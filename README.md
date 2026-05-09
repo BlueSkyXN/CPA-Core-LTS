@@ -9,6 +9,7 @@ CPA Core LTS is a long-term-maintained fork of `router-for-me/CLIProxyAPI`.
 - Upstream source: <https://github.com/router-for-me/CLIProxyAPI>
 - LTS repository: <https://github.com/BlueSkyXN/CPA-Core-LTS>
 - Companion Web UI: <https://github.com/BlueSkyXN/CPA-Panel-LTS>
+- Default panel release source: `https://github.com/BlueSkyXN/CPA-Panel-LTS`
 
 ## LTS Plan
 
@@ -22,7 +23,7 @@ Maintenance rules:
 - Do not blindly sync the upstream fork if the change removes statistics or breaks `CPA-Panel-LTS` usage pages.
 - Planned cleanup can remove promotional copy, unused features, and non-LTS release machinery, but must not weaken the statistics contract.
 
-This core service is intended to pair with `CPA-Panel-LTS`, which keeps the matching management panel usage statistics UI.
+This core service is intended to pair with `CPA-Panel-LTS`, which keeps the matching management panel usage statistics UI. By default, `/management.html` is downloaded from the latest `CPA-Panel-LTS` release asset named `management.html`.
 
 ## Original Project Overview
 

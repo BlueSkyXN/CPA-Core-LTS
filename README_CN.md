@@ -9,6 +9,7 @@ CPA Core LTS 是基于 `router-for-me/CLIProxyAPI` 的长期维护分支。
 - 上游来源：<https://github.com/router-for-me/CLIProxyAPI>
 - LTS 仓库：<https://github.com/BlueSkyXN/CPA-Core-LTS>
 - 配套 Web 管理面板：<https://github.com/BlueSkyXN/CPA-Panel-LTS>
+- 默认面板发布源：`https://github.com/BlueSkyXN/CPA-Panel-LTS`
 
 ## LTS 计划
 
@@ -22,7 +23,7 @@ CPA Core LTS 是基于 `router-for-me/CLIProxyAPI` 的长期维护分支。
 - 不要盲目同步上游 fork；凡是会移除统计或破坏 `CPA-Panel-LTS` 使用统计页面的改动，都不能直接合入。
 - 后续轻量化改造可以移除推广文案、无用功能和非 LTS 发布链路，但不能削弱统计契约。
 
-本核心服务应与 `CPA-Panel-LTS` 配套使用，后者保留了与该统计接口匹配的管理面板统计页面。
+本核心服务应与 `CPA-Panel-LTS` 配套使用，后者保留了与该统计接口匹配的管理面板统计页面。默认情况下，`/management.html` 会从 `CPA-Panel-LTS` 最新 release 中名为 `management.html` 的资产下载。
 
 ## 原项目概览
 

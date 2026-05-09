@@ -38,6 +38,7 @@
 
 - Core 负责稳定输出统计接口。
 - Panel 负责保留和演进统计 UI。
+- Core 默认应从 `BlueSkyXN/CPA-Panel-LTS` 的 latest release 下载 `management.html`。
 - Core 改动统计数据结构时，必须同步检查 Panel。
 - Panel 改动统计页面时，必须确认 Core 仍提供对应接口。
 
