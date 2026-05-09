@@ -1,6 +1,30 @@
-# CLI Proxy API
+# CPA Core LTS
 
 English | [中文](README_CN.md) | [日本語](README_JA.md)
+
+CPA Core LTS is a long-term-maintained fork of `router-for-me/CLIProxyAPI`.
+
+- LTS baseline: `v6.9.49`
+- Baseline commit: `b8bba053fcdafd80abc2152c88c78f4e7713c05a`
+- Upstream source: <https://github.com/router-for-me/CLIProxyAPI>
+- LTS repository: <https://github.com/BlueSkyXN/CPA-Core-LTS>
+- Companion Web UI: <https://github.com/BlueSkyXN/CPA-Panel-LTS>
+
+## LTS Plan
+
+This fork exists because upstream releases after the selected baseline changed or removed the full usage statistics flow. The goal of this repository is to keep the CLI proxy core maintainable while preserving the statistics behavior that existed at `v6.9.49`.
+
+Maintenance rules:
+
+- `main` is the LTS line. Do not create a separate "statistics branch" for normal maintenance.
+- Preserve usage collection, `/v0/management/usage`, `/v0/management/usage/export`, `/v0/management/usage/import`, and `usage-statistics-enabled`.
+- Track useful upstream fixes and features selectively by review, cherry-pick, or manual porting.
+- Do not blindly sync the upstream fork if the change removes statistics or breaks `CPA-Panel-LTS` usage pages.
+- Planned cleanup can remove promotional copy, unused features, and non-LTS release machinery, but must not weaken the statistics contract.
+
+This core service is intended to pair with `CPA-Panel-LTS`, which keeps the matching management panel usage statistics UI.
+
+## Original Project Overview
 
 A proxy server that provides OpenAI/Gemini/Claude/Codex compatible API interfaces for CLI.
 

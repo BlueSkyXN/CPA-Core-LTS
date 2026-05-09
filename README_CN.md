@@ -1,6 +1,30 @@
-# CLI 代理 API
+# CPA Core LTS
 
 [English](README.md) | 中文 | [日本語](README_JA.md)
+
+CPA Core LTS 是基于 `router-for-me/CLIProxyAPI` 的长期维护分支。
+
+- LTS 基线版本：`v6.9.49`
+- 基线提交：`b8bba053fcdafd80abc2152c88c78f4e7713c05a`
+- 上游来源：<https://github.com/router-for-me/CLIProxyAPI>
+- LTS 仓库：<https://github.com/BlueSkyXN/CPA-Core-LTS>
+- 配套 Web 管理面板：<https://github.com/BlueSkyXN/CPA-Panel-LTS>
+
+## LTS 计划
+
+本仓库存在的原因是：上游在所选基线之后调整或移除了完整的使用统计链路。本仓库的目标是在继续维护 CLI 代理核心能力的同时，保留 `v6.9.49` 已具备的统计能力。
+
+维护规则：
+
+- `main` 就是 LTS 主线，不再单独维护一个“统计分支”。
+- 必须保留使用统计采集、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import` 和 `usage-statistics-enabled`。
+- 跟进上游新功能时，需要逐项审查、cherry-pick 或手工移植。
+- 不要盲目同步上游 fork；凡是会移除统计或破坏 `CPA-Panel-LTS` 使用统计页面的改动，都不能直接合入。
+- 后续轻量化改造可以移除推广文案、无用功能和非 LTS 发布链路，但不能削弱统计契约。
+
+本核心服务应与 `CPA-Panel-LTS` 配套使用，后者保留了与该统计接口匹配的管理面板统计页面。
+
+## 原项目概览
 
 一个为 CLI 提供 OpenAI/Gemini/Claude/Codex 兼容 API 接口的代理服务器。
 
