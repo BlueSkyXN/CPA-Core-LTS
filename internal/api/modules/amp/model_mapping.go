@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/thinking"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 

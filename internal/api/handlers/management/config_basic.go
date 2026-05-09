@@ -10,17 +10,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
+	sdkconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
-	latestReleaseUserAgent = "CLIProxyAPI"
+	latestReleaseURL       = "https://api.github.com/repos/BlueSkyXN/CPA-Core-LTS/releases/latest"
+	latestReleaseUserAgent = "CPA-Core-LTS"
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {

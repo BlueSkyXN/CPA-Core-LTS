@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/auth/vertex"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/vertex"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // ImportVertexCredential handles uploading a Vertex service account JSON and saving it as an auth record.

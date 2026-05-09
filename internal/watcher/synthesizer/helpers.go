@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/watcher/diff"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
 )
 
 // StableIDGenerator generates stable, deterministic IDs for auth entries.

@@ -3,8 +3,8 @@ package cliproxy
 import (
 	"testing"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 )
 
 func TestEnsureExecutorsForAuth_CodexDoesNotReplaceInNormalMode(t *testing.T) {

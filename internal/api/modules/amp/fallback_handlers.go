@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/thinking"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/watcher/diff"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/watcher/synthesizer"
+	sdkAuth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/auth"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
 	"github.com/fsnotify/fsnotify"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
 

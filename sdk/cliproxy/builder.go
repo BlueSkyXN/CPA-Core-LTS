@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	configaccess "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/access/config_access"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/api"
+	sdkaccess "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/access"
+	sdkAuth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/auth"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 )
 
 // Builder constructs a Service instance with customizable providers.

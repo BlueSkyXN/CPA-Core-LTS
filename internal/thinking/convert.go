@@ -3,7 +3,7 @@ package thinking
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/registry"
 )
 
 // levelToBudgetMap defines the standard Level → Budget mapping.

@@ -5,7 +5,7 @@
 ## 安装与导入
 
 ```bash
-go get github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy
+go get github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy
 ```
 
 ```go
@@ -14,8 +14,8 @@ import (
     "errors"
     "time"
 
-    "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-    "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+    "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+    "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy"
 )
 ```
 
@@ -74,7 +74,7 @@ svc, _ := cliproxy.NewBuilder().
 
 - 仅当 `config.yaml` 中设置了 `remote-management.secret-key` 时才会挂载管理端点。
 - 远程访问还需要 `remote-management.allow-remote: true`。
-- 具体端点见 MANAGEMENT_API_CN.md。内嵌服务器会在配置端口下暴露 `/v0/management`。
+- 管理端点会在配置端口下暴露为 `/v0/management`。当前 handler 实现位于 `internal/api/handlers/management`。
 
 ## 使用核心鉴权管理器
 
@@ -161,4 +161,3 @@ _ = svc.Shutdown(ctx)
 - 热更新：`config.yaml` 与 `auths/` 变化会被自动侦测并应用。
 - 请求日志可通过管理 API 在运行时开关。
 - `gemini-web.*` 相关配置在内嵌服务器中会被遵循。
-

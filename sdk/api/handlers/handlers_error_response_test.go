@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/interfaces"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 func TestWriteErrorResponse_AddonHeadersDisabledByDefault(t *testing.T) {

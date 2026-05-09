@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/cache"
 )
 
 // ============================================================================

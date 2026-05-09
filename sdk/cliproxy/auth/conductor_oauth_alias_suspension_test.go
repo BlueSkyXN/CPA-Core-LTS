@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	internalconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/registry"
+	cliproxyexecutor "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/executor"
 )
 
 type aliasRoutingExecutor struct {

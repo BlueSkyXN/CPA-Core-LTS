@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

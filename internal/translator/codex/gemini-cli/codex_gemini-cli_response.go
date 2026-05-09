@@ -7,8 +7,8 @@ package geminiCLI
 import (
 	"context"
 
-	. "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/codex/gemini"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	. "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/translator/codex/gemini"
+	translatorcommon "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/translator/common"
 )
 
 // ConvertCodexResponseToGeminiCLI converts Codex streaming response format to Gemini CLI format.

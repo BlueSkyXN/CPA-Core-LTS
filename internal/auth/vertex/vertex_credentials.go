@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
 

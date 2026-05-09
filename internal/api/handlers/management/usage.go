@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/usage"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 type usageExportPayload struct {

@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
+	sdkconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -28,7 +28,7 @@ const (
 	defaultManagementReleaseURL  = "https://api.github.com/repos/BlueSkyXN/CPA-Panel-LTS/releases/latest"
 	defaultManagementFallbackURL = "https://github.com/BlueSkyXN/CPA-Panel-LTS/releases/latest/download/management.html"
 	managementAssetName          = "management.html"
-	httpUserAgent                = "CLIProxyAPI-management-updater"
+	httpUserAgent                = "CPA-Core-LTS-management-updater"
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
 	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads

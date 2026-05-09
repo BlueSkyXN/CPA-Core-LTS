@@ -23,15 +23,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api"
+	sdkAuth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/auth"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	clipexec "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/executor"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/logging"
+	sdktr "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/translator"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	clipexec "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/logging"
-	sdktr "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
 const (

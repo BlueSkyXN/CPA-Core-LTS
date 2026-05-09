@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	configaccess "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/access/config_access"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	sdkaccess "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/access"
 	log "github.com/sirupsen/logrus"
 )
 

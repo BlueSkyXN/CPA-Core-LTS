@@ -8,12 +8,12 @@ import (
 	"net/http/httputil"
 	"strings"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api/handlers"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api/handlers/claude"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api/handlers/gemini"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api/handlers/openai"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/gemini"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/openai"
 	log "github.com/sirupsen/logrus"
 )
 

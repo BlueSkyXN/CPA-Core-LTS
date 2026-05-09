@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/interfaces"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 )
 
 type StreamForwardOptions struct {

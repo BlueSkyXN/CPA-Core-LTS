@@ -9,8 +9,8 @@
 package claude
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/registry"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/thinking"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

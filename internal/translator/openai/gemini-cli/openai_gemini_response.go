@@ -8,8 +8,8 @@ package geminiCLI
 import (
 	"context"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	. "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/gemini"
+	translatorcommon "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/translator/common"
+	. "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/translator/openai/gemini"
 )
 
 // ConvertOpenAIResponseToGeminiCLI converts OpenAI Chat Completions streaming response format to Gemini API format.

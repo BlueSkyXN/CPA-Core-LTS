@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	cliproxyauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/usage"
 	"github.com/gin-gonic/gin"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

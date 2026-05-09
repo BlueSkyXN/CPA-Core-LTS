@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	internallogging "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
+	internalusage "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/usage"
+	coreusage "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/usage"
 	"github.com/gin-gonic/gin"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
 func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {

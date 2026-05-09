@@ -25,11 +25,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/proxyutil"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/misc"
+	sdkauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/auth"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )

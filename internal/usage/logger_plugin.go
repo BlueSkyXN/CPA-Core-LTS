@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	internallogging "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
+	coreusage "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/usage"
 )
 
 var statisticsEnabled atomic.Bool

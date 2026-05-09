@@ -3,8 +3,8 @@ package diff
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	sdkconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 )
 
 func TestBuildConfigChangeDetails(t *testing.T) {

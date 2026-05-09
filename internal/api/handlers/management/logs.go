@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 )
 
 const (

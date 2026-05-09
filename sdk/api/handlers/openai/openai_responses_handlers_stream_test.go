@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/interfaces"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api/handlers"
+	sdkconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 func newResponsesStreamTestHandler(t *testing.T) (*OpenAIResponsesAPIHandler, *httptest.ResponseRecorder, *gin.Context, http.Flusher) {

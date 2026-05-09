@@ -13,15 +13,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/interfaces"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/thinking"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	coreexecutor "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/executor"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
+	sdktranslator "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/translator"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"golang.org/x/net/context"
 )
 

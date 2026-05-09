@@ -1,49 +1,38 @@
-# CLI Proxy API
+# CPA Core LTS
 
 [English](README.md) | [中文](README_CN.md) | 日本語
+
+CPA Core LTS は `router-for-me/CLIProxyAPI` を基にした長期保守ブランチです。
+
+- LTS baseline: `v6.9.49`
+- Baseline commit: `b8bba053fcdafd80abc2152c88c78f4e7713c05a`
+- Upstream source: <https://github.com/router-for-me/CLIProxyAPI>
+- LTS repository: <https://github.com/BlueSkyXN/CPA-Core-LTS>
+- Companion Web UI: <https://github.com/BlueSkyXN/CPA-Panel-LTS>
+- Default panel release source: `https://github.com/BlueSkyXN/CPA-Panel-LTS`
+
+## LTS 方針
+
+この fork は、選択した基準版以降の upstream release で完全な usage statistics フローが変更または削除されたため存在します。このリポジトリの目的は、CLI proxy core を保守しながら、`v6.9.49` 時点の統計機能を維持することです。
+
+保守ルール:
+
+- `main` が LTS line です。通常保守用に別の "statistics branch" は作りません。
+- usage collection、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import`、`usage-statistics-enabled` を維持します。
+- 有用な upstream 修正や機能は、レビュー、cherry-pick、または手動移植で選択的に取り込みます。
+- 統計機能を削除したり `CPA-Panel-LTS` の usage pages を壊したりする変更は、upstream fork から盲目的に同期しません。
+- 後続の軽量化では、宣伝文、未使用機能、非 LTS release machinery を削除できますが、統計契約は弱めません。
+- LTS release tags は `v*-lts.*` パターンを使います。release 時は対象の LTS tag だけを push し、upstream fetch 後に `git push --tags` は使いません。
+
+この core service は、対応する management panel usage statistics UI を保持する `CPA-Panel-LTS` と組み合わせて利用する想定です。既定では、`/management.html` は最新の `CPA-Panel-LTS` release に含まれる `management.html` asset から取得されます。
+
+## 元プロジェクト概要
 
 CLI向けのOpenAI/Gemini/Claude/Codex互換APIインターフェースを提供するプロキシサーバーです。
 
 OAuth経由でOpenAI Codex（GPTモデル）およびClaude Codeもサポートしています。
 
 ローカルまたはマルチアカウントのCLIアクセスを、OpenAI（Responses含む）/Gemini/Claude互換のクライアントやSDKで利用できます。
-
-## スポンサー
-
-[![z.ai](https://assets.router-for.me/english-5-0.jpg)](https://z.ai/subscribe?ic=8JVLJQFSKB)
-
-本プロジェクトはZ.aiにスポンサーされており、GLM CODING PLANの提供を受けています。
-
-GLM CODING PLANはAIコーディング向けに設計されたサブスクリプションサービスで、月額わずか$10から利用可能です。フラッグシップのGLM-4.7および（GLM-5はProユーザーのみ利用可能）モデルを10以上の人気AIコーディングツール（Claude Code、Cline、Roo Codeなど）で利用でき、開発者にトップクラスの高速かつ安定したコーディング体験を提供します。
-
-GLM CODING PLANを10%割引で取得：https://z.ai/subscribe?ic=8JVLJQFSKB
-
----
-
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.packyapi.com/register?aff=cliproxyapi"><img src="./assets/packycode.png" alt="PackyCode" width="150"></a></td>
-<td>PackyCodeのスポンサーシップに感謝します！PackyCodeは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。PackyCodeは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://www.packyapi.com/register?aff=cliproxyapi">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「cliproxyapi」を入力すると10%割引になります。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.com/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>AICodeMirrorのスポンサーシップに感謝します！AICodeMirrorはClaude Code / Codex / Gemini CLI向けの公式高安定性リレーサービスを提供しており、エンタープライズグレードの同時接続、迅速な請求書発行、24時間365日の専任技術サポートを備えています。Claude Code / Codex / Geminiの公式チャネルが元の価格の38% / 2% / 9%で利用でき、チャージ時にはさらに割引があります！CLIProxyAPIユーザー向けの特別特典：<a href="https://www.aicodemirror.com/register?invitecode=TJNAIF">こちらのリンク</a>から登録すると、初回チャージが20%割引になり、エンタープライズのお客様は最大25%割引を受けられます！</td>
-</tr>
-<tr>
-<td width="180"><a href="https://shop.bmoplus.com/?utm_source=github"><img src="./assets/bmoplus.png" alt="BmoPlus" width="150"></a></td>
-<td>本プロジェクトにご支援いただいた BmoPlus に感謝いたします！BmoPlusは、AIサブスクリプションのヘビーユーザー向けに特化した信頼性の高いAIアカウントサービスプロバイダーであり、安定した ChatGPT Plus / ChatGPT Pro (完全保証) / Claude Pro / Super Grok / Gemini Pro の公式代行チャージおよび即納アカウントを提供しています。こちらの<a href="https://shop.bmoplus.com/?utm_source=github">BmoPlus AIアカウント専門店/代行チャージ</a>経由でご登録・ご注文いただいたユーザー様は、GPTを <b>公式サイト価格の約1割（90% OFF）</b> という驚異的な価格でご利用いただけます！</td>
-</tr>
-<tr>
-<td width="180"><a href="https://poixe.com/i/m8kvep"><img src="./assets/poixeai.png" alt="PoixeAI" width="150"></a></td>
-<td>Poixe AIのスポンサーシップに感謝します！Poixe AIは信頼できるAIモデルAPIサービスを提供しており、プラットフォームが提供するLLM APIを使って簡単にAI製品を構築できます。また、サプライヤーとしてプラットフォームに大規模モデルのリソースを提供し、収益を得ることも可能です。CLIProxyAPIの<a href="https://poixe.com/i/m8kvep">専用リンク</a>から登録すると、チャージ時に追加で$5が付与されます。</td>
-</tr>
-<tr>
-<td width="180"><a href="https://coder.visioncoder.cn"><img src="./assets/visioncoder.png" alt="VisionCoder" width="150"></a></td>
-<td>VisionCoderのご支援に感謝します！<a href="https://coder.visioncoder.cn">VisionCoder 開発プラットフォーム</a> は、信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどの主要AIモデルを提供し、開発者やチームがより簡単にAI機能を統合して生産性を向上できるよう支援します。さらに、VisionCoderはユーザー向けに <a href="https://coder.visioncoder.cn">Token Plan</a> の期間限定キャンペーン（1か月購入で1か月分プレゼント）も提供しています。</td>
-</tr>
-</tbody>
-</table>
 
 ## 概要
 
@@ -66,11 +55,11 @@ GLM CODING PLANを10%割引で取得：https://z.ai/subscribe?ic=8JVLJQFSKB
 
 ## はじめに
 
-CLIProxyAPIガイド：[https://help.router-for.me/](https://help.router-for.me/)
+`config.example.yaml` と `docs/` 配下の SDK docs から確認してください。upstream guide は歴史的な参考として利用できますが、この LTS repository に適用する前に現在のコード挙動を確認してください。
 
 ## 管理API
 
-[MANAGEMENT_API.md](https://help.router-for.me/management/api)を参照
+remote management を有効にすると、管理エンドポイントは `/v0/management` 配下で公開されます。LTS usage statistics contract には `/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import` が含まれます。現在の実装は `internal/api/handlers/management` にあります。
 
 ## Amp CLIサポート
 
@@ -90,7 +79,7 @@ CLIProxyAPIは[Amp CLI](https://ampcode.com)およびAmp IDE拡張機能の統�
 
 これらのパスはプロトコル面の選択には役立ちますが、同じクライアント向けモデル名が複数バックエンドで再利用されている場合、それだけで推論実行系が一意に固定されるわけではありません。実際の推論ルーティングは、引き続きリクエスト内の model/alias 解決に従います。厳密にバックエンドを固定したい場合は、一意な alias や prefix を使うか、クライアント向けモデル名の重複自体を避けてください。
 
-**→ [Amp CLI統合ガイドの完全版](https://help.router-for.me/agent-client/amp-cli.html)**
+Amp routes は `internal/api/modules/amp` に実装されています。設定挙動は `config.example.yaml` の `amp-code` section と現在のコードで確認してください。
 
 ## SDKドキュメント
 

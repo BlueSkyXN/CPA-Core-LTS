@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	cliproxyauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/executor"
+	sdktranslator "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 

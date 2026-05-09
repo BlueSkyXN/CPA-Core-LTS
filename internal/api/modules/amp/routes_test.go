@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/api/handlers"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 )
 
 func TestRegisterManagementRoutes(t *testing.T) {

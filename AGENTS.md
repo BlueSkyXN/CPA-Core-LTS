@@ -49,6 +49,7 @@
 - 合入前检查是否触碰 `internal/usage/`、Management API usage endpoints、config schema、auth/API key usage 结构。
 - 如果上游改动会破坏统计，优先保留 LTS 统计实现，再单独吸收其他无冲突部分。
 - 后续轻量化改造可以移除广告、赞助描述、无用文档、非目标 provider 或发布链路，但不要删除仍被统计、管理面板或部署流程依赖的代码。
+- LTS 发布标签必须使用 `v*-lts.*` 形式；发布时只推送当前标签，不要在跟进上游后执行 `git push --tags`。
 
 ## 常用命令
 

@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 

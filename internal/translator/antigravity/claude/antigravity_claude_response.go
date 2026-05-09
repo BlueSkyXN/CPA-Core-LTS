@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/cache"
+	translatorcommon "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/translator/common"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tidwall/gjson"

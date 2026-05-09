@@ -3,7 +3,7 @@ package synthesizer
 import (
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
 )
 
 // SynthesisContext provides the context needed for auth synthesis.

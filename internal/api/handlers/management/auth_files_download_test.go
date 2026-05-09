@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
 func TestDownloadAuthFile_ReturnsFile(t *testing.T) {

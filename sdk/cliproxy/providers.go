@@ -3,8 +3,8 @@ package cliproxy
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/watcher"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/config"
 )
 
 // NewFileTokenClientProvider returns the default token-backed client loader.

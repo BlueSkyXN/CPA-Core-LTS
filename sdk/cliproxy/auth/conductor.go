@@ -15,13 +15,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	internalconfig "github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/config"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/logging"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/registry"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/thinking"
+	"github.com/BlueSkyXN/CPA-Core-LTS/v6/internal/util"
+	cliproxyexecutor "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/executor"
 	"github.com/google/uuid"
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 

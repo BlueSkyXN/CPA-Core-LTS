@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreauth "github.com/BlueSkyXN/CPA-Core-LTS/v6/sdk/cliproxy/auth"
 )
 
 type memoryAuthStore struct {
