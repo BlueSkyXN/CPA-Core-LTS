@@ -109,6 +109,7 @@ func (s *Server) routeMuxConnection(conn net.Conn, httpListener *muxListener) {
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Time{})
 		s.handleRedisConnection(conn, reader)
 		return
 	}
