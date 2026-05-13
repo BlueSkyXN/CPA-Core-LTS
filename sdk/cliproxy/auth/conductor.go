@@ -2599,6 +2599,13 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	return auth.Clone(), true
 }
 
+// GetExecutionSessionAuthByID retrieves an auth entry scoped to an execution session.
+// CPA-Core-LTS does not use the upstream Home runtime auth cache, so this keeps
+// websocket handler compatibility by falling back to the normal auth registry.
+func (m *Manager) GetExecutionSessionAuthByID(_ string, authID string) (*Auth, bool) {
+	return m.GetByID(authID)
+}
+
 // Executor returns the registered provider executor for a provider key.
 func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 	if m == nil {
