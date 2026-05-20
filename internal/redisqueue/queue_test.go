@@ -63,6 +63,52 @@ func TestQueueRetentionSecondsDefaultsAndClamps(t *testing.T) {
 	})
 }
 
+func TestSubscribeUsageBroadcastsAndRetainsQueue(t *testing.T) {
+	withQueueState(t, func() {
+		messages, unsubscribe := SubscribeUsage()
+		defer unsubscribe()
+
+		payload := []byte("usage-event")
+		Enqueue(payload)
+		payload[0] = 'X'
+
+		select {
+		case got, ok := <-messages:
+			if !ok {
+				t.Fatal("subscriber channel closed")
+			}
+			if string(got) != "usage-event" {
+				t.Fatalf("subscriber payload = %q, want usage-event", got)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for subscriber payload")
+		}
+
+		items := PopOldest(1)
+		if len(items) != 1 || string(items[0]) != "usage-event" {
+			t.Fatalf("queued payload = %q, want [usage-event]", items)
+		}
+	})
+}
+
+func TestSubscribeUsageClosesWhenQueueDisabled(t *testing.T) {
+	withQueueState(t, func() {
+		messages, unsubscribe := SubscribeUsage()
+		defer unsubscribe()
+
+		SetEnabled(false)
+
+		select {
+		case _, ok := <-messages:
+			if ok {
+				t.Fatal("subscriber channel remained open after queue disable")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for subscriber close")
+		}
+	})
+}
+
 func withQueueState(t *testing.T, fn func()) {
 	t.Helper()
 
