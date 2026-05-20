@@ -171,6 +171,105 @@ func readRESPArrayOfBulkStrings(r *bufio.Reader) ([][]byte, error) {
 	return out, nil
 }
 
+func readTestRESPInteger(r *bufio.Reader) (int, error) {
+	prefix, err := r.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	if prefix != ':' {
+		return 0, fmt.Errorf("expected integer prefix ':', got %q", prefix)
+	}
+
+	line, err := readTestRESPLine(r)
+	if err != nil {
+		return 0, err
+	}
+	value, err := strconv.Atoi(line)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q: %v", line, err)
+	}
+	return value, nil
+}
+
+func readTestRESPArrayHeader(r *bufio.Reader) (int, error) {
+	prefix, err := r.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	if prefix != '*' {
+		return 0, fmt.Errorf("expected array prefix '*', got %q", prefix)
+	}
+
+	line, err := readTestRESPLine(r)
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.Atoi(line)
+	if err != nil {
+		return 0, fmt.Errorf("invalid array length %q: %v", line, err)
+	}
+	if count < 0 {
+		return 0, fmt.Errorf("invalid array length %d", count)
+	}
+	return count, nil
+}
+
+func readTestRESPPubSubSubscribe(r *bufio.Reader) (string, int, error) {
+	count, err := readTestRESPArrayHeader(r)
+	if err != nil {
+		return "", 0, err
+	}
+	if count != 3 {
+		return "", 0, fmt.Errorf("subscribe array length = %d, want 3", count)
+	}
+
+	kind, err := readTestRESPBulkString(r)
+	if err != nil {
+		return "", 0, err
+	}
+	if string(kind) != "subscribe" {
+		return "", 0, fmt.Errorf("pubsub kind = %q, want subscribe", string(kind))
+	}
+
+	channel, err := readTestRESPBulkString(r)
+	if err != nil {
+		return "", 0, err
+	}
+	subscriptions, err := readTestRESPInteger(r)
+	if err != nil {
+		return "", 0, err
+	}
+	return string(channel), subscriptions, nil
+}
+
+func readTestRESPPubSubMessage(r *bufio.Reader) (string, []byte, error) {
+	count, err := readTestRESPArrayHeader(r)
+	if err != nil {
+		return "", nil, err
+	}
+	if count != 3 {
+		return "", nil, fmt.Errorf("message array length = %d, want 3", count)
+	}
+
+	kind, err := readTestRESPBulkString(r)
+	if err != nil {
+		return "", nil, err
+	}
+	if string(kind) != "message" {
+		return "", nil, fmt.Errorf("pubsub kind = %q, want message", string(kind))
+	}
+
+	channel, err := readTestRESPBulkString(r)
+	if err != nil {
+		return "", nil, err
+	}
+	payload, err := readTestRESPBulkString(r)
+	if err != nil {
+		return "", nil, err
+	}
+	return string(channel), payload, nil
+}
+
 func TestRedisProtocol_ManagementDisabled_RejectsConnection(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	redisqueue.SetEnabled(false)
@@ -312,6 +411,91 @@ func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 	}
 	if len(emptyItems) != 0 {
 		t.Fatalf("expected empty array for empty queue with count, got %#v", emptyItems)
+	}
+}
+
+func TestRedisProtocol_SubscribeUsageBroadcastsAndRetainsQueue(t *testing.T) {
+	const managementPassword = "test-management-password"
+
+	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
+	redisqueue.SetEnabled(false)
+	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+
+	server := newTestServer(t)
+	if !server.managementRoutesEnabled.Load() {
+		t.Fatalf("expected managementRoutesEnabled to be true")
+	}
+
+	addr, stop := startRedisMuxListener(t, server)
+	t.Cleanup(stop)
+
+	subConn, errDialSub := net.DialTimeout("tcp", addr, time.Second)
+	if errDialSub != nil {
+		t.Fatalf("failed to dial subscriber redis listener: %v", errDialSub)
+	}
+	t.Cleanup(func() { _ = subConn.Close() })
+	subReader := bufio.NewReader(subConn)
+	_ = subConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if errWrite := writeTestRESPCommand(subConn, "SUBSCRIBE", "usage"); errWrite != nil {
+		t.Fatalf("failed to write unauthenticated SUBSCRIBE command: %v", errWrite)
+	}
+	if msg, err := readTestRESPError(subReader); err != nil {
+		t.Fatalf("failed to read SUBSCRIBE NOAUTH error: %v", err)
+	} else if msg != "NOAUTH Authentication required." {
+		t.Fatalf("unexpected SUBSCRIBE NOAUTH error: %q", msg)
+	}
+
+	if errWrite := writeTestRESPCommand(subConn, "AUTH", managementPassword); errWrite != nil {
+		t.Fatalf("failed to write subscriber AUTH command: %v", errWrite)
+	}
+	if msg, err := readTestRESPSimpleString(subReader); err != nil {
+		t.Fatalf("failed to read subscriber AUTH response: %v", err)
+	} else if msg != "OK" {
+		t.Fatalf("unexpected subscriber AUTH response: %q", msg)
+	}
+	if errWrite := writeTestRESPCommand(subConn, "SUBSCRIBE", "usage"); errWrite != nil {
+		t.Fatalf("failed to write SUBSCRIBE command: %v", errWrite)
+	}
+	if channel, count, err := readTestRESPPubSubSubscribe(subReader); err != nil {
+		t.Fatalf("failed to read SUBSCRIBE response: %v", err)
+	} else if channel != "usage" || count != 1 {
+		t.Fatalf("unexpected SUBSCRIBE response channel=%q count=%d", channel, count)
+	}
+
+	redisqueue.Enqueue([]byte(`{"id":1}`))
+
+	if channel, payload, err := readTestRESPPubSubMessage(subReader); err != nil {
+		t.Fatalf("failed to read pubsub message: %v", err)
+	} else if channel != "usage" || string(payload) != `{"id":1}` {
+		t.Fatalf("unexpected pubsub message channel=%q payload=%q", channel, string(payload))
+	}
+
+	popConn, errDialPop := net.DialTimeout("tcp", addr, time.Second)
+	if errDialPop != nil {
+		t.Fatalf("failed to dial pop redis listener: %v", errDialPop)
+	}
+	t.Cleanup(func() { _ = popConn.Close() })
+	popReader := bufio.NewReader(popConn)
+	_ = popConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if errWrite := writeTestRESPCommand(popConn, "AUTH", managementPassword); errWrite != nil {
+		t.Fatalf("failed to write pop AUTH command: %v", errWrite)
+	}
+	if msg, err := readTestRESPSimpleString(popReader); err != nil {
+		t.Fatalf("failed to read pop AUTH response: %v", err)
+	} else if msg != "OK" {
+		t.Fatalf("unexpected pop AUTH response: %q", msg)
+	}
+	if errWrite := writeTestRESPCommand(popConn, "LPOP", "usage"); errWrite != nil {
+		t.Fatalf("failed to write pop LPOP command: %v", errWrite)
+	}
+	item, errItem := readTestRESPBulkString(popReader)
+	if errItem != nil {
+		t.Fatalf("failed to read pop LPOP response: %v", errItem)
+	}
+	if string(item) != `{"id":1}` {
+		t.Fatalf("expected subscribed usage to remain queued, got %q", string(item))
 	}
 }
 
