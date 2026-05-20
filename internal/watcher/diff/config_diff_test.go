@@ -102,6 +102,80 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 	expectContains(t, details, "  provider updated: compat-a (models 1 -> 2)")
 }
 
+func TestBuildConfigChangeDetails_PayloadRules(t *testing.T) {
+	oldCfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Default: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "gpt-*", Protocol: "responses"}},
+					Params: map[string]any{"temperature": 0.2},
+				},
+			},
+			DefaultRaw: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "claude-*", Protocol: "anthropic"}},
+					Params: map[string]any{"metadata": `{"source":"old"}`},
+				},
+			},
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: "gemini"}},
+					Params: map[string]any{"top_p": 0.9},
+				},
+			},
+			OverrideRaw: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "xai-*", Protocol: "responses"}},
+					Params: map[string]any{"extra": `{"old":true}`},
+				},
+			},
+			Filter: []config.PayloadFilterRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "codex-*", Protocol: "responses"}},
+					Params: []string{"stream_options.include_usage"},
+				},
+			},
+		},
+	}
+	newCfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Default: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "gpt-*", Protocol: "responses"}},
+					Params: map[string]any{"temperature": 0.3},
+				},
+				{
+					Models: []config.PayloadModelRule{{Name: "o*", Protocol: "responses"}},
+					Params: map[string]any{"reasoning.effort": "medium"},
+				},
+			},
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "gemini-*", Protocol: "gemini"}},
+					Params: map[string]any{"top_p": 0.8},
+				},
+			},
+			OverrideRaw: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "xai-*", Protocol: "responses"}},
+					Params: map[string]any{"extra": `{"new":true}`},
+				},
+				{
+					Models: []config.PayloadModelRule{{Name: "*", Protocol: "responses"}},
+					Params: map[string]any{"metadata": `{"trace":true}`},
+				},
+			},
+		},
+	}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "payload.default: updated (1 -> 2 rules)")
+	expectContains(t, details, "payload.default-raw: updated (1 -> 0 rules)")
+	expectContains(t, details, "payload.override: updated (1 -> 1 rules)")
+	expectContains(t, details, "payload.override-raw: updated (1 -> 2 rules)")
+	expectContains(t, details, "payload.filter: updated (1 -> 0 rules)")
+}
+
 func TestBuildConfigChangeDetails_NoChanges(t *testing.T) {
 	cfg := &config.Config{
 		Port: 8080,
