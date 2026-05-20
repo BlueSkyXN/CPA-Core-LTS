@@ -13,6 +13,7 @@ import (
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -106,6 +107,71 @@ func TestManagementLocalPasswordRejectsSpoofedForwardedFor(t *testing.T) {
 	}
 	if body := rr.Body.String(); !strings.Contains(body, "remote management disabled") {
 		t.Fatalf("body = %q, want remote management disabled", body)
+	}
+}
+
+func TestManagementUsageQueueRequiresAuthAndPreservesUsageStatisticsRoute(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	prevQueueEnabled := redisqueue.Enabled()
+	redisqueue.SetEnabled(false)
+	t.Cleanup(func() {
+		redisqueue.SetEnabled(false)
+		redisqueue.SetEnabled(prevQueueEnabled)
+	})
+
+	server := newTestServer(t)
+
+	redisqueue.Enqueue([]byte(`{"id":1}`))
+	redisqueue.Enqueue([]byte(`{"id":2}`))
+
+	missingKeyReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
+	missingKeyRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(missingKeyRR, missingKeyReq)
+	if missingKeyRR.Code != http.StatusUnauthorized {
+		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
+	}
+
+	usageStatsReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage", nil)
+	usageStatsReq.Header.Set("Authorization", "Bearer test-management-key")
+	usageStatsRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(usageStatsRR, usageStatsReq)
+	if usageStatsRR.Code != http.StatusOK {
+		t.Fatalf("usage stats status = %d, want %d body=%s", usageStatsRR.Code, http.StatusOK, usageStatsRR.Body.String())
+	}
+	if body := usageStatsRR.Body.String(); !strings.Contains(body, `"usage"`) {
+		t.Fatalf("usage stats body missing usage snapshot: %s", body)
+	}
+
+	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
+	authReq.Header.Set("Authorization", "Bearer test-management-key")
+	authRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(authRR, authReq)
+	if authRR.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d, want %d body=%s", authRR.Code, http.StatusOK, authRR.Body.String())
+	}
+
+	var payload []json.RawMessage
+	if errUnmarshal := json.Unmarshal(authRR.Body.Bytes(), &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal response: %v body=%s", errUnmarshal, authRR.Body.String())
+	}
+	if len(payload) != 2 {
+		t.Fatalf("response records = %d, want 2", len(payload))
+	}
+	for i, raw := range payload {
+		var record struct {
+			ID int `json:"id"`
+		}
+		if errUnmarshal := json.Unmarshal(raw, &record); errUnmarshal != nil {
+			t.Fatalf("unmarshal record %d: %v", i, errUnmarshal)
+		}
+		if record.ID != i+1 {
+			t.Fatalf("record %d id = %d, want %d", i, record.ID, i+1)
+		}
+	}
+
+	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
+		t.Fatalf("remaining queue = %q, want empty", remaining)
 	}
 }
 
