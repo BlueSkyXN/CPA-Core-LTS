@@ -19,6 +19,10 @@ import (
 )
 
 func newTestServer(t *testing.T) *Server {
+	return newTestServerWithOptions(t)
+}
+
+func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -44,7 +48,7 @@ func newTestServer(t *testing.T) *Server {
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	return NewServer(cfg, authManager, accessManager, configPath)
+	return NewServer(cfg, authManager, accessManager, configPath, opts...)
 }
 
 func TestHealthz(t *testing.T) {
@@ -82,6 +86,26 @@ func TestHealthz(t *testing.T) {
 			t.Fatalf("expected empty body for HEAD request, got %q", rr.Body.String())
 		}
 	})
+}
+
+func TestManagementLocalPasswordRejectsSpoofedForwardedFor(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	server := newTestServerWithOptions(t, WithLocalManagementPassword("test-local-key"))
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+	req.RemoteAddr = "203.0.113.10:45678"
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+	req.Header.Set("Authorization", "Bearer test-local-key")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "remote management disabled") {
+		t.Fatalf("body = %q, want remote management disabled", body)
+	}
 }
 
 func TestAmpProviderModelRoutes(t *testing.T) {
