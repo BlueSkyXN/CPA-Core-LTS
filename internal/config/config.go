@@ -396,6 +396,9 @@ type ClaudeKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
@@ -451,6 +454,9 @@ type CodexKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string  { return k.APIKey }
@@ -495,6 +501,9 @@ type GeminiKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string  { return k.APIKey }
@@ -539,6 +548,9 @@ type OpenAICompatibility struct {
 
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
