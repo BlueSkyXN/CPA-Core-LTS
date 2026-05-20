@@ -32,6 +32,46 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	}
 }
 
+func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:          "test-key",
+		Model:           "gpt-5.4",
+		Alias:           "client-gpt",
+		ReasoningEffort: "medium",
+		RequestedAt:     time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
+		Detail: coreusage.Detail{
+			InputTokens:         10,
+			OutputTokens:        20,
+			CacheReadTokens:     7,
+			CacheCreationTokens: 3,
+			TotalTokens:         30,
+		},
+	})
+
+	snapshot := stats.Snapshot()
+	details := snapshot.APIs["test-key"].Models["gpt-5.4"].Details
+	if len(details) != 1 {
+		t.Fatalf("details len = %d, want 1", len(details))
+	}
+	detail := details[0]
+	if detail.Alias != "client-gpt" {
+		t.Fatalf("alias = %q, want %q", detail.Alias, "client-gpt")
+	}
+	if detail.ReasoningEffort != "medium" {
+		t.Fatalf("reasoning_effort = %q, want %q", detail.ReasoningEffort, "medium")
+	}
+	if detail.Tokens.CacheReadTokens != 7 {
+		t.Fatalf("cache_read_tokens = %d, want 7", detail.Tokens.CacheReadTokens)
+	}
+	if detail.Tokens.CacheCreationTokens != 3 {
+		t.Fatalf("cache_creation_tokens = %d, want 3", detail.Tokens.CacheCreationTokens)
+	}
+	if detail.Tokens.CachedTokens != 7 {
+		t.Fatalf("cached_tokens = %d, want 7", detail.Tokens.CachedTokens)
+	}
+}
+
 func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 	stats := NewRequestStatistics()
 	timestamp := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)

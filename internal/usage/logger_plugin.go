@@ -89,21 +89,25 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	LatencyMs int64      `json:"latency_ms"`
-	Source    string     `json:"source"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	Timestamp       time.Time  `json:"timestamp"`
+	LatencyMs       int64      `json:"latency_ms"`
+	Source          string     `json:"source"`
+	AuthIndex       string     `json:"auth_index"`
+	Alias           string     `json:"alias,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	Tokens          TokenStats `json:"tokens"`
+	Failed          bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
 type TokenStats struct {
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	ReasoningTokens int64 `json:"reasoning_tokens"`
-	CachedTokens    int64 `json:"cached_tokens"`
-	TotalTokens     int64 `json:"total_tokens"`
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	ReasoningTokens     int64 `json:"reasoning_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	TotalTokens         int64 `json:"total_tokens"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -198,12 +202,14 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.apis[statsKey] = stats
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp: timestamp,
-		LatencyMs: normaliseLatency(record.Latency),
-		Source:    record.Source,
-		AuthIndex: record.AuthIndex,
-		Tokens:    detail,
-		Failed:    failed,
+		Timestamp:       timestamp,
+		LatencyMs:       normaliseLatency(record.Latency),
+		Source:          record.Source,
+		AuthIndex:       record.AuthIndex,
+		Alias:           strings.TrimSpace(record.Alias),
+		ReasoningEffort: strings.TrimSpace(record.ReasoningEffort),
+		Tokens:          detail,
+		Failed:          failed,
 	})
 
 	s.requestsByDay[dayKey]++
@@ -423,14 +429,23 @@ const httpStatusBadRequest = 400
 
 func normaliseDetail(detail coreusage.Detail) TokenStats {
 	tokens := TokenStats{
-		InputTokens:     detail.InputTokens,
-		OutputTokens:    detail.OutputTokens,
-		ReasoningTokens: detail.ReasoningTokens,
-		CachedTokens:    detail.CachedTokens,
-		TotalTokens:     detail.TotalTokens,
+		InputTokens:         detail.InputTokens,
+		OutputTokens:        detail.OutputTokens,
+		ReasoningTokens:     detail.ReasoningTokens,
+		CachedTokens:        detail.CachedTokens,
+		CacheReadTokens:     detail.CacheReadTokens,
+		CacheCreationTokens: detail.CacheCreationTokens,
+		TotalTokens:         detail.TotalTokens,
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+	}
+	if tokens.CachedTokens == 0 {
+		if tokens.CacheReadTokens != 0 {
+			tokens.CachedTokens = tokens.CacheReadTokens
+		} else if tokens.CacheCreationTokens != 0 {
+			tokens.CachedTokens = tokens.CacheCreationTokens
+		}
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
@@ -441,6 +456,13 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 func normaliseTokenStats(tokens TokenStats) TokenStats {
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
+	}
+	if tokens.CachedTokens == 0 {
+		if tokens.CacheReadTokens != 0 {
+			tokens.CachedTokens = tokens.CacheReadTokens
+		} else if tokens.CacheCreationTokens != 0 {
+			tokens.CachedTokens = tokens.CacheCreationTokens
+		}
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
