@@ -18,6 +18,13 @@ func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
 }
 
+func disableCoolingMetadata(disableCooling bool) map[string]any {
+	if !disableCooling {
+		return nil
+	}
+	return map[string]any{"disable_cooling": true}
+}
+
 // Synthesize generates Auth entries from config API keys.
 func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, error) {
 	out := make([]*coreauth.Auth, 0, 32)
@@ -78,6 +85,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
+			Metadata:   disableCoolingMetadata(entry.DisableCooling),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -126,6 +134,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
+			Metadata:   disableCoolingMetadata(ck.DisableCooling),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -176,6 +185,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
+			Metadata:   disableCoolingMetadata(ck.DisableCooling),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -236,6 +246,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
 				Attributes: attrs,
+				Metadata:   disableCoolingMetadata(compat.DisableCooling),
 				CreatedAt:  now,
 				UpdatedAt:  now,
 			}
@@ -266,6 +277,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				Attributes: attrs,
+				Metadata:   disableCoolingMetadata(compat.DisableCooling),
 				CreatedAt:  now,
 				UpdatedAt:  now,
 			}

@@ -369,6 +369,82 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_DisableCoolingMetadataFromConfig(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			GeminiKey: []config.GeminiKey{
+				{APIKey: "gemini-key", DisableCooling: true},
+			},
+			ClaudeKey: []config.ClaudeKey{
+				{APIKey: "claude-key", DisableCooling: true},
+			},
+			CodexKey: []config.CodexKey{
+				{APIKey: "codex-key", DisableCooling: true},
+			},
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:           "openrouter",
+					BaseURL:        "https://openrouter.ai/api/v1",
+					DisableCooling: true,
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "openrouter-key"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, provider := range []string{"gemini", "claude", "codex", "openrouter"} {
+		auth := findSynthesizedAuthByProvider(auths, provider)
+		if auth == nil {
+			t.Fatalf("expected synthesized auth for provider %q", provider)
+		}
+		if got, ok := auth.Metadata["disable_cooling"].(bool); !ok || !got {
+			t.Fatalf("%s disable_cooling metadata = %#v, want true", provider, auth.Metadata["disable_cooling"])
+		}
+	}
+}
+
+func TestConfigSynthesizer_DisableCoolingFalseOmitsMetadata(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			GeminiKey: []config.GeminiKey{
+				{APIKey: "gemini-key", DisableCooling: false},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auths len = %d, want 1", len(auths))
+	}
+	if auths[0].Metadata != nil {
+		t.Fatalf("metadata = %#v, want nil when disable-cooling is false", auths[0].Metadata)
+	}
+}
+
+func findSynthesizedAuthByProvider(auths []*coreauth.Auth, provider string) *coreauth.Auth {
+	for _, auth := range auths {
+		if auth != nil && auth.Provider == provider {
+			return auth
+		}
+	}
+	return nil
+}
+
 func TestConfigSynthesizer_VertexCompat(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
