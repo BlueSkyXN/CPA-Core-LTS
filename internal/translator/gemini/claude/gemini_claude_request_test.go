@@ -78,3 +78,29 @@ func TestConvertClaudeRequestToGemini_ImageContent(t *testing.T) {
 		t.Fatalf("Expected image data 'aGVsbG8=', got '%s'", got)
 	}
 }
+
+func TestConvertClaudeRequestToGemini_SkipsEmptyTextParts(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-3-5-sonnet",
+		"messages": [
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "text", "text": ""},
+					{"type": "text", "text": "hello"},
+					{"type": "text", "text": ""}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+
+	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	if len(parts) != 1 {
+		t.Fatalf("Expected 1 part after skipping empty text, got %d: %s", len(parts), output)
+	}
+	if got := parts[0].Get("text").String(); got != "hello" {
+		t.Fatalf("Expected part text 'hello', got '%s'", got)
+	}
+}
