@@ -790,6 +790,11 @@ func (s *Server) watchKeepAlive() {
 // otherwise it routes to OpenAI handler.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if _, ok := c.Request.URL.Query()["client_version"]; ok {
+			openaiHandler.OpenAIModels(c)
+			return
+		}
+
 		userAgent := c.GetHeader("User-Agent")
 
 		// Route to Claude handler if User-Agent starts with "claude-cli"
