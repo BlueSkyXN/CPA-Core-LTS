@@ -57,6 +57,113 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 		t.Fatalf("payload = %s", string(resp.Payload))
 	}
 }
+
+func TestOpenAICompatExecutorImagesGenerationUsesImagesEndpoint(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":123,"data":[{"b64_json":"AA=="}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "upstream-image-model",
+		Payload: []byte(`{"model":"image-alias","prompt":"draw","stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-image"),
+		Stream:       false,
+		Headers:      http.Header{"Content-Type": []string{"application/json"}},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/images/generations")
+	}
+	if gotAuth != "Bearer test" {
+		t.Fatalf("Authorization = %q, want Bearer test", gotAuth)
+	}
+	if got := gjson.GetBytes(gotBody, "model").String(); got != "upstream-image-model" {
+		t.Fatalf("model = %q, want upstream-image-model; body=%s", got, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "stream").Exists() {
+		t.Fatalf("expected stream flag to be removed for non-streaming image request: %s", string(gotBody))
+	}
+	if string(resp.Payload) != `{"created":123,"data":[{"b64_json":"AA=="}]}` {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorImagesStreamUsesEditsEndpoint(t *testing.T) {
+	var gotPath string
+	var gotAccept string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAccept = r.Header.Get("Accept")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"image_generation.partial_image\"}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "upstream-image-model",
+		Payload: []byte(`{"model":"image-alias","prompt":"edit"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-image"),
+		Stream:       true,
+		Headers:      http.Header{"Content-Type": []string{"application/json"}},
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/edits",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	var got []byte
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+		got = append(got, chunk.Payload...)
+	}
+	if gotPath != "/v1/images/edits" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/images/edits")
+	}
+	if gotAccept != "text/event-stream" {
+		t.Fatalf("Accept = %q, want text/event-stream", gotAccept)
+	}
+	if got := gjson.GetBytes(gotBody, "model").String(); got != "upstream-image-model" {
+		t.Fatalf("model = %q, want upstream-image-model; body=%s", got, string(gotBody))
+	}
+	if !gjson.GetBytes(gotBody, "stream").Bool() {
+		t.Fatalf("expected stream flag to be true: %s", string(gotBody))
+	}
+	if string(got) != "data: {\"type\":\"image_generation.partial_image\"}\n\n" {
+		t.Fatalf("stream payload = %q", string(got))
+	}
+}
 func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
