@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -85,6 +86,29 @@ func TestParseOpenAIStreamUsageResponsesFields(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsageTracksDetailedCacheTokens(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 10 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 10)
+	}
+	if detail.OutputTokens != 20 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 20)
+	}
+	if detail.CachedTokens != 7 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7)
+	}
+	if detail.CacheReadTokens != 7 {
+		t.Fatalf("cache read tokens = %d, want %d", detail.CacheReadTokens, 7)
+	}
+	if detail.CacheCreationTokens != 3 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 3)
+	}
+	if detail.TotalTokens != 30 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 30)
+	}
+}
+
 func TestParseGeminiCLIUsage_TopLevelUsageMetadata(t *testing.T) {
 	data := []byte(`{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":3,"totalTokenCount":21,"cachedContentTokenCount":5}}`)
 	detail := ParseGeminiCLIUsage(data)
@@ -145,6 +169,23 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 }
 
+func TestUsageReporterBuildRecordIncludesUsageMetadata(t *testing.T) {
+	ctx := usage.WithRequestedModelAlias(context.Background(), "client-gpt")
+	ctx = usage.WithReasoningEffort(ctx, "medium")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.Model != "gpt-5.4" {
+		t.Fatalf("model = %q, want %q", record.Model, "gpt-5.4")
+	}
+	if record.Alias != "client-gpt" {
+		t.Fatalf("alias = %q, want %q", record.Alias, "client-gpt")
+	}
+	if record.ReasoningEffort != "medium" {
+		t.Fatalf("reasoning effort = %q, want %q", record.ReasoningEffort, "medium")
+	}
+}
+
 func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	reporter := &UsageReporter{
 		provider:    "codex",
@@ -160,5 +201,8 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
+	}
+	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CacheReadTokens: 2}); !ok {
+		t.Fatalf("expected non-zero cache read token usage to be recorded")
 	}
 }

@@ -20,30 +20,48 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
 		ctx = internallogging.WithResponseStatusHolder(ctx)
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
+		responseHeaders := http.Header{}
+		responseHeaders.Add("X-Upstream-Request-Id", "upstream-req-1")
+		responseHeaders.Add("Retry-After", "30")
+		responseHeaders.Add("Set-Cookie", "session=secret")
 
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
-			Provider:    "openai",
-			Model:       "gpt-5.4",
-			APIKey:      "test-key",
-			AuthIndex:   "0",
-			AuthType:    "apikey",
-			Source:      "user@example.com",
-			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
-			Latency:     1500 * time.Millisecond,
+			Provider:        "openai",
+			Model:           "gpt-5.4",
+			Alias:           "client-gpt",
+			APIKey:          "test-key",
+			AuthIndex:       "0",
+			AuthType:        "apikey",
+			Source:          "user@example.com",
+			ReasoningEffort: "medium",
+			RequestedAt:     time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Latency:         1500 * time.Millisecond,
 			Detail: coreusage.Detail{
-				InputTokens:  10,
-				OutputTokens: 20,
-				TotalTokens:  30,
+				InputTokens:         10,
+				OutputTokens:        20,
+				CacheReadTokens:     7,
+				CacheCreationTokens: 3,
+				TotalTokens:         30,
 			},
+			ResponseHeaders: responseHeaders.Clone(),
 		})
+		responseHeaders.Set("Retry-After", "999")
 
 		payload := popSinglePayload(t)
 		requireStringField(t, payload, "provider", "openai")
 		requireStringField(t, payload, "model", "gpt-5.4")
+		requireStringField(t, payload, "alias", "client-gpt")
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
 		requireStringField(t, payload, "auth_type", "apikey")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
+		requireStringField(t, payload, "reasoning_effort", "medium")
+		requireNestedIntField(t, payload, "tokens", "cache_read_tokens", 7)
+		requireNestedIntField(t, payload, "tokens", "cache_creation_tokens", 3)
+		requireNestedIntField(t, payload, "tokens", "cached_tokens", 7)
+		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
+		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
+		requireMissingHeader(t, payload, "response_headers", "Set-Cookie")
 		requireBoolField(t, payload, "failed", false)
 	})
 }
@@ -59,6 +77,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 		plugin.HandleUsage(ctx, coreusage.Record{
 			Provider:    "openai",
 			Model:       "gpt-5.4-mini",
+			Alias:       "client-mini",
 			APIKey:      "test-key",
 			AuthIndex:   "0",
 			AuthType:    "apikey",
@@ -75,6 +94,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 		payload := popSinglePayload(t)
 		requireStringField(t, payload, "provider", "openai")
 		requireStringField(t, payload, "model", "gpt-5.4-mini")
+		requireStringField(t, payload, "alias", "client-mini")
 		requireStringField(t, payload, "endpoint", "GET /v1/responses")
 		requireStringField(t, payload, "auth_type", "apikey")
 		requireStringField(t, payload, "request_id", "gin-request-id")
@@ -103,6 +123,7 @@ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 		mgr.Publish(ctx, coreusage.Record{
 			Provider:    "openai",
 			Model:       "gpt-5.4",
+			Alias:       "client-gpt",
 			APIKey:      "test-key",
 			AuthIndex:   "0",
 			AuthType:    "apikey",
@@ -118,6 +139,7 @@ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 
 		payload := waitForSinglePayload(t, 2*time.Second)
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
+		requireStringField(t, payload, "alias", "client-gpt")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
 		requireBoolField(t, payload, "failed", true)
 	})
@@ -229,4 +251,61 @@ func requireBoolField(t *testing.T, payload map[string]json.RawMessage, key stri
 	if got != want {
 		t.Fatalf("%s = %t, want %t", key, got, want)
 	}
+}
+
+func requireNestedIntField(t *testing.T, payload map[string]json.RawMessage, field, key string, want int64) {
+	t.Helper()
+
+	raw, ok := payload[field]
+	if !ok {
+		t.Fatalf("payload missing %q", field)
+	}
+	var values map[string]int64
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("unmarshal %q: %v", field, err)
+	}
+	if got := values[key]; got != want {
+		t.Fatalf("%s[%q] = %d, want %d", field, key, got, want)
+	}
+}
+
+func requireHeaderField(t *testing.T, payload map[string]json.RawMessage, field, key string, want []string) {
+	t.Helper()
+
+	headers := responseHeadersFromPayload(t, payload, field)
+	got, ok := headers[key]
+	if !ok {
+		t.Fatalf("%s missing header %q", field, key)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
+		}
+	}
+}
+
+func requireMissingHeader(t *testing.T, payload map[string]json.RawMessage, field, key string) {
+	t.Helper()
+
+	headers := responseHeadersFromPayload(t, payload, field)
+	if _, ok := headers[key]; ok {
+		t.Fatalf("%s unexpectedly contains header %q", field, key)
+	}
+}
+
+func responseHeadersFromPayload(t *testing.T, payload map[string]json.RawMessage, field string) map[string][]string {
+	t.Helper()
+
+	raw, ok := payload[field]
+	if !ok {
+		t.Fatalf("payload missing %q", field)
+	}
+	var headers map[string][]string
+	if err := json.Unmarshal(raw, &headers); err != nil {
+		t.Fatalf("unmarshal %q: %v", field, err)
+	}
+	return headers
 }
