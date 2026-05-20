@@ -9,8 +9,9 @@ import (
 
 func TestBuildConfigChangeDetails(t *testing.T) {
 	oldCfg := &config.Config{
-		Port:    8080,
-		AuthDir: "/tmp/auth-old",
+		Port:                            8080,
+		AuthDir:                         "/tmp/auth-old",
+		RedisUsageQueueRetentionSeconds: 60,
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "old", BaseURL: "http://old", ExcludedModels: []string{"old-model"}},
 		},
@@ -41,8 +42,9 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 	}
 
 	newCfg := &config.Config{
-		Port:    9090,
-		AuthDir: "/tmp/auth-new",
+		Port:                            9090,
+		AuthDir:                         "/tmp/auth-new",
+		RedisUsageQueueRetentionSeconds: 300,
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "old", BaseURL: "http://old", ExcludedModels: []string{"old-model", "extra"}},
 		},
@@ -86,6 +88,7 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 
 	expectContains(t, details, "port: 8080 -> 9090")
 	expectContains(t, details, "auth-dir: /tmp/auth-old -> /tmp/auth-new")
+	expectContains(t, details, "redis-usage-queue-retention-seconds: 60 -> 300")
 	expectContains(t, details, "gemini[0].excluded-models: updated (1 -> 2 entries)")
 	expectContains(t, details, "ampcode.upstream-url: http://old-upstream -> http://new-upstream")
 	expectContains(t, details, "ampcode.model-mappings: updated (1 -> 2 entries)")
