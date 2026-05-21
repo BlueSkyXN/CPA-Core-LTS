@@ -6,7 +6,12 @@ import (
 	"strings"
 )
 
-const codexBuiltinImageModelID = "gpt-image-2"
+const (
+	codexBuiltinImageModelID      = "gpt-image-2"
+	xaiBuiltinImageModelID        = "grok-imagine-image"
+	xaiBuiltinImageQualityModelID = "grok-imagine-image-quality"
+	xaiBuiltinVideoModelID        = "grok-imagine-video"
+)
 
 // staticModelsJSON mirrors the top-level structure of models.json.
 type staticModelsJSON struct {
@@ -81,7 +86,7 @@ func GetAntigravityModels() []*ModelInfo {
 
 // GetXAIModels returns the standard xAI Grok model definitions.
 func GetXAIModels() []*ModelInfo {
-	return cloneModelInfos(getModels().XAI)
+	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
 }
 
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
@@ -89,6 +94,12 @@ func GetXAIModels() []*ModelInfo {
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models, codexBuiltinImageModelInfo())
+}
+
+// WithXAIBuiltins injects hard-coded xAI image/video model definitions that should
+// not depend on remote models.json updates.
+func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
+	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinVideoModelInfo())
 }
 
 func codexBuiltinImageModelInfo() *ModelInfo {
@@ -100,6 +111,45 @@ func codexBuiltinImageModelInfo() *ModelInfo {
 		Type:        "openai",
 		DisplayName: "GPT Image 2",
 		Version:     codexBuiltinImageModelID,
+	}
+}
+
+func xaiBuiltinImageModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinImageModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Image",
+		Name:        xaiBuiltinImageModelID,
+		Description: "xAI Grok image generation model.",
+	}
+}
+
+func xaiBuiltinImageQualityModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinImageQualityModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Image Quality",
+		Name:        xaiBuiltinImageQualityModelID,
+		Description: "xAI Grok higher-fidelity image generation model.",
+	}
+}
+
+func xaiBuiltinVideoModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinVideoModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Video",
+		Name:        xaiBuiltinVideoModelID,
+		Description: "xAI Grok video generation model.",
 	}
 }
 

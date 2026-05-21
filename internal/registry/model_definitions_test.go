@@ -36,6 +36,22 @@ func TestValidateModelsCatalogAllowsMissingOptionalXAISection(t *testing.T) {
 	}
 }
 
+func TestWithXAIBuiltinsAddsImageAndVideoModels(t *testing.T) {
+	models := WithXAIBuiltins(nil)
+	for _, id := range []string{xaiBuiltinImageModelID, xaiBuiltinImageQualityModelID, xaiBuiltinVideoModelID} {
+		model := findModelInfo(models, id)
+		if model == nil {
+			t.Fatalf("expected %s builtin model", id)
+		}
+		if model.OwnedBy != "xai" {
+			t.Fatalf("%s owned_by = %q, want xai", id, model.OwnedBy)
+		}
+		if model.Type != "xai" {
+			t.Fatalf("%s type = %q, want xai", id, model.Type)
+		}
+	}
+}
+
 func TestValidateModelsCatalogRejectsMissingRequiredSections(t *testing.T) {
 	data := validTestModelsCatalog()
 	data.Claude = nil
