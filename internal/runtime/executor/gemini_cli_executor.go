@@ -857,7 +857,12 @@ func cleanGeminiCLIRequestSchemas(body []byte) []byte {
 						}
 						cleaned := util.CleanJSONSchemaForGemini(params.Raw)
 						path := fmt.Sprintf("request.tools.%d.%s.%d.%s", i, declarationsKey, j, schemaKey)
-						body, _ = sjson.SetRawBytes(body, path, []byte(cleaned))
+						updated, errSet := sjson.SetRawBytes(body, path, []byte(cleaned))
+						if errSet != nil {
+							log.Errorf("gemini cli executor: failed to set cleaned schema at %s: %v", path, errSet)
+							continue
+						}
+						body = updated
 					}
 				}
 			}
@@ -873,7 +878,12 @@ func cleanGeminiCLIRequestSchemas(body []byte) []byte {
 			continue
 		}
 		cleaned := util.CleanJSONSchemaForGemini(responseSchema.Raw)
-		body, _ = sjson.SetRawBytes(body, schemaPath, []byte(cleaned))
+		updated, errSet := sjson.SetRawBytes(body, schemaPath, []byte(cleaned))
+		if errSet != nil {
+			log.Errorf("gemini cli executor: failed to set cleaned response schema at %s: %v", schemaPath, errSet)
+			continue
+		}
+		body = updated
 	}
 
 	return body
