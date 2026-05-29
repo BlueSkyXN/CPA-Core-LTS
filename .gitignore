@@ -27,7 +27,6 @@ auths/*
 
 # Documentation
 docs/*
-AGENTS.md
 CLAUDE.md
 GEMINI.md
 
@@ -51,3 +50,6 @@ _bmad-output/*
 .DS_Store
 ._*
 .gocache/
+.playwright-mcp/
+/local
+server
