@@ -284,7 +284,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, auth, from, url, req, body)
 	if err != nil {
 		return resp, err
 	}
@@ -440,7 +440,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, auth, from, url, req, body)
 	if err != nil {
 		return resp, err
 	}
@@ -538,7 +538,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, auth, from, url, req, body)
 	if err != nil {
 		return nil, err
 	}
@@ -841,12 +841,12 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
+func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
 	var cache helps.CodexCache
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
 		if userIDResult.Exists() {
-			key := fmt.Sprintf("%s-%s", req.Model, userIDResult.String())
+			key := codexClaudeCacheKey(req.Model, auth, userIDResult.String())
 			var ok bool
 			if cache, ok = helps.GetCodexCache(key); !ok {
 				cache = helps.CodexCache{
@@ -859,11 +859,11 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	} else if from == "openai-response" {
 		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
 		if promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+			cache.ID = scopedCodexPromptCacheKey(auth, promptCacheKey.String())
 		}
 	} else if from == "openai" {
 		if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
-			cache.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
+			cache.ID = scopedCodexPromptCacheKey(auth, uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String())
 		}
 	}
 
@@ -878,6 +878,56 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
+}
+
+func codexClaudeCacheKey(model string, auth *cliproxyauth.Auth, userID string) string {
+	namespace := codexAuthSessionNamespace(auth)
+	if namespace == "" {
+		return fmt.Sprintf("%s-%s", model, userID)
+	}
+	return codexScopedSHA1Key("cli-proxy-api:codex:claude-session", model, namespace, userID)
+}
+
+func scopedCodexPromptCacheKey(auth *cliproxyauth.Auth, promptCacheKey string) string {
+	promptCacheKey = strings.TrimSpace(promptCacheKey)
+	if promptCacheKey == "" {
+		return ""
+	}
+	namespace := codexAuthSessionNamespace(auth)
+	if namespace == "" {
+		return promptCacheKey
+	}
+	return codexScopedSHA1Key("cli-proxy-api:codex:auth-session", namespace, promptCacheKey)
+}
+
+func codexScopedSHA1Key(prefix string, components ...string) string {
+	var b strings.Builder
+	b.WriteString(prefix)
+	for _, component := range components {
+		fmt.Fprintf(&b, ":%d:%s", len(component), component)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(b.String())).String()
+}
+
+func codexAuthSessionNamespace(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	for _, key := range []string{"codex_installation_id", "installation_id"} {
+		if auth.Metadata != nil {
+			if value, ok := auth.Metadata[key].(string); ok {
+				if trimmed := strings.TrimSpace(value); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+		if auth.Attributes != nil {
+			if value := strings.TrimSpace(auth.Attributes[key]); value != "" {
+				return value
+			}
+		}
+	}
+	return strings.TrimSpace(auth.ID)
 }
 
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {

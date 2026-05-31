@@ -347,7 +347,7 @@ func TestApplyCodexWebsocketHeadersPreservesExplicitAPIKeyUserAgent(t *testing.T
 func TestApplyCodexPromptCacheHeadersSetsLowercaseSessionAndLegacyConversation(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"cache-1"}`)}
 
-	_, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
+	_, headers := applyCodexPromptCacheHeaders("openai-response", nil, req, []byte(`{"model":"gpt-5-codex"}`))
 
 	if got := headerValueCaseInsensitive(headers, "session_id"); got != "cache-1" {
 		t.Fatalf("session_id = %s, want cache-1", got)
@@ -357,6 +357,30 @@ func TestApplyCodexPromptCacheHeadersSetsLowercaseSessionAndLegacyConversation(t
 	}
 	if got := headers.Get("Conversation_id"); got != "cache-1" {
 		t.Fatalf("Conversation_id = %s, want cache-1", got)
+	}
+}
+
+func TestApplyCodexPromptCacheHeadersScopesSessionByAuth(t *testing.T) {
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"cache-1"}`)}
+	authA := &cliproxyauth.Auth{ID: "auth-a", Metadata: map[string]any{"codex_installation_id": "install-a"}}
+	authB := &cliproxyauth.Auth{ID: "auth-b", Metadata: map[string]any{"codex_installation_id": "install-b"}}
+
+	bodyA, headersA := applyCodexPromptCacheHeaders("openai-response", authA, req, []byte(`{"model":"gpt-5-codex"}`))
+	bodyB, headersB := applyCodexPromptCacheHeaders("openai-response", authB, req, []byte(`{"model":"gpt-5-codex"}`))
+
+	keyA := gjson.GetBytes(bodyA, "prompt_cache_key").String()
+	keyB := gjson.GetBytes(bodyB, "prompt_cache_key").String()
+	if keyA == "" || keyA == "cache-1" {
+		t.Fatalf("auth A prompt_cache_key = %q, want scoped key", keyA)
+	}
+	if keyB == "" || keyB == keyA {
+		t.Fatalf("auth B prompt_cache_key = %q, want different from auth A %q", keyB, keyA)
+	}
+	if got := headerValueCaseInsensitive(headersA, "session_id"); got != keyA {
+		t.Fatalf("auth A session_id = %q, want %q", got, keyA)
+	}
+	if got := headersB.Get("Conversation_id"); got != keyB {
+		t.Fatalf("auth B Conversation_id = %q, want %q", got, keyB)
 	}
 }
 
