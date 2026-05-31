@@ -70,7 +70,7 @@ func TestParseClaudeRetryAfter(t *testing.T) {
 
 	t.Run("seconds", func(t *testing.T) {
 		header := http.Header{"Retry-After": []string{"2.5"}}
-		got := parseClaudeRetryAfter(header, now)
+		got := helps.ParseClaudeRetryAfter(header, now)
 		if got == nil {
 			t.Fatal("expected retryAfter, got nil")
 		}
@@ -81,7 +81,7 @@ func TestParseClaudeRetryAfter(t *testing.T) {
 
 	t.Run("http date", func(t *testing.T) {
 		header := http.Header{"Retry-After": []string{now.Add(3 * time.Minute).Format(http.TimeFormat)}}
-		got := parseClaudeRetryAfter(header, now)
+		got := helps.ParseClaudeRetryAfter(header, now)
 		if got == nil {
 			t.Fatal("expected retryAfter, got nil")
 		}
@@ -92,20 +92,20 @@ func TestParseClaudeRetryAfter(t *testing.T) {
 
 	t.Run("invalid", func(t *testing.T) {
 		header := http.Header{"Retry-After": []string{"not-a-duration"}}
-		if got := parseClaudeRetryAfter(header, now); got != nil {
+		if got := helps.ParseClaudeRetryAfter(header, now); got != nil {
 			t.Fatalf("expected nil for invalid header, got %v", *got)
 		}
 	})
 
 	t.Run("past date", func(t *testing.T) {
 		header := http.Header{"Retry-After": []string{now.Add(-time.Minute).Format(http.TimeFormat)}}
-		if got := parseClaudeRetryAfter(header, now); got != nil {
+		if got := helps.ParseClaudeRetryAfter(header, now); got != nil {
 			t.Fatalf("expected nil for past date, got %v", *got)
 		}
 	})
 
 	t.Run("missing", func(t *testing.T) {
-		if got := parseClaudeRetryAfter(http.Header{}, now); got != nil {
+		if got := helps.ParseClaudeRetryAfter(http.Header{}, now); got != nil {
 			t.Fatalf("expected nil for missing header, got %v", *got)
 		}
 	})

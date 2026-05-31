@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -2386,30 +2385,7 @@ func ensureModelMaxTokens(body []byte, modelID string) []byte {
 func newClaudeStatusErr(statusCode int, body []byte, header http.Header) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
 	if statusCode == http.StatusTooManyRequests || statusCode == claudeStatusOverloaded {
-		err.retryAfter = parseClaudeRetryAfter(header, time.Now())
+		err.retryAfter = helps.ParseClaudeRetryAfter(header, time.Now())
 	}
 	return err
-}
-
-func parseClaudeRetryAfter(header http.Header, now time.Time) *time.Duration {
-	val := strings.TrimSpace(header.Get("Retry-After"))
-	if val == "" {
-		return nil
-	}
-
-	secs, err := strconv.ParseFloat(val, 64)
-	if err == nil && secs > 0 {
-		d := time.Duration(secs * float64(time.Second))
-		return &d
-	}
-
-	t, err := http.ParseTime(val)
-	if err != nil {
-		return nil
-	}
-	d := t.Sub(now)
-	if d <= 0 {
-		return nil
-	}
-	return &d
 }
