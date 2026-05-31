@@ -5,6 +5,13 @@ host: ""
 # Server port
 port: 8317
 
+# Trusted proxies used to resolve the real client IP from forwarded headers.
+# When omitted or empty, forwarded client IP headers are ignored.
+# Add only reverse proxies you control; this sample covers local loopback proxies.
+trusted-proxies:
+  - "127.0.0.0/8"
+  - "::1"
+
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:
   enable: false

@@ -213,8 +213,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
-	if errSetTrustedProxies := engine.SetTrustedProxies(nil); errSetTrustedProxies != nil {
-		log.Warnf("failed to disable trusted proxy headers: %v", errSetTrustedProxies)
+	trustedProxies := []string(nil)
+	if cfg.TrustedProxies != nil {
+		trustedProxies = cfg.TrustedProxies
+	}
+	if errSetTrustedProxies := engine.SetTrustedProxies(trustedProxies); errSetTrustedProxies != nil {
+		log.WithError(errSetTrustedProxies).Warn("failed to configure trusted proxies; disabling trusted proxy headers")
+		if errDisableTrustedProxies := engine.SetTrustedProxies(nil); errDisableTrustedProxies != nil {
+			log.WithError(errDisableTrustedProxies).Warn("failed to disable trusted proxy headers after trusted proxy configuration error")
+		}
 	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
