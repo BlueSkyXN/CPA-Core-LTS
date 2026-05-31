@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
@@ -37,12 +40,125 @@ func (e schedulerProviderTestExecutor) HttpRequest(ctx context.Context, auth *Au
 	return nil, nil
 }
 
+type blockingRefreshTestExecutor struct {
+	schedulerProviderTestExecutor
+	entered   chan struct{}
+	release   chan struct{}
+	active    int32
+	maxActive int32
+}
+
+func (e *blockingRefreshTestExecutor) Refresh(ctx context.Context, auth *Auth) (*Auth, error) {
+	active := atomic.AddInt32(&e.active, 1)
+	for {
+		maxActive := atomic.LoadInt32(&e.maxActive)
+		if active <= maxActive || atomic.CompareAndSwapInt32(&e.maxActive, maxActive, active) {
+			break
+		}
+	}
+	select {
+	case e.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		atomic.AddInt32(&e.active, -1)
+		return nil, ctx.Err()
+	case <-e.release:
+	}
+	time.Sleep(10 * time.Millisecond)
+	atomic.AddInt32(&e.active, -1)
+	return auth, nil
+}
+
 type unauthorizedRefreshTestExecutor struct {
 	schedulerProviderTestExecutor
 }
 
 func (e unauthorizedRefreshTestExecutor) Refresh(ctx context.Context, auth *Auth) (*Auth, error) {
 	return nil, errors.New("token refresh failed with status 401: invalid_grant")
+}
+
+func TestManager_AuthRefreshJitterWindowReadsRuntimeConfig(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	if got := manager.authRefreshJitterWindow(); got != 0 {
+		t.Fatalf("authRefreshJitterWindow() = %s, want 0", got)
+	}
+	manager.SetConfig(&internalconfig.Config{AuthRefreshJitterMinutes: 7})
+	if got := manager.authRefreshJitterWindow(); got != 7*time.Minute {
+		t.Fatalf("authRefreshJitterWindow() = %s, want 7m", got)
+	}
+}
+
+func TestManager_ProviderRefreshSemaphoreRespectsConfigBeforeExecutorRegistration(t *testing.T) {
+	ctx := context.Background()
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{AuthMaxConcurrentRefreshPerProvider: 1})
+	executor := &blockingRefreshTestExecutor{
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "codex"},
+		entered:                       make(chan struct{}, 3),
+		release:                       make(chan struct{}),
+	}
+	manager.RegisterExecutor(executor)
+
+	for _, id := range []string{"refresh-a", "refresh-b", "refresh-c"} {
+		if _, errRegister := manager.Register(ctx, &Auth{
+			ID:       id,
+			Provider: "codex",
+			Metadata: map[string]any{
+				"email": id + "@example.com",
+			},
+		}); errRegister != nil {
+			t.Fatalf("register %s: %v", id, errRegister)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for _, id := range []string{"refresh-a", "refresh-b", "refresh-c"} {
+		id := id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			manager.refreshAuth(ctx, id)
+		}()
+	}
+	select {
+	case <-executor.entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first refresh to enter")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt32(&executor.maxActive); got != 1 {
+		t.Fatalf("max concurrent refreshes = %d, want 1", got)
+	}
+	if extra := len(executor.entered); extra != 0 {
+		t.Fatalf("refreshes entered while semaphore was held = %d, want 0", extra)
+	}
+
+	close(executor.release)
+	wg.Wait()
+	if got := atomic.LoadInt32(&executor.maxActive); got != 1 {
+		t.Fatalf("max concurrent refreshes after completion = %d, want 1", got)
+	}
+}
+
+func TestManager_ProviderRefreshSemaphoreRebuildsOnConfigReload(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: "codex"})
+	manager.SetConfig(&internalconfig.Config{AuthMaxConcurrentRefreshPerProvider: 2})
+	first := manager.providerRefreshSem("codex")
+	if first == nil || cap(first) != 2 {
+		t.Fatalf("providerRefreshSem cap = %d, want 2", cap(first))
+	}
+
+	manager.SetConfig(&internalconfig.Config{AuthMaxConcurrentRefreshPerProvider: 4})
+	second := manager.providerRefreshSem("codex")
+	if second == nil || cap(second) != 4 {
+		t.Fatalf("providerRefreshSem cap = %d, want 4", cap(second))
+	}
+	if second == first {
+		t.Fatal("expected config reload to rebuild provider refresh semaphore")
+	}
 }
 
 func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.T) {
@@ -85,7 +201,7 @@ func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.
 	if manager.shouldRefresh(updated, now) {
 		t.Fatal("expected unauthorized auth to stop refresh attempts")
 	}
-	if _, shouldSchedule := nextRefreshCheckAt(now, updated, time.Second); shouldSchedule {
+	if _, shouldSchedule := nextRefreshCheckAt(now, updated, time.Second, 0); shouldSchedule {
 		t.Fatal("expected unauthorized auth to be removed from the auto-refresh schedule")
 	}
 }

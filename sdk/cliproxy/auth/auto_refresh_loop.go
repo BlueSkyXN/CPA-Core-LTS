@@ -3,6 +3,7 @@ package auth
 import (
 	"container/heap"
 	"context"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,17 @@ func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrenc
 		wakeCh:      make(chan struct{}, 1),
 		jobs:        make(chan string, jobBuffer),
 	}
+}
+
+// stableJitter returns a deterministic duration in [0, window) derived from the auth ID.
+// The offset stays stable across queue rebuilds, so refresh schedules do not drift.
+func stableJitter(authID string, window time.Duration) time.Duration {
+	if window <= 0 || authID == "" {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(authID))
+	return time.Duration(h.Sum64() % uint64(window))
 }
 
 func (l *authAutoRefreshLoop) queueReschedule(authID string) {
@@ -99,8 +111,9 @@ func (l *authAutoRefreshLoop) rebuild(now time.Time) {
 	entries := make([]entry, 0)
 
 	l.manager.mu.RLock()
+	jitterWindow := l.manager.authRefreshJitterWindow()
 	for id, auth := range l.manager.auths {
-		next, ok := nextRefreshCheckAt(now, auth, l.interval)
+		next, ok := nextRefreshCheckAt(now, auth, l.interval, jitterWindow)
 		if !ok {
 			continue
 		}
@@ -231,7 +244,7 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 		manager.mu.RUnlock()
 		return
 	}
-	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval)
+	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval, manager.authRefreshJitterWindow())
 	shouldRefresh := manager.shouldRefresh(auth, now)
 	exec := manager.executors[auth.Provider]
 	manager.mu.RUnlock()
@@ -254,7 +267,7 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	if !manager.markRefreshPending(authID, now) {
 		manager.mu.RLock()
 		auth = manager.auths[authID]
-		next, shouldSchedule = nextRefreshCheckAt(now, auth, l.interval)
+		next, shouldSchedule = nextRefreshCheckAt(now, auth, l.interval, manager.authRefreshJitterWindow())
 		manager.mu.RUnlock()
 		if shouldSchedule {
 			l.upsert(authID, next)
@@ -280,7 +293,7 @@ func (l *authAutoRefreshLoop) applyDirty(now time.Time) {
 	for _, authID := range dirty {
 		l.manager.mu.RLock()
 		auth := l.manager.auths[authID]
-		next, ok := nextRefreshCheckAt(now, auth, l.interval)
+		next, ok := nextRefreshCheckAt(now, auth, l.interval, l.manager.authRefreshJitterWindow())
 		l.manager.mu.RUnlock()
 
 		if !ok {
@@ -335,7 +348,7 @@ func (l *authAutoRefreshLoop) remove(authID string) {
 	delete(l.index, authID)
 }
 
-func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time.Time, bool) {
+func nextRefreshCheckAt(now time.Time, auth *Auth, interval, jitterWindow time.Duration) (time.Time, bool) {
 	if auth == nil || auth.Disabled {
 		return time.Time{}, false
 	}
@@ -392,20 +405,21 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 		return next, true
 	}
 
+	jitter := stableJitter(auth.ID, jitterWindow)
 	provider := strings.ToLower(auth.Provider)
 	lead := ProviderRefreshLead(provider, auth.Runtime)
 	if lead == nil {
 		return time.Time{}, false
 	}
 	if hasExpiry && !expiry.IsZero() {
-		dueAt := expiry.Add(-*lead)
+		dueAt := expiry.Add(-*lead).Add(jitter)
 		if !dueAt.After(now) {
 			return now, true
 		}
 		return dueAt, true
 	}
 	if !lastRefresh.IsZero() {
-		dueAt := lastRefresh.Add(*lead)
+		dueAt := lastRefresh.Add(*lead).Add(jitter)
 		if !dueAt.After(now) {
 			return now, true
 		}

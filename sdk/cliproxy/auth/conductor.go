@@ -187,6 +187,10 @@ type Manager struct {
 	refreshLoop   *authAutoRefreshLoop
 
 	requestPrepareLocks sync.Map
+
+	// providerRefreshSems limits concurrent token refreshes per provider.
+	providerRefreshSems   map[string]chan struct{}
+	providerRefreshSemsMu sync.RWMutex
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -198,13 +202,14 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:            store,
-		executors:        make(map[string]ProviderExecutor),
-		selector:         selector,
-		hook:             hook,
-		auths:            make(map[string]*Auth),
-		providerOffsets:  make(map[string]int),
-		modelPoolOffsets: make(map[string]int),
+		store:               store,
+		executors:           make(map[string]ProviderExecutor),
+		selector:            selector,
+		hook:                hook,
+		auths:               make(map[string]*Auth),
+		providerOffsets:     make(map[string]int),
+		modelPoolOffsets:    make(map[string]int),
+		providerRefreshSems: make(map[string]chan struct{}),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -385,6 +390,90 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	}
 	m.runtimeConfig.Store(cfg)
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	m.rebuildProviderRefreshSems(cfg)
+}
+
+const defaultMaxConcurrentRefreshPerProvider = 3
+
+func authMaxConcurrentRefreshPerProvider(cfg *internalconfig.Config) int {
+	if cfg != nil && cfg.AuthMaxConcurrentRefreshPerProvider > 0 {
+		return cfg.AuthMaxConcurrentRefreshPerProvider
+	}
+	return defaultMaxConcurrentRefreshPerProvider
+}
+
+func (m *Manager) authRefreshJitterWindow() time.Duration {
+	if m == nil {
+		return 0
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || cfg.AuthRefreshJitterMinutes <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.AuthRefreshJitterMinutes) * time.Minute
+}
+
+func (m *Manager) rebuildProviderRefreshSems(cfg *internalconfig.Config) {
+	if m == nil {
+		return
+	}
+	limit := authMaxConcurrentRefreshPerProvider(cfg)
+
+	m.mu.RLock()
+	providers := make([]string, 0, len(m.executors))
+	for provider := range m.executors {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider != "" {
+			providers = append(providers, provider)
+		}
+	}
+	m.mu.RUnlock()
+
+	sems := make(map[string]chan struct{}, len(providers))
+	for _, provider := range providers {
+		if _, exists := sems[provider]; !exists {
+			sems[provider] = make(chan struct{}, limit)
+		}
+	}
+
+	m.providerRefreshSemsMu.Lock()
+	m.providerRefreshSems = sems
+	m.providerRefreshSemsMu.Unlock()
+}
+
+func (m *Manager) ensureProviderRefreshSem(provider string) chan struct{} {
+	if m == nil {
+		return nil
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return nil
+	}
+
+	m.providerRefreshSemsMu.RLock()
+	sem := m.providerRefreshSems[provider]
+	m.providerRefreshSemsMu.RUnlock()
+	if sem != nil {
+		return sem
+	}
+
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	limit := authMaxConcurrentRefreshPerProvider(cfg)
+	m.providerRefreshSemsMu.Lock()
+	defer m.providerRefreshSemsMu.Unlock()
+	if m.providerRefreshSems == nil {
+		m.providerRefreshSems = make(map[string]chan struct{})
+	}
+	if sem = m.providerRefreshSems[provider]; sem != nil {
+		return sem
+	}
+	sem = make(chan struct{}, limit)
+	m.providerRefreshSems[provider] = sem
+	return sem
+}
+
+func (m *Manager) providerRefreshSem(provider string) chan struct{} {
+	return m.ensureProviderRefreshSem(provider)
 }
 
 func (m *Manager) lookupAPIKeyUpstreamModel(authID, requestedModel string) string {
@@ -1084,6 +1173,7 @@ func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	replaced = m.executors[provider]
 	m.executors[provider] = executor
 	m.mu.Unlock()
+	m.ensureProviderRefreshSem(provider)
 
 	if replaced == nil || replaced == executor {
 		return
@@ -3675,6 +3765,14 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	m.mu.RUnlock()
 	if auth == nil || exec == nil {
 		return
+	}
+	if sem := m.providerRefreshSem(auth.Provider); sem != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		defer func() { <-sem }()
 	}
 	updated, err := exec.Refresh(ctx, cloned)
 	if err != nil && errors.Is(err, context.Canceled) {

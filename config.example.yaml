@@ -104,6 +104,14 @@ disable-image-generation: false
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16
 
+# Stable per-credential jitter window for auth auto-refresh scheduling.
+# When > 0, spreads refresh checks for bulk-provisioned credentials over this many minutes.
+# auth-refresh-jitter-minutes: 5
+
+# Maximum concurrent token refreshes per provider.
+# When <= 0, uses the default limit (3).
+# auth-max-concurrent-refresh-per-provider: 3
+
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
