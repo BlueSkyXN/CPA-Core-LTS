@@ -95,6 +95,10 @@ type Auth struct {
 	Success int64 `json:"-"`
 	Failed  int64 `json:"-"`
 
+	// ConsecutiveTransientFailures counts consecutive 5xx/408 execution errors.
+	// Reset to zero on any successful request or non-transient error.
+	ConsecutiveTransientFailures int `json:"-"`
+
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
 }

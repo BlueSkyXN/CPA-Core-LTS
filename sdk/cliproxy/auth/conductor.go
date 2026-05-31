@@ -387,6 +387,56 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 }
 
+const (
+	defaultCircuitBreakerThreshold       = 5
+	defaultCircuitBreakerCooldownMinutes = 10
+)
+
+// applyCircuitBreaker opens a credential circuit after repeated transient upstream failures.
+// The caller must hold m.mu.
+func (m *Manager) applyCircuitBreaker(auth *Auth, state *ModelState, statusCode int, now time.Time) {
+	if m == nil || auth == nil {
+		return
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	threshold := defaultCircuitBreakerThreshold
+	cooldown := defaultCircuitBreakerCooldownMinutes * time.Minute
+	if cfg != nil {
+		if cfg.AuthCircuitBreakerThreshold < 0 {
+			return
+		}
+		if cfg.AuthCircuitBreakerThreshold > 0 {
+			threshold = cfg.AuthCircuitBreakerThreshold
+		}
+		if cfg.AuthCircuitBreakerCooldownMinutes > 0 {
+			cooldown = time.Duration(cfg.AuthCircuitBreakerCooldownMinutes) * time.Minute
+		}
+	}
+
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	default:
+		auth.ConsecutiveTransientFailures = 0
+		return
+	}
+
+	auth.ConsecutiveTransientFailures++
+	if auth.ConsecutiveTransientFailures < threshold {
+		return
+	}
+
+	next := now.Add(cooldown)
+	auth.Unavailable = true
+	if auth.NextRetryAfter.IsZero() || auth.NextRetryAfter.Before(next) {
+		auth.NextRetryAfter = next
+		log.Warnf("circuit breaker opened: %s/%s after %d consecutive transient failures, retry after %s",
+			auth.Provider, auth.ID, auth.ConsecutiveTransientFailures, next.Format(time.RFC3339))
+	}
+	if state != nil && (state.NextRetryAfter.IsZero() || state.NextRetryAfter.Before(next)) {
+		state.NextRetryAfter = next
+	}
+}
+
 func (m *Manager) lookupAPIKeyUpstreamModel(authID, requestedModel string) string {
 	if m == nil {
 		return ""
@@ -2189,6 +2239,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
 				}
+				auth.ConsecutiveTransientFailures = 0
 				auth.UpdatedAt = now
 				shouldResumeModel = true
 				clearModelQuota = true
@@ -2286,9 +2337,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
+					m.applyCircuitBreaker(auth, state, statusCodeFromResult(result.Error), now)
 				}
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
+				m.applyCircuitBreaker(auth, nil, statusCodeFromResult(result.Error), now)
 			}
 		}
 
@@ -2472,6 +2525,7 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.BackoffLevel = 0
 	auth.LastError = nil
 	auth.NextRetryAfter = time.Time{}
+	auth.ConsecutiveTransientFailures = 0
 	auth.UpdatedAt = now
 }
 

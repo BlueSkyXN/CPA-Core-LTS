@@ -104,6 +104,13 @@ disable-image-generation: false
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16
 
+# Consecutive transient upstream failures (HTTP 408/500/502/503/504) before opening
+# a credential circuit. Set to -1 to disable. When <= 0, the default is 5.
+# auth-circuit-breaker-threshold: 5
+
+# Minutes to keep an opened credential circuit cooled down. When <= 0, the default is 10.
+# auth-circuit-breaker-cooldown-minutes: 10
+
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
