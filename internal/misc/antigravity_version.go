@@ -16,7 +16,7 @@ import (
 
 const (
 	antigravityReleasesURL     = "https://antigravity-auto-updater-974169037036.us-central1.run.app/releases"
-	antigravityFallbackVersion = "1.21.9"
+	antigravityFallbackVersion = "2.10.0"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
 	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
@@ -74,10 +74,13 @@ func refreshAntigravityVersion(ctx context.Context) {
 	now := time.Now()
 
 	if errFetch == nil {
-		cachedAntigravityVersion = version
-		antigravityVersionExpiry = now.Add(antigravityVersionCacheTTL)
-		log.WithField("version", version).Info("fetched latest antigravity version")
-		return
+		if isSupportedAntigravityVersion(version) {
+			cachedAntigravityVersion = version
+			antigravityVersionExpiry = now.Add(antigravityVersionCacheTTL)
+			log.WithField("version", version).Info("fetched latest antigravity version")
+			return
+		}
+		log.WithField("version", version).Warn("fetched antigravity version is deprecated, using fallback")
 	}
 
 	if cachedAntigravityVersion == "" || now.After(antigravityVersionExpiry) {
@@ -91,17 +94,23 @@ func refreshAntigravityVersion(ctx context.Context) {
 }
 
 // AntigravityLatestVersion returns the cached antigravity version refreshed by StartAntigravityVersionUpdater.
-// It falls back to antigravityFallbackVersion if the cache is empty or stale.
+// It falls back to antigravityFallbackVersion if the cache is empty, stale, or deprecated.
 func AntigravityLatestVersion() string {
 	antigravityVersionMu.RLock()
+	defer antigravityVersionMu.RUnlock()
+
 	if cachedAntigravityVersion != "" && time.Now().Before(antigravityVersionExpiry) {
-		v := cachedAntigravityVersion
-		antigravityVersionMu.RUnlock()
-		return v
+		if isSupportedAntigravityVersion(cachedAntigravityVersion) {
+			return cachedAntigravityVersion
+		}
 	}
-	antigravityVersionMu.RUnlock()
 
 	return antigravityFallbackVersion
+}
+
+func isSupportedAntigravityVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	return strings.HasPrefix(version, "2.") || strings.HasPrefix(version, "3.")
 }
 
 // AntigravityUserAgent returns the User-Agent string for antigravity requests
