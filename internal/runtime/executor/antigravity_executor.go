@@ -1620,9 +1620,7 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	}
 	refreshCtx := context.Background()
 	if ctx != nil {
-		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
-		}
+		refreshCtx = cliproxyexecutor.WithRoundTripper(refreshCtx, cliproxyexecutor.RoundTripper(ctx))
 	}
 	updated, errRefresh := e.refreshToken(refreshCtx, auth.Clone())
 	if errRefresh != nil {
@@ -1674,9 +1672,7 @@ func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Con
 
 	refreshCtx := context.Background()
 	if ctx != nil {
-		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
-		}
+		refreshCtx = cliproxyexecutor.WithRoundTripper(refreshCtx, cliproxyexecutor.RoundTripper(ctx))
 	}
 	refreshCtx, cancel := context.WithTimeout(refreshCtx, antigravityCreditsHintRefreshTimeout)
 	authCopy := auth.Clone()

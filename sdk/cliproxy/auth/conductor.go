@@ -1328,8 +1328,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
-			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			execCtx = cliproxyexecutor.WithRoundTripper(execCtx, rt)
 		}
 		execCtx = contextWithUsageMetadata(execCtx, opts, routeModel)
 
@@ -1418,8 +1417,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
-			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			execCtx = cliproxyexecutor.WithRoundTripper(execCtx, rt)
 		}
 		execCtx = contextWithUsageMetadata(execCtx, opts, routeModel)
 
@@ -1508,8 +1506,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
-			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			execCtx = cliproxyexecutor.WithRoundTripper(execCtx, rt)
 		}
 		execCtx = contextWithUsageMetadata(execCtx, opts, routeModel)
 		models, pooled := m.preparedExecutionModels(auth, routeModel)
@@ -3278,8 +3275,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		}
 		creditsCtx := WithAntigravityCredits(ctx)
 		if rt := m.roundTripperFor(c.auth); rt != nil {
-			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
-			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+			creditsCtx = cliproxyexecutor.WithRoundTripper(creditsCtx, rt)
 		}
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
 		creditsCtx = contextWithUsageMetadata(creditsCtx, creditsOpts, routeModel)
@@ -3326,8 +3322,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		}
 		creditsCtx := WithAntigravityCredits(ctx)
 		if rt := m.roundTripperFor(c.auth); rt != nil {
-			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
-			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+			creditsCtx = cliproxyexecutor.WithRoundTripper(creditsCtx, rt)
 		}
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
 		creditsCtx = contextWithUsageMetadata(creditsCtx, creditsOpts, routeModel)
@@ -3732,9 +3727,6 @@ func (m *Manager) executorFor(provider string) ProviderExecutor {
 	defer m.mu.RUnlock()
 	return m.executors[provider]
 }
-
-// roundTripperContextKey is an unexported context key type to avoid collisions.
-type roundTripperContextKey struct{}
 
 // roundTripperFor retrieves an HTTP RoundTripper for the given auth if a provider is registered.
 func (m *Manager) roundTripperFor(auth *Auth) http.RoundTripper {
