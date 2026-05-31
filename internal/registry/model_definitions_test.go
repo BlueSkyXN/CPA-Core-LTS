@@ -38,7 +38,7 @@ func TestValidateModelsCatalogAllowsMissingOptionalXAISection(t *testing.T) {
 
 func TestWithXAIBuiltinsAddsImageAndVideoModels(t *testing.T) {
 	models := WithXAIBuiltins(nil)
-	for _, id := range []string{xaiBuiltinImageModelID, xaiBuiltinImageQualityModelID, xaiBuiltinVideoModelID} {
+	for _, id := range []string{xaiBuiltinImageModelID, xaiBuiltinImageQualityModelID, xaiBuiltinVideoModelID, xaiBuiltinVideo15PreviewModelID} {
 		model := findModelInfo(models, id)
 		if model == nil {
 			t.Fatalf("expected %s builtin model", id)
