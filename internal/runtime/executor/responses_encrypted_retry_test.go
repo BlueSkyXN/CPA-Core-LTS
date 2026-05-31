@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,15 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func validResponsesEncryptedContentForTest() string {
+	payload := make([]byte, 1+8+16+16+32)
+	payload[0] = 0x80
+	for i := 9; i < len(payload); i++ {
+		payload[i] = byte(i)
+	}
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
 
 func TestIsInvalidResponsesEncryptedContentError(t *testing.T) {
 	body := []byte(`{
@@ -29,6 +39,33 @@ func TestIsInvalidResponsesEncryptedContentError(t *testing.T) {
 	}
 	if isInvalidResponsesEncryptedContentError(http.StatusInternalServerError, body) {
 		t.Fatalf("non-400 response should not trigger encrypted content fallback")
+	}
+}
+
+func TestSanitizeOpenAIResponsesReasoningEncryptedContent(t *testing.T) {
+	valid := validResponsesEncryptedContentForTest()
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"user","content":"hello","encrypted_content":"message-field"},
+			{"type":"reasoning","id":"rs_valid","encrypted_content":"` + valid + `"},
+			{"type":"reasoning","id":"rs_bad_prefix","encrypted_content":"not-a-gpt-signature"},
+			{"type":"reasoning","id":"rs_null","encrypted_content":null}
+		]
+	}`)
+
+	got := sanitizeOpenAIResponsesReasoningEncryptedContent(context.Background(), "test executor", raw)
+	if gotValid := gjson.GetBytes(got, "input.1.encrypted_content").String(); gotValid != valid {
+		t.Fatalf("valid encrypted_content should be preserved, got %q; body=%s", gotValid, got)
+	}
+	if gjson.GetBytes(got, "input.2.encrypted_content").Exists() {
+		t.Fatalf("invalid reasoning encrypted_content should be removed: %s", got)
+	}
+	if gjson.GetBytes(got, "input.3.encrypted_content").Exists() {
+		t.Fatalf("null reasoning encrypted_content should be removed: %s", got)
+	}
+	if gotMessage := gjson.GetBytes(got, "input.0.encrypted_content").String(); gotMessage != "message-field" {
+		t.Fatalf("non-reasoning encrypted_content should be left alone, got %q; body=%s", gotMessage, got)
 	}
 }
 
@@ -63,6 +100,7 @@ func TestStripInvalidEncryptedContentFromResponsesBody(t *testing.T) {
 }
 
 func TestCodexExecutorRetriesInvalidEncryptedContentWithStrippedBody(t *testing.T) {
+	valid := validResponsesEncryptedContentForTest()
 	var bodies [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -90,7 +128,7 @@ func TestCodexExecutorRetriesInvalidEncryptedContentWithStrippedBody(t *testing.
 		Model: "gpt-5.4",
 		Payload: []byte(`{"model":"gpt-5.4","input":[` +
 			`{"type":"message","role":"user","content":"hello"},` +
-			`{"type":"reasoning","id":"rs_bad","encrypted_content":"gAAA"},` +
+			`{"type":"reasoning","id":"rs_bad","encrypted_content":"` + valid + `"},` +
 			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done","encrypted_content":"nested"}]}` +
 			`]}`),
 	}, cliproxyexecutor.Options{
@@ -125,6 +163,7 @@ func TestCodexExecutorRetriesInvalidEncryptedContentWithStrippedBody(t *testing.
 }
 
 func TestOpenAICompatCompactRetriesInvalidEncryptedContentWithStrippedBody(t *testing.T) {
+	valid := validResponsesEncryptedContentForTest()
 	var bodies [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -152,7 +191,7 @@ func TestOpenAICompatCompactRetriesInvalidEncryptedContentWithStrippedBody(t *te
 		Model: "gpt-5.4",
 		Payload: []byte(`{"model":"gpt-5.4","input":[` +
 			`{"type":"message","role":"user","content":"hello"},` +
-			`{"type":"reasoning","id":"rs_bad","encrypted_content":"gAAA"}` +
+			`{"type":"reasoning","id":"rs_bad","encrypted_content":"` + valid + `"}` +
 			`]}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai-response"),
