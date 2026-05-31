@@ -349,6 +349,13 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
+				if strings.EqualFold(typeValue, "codex") {
+					if cv := gjson.GetBytes(data, "compact"); cv.Exists() && cv.Type == gjson.String {
+						if trimmed := strings.TrimSpace(cv.String()); trimmed != "" {
+							fileData["compact"] = trimmed
+						}
+					}
+				}
 			}
 
 			files = append(files, fileData)
@@ -463,6 +470,17 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		if rawNote, ok := auth.Metadata["note"].(string); ok {
 			if trimmed := strings.TrimSpace(rawNote); trimmed != "" {
 				entry["note"] = trimmed
+			}
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		if mode := strings.TrimSpace(authAttribute(auth, "compact_mode")); mode != "" {
+			entry["compact"] = mode
+		} else if auth.Metadata != nil {
+			if rawCompact, ok := auth.Metadata["compact"].(string); ok {
+				if trimmed := strings.TrimSpace(rawCompact); trimmed != "" {
+					entry["compact"] = trimmed
+				}
 			}
 		}
 	}
@@ -1040,6 +1058,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		}
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(auth)
+	syncAuthFileCompactAttribute(auth, h.compactDefaultAllow())
 	return auth, nil
 }
 
@@ -1122,7 +1141,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note) of an auth file.
+// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note, compact) of an auth file.
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -1136,6 +1155,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Headers  map[string]string `json:"headers"`
 		Priority *int              `json:"priority"`
 		Note     *string           `json:"note"`
+		Compact  *string           `json:"compact"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1272,7 +1292,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			changed = true
 		}
 	}
-	if req.Priority != nil || req.Note != nil {
+	if req.Priority != nil || req.Note != nil || req.Compact != nil {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
@@ -1299,6 +1319,15 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 				targetAuth.Attributes["note"] = trimmedNote
 			}
 		}
+		if req.Compact != nil {
+			mode := strings.ToLower(strings.TrimSpace(*req.Compact))
+			if err := validateAuthFileCompactValue(targetAuth, mode); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			targetAuth.Metadata["compact"] = mode
+			syncAuthFileCompactAttribute(targetAuth, h.compactDefaultAllow())
+		}
 		changed = true
 	}
 
@@ -1315,6 +1344,46 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func validateAuthFileCompactValue(auth *coreauth.Auth, mode string) error {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return fmt.Errorf("compact is only supported for codex auth files")
+	}
+	switch mode {
+	case coreauth.CompactModeAuto, coreauth.CompactModeForceOn, coreauth.CompactModeForceOff:
+		return nil
+	default:
+		return fmt.Errorf("compact must be one of auto, force_on, force_off")
+	}
+}
+
+func (h *Handler) compactDefaultAllow() bool {
+	if h == nil || h.cfg == nil {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(h.cfg.CompactDefault), "deny")
+}
+
+func syncAuthFileCompactAttribute(auth *coreauth.Auth, defaultAllow bool) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		delete(auth.Attributes, "compact_mode")
+		delete(auth.Attributes, "compact_allowed")
+		return
+	}
+	raw, ok := auth.Metadata["compact"].(string)
+	if !ok {
+		delete(auth.Attributes, "compact_mode")
+		delete(auth.Attributes, "compact_allowed")
+		return
+	}
+	coreauth.ApplyCompactAttributes(auth, raw, defaultAllow)
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {

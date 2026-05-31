@@ -2875,6 +2875,8 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	candidates := make([]*Auth, 0, len(m.auths))
+	requireCompact := requireCompactRequest(opts)
+	compactBlocked := false
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
 	if modelKey != "" {
@@ -2900,10 +2902,17 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
+		if !compactCandidateAllowed(candidate, requireCompact) {
+			compactBlocked = true
+			continue
+		}
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if requireCompact && compactBlocked {
+			return nil, nil, noCompactAuthError()
+		}
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
@@ -2934,6 +2943,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	if requireCompactRequest(opts) {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
+	}
 	if !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
@@ -3008,6 +3020,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	m.mu.RLock()
 	candidates := make([]*Auth, 0, len(m.auths))
+	requireCompact := requireCompactRequest(opts)
+	compactBlocked := false
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
 	if modelKey != "" {
@@ -3043,10 +3057,17 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
+		if !compactCandidateAllowed(candidate, requireCompact) {
+			compactBlocked = true
+			continue
+		}
 		candidates = append(candidates, candidate)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if requireCompact && compactBlocked {
+			return nil, nil, "", noCompactAuthError()
+		}
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
@@ -3083,6 +3104,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	if requireCompactRequest(opts) {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+	}
 	if !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}

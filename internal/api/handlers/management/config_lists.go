@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // Generic helpers for list[string]
@@ -465,6 +466,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Name          *string                             `json:"name"`
 		Prefix        *string                             `json:"prefix"`
 		Disabled      *bool                               `json:"disabled"`
+		Compact       *string                             `json:"compact"`
 		BaseURL       *string                             `json:"base-url"`
 		APIKeyEntries *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
 		Models        *[]config.OpenAICompatibilityModel  `json:"models"`
@@ -509,6 +511,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.Disabled != nil {
 		entry.Disabled = *body.Value.Disabled
+	}
+	if body.Value.Compact != nil {
+		entry.Compact = strings.ToLower(strings.TrimSpace(*body.Value.Compact))
 	}
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)
@@ -958,6 +963,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		APIKey         *string              `json:"api-key"`
 		Prefix         *string              `json:"prefix"`
 		BaseURL        *string              `json:"base-url"`
+		Compact        *string              `json:"compact"`
 		ProxyURL       *string              `json:"proxy-url"`
 		Models         *[]config.CodexModel `json:"models"`
 		Headers        *map[string]string   `json:"headers"`
@@ -1009,6 +1015,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 			return
 		}
 		entry.BaseURL = trimmed
+	}
+	if body.Value.Compact != nil {
+		entry.Compact = strings.ToLower(strings.TrimSpace(*body.Value.Compact))
 	}
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
@@ -1087,6 +1096,7 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	}
 	// Trim base-url; empty base-url indicates provider should be removed by sanitization
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.Compact = coreauth.NormalizeCompactMode(entry.Compact)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
 	for i := range entry.APIKeyEntries {
@@ -1146,6 +1156,7 @@ func normalizeCodexKey(entry *config.CodexKey) {
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.Compact = coreauth.NormalizeCompactMode(entry.Compact)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)

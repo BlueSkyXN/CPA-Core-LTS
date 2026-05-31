@@ -20,6 +20,9 @@ const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 // ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
 const ReasoningEffortMetadataKey = "reasoning_effort"
 
+// ResponsesCompactAlt is the Options.Alt value identifying a POST /v1/responses/compact request.
+const ResponsesCompactAlt = "responses/compact"
+
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"

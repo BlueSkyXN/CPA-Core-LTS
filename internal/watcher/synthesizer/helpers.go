@@ -103,6 +103,19 @@ func ApplyAuthExcludedModelsMeta(auth *coreauth.Auth, cfg *config.Config, perKey
 	}
 }
 
+// ApplyAuthCompactMeta resolves compact routing metadata against the global
+// default and records compact_mode plus compact_allowed on the auth.
+func ApplyAuthCompactMeta(auth *coreauth.Auth, cfg *config.Config, mode string) {
+	if auth == nil {
+		return
+	}
+	defaultAllow := true
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.CompactDefault), "deny") {
+		defaultAllow = false
+	}
+	coreauth.ApplyCompactAttributes(auth, mode, defaultAllow)
+}
+
 // addConfigHeadersToAttrs adds header configuration to auth attributes.
 // Headers are prefixed with "header:" in the attributes map.
 func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string) {
