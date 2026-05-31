@@ -499,6 +499,7 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, req cliproxye
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeXAITools(body)
+	body = normalizeXAIToolChoiceForTools(body)
 	body = normalizeXAIInputReasoningItems(body)
 	body = normalizeCodexInstructions(body)
 	body = sanitizeXAIResponsesBody(body, baseModel)
@@ -706,6 +707,23 @@ func normalizeXAITools(body []byte) []byte {
 		return body
 	}
 	return updated
+}
+
+// normalizeXAIToolChoiceForTools prevents xAI from rejecting payloads that
+// carry tool_choice without any tools after xAI-specific tool filtering.
+func normalizeXAIToolChoiceForTools(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if tools.Exists() && tools.IsArray() && len(tools.Array()) == 0 {
+		body, _ = sjson.DeleteBytes(body, "tools")
+		body, _ = sjson.DeleteBytes(body, "tool_choice")
+		body, _ = sjson.DeleteBytes(body, "parallel_tool_calls")
+		return body
+	}
+	if !tools.Exists() && gjson.GetBytes(body, "tool_choice").Exists() {
+		body, _ = sjson.DeleteBytes(body, "tool_choice")
+		body, _ = sjson.DeleteBytes(body, "parallel_tool_calls")
+	}
+	return body
 }
 
 func normalizeXAITool(tool gjson.Result) ([]byte, bool, bool) {
