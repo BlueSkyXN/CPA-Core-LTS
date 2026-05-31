@@ -314,8 +314,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			LastRefreshedAt:  time.Time{},
 			NextRefreshAfter: time.Time{},
 		}
-		cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-		applyDisabledMetadata(auth, metadata)
+		cliproxyauth.HydrateAuthFromMetadata(auth)
 		auths = append(auths, auth)
 	}
 	if err = rows.Err(); err != nil {

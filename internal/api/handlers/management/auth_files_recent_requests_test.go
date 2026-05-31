@@ -20,6 +20,7 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 	record := &coreauth.Auth{
 		ID:       "runtime-only-auth-1",
 		Provider: "codex",
+		Prefix:   "team-a",
 		Attributes: map[string]string{
 			"runtime_only": "true",
 		},
@@ -67,6 +68,9 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 	}
 	if _, ok := fileEntry["failed"].(float64); !ok {
 		t.Fatalf("expected failed number, got %#v", fileEntry["failed"])
+	}
+	if got, _ := fileEntry["prefix"].(string); got != "team-a" {
+		t.Fatalf("prefix = %q, want team-a", got)
 	}
 
 	recentRaw, ok := fileEntry["recent_requests"].([]any)

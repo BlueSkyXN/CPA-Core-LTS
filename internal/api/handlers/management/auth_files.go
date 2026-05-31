@@ -380,6 +380,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		"name":           name,
 		"type":           strings.TrimSpace(auth.Provider),
 		"provider":       strings.TrimSpace(auth.Provider),
+		"prefix":         strings.TrimSpace(auth.Prefix),
 		"label":          auth.Label,
 		"status":         auth.Status,
 		"status_message": auth.StatusMessage,
@@ -1039,7 +1040,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			auth.Runtime = existing.Runtime
 		}
 	}
-	coreauth.ApplyCustomHeadersFromMetadata(auth)
+	coreauth.HydrateAuthFromMetadata(auth)
 	return auth, nil
 }
 
