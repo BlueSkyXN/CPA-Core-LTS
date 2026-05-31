@@ -65,6 +65,63 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 	}
 }
 
+func TestApplyClaudeHeaders_StripsContext1MBetaForOAuth(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		ID:       "oauth-auth",
+		Metadata: map[string]any{"access_token": "oauth-token"},
+	}
+	req := newClaudeHeaderTestRequest(t, http.Header{
+		"Anthropic-Beta": []string{"claude-code-20250219, context-1m-2025-08-07,custom-beta-2026-01-01"},
+	})
+
+	applyClaudeHeaders(req, auth, "oauth-token", false, []string{"context-1m-2025-08-07", "another-beta-2026-01-01"}, nil)
+
+	got := req.Header.Get("Anthropic-Beta")
+	if strings.Contains(got, claudeContext1MBeta) {
+		t.Fatalf("Anthropic-Beta = %q, must not contain %q for OAuth", got, claudeContext1MBeta)
+	}
+	for _, want := range []string{"claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "custom-beta-2026-01-01", "another-beta-2026-01-01"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Anthropic-Beta = %q, want to contain %q", got, want)
+		}
+	}
+	if gotAuth := req.Header.Get("Authorization"); gotAuth != "Bearer oauth-token" {
+		t.Fatalf("Authorization = %q, want Bearer oauth-token", gotAuth)
+	}
+}
+
+func TestApplyClaudeHeaders_KeepsContext1MBetaForAPIKey(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		ID: "api-key-auth",
+		Attributes: map[string]string{
+			"api_key": "key-123",
+		},
+	}
+	req := newClaudeHeaderTestRequest(t, http.Header{
+		"Anthropic-Beta": []string{"claude-code-20250219"},
+	})
+
+	applyClaudeHeaders(req, auth, "key-123", false, []string{"context-1m-2025-08-07"}, nil)
+
+	got := req.Header.Get("Anthropic-Beta")
+	if !strings.Contains(got, claudeContext1MBeta) {
+		t.Fatalf("Anthropic-Beta = %q, want to contain %q for API key auth", got, claudeContext1MBeta)
+	}
+	if gotAPIKey := req.Header.Get("x-api-key"); gotAPIKey != "key-123" {
+		t.Fatalf("x-api-key = %q, want key-123", gotAPIKey)
+	}
+}
+
+func TestRemoveClaudeBetaMatchesWholeBetaNames(t *testing.T) {
+	got := removeClaudeBeta("context-1m-2025-08-07-extra, context-1m-2025-08-07, other", claudeContext1MBeta)
+	if strings.Contains(got, ", context-1m-2025-08-07,") || strings.HasSuffix(got, ","+claudeContext1MBeta) || strings.HasPrefix(got, claudeContext1MBeta+",") {
+		t.Fatalf("removeClaudeBeta() = %q, still contains exact removed beta", got)
+	}
+	if !strings.Contains(got, "context-1m-2025-08-07-extra") {
+		t.Fatalf("removeClaudeBeta() = %q, should keep similarly-prefixed beta", got)
+	}
+}
+
 func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 	stabilize := true

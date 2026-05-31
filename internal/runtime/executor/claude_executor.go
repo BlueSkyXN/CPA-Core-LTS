@@ -80,6 +80,7 @@ var oauthToolsToRemove = map[string]bool{}
 // Anthropic-compatible upstreams may reject or even crash when Claude models
 // omit max_tokens. Prefer registered model metadata before using a fallback.
 const defaultModelMaxTokens = 1024
+const claudeContext1MBeta = "context-1m-2025-08-07"
 
 func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecutor{cfg: cfg} }
 
@@ -972,6 +973,9 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 			}
 		}
 	}
+	if !useAPIKey {
+		baseBetas = removeClaudeBeta(baseBetas, claudeContext1MBeta)
+	}
 	r.Header.Set("Anthropic-Beta", baseBetas)
 
 	misc.EnsureHeader(r.Header, ginHeaders, "Anthropic-Version", "2023-06-01")
@@ -1021,6 +1025,23 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	if stream {
 		r.Header.Set("Accept-Encoding", "identity")
 	}
+}
+
+func removeClaudeBeta(baseBetas, betaToRemove string) string {
+	betaToRemove = strings.TrimSpace(betaToRemove)
+	if betaToRemove == "" || strings.TrimSpace(baseBetas) == "" {
+		return strings.TrimSpace(baseBetas)
+	}
+	parts := strings.Split(baseBetas, ",")
+	kept := parts[:0]
+	for _, part := range parts {
+		beta := strings.TrimSpace(part)
+		if beta == "" || beta == betaToRemove {
+			continue
+		}
+		kept = append(kept, beta)
+	}
+	return strings.Join(kept, ",")
 }
 
 func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
