@@ -2093,6 +2093,30 @@ func TestNormalizeClaudeTemperatureForThinking_AfterForcedToolChoiceKeepsOrigina
 	}
 }
 
+func TestSanitizeClaudeUpstreamThinkingSignatures_StripsInvalidAntigravitySignatures(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"drop-empty","signature":""},{"type":"thinking","thinking":"drop-antigravity","signature":"not-a-claude-signature"},{"type":"thinking","thinking":"keep-claude","signature":"Evalid-prefix"},{"type":"thinking","thinking":"keep-cached-claude","signature":"model-group#Rvalid-prefix"},{"type":"text","text":"hello"}]}]}`)
+	out := sanitizeClaudeUpstreamThinkingSignatures(payload)
+
+	blocks := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(blocks) != 3 {
+		t.Fatalf("content block count = %d, want 3: %s", len(blocks), string(out))
+	}
+
+	var keptThinking []string
+	for _, block := range blocks {
+		if block.Get("type").String() == "thinking" {
+			keptThinking = append(keptThinking, block.Get("thinking").String())
+		}
+	}
+	got := strings.Join(keptThinking, ",")
+	if got != "keep-claude,keep-cached-claude" {
+		t.Fatalf("kept thinking blocks = %q, want valid Claude signatures only", got)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.2.text").String(); got != "hello" {
+		t.Fatalf("text block = %q, want hello", got)
+	}
+}
+
 func TestRemapOAuthToolNames_TitleCase_NoReverseNeeded(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"Bash","description":"Run shell commands","input_schema":{"type":"object","properties":{"cmd":{"type":"string"}}}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 
