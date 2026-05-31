@@ -113,7 +113,7 @@ func isSupportedImagesModel(model string) bool {
 	if baseModel == defaultImagesToolModel {
 		return true
 	}
-	return isOpenAICompatImagesModel(model)
+	return isOpenAICompatImagesModel(model) || isGeminiChatImageModel(model)
 }
 
 func isOpenAICompatImagesModel(model string) bool {
@@ -125,6 +125,15 @@ func isOpenAICompatImagesModel(model string) bool {
 	return info != nil && info.Type == registry.OpenAIImageModelType
 }
 
+func isGeminiChatImageModel(model string) bool {
+	baseModel := strings.TrimSpace(model)
+	if idx := strings.LastIndex(baseModel, "/"); idx >= 0 && idx < len(baseModel)-1 {
+		baseModel = strings.TrimSpace(baseModel[idx+1:])
+	}
+	baseModel = strings.ToLower(baseModel)
+	return strings.Contains(baseModel, "flash-image") || strings.Contains(baseModel, "imagen")
+}
+
 func rejectUnsupportedImagesModel(c *gin.Context, model string) bool {
 	if isSupportedImagesModel(model) {
 		return false
@@ -132,7 +141,7 @@ func rejectUnsupportedImagesModel(c *gin.Context, model string) bool {
 
 	c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 		Error: handlers.ErrorDetail{
-			Message: fmt.Sprintf("Model %s is not supported on %s or %s. Use %s or a configured openai-compatibility image model.", model, imagesGenerationsPath, imagesEditsPath, defaultImagesToolModel),
+			Message: fmt.Sprintf("Model %s is not supported on %s or %s. Use %s, a Gemini image model, or a configured openai-compatibility image model.", model, imagesGenerationsPath, imagesEditsPath, defaultImagesToolModel),
 			Type:    "invalid_request_error",
 		},
 	})
@@ -350,6 +359,11 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	if isOpenAICompatImagesModel(imageModel) {
 		compatReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
 		h.handleOpenAICompatImages(c, compatReq, imageModel, stream)
+		return
+	}
+	if isGeminiChatImageModel(imageModel) {
+		chatReq := buildGeminiChatImagesRequest(prompt, imageModel)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat)
 		return
 	}
 
@@ -668,6 +682,83 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		return
 	}
 	h.collectImagesFromResponses(c, responsesReq, responseFormat)
+}
+
+func buildGeminiChatImagesRequest(prompt, model string) []byte {
+	req := []byte(`{"messages":[{"role":"user","content":""}],"modalities":["image","text"]}`)
+	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(model))
+	req, _ = sjson.SetBytes(req, "messages.0.content", strings.TrimSpace(prompt))
+	return req
+}
+
+func extractImagesFromChatCompletions(resp []byte) ([]imageCallResult, int64, error) {
+	createdAt := gjson.GetBytes(resp, "created").Int()
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	imagesArr := gjson.GetBytes(resp, "choices.0.message.images")
+	if !imagesArr.IsArray() || len(imagesArr.Array()) == 0 {
+		return nil, createdAt, fmt.Errorf("upstream did not return image output")
+	}
+
+	results := make([]imageCallResult, 0, len(imagesArr.Array()))
+	for _, img := range imagesArr.Array() {
+		dataURI := strings.TrimSpace(img.Get("image_url.url").String())
+		if dataURI == "" {
+			continue
+		}
+		entry := imageCallResult{}
+		if idx := strings.Index(dataURI, ";base64,"); idx >= 0 {
+			mimeType := strings.TrimPrefix(dataURI[:idx], "data:")
+			entry.OutputFormat = strings.TrimPrefix(mimeType, "image/")
+			entry.Result = dataURI[idx+len(";base64,"):]
+		} else {
+			entry.Result = dataURI
+		}
+		results = append(results, entry)
+	}
+	if len(results) == 0 {
+		return nil, createdAt, fmt.Errorf("upstream did not return image output")
+	}
+	return results, createdAt, nil
+}
+
+func (h *OpenAIAPIHandler) collectGeminiChatImages(c *gin.Context, chatReq []byte, model, responseFormat string) {
+	c.Header("Content-Type", "application/json")
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx = handlers.WithDisallowFreeAuth(cliCtx)
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, "openai", model, chatReq, "")
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		if errMsg.Error != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel(nil)
+		}
+		return
+	}
+
+	results, createdAt, err := extractImagesFromChatCompletions(resp)
+	if err != nil {
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
+		cliCancel(err)
+		return
+	}
+
+	out, err := buildImagesAPIResponse(results, createdAt, nil, results[0], responseFormat)
+	if err != nil {
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: err})
+		cliCancel(err)
+		return
+	}
+
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(out)
+	cliCancel(nil)
 }
 
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {

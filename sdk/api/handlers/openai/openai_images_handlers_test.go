@@ -52,6 +52,37 @@ func (e *imageCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *htt
 	return nil, errors.New("not implemented")
 }
 
+type geminiChatImageCaptureExecutor struct {
+	sourceFormat string
+	model        string
+	payload      []byte
+}
+
+func (e *geminiChatImageCaptureExecutor) Identifier() string { return "gemini" }
+
+func (e *geminiChatImageCaptureExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	e.sourceFormat = opts.SourceFormat.String()
+	e.model = req.Model
+	e.payload = append([]byte(nil), req.Payload...)
+	return coreexecutor.Response{Payload: []byte(`{"created":1700000000,"choices":[{"message":{"role":"assistant","images":[{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/ABC="}}]}}]}`)}, nil
+}
+
+func (e *geminiChatImageCaptureExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *geminiChatImageCaptureExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *geminiChatImageCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *geminiChatImageCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
 func performImagesEndpointRequest(t *testing.T, endpointPath string, contentType string, body io.Reader, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -76,7 +107,7 @@ func assertUnsupportedImagesModelResponse(t *testing.T, resp *httptest.ResponseR
 	}
 
 	message := gjson.GetBytes(resp.Body.Bytes(), "error.message").String()
-	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + defaultImagesToolModel + " or a configured openai-compatibility image model."
+	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + defaultImagesToolModel + ", a Gemini image model, or a configured openai-compatibility image model."
 	if message != expectedMessage {
 		t.Fatalf("error message = %q, want %q", message, expectedMessage)
 	}
@@ -106,6 +137,74 @@ func TestImagesModelValidationAllowsOpenAICompatImageModel(t *testing.T) {
 
 	if !isSupportedImagesModel(modelID) {
 		t.Fatalf("expected configured openai-compatibility image model %s to be supported", modelID)
+	}
+}
+
+func TestImagesModelValidationAllowsGeminiImageModels(t *testing.T) {
+	for _, model := range []string{
+		"gemini-3.1-flash-image",
+		"antigravity/gemini-3.1-flash-image",
+		"gemini-2.5-flash-image-preview",
+		"imagen-3",
+	} {
+		if !isSupportedImagesModel(model) {
+			t.Fatalf("expected %s to be supported", model)
+		}
+	}
+	for _, model := range []string{"gemini-2.5-flash", "gemini-2.5-pro"} {
+		if isSupportedImagesModel(model) {
+			t.Fatalf("expected %s to be rejected", model)
+		}
+	}
+}
+
+func TestBuildGeminiChatImagesRequest(t *testing.T) {
+	req := buildGeminiChatImagesRequest("a red apple", "antigravity/gemini-3.1-flash-image")
+
+	if got := gjson.GetBytes(req, "model").String(); got != "antigravity/gemini-3.1-flash-image" {
+		t.Fatalf("model = %q, want antigravity/gemini-3.1-flash-image", got)
+	}
+	if got := gjson.GetBytes(req, "messages.0.role").String(); got != "user" {
+		t.Fatalf("messages.0.role = %q, want user", got)
+	}
+	if got := gjson.GetBytes(req, "messages.0.content").String(); got != "a red apple" {
+		t.Fatalf("messages.0.content = %q, want a red apple", got)
+	}
+	if got := gjson.GetBytes(req, "modalities.0").String(); got != "image" {
+		t.Fatalf("modalities.0 = %q, want image", got)
+	}
+	if got := gjson.GetBytes(req, "modalities.1").String(); got != "text" {
+		t.Fatalf("modalities.1 = %q, want text", got)
+	}
+}
+
+func TestExtractImagesFromChatCompletions(t *testing.T) {
+	resp := []byte(`{"created":1700000000,"choices":[{"message":{"role":"assistant","images":[{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/ABC="}}]}}]}`)
+
+	results, createdAt, err := extractImagesFromChatCompletions(resp)
+	if err != nil {
+		t.Fatalf("extractImagesFromChatCompletions() error = %v", err)
+	}
+	if createdAt != 1700000000 {
+		t.Fatalf("createdAt = %d, want 1700000000", createdAt)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].Result != "/9j/ABC=" {
+		t.Fatalf("result = %q, want /9j/ABC=", results[0].Result)
+	}
+	if results[0].OutputFormat != "jpeg" {
+		t.Fatalf("output_format = %q, want jpeg", results[0].OutputFormat)
+	}
+}
+
+func TestExtractImagesFromChatCompletionsNoImages(t *testing.T) {
+	resp := []byte(`{"created":1700000000,"choices":[{"message":{"role":"assistant","content":"hello"}}]}`)
+
+	_, _, err := extractImagesFromChatCompletions(resp)
+	if err == nil {
+		t.Fatal("expected error for response with no images")
 	}
 }
 
@@ -145,6 +244,48 @@ func TestImagesGenerationsRoutesOpenAICompatImageModel(t *testing.T) {
 	}
 	if gjson.GetBytes(executor.payload, "stream").Exists() {
 		t.Fatalf("expected non-streaming payload to remove stream flag: %s", string(executor.payload))
+	}
+}
+
+func TestImagesGenerationsRoutesGeminiImageModelThroughChatCompletions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	executor := &geminiChatImageCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	modelID := "gemini-3.1-flash-image"
+	auth := &coreauth.Auth{ID: "auth-gemini-image", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	handler := NewOpenAIAPIHandler(base)
+	body := strings.NewReader(`{"model":"gemini-3.1-flash-image","prompt":"draw a red apple","response_format":"url"}`)
+
+	resp := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", body, handler.ImagesGenerations)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if got := gjson.GetBytes(resp.Body.Bytes(), "data.0.url").String(); got != "data:image/jpeg;base64,/9j/ABC=" {
+		t.Fatalf("data.0.url = %q, want data:image/jpeg;base64,/9j/ABC=", got)
+	}
+	if executor.sourceFormat != "openai" {
+		t.Fatalf("source format = %q, want openai", executor.sourceFormat)
+	}
+	if executor.model != modelID {
+		t.Fatalf("model = %q, want %q", executor.model, modelID)
+	}
+	if got := gjson.GetBytes(executor.payload, "messages.0.content").String(); got != "draw a red apple" {
+		t.Fatalf("messages.0.content = %q, want draw a red apple; payload=%s", got, string(executor.payload))
+	}
+	if got := gjson.GetBytes(executor.payload, "modalities.0").String(); got != "image" {
+		t.Fatalf("modalities.0 = %q, want image; payload=%s", got, string(executor.payload))
 	}
 }
 
