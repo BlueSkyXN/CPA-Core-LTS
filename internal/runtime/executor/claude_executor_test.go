@@ -2198,6 +2198,47 @@ func TestReverseRemapOAuthToolNamesFromStreamLine_HonorsPerRequestMap(t *testing
 	}
 }
 
+func TestRemapOAuthToolNamesMcpSingleUnderscoreNormalizedAndReversed(t *testing.T) {
+	body := []byte(`{"tools":[` +
+		`{"name":"mcp_search_youtube_z50gm8","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},` +
+		`{"name":"mcp__already__ok","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}` +
+		`],"tool_choice":{"type":"tool","name":"mcp_search_youtube_z50gm8"},` +
+		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"mcp_search_youtube_z50gm8","input":{"query":"go"}}]}]}`)
+
+	out, reverseMap := remapOAuthToolNames(body)
+
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "mcp__search_youtube_z50gm8" {
+		t.Fatalf("tools.0.name = %q, want %q", got, "mcp__search_youtube_z50gm8")
+	}
+	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "mcp__already__ok" {
+		t.Fatalf("tools.1.name = %q, want unchanged %q", got, "mcp__already__ok")
+	}
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "mcp__search_youtube_z50gm8" {
+		t.Fatalf("tool_choice.name = %q, want %q", got, "mcp__search_youtube_z50gm8")
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.0.name").String(); got != "mcp__search_youtube_z50gm8" {
+		t.Fatalf("history tool_use name = %q, want %q", got, "mcp__search_youtube_z50gm8")
+	}
+	if reverseMap["mcp__search_youtube_z50gm8"] != "mcp_search_youtube_z50gm8" {
+		t.Fatalf("reverseMap = %v, want mcp__search_youtube_z50gm8 -> mcp_search_youtube_z50gm8", reverseMap)
+	}
+	if _, exists := reverseMap["mcp__already__ok"]; exists {
+		t.Fatalf("reverseMap must not contain already-double-underscore name: %v", reverseMap)
+	}
+
+	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_02","name":"mcp__search_youtube_z50gm8","input":{"query":"go"}}]}`)
+	reversed := reverseRemapOAuthToolNames(resp, reverseMap)
+	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "mcp_search_youtube_z50gm8" {
+		t.Fatalf("content.0.name = %q, want restored %q", got, "mcp_search_youtube_z50gm8")
+	}
+
+	line := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_02","name":"mcp__search_youtube_z50gm8","input":{}}}`)
+	outLine := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
+	if !bytes.Contains(outLine, []byte(`"name":"mcp_search_youtube_z50gm8"`)) {
+		t.Fatalf("stream reverse failed, got: %s", string(outLine))
+	}
+}
+
 func TestPrepareClaudeOAuthToolNamesForUpstream_MixedCaseWithPrefix(t *testing.T) {
 	body := []byte(`{"tools":[` +
 		`{"name":"Bash","input_schema":{"type":"object","properties":{"cmd":{"type":"string"}}}},` +
