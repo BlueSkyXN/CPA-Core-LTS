@@ -620,6 +620,15 @@ func TestNormalizeXAIToolChoiceForToolsDropsWhenToolsMissing(t *testing.T) {
 	}
 }
 
+func TestNormalizeXAIToolChoiceForToolsDropsOrphanedParallelToolCalls(t *testing.T) {
+	body := []byte(`{"model":"grok-4","parallel_tool_calls":true,"input":"hi"}`)
+	out := normalizeXAIToolChoiceForTools(body)
+
+	if gjson.GetBytes(out, "parallel_tool_calls").Exists() {
+		t.Fatalf("parallel_tool_calls should be removed when tools missing even without tool_choice: %s", string(out))
+	}
+}
+
 func TestNormalizeXAIToolChoiceForToolsKeepsWhenToolsPresent(t *testing.T) {
 	body := []byte(`{"model":"grok-4","tools":[{"type":"function","name":"Bash"}],"tool_choice":"auto","parallel_tool_calls":true,"input":"hi"}`)
 	out := normalizeXAIToolChoiceForTools(body)

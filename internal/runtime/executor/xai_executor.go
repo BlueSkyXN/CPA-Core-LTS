@@ -709,18 +709,21 @@ func normalizeXAITools(body []byte) []byte {
 	return updated
 }
 
-// normalizeXAIToolChoiceForTools prevents xAI from rejecting payloads that
-// carry tool_choice without any tools after xAI-specific tool filtering.
+// normalizeXAIToolChoiceForTools prevents xAI from rejecting payloads that carry
+// tool metadata without any tools after xAI-specific tool filtering.
 func normalizeXAIToolChoiceForTools(body []byte) []byte {
 	tools := gjson.GetBytes(body, "tools")
-	if tools.Exists() && tools.IsArray() && len(tools.Array()) == 0 {
-		body, _ = sjson.DeleteBytes(body, "tools")
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		body, _ = sjson.DeleteBytes(body, "parallel_tool_calls")
+	hasTools := tools.Exists() && tools.IsArray() && len(tools.Array()) > 0
+	if hasTools {
 		return body
 	}
-	if !tools.Exists() && gjson.GetBytes(body, "tool_choice").Exists() {
+	if tools.Exists() {
+		body, _ = sjson.DeleteBytes(body, "tools")
+	}
+	if gjson.GetBytes(body, "tool_choice").Exists() {
 		body, _ = sjson.DeleteBytes(body, "tool_choice")
+	}
+	if gjson.GetBytes(body, "parallel_tool_calls").Exists() {
 		body, _ = sjson.DeleteBytes(body, "parallel_tool_calls")
 	}
 	return body
