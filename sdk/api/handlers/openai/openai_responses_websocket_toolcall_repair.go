@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -417,4 +418,91 @@ func isResponsesToolCallOutputType(itemType string) bool {
 	default:
 		return false
 	}
+}
+
+func repairResponsesHTTPToolCalls(payload []byte) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() || !input.IsArray() {
+		return payload
+	}
+
+	updatedRaw := reorderResponsesToolCallsNoCache(input.Raw)
+	if updatedRaw == "" || updatedRaw == input.Raw {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, "input", []byte(updatedRaw))
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
+func reorderResponsesToolCallsNoCache(rawArray string) string {
+	rawArray = strings.TrimSpace(rawArray)
+	if rawArray == "" {
+		return "[]"
+	}
+
+	var items []json.RawMessage
+	if errUnmarshal := json.Unmarshal([]byte(rawArray), &items); errUnmarshal != nil {
+		return ""
+	}
+
+	outputsByCallID := make(map[string][]json.RawMessage, len(items))
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		itemType := strings.TrimSpace(gjson.GetBytes(item, "type").String())
+		if !isResponsesToolCallOutputType(itemType) {
+			continue
+		}
+		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+		if callID == "" {
+			continue
+		}
+		outputsByCallID[callID] = append(outputsByCallID[callID], item)
+	}
+
+	result := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		itemType := strings.TrimSpace(gjson.GetBytes(item, "type").String())
+		if isResponsesToolCallOutputType(itemType) {
+			continue
+		}
+		if !isResponsesToolCallType(itemType) {
+			result = append(result, item)
+			continue
+		}
+
+		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+		if callID == "" {
+			// Upstream rejects tool calls without call_id.
+			continue
+		}
+		result = append(result, item)
+		result = append(result, outputsByCallID[callID]...)
+		delete(outputsByCallID, callID)
+	}
+
+	orphanOrder := make([]string, 0, len(outputsByCallID))
+	for callID := range outputsByCallID {
+		orphanOrder = append(orphanOrder, callID)
+	}
+	sort.Strings(orphanOrder)
+	for _, callID := range orphanOrder {
+		result = append(result, outputsByCallID[callID]...)
+	}
+
+	out, errMarshal := json.Marshal(result)
+	if errMarshal != nil {
+		return ""
+	}
+	return string(out)
 }

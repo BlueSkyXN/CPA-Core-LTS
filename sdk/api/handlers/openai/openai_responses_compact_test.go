@@ -16,11 +16,13 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/tidwall/gjson"
 )
 
 type compactCaptureExecutor struct {
 	alt          string
 	sourceFormat string
+	payload      []byte
 	calls        int
 }
 
@@ -30,6 +32,7 @@ func (e *compactCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Aut
 	e.calls++
 	e.alt = opts.Alt
 	e.sourceFormat = opts.SourceFormat.String()
+	e.payload = append([]byte(nil), req.Payload...)
 	return coreexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
 }
 
@@ -118,6 +121,91 @@ func TestOpenAIResponsesCompactExecute(t *testing.T) {
 	}
 	if strings.TrimSpace(resp.Body.String()) != `{"ok":true}` {
 		t.Fatalf("body = %s", resp.Body.String())
+	}
+}
+
+func TestOpenAIResponsesCompactRepairsHTTPToolCallOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	executor := &compactCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{ID: "auth-http-repair", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	body := `{"model":"test-model","input":[{"type":"function_call_output","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-1"},{"type":"function_call","call_id":"call-1","name":"tool"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	input := gjson.GetBytes(executor.payload, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("forwarded input len = %d, want 3: %s", len(input), executor.payload)
+	}
+	if input[0].Get("type").String() != "message" || input[0].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected first item: %s", input[0].Raw)
+	}
+	if input[1].Get("type").String() != "function_call" || input[1].Get("call_id").String() != "call-1" {
+		t.Fatalf("unexpected repaired call: %s", input[1].Raw)
+	}
+	if input[2].Get("type").String() != "function_call_output" || input[2].Get("call_id").String() != "call-1" {
+		t.Fatalf("unexpected repaired output: %s", input[2].Raw)
+	}
+}
+
+func TestOpenAIResponsesRepairsHTTPToolCallOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	executor := &compactCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{ID: "auth-http-responses-repair", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses", h.Responses)
+
+	body := `{"model":"test-model","input":[{"type":"function_call_output","call_id":"call-1","output":"ok"},{"type":"function_call","call_id":"call-1","name":"tool"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	input := gjson.GetBytes(executor.payload, "input").Array()
+	if len(input) != 2 {
+		t.Fatalf("forwarded input len = %d, want 2: %s", len(input), executor.payload)
+	}
+	if input[0].Get("type").String() != "function_call" || input[0].Get("call_id").String() != "call-1" {
+		t.Fatalf("unexpected repaired call: %s", input[0].Raw)
+	}
+	if input[1].Get("type").String() != "function_call_output" || input[1].Get("call_id").String() != "call-1" {
+		t.Fatalf("unexpected repaired output: %s", input[1].Raw)
 	}
 }
 
