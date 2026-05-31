@@ -688,6 +688,9 @@ func (s *Service) Run(ctx context.Context) error {
 		if s.coreManager != nil {
 			s.coreManager.SetConfig(newCfg)
 			s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
+			for _, warning := range validateOAuthAliasExclusions(newCfg.OAuthModelAlias, newCfg.OAuthExcludedModels) {
+				log.Warnf("%s", warning)
+			}
 		}
 		s.rebindExecutors()
 	}

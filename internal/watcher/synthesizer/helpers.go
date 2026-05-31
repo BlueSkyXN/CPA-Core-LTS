@@ -103,6 +103,87 @@ func ApplyAuthExcludedModelsMeta(auth *coreauth.Auth, cfg *config.Config, perKey
 	}
 }
 
+// WarnAuthAliasExclusionConflicts returns warnings for oauth-model-alias
+// upstream names that would be wildcard-blocked by this auth's per-account
+// excluded_models. Provider-wide exclusions are checked in sdk/cliproxy during
+// config load; this helper handles the auth-file layer where per-account data
+// is visible.
+func WarnAuthAliasExclusionConflicts(auth *coreauth.Auth, cfg *config.Config, perKey []string, authKind string) []string {
+	if auth == nil || cfg == nil || len(cfg.OAuthModelAlias) == 0 || len(perKey) == 0 {
+		return nil
+	}
+	channel := coreauth.OAuthModelAliasChannel(strings.TrimSpace(auth.Provider), authKind)
+	if channel == "" {
+		return nil
+	}
+	aliases := cfg.OAuthModelAlias[channel]
+	if len(aliases) == 0 {
+		return nil
+	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		authID = "<unknown>"
+	}
+	var warnings []string
+	for _, entry := range aliases {
+		upstream := strings.TrimSpace(entry.Name)
+		alias := strings.TrimSpace(entry.Alias)
+		if upstream == "" || alias == "" || strings.EqualFold(upstream, alias) {
+			continue
+		}
+		upstreamLower := strings.ToLower(upstream)
+		for _, pattern := range perKey {
+			p := strings.TrimSpace(pattern)
+			if p == "" {
+				continue
+			}
+			if matchExclusionWildcard(strings.ToLower(p), upstreamLower) {
+				warnings = append(warnings, fmt.Sprintf(
+					"oauth-model-alias: auth=%q channel=%q alias=%q upstream=%q matches per-account excluded-models pattern=%q; alias will not resolve at runtime",
+					authID, channel, alias, upstream, p,
+				))
+			}
+		}
+	}
+	return warnings
+}
+
+// matchExclusionWildcard mirrors sdk/cliproxy.matchWildcard semantics without
+// adding a synthesizer -> sdk/cliproxy import edge. Inputs are expected to be
+// lowercased by the caller.
+func matchExclusionWildcard(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+	parts := strings.Split(pattern, "*")
+	if prefix := parts[0]; prefix != "" {
+		if !strings.HasPrefix(value, prefix) {
+			return false
+		}
+		value = value[len(prefix):]
+	}
+	if suffix := parts[len(parts)-1]; suffix != "" {
+		if !strings.HasSuffix(value, suffix) {
+			return false
+		}
+		value = value[:len(value)-len(suffix)]
+	}
+	for _, segment := range parts[1 : len(parts)-1] {
+		if segment == "" {
+			continue
+		}
+		idx := strings.Index(value, segment)
+		if idx < 0 {
+			return false
+		}
+		value = value[idx+len(segment):]
+	}
+	return true
+}
+
 // addConfigHeadersToAttrs adds header configuration to auth attributes.
 // Headers are prefixed with "header:" in the attributes map.
 func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string) {
