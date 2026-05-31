@@ -65,6 +65,110 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 	}
 }
 
+func TestParseClaudeRetryAfter(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	t.Run("seconds", func(t *testing.T) {
+		header := http.Header{"Retry-After": []string{"2.5"}}
+		got := parseClaudeRetryAfter(header, now)
+		if got == nil {
+			t.Fatal("expected retryAfter, got nil")
+		}
+		if *got != 2500*time.Millisecond {
+			t.Fatalf("retryAfter = %v, want %v", *got, 2500*time.Millisecond)
+		}
+	})
+
+	t.Run("http date", func(t *testing.T) {
+		header := http.Header{"Retry-After": []string{now.Add(3 * time.Minute).Format(http.TimeFormat)}}
+		got := parseClaudeRetryAfter(header, now)
+		if got == nil {
+			t.Fatal("expected retryAfter, got nil")
+		}
+		if *got != 3*time.Minute {
+			t.Fatalf("retryAfter = %v, want %v", *got, 3*time.Minute)
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		header := http.Header{"Retry-After": []string{"not-a-duration"}}
+		if got := parseClaudeRetryAfter(header, now); got != nil {
+			t.Fatalf("expected nil for invalid header, got %v", *got)
+		}
+	})
+
+	t.Run("past date", func(t *testing.T) {
+		header := http.Header{"Retry-After": []string{now.Add(-time.Minute).Format(http.TimeFormat)}}
+		if got := parseClaudeRetryAfter(header, now); got != nil {
+			t.Fatalf("expected nil for past date, got %v", *got)
+		}
+	})
+
+	t.Run("missing", func(t *testing.T) {
+		if got := parseClaudeRetryAfter(http.Header{}, now); got != nil {
+			t.Fatalf("expected nil for missing header, got %v", *got)
+		}
+	})
+}
+
+func TestNewClaudeStatusErrAttachesRetryAfterForRateLimits(t *testing.T) {
+	header := http.Header{"Retry-After": []string{"7"}}
+
+	for _, statusCode := range []int{http.StatusTooManyRequests, claudeStatusOverloaded} {
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			err := newClaudeStatusErr(statusCode, []byte(`{"error":"rate limited"}`), header)
+			got := err.RetryAfter()
+			if got == nil {
+				t.Fatal("expected retryAfter, got nil")
+			}
+			if *got != 7*time.Second {
+				t.Fatalf("retryAfter = %v, want %v", *got, 7*time.Second)
+			}
+		})
+	}
+
+	err := newClaudeStatusErr(http.StatusBadRequest, []byte(`{"error":"bad request"}`), header)
+	if got := err.RetryAfter(); got != nil {
+		t.Fatalf("expected nil retryAfter for non-rate-limit status, got %v", *got)
+	}
+}
+
+func TestClaudeExecutorExecuteReturnsRetryAfterFromHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "4")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
+	if !ok {
+		t.Fatalf("expected retryable status error, got %T", err)
+	}
+	got := retryable.RetryAfter()
+	if got == nil {
+		t.Fatal("expected retryAfter, got nil")
+	}
+	if *got != 4*time.Second {
+		t.Fatalf("retryAfter = %v, want %v", *got, 4*time.Second)
+	}
+}
+
 func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 	stabilize := true

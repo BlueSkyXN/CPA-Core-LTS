@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -86,5 +87,40 @@ func TestGeminiExecutorExecuteCapsMaxOutputTokensBeforeUpstream(t *testing.T) {
 	}
 	if upstreamMaxOutputTokens != 65536 {
 		t.Fatalf("upstream maxOutputTokens = %d, want 65536", upstreamMaxOutputTokens)
+	}
+}
+
+func TestGeminiExecutorExecuteReturnsRetryAfterFromRetryInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.500s"}]}}`))
+	}))
+	defer server.Close()
+
+	exec := NewGeminiExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "test-key",
+		"base_url": server.URL,
+	}}
+	req := cliproxyexecutor.Request{
+		Model:   "gemini-3.1-pro-preview",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}
+
+	_, err := exec.Execute(context.Background(), auth, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
+	if !ok {
+		t.Fatalf("expected retryable status error, got %T", err)
+	}
+	got := retryable.RetryAfter()
+	if got == nil {
+		t.Fatal("expected retryAfter, got nil")
+	}
+	if *got != 2500*time.Millisecond {
+		t.Fatalf("retryAfter = %v, want %v", *got, 2500*time.Millisecond)
 	}
 }

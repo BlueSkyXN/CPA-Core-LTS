@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,7 @@ var oauthToolsToRemove = map[string]bool{}
 // Anthropic-compatible upstreams may reject or even crash when Claude models
 // omit max_tokens. Prefer registered model metadata before using a fallback.
 const defaultModelMaxTokens = 1024
+const claudeStatusOverloaded = 529
 
 func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecutor{cfg: cfg} }
 
@@ -252,7 +254,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = newClaudeStatusErr(httpResp.StatusCode, b, httpResp.Header)
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
 		}
@@ -429,7 +431,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = newClaudeStatusErr(httpResp.StatusCode, b, httpResp.Header)
 		return nil, err
 	}
 	decodedBody, err := decodeResponseBody(httpResp.Body, httpResp.Header.Get("Content-Encoding"))
@@ -663,7 +665,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
 		}
-		return cliproxyexecutor.Response{}, statusErr{code: resp.StatusCode, msg: string(b)}
+		return cliproxyexecutor.Response{}, newClaudeStatusErr(resp.StatusCode, b, resp.Header)
 	}
 	decodedBody, err := decodeResponseBody(resp.Body, resp.Header.Get("Content-Encoding"))
 	if err != nil {
@@ -2379,4 +2381,35 @@ func ensureModelMaxTokens(body []byte, modelID string) []byte {
 	}
 
 	return body
+}
+
+func newClaudeStatusErr(statusCode int, body []byte, header http.Header) statusErr {
+	err := statusErr{code: statusCode, msg: string(body)}
+	if statusCode == http.StatusTooManyRequests || statusCode == claudeStatusOverloaded {
+		err.retryAfter = parseClaudeRetryAfter(header, time.Now())
+	}
+	return err
+}
+
+func parseClaudeRetryAfter(header http.Header, now time.Time) *time.Duration {
+	val := strings.TrimSpace(header.Get("Retry-After"))
+	if val == "" {
+		return nil
+	}
+
+	secs, err := strconv.ParseFloat(val, 64)
+	if err == nil && secs > 0 {
+		d := time.Duration(secs * float64(time.Second))
+		return &d
+	}
+
+	t, err := http.ParseTime(val)
+	if err != nil {
+		return nil
+	}
+	d := t.Sub(now)
+	if d <= 0 {
+		return nil
+	}
+	return &d
 }
