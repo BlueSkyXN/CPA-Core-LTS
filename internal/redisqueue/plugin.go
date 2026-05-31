@@ -53,6 +53,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
 	}
+	serviceTier := strings.TrimSpace(record.ServiceTier)
+	if serviceTier == "" {
+		serviceTier = coreusage.ServiceTierFromContext(ctx)
+	}
 
 	tokens := internalusage.TokenStats{
 		InputTokens:         record.Detail.InputTokens,
@@ -86,10 +90,12 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		RequestDetail: internalusage.RequestDetail{
 			Timestamp:       timestamp,
 			LatencyMs:       record.Latency.Milliseconds(),
+			TTFTMs:          record.TTFT.Milliseconds(),
 			Source:          record.Source,
 			AuthIndex:       record.AuthIndex,
 			Alias:           aliasName,
 			ReasoningEffort: reasoningEffort,
+			ServiceTier:     serviceTier,
 			Tokens:          tokens,
 			Failed:          failed,
 		},

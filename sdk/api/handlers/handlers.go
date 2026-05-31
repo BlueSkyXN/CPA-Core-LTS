@@ -20,8 +20,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
 
@@ -240,6 +242,19 @@ func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, 
 		return
 	}
 	meta[coreexecutor.ReasoningEffortMetadataKey] = effort
+}
+
+func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
+	if meta == nil {
+		return
+	}
+	serviceTier := coreusage.DefaultServiceTier
+	if node := gjson.GetBytes(rawJSON, "service_tier"); node.Exists() {
+		if value := strings.TrimSpace(node.String()); value != "" {
+			serviceTier = value
+		}
+	}
+	meta[coreexecutor.ServiceTierMetadataKey] = serviceTier
 }
 
 // headersFromContext extracts the original HTTP request headers from the gin context
@@ -553,6 +568,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
+	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -602,6 +618,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
+	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -655,6 +672,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
+	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil

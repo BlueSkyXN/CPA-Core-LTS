@@ -1587,6 +1587,9 @@ func contextWithUsageMetadata(ctx context.Context, opts cliproxyexecutor.Options
 	if effort := reasoningEffortFromOptions(opts); effort != "" {
 		ctx = coreusage.WithReasoningEffort(ctx, effort)
 	}
+	if serviceTier := serviceTierFromOptions(opts); serviceTier != "" {
+		ctx = coreusage.WithServiceTier(ctx, serviceTier)
+	}
 	return ctx
 }
 
@@ -1663,6 +1666,13 @@ func reasoningEffortFromOptions(opts cliproxyexecutor.Options) string {
 		return ""
 	}
 	return stringMetadataValue(opts.Metadata, cliproxyexecutor.ReasoningEffortMetadataKey)
+}
+
+func serviceTierFromOptions(opts cliproxyexecutor.Options) string {
+	if len(opts.Metadata) == 0 {
+		return ""
+	}
+	return stringMetadataValue(opts.Metadata, cliproxyexecutor.ServiceTierMetadataKey)
 }
 
 func stringMetadataValue(meta map[string]any, key string) string {

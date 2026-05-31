@@ -13,6 +13,7 @@ func TestContextWithUsageMetadataIncludesAliasAndReasoningEffort(t *testing.T) {
 		Metadata: map[string]any{
 			cliproxyexecutor.RequestedModelMetadataKey:  "client-model",
 			cliproxyexecutor.ReasoningEffortMetadataKey: "medium",
+			cliproxyexecutor.ServiceTierMetadataKey:     "priority",
 		},
 	}, "fallback-model")
 
@@ -21,5 +22,8 @@ func TestContextWithUsageMetadataIncludesAliasAndReasoningEffort(t *testing.T) {
 	}
 	if got := coreusage.ReasoningEffortFromContext(ctx); got != "medium" {
 		t.Fatalf("reasoning effort = %q, want %q", got, "medium")
+	}
+	if got := coreusage.ServiceTierFromContext(ctx); got != "priority" {
+		t.Fatalf("service tier = %q, want %q", got, "priority")
 	}
 }

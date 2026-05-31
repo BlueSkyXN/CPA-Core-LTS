@@ -23,6 +23,13 @@ func TestExtractReasoningEffortSupportsOpenAIResponses(t *testing.T) {
 	}
 }
 
+func TestExtractTranslatedReasoningEffortSupportsOpenAIResponses(t *testing.T) {
+	got := ExtractTranslatedReasoningEffort([]byte(`{"reasoning":{"effort":"high"}}`), "openai-response")
+	if got != "high" {
+		t.Fatalf("ExtractTranslatedReasoningEffort() = %q, want %q", got, "high")
+	}
+}
+
 func TestExtractReasoningEffortMissingConfigIsEmpty(t *testing.T) {
 	got := ExtractReasoningEffort([]byte(`{"messages":[{"role":"user","content":"hi"}]}`), "openai", "gpt-5.4")
 	if got != "" {

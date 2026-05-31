@@ -91,10 +91,12 @@ type modelStats struct {
 type RequestDetail struct {
 	Timestamp       time.Time  `json:"timestamp"`
 	LatencyMs       int64      `json:"latency_ms"`
+	TTFTMs          int64      `json:"ttft_ms,omitempty"`
 	Source          string     `json:"source"`
 	AuthIndex       string     `json:"auth_index"`
 	Alias           string     `json:"alias,omitempty"`
 	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	ServiceTier     string     `json:"service_tier,omitempty"`
 	Tokens          TokenStats `json:"tokens"`
 	Failed          bool       `json:"failed"`
 }
@@ -204,10 +206,12 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	s.updateAPIStats(stats, modelName, RequestDetail{
 		Timestamp:       timestamp,
 		LatencyMs:       normaliseLatency(record.Latency),
+		TTFTMs:          normaliseLatency(record.TTFT),
 		Source:          record.Source,
 		AuthIndex:       record.AuthIndex,
 		Alias:           strings.TrimSpace(record.Alias),
 		ReasoningEffort: strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:     strings.TrimSpace(record.ServiceTier),
 		Tokens:          detail,
 		Failed:          failed,
 	})
@@ -342,6 +346,9 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
+				}
+				if detail.TTFTMs < 0 {
+					detail.TTFTMs = 0
 				}
 				if detail.Timestamp.IsZero() {
 					detail.Timestamp = time.Now()

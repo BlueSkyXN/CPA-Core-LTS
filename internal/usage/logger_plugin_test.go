@@ -39,7 +39,9 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 		Model:           "gpt-5.4",
 		Alias:           "client-gpt",
 		ReasoningEffort: "medium",
+		ServiceTier:     "priority",
 		RequestedAt:     time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
+		TTFT:            250 * time.Millisecond,
 		Detail: coreusage.Detail{
 			InputTokens:         10,
 			OutputTokens:        20,
@@ -60,6 +62,12 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.ReasoningEffort != "medium" {
 		t.Fatalf("reasoning_effort = %q, want %q", detail.ReasoningEffort, "medium")
+	}
+	if detail.ServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want %q", detail.ServiceTier, "priority")
+	}
+	if detail.TTFTMs != 250 {
+		t.Fatalf("ttft_ms = %d, want 250", detail.TTFTMs)
 	}
 	if detail.Tokens.CacheReadTokens != 7 {
 		t.Fatalf("cache_read_tokens = %d, want 7", detail.Tokens.CacheReadTokens)
