@@ -109,6 +109,52 @@ func TestImagesModelValidationAllowsOpenAICompatImageModel(t *testing.T) {
 	}
 }
 
+func TestGPTImage2BaseModelResolution(t *testing.T) {
+	var nilHandler *OpenAIAPIHandler
+	if got := nilHandler.resolveGPTImage2BaseModel(); got != defaultImagesMainModel {
+		t.Fatalf("nil handler base model = %q, want %q", got, defaultImagesMainModel)
+	}
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{GPTImage2BaseModel: " gpt-5.5-mini "}, nil)
+	handler := NewOpenAIAPIHandler(base)
+	if got := handler.resolveGPTImage2BaseModel(); got != "gpt-5.5-mini" {
+		t.Fatalf("configured base model = %q, want gpt-5.5-mini", got)
+	}
+
+	base = handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{GPTImage2BaseModel: "claude-sonnet-4.5"}, nil)
+	handler = NewOpenAIAPIHandler(base)
+	if got := handler.resolveGPTImage2BaseModel(); got != defaultImagesMainModel {
+		t.Fatalf("invalid base model = %q, want %q", got, defaultImagesMainModel)
+	}
+}
+
+func TestBuildImagesResponsesRequestUsesConfiguredGPTImage2BaseModel(t *testing.T) {
+	tool := []byte(`{"type":"image_generation","model":"gpt-image-2"}`)
+	req := buildImagesResponsesRequest("draw", nil, tool, "gpt-5.5-mini")
+
+	if got := gjson.GetBytes(req, "model").String(); got != "gpt-5.5-mini" {
+		t.Fatalf("responses model = %q, want gpt-5.5-mini; payload=%s", got, string(req))
+	}
+}
+
+func TestBuildImagesResponsesRequestPreservesPrefixForConfiguredGPTImage2BaseModel(t *testing.T) {
+	tool := []byte(`{"type":"image_generation","model":"team-a/gpt-image-2"}`)
+	req := buildImagesResponsesRequest("draw", nil, tool, "gpt-5.5-mini")
+
+	if got := gjson.GetBytes(req, "model").String(); got != "team-a/gpt-5.5-mini" {
+		t.Fatalf("responses model = %q, want team-a/gpt-5.5-mini; payload=%s", got, string(req))
+	}
+}
+
+func TestBuildImagesResponsesRequestFallsBackForInvalidGPTImage2BaseModel(t *testing.T) {
+	tool := []byte(`{"type":"image_generation","model":"team-a/gpt-image-2"}`)
+	req := buildImagesResponsesRequest("draw", nil, tool, "claude-sonnet-4.5")
+
+	if got := gjson.GetBytes(req, "model").String(); got != "team-a/"+defaultImagesMainModel {
+		t.Fatalf("responses model = %q, want team-a/%s; payload=%s", got, defaultImagesMainModel, string(req))
+	}
+}
+
 func TestImagesGenerationsRoutesOpenAICompatImageModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	executor := &imageCaptureExecutor{}

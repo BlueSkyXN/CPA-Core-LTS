@@ -296,6 +296,24 @@ func parseBoolField(raw string, fallback bool) bool {
 	}
 }
 
+func normalizeGPTImage2BaseModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return defaultImagesMainModel
+	}
+	if strings.HasPrefix(strings.ToLower(model), "gpt-") {
+		return model
+	}
+	return defaultImagesMainModel
+}
+
+func (h *OpenAIAPIHandler) resolveGPTImage2BaseModel() string {
+	if h == nil || h.BaseAPIHandler == nil || h.BaseAPIHandler.Cfg == nil {
+		return defaultImagesMainModel
+	}
+	return normalizeGPTImage2BaseModel(h.BaseAPIHandler.Cfg.GPTImage2BaseModel)
+}
+
 func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
 		c.AbortWithStatus(http.StatusNotFound)
@@ -382,7 +400,7 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		tool, _ = sjson.SetBytes(tool, "moderation", v)
 	}
 
-	responsesReq := buildImagesResponsesRequest(prompt, nil, tool)
+	responsesReq := buildImagesResponsesRequest(prompt, nil, tool, h.resolveGPTImage2BaseModel())
 	if stream {
 		h.streamImagesFromResponses(c, responsesReq, responseFormat, "image_generation")
 		return
@@ -546,7 +564,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		tool, _ = sjson.SetBytes(tool, "input_image_mask.image_url", strings.TrimSpace(*maskDataURL))
 	}
 
-	responsesReq := buildImagesResponsesRequest(prompt, images, tool)
+	responsesReq := buildImagesResponsesRequest(prompt, images, tool, h.resolveGPTImage2BaseModel())
 	if stream {
 		h.streamImagesFromResponses(c, responsesReq, responseFormat, "image_edit")
 		return
@@ -662,7 +680,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 		tool, _ = sjson.SetBytes(tool, "input_image_mask.image_url", strings.TrimSpace(*maskDataURL))
 	}
 
-	responsesReq := buildImagesResponsesRequest(prompt, images, tool)
+	responsesReq := buildImagesResponsesRequest(prompt, images, tool, h.resolveGPTImage2BaseModel())
 	if stream {
 		h.streamImagesFromResponses(c, responsesReq, responseFormat, "image_edit")
 		return
@@ -670,15 +688,15 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	h.collectImagesFromResponses(c, responsesReq, responseFormat)
 }
 
-func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {
+func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte, baseModel string) []byte {
 	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
-	mainModel := defaultImagesMainModel
+	mainModel := normalizeGPTImage2BaseModel(baseModel)
 	if len(toolJSON) > 0 && json.Valid(toolJSON) {
 		toolModel := strings.TrimSpace(gjson.GetBytes(toolJSON, "model").String())
 		if idx := strings.LastIndex(toolModel, "/"); idx > 0 && idx < len(toolModel)-1 {
 			prefix := strings.TrimSpace(toolModel[:idx])
 			if prefix != "" {
-				mainModel = prefix + "/" + defaultImagesMainModel
+				mainModel = prefix + "/" + mainModel
 			}
 		}
 	}

@@ -317,6 +317,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			APIKeys:                    []string{"key-1"},
 			ForceModelPrefix:           false,
 			NonStreamKeepAliveInterval: 0,
+			GPTImage2BaseModel:         "",
 		},
 	}
 	newCfg := &config.Config{
@@ -357,6 +358,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
 			DisableImageGeneration:     config.DisableImageGenerationAll,
+			GPTImage2BaseModel:         "gpt-5.5-mini",
 		},
 	}
 
@@ -374,6 +376,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "ws-auth: false -> true")
 	expectContains(t, details, "force-model-prefix: false -> true")
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")
+	expectContains(t, details, "gpt-image-2-base-model:  -> gpt-5.5-mini")
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, details, "quota-exceeded.switch-preview-model: false -> true")
 	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")
