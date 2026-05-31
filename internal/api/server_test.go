@@ -90,6 +90,55 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
+func TestRootEndpointListsRegisteredPublicRoutes(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var resp struct {
+		Message   string   `json:"message"`
+		Endpoints []string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v body=%s", err, rr.Body.String())
+	}
+	if resp.Message != "CLI Proxy API Server" {
+		t.Fatalf("message = %q, want %q", resp.Message, "CLI Proxy API Server")
+	}
+
+	endpoints := make(map[string]struct{}, len(resp.Endpoints))
+	for _, endpoint := range resp.Endpoints {
+		endpoints[endpoint] = struct{}{}
+		if strings.Contains(endpoint, "/healthz") ||
+			strings.Contains(endpoint, "/management") ||
+			strings.Contains(endpoint, "/callback") {
+			t.Fatalf("endpoints contains non-public route %q: %v", endpoint, resp.Endpoints)
+		}
+	}
+
+	for _, want := range []string{
+		"GET /v1/models",
+		"POST /v1/chat/completions",
+		"POST /v1/images/generations",
+		"POST /v1/responses",
+		"POST /v1/responses/compact",
+		"GET /v1beta/models",
+		"POST /backend-api/codex/responses",
+	} {
+		if _, ok := endpoints[want]; !ok {
+			t.Fatalf("endpoints missing %q: %v", want, resp.Endpoints)
+		}
+	}
+}
+
 func TestManagementLocalPasswordRejectsSpoofedForwardedFor(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

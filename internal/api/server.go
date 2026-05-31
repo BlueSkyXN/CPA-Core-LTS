@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,6 +172,11 @@ type Server struct {
 
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
+
+	// rootEndpoints caches the dynamic endpoint list for GET /.
+	// Routes are static after startup, so compute the list once on first request.
+	rootEndpointsOnce sync.Once
+	rootEndpoints     []string
 
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
@@ -393,13 +399,22 @@ func (s *Server) setupRoutes() {
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
+		s.rootEndpointsOnce.Do(func() {
+			routes := s.engine.Routes()
+			s.rootEndpoints = make([]string, 0, len(routes))
+			for _, route := range routes {
+				path := route.Path
+				if strings.HasPrefix(path, "/v1/") ||
+					strings.HasPrefix(path, "/v1beta/") ||
+					strings.HasPrefix(path, "/backend-api/") {
+					s.rootEndpoints = append(s.rootEndpoints, route.Method+" "+path)
+				}
+			}
+			sort.Strings(s.rootEndpoints)
+		})
 		c.JSON(http.StatusOK, gin.H{
-			"message": "CLI Proxy API Server",
-			"endpoints": []string{
-				"POST /v1/chat/completions",
-				"POST /v1/completions",
-				"GET /v1/models",
-			},
+			"message":   "CLI Proxy API Server",
+			"endpoints": s.rootEndpoints,
 		})
 	})
 	s.engine.POST("/v1internal:method", geminiCLIHandlers.CLIHandler)
