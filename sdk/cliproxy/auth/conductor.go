@@ -620,6 +620,7 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 
 	availableByPriority := make(map[int][]*Auth)
 	cooldownCount := 0
+	disabledCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
@@ -634,11 +635,14 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 				earliest = next
 			}
+		} else if reason == blockReasonDisabled {
+			disabledCount++
 		}
 	}
 
 	if len(availableByPriority) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
+		recoverableCount := len(auths) - disabledCount
+		if cooldownCount > 0 && cooldownCount == recoverableCount && !earliest.IsZero() {
 			providerForError := provider
 			if providerForError == "mixed" {
 				providerForError = ""

@@ -14,6 +14,70 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
+func testCooldownAuth(id, provider, model string, next time.Time) *Auth {
+	return &Auth{
+		ID:       id,
+		Provider: provider,
+		ModelStates: map[string]*ModelState{
+			model: {
+				Status:         StatusActive,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota: QuotaState{
+					Exceeded:      true,
+					NextRecoverAt: next,
+				},
+			},
+		},
+	}
+}
+
+func testTransientBlockedAuth(id, provider, model string, next time.Time) *Auth {
+	return &Auth{
+		ID:       id,
+		Provider: provider,
+		ModelStates: map[string]*ModelState{
+			model: {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+			},
+		},
+	}
+}
+
+func testDisabledAuth(id, provider string) *Auth {
+	return &Auth{
+		ID:       id,
+		Provider: provider,
+		Disabled: true,
+		Status:   StatusDisabled,
+	}
+}
+
+func assertModelCooldownError(t *testing.T, err error) *modelCooldownError {
+	t.Helper()
+	var mce *modelCooldownError
+	if !errors.As(err, &mce) {
+		t.Fatalf("error = %T, want *modelCooldownError", err)
+	}
+	if mce.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %d, want %d", mce.StatusCode(), http.StatusTooManyRequests)
+	}
+	return mce
+}
+
+func assertAuthUnavailableError(t *testing.T, err error) {
+	t.Helper()
+	var authErr *Error
+	if !errors.As(err, &authErr) {
+		t.Fatalf("error = %T, want *Error", err)
+	}
+	if authErr.Code != "auth_unavailable" {
+		t.Fatalf("Error.Code = %q, want %q", authErr.Code, "auth_unavailable")
+	}
+}
+
 func TestFillFirstSelectorPick_Deterministic(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +345,43 @@ func TestSelectorPick_AllCooldownReturnsModelCooldownError(t *testing.T) {
 			t.Fatalf("Error().error.provider = %q, want %q", got, "gemini")
 		}
 	})
+}
+
+func TestSelectorPick_DisabledAndCooldownReturnsModelCooldownError(t *testing.T) {
+	t.Parallel()
+
+	model := "selector-disabled-cooldown-model"
+	next := time.Now().Add(60 * time.Second)
+	auths := []*Auth{
+		testDisabledAuth("disabled", "gemini"),
+		testCooldownAuth("cooldown", "gemini", model, next),
+	}
+
+	selector := &FillFirstSelector{}
+	_, err := selector.Pick(context.Background(), "gemini", model, cliproxyexecutor.Options{}, auths)
+	if err == nil {
+		t.Fatalf("Pick() error = nil")
+	}
+	assertModelCooldownError(t, err)
+}
+
+func TestSelectorPick_TransientBlockPreventsCooldownQuorum(t *testing.T) {
+	t.Parallel()
+
+	model := "selector-transient-cooldown-model"
+	next := time.Now().Add(60 * time.Second)
+	auths := []*Auth{
+		testDisabledAuth("disabled", "gemini"),
+		testCooldownAuth("cooldown", "gemini", model, next),
+		testTransientBlockedAuth("transient", "gemini", model, next),
+	}
+
+	selector := &FillFirstSelector{}
+	_, err := selector.Pick(context.Background(), "gemini", model, cliproxyexecutor.Options{}, auths)
+	if err == nil {
+		t.Fatalf("Pick() error = nil")
+	}
+	assertAuthUnavailableError(t, err)
 }
 
 func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsNotBlocked(t *testing.T) {

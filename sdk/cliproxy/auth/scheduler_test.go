@@ -151,6 +151,44 @@ func TestSchedulerPick_PromotesExpiredCooldownBeforePick(t *testing.T) {
 	}
 }
 
+func TestSchedulerPickSingle_DisabledAndCooldownReturnsModelCooldownError(t *testing.T) {
+	t.Parallel()
+
+	model := "scheduler-disabled-cooldown-model"
+	next := time.Now().Add(60 * time.Second)
+	registerSchedulerModels(t, "gemini", model, "disabled", "cooldown")
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		testDisabledAuth("disabled", "gemini"),
+		testCooldownAuth("cooldown", "gemini", model, next),
+	)
+
+	_, errPick := scheduler.pickSingle(context.Background(), "gemini", model, cliproxyexecutor.Options{}, nil)
+	if errPick == nil {
+		t.Fatalf("pickSingle() error = nil")
+	}
+	assertModelCooldownError(t, errPick)
+}
+
+func TestSchedulerPickSingle_TransientBlockPreventsCooldownQuorum(t *testing.T) {
+	t.Parallel()
+
+	model := "scheduler-transient-cooldown-model"
+	next := time.Now().Add(60 * time.Second)
+	registerSchedulerModels(t, "gemini", model, "cooldown", "transient")
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		testCooldownAuth("cooldown", "gemini", model, next),
+		testTransientBlockedAuth("transient", "gemini", model, next),
+	)
+
+	_, errPick := scheduler.pickSingle(context.Background(), "gemini", model, cliproxyexecutor.Options{}, nil)
+	if errPick == nil {
+		t.Fatalf("pickSingle() error = nil")
+	}
+	assertAuthUnavailableError(t, errPick)
+}
+
 func TestSchedulerPick_GeminiVirtualParentUsesTwoLevelRotation(t *testing.T) {
 	t.Parallel()
 
@@ -298,6 +336,26 @@ func TestSchedulerPick_MixedProvidersPrefersHighestPriorityTier(t *testing.T) {
 	}
 }
 
+func TestSchedulerPickMixed_DisabledAndCooldownReturnsModelCooldownError(t *testing.T) {
+	t.Parallel()
+
+	model := "scheduler-mixed-disabled-cooldown-model"
+	next := time.Now().Add(60 * time.Second)
+	registerSchedulerModels(t, "gemini", model, "disabled")
+	registerSchedulerModels(t, "claude", model, "cooldown")
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		testDisabledAuth("disabled", "gemini"),
+		testCooldownAuth("cooldown", "claude", model, next),
+	)
+
+	_, _, errPick := scheduler.pickMixed(context.Background(), []string{"gemini", "claude"}, model, cliproxyexecutor.Options{}, nil)
+	if errPick == nil {
+		t.Fatalf("pickMixed() error = nil")
+	}
+	assertModelCooldownError(t, errPick)
+}
+
 func TestManager_PickNextMixed_UsesWeightedProviderRotationBeforeCredentialRotation(t *testing.T) {
 	t.Parallel()
 
@@ -391,6 +449,27 @@ func TestManagerCustomSelector_FallsBackToLegacyPath(t *testing.T) {
 	if got.ID != selector.lastAuthID[len(selector.lastAuthID)-1] {
 		t.Fatalf("pickNext() auth.ID = %q, want selector-picked %q", got.ID, selector.lastAuthID[len(selector.lastAuthID)-1])
 	}
+}
+
+func TestManagerAvailableAuths_DisabledAndCooldownReturnsModelCooldownError(t *testing.T) {
+	t.Parallel()
+
+	model := "manager-disabled-cooldown-model"
+	next := time.Now().Add(60 * time.Second)
+	manager := NewManager(nil, &trackingSelector{}, nil)
+	_, err := manager.availableAuthsForRouteModel(
+		[]*Auth{
+			testDisabledAuth("disabled", "gemini"),
+			testCooldownAuth("cooldown", "gemini", model, next),
+		},
+		"gemini",
+		model,
+		time.Now(),
+	)
+	if err == nil {
+		t.Fatalf("availableAuthsForRouteModel() error = nil")
+	}
+	assertModelCooldownError(t, err)
 }
 
 func TestManager_InitializesSchedulerForBuiltInSelector(t *testing.T) {
