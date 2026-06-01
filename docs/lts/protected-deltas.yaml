@@ -1,0 +1,67 @@
+maintenance_model:
+  type: protected-full-sync
+  product_branch: main
+  operation_mode: manual-ai-assisted
+  scheduled_sync: false
+  cadence_guidance: frequent_small_syncs_when_requested
+  optional_runtime_smoke: manual_huggingface_space
+
+upstream_source:
+  repo: router-for-me/CLIProxyAPI
+  branch: main
+
+protected_deltas:
+  - id: full-usage-statistics
+    must_keep: true
+    markers:
+      - usage-statistics-enabled
+      - internal/usage/
+      - /v0/management/usage
+      - /v0/management/usage/export
+      - /v0/management/usage/import
+    validation:
+      - scripts/check-lts-contract.sh
+      - usage-management-contract-tests
+    conflict_policy: preserve_or_reapply_lts_usage
+
+  - id: cpa-panel-lts-compatibility
+    must_keep: true
+    markers:
+      - CPA-Panel-LTS
+      - management usage response shape
+      - usage page compatibility
+    validation:
+      - panel-response-shape-review
+    conflict_policy: preserve_panel_compatibility
+
+  - id: local-downstream-customizations
+    must_keep: true
+    markers:
+      - auth/config/panel/release/source customizations
+    validation:
+      - manual_review_required
+    conflict_policy: preserve_or_reapply_local_delta
+
+sync_rules:
+  default_mode: protected_full_sync
+  upstream_changes: accept_by_default
+  merge_commit_required: true
+  squash_forbidden: true
+  rebase_forbidden: true
+  forbidden_shortcuts:
+    - GitHub Sync fork
+    - git pull upstream main on main
+    - git checkout upstream/main -- .
+
+runtime_smoke:
+  mode: manual-ai-operated
+  scheduled: false
+  reference_space: BlueSkyXN/CPA-HFS-2026-03
+  requirements:
+    - Build the CPA-Core-LTS branch or exact sync commit being reviewed.
+    - Enable usage-statistics-enabled for the smoke run.
+    - Use the CPA-Panel-LTS management panel release source.
+    - Verify /healthz returns ok.
+    - Verify /management.html is served.
+    - Verify /v0/management/usage and export endpoints exist and require management authentication rather than disappearing.
+    - Do not publish management passwords, API keys, auth files, or Hugging Face secrets in PR text or logs.

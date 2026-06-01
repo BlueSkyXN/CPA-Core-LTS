@@ -11,17 +11,19 @@ CPA Core LTS is a long-term-maintained fork of `router-for-me/CLIProxyAPI`.
 - Companion Web UI: <https://github.com/BlueSkyXN/CPA-Panel-LTS>
 - Default panel release source: `https://github.com/BlueSkyXN/CPA-Panel-LTS`
 
-## LTS Plan
+## Maintenance Model
 
 This fork exists because upstream releases after the selected baseline changed or removed the full usage statistics flow. The goal of this repository is to keep the CLI proxy core maintainable while preserving the statistics behavior that existed at `v6.9.49`.
 
 Maintenance rules:
 
-- `main` is the LTS line. Do not create a separate "statistics branch" for normal maintenance.
-- Preserve usage collection, `/v0/management/usage`, `/v0/management/usage/export`, `/v0/management/usage/import`, and `usage-statistics-enabled`.
-- Track useful upstream fixes and features selectively by review, cherry-pick, or manual porting.
-- Do not blindly sync the upstream fork if the change removes statistics or breaks `CPA-Panel-LTS` usage pages.
-- Planned cleanup can remove promotional copy, unused features, and non-LTS release machinery, but must not weaken the statistics contract.
+- `main` is the only CPA-Core-LTS product line. Do not create a separate "statistics branch" for normal maintenance.
+- CPA-Core-LTS tracks `router-for-me/CLIProxyAPI` by operator-driven protected full-sync merge PRs, usually prepared by AI agents when maintainers request a sync.
+- Preserve usage collection, `internal/usage/`, `/v0/management/usage`, `/v0/management/usage/export`, `/v0/management/usage/import`, and `usage-statistics-enabled`.
+- Upstream changes are accepted by default. If an upstream change conflicts with a protected delta, adapt the upstream change instead of allowing it to remove or weaken the LTS contract.
+- Do not use GitHub Sync fork, file-level overwrites, or direct `git pull upstream main` on `main`.
+- This repository does not schedule automatic upstream syncs; the documented process is the repeatable method for human/AI-operated sync work.
+- Planned cleanup can remove promotional copy, unused features, and non-LTS release machinery, but must not weaken the statistics contract or `CPA-Panel-LTS` compatibility.
 
 This core service is intended to pair with `CPA-Panel-LTS`, which keeps the matching management panel usage statistics UI. By default, `/management.html` is downloaded from the latest `CPA-Panel-LTS` release asset named `management.html`.
 
