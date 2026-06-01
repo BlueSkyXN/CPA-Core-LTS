@@ -11,17 +11,19 @@ CPA Core LTS 是基于 `router-for-me/CLIProxyAPI` 的长期维护分支。
 - 配套 Web 管理面板：<https://github.com/BlueSkyXN/CPA-Panel-LTS>
 - 默认面板发布源：`https://github.com/BlueSkyXN/CPA-Panel-LTS`
 
-## LTS 计划
+## 维护模型
 
 本仓库存在的原因是：上游在所选基线之后调整或移除了完整的使用统计链路。本仓库的目标是在继续维护 CLI 代理核心能力的同时，保留 `v6.9.49` 已具备的统计能力。
 
 维护规则：
 
-- `main` 就是 LTS 主线，不再单独维护一个“统计分支”。
-- 必须保留使用统计采集、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import` 和 `usage-statistics-enabled`。
-- 跟进上游新功能时，需要逐项审查、cherry-pick 或手工移植。
-- 不要盲目同步上游 fork；凡是会移除统计或破坏 `CPA-Panel-LTS` 使用统计页面的改动，都不能直接合入。
-- 后续轻量化改造可以移除推广文案、无用功能和非 LTS 发布链路，但不能削弱统计契约。
+- `main` 是 CPA-Core-LTS 的唯一产品主线，不再单独维护一个“统计分支”。
+- CPA-Core-LTS 通过操作者驱动的 protected full-sync merge PR 跟踪 `router-for-me/CLIProxyAPI`，通常由维护者要求 AI agent 执行同步。
+- 必须保留使用统计采集、`internal/usage/`、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import` 和 `usage-statistics-enabled`。
+- 普通上游改动默认吸收。若上游改动与 protected delta 冲突，应改写上游变更以保留 LTS 契约，而不是让上游覆盖或削弱统计功能。
+- 禁止使用 GitHub Sync fork、文件级覆盖，或在 `main` 上直接 `git pull upstream main`。
+- 本仓库不安排自动同步上游；这里沉淀的是可重复执行的人/AI 操作方法。
+- 后续轻量化改造可以移除推广文案、无用功能和非 LTS 发布链路，但不能削弱统计契约或 `CPA-Panel-LTS` 兼容性。
 
 本核心服务应与 `CPA-Panel-LTS` 配套使用，后者保留了与该统计接口匹配的管理面板统计页面。默认情况下，`/management.html` 会从 `CPA-Panel-LTS` 最新 release 中名为 `management.html` 的资产下载。
 

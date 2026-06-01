@@ -1,0 +1,47 @@
+name: lts-contract
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  lts-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check LTS protected sentinels
+        run: scripts/check-lts-contract.sh
+
+      - name: Test usage and management contracts
+        run: |
+          packages="$(go list ./internal/usage ./internal/api/handlers/management ./test 2>/dev/null | tr '\n' ' ')"
+          if [ -z "$packages" ]; then
+            echo "No usage/management contract packages found" >&2
+            exit 1
+          fi
+          go test $packages -run 'Usage|usage'
+
+      - name: Build server
+        run: |
+          go build -o test-output ./cmd/server
+          rm -f test-output
+
+  full-test-observation:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Observe full test suite
+        run: go test ./...

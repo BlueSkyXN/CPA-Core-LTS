@@ -1,6 +1,33 @@
-# CLI Proxy API
+# CPA Core LTS
 
 [English](README.md) | [中文](README_CN.md) | 日本語
+
+CPA Core LTS は `router-for-me/CLIProxyAPI` の長期メンテナンス fork です。
+
+- LTS ベースライン: `v6.9.49`
+- ベースライン commit: `b8bba053fcdafd80abc2152c88c78f4e7713c05a`
+- Upstream source: <https://github.com/router-for-me/CLIProxyAPI>
+- LTS repository: <https://github.com/BlueSkyXN/CPA-Core-LTS>
+- Companion Web UI: <https://github.com/BlueSkyXN/CPA-Panel-LTS>
+- Default panel release source: `https://github.com/BlueSkyXN/CPA-Panel-LTS`
+
+## メンテナンスモデル
+
+この fork は、選択したベースライン以降の upstream が完全な usage statistics フローを変更または削除したため存在します。本リポジトリの目的は、CLI proxy core をメンテナンス可能な状態に保ちながら、`v6.9.49` 時代の統計機能を保持することです。
+
+メンテナンスルール:
+
+- `main` は CPA-Core-LTS の唯一の製品ラインです。通常メンテナンス用に別の「statistics branch」は作りません。
+- CPA-Core-LTS は operator-driven な protected full-sync merge PR によって `router-for-me/CLIProxyAPI` を追跡します。通常はメンテナーが依頼したときに AI agent が同期作業を準備します。
+- usage collection、`internal/usage/`、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import`、`usage-statistics-enabled` を保持します。
+- 通常の upstream 変更はデフォルトで取り込みます。upstream 変更が protected delta と衝突する場合は、LTS 契約を削除または弱体化させるのではなく、upstream 変更を適応させます。
+- GitHub Sync fork、ファイル単位の上書き、`main` 上での直接 `git pull upstream main` は使用しません。
+- このリポジトリでは upstream sync を自動スケジュールしません。ここに記載するのは、人間または AI が操作するための再現可能な手順です。
+- 予定された軽量化では宣伝文、未使用機能、非 LTS release machinery を削除できますが、統計契約や `CPA-Panel-LTS` 互換性を弱めてはいけません。
+
+この core service は、対応する management panel usage statistics UI を保持する `CPA-Panel-LTS` と組み合わせて使用することを想定しています。デフォルトでは、`/management.html` は最新の `CPA-Panel-LTS` release asset `management.html` からダウンロードされます。
+
+## 元プロジェクト概要
 
 CLI向けのOpenAI/Gemini/Claude/Codex互換APIインターフェースを提供するプロキシサーバーです。
 
