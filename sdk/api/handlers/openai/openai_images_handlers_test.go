@@ -2,8 +2,6 @@ package openai
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -13,44 +11,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	"github.com/tidwall/gjson"
 )
-
-type imageCaptureExecutor struct {
-	sourceFormat string
-	model        string
-	payload      []byte
-}
-
-func (e *imageCaptureExecutor) Identifier() string { return "openai-compatibility" }
-
-func (e *imageCaptureExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
-	e.sourceFormat = opts.SourceFormat.String()
-	e.model = req.Model
-	e.payload = append([]byte(nil), req.Payload...)
-	return coreexecutor.Response{Payload: []byte(`{"created":123,"data":[{"b64_json":"AA=="}]}`)}, nil
-}
-
-func (e *imageCaptureExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (e *imageCaptureExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	return auth, nil
-}
-
-func (e *imageCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, errors.New("not implemented")
-}
-
-func (e *imageCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, errors.New("not implemented")
-}
 
 func performImagesEndpointRequest(t *testing.T, endpointPath string, contentType string, body io.Reader, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
@@ -76,7 +40,7 @@ func assertUnsupportedImagesModelResponse(t *testing.T, resp *httptest.ResponseR
 	}
 
 	message := gjson.GetBytes(resp.Body.Bytes(), "error.message").String()
-	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + defaultImagesToolModel + " or a configured openai-compatibility image model."
+	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + defaultImagesToolModel + ", " + defaultXAIImagesModel + ", or " + xaiImagesQualityModel + "."
 	if message != expectedMessage {
 		t.Fatalf("error message = %q, want %q", message, expectedMessage)
 	}
@@ -85,8 +49,8 @@ func assertUnsupportedImagesModelResponse(t *testing.T, resp *httptest.ResponseR
 	}
 }
 
-func TestImagesModelValidationAllowsGPTImage2WithOptionalPrefix(t *testing.T) {
-	for _, model := range []string{"gpt-image-2", "codex/gpt-image-2"} {
+func TestImagesModelValidationAllowsGPTImage2AndXAIModels(t *testing.T) {
+	for _, model := range []string{"gpt-image-2", "codex/gpt-image-2", "grok-imagine-image", "xai/grok-imagine-image", "grok-imagine-image-quality", "xai/grok-imagine-image-quality"} {
 		if !isSupportedImagesModel(model) {
 			t.Fatalf("expected %s to be supported", model)
 		}
@@ -94,96 +58,89 @@ func TestImagesModelValidationAllowsGPTImage2WithOptionalPrefix(t *testing.T) {
 	if isSupportedImagesModel("gpt-5.4-mini") {
 		t.Fatal("expected gpt-5.4-mini to be rejected")
 	}
-}
-
-func TestImagesModelValidationAllowsOpenAICompatImageModel(t *testing.T) {
-	authID := "test-openai-image-validation"
-	modelID := "image-alias-validation"
-	registry.GetGlobalRegistry().RegisterClient(authID, "openai-compatibility", []*registry.ModelInfo{{ID: modelID, Type: registry.OpenAIImageModelType}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(authID)
-	})
-
-	if !isSupportedImagesModel(modelID) {
-		t.Fatalf("expected configured openai-compatibility image model %s to be supported", modelID)
+	if isSupportedImagesModel("codex/grok-imagine-image") {
+		t.Fatal("expected codex/grok-imagine-image to be rejected")
 	}
 }
 
-func TestImagesGenerationsRoutesOpenAICompatImageModel(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	executor := &imageCaptureExecutor{}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
+func TestBuildXAIImagesGenerationsRequest(t *testing.T) {
+	rawJSON := []byte(`{"model":"xai/grok-imagine-image-quality","prompt":"abstract art","aspect_ratio":"landscape","resolution":"2k","n":2,"response_format":"url"}`)
 
-	auth := &coreauth.Auth{ID: "auth-openai-image", Provider: executor.Identifier(), Status: coreauth.StatusActive}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register auth: %v", err)
-	}
-	modelID := "image-alias"
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID, Type: registry.OpenAIImageModelType}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-	})
+	req := buildXAIImagesGenerationsRequest(rawJSON, "xai/grok-imagine-image-quality", "url")
 
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	handler := NewOpenAIAPIHandler(base)
-	body := strings.NewReader(`{"model":"image-alias","prompt":"draw a square"}`)
-
-	resp := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json", body, handler.ImagesGenerations)
-
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusOK, resp.Body.String())
+	if got := gjson.GetBytes(req, "model").String(); got != "grok-imagine-image-quality" {
+		t.Fatalf("model = %q, want grok-imagine-image-quality", got)
 	}
-	if got := gjson.GetBytes(resp.Body.Bytes(), "data.0.b64_json").String(); got != "AA==" {
-		t.Fatalf("b64_json = %q, want AA==", got)
+	if got := gjson.GetBytes(req, "prompt").String(); got != "abstract art" {
+		t.Fatalf("prompt = %q, want abstract art", got)
 	}
-	if executor.sourceFormat != openAIImagesHandlerType {
-		t.Fatalf("source format = %q, want %q", executor.sourceFormat, openAIImagesHandlerType)
+	if got := gjson.GetBytes(req, "aspect_ratio").String(); got != "16:9" {
+		t.Fatalf("aspect_ratio = %q, want 16:9", got)
 	}
-	if executor.model != modelID {
-		t.Fatalf("model = %q, want %q", executor.model, modelID)
+	if got := gjson.GetBytes(req, "resolution").String(); got != "2k" {
+		t.Fatalf("resolution = %q, want 2k", got)
 	}
-	if gjson.GetBytes(executor.payload, "stream").Exists() {
-		t.Fatalf("expected non-streaming payload to remove stream flag: %s", string(executor.payload))
+	if got := gjson.GetBytes(req, "response_format").String(); got != "url" {
+		t.Fatalf("response_format = %q, want url", got)
+	}
+	if got := gjson.GetBytes(req, "n").Int(); got != 2 {
+		t.Fatalf("n = %d, want 2", got)
 	}
 }
 
-func TestImagesEditsJSONRoutesOpenAICompatImageModelBeforeCodexImageValidation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	executor := &imageCaptureExecutor{}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
+func TestBuildXAIImagesEditRequest(t *testing.T) {
+	req := buildXAIImagesEditRequest("grok-imagine-image", "edit it", []string{"data:image/png;base64,AA==", "https://example.com/image.png"}, "b64_json", "3:2", "1k", 0)
 
-	auth := &coreauth.Auth{ID: "auth-openai-image-edit", Provider: executor.Identifier(), Status: coreauth.StatusActive}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register auth: %v", err)
+	if got := gjson.GetBytes(req, "model").String(); got != "grok-imagine-image" {
+		t.Fatalf("model = %q, want grok-imagine-image", got)
 	}
-	modelID := "image-alias-edit"
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID, Type: registry.OpenAIImageModelType}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-	})
+	if got := gjson.GetBytes(req, "images.0.type").String(); got != "image_url" {
+		t.Fatalf("images.0.type = %q, want image_url", got)
+	}
+	if got := gjson.GetBytes(req, "images.0.url").String(); got != "data:image/png;base64,AA==" {
+		t.Fatalf("images.0.url = %q", got)
+	}
+	if got := gjson.GetBytes(req, "images.1.url").String(); got != "https://example.com/image.png" {
+		t.Fatalf("images.1.url = %q", got)
+	}
+	if gjson.GetBytes(req, "image").Exists() {
+		t.Fatalf("multiple image edits must use images array: %s", string(req))
+	}
+}
 
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
-	handler := NewOpenAIAPIHandler(base)
-	body := strings.NewReader(`{"model":"image-alias-edit","prompt":"edit this","image":"raw-image-ref","stream":false}`)
+func TestBuildXAIImagesEditRequestSingleImage(t *testing.T) {
+	req := buildXAIImagesEditRequest("grok-imagine-image", "edit it", []string{"https://example.com/image.png"}, "url", "", "", 0)
 
-	resp := performImagesEndpointRequest(t, imagesEditsPath, "application/json", body, handler.ImagesEdits)
+	if got := gjson.GetBytes(req, "image.type").String(); got != "image_url" {
+		t.Fatalf("image.type = %q, want image_url", got)
+	}
+	if got := gjson.GetBytes(req, "image.url").String(); got != "https://example.com/image.png" {
+		t.Fatalf("image.url = %q", got)
+	}
+	if gjson.GetBytes(req, "images").Exists() {
+		t.Fatalf("single image edit must use image object: %s", string(req))
+	}
+}
 
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusOK, resp.Body.String())
+func TestBuildImagesAPIResponseFromXAI(t *testing.T) {
+	payload := []byte(`{"created":123,"data":[{"b64_json":"AA==","revised_prompt":"refined","mime_type":"image/png"}],"usage":{"total_tokens":0}}`)
+
+	out, err := buildImagesAPIResponseFromXAI(payload, "b64_json")
+	if err != nil {
+		t.Fatalf("buildImagesAPIResponseFromXAI() error = %v", err)
 	}
-	if executor.sourceFormat != openAIImagesHandlerType {
-		t.Fatalf("source format = %q, want %q", executor.sourceFormat, openAIImagesHandlerType)
+
+	if got := gjson.GetBytes(out, "created").Int(); got != 123 {
+		t.Fatalf("created = %d, want 123", got)
 	}
-	if executor.model != modelID {
-		t.Fatalf("model = %q, want %q", executor.model, modelID)
+	if got := gjson.GetBytes(out, "data.0.b64_json").String(); got != "AA==" {
+		t.Fatalf("data.0.b64_json = %q, want AA==", got)
 	}
-	if got := gjson.GetBytes(executor.payload, "image").String(); got != "raw-image-ref" {
-		t.Fatalf("image field = %q, want raw-image-ref; payload=%s", got, string(executor.payload))
+	if got := gjson.GetBytes(out, "data.0.revised_prompt").String(); got != "refined" {
+		t.Fatalf("data.0.revised_prompt = %q, want refined", got)
 	}
-	if gjson.GetBytes(executor.payload, "stream").Exists() {
-		t.Fatalf("expected non-streaming executor payload to remove stream flag: %s", string(executor.payload))
+	if !gjson.GetBytes(out, "usage").Exists() {
+		t.Fatalf("usage missing: %s", string(out))
 	}
 }
 

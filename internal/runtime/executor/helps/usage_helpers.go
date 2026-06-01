@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -54,7 +55,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 }
 
 func (r *UsageReporter) Publish(ctx context.Context, detail usage.Detail) {
-	r.publishWithOutcome(ctx, detail, false)
+	r.publishWithOutcome(ctx, detail, false, usage.Failure{})
 }
 
 func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string, detail usage.Detail) {
@@ -77,11 +78,11 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	if !hasNonZeroTokenUsage(detail) {
 		return usage.Record{}, false
 	}
-	return r.buildRecordForModel(model, detail, false), true
+	return r.buildRecordForModel(model, detail, false, usage.Failure{}), true
 }
 
-func (r *UsageReporter) PublishFailure(ctx context.Context, _ ...error) {
-	r.publishWithOutcome(ctx, usage.Detail{}, true)
+func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
+	r.publishWithOutcome(ctx, usage.Detail{}, true, failFromErrors(errs...))
 }
 
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
@@ -89,17 +90,17 @@ func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
 		return
 	}
 	if *errPtr != nil {
-		r.PublishFailure(ctx)
+		r.PublishFailure(ctx, *errPtr)
 	}
 }
 
-func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool) {
+func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool, fail usage.Failure) {
 	if r == nil {
 		return
 	}
 	detail = normalizeUsageDetailTotal(detail)
 	r.once.Do(func() {
-		r.publishRecord(ctx, r.buildRecord(detail, failed))
+		r.publishRecord(ctx, r.buildRecord(detail, failed, fail))
 	})
 }
 
@@ -132,7 +133,7 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 		return
 	}
 	r.once.Do(func() {
-		r.publishRecord(ctx, r.buildRecord(usage.Detail{}, false))
+		r.publishRecord(ctx, r.buildRecord(usage.Detail{}, false, usage.Failure{}))
 	})
 }
 
@@ -141,16 +142,20 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 	usage.PublishRecord(ctx, record)
 }
 
-func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool) usage.Record {
-	if r == nil {
-		return usage.Record{Detail: detail, Failed: failed}
+func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
+	var fail usage.Failure
+	if len(failures) > 0 {
+		fail = failures[0]
 	}
-	return r.buildRecordForModel(r.model, detail, failed)
+	if r == nil {
+		return usage.Record{Detail: detail, Failed: failed, Fail: fail}
+	}
+	return r.buildRecordForModel(r.model, detail, failed, fail)
 }
 
-func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, failed bool) usage.Record {
+func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, failed bool, fail usage.Failure) usage.Record {
 	if r == nil {
-		return usage.Record{Model: model, Detail: detail, Failed: failed}
+		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail}
 	}
 	return usage.Record{
 		Provider:        r.provider,
@@ -165,8 +170,26 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		RequestedAt:     r.requestedAt,
 		Latency:         r.latency(),
 		Failed:          failed,
+		Fail:            fail,
 		Detail:          detail,
 	}
+}
+
+func failFromErrors(errs ...error) usage.Failure {
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		fail := usage.Failure{
+			Body: strings.TrimSpace(err.Error()),
+		}
+		var se interface{ StatusCode() int }
+		if errors.As(err, &se) && se != nil {
+			fail.StatusCode = se.StatusCode()
+		}
+		return fail
+	}
+	return usage.Failure{}
 }
 
 func (r *UsageReporter) latency() time.Duration {
@@ -188,7 +211,7 @@ func APIKeyFromContext(ctx context.Context) string {
 	if !ok || ginCtx == nil {
 		return ""
 	}
-	if v, exists := ginCtx.Get("apiKey"); exists {
+	if v, exists := ginCtx.Get("userApiKey"); exists {
 		switch value := v.(type) {
 		case string:
 			return value

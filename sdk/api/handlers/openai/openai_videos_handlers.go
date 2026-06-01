@@ -38,20 +38,12 @@ type xaiVideoCreateMetadata struct {
 }
 
 func videosModelBase(model string) string {
-	_, baseModel := videosModelParts(model)
+	_, baseModel := imagesModelParts(model)
 	return strings.ToLower(strings.TrimSpace(baseModel))
 }
 
-func videosModelParts(model string) (prefix string, baseModel string) {
-	model = strings.TrimSpace(model)
-	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
-		return strings.TrimSpace(model[:idx]), strings.TrimSpace(model[idx+1:])
-	}
-	return "", model
-}
-
 func isXAIVideosModel(model string) bool {
-	prefix, baseModel := videosModelParts(model)
+	prefix, baseModel := imagesModelParts(model)
 	baseModel = strings.ToLower(strings.TrimSpace(baseModel))
 	if baseModel != defaultXAIVideosModel {
 		return false

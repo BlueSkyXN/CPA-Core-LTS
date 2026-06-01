@@ -16,7 +16,7 @@ import (
 func TestCodexExecutorCacheHelper_OpenAIChatCompletions_StablePromptCacheKeyFromAPIKey(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
-	ginCtx.Set("apiKey", "test-api-key")
+	ginCtx.Set("userApiKey", "test-api-key")
 
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
 	executor := &CodexExecutor{}

@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -51,6 +54,120 @@ func init() {
 	buildinfo.BuildDate = BuildDate
 }
 
+func parseHomeFlagConfig(rawAddr string, password string) (config.HomeConfig, error) {
+	rawAddr = strings.TrimSpace(rawAddr)
+	if rawAddr == "" {
+		return config.HomeConfig{}, fmt.Errorf("address is empty")
+	}
+
+	if strings.Contains(rawAddr, "://") {
+		return parseHomeURLConfig(rawAddr, password)
+	}
+
+	host, portStr, errSplit := net.SplitHostPort(rawAddr)
+	if errSplit != nil {
+		return config.HomeConfig{}, fmt.Errorf("expected host:port, redis://host:port, or rediss://host:port: %w", errSplit)
+	}
+
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return config.HomeConfig{}, fmt.Errorf("host is empty")
+	}
+
+	port, errPort := parseHomePort(portStr)
+	if errPort != nil {
+		return config.HomeConfig{}, errPort
+	}
+
+	return config.HomeConfig{
+		Enabled:  true,
+		Host:     host,
+		Port:     port,
+		Password: password,
+	}, nil
+}
+
+func parseHomeURLConfig(rawAddr string, password string) (config.HomeConfig, error) {
+	parsed, errParse := url.Parse(rawAddr)
+	if errParse != nil {
+		return config.HomeConfig{}, fmt.Errorf("parse URL: %w", errParse)
+	}
+
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if scheme != "redis" && scheme != "rediss" {
+		return config.HomeConfig{}, fmt.Errorf("unsupported URL scheme %q", parsed.Scheme)
+	}
+
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return config.HomeConfig{}, fmt.Errorf("host is empty")
+	}
+
+	port, errPort := parseHomePort(parsed.Port())
+	if errPort != nil {
+		return config.HomeConfig{}, errPort
+	}
+
+	if password == "" && parsed.User != nil {
+		if urlPassword, ok := parsed.User.Password(); ok {
+			password = urlPassword
+		}
+	}
+
+	homeCfg := config.HomeConfig{
+		Enabled:  true,
+		Host:     host,
+		Port:     port,
+		Password: password,
+	}
+	query := parsed.Query()
+	homeCfg.DisableClusterDiscovery = parseHomeBoolQuery(query, "disable-cluster-discovery", "disable_cluster_discovery")
+
+	if scheme == "rediss" {
+		homeCfg.TLS.Enable = true
+		homeCfg.TLS.ServerName = strings.TrimSpace(firstHomeQueryValue(query, "server-name", "server_name"))
+		homeCfg.TLS.InsecureSkipVerify = parseHomeBoolQuery(query, "insecure-skip-verify", "insecure_skip_verify", "skip_verify")
+		homeCfg.TLS.CACert = strings.TrimSpace(firstHomeQueryValue(query, "ca-cert", "ca_cert"))
+	}
+
+	return homeCfg, nil
+}
+
+func parseHomePort(rawPort string) (int, error) {
+	rawPort = strings.TrimSpace(rawPort)
+	if rawPort == "" {
+		return 0, fmt.Errorf("port is empty")
+	}
+
+	port, errPort := strconv.Atoi(rawPort)
+	if errPort != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %q", rawPort)
+	}
+
+	return port, nil
+}
+
+func firstHomeQueryValue(values url.Values, keys ...string) string {
+	for _, key := range keys {
+		if value := values.Get(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseHomeBoolQuery(values url.Values, keys ...string) bool {
+	for _, key := range keys {
+		value := strings.TrimSpace(values.Get(key))
+		if value == "" {
+			continue
+		}
+		parsed, errParse := strconv.ParseBool(value)
+		return errParse == nil && parsed
+	}
+	return false
+}
+
 // main is the entry point of the application.
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
@@ -72,6 +189,9 @@ func main() {
 	var vertexImportPrefix string
 	var configPath string
 	var password string
+	var homeAddr string
+	var homePassword string
+	var homeDisableClusterDiscovery bool
 	var tuiMode bool
 	var standalone bool
 	var localModel bool
@@ -91,6 +211,9 @@ func main() {
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
 	flag.StringVar(&password, "password", "", "")
+	flag.StringVar(&homeAddr, "home", "", "Home control plane address in host:port, redis://host:port, or rediss://host:port format (loads config from home and skips local config file)")
+	flag.StringVar(&homePassword, "home-password", "", "Home control plane password (Redis AUTH)")
+	flag.BoolVar(&homeDisableClusterDiscovery, "home-disable-cluster-discovery", false, "Disable Home CLUSTER NODES discovery and keep using the configured -home address")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalog only, skip remote model fetching")
@@ -129,6 +252,7 @@ func main() {
 	var err error
 	var cfg *config.Config
 	var isCloudDeploy bool
+	var configLoadedFromHome bool
 	var (
 		usePostgresStore     bool
 		pgStoreDSN           string
@@ -239,7 +363,54 @@ func main() {
 	// Determine and load the configuration file.
 	// Prefer the Postgres store when configured, otherwise fallback to git or local files.
 	var configFilePath string
-	if usePostgresStore {
+	if strings.TrimSpace(homeAddr) != "" {
+		configLoadedFromHome = true
+		trimmedHomePassword := strings.TrimSpace(homePassword)
+		homeCfg, errHomeCfg := parseHomeFlagConfig(homeAddr, trimmedHomePassword)
+		if errHomeCfg != nil {
+			log.Errorf("invalid -home address %q: %v", homeAddr, errHomeCfg)
+			return
+		}
+		if homeDisableClusterDiscovery {
+			homeCfg.DisableClusterDiscovery = true
+		}
+		homeClient := home.New(homeCfg)
+		defer homeClient.Close()
+
+		ctxHome, cancelHome := context.WithTimeout(context.Background(), 30*time.Second)
+		raw, errGetConfig := homeClient.GetConfig(ctxHome)
+		cancelHome()
+		if errGetConfig != nil {
+			log.Errorf("failed to fetch config from home: %v", errGetConfig)
+			return
+		}
+
+		parsed, errParseConfig := config.ParseConfigBytes(raw)
+		if errParseConfig != nil {
+			log.Errorf("failed to parse config payload from home: %v", errParseConfig)
+			return
+		}
+		if parsed == nil {
+			parsed = &config.Config{}
+		}
+		parsed.Home = homeCfg
+		parsed.Port = 8317 // Default to 8317 for home mode, can be overridden by home config
+		parsed.UsageStatisticsEnabled = true
+		cfg = parsed
+
+		// Keep a non-empty config path for downstream components (log paths, management assets, etc),
+		// but do not require the file to exist when loading config from home.
+		if strings.TrimSpace(configPath) != "" {
+			configFilePath = configPath
+		} else {
+			configFilePath = filepath.Join(wd, "config.yaml")
+		}
+
+		// Local stores are intentionally disabled when config is loaded from home.
+		usePostgresStore = false
+		useObjectStore = false
+		useGitStore = false
+	} else if usePostgresStore {
 		if pgStoreLocalPath == "" {
 			pgStoreLocalPath = wd
 		}
@@ -403,21 +574,25 @@ func main() {
 	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
 	if isCloudDeploy {
-		if info, errStat := os.Stat(configFilePath); errStat != nil {
-			// Don't mislead: API server will not start until configuration is provided.
-			log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
-			configFileExists = false
-		} else if info.IsDir() {
-			log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
-			configFileExists = false
-		} else if cfg.Port == 0 {
-			// LoadConfigOptional returns empty config when file is empty or invalid.
-			// Config file exists but is empty or invalid; treat as missing config
-			log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
-			configFileExists = false
+		if configLoadedFromHome && cfg != nil {
+			configFileExists = cfg.Port != 0
 		} else {
-			log.Info("Cloud deploy mode: Configuration file detected; starting service")
-			configFileExists = true
+			if info, errStat := os.Stat(configFilePath); errStat != nil {
+				// Don't mislead: API server will not start until configuration is provided.
+				log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
+				configFileExists = false
+			} else if info.IsDir() {
+				log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
+				configFileExists = false
+			} else if cfg.Port == 0 {
+				// LoadConfigOptional returns empty config when file is empty or invalid.
+				// Config file exists but is empty or invalid; treat as missing config
+				log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
+				configFileExists = false
+			} else {
+				log.Info("Cloud deploy mode: Configuration file detected; starting service")
+				configFileExists = true
+			}
 		}
 	}
 	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
@@ -502,8 +677,10 @@ func main() {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
 				misc.StartAntigravityVersionUpdater(context.Background())
-				if !localModel {
+				if !localModel && !cfg.Home.Enabled {
 					registry.StartModelsUpdater(context.Background())
+				} else if cfg.Home.Enabled {
+					log.Info("Home mode: remote model updates disabled")
 				}
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
@@ -578,8 +755,10 @@ func main() {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
-			if !localModel {
+			if !localModel && !cfg.Home.Enabled {
 				registry.StartModelsUpdater(context.Background())
+			} else if cfg.Home.Enabled {
+				log.Info("Home mode: remote model updates disabled")
 			}
 			cmd.StartService(cfg, configFilePath, password)
 		}

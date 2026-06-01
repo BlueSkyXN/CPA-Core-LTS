@@ -21,12 +21,12 @@ import (
 // from gin.Context to the request context for SecretSource lookup.
 type clientAPIKeyContextKey struct{}
 
-// clientAPIKeyMiddleware injects the authenticated client API key from gin.Context["apiKey"]
+// clientAPIKeyMiddleware injects the authenticated client API key from gin.Context["userApiKey"]
 // into the request context so that SecretSource can look it up for per-client upstream routing.
 func clientAPIKeyMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Extract the client API key from gin context (set by AuthMiddleware)
-		if apiKey, exists := c.Get("apiKey"); exists {
+		if apiKey, exists := c.Get("userApiKey"); exists {
 			if keyStr, ok := apiKey.(string); ok && keyStr != "" {
 				// Inject into request context for SecretSource.Get(ctx) to read
 				ctx := context.WithValue(c.Request.Context(), clientAPIKeyContextKey{}, keyStr)

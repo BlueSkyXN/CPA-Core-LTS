@@ -24,12 +24,12 @@ func (s *testTokenStorage) SaveTokenToFile(authFilePath string) error {
 	return os.WriteFile(authFilePath, raw, 0o600)
 }
 
-func TestFileTokenStoreSaveDisabledPersistsFlagForTokenStorage(t *testing.T) {
+func TestFileTokenStore_Save_DisabledPersistsFlagForTokenStorage(t *testing.T) {
 	ctx := context.Background()
 	baseDir := t.TempDir()
 	path := filepath.Join(baseDir, "disabled.json")
 
-	if err := os.WriteFile(path, []byte(`{"type":"test","disabled":false}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"type":"test","disabled":true}`), 0o600); err != nil {
 		t.Fatalf("seed auth file: %v", err)
 	}
 

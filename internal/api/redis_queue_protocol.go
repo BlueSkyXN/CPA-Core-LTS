@@ -52,6 +52,12 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 		return true
 	}
 
+	if s.cfg != nil && s.cfg.Home.Enabled {
+		_ = writeRedisError(writer, "ERR redis usage output disabled in home mode")
+		_ = writer.Flush()
+		return
+	}
+
 	for {
 		if !s.managementRoutesEnabled.Load() {
 			return
@@ -156,9 +162,9 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 				continue
 			}
 			messages, unsubscribe := redisqueue.SubscribeUsage()
-			if err := writeRedisPubSubSubscribe(writer, redisUsageChannel, 1); err != nil {
+			if errWrite := writeRedisPubSubSubscribe(writer, redisUsageChannel, 1); errWrite != nil {
 				unsubscribe()
-				log.Errorf("redis protocol subscribe response error: %v", err)
+				log.Errorf("redis protocol subscribe response error: %v", errWrite)
 				return
 			}
 			if !flush() {
@@ -236,12 +242,12 @@ func (s *Server) streamRedisUsageSubscription(reader *bufio.Reader, writer *bufi
 			if !ok {
 				return
 			}
-			if err := writeRedisPubSubMessage(writer, redisUsageChannel, msg); err != nil {
-				log.Errorf("redis protocol publish message error: %v", err)
+			if errWrite := writeRedisPubSubMessage(writer, redisUsageChannel, msg); errWrite != nil {
+				log.Errorf("redis protocol publish message error: %v", errWrite)
 				return
 			}
-			if err := writer.Flush(); err != nil {
-				log.Errorf("redis protocol flush error: %v", err)
+			if errFlush := writer.Flush(); errFlush != nil {
+				log.Errorf("redis protocol flush error: %v", errFlush)
 				return
 			}
 		case command, ok := <-commands:
@@ -249,8 +255,8 @@ func (s *Server) streamRedisUsageSubscription(reader *bufio.Reader, writer *bufi
 				return
 			}
 			keepOpen := handleRedisSubscriptionCommand(writer, command)
-			if err := writer.Flush(); err != nil {
-				log.Errorf("redis protocol flush error: %v", err)
+			if errFlush := writer.Flush(); errFlush != nil {
+				log.Errorf("redis protocol flush error: %v", errFlush)
 				return
 			}
 			if !keepOpen {

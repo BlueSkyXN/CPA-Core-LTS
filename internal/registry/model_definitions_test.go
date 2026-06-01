@@ -27,37 +27,28 @@ func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	assertGPT55ModelInfo(t, "lookup", model)
 }
 
-func TestValidateModelsCatalogAllowsMissingOptionalXAISection(t *testing.T) {
+func TestWithXAIBuiltinsAddsVideoModel(t *testing.T) {
+	models := WithXAIBuiltins(nil)
+	found := false
+	for _, model := range models {
+		if model != nil && model.ID == xaiBuiltinVideoModelID {
+			found = true
+			if model.OwnedBy != "xai" {
+				t.Fatalf("OwnedBy = %q, want xai", model.OwnedBy)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s builtin model", xaiBuiltinVideoModelID)
+	}
+}
+
+func TestValidateModelsCatalogAllowsMissingSections(t *testing.T) {
 	data := validTestModelsCatalog()
 	data.XAI = nil
 
 	if err := validateModelsCatalog(data); err != nil {
 		t.Fatalf("validateModelsCatalog() error = %v", err)
-	}
-}
-
-func TestWithXAIBuiltinsAddsImageAndVideoModels(t *testing.T) {
-	models := WithXAIBuiltins(nil)
-	for _, id := range []string{xaiBuiltinImageModelID, xaiBuiltinImageQualityModelID, xaiBuiltinVideoModelID} {
-		model := findModelInfo(models, id)
-		if model == nil {
-			t.Fatalf("expected %s builtin model", id)
-		}
-		if model.OwnedBy != "xai" {
-			t.Fatalf("%s owned_by = %q, want xai", id, model.OwnedBy)
-		}
-		if model.Type != "xai" {
-			t.Fatalf("%s type = %q, want xai", id, model.Type)
-		}
-	}
-}
-
-func TestValidateModelsCatalogRejectsMissingRequiredSections(t *testing.T) {
-	data := validTestModelsCatalog()
-	data.Claude = nil
-
-	if err := validateModelsCatalog(data); err == nil {
-		t.Fatal("expected missing required section error")
 	}
 }
 

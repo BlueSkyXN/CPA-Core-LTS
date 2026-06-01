@@ -37,6 +37,9 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
+	// Home config enables the Redis-based control plane integration.
+	Home HomeConfig `yaml:"home" json:"-"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
@@ -224,12 +227,6 @@ type RoutingConfig struct {
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
-	// ClaudeCodeSessionAffinity enables session-sticky routing for Claude Code clients.
-	// When enabled, requests with the same session ID (extracted from metadata.user_id)
-	// are routed to the same auth credential when available.
-	// Deprecated: Use SessionAffinity instead for universal session support.
-	ClaudeCodeSessionAffinity bool `yaml:"claude-code-session-affinity,omitempty" json:"claude-code-session-affinity,omitempty"`
-
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Session IDs are extracted from multiple sources:
 	// metadata.user_id (Claude Code session format), X-Session-ID, Session_id (Codex),
@@ -347,6 +344,18 @@ type PayloadModelRule struct {
 	Name string `yaml:"name" json:"name"`
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
+	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
+	Headers map[string]string `yaml:"headers" json:"headers"`
+	// FormProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
+	FormProtocol string `yaml:"form-protocol" json:"form-protocol"`
+	// Match requires payload JSON paths to equal the configured values.
+	Match []map[string]any `yaml:"match" json:"match"`
+	// NotMatch requires payload JSON paths to not equal the configured values.
+	NotMatch []map[string]any `yaml:"not-match" json:"not-match"`
+	// Exist requires payload JSON paths to exist and not be null.
+	Exist []string `yaml:"exist" json:"exist"`
+	// NotExist requires payload JSON paths to be missing or null.
+	NotExist []string `yaml:"not-exist" json:"not-exist"`
 }
 
 // CloakConfig configures request cloaking for non-Claude-Code clients.

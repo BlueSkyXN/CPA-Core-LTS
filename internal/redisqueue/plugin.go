@@ -81,6 +81,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if !failed {
 		failed = !resolveSuccess(ctx)
 	}
+	fail := resolveFail(ctx, record, failed)
 
 	detail := queuedRequestDetail{
 		RequestDetail: internalusage.RequestDetail{
@@ -94,6 +95,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 			Failed:          failed,
 		},
 		ResponseHeaders: usageResponseHeaders(record.ResponseHeaders),
+		Fail:            fail,
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
@@ -126,6 +128,29 @@ type queuedUsageDetail struct {
 type queuedRequestDetail struct {
 	internalusage.RequestDetail
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
+	Fail            failDetail  `json:"fail"`
+}
+
+type failDetail struct {
+	StatusCode int    `json:"status_code"`
+	Body       string `json:"body"`
+}
+
+func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
+	fail := failDetail{
+		StatusCode: record.Fail.StatusCode,
+		Body:       strings.TrimSpace(record.Fail.Body),
+	}
+	if !failed {
+		return failDetail{StatusCode: 200}
+	}
+	if fail.StatusCode <= 0 {
+		fail.StatusCode = internallogging.GetResponseStatus(ctx)
+	}
+	if fail.StatusCode <= 0 {
+		fail.StatusCode = 500
+	}
+	return fail
 }
 
 func resolveSuccess(ctx context.Context) bool {

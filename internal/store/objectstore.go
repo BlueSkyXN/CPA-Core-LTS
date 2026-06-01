@@ -184,15 +184,19 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 
 	switch {
 	case auth.Storage != nil:
-		metadata := ensureDisabledMetadata(auth)
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata["disabled"] = auth.Disabled
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
-			setter.SetMetadata(metadata)
+			setter.SetMetadata(auth.Metadata)
 		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
 	case auth.Metadata != nil:
-		raw, errMarshal := json.Marshal(ensureDisabledMetadata(auth))
+		auth.Metadata["disabled"] = auth.Disabled
+		raw, errMarshal := json.Marshal(auth.Metadata)
 		if errMarshal != nil {
 			return "", fmt.Errorf("object store: marshal metadata: %w", errMarshal)
 		}
@@ -600,7 +604,10 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 		NextRefreshAfter: time.Time{},
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-	applyDisabledMetadata(auth, metadata)
+	if disabled, ok := metadata["disabled"].(bool); ok && disabled {
+		auth.Disabled = true
+		auth.Status = cliproxyauth.StatusDisabled
+	}
 	return auth, nil
 }
 

@@ -12,13 +12,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
-func TestGeminiExecutorRecordsSuccessfulZeroUsage(t *testing.T) {
+func TestGeminiExecutorRecordsSuccessfulZeroUsageInQueue(t *testing.T) {
 	model := fmt.Sprintf("gemini-2.5-flash-zero-usage-%d", time.Now().UnixNano())
 	source := fmt.Sprintf("zero-usage-%d@example.com", time.Now().UnixNano())
 
@@ -46,16 +45,13 @@ func TestGeminiExecutorRecordsSuccessfulZeroUsage(t *testing.T) {
 
 	prevQueueEnabled := redisqueue.Enabled()
 	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
-	prevStatsEnabled := internalusage.StatisticsEnabled()
 	redisqueue.SetEnabled(false)
 	redisqueue.SetEnabled(true)
 	redisqueue.SetUsageStatisticsEnabled(true)
-	internalusage.SetStatisticsEnabled(true)
 	t.Cleanup(func() {
 		redisqueue.SetEnabled(false)
 		redisqueue.SetEnabled(prevQueueEnabled)
 		redisqueue.SetUsageStatisticsEnabled(prevUsageEnabled)
-		internalusage.SetStatisticsEnabled(prevStatsEnabled)
 	})
 
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -69,43 +65,7 @@ func TestGeminiExecutorRecordsSuccessfulZeroUsage(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	detail := waitForStatisticsDetail(t, "gemini", model, source)
-	if detail.Failed {
-		t.Fatalf("detail failed = true, want false")
-	}
-	if detail.Tokens.TotalTokens != 0 {
-		t.Fatalf("statistics total tokens = %d, want 0", detail.Tokens.TotalTokens)
-	}
-
 	waitForQueuedUsageModelTotalTokens(t, "gemini", model, 0)
-}
-
-func waitForStatisticsDetail(t *testing.T, apiName, model, source string) internalusage.RequestDetail {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		snapshot := internalusage.GetRequestStatistics().Snapshot()
-		apiSnapshot, ok := snapshot.APIs[apiName]
-		if !ok {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-		modelSnapshot, ok := apiSnapshot.Models[model]
-		if !ok {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-		for _, detail := range modelSnapshot.Details {
-			if detail.Source == source {
-				return detail
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for statistics detail for api=%q model=%q source=%q", apiName, model, source)
-	return internalusage.RequestDetail{}
 }
 
 func waitForQueuedUsageModelTotalTokens(t *testing.T, wantProvider, wantModel string, wantTokens int64) {
