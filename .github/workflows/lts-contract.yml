@@ -21,12 +21,12 @@ jobs:
 
       - name: Test usage and management contracts
         run: |
-          packages="$(go list ./internal/usage ./internal/api/handlers/management ./test 2>/dev/null | tr '\n' ' ')"
+          packages="$(go list ./internal/usage ./internal/api/handlers/management ./test 2>/dev/null)"
           if [ -z "$packages" ]; then
             echo "No usage/management contract packages found" >&2
             exit 1
           fi
-          go test $packages -run 'Usage|usage'
+          printf '%s\n' "$packages" | xargs go test -run 'Usage|usage'
 
       - name: Build server
         run: |
