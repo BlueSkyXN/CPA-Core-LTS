@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -16,7 +18,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
-func TestGeminiExecutorRecordsSuccessfulZeroUsageInStatistics(t *testing.T) {
+func TestGeminiExecutorRecordsSuccessfulZeroUsage(t *testing.T) {
 	model := fmt.Sprintf("gemini-2.5-flash-zero-usage-%d", time.Now().UnixNano())
 	source := fmt.Sprintf("zero-usage-%d@example.com", time.Now().UnixNano())
 
@@ -42,9 +44,17 @@ func TestGeminiExecutorRecordsSuccessfulZeroUsageInStatistics(t *testing.T) {
 		},
 	}
 
+	prevQueueEnabled := redisqueue.Enabled()
+	prevUsageEnabled := redisqueue.UsageStatisticsEnabled()
 	prevStatsEnabled := internalusage.StatisticsEnabled()
+	redisqueue.SetEnabled(false)
+	redisqueue.SetEnabled(true)
+	redisqueue.SetUsageStatisticsEnabled(true)
 	internalusage.SetStatisticsEnabled(true)
 	t.Cleanup(func() {
+		redisqueue.SetEnabled(false)
+		redisqueue.SetEnabled(prevQueueEnabled)
+		redisqueue.SetUsageStatisticsEnabled(prevUsageEnabled)
 		internalusage.SetStatisticsEnabled(prevStatsEnabled)
 	})
 
@@ -64,8 +74,10 @@ func TestGeminiExecutorRecordsSuccessfulZeroUsageInStatistics(t *testing.T) {
 		t.Fatalf("detail failed = true, want false")
 	}
 	if detail.Tokens.TotalTokens != 0 {
-		t.Fatalf("total tokens = %d, want 0", detail.Tokens.TotalTokens)
+		t.Fatalf("statistics total tokens = %d, want 0", detail.Tokens.TotalTokens)
 	}
+
+	waitForQueuedUsageModelTotalTokens(t, "gemini", model, 0)
 }
 
 func waitForStatisticsDetail(t *testing.T, apiName, model, source string) internalusage.RequestDetail {
@@ -94,4 +106,57 @@ func waitForStatisticsDetail(t *testing.T, apiName, model, source string) intern
 
 	t.Fatalf("timed out waiting for statistics detail for api=%q model=%q source=%q", apiName, model, source)
 	return internalusage.RequestDetail{}
+}
+
+func waitForQueuedUsageModelTotalTokens(t *testing.T, wantProvider, wantModel string, wantTokens int64) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		items := redisqueue.PopOldest(10)
+		for _, item := range items {
+			got, ok := parseQueuedUsagePayload(t, item)
+			if !ok {
+				continue
+			}
+			if got.Provider != wantProvider || got.Model != wantModel {
+				continue
+			}
+			if got.Failed {
+				t.Fatalf("payload failed = true, want false")
+			}
+			if got.Tokens.TotalTokens != wantTokens {
+				t.Fatalf("payload total tokens = %d, want %d", got.Tokens.TotalTokens, wantTokens)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for queued usage payload for provider=%q model=%q", wantProvider, wantModel)
+}
+
+type queuedUsagePayload struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Failed   bool   `json:"failed"`
+	Tokens   struct {
+		TotalTokens int64 `json:"total_tokens"`
+	} `json:"tokens"`
+}
+
+func parseQueuedUsagePayload(t *testing.T, payload []byte) (queuedUsagePayload, bool) {
+	t.Helper()
+
+	var parsed queuedUsagePayload
+	if len(payload) == 0 {
+		return parsed, false
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return parsed, false
+	}
+	if parsed.Provider == "" || parsed.Model == "" {
+		return parsed, false
+	}
+	return parsed, true
 }

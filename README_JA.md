@@ -37,22 +37,18 @@ OAuth経由でOpenAI Codex（GPTモデル）およびClaude Codeもサポート�
 
 ## スポンサー
 
-[![z.ai](https://assets.router-for.me/english-5-0.jpg)](https://z.ai/subscribe?ic=8JVLJQFSKB)
+[![https://www.packyapi.com/register?aff=cliproxyapi](./assets/packycode-en.png)](https://www.packyapi.com/register?aff=cliproxyapi)
 
-本プロジェクトはZ.aiにスポンサーされており、GLM CODING PLANの提供を受けています。
+PackyCodeのスポンサーシップに感謝します！
 
-GLM CODING PLANはAIコーディング向けに設計されたサブスクリプションサービスで、月額わずか$10から利用可能です。フラッグシップのGLM-4.7および（GLM-5はProユーザーのみ利用可能）モデルを10以上の人気AIコーディングツール（Claude Code、Cline、Roo Codeなど）で利用でき、開発者にトップクラスの高速かつ安定したコーディング体験を提供します。
+PackyCodeは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。
 
-GLM CODING PLANを10%割引で取得：https://z.ai/subscribe?ic=8JVLJQFSKB
+PackyCodeは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://www.packyapi.com/register?aff=cliproxyapi">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「cliproxyapi」を入力すると10%割引になります。
 
 ---
 
 <table>
 <tbody>
-<tr>
-<td width="180"><a href="https://www.packyapi.com/register?aff=cliproxyapi"><img src="./assets/packycode.png" alt="PackyCode" width="150"></a></td>
-<td>PackyCodeのスポンサーシップに感謝します！PackyCodeは信頼性が高く効率的なAPIリレーサービスプロバイダーで、Claude Code、Codex、Geminiなどのリレーサービスを提供しています。PackyCodeは当ソフトウェアのユーザーに特別割引を提供しています：<a href="https://www.packyapi.com/register?aff=cliproxyapi">こちらのリンク</a>から登録し、チャージ時にプロモーションコード「cliproxyapi」を入力すると10%割引になります。</td>
-</tr>
 <tr>
 <td width="180"><a href="https://www.aicodemirror.com/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
 <td>AICodeMirrorのスポンサーシップに感謝します！AICodeMirrorはClaude Code / Codex / Gemini CLI向けの公式高安定性リレーサービスを提供しており、エンタープライズグレードの同時接続、迅速な請求書発行、24時間365日の専任技術サポートを備えています。Claude Code / Codex / Geminiの公式チャネルが元の価格の38% / 2% / 9%で利用でき、チャージ時にはさらに割引があります！CLIProxyAPIユーザー向けの特別特典：<a href="https://www.aicodemirror.com/register?invitecode=TJNAIF">こちらのリンク</a>から登録すると、初回チャージが20%割引になり、エンタープライズのお客様は最大25%割引を受けられます！</td>
@@ -60,10 +56,6 @@ GLM CODING PLANを10%割引で取得：https://z.ai/subscribe?ic=8JVLJQFSKB
 <tr>
 <td width="180"><a href="https://shop.bmoplus.com/?utm_source=github"><img src="./assets/bmoplus.png" alt="BmoPlus" width="150"></a></td>
 <td>本プロジェクトにご支援いただいた BmoPlus に感謝いたします！BmoPlusは、AIサブスクリプションのヘビーユーザー向けに特化した信頼性の高いAIアカウントサービスプロバイダーであり、安定した ChatGPT Plus / ChatGPT Pro (完全保証) / Claude Pro / Super Grok / Gemini Pro の公式代行チャージおよび即納アカウントを提供しています。こちらの<a href="https://shop.bmoplus.com/?utm_source=github">BmoPlus AIアカウント専門店/代行チャージ</a>経由でご登録・ご注文いただいたユーザー様は、GPTを <b>公式サイト価格の約1割（90% OFF）</b> という驚異的な価格でご利用いただけます！</td>
-</tr>
-<tr>
-<td width="180"><a href="https://poixe.com/i/m8kvep"><img src="./assets/poixeai.png" alt="PoixeAI" width="150"></a></td>
-<td>Poixe AIのスポンサーシップに感謝します！Poixe AIは信頼できるAIモデルAPIサービスを提供しており、プラットフォームが提供するLLM APIを使って簡単にAI製品を構築できます。また、サプライヤーとしてプラットフォームに大規模モデルのリソースを提供し、収益を得ることも可能です。CLIProxyAPIの<a href="https://poixe.com/i/m8kvep">専用リンク</a>から登録すると、チャージ時に追加で$5が付与されます。</td>
 </tr>
 <tr>
 <td width="180"><a href="https://coder.visioncoder.cn"><img src="./assets/visioncoder.png" alt="VisionCoder" width="150"></a></td>
@@ -78,7 +70,7 @@ GLM CODING PLANを10%割引で取得：https://z.ai/subscribe?ic=8JVLJQFSKB
 - OAuthログインによるOpenAI Codexサポート（GPTモデル）
 - OAuthログインによるClaude Codeサポート
 - プロバイダールーティングによるAmp CLIおよびIDE拡張機能のサポート
-- ストリーミングおよび非ストリーミングレスポンス
+- ストリーミング、非ストリーミング、および対応環境でのWebSocketレスポンス
 - 関数呼び出し/ツールのサポート
 - マルチモーダル入力サポート（テキストと画像）
 - ラウンドロビン負荷分散による複数アカウント対応（Gemini、OpenAI、Claude）
@@ -98,6 +90,22 @@ CLIProxyAPIガイド：[https://help.router-for.me/](https://help.router-for.me/
 ## 管理API
 
 [MANAGEMENT_API.md](https://help.router-for.me/management/api)を参照
+
+## 使用量統計
+
+上流の CLIProxyAPI v6.10.0 以降では、組み込み使用量統計が core project から分離されました。CPA-Core-LTS は CPA-Panel-LTS 互換性のため、組み込みの `/v0/management/usage` 統計と export/import API を保持し、外部ダッシュボードが同じイベントを利用できるよう Redis 互換の使用量キューも保持します。
+
+### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
+
+CLIProxyAPI向けの独立した使用量永続化・可視化サービス。CLIProxyAPIデータを定期同期してSQLiteに保存し、集計APIと、使用量や各種統計を確認できる組み込みダッシュボードを提供します。
+
+### [CLIProxyAPI Usage Dashboard](https://github.com/zhanglunet/cliproxyapi-usage-dashboard)
+
+CLIProxyAPI向けのローカル優先の使用量・クォータダッシュボード。Redis互換の使用量キューからリクエストごとのToken使用量を収集してSQLiteに保存し、アカウント別・モデル別の日次および直近時間枠の使用量を可視化し、Codex 5h/7dクォータ残量をローカルWeb UIで表示します。
+
+### [CPA-Manager](https://github.com/seakee/CPA-Manager)
+
+リクエスト単位の監視とコスト推定を備えたCLIProxyAPI向けのフル管理センターです。CPA-Managerは、収集したリクエストをアカウント、モデル、チャネル、レイテンシ、ステータス、Token使用量ごとに追跡し、編集可能なモデル価格とLiteLLM価格のワンクリック同期でコストを推定します。SQLiteでイベントを永続化し、Codexアカウントプール向けに一括検査、クォータ判定、異常アカウント検出、クリーンアップ提案、ワンクリック実行を提供し、日常的なマルチアカウント運用に適しています。
 
 ## Amp CLIサポート
 
@@ -147,7 +155,7 @@ macOSネイティブのメニューバーアプリで、Claude CodeとChatGPTの
 
 ### [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator)
 
-CLIProxyAPI経由でGeminiサブスクリプションを使用してSRT字幕を翻訳するブラウザベースのツール。自動検証/エラー修正機能付き - APIキー不要
+CLIProxyAPI経由で既存のLLMサブスクリプション（Gemini、ChatGPT、Claude, etc.）を使用してSRT字幕を翻訳および検証する、クロスプラットフォームのデスクトップおよびWebアプリ - APIキー不要。
 
 ### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
 
@@ -205,13 +213,13 @@ CLIProxyAPIをネイティブGUIでラップしたクロスプラットフォー
 
 CLIProxyAPI向けのすぐに使えるクロスプラットフォームのクォータ確認ツール。アカウントごとの codex 5h/7d クォータ表示、プラン別ソート、ステータス色分け、複数アカウントの集計分析に対応。
 
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
-
-CLIProxyAPI向けの独立した使用量永続化・可視化サービス。CPAデータを定期同期してSQLiteに保存し、集計APIと、使用量や各種統計を確認できる組み込みダッシュボードを提供します。
-
 ### [CodexCliPlus](https://github.com/C4AL/CodexCliPlus)
 
 CLIProxyAPIを基盤にしたWindows向けのローカル優先Codex CLIデスクトップ管理プラットフォーム。ローカル設定、アカウント、実行状態の管理を簡素化し、ローカルユーザーにより包括的なCodex CLI体験を提供します。
+
+### [CLIProxy Pool Watch](https://github.com/murasame612/CLIProxyPoolWidget)
+
+CLIProxyAPIプール内のChatGPT/Codexアカウントクォータを監視するmacOSネイティブSwiftUIアプリ。Management APIを通じて、アカウントの可用性、Plus基準の容量、5時間/週次クォータバー、プラン重み、復元予測を表示します。
 
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。
@@ -229,6 +237,10 @@ CLIProxyAPIに触発されたNext.js実装。インストールと使用が簡�
 コーディングを止めない。無料および低コストのAIモデルへのスマートルーティングと自動フォールバック。
 
 OmniRouteはマルチプロバイダーLLM向けのAIゲートウェイです：スマートルーティング、負荷分散、リトライ、フォールバックを備えたOpenAI互換エンドポイント。ポリシー、レート制限、キャッシュ、可観測性を追加して、信頼性が高くコストを意識した推論を実現します。
+
+### [Playful Proxy API Panel (PPAP)](https://github.com/daishuge/playful-proxy-api-panel)
+
+上流に近い使い方を維持する公開CLIProxyAPI互換フォーク兼管理パネルです。内蔵の使用量統計を復元し、キャッシュヒット率、初回バイト待ち時間、TPSの記録、Docker向けのセルフホスト手順を追加しています。
 
 > [!NOTE]
 > CLIProxyAPIの移植版またはそれに触発されたプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。

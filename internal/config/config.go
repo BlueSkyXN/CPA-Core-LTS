@@ -66,8 +66,8 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
-	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
-	// in memory for the Redis RESP interface.
+	// RedisUsageQueueRetentionSeconds controls how long (in seconds) usage queue items
+	// are retained in memory for the Redis RESP interface (LPOP/RPOP).
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
