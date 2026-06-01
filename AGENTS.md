@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`CPA-Core-LTS` 是 `router-for-me/CLIProxyAPI` 的长期维护分支，目标是在选择性吸收上游有价值改动时，稳定保留 `v6.9.49` 基线已有的完整 usage statistics 能力，并继续服务 `CPA-Panel-LTS`。
+`CPA-Core-LTS` 是 `router-for-me/CLIProxyAPI` 的长期维护分支，目标是跟踪 CLIProxyAPI latest，同时稳定保留 `v6.9.49` 基线已有的完整 usage statistics 能力、`CPA-Panel-LTS` 兼容性，以及本仓库 downstream 专属修改。
 
 本仓库不是普通同步 fork。任何维护动作都必须先判断是否影响 LTS 统计契约、Management API、auth/config 兼容性和配套面板。
 
@@ -13,7 +13,7 @@
 - 修改带有本地 `AGENTS.md` 的目录前，先运行 `cat <path>/AGENTS.md` 读取对应卡片。
 - 如果目标路径上有多层 `AGENTS.md`，按从浅到深的顺序读取，冲突时更深层规则优先。
 - 如果用户只问问题或做只读审计，不需要为了读取本地卡片而修改文件。
-- 本仓库存在 `.github/workflows/agents-md-guard.yml`，会关闭修改 `AGENTS.md` 的 PR；除非用户明确要求维护 agent 指令，不要把 AGENTS 改动混入产品代码 PR。
+- 本仓库存在 `.github/workflows/agents-md-guard.yml`，会限制修改 `AGENTS.md` 的 PR；外部 PR 触碰 `AGENTS.md` 会被关闭，OWNER 可直接放行，MEMBER/COLLABORATOR 需要 `allow-agents-md-update` label。除非用户明确要求维护 agent 指令，不要把 AGENTS 改动混入产品代码 PR。
 
 ## LTS contract
 
@@ -38,7 +38,7 @@ LTS 仓库信息：
 - API key、auth file、model、token、latency、success/failure 等统计字段的兼容性
 - 与 `CPA-Panel-LTS` 的 `/usage` 页面、provider status bar、request events table 兼容
 
-禁止把上游后续“只保留 recent requests / api-key usage，移除完整 usage statistics”的方向直接合入。跟进上游时先读 diff，再选择 cherry-pick、手工移植或放弃；如果上游改动会破坏统计，优先保留 LTS 统计实现，再单独吸收其他无冲突部分。
+正常维护模式是 manual / AI-operated protected full-sync。普通 upstream 改动默认吸收；如果 upstream 改动会破坏完整 usage statistics、`CPA-Panel-LTS` 兼容性或 downstream customizations，必须保留或重放 LTS delta 后再合入。禁止让 upstream 的 recent requests / api-key usage 简化方向移除或降级本仓库内置完整统计。
 
 `CPA-Core-LTS` 和 `CPA-Panel-LTS` 作为一组 LTS 分发维护：
 
@@ -47,6 +47,31 @@ LTS 仓库信息：
 - Core 默认应从 `BlueSkyXN/CPA-Panel-LTS` latest release 下载 `management.html`。
 - Core 改动统计数据结构时，必须同步检查 Panel 是否仍能展示。
 - Panel 改动统计页面时，必须确认 Core 仍提供对应接口。
+
+## Protected full-sync workflow
+
+本仓库使用人工 / AI 操作的 protected full-sync，不安排自动同步任务。`upstream/main` 只是只读同步坐标，不是长期产品分支。
+
+同步流程：
+
+1. 从最新 `origin/main` 创建隔离 worktree / 分支，例如 `codex/sync-upstream-stage-N`。
+2. 运行 `git fetch origin --prune` 和 `git fetch upstream --prune`。
+3. 对大范围同步优先按 upstream first-parent SHA 分段；不要按文件分段，也不要把普通维护拆成逐个 upstream PR cherry-pick。
+4. 使用 `git merge --no-ff --log <UPSTREAM_STAGE_SHA>` 合入该段 upstream 历史。
+5. provider、model、translator、runtime、security、crash、stream 等普通 upstream 修复默认吸收。
+6. 冲突触碰 protected deltas 时，保留或重放 CPA-Core-LTS 行为，再适配 upstream 改动。
+7. sync PR body 必须写明 upstream from/to SHA、stage 编号、冲突文件列表、protected delta 处理、contract/build/test 状态，以及覆盖了哪些旧 upstream-port PR。
+8. sync PR 合入 `main` 必须使用 Create a merge commit；禁止 squash 或 rebase sync PR。
+
+Protected full-sync 的硬门禁：
+
+- Go module path 仍保持 `github.com/router-for-me/CLIProxyAPI/v6`，除非用户明确批准 breaking module-path 策略。
+- `internal/usage/`、`usage-statistics-enabled`、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import` 必须保留。
+- usage record schema 必须保留 API key、auth file、model、token、latency、success/failure 等统计字段兼容性。
+- Management usage response shape 必须保持 `CPA-Panel-LTS` 兼容。
+- config schema 接收 upstream 新项时，必须保留旧配置读取和热重载兼容。
+- panel release source 保持 `BlueSkyXN/CPA-Panel-LTS`，除非用户明确要求改变并同步验证 Panel 兼容性。
+- 如果 upstream 删除内置 usage seam 或转向外置 usage service，可以适配新架构，但不能降级本仓库内置完整统计。
 
 ## Directory map
 
@@ -133,11 +158,14 @@ Workflow-specific note: `.github/workflows/pr-test-build.yml` refreshes `interna
 - Config 兼容性按用户数据迁移看待。新增 key 要考虑 `config.example.yaml`、default、YAML/JSON tag、sanitize、hot reload、Management API 和旧配置读取。
 - Auth file 和 API key 结构影响 watcher、management UI、TUI、SDK auth conductor 和 usage attribution；不要只改一个入口。
 - Public SDK 类型和方法是外部契约；改 `sdk/` 前检查 docs、examples、tests，并避免无必要的 breaking change。
-- 上游同步只接受经过 diff 审核的 selective port。任何触碰 `internal/usage/`、Management usage endpoints、config schema、auth/API key usage 结构的上游改动必须单独审查。
+- 上游同步默认走经过审核的 protected full-sync merge PR。任何触碰 `internal/usage/`、Management usage endpoints、config schema、auth/API key usage 结构或 `CPA-Panel-LTS` response shape 的冲突，必须按 protected delta 审查并保留 LTS 契约。
 
 ## Do not
 
 - 不要使用 GitHub `Sync fork` 盲同步上游。
+- 不要在 `main` 上直接 `git pull upstream main`。
+- 不要用 `git checkout upstream/main -- .` 或文件级覆盖作为同步方式。
+- 不要 squash 或 rebase upstream sync PR。
 - 不要移除或降级 `internal/usage/`、`usage-statistics-enabled`、`/v0/management/usage*`。
 - 不要把 Core 默认面板源改回上游或其他仓库，除非用户明确要求并同步检查 Panel 兼容性。
 - 不要提交真实 `auths/` 内容、`.env`、`config.yaml`、token、secret、management key 或本地日志。
