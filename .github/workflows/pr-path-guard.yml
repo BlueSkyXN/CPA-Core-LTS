@@ -6,6 +6,8 @@ on:
       - opened
       - synchronize
       - reopened
+      - labeled
+      - unlabeled
 
 jobs:
   ensure-no-translator-changes:
@@ -20,9 +22,33 @@ jobs:
         with:
           files: |
             internal/translator/**
+      - name: Determine translator override
+        id: translator-override
+        env:
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          trusted=false
+          case "${AUTHOR_ASSOCIATION}" in
+            OWNER|MEMBER|COLLABORATOR)
+              trusted=true
+              ;;
+          esac
+
+          allowed=false
+          if [[ "${trusted}" == "true" && "${HEAD_REPO}" == "${REPOSITORY}" && "${HEAD_REF}" == codex/sync-upstream-* ]]; then
+            allowed=true
+          elif [[ "${trusted}" == "true" && "${LABELS}" == *'"allow-translator-changes"'* ]]; then
+            allowed=true
+          fi
+
+          echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
       - name: Fail when restricted paths change
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: steps.changed-files.outputs.any_changed == 'true' && steps.translator-override.outputs.allowed != 'true'
         run: |
           echo "Changes under internal/translator are not allowed in pull requests."
-          echo "You need to create an issue for our maintenance team to make the necessary changes."
+          echo "Use a trusted protected sync branch or the allow-translator-changes label when this is an approved maintenance change."
           exit 1
