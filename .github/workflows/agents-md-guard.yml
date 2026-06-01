@@ -6,6 +6,8 @@ on:
       - opened
       - synchronize
       - reopened
+      - labeled
+      - unlabeled
 
 permissions:
   contents: read
@@ -13,15 +15,17 @@ permissions:
   pull-requests: write
 
 jobs:
-  close-when-agents-md-changed:
+  guard-agents-md-changes:
     runs-on: ubuntu-latest
     steps:
-      - name: Detect AGENTS.md changes and close PR
+      - name: Guard AGENTS.md changes
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = context.payload.pull_request.number;
+            const pr = context.payload.pull_request;
+            const prNumber = pr.number;
             const { owner, repo } = context.repo;
+            const allowLabel = "allow-agents-md-update";
 
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner,
@@ -43,6 +47,12 @@ jobs:
               return;
             }
 
+            const labels = Array.isArray(pr.labels) ? pr.labels.map((label) => label.name) : [];
+            const hasAllowLabel = labels.includes(allowLabel);
+            const association = pr.author_association || "NONE";
+            const isOwner = association === "OWNER";
+            const isMaintainer = isOwner || association === "MEMBER" || association === "COLLABORATOR";
+
             const changedList = touched
               .map((f) =>
                 f.previous_filename && f.previous_filename !== f.filename
@@ -51,8 +61,48 @@ jobs:
               )
               .join("\n");
 
+            if (isOwner) {
+              core.info("AGENTS.md change allowed for OWNER.");
+              return;
+            }
+
+            if (isMaintainer && hasAllowLabel) {
+              core.info(`AGENTS.md change allowed for ${association} with ${allowLabel} label.`);
+              return;
+            }
+
+            if (isMaintainer) {
+              const body = [
+                "`AGENTS.md` changes require explicit maintainer approval.",
+                "",
+                `Author association: \`${association}\``,
+                `Required label: \`${allowLabel}\``,
+                "",
+                "Detected changes:",
+                changedList,
+                "",
+                "Add the required label to rerun this guard and allow the PR to proceed.",
+              ].join("\n");
+
+              try {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body,
+                });
+              } catch (error) {
+                core.warning(`Failed to comment on PR #${prNumber}: ${error.message}`);
+              }
+
+              core.setFailed(`PR modifies AGENTS.md without ${allowLabel} label`);
+              return;
+            }
+
             const body = [
-              "This repository does not allow modifying `AGENTS.md` in pull requests.",
+              "This repository does not allow external pull requests to modify `AGENTS.md`.",
+              "",
+              `Author association: \`${association}\``,
               "",
               "Detected changes:",
               changedList,
@@ -78,4 +128,4 @@ jobs:
               state: "closed",
             });
 
-            core.setFailed("PR modifies AGENTS.md");
+            core.setFailed("External PR modifies AGENTS.md");
