@@ -340,8 +340,8 @@ func hasThinkingConfig(config ThinkingConfig) bool {
 }
 
 // ExtractReasoningEffort returns the request's thinking setting as a canonical
-// reasoning_effort label for usage logging. Model suffixes follow the same
-// priority as ApplyThinking, so a valid suffix overrides body fields.
+// reasoning_effort label for usage logging. Model suffixes have the same
+// priority as ApplyThinking: a valid suffix overrides body fields.
 func ExtractReasoningEffort(body []byte, provider, model string) string {
 	if effort := reasoningEffortFromSuffix(ParseSuffix(model)); effort != "" {
 		return effort
@@ -351,8 +351,27 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 	config := extractThinkingConfig(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
+		case "openai-response":
+			config = extractCodexConfig(body)
+		case "openai":
+			config = extractCodexConfig(body)
+		}
+	}
+	return reasoningEffortFromConfig(config)
+}
+
+// ExtractTranslatedReasoningEffort returns the final provider payload's thinking
+// setting as a canonical reasoning_effort label for usage logging.
+func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	config := extractThinkingConfig(body, provider)
+	if !hasThinkingConfig(config) {
+		switch provider {
 		case "openai", "openai-response":
 			config = extractCodexConfig(body)
+			if !hasThinkingConfig(config) {
+				config = extractOpenAIConfig(body)
+			}
 		}
 	}
 	return reasoningEffortFromConfig(config)

@@ -135,8 +135,8 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
-	body = capGeminiMaxOutputTokens(body, baseModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = capGeminiMaxOutputTokens(body, baseModel)
 
 	action := "generateContent"
 	if req.Metadata != nil {
@@ -151,6 +151,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
+	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -182,6 +183,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	})
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -245,6 +247,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = capGeminiMaxOutputTokens(body, baseModel)
 
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, "streamGenerateContent")
@@ -255,6 +258,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
+	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -286,6 +290,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	})
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -529,23 +534,24 @@ func applyGeminiHeaders(req *http.Request, auth *cliproxyauth.Auth) {
 	util.ApplyCustomHeadersFromAttrs(req, attrs)
 }
 
-func capGeminiMaxOutputTokens(rawJSON []byte, modelName string) []byte {
-	maxOut := gjson.GetBytes(rawJSON, "generationConfig.maxOutputTokens")
+func capGeminiMaxOutputTokens(body []byte, modelName string) []byte {
+	maxOut := gjson.GetBytes(body, "generationConfig.maxOutputTokens")
 	if !maxOut.Exists() || maxOut.Type != gjson.Number {
-		return rawJSON
+		return body
 	}
 	modelInfo := registry.LookupModelInfo(modelName, "gemini")
-	if modelInfo == nil || modelInfo.OutputTokenLimit <= 0 {
-		return rawJSON
+	if modelInfo == nil {
+		return body
 	}
-	if maxOut.Int() <= int64(modelInfo.OutputTokenLimit) {
-		return rawJSON
+	limit := modelInfo.OutputTokenLimit
+	if limit <= 0 {
+		limit = modelInfo.MaxCompletionTokens
 	}
-	out, err := sjson.SetBytes(rawJSON, "generationConfig.maxOutputTokens", modelInfo.OutputTokenLimit)
-	if err != nil {
-		return rawJSON
+	if limit <= 0 || maxOut.Int() <= int64(limit) {
+		return body
 	}
-	return out
+	body, _ = sjson.SetBytes(body, "generationConfig.maxOutputTokens", limit)
+	return body
 }
 
 func fixGeminiImageAspectRatio(modelName string, rawJSON []byte) []byte {

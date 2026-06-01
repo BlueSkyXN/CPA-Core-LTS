@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -21,7 +21,7 @@ func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) str
 			if name == "" && alias == "" {
 				continue
 			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|image=" + strconv.FormatBool(model.Image))
+			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + fmt.Sprintf("image=%t", model.Image))
 		}
 	})
 	return hashJoined(keys)

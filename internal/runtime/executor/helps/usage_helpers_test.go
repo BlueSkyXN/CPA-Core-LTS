@@ -2,6 +2,9 @@ package helps
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,26 +89,37 @@ func TestParseOpenAIStreamUsageResponsesFields(t *testing.T) {
 	}
 }
 
-func TestParseClaudeUsageTracksDetailedCacheTokens(t *testing.T) {
-	data := []byte(`{"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}`)
+func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_read_input_tokens":7,"cache_creation_input_tokens":19514}}`)
 	detail := ParseClaudeUsage(data)
-	if detail.InputTokens != 10 {
-		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 10)
+	if detail.InputTokens != 3085 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 3085)
 	}
-	if detail.OutputTokens != 20 {
-		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 20)
-	}
-	if detail.CachedTokens != 7 {
-		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7)
+	if detail.OutputTokens != 253 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 253)
 	}
 	if detail.CacheReadTokens != 7 {
 		t.Fatalf("cache read tokens = %d, want %d", detail.CacheReadTokens, 7)
 	}
-	if detail.CacheCreationTokens != 3 {
-		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 3)
+	if detail.CacheCreationTokens != 19514 {
+		t.Fatalf("cache creation tokens = %d, want %d", detail.CacheCreationTokens, 19514)
 	}
-	if detail.TotalTokens != 30 {
-		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 30)
+	if detail.CachedTokens != 7 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7)
+	}
+	if detail.TotalTokens != 22859 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22859)
+	}
+}
+
+func TestParseClaudeUsageFallsBackCachedTokensToCacheCreation(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_creation_input_tokens":19514}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CachedTokens != 19514 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 19514)
+	}
+	if detail.TotalTokens != 22852 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22852)
 	}
 }
 
@@ -169,9 +183,43 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 }
 
-func TestUsageReporterBuildRecordIncludesUsageMetadata(t *testing.T) {
+func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
+	delay := 40 * time.Millisecond
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	client := reporter.TrackHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			time.Sleep(delay)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Request:    req,
+			}, nil
+		}),
+	})
+
+	req, errNewRequest := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid/v1/chat/completions", strings.NewReader("{}"))
+	if errNewRequest != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", errNewRequest)
+	}
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		t.Fatalf("Do() error = %v", errDo)
+	}
+	if _, errRead := io.ReadAll(resp.Body); errRead != nil {
+		t.Fatalf("ReadAll() error = %v", errRead)
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		t.Fatalf("response body close error = %v", errClose)
+	}
+	if got := reporter.ttftDuration(); got < delay {
+		t.Fatalf("ttft = %v, want >= %v", got, delay)
+	}
+}
+
+func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	ctx := usage.WithRequestedModelAlias(context.Background(), "client-gpt")
-	ctx = usage.WithReasoningEffort(ctx, "medium")
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
 
 	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
@@ -181,8 +229,48 @@ func TestUsageReporterBuildRecordIncludesUsageMetadata(t *testing.T) {
 	if record.Alias != "client-gpt" {
 		t.Fatalf("alias = %q, want %q", record.Alias, "client-gpt")
 	}
+}
+
+func TestUsageReporterBuildRecordIncludesReasoningEffort(t *testing.T) {
+	ctx := usage.WithReasoningEffort(context.Background(), "medium")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
 	if record.ReasoningEffort != "medium" {
 		t.Fatalf("reasoning effort = %q, want %q", record.ReasoningEffort, "medium")
+	}
+}
+
+func TestUsageReporterBuildRecordIncludesServiceTier(t *testing.T) {
+	ctx := usage.WithServiceTier(context.Background(), "priority")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want %q", record.ServiceTier, "priority")
+	}
+}
+
+func TestUsageReporterSetTranslatedReasoningEffortUpdatesServiceTier(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+
+	reporter.SetTranslatedReasoningEffort([]byte(`{"service_tier":"priority"}`), "openai")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want %q", record.ServiceTier, "priority")
+	}
+}
+
+func TestUsageReporterSetTranslatedReasoningEffortDefaultsServiceTierWhenRemoved(t *testing.T) {
+	ctx := usage.WithServiceTier(context.Background(), "priority")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	reporter.SetTranslatedReasoningEffort([]byte(`{"model":"gpt-5.4"}`), "openai")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ServiceTier != usage.DefaultServiceTier {
+		t.Fatalf("service tier = %q, want %q", record.ServiceTier, usage.DefaultServiceTier)
 	}
 }
 
@@ -202,7 +290,10 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
 	}
-	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CacheReadTokens: 2}); !ok {
-		t.Fatalf("expected non-zero cache read token usage to be recorded")
-	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

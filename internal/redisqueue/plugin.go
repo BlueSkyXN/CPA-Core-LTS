@@ -53,8 +53,12 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
 	}
+	serviceTier := strings.TrimSpace(record.ServiceTier)
+	if serviceTier == "" {
+		serviceTier = coreusage.ServiceTierFromContext(ctx)
+	}
 
-	tokens := internalusage.TokenStats{
+	tokens := tokenStats{
 		InputTokens:         record.Detail.InputTokens,
 		OutputTokens:        record.Detail.OutputTokens,
 		ReasoningTokens:     record.Detail.ReasoningTokens,
@@ -83,30 +87,29 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	fail := resolveFail(ctx, record, failed)
 
-	detail := queuedRequestDetail{
-		RequestDetail: internalusage.RequestDetail{
-			Timestamp:       timestamp,
-			LatencyMs:       record.Latency.Milliseconds(),
-			Source:          record.Source,
-			AuthIndex:       record.AuthIndex,
-			Alias:           aliasName,
-			ReasoningEffort: reasoningEffort,
-			Tokens:          tokens,
-			Failed:          failed,
-		},
-		ResponseHeaders: usageResponseHeaders(record.ResponseHeaders),
+	detail := requestDetail{
+		Timestamp:       timestamp,
+		LatencyMs:       record.Latency.Milliseconds(),
+		TTFTMs:          record.TTFT.Milliseconds(),
+		Source:          record.Source,
+		AuthIndex:       record.AuthIndex,
+		Tokens:          tokens,
+		Failed:          failed,
 		Fail:            fail,
+		ResponseHeaders: usageResponseHeaders(record.ResponseHeaders),
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
-		queuedRequestDetail: detail,
-		Provider:            provider,
-		Model:               modelName,
-		Alias:               aliasName,
-		Endpoint:            resolveEndpoint(ctx),
-		AuthType:            authType,
-		APIKey:              apiKey,
-		RequestID:           requestID,
+		requestDetail:   detail,
+		Provider:        provider,
+		Model:           modelName,
+		Alias:           aliasName,
+		Endpoint:        resolveEndpoint(ctx),
+		AuthType:        authType,
+		APIKey:          apiKey,
+		RequestID:       requestID,
+		ReasoningEffort: reasoningEffort,
+		ServiceTier:     serviceTier,
 	})
 	if err != nil {
 		return
@@ -115,20 +118,38 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 }
 
 type queuedUsageDetail struct {
-	queuedRequestDetail
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	Alias     string `json:"alias"`
-	Endpoint  string `json:"endpoint"`
-	AuthType  string `json:"auth_type"`
-	APIKey    string `json:"api_key"`
-	RequestID string `json:"request_id"`
+	requestDetail
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	Alias           string `json:"alias"`
+	Endpoint        string `json:"endpoint"`
+	AuthType        string `json:"auth_type"`
+	APIKey          string `json:"api_key"`
+	RequestID       string `json:"request_id"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	ServiceTier     string `json:"service_tier"`
 }
 
-type queuedRequestDetail struct {
-	internalusage.RequestDetail
-	ResponseHeaders http.Header `json:"response_headers,omitempty"`
+type requestDetail struct {
+	Timestamp       time.Time   `json:"timestamp"`
+	LatencyMs       int64       `json:"latency_ms"`
+	TTFTMs          int64       `json:"ttft_ms"`
+	Source          string      `json:"source"`
+	AuthIndex       string      `json:"auth_index"`
+	Tokens          tokenStats  `json:"tokens"`
+	Failed          bool        `json:"failed"`
 	Fail            failDetail  `json:"fail"`
+	ResponseHeaders http.Header `json:"response_headers,omitempty"`
+}
+
+type tokenStats struct {
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	ReasoningTokens     int64 `json:"reasoning_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+	TotalTokens         int64 `json:"total_tokens"`
 }
 
 type failDetail struct {
