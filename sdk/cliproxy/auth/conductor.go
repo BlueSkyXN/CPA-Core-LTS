@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/sjson"
 )
 
 // ProviderExecutor defines the contract required by Manager to execute provider calls.
@@ -869,7 +869,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
-	ctx = contextWithUsageMetadata(ctx, opts, routeModel)
+	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
 	for idx, execModel := range execModels {
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
@@ -1368,7 +1368,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		execCtx = contextWithUsageMetadata(execCtx, opts, routeModel)
+		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
 		models, pooled := m.preparedExecutionModels(auth, routeModel)
 		if len(models) == 0 {
@@ -1467,7 +1467,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		execCtx = contextWithUsageMetadata(execCtx, opts, routeModel)
+		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
 		models, pooled := m.preparedExecutionModels(auth, routeModel)
 		if len(models) == 0 {
@@ -1566,7 +1566,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		execCtx = contextWithUsageMetadata(execCtx, opts, routeModel)
 		models, pooled := m.preparedExecutionModels(auth, routeModel)
 		if len(models) == 0 {
 			continue
@@ -1583,7 +1582,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			lastErr = errPrepare
 			continue
 		}
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, req, opts, routeModel, models, pooled)
+		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
+		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -1599,6 +1599,18 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		return streamResult, nil
 	}
+}
+
+func sanitizeDownstreamWebsocketFallbackRequest(ctx context.Context, auth *Auth, req cliproxyexecutor.Request) cliproxyexecutor.Request {
+	if !cliproxyexecutor.DownstreamWebsocket(ctx) || authWebsocketsEnabled(auth) || len(req.Payload) == 0 {
+		return req
+	}
+	updated, errDelete := sjson.DeleteBytes(req.Payload, "generate")
+	if errDelete != nil {
+		return req
+	}
+	req.Payload = updated
+	return req
 }
 
 func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {
@@ -1674,14 +1686,6 @@ func hasRequestedModelMetadata(meta map[string]any) bool {
 	}
 }
 
-func contextWithUsageMetadata(ctx context.Context, opts cliproxyexecutor.Options, fallbackModel string) context.Context {
-	ctx = coreusage.WithRequestedModelAlias(ctx, requestedModelAliasFromOptions(opts, fallbackModel))
-	if effort := reasoningEffortFromOptions(opts); effort != "" {
-		ctx = coreusage.WithReasoningEffort(ctx, effort)
-	}
-	return ctx
-}
-
 type requestAuthPrepareLock struct {
 	mu sync.Mutex
 }
@@ -1738,27 +1742,50 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 	return updated, nil
 }
 
+func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {
+	alias := requestedModelAliasFromOptions(opts, fallback)
+	ctx = coreusage.WithRequestedModelAlias(ctx, alias)
+	effort := reasoningEffortFromOptions(opts)
+	if effort != "" {
+		ctx = coreusage.WithReasoningEffort(ctx, effort)
+	}
+	serviceTier := serviceTierFromOptions(opts)
+	if serviceTier != "" {
+		ctx = coreusage.WithServiceTier(ctx, serviceTier)
+	}
+	return ctx
+}
+
 func requestedModelAliasFromOptions(opts cliproxyexecutor.Options, fallback string) string {
 	fallback = strings.TrimSpace(fallback)
 	if len(opts.Metadata) == 0 {
 		return fallback
 	}
-	value := stringMetadataValue(opts.Metadata, cliproxyexecutor.RequestedModelMetadataKey)
-	if value == "" {
+	raw, ok := opts.Metadata[cliproxyexecutor.RequestedModelMetadataKey]
+	if !ok || raw == nil {
 		return fallback
 	}
-	return value
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return fallback
+		}
+		return strings.TrimSpace(value)
+	case []byte:
+		if len(value) == 0 {
+			return fallback
+		}
+		return strings.TrimSpace(string(value))
+	default:
+		return fallback
+	}
 }
 
 func reasoningEffortFromOptions(opts cliproxyexecutor.Options) string {
 	if len(opts.Metadata) == 0 {
 		return ""
 	}
-	return stringMetadataValue(opts.Metadata, cliproxyexecutor.ReasoningEffortMetadataKey)
-}
-
-func stringMetadataValue(meta map[string]any, key string) string {
-	raw, ok := meta[key]
+	raw, ok := opts.Metadata[cliproxyexecutor.ReasoningEffortMetadataKey]
 	if !ok || raw == nil {
 		return ""
 	}
@@ -1767,8 +1794,24 @@ func stringMetadataValue(meta map[string]any, key string) string {
 		return strings.TrimSpace(value)
 	case []byte:
 		return strings.TrimSpace(string(value))
-	case fmt.Stringer:
-		return strings.TrimSpace(value.String())
+	default:
+		return ""
+	}
+}
+
+func serviceTierFromOptions(opts cliproxyexecutor.Options) string {
+	if len(opts.Metadata) == 0 {
+		return ""
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.ServiceTierMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
 	default:
 		return ""
 	}
@@ -3755,7 +3798,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
 		}
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
-		creditsCtx = contextWithUsageMetadata(creditsCtx, creditsOpts, routeModel)
+		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
 			continue
@@ -3803,7 +3846,6 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
 		}
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
-		creditsCtx = contextWithUsageMetadata(creditsCtx, creditsOpts, routeModel)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
 			continue
@@ -3907,7 +3949,7 @@ func (m *Manager) queueRefreshReschedule(authID string) {
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
-	if a == nil || a.Disabled {
+	if a == nil {
 		return false
 	}
 	if hasUnauthorizedAuthFailure(a) {

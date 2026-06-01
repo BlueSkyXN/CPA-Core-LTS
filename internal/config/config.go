@@ -37,8 +37,8 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
-	// Home config enables the Redis-based control plane integration.
-	Home HomeConfig `yaml:"home" json:"-"`
+	// Home config is runtime-only and is populated from -home-jwt.
+	Home HomeConfig `yaml:"-" json:"-"`
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
@@ -69,8 +69,8 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
-	// RedisUsageQueueRetentionSeconds controls how long (in seconds) usage queue items
-	// are retained in memory for the Redis RESP interface (LPOP/RPOP).
+	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
+	// in memory for Management API consumers.
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
@@ -110,6 +110,9 @@ type Config struct {
 
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
+
+	// Codex configures provider-wide Codex request behavior.
+	Codex CodexConfig `yaml:"codex" json:"codex"`
 
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
@@ -170,6 +173,11 @@ type ClaudeHeaderDefaults struct {
 type CodexHeaderDefaults struct {
 	UserAgent    string `yaml:"user-agent" json:"user-agent"`
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+}
+
+// CodexConfig configures provider-wide Codex request behavior.
+type CodexConfig struct {
+	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -346,8 +354,8 @@ type PayloadModelRule struct {
 	Protocol string `yaml:"protocol" json:"protocol"`
 	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
 	Headers map[string]string `yaml:"headers" json:"headers"`
-	// FormProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
-	FormProtocol string `yaml:"form-protocol" json:"form-protocol"`
+	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
+	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
 	// Match requires payload JSON paths to equal the configured values.
 	Match []map[string]any `yaml:"match" json:"match"`
 	// NotMatch requires payload JSON paths to not equal the configured values.

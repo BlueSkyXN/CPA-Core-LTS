@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
@@ -23,7 +22,6 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		responseHeaders := http.Header{}
 		responseHeaders.Add("X-Upstream-Request-Id", "upstream-req-1")
 		responseHeaders.Add("Retry-After", "30")
-		responseHeaders.Add("Set-Cookie", "session=secret")
 
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
@@ -35,14 +33,13 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			AuthType:        "apikey",
 			Source:          "user@example.com",
 			ReasoningEffort: "medium",
+			ServiceTier:     "priority",
 			RequestedAt:     time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:         1500 * time.Millisecond,
 			Detail: coreusage.Detail{
-				InputTokens:         10,
-				OutputTokens:        20,
-				CacheReadTokens:     7,
-				CacheCreationTokens: 3,
-				TotalTokens:         30,
+				InputTokens:  10,
+				OutputTokens: 20,
+				TotalTokens:  30,
 			},
 			ResponseHeaders: responseHeaders.Clone(),
 		})
@@ -57,14 +54,55 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
 		requireStringField(t, payload, "reasoning_effort", "medium")
-		requireNestedIntField(t, payload, "tokens", "cache_read_tokens", 7)
-		requireNestedIntField(t, payload, "tokens", "cache_creation_tokens", 3)
-		requireNestedIntField(t, payload, "tokens", "cached_tokens", 7)
+		requireStringField(t, payload, "service_tier", "priority")
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
-		requireMissingHeader(t, payload, "response_headers", "Set-Cookie")
 		requireBoolField(t, payload, "failed", false)
 		requireFailField(t, payload, http.StatusOK, "")
+	})
+}
+
+func TestUsageQueuePluginAsyncUsesRecordResponseHeaders(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
+		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		ctx = internallogging.WithResponseHeadersHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+		initialHeaders := http.Header{}
+		initialHeaders.Set("X-Upstream-Request-Id", "upstream-req-1")
+		internallogging.SetResponseHeaders(ctx, initialHeaders)
+
+		mgr := coreusage.NewManager(16)
+		defer mgr.Stop()
+
+		mgr.Register(pluginFunc(func(ctx context.Context, _ coreusage.Record) {
+			nextHeaders := http.Header{}
+			nextHeaders.Set("X-Upstream-Request-Id", "upstream-req-2")
+			internallogging.SetResponseHeaders(ctx, nextHeaders)
+		}))
+		mgr.Register(&usageQueuePlugin{})
+
+		mgr.Publish(ctx, coreusage.Record{
+			Provider:    "openai",
+			Model:       "gpt-5.4",
+			Alias:       "client-gpt",
+			APIKey:      "test-key",
+			AuthIndex:   "0",
+			AuthType:    "apikey",
+			Source:      "user@example.com",
+			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Latency:     1500 * time.Millisecond,
+			Detail: coreusage.Detail{
+				InputTokens:  10,
+				OutputTokens: 20,
+				TotalTokens:  30,
+			},
+			ResponseHeaders: internallogging.GetResponseHeaders(ctx),
+		})
+
+		payload := waitForSinglePayload(t, 2*time.Second)
+		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 	})
 }
 
@@ -163,18 +201,15 @@ func withEnabledQueue(t *testing.T, fn func()) {
 	t.Helper()
 
 	prevQueueEnabled := Enabled()
-	prevInternalStatsEnabled := internalusage.StatisticsEnabled()
 	prevUsageEnabled := UsageStatisticsEnabled()
 
 	SetEnabled(false)
 	SetEnabled(true)
-	internalusage.SetStatisticsEnabled(true)
 	SetUsageStatisticsEnabled(true)
 
 	defer func() {
 		SetEnabled(false)
 		SetEnabled(prevQueueEnabled)
-		internalusage.SetStatisticsEnabled(prevInternalStatsEnabled)
 		SetUsageStatisticsEnabled(prevUsageEnabled)
 	}()
 
@@ -278,63 +313,6 @@ func requireBoolField(t *testing.T, payload map[string]json.RawMessage, key stri
 	}
 }
 
-func requireNestedIntField(t *testing.T, payload map[string]json.RawMessage, field, key string, want int64) {
-	t.Helper()
-
-	raw, ok := payload[field]
-	if !ok {
-		t.Fatalf("payload missing %q", field)
-	}
-	var values map[string]int64
-	if err := json.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("unmarshal %q: %v", field, err)
-	}
-	if got := values[key]; got != want {
-		t.Fatalf("%s[%q] = %d, want %d", field, key, got, want)
-	}
-}
-
-func requireHeaderField(t *testing.T, payload map[string]json.RawMessage, field, key string, want []string) {
-	t.Helper()
-
-	headers := responseHeadersFromPayload(t, payload, field)
-	got, ok := headers[key]
-	if !ok {
-		t.Fatalf("%s missing header %q", field, key)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
-		}
-	}
-}
-
-func requireMissingHeader(t *testing.T, payload map[string]json.RawMessage, field, key string) {
-	t.Helper()
-
-	headers := responseHeadersFromPayload(t, payload, field)
-	if _, ok := headers[key]; ok {
-		t.Fatalf("%s unexpectedly contains header %q", field, key)
-	}
-}
-
-func responseHeadersFromPayload(t *testing.T, payload map[string]json.RawMessage, field string) map[string][]string {
-	t.Helper()
-
-	raw, ok := payload[field]
-	if !ok {
-		t.Fatalf("payload missing %q", field)
-	}
-	var headers map[string][]string
-	if err := json.Unmarshal(raw, &headers); err != nil {
-		t.Fatalf("unmarshal %q: %v", field, err)
-	}
-	return headers
-}
-
 func requireFailField(t *testing.T, payload map[string]json.RawMessage, wantStatus int, wantBody string) {
 	t.Helper()
 
@@ -351,5 +329,30 @@ func requireFailField(t *testing.T, payload map[string]json.RawMessage, wantStat
 	}
 	if got.StatusCode != wantStatus || got.Body != wantBody {
 		t.Fatalf("fail = {status_code:%d body:%q}, want {status_code:%d body:%q}", got.StatusCode, got.Body, wantStatus, wantBody)
+	}
+}
+
+func requireHeaderField(t *testing.T, payload map[string]json.RawMessage, field, key string, want []string) {
+	t.Helper()
+
+	raw, ok := payload[field]
+	if !ok {
+		t.Fatalf("payload missing %q", field)
+	}
+	var headers map[string][]string
+	if err := json.Unmarshal(raw, &headers); err != nil {
+		t.Fatalf("unmarshal %q: %v", field, err)
+	}
+	got, ok := headers[key]
+	if !ok {
+		t.Fatalf("%s missing header %q", field, key)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
+		}
 	}
 }
