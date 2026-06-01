@@ -63,50 +63,65 @@ func TestQueueRetentionSecondsDefaultsAndClamps(t *testing.T) {
 	})
 }
 
-func TestSubscribeUsageBroadcastsAndRetainsQueue(t *testing.T) {
+func TestEnqueueBroadcastsToUsageSubscribersAndSkipsQueue(t *testing.T) {
 	withQueueState(t, func() {
-		messages, unsubscribe := SubscribeUsage()
-		defer unsubscribe()
+		first, unsubscribeFirst := SubscribeUsage()
+		defer unsubscribeFirst()
+		second, unsubscribeSecond := SubscribeUsage()
+		defer unsubscribeSecond()
 
-		payload := []byte("usage-event")
-		Enqueue(payload)
-		payload[0] = 'X'
+		Enqueue([]byte("usage-record"))
 
-		select {
-		case got, ok := <-messages:
-			if !ok {
-				t.Fatal("subscriber channel closed")
-			}
-			if string(got) != "usage-event" {
-				t.Fatalf("subscriber payload = %q, want usage-event", got)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("timeout waiting for subscriber payload")
+		requireUsageSubscriberPayload(t, first, "usage-record")
+		requireUsageSubscriberPayload(t, second, "usage-record")
+
+		if items := PopOldest(1); len(items) != 0 {
+			t.Fatalf("PopOldest() items = %q, want empty after subscriber broadcast", items)
 		}
 
+		unsubscribeFirst()
+		unsubscribeSecond()
+
+		Enqueue([]byte("queued-record"))
 		items := PopOldest(1)
-		if len(items) != 1 || string(items[0]) != "usage-event" {
-			t.Fatalf("queued payload = %q, want [usage-event]", items)
+		if len(items) != 1 || string(items[0]) != "queued-record" {
+			t.Fatalf("PopOldest() items = %q, want queued record after unsubscribe", items)
 		}
 	})
 }
 
-func TestSubscribeUsageClosesWhenQueueDisabled(t *testing.T) {
+func TestSetEnabledFalseClosesUsageSubscribers(t *testing.T) {
 	withQueueState(t, func() {
-		messages, unsubscribe := SubscribeUsage()
+		subscriber, unsubscribe := SubscribeUsage()
 		defer unsubscribe()
 
 		SetEnabled(false)
 
 		select {
-		case _, ok := <-messages:
+		case _, ok := <-subscriber:
 			if ok {
-				t.Fatal("subscriber channel remained open after queue disable")
+				t.Fatalf("subscriber channel remained open after SetEnabled(false)")
 			}
 		case <-time.After(time.Second):
-			t.Fatal("timeout waiting for subscriber close")
+			t.Fatalf("timeout waiting for subscriber close")
 		}
 	})
+}
+
+func requireUsageSubscriberPayload(t *testing.T, subscriber <-chan []byte, want string) {
+	t.Helper()
+
+	select {
+	case got, ok := <-subscriber:
+		if !ok {
+			t.Fatalf("subscriber closed before receiving %q", want)
+		}
+		if string(got) != want {
+			t.Fatalf("subscriber payload = %q, want %q", string(got), want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timeout waiting for subscriber payload %q", want)
+	}
 }
 
 func withQueueState(t *testing.T, fn func()) {

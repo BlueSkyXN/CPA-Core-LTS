@@ -63,7 +63,9 @@ func Enqueue(payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
-	global.publishToSubscribers(payload)
+	if global.publishToSubscribers(payload) {
+		return
+	}
 	global.enqueue(payload)
 }
 
@@ -112,9 +114,13 @@ func (q *queue) enqueue(payload []byte) {
 	q.maybeCompactLocked()
 }
 
-func (q *queue) publishToSubscribers(payload []byte) {
+func (q *queue) publishToSubscribers(payload []byte) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	if len(q.subscribers) == 0 {
+		return false
+	}
 
 	for id, subscriber := range q.subscribers {
 		cloned := append([]byte(nil), payload...)
@@ -125,6 +131,8 @@ func (q *queue) publishToSubscribers(payload []byte) {
 			close(subscriber)
 		}
 	}
+
+	return true
 }
 
 func (q *queue) subscribeUsage() (<-chan []byte, func()) {

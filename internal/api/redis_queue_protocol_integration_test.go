@@ -3,10 +3,13 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -303,6 +306,43 @@ func TestRedisProtocol_ManagementDisabled_RejectsConnection(t *testing.T) {
 	}
 }
 
+func TestRedisProtocol_HomeEnabled_DisablesConnection(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-password")
+	redisqueue.SetEnabled(false)
+	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+
+	server := newTestServer(t)
+	if !server.managementRoutesEnabled.Load() {
+		t.Fatalf("expected managementRoutesEnabled to be true")
+	}
+	if server.cfg == nil {
+		t.Fatalf("expected server cfg to be non-nil")
+	}
+	server.cfg.Home.Enabled = true
+	redisqueue.SetEnabled(true)
+
+	addr, stop := startRedisMuxListener(t, server)
+	t.Cleanup(stop)
+
+	conn, errDial := net.DialTimeout("tcp", addr, time.Second)
+	if errDial != nil {
+		t.Fatalf("failed to dial redis listener: %v", errDial)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	_ = writeTestRESPCommand(conn, "PING")
+
+	buf := make([]byte, 1)
+	_, errRead := conn.Read(buf)
+	if errRead == nil {
+		t.Fatalf("expected connection to be closed when home mode is enabled")
+	}
+	if ne, ok := errRead.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("expected connection to be closed when home mode is enabled, got timeout: %v", errRead)
+	}
+}
+
 func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 	const managementPassword = "test-management-password"
 
@@ -414,7 +454,7 @@ func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 	}
 }
 
-func TestRedisProtocol_SubscribeUsageBroadcastsAndRetainsQueue(t *testing.T) {
+func TestRedisProtocol_SubscribeUsageBroadcastsAndSkipsQueue(t *testing.T) {
 	const managementPassword = "test-management-password"
 
 	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
@@ -429,46 +469,67 @@ func TestRedisProtocol_SubscribeUsageBroadcastsAndRetainsQueue(t *testing.T) {
 	addr, stop := startRedisMuxListener(t, server)
 	t.Cleanup(stop)
 
-	subConn, errDialSub := net.DialTimeout("tcp", addr, time.Second)
-	if errDialSub != nil {
-		t.Fatalf("failed to dial subscriber redis listener: %v", errDialSub)
+	firstConn, errDialFirst := net.DialTimeout("tcp", addr, time.Second)
+	if errDialFirst != nil {
+		t.Fatalf("failed to dial first redis listener: %v", errDialFirst)
 	}
-	t.Cleanup(func() { _ = subConn.Close() })
-	subReader := bufio.NewReader(subConn)
-	_ = subConn.SetDeadline(time.Now().Add(5 * time.Second))
+	t.Cleanup(func() { _ = firstConn.Close() })
+	firstReader := bufio.NewReader(firstConn)
+	_ = firstConn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	if errWrite := writeTestRESPCommand(subConn, "SUBSCRIBE", "usage"); errWrite != nil {
-		t.Fatalf("failed to write unauthenticated SUBSCRIBE command: %v", errWrite)
+	if errWrite := writeTestRESPCommand(firstConn, "AUTH", managementPassword); errWrite != nil {
+		t.Fatalf("failed to write first AUTH command: %v", errWrite)
 	}
-	if msg, err := readTestRESPError(subReader); err != nil {
-		t.Fatalf("failed to read SUBSCRIBE NOAUTH error: %v", err)
-	} else if msg != "NOAUTH Authentication required." {
-		t.Fatalf("unexpected SUBSCRIBE NOAUTH error: %q", msg)
-	}
-
-	if errWrite := writeTestRESPCommand(subConn, "AUTH", managementPassword); errWrite != nil {
-		t.Fatalf("failed to write subscriber AUTH command: %v", errWrite)
-	}
-	if msg, err := readTestRESPSimpleString(subReader); err != nil {
-		t.Fatalf("failed to read subscriber AUTH response: %v", err)
+	if msg, err := readTestRESPSimpleString(firstReader); err != nil {
+		t.Fatalf("failed to read first AUTH response: %v", err)
 	} else if msg != "OK" {
-		t.Fatalf("unexpected subscriber AUTH response: %q", msg)
+		t.Fatalf("unexpected first AUTH response: %q", msg)
 	}
-	if errWrite := writeTestRESPCommand(subConn, "SUBSCRIBE", "usage"); errWrite != nil {
-		t.Fatalf("failed to write SUBSCRIBE command: %v", errWrite)
+	if errWrite := writeTestRESPCommand(firstConn, "SUBSCRIBE", "usage"); errWrite != nil {
+		t.Fatalf("failed to write first SUBSCRIBE command: %v", errWrite)
 	}
-	if channel, count, err := readTestRESPPubSubSubscribe(subReader); err != nil {
-		t.Fatalf("failed to read SUBSCRIBE response: %v", err)
+	if channel, count, err := readTestRESPPubSubSubscribe(firstReader); err != nil {
+		t.Fatalf("failed to read first SUBSCRIBE response: %v", err)
 	} else if channel != "usage" || count != 1 {
-		t.Fatalf("unexpected SUBSCRIBE response channel=%q count=%d", channel, count)
+		t.Fatalf("unexpected first SUBSCRIBE response channel=%q count=%d", channel, count)
+	}
+
+	secondConn, errDialSecond := net.DialTimeout("tcp", addr, time.Second)
+	if errDialSecond != nil {
+		t.Fatalf("failed to dial second redis listener: %v", errDialSecond)
+	}
+	t.Cleanup(func() { _ = secondConn.Close() })
+	secondReader := bufio.NewReader(secondConn)
+	_ = secondConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if errWrite := writeTestRESPCommand(secondConn, "AUTH", managementPassword); errWrite != nil {
+		t.Fatalf("failed to write second AUTH command: %v", errWrite)
+	}
+	if msg, err := readTestRESPSimpleString(secondReader); err != nil {
+		t.Fatalf("failed to read second AUTH response: %v", err)
+	} else if msg != "OK" {
+		t.Fatalf("unexpected second AUTH response: %q", msg)
+	}
+	if errWrite := writeTestRESPCommand(secondConn, "SUBSCRIBE", "usage"); errWrite != nil {
+		t.Fatalf("failed to write second SUBSCRIBE command: %v", errWrite)
+	}
+	if channel, count, err := readTestRESPPubSubSubscribe(secondReader); err != nil {
+		t.Fatalf("failed to read second SUBSCRIBE response: %v", err)
+	} else if channel != "usage" || count != 1 {
+		t.Fatalf("unexpected second SUBSCRIBE response channel=%q count=%d", channel, count)
 	}
 
 	redisqueue.Enqueue([]byte(`{"id":1}`))
 
-	if channel, payload, err := readTestRESPPubSubMessage(subReader); err != nil {
-		t.Fatalf("failed to read pubsub message: %v", err)
+	if channel, payload, err := readTestRESPPubSubMessage(firstReader); err != nil {
+		t.Fatalf("failed to read first pubsub message: %v", err)
 	} else if channel != "usage" || string(payload) != `{"id":1}` {
-		t.Fatalf("unexpected pubsub message channel=%q payload=%q", channel, string(payload))
+		t.Fatalf("unexpected first pubsub message channel=%q payload=%q", channel, string(payload))
+	}
+	if channel, payload, err := readTestRESPPubSubMessage(secondReader); err != nil {
+		t.Fatalf("failed to read second pubsub message: %v", err)
+	} else if channel != "usage" || string(payload) != `{"id":1}` {
+		t.Fatalf("unexpected second pubsub message channel=%q payload=%q", channel, string(payload))
 	}
 
 	popConn, errDialPop := net.DialTimeout("tcp", addr, time.Second)
@@ -494,8 +555,23 @@ func TestRedisProtocol_SubscribeUsageBroadcastsAndRetainsQueue(t *testing.T) {
 	if errItem != nil {
 		t.Fatalf("failed to read pop LPOP response: %v", errItem)
 	}
-	if string(item) != `{"id":1}` {
-		t.Fatalf("expected subscribed usage to remain queued, got %q", string(item))
+	if item != nil {
+		t.Fatalf("expected subscribed usage to skip queue, got %q", string(item))
+	}
+
+	managementReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=1", nil)
+	managementReq.Header.Set("Authorization", "Bearer "+managementPassword)
+	managementRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(managementRR, managementReq)
+	if managementRR.Code != http.StatusOK {
+		t.Fatalf("management usage status = %d, want %d body=%s", managementRR.Code, http.StatusOK, managementRR.Body.String())
+	}
+	var managementPayload []json.RawMessage
+	if errUnmarshal := json.Unmarshal(managementRR.Body.Bytes(), &managementPayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal management usage response: %v", errUnmarshal)
+	}
+	if len(managementPayload) != 0 {
+		t.Fatalf("expected management usage queue to be empty, got %s", managementRR.Body.String())
 	}
 }
 
