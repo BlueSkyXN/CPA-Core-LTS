@@ -149,16 +149,19 @@ func withEnabledQueue(t *testing.T, fn func()) {
 	t.Helper()
 
 	prevQueueEnabled := Enabled()
-	prevStatsEnabled := internalusage.StatisticsEnabled()
+	prevInternalStatsEnabled := internalusage.StatisticsEnabled()
+	prevUsageEnabled := UsageStatisticsEnabled()
 
 	SetEnabled(false)
 	SetEnabled(true)
 	internalusage.SetStatisticsEnabled(true)
+	SetUsageStatisticsEnabled(true)
 
 	defer func() {
 		SetEnabled(false)
 		SetEnabled(prevQueueEnabled)
-		internalusage.SetStatisticsEnabled(prevStatsEnabled)
+		internalusage.SetStatisticsEnabled(prevInternalStatsEnabled)
+		SetUsageStatisticsEnabled(prevUsageEnabled)
 	}()
 
 	fn()

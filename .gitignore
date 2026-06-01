@@ -52,4 +52,4 @@ _bmad-output/*
 .gocache/
 .playwright-mcp/
 /local
-server
+/server

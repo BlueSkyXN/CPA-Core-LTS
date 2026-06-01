@@ -164,6 +164,7 @@ func TestOpenAICompatExecutorImagesStreamUsesEditsEndpoint(t *testing.T) {
 		t.Fatalf("stream payload = %q", string(got))
 	}
 }
+
 func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +208,7 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 		t.Fatalf("reasoning_effort = %q, want %q; body=%s", got, "low", string(gotBody))
 	}
 }
+
 func TestOpenAICompatExecutorStreamRejectsPlainJSONAfterBlankLines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
