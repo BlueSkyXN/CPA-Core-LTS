@@ -24,7 +24,7 @@ LTS 仓库信息：
 - 基线版本：`v6.9.49`
 - 基线提交：`b8bba053fcdafd80abc2152c88c78f4e7713c05a`
 - 配套面板：`https://github.com/BlueSkyXN/CPA-Panel-LTS`
-- Go module path 仍是 `github.com/router-for-me/CLIProxyAPI/v6`；不要因为 LTS 仓库名而随意改 import path。
+- Go module path 当前跟随 upstream major path：`github.com/router-for-me/CLIProxyAPI/v7`；不要因为 LTS 仓库名而随意改 import path。
 
 `main` 是唯一的 LTS 主线。正常维护不要为“保留统计”再创建长期分支。
 
@@ -65,7 +65,7 @@ LTS 仓库信息：
 
 Protected full-sync 的硬门禁：
 
-- Go module path 仍保持 `github.com/router-for-me/CLIProxyAPI/v6`，除非用户明确批准 breaking module-path 策略。
+- Go module path 跟随 upstream major path；当前必须保持 `github.com/router-for-me/CLIProxyAPI/v7`，后续 major bump 仍需用户明确批准 module-path 策略。
 - `internal/usage/`、`usage-statistics-enabled`、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import` 必须保留。
 - usage record schema 必须保留 API key、auth file、model、token、latency、success/failure 等统计字段兼容性。
 - Management usage response shape 必须保持 `CPA-Panel-LTS` 兼容。

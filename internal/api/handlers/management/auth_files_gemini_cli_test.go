@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
+	geminiAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gemini"
 )
 
 func TestPerformGeminiCLISetupUsesBackendProjectID(t *testing.T) {

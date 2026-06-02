@@ -1,6 +1,6 @@
 package store
 
-import cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+import cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 
 func ensureDisabledMetadata(auth *cliproxyauth.Auth) map[string]any {
 	if auth.Metadata == nil {
