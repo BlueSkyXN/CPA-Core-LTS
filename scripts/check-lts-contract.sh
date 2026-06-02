@@ -6,6 +6,17 @@ echo "Checking CPA-Core-LTS protected contract sentinels..."
 test -d internal/usage
 test -f docs/lts/protected-deltas.yaml
 
+module_path="$(sed -n 's/^module //p' go.mod)"
+if [ "$module_path" != "github.com/router-for-me/CLIProxyAPI/v7" ]; then
+  echo "unexpected Go module path: $module_path" >&2
+  exit 1
+fi
+
+if git grep -n "github.com/router-for-me/CLIProxyAPI/v6" -- . ':(exclude)scripts/check-lts-contract.sh'; then
+  echo "legacy v6 module path references found; CPA-Core-LTS now follows upstream /v7" >&2
+  exit 1
+fi
+
 grep -R "usage-statistics-enabled" -n \
   internal config.example.yaml README.md README_CN.md README_JA.md docs \
   --exclude-dir=.git \
