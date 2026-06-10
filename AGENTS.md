@@ -52,6 +52,8 @@ LTS 仓库信息：
 
 本仓库使用人工 / AI 操作的 protected full-sync，不安排自动同步任务。`upstream/main` 只是只读同步坐标，不是长期产品分支。
 
+执行真实 upstream sync 前，先阅读 `docs/lts/sync-runbook.md`，并按其中的 preflight、rehearsal、staged sync decision、validation gate 和 HF Space smoke 顺序操作。根 `AGENTS.md` 定义维护边界；runbook 定义每次同步的可执行步骤。
+
 同步流程：
 
 1. 从最新 `origin/main` 创建隔离 worktree / 分支，例如 `codex/sync-upstream-stage-N`。
@@ -62,6 +64,8 @@ LTS 仓库信息：
 6. 冲突触碰 protected deltas 时，保留或重放 CPA-Core-LTS 行为，再适配 upstream 改动。
 7. sync PR body 必须写明 upstream from/to SHA、stage 编号、冲突文件列表、protected delta 处理、contract/build/test 状态，以及覆盖了哪些旧 upstream-port PR。
 8. sync PR 合入 `main` 必须使用 Create a merge commit；禁止 squash 或 rebase sync PR。
+
+如果 upstream diff 触碰 request lifecycle、auth identity、model resolution、token accounting、logging metadata、Management usage response shape、config hot reload 或 panel release source，即使没有文本冲突，也必须在 PR body 写 `Protected delta review`，并说明 usage statistics、Management usage API、CPA-Panel-LTS response shape 和 downstream customizations 的处理结果。
 
 Protected full-sync 的硬门禁：
 
@@ -197,3 +201,5 @@ If validation cannot be run, say exactly which command was skipped and why. Do n
 - README 有英文、中文、日文版本；用户面向文档改动要检查多语言是否需要同步。
 - `docker-build.sh --with-usage` 会通过 Management API export/import 统计并在 `temp/stats/.api_secret` 保存临时管理密钥；不要把该目录纳入 Git。
 - `internal/registry/models/models.json` 由 workflow 远程刷新；离线环境下不要假设模型目录一定最新。
+- `docs/lts/` 是维护策略和同步 runbook 的可提交文档目录；新增该目录下的 `.md` / `.yaml` / `.yml` 文件时应正常进入 PR。
+- 参考 Hugging Face Space `BlueSkyXN/CPA-HFS-2026-03` 做 smoke 时，HF Variables 里的 `CPA_COMMIT` / `CPA_VERSION` 会覆盖 Dockerfile 默认值。合入 sync 后必须确认 Space 变量、runtime log 和响应头 `x-cpa-commit` 都指向目标 Core commit。

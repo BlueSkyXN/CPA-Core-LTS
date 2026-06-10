@@ -191,6 +191,39 @@ Hugging Face Space smoke 适合证明真实部署基本可运行，但不能替�
 
 不要在 PR、日志或截图中暴露 management password、API key、auth file、OAuth token 或 Hugging Face secret。
 
+注意：该 Space 的 HF Variables 会覆盖 Dockerfile 里的默认 `ARG`。只改 Dockerfile 或 Space repo commit 不等于已经部署目标 Core commit；必须同步更新变量并从 live runtime 反查。
+
+推荐操作：
+
+```bash
+target_full_sha="<merged-main-sha>"
+target_short_sha="${target_full_sha:0:8}"
+
+hf spaces variables add BlueSkyXN/CPA-HFS-2026-03 \
+  -e "CPA_VERSION=${target_short_sha}" \
+  -e "CPA_COMMIT=${target_full_sha}"
+hf spaces restart BlueSkyXN/CPA-HFS-2026-03
+hf spaces info BlueSkyXN/CPA-HFS-2026-03
+hf spaces logs BlueSkyXN/CPA-HFS-2026-03 --build -n 200
+hf spaces logs BlueSkyXN/CPA-HFS-2026-03 -n 120
+```
+
+Live smoke：
+
+```bash
+space_url="https://blueskyxn-cpa-hfs-2026-03.hf.space"
+curl -k -sS "${space_url}/healthz"
+curl -k -sS -D - -o /tmp/cpa-management.html "${space_url}/management.html"
+curl -k -sS -D - "${space_url}/v0/management/usage"
+```
+
+期望结果：
+
+- `/healthz` 返回 200 且 body 包含 ok。
+- `/management.html` 返回 200。
+- `/v0/management/usage` 返回 401 missing management key，而不是 404 或路由消失。
+- 响应头 `x-cpa-commit` 等于目标 `target_full_sha`。
+
 ## Cleanup
 
 同步完成后清理临时 worktree：
