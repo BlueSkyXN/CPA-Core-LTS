@@ -90,7 +90,6 @@ Protected full-sync 的硬门禁：
 | `cmd/fetch_antigravity_models/` | Antigravity model catalog 辅助拉取命令 | No | 修改模型拉取辅助工具前 |
 | `config.example.yaml` | 用户配置示例和 schema 可见面 | No | 新增/改名/删除 config key 前，同时读 `internal/config/AGENTS.md` |
 | `Dockerfile` / `docker-compose.yml` / `docker-build.*` | 容器构建和本地 Docker 运行 | No | 修改镜像、端口、volume、usage backup 脚本前 |
-| `.goreleaser.yml` | tag release artifact 配置 | No | 修改 release binary/archive/checksum 前 |
 | `docs/` | SDK 文档，含中英文版本 | No | 修改 SDK 行为或公开接口文档前 |
 | `examples/` | SDK/translator/http-request 示例 | No | 修改公开示例或 API 使用方式前 |
 | `internal/access/` | API key/access manager 适配 | No | 修改鉴权判定或 auth manager 集成前，同时读 `internal/auth/AGENTS.md` |
@@ -130,7 +129,7 @@ Only read the cards that apply to the target change. If a change spans multiple 
 
 ## Commands
 
-These commands are confirmed from the existing AGENTS file, Go tooling, CI workflows, Docker files, `.goreleaser.yml`, or source flags.
+These commands are confirmed from the existing AGENTS file, Go tooling, CI workflows, Docker files, release workflow, or source flags.
 
 | Command | Purpose | Scope | Sandbox notes |
 |---|---|---|---|
@@ -145,9 +144,9 @@ These commands are confirmed from the existing AGENTS file, Go tooling, CI workf
 | `docker compose build` | Build container image | repo | Requires Docker daemon; not default sandbox validation |
 | `docker compose up -d --remove-orphans --pull never` | Start local compose stack from local image | repo | Requires Docker daemon and local config/auth/log volume paths |
 | `./docker-build.sh` | Interactive Docker build/run helper | repo | Interactive, Docker required; `--with-usage` calls Management API and stores temp secret under `temp/stats/` |
-| `goreleaser release --clean --skip=validate` | Release build action used by workflow | repo | Requires release context, tag, network, and `GITHUB_TOKEN`; do not run unless explicitly asked |
 
 Workflow-specific note: `.github/workflows/pr-test-build.yml` refreshes `internal/registry/models/models.json` from `https://github.com/router-for-me/models.git` before building. Local validation may skip that network refresh unless the change is model catalog related.
+Release-specific note: `.github/workflows/release.yaml` now builds release archives directly in GitHub Actions. It is tag-triggered for `v*-lts.*` tags and requires release context, network, and `GITHUB_TOKEN`; do not run release-equivalent manual commands unless explicitly asked.
 
 ## Global rules
 
@@ -176,7 +175,7 @@ Workflow-specific note: `.github/workflows/pr-test-build.yml` refreshes `interna
 - 不要把 `AGENTS.md` 改动混入普通产品 PR；本仓库 workflow 会关闭触碰 AGENTS 的 PR。
 - 不要把 CI/release/Docker 变更当作无风险文本修改；这些文件影响分发和运行路径。
 - 不要在没有对应测试或明确说明缺口的情况下声称已验证统计、auth、translator、executor 或 Management API 行为。
-- 不要执行发布、推送、tag、Docker destructive cleanup、`goreleaser release`、`terraform`、sudo 或外部平台变更，除非用户明确要求。
+- 不要执行发布、推送、tag、Docker destructive cleanup、release-equivalent manual build/upload commands、`terraform`、sudo 或外部平台变更，除非用户明确要求。
 
 ## Validation
 
