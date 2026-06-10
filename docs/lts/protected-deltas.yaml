@@ -21,7 +21,8 @@ protected_deltas:
       - /v0/management/usage/import
     validation:
       - scripts/check-lts-contract.sh
-      - usage-management-contract-tests
+      - go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
+      - behavior-contract-tests
     conflict_policy: preserve_or_reapply_lts_usage
 
   - id: cpa-panel-lts-compatibility
@@ -32,6 +33,7 @@ protected_deltas:
       - usage page compatibility
     validation:
       - panel-response-shape-review
+      - management-usage-response-shape-test
     conflict_policy: preserve_panel_compatibility
 
   - id: local-downstream-customizations
