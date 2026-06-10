@@ -13,6 +13,7 @@ import (
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -21,6 +22,11 @@ import (
 )
 
 func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	return newTestServerWithOptions(t)
+}
+
+func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -46,7 +52,7 @@ func newTestServer(t *testing.T) *Server {
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	return NewServer(cfg, authManager, accessManager, configPath)
+	return NewServer(cfg, authManager, accessManager, configPath, opts...)
 }
 
 func TestHealthz(t *testing.T) {
@@ -86,7 +92,31 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
-func TestManagementUsageRoutesRequireAuthAndQueuePopsArray(t *testing.T) {
+func TestNewServerWithPluginHostInjectsHandlerInterceptors(t *testing.T) {
+	host := pluginhost.New()
+	server := newTestServerWithOptions(t, WithPluginHost(host))
+
+	if server.handlers == nil {
+		t.Fatal("server handlers = nil")
+	}
+	got, ok := server.handlers.PluginHost.(*pluginhost.Host)
+	if !ok || got != host {
+		t.Fatalf("handler plugin host = %#v, want configured host", server.handlers.PluginHost)
+	}
+}
+
+func TestNewServerWithoutPluginHostLeavesHandlerInterceptorsDisabled(t *testing.T) {
+	server := newTestServer(t)
+
+	if server.handlers == nil {
+		t.Fatal("server handlers = nil")
+	}
+	if server.handlers.PluginHost != nil {
+		t.Fatalf("handler plugin host = %#v, want nil", server.handlers.PluginHost)
+	}
+}
+
+func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
 	prevQueueEnabled := redisqueue.Enabled()
@@ -152,6 +182,32 @@ func TestManagementUsageRoutesRequireAuthAndQueuePopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
+	}
+}
+
+func TestManagementPluginsRouteRegistered(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/plugins", nil)
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var payload struct {
+		PluginsEnabled bool  `json:"plugins_enabled"`
+		Plugins        []any `json:"plugins"`
+	}
+	if errUnmarshal := json.Unmarshal(rr.Body.Bytes(), &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal response: %v body=%s", errUnmarshal, rr.Body.String())
+	}
+	if payload.Plugins == nil {
+		t.Fatalf("plugins field = nil, want array; body=%s", rr.Body.String())
 	}
 }
 
