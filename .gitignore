@@ -27,6 +27,10 @@ auths/*
 
 # Documentation
 docs/*
+!docs/lts/
+!docs/lts/*.md
+!docs/lts/*.yaml
+!docs/lts/*.yml
 CLAUDE.md
 GEMINI.md
 
