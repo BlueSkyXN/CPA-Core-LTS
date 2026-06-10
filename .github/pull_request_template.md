@@ -21,8 +21,22 @@
 - [ ] `/v0/management/usage` still exists
 - [ ] `/v0/management/usage/export` still exists
 - [ ] `/v0/management/usage/import` still exists
+- [ ] Usage record creation/schema reviewed or tested: API key, auth source, model, token breakdown, latency, success/failure
+- [ ] Management usage response shape reviewed or tested: `usage`, `failed_requests`, `apis`, `models`, `details`
+- [ ] Export/import roundtrip reviewed or tested when usage data shape is touched
 - [ ] CPA-Panel-LTS response shape reviewed
 - [ ] Local auth/config/panel/release/source customizations reviewed
+
+Protected-adjacent upstream changes requiring review even without text conflicts:
+
+- request lifecycle
+- auth identity / API key attribution
+- model resolution / alias normalization
+- token accounting / final usage aggregation
+- logging metadata
+- Management usage response shape
+- config schema / hot reload
+- panel asset source / release source
 
 ## Conflict resolution notes
 
@@ -31,9 +45,10 @@ Describe any downstream resolution made to preserve LTS behavior.
 ## Validation
 
 - [ ] `scripts/check-lts-contract.sh`
-- [ ] usage / management contract tests
-- [ ] `go build ./cmd/server`
+- [ ] `go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'`
+- [ ] `go build -o test-output ./cmd/server && rm -f test-output`
 - [ ] `go test ./...`
+- [ ] `git diff --check`
 
 ## Optional real runtime smoke
 
