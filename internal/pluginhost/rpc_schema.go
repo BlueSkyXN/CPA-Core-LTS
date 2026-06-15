@@ -129,7 +129,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ExecutorOutputFormats:         append([]string(nil), caps.ExecutorOutputFormats...),
 		RequestTranslator:             caps.RequestTranslator != nil,
 		RequestNormalizer:             caps.RequestNormalizer != nil,
-		RequestInterceptor:            caps.RequestInterceptor != nil,
+		RequestInterceptor:            hasRequestInterceptorCapability(caps.RequestInterceptor),
 		ResponseTranslator:            caps.ResponseTranslator != nil,
 		ResponseBeforeTranslator:      caps.ResponseBeforeTranslator != nil,
 		ResponseAfterTranslator:       caps.ResponseAfterTranslator != nil,

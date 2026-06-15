@@ -1,5 +1,4 @@
-- ：仅 Go 实现的插件资源，演示 host 凭证文件回调（、、、）。
-- # 标准动态库插件示例
+# 标准动态库插件示例
 
 本目录包含 CLIProxyAPI C ABI 的标准动态库插件示例。
 
@@ -53,6 +52,10 @@ plugins:
     host-callback-auth-files:
       enabled: true
       priority: 1
+      permissions:
+        auth-list: true
+        auth-read: true
+        auth-write: true
 ```
 
 详见 `host-callback-auth-files/README.md`。
@@ -69,6 +72,8 @@ plugins:
     host-model-callback:
       enabled: true
       priority: 1
+      permissions:
+        model-execute: true
 ```
 
 默认示例模型是 `gpt-5.5`，但请求能否成功取决于当前 CPA 模型和认证配置是否可以路由该模型。

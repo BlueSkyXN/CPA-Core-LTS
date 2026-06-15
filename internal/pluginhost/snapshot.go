@@ -4,14 +4,16 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type capabilityRecord struct {
-	id       string
-	priority int
-	meta     pluginapi.Metadata
-	plugin   pluginapi.Plugin
+	id          string
+	priority    int
+	permissions config.PluginPermissions
+	meta        pluginapi.Metadata
+	plugin      pluginapi.Plugin
 }
 
 type Snapshot struct {

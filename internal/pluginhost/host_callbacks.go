@@ -73,6 +73,15 @@ type dynamicHostCallbackEntry struct {
 
 type hostCallbackPluginIDKey struct{}
 
+type pluginHostPermission string
+
+const (
+	pluginPermissionAuthList     pluginHostPermission = "auth-list"
+	pluginPermissionAuthRead     pluginHostPermission = "auth-read"
+	pluginPermissionAuthWrite    pluginHostPermission = "auth-write"
+	pluginPermissionModelExecute pluginHostPermission = "model-execute"
+)
+
 func withHostCallbackPluginID(ctx context.Context, pluginID string) context.Context {
 	pluginID = strings.TrimSpace(pluginID)
 	if pluginID == "" {
@@ -98,12 +107,24 @@ func hostCallbackPluginIDFromContext(ctx context.Context) string {
 func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodHostModelExecute:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionModelExecute); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostModelExecute(ctx, request)
 	case pluginabi.MethodHostModelExecuteStream:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionModelExecute); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostModelExecuteStream(ctx, request)
 	case pluginabi.MethodHostModelStreamRead:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionModelExecute); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostModelStreamRead(ctx, request)
 	case pluginabi.MethodHostModelStreamClose:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionModelExecute); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostModelStreamClose(request)
 	case pluginabi.MethodHostHTTPDo:
 		return h.callHostHTTPDo(ctx, request)
@@ -120,16 +141,61 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 	case pluginabi.MethodHostLog:
 		return h.callHostLog(ctx, request)
 	case pluginabi.MethodHostAuthList:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionAuthList); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostAuthList(ctx, request)
 	case pluginabi.MethodHostAuthGet:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionAuthRead); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostAuthGet(ctx, request)
 	case pluginabi.MethodHostAuthGetRuntime:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionAuthRead); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostAuthGetRuntime(ctx, request)
 	case pluginabi.MethodHostAuthSave:
+		if errPermission := h.requirePluginPermission(ctx, pluginPermissionAuthWrite); errPermission != nil {
+			return nil, errPermission
+		}
 		return h.callHostAuthSave(ctx, request)
 	default:
 		return nil, fmt.Errorf("unsupported host callback %s", method)
 	}
+}
+
+func (h *Host) requirePluginPermission(ctx context.Context, permission pluginHostPermission) error {
+	pluginID := hostCallbackPluginIDFromContext(ctx)
+	if pluginID == "" {
+		return nil
+	}
+	for _, record := range h.Snapshot().records {
+		if record.id != pluginID {
+			continue
+		}
+		perms := record.permissions
+		switch permission {
+		case pluginPermissionAuthList:
+			if perms.AuthList {
+				return nil
+			}
+		case pluginPermissionAuthRead:
+			if perms.AuthRead {
+				return nil
+			}
+		case pluginPermissionAuthWrite:
+			if perms.AuthWrite {
+				return nil
+			}
+		case pluginPermissionModelExecute:
+			if perms.ModelExecute {
+				return nil
+			}
+		}
+		return fmt.Errorf("plugin %s is not allowed to use host callback permission %s", pluginID, permission)
+	}
+	return fmt.Errorf("plugin %s is not registered for host callback permission %s", pluginID, permission)
 }
 
 func (h *Host) callbackCallerPluginID(ctx context.Context, callbackID string) string {

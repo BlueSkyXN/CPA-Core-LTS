@@ -19,10 +19,11 @@ type runtimeConfig struct {
 }
 
 type runtimeItemConfig struct {
-	ID         string
-	Enabled    bool
-	Priority   int
-	ConfigYAML []byte
+	ID          string
+	Enabled     bool
+	Priority    int
+	Permissions config.PluginPermissions
+	ConfigYAML  []byte
 }
 
 func runtimeConfigFromConfig(cfg *config.Config) runtimeConfig {
@@ -54,10 +55,11 @@ func runtimeConfigFromConfig(cfg *config.Config) runtimeConfig {
 		}
 
 		out.Items[id] = runtimeItemConfig{
-			ID:         id,
-			Enabled:    enabled,
-			Priority:   item.Priority,
-			ConfigYAML: runtimeConfigYAML(item, enabled),
+			ID:          id,
+			Enabled:     enabled,
+			Priority:    item.Priority,
+			Permissions: item.Permissions,
+			ConfigYAML:  runtimeConfigYAML(item, enabled),
 		}
 	}
 	return out
@@ -83,7 +85,9 @@ func runtimeConfigYAML(item config.PluginInstanceConfig, enabled bool) []byte {
 
 func normalizedConfigNode(item config.PluginInstanceConfig, enabled bool) *yaml.Node {
 	if item.Raw.Kind == 0 {
-		return defaultRuntimeConfigNode(enabled, item.Priority)
+		node := defaultRuntimeConfigNode(enabled, item.Priority)
+		ensureMappingPermissions(node, item.Permissions)
+		return node
 	}
 	node := deepCopyYAMLNode(&item.Raw)
 	if node.Kind != yaml.MappingNode {
@@ -91,6 +95,7 @@ func normalizedConfigNode(item config.PluginInstanceConfig, enabled bool) *yaml.
 	}
 	ensureMappingScalar(node, "enabled", boolYAMLValue(enabled), "!!bool")
 	ensureMappingScalar(node, "priority", intYAMLValue(item.Priority), "!!int")
+	ensureMappingPermissions(node, item.Permissions)
 	return node
 }
 
@@ -119,6 +124,25 @@ func ensureMappingScalar(node *yaml.Node, key, value, tag string) {
 	node.Content = append(node.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value},
+	)
+}
+
+func ensureMappingPermissions(node *yaml.Node, permissions config.PluginPermissions) {
+	if node == nil || node.Kind != yaml.MappingNode || permissions == (config.PluginPermissions{}) {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i] != nil && node.Content[i].Value == "permissions" {
+			return
+		}
+	}
+	var permissionsNode yaml.Node
+	if errEncode := permissionsNode.Encode(permissions); errEncode != nil {
+		return
+	}
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "permissions"},
+		&permissionsNode,
 	)
 }
 

@@ -160,6 +160,61 @@ options:
 	}
 }
 
+func TestGetPluginConfigReturnsSynthesizedPermissions(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	enabled := true
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Configs: map[string]config.PluginInstanceConfig{
+					"sample": {
+						Enabled:  &enabled,
+						Priority: 4,
+						Permissions: config.PluginPermissions{
+							AuthList:     true,
+							AuthRead:     true,
+							ModelExecute: true,
+						},
+					},
+				},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugins/sample/config", nil)
+
+	h.GetPluginConfig(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Enabled     bool `json:"enabled"`
+		Priority    int  `json:"priority"`
+		Permissions struct {
+			AuthList     bool `json:"auth-list"`
+			AuthRead     bool `json:"auth-read"`
+			AuthWrite    bool `json:"auth-write"`
+			ModelExecute bool `json:"model-execute"`
+		} `json:"permissions"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("decode response: %v; body=%s", errDecode, rec.Body.String())
+	}
+	if !body.Enabled || body.Priority != 4 {
+		t.Fatalf("base fields = enabled %v priority %d, want true 4", body.Enabled, body.Priority)
+	}
+	if !body.Permissions.AuthList || !body.Permissions.AuthRead || body.Permissions.AuthWrite || !body.Permissions.ModelExecute {
+		t.Fatalf("permissions = %#v", body.Permissions)
+	}
+}
+
 func TestGetPluginConfigReturnsEmptyObjectForKnownUnconfiguredPlugin(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

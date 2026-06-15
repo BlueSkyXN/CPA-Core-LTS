@@ -1342,6 +1342,32 @@ func TestInterceptRequestAfterAuthPassesTargetFormat(t *testing.T) {
 	}
 }
 
+func TestLegacyRequestInterceptorRunsBeforeAuthOnly(t *testing.T) {
+	calls := 0
+	host := newHostWithRecords(capabilityRecord{
+		id: "legacy",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: legacyRequestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				calls++
+				return pluginapi.RequestInterceptResponse{Body: append(req.Body, []byte("|legacy")...)}, nil
+			}),
+		}},
+	})
+
+	before := host.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{Body: []byte("body")})
+	after := host.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{Body: []byte("body")})
+
+	if string(before.Body) != "body|legacy" {
+		t.Fatalf("before body = %q, want body|legacy", before.Body)
+	}
+	if string(after.Body) != "body" {
+		t.Fatalf("after body = %q, want original body", after.Body)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
 func TestInterceptorsSkipExceptedPlugin(t *testing.T) {
 	originCalls := 0
 	otherCalls := 0
@@ -1687,6 +1713,16 @@ func TestHasRequestInterceptorsReflectsActiveRequestInterceptors(t *testing.T) {
 	})
 	if responseOnly.HasRequestInterceptors() {
 		t.Fatal("HasRequestInterceptors() = true, want false for response-only plugins")
+	}
+
+	unsupportedRequest := newHostWithRecords(capabilityRecord{
+		id: "unsupported",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: struct{}{},
+		}},
+	})
+	if unsupportedRequest.HasRequestInterceptors() {
+		t.Fatal("HasRequestInterceptors() = true, want false for unsupported request interceptor value")
 	}
 
 	requestHost := newHostWithRecords(capabilityRecord{

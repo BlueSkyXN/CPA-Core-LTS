@@ -854,10 +854,35 @@ type ResponseNormalizer interface {
 	NormalizeResponse(context.Context, ResponseTransformRequest) (PayloadResponse, error)
 }
 
-// RequestInterceptor rewrites execution requests before and after credential selection.
-type RequestInterceptor interface {
+// RequestInterceptor is intentionally broad for source compatibility with
+// plugins compiled against the older single-stage interceptor SDK and plugins
+// using the newer before/after auth split. Hosts should type-assert one of the
+// narrower interfaces below before calling it.
+type RequestInterceptor any
+
+// LegacyRequestInterceptor rewrites execution requests before credential
+// selection. It is kept for plugins built against the original SDK surface.
+type LegacyRequestInterceptor interface {
+	InterceptRequest(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
+}
+
+// RequestInterceptorBeforeAuth rewrites execution requests before credential
+// selection.
+type RequestInterceptorBeforeAuth interface {
 	InterceptRequestBeforeAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
+}
+
+// RequestInterceptorAfterAuth rewrites execution requests after credential
+// selection.
+type RequestInterceptorAfterAuth interface {
 	InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
+}
+
+// StagedRequestInterceptor rewrites execution requests before and after
+// credential selection.
+type StagedRequestInterceptor interface {
+	RequestInterceptorBeforeAuth
+	RequestInterceptorAfterAuth
 }
 
 // ResponseInterceptor rewrites successful non-streaming execution responses before downstream delivery.

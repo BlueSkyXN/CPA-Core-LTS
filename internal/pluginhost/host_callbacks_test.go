@@ -293,6 +293,35 @@ func TestHostModelExecuteCallback(t *testing.T) {
 	}
 }
 
+func TestHostModelExecuteCallbackRequiresExplicitPluginPermission(t *testing.T) {
+	host := New()
+	host.SetModelExecutor(&fakeHostModelExecutor{
+		executeModel: func(context.Context, handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
+			return handlers.ModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"ok":true}`)}, nil
+		},
+	})
+	grantPluginPermissionsForTest(host, "plugin-a", config.PluginPermissions{})
+	ctx := withHostCallbackPluginID(context.Background(), "plugin-a")
+	rawReq, errMarshal := json.Marshal(pluginapi.HostModelExecutionRequest{
+		EntryProtocol: "openai",
+		ExitProtocol:  "openai",
+		Model:         "gpt-5.5",
+		Body:          []byte(`{"messages":[]}`),
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal request: %v", errMarshal)
+	}
+
+	if _, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostModelExecute, rawReq); errCall == nil || !strings.Contains(errCall.Error(), "not allowed") {
+		t.Fatalf("host.model.execute error = %v, want permission denial", errCall)
+	}
+
+	grantPluginPermissionsForTest(host, "plugin-a", config.PluginPermissions{ModelExecute: true})
+	if _, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostModelExecute, rawReq); errCall != nil {
+		t.Fatalf("host.model.execute with permission error = %v", errCall)
+	}
+}
+
 func TestHostModelExecuteCallbackCarriesCallerPluginSkipID(t *testing.T) {
 	host := New()
 	var got handlers.ModelExecutionRequest

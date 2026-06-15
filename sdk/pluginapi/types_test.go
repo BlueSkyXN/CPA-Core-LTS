@@ -10,6 +10,7 @@ import (
 )
 
 type compileTimePlugin struct{}
+type legacyRequestInterceptor struct{}
 
 var _ ModelRegistrar = (*compileTimePlugin)(nil)
 var _ ModelProvider = (*compileTimePlugin)(nil)
@@ -22,7 +23,7 @@ var _ RequestTranslator = (*compileTimePlugin)(nil)
 var _ RequestNormalizer = (*compileTimePlugin)(nil)
 var _ ResponseTranslator = (*compileTimePlugin)(nil)
 var _ ResponseNormalizer = (*compileTimePlugin)(nil)
-var _ RequestInterceptor = (*compileTimePlugin)(nil)
+var _ StagedRequestInterceptor = (*compileTimePlugin)(nil)
 var _ ResponseInterceptor = (*compileTimePlugin)(nil)
 var _ StreamChunkInterceptor = (*compileTimePlugin)(nil)
 var _ ThinkingApplier = (*compileTimePlugin)(nil)
@@ -30,6 +31,19 @@ var _ UsagePlugin = (*compileTimePlugin)(nil)
 var _ CommandLinePlugin = (*compileTimePlugin)(nil)
 var _ ManagementAPI = (*compileTimePlugin)(nil)
 var _ ManagementHandler = (*compileTimePlugin)(nil)
+var _ LegacyRequestInterceptor = (*legacyRequestInterceptor)(nil)
+
+func TestRequestInterceptorCapabilityAcceptsLegacyAndStagedImplementations(t *testing.T) {
+	legacy := Capabilities{RequestInterceptor: legacyRequestInterceptor{}}
+	if _, ok := legacy.RequestInterceptor.(LegacyRequestInterceptor); !ok {
+		t.Fatalf("legacy RequestInterceptor type = %T, want LegacyRequestInterceptor", legacy.RequestInterceptor)
+	}
+
+	staged := Capabilities{RequestInterceptor: compileTimePlugin{}}
+	if _, ok := staged.RequestInterceptor.(StagedRequestInterceptor); !ok {
+		t.Fatalf("staged RequestInterceptor type = %T, want StagedRequestInterceptor", staged.RequestInterceptor)
+	}
+}
 
 func TestMetadataConfigFieldsExposePluginSchema(t *testing.T) {
 	meta := Metadata{
@@ -410,6 +424,10 @@ func (compileTimePlugin) InterceptRequestBeforeAuth(context.Context, RequestInte
 }
 
 func (compileTimePlugin) InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error) {
+	return RequestInterceptResponse{}, nil
+}
+
+func (legacyRequestInterceptor) InterceptRequest(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error) {
 	return RequestInterceptResponse{}, nil
 }
 

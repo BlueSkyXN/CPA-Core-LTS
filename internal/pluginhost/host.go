@@ -199,10 +199,11 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			continue
 		}
 		records = append(records, capabilityRecord{
-			id:       file.ID,
-			priority: item.Priority,
-			meta:     plugin.Metadata,
-			plugin:   plugin,
+			id:          file.ID,
+			priority:    item.Priority,
+			permissions: item.Permissions,
+			meta:        plugin.Metadata,
+			plugin:      plugin,
 		})
 	}
 
@@ -416,7 +417,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.Executor != nil ||
 		caps.RequestTranslator != nil ||
 		caps.RequestNormalizer != nil ||
-		caps.RequestInterceptor != nil ||
+		hasRequestInterceptorCapability(caps.RequestInterceptor) ||
 		caps.ResponseTranslator != nil ||
 		caps.ResponseBeforeTranslator != nil ||
 		caps.ResponseAfterTranslator != nil ||

@@ -4,8 +4,7 @@ This directory contains standard dynamic library plugin examples for the CLIProx
 
 ## Layout
 
-- `simple/`- : Go-only plugin resource that calls host auth file callbacks (, , , ).
-- : full provider-native skeleton that declares every supported capability.
+- `simple/`: full provider-native skeleton that declares every supported capability.
 - `model/`: model capability only.
 - `auth/`: auth provider capability only.
 - `frontend-auth/`: frontend auth provider capability only.
@@ -53,6 +52,10 @@ plugins:
     host-callback-auth-files:
       enabled: true
       priority: 1
+      permissions:
+        auth-list: true
+        auth-read: true
+        auth-write: true
 ```
 
 See `host-callback-auth-files/README.md` for URL examples.
@@ -69,6 +72,8 @@ plugins:
     host-model-callback:
       enabled: true
       priority: 1
+      permissions:
+        model-execute: true
 ```
 
 The default example model is `gpt-5.5`, but the request succeeds only when the current CPA model and auth configuration can route that model.

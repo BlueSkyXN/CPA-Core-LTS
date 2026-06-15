@@ -51,6 +51,64 @@ plugins:
 	}
 }
 
+func TestParseConfigBytes_PluginPermissionsDefaultDenyAndParse(t *testing.T) {
+	cfg, errParse := ParseConfigBytes([]byte(`
+plugins:
+  configs:
+    legacy: {}
+    trusted:
+      permissions:
+        auth-list: true
+        auth-read: true
+        auth-write: true
+        model-execute: true
+`))
+	if errParse != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", errParse)
+	}
+
+	legacy := cfg.Plugins.Configs["legacy"].Permissions
+	if legacy.AuthList || legacy.AuthRead || legacy.AuthWrite || legacy.ModelExecute {
+		t.Fatalf("legacy permissions = %#v, want all false", legacy)
+	}
+	trusted := cfg.Plugins.Configs["trusted"].Permissions
+	if !trusted.AuthList || !trusted.AuthRead || !trusted.AuthWrite || !trusted.ModelExecute {
+		t.Fatalf("trusted permissions = %#v, want all true", trusted)
+	}
+}
+
+func TestPluginInstanceMarshalYAMLSynthesizesProgrammaticPermissions(t *testing.T) {
+	enabled := true
+	plugin := PluginInstanceConfig{
+		Enabled:  &enabled,
+		Priority: 5,
+		Permissions: PluginPermissions{
+			AuthRead:     true,
+			ModelExecute: true,
+		},
+	}
+
+	marshaled, errMarshal := yaml.Marshal(plugin)
+	if errMarshal != nil {
+		t.Fatalf("yaml.Marshal(plugin) error = %v", errMarshal)
+	}
+	text := string(marshaled)
+	for _, want := range []string{
+		"enabled: true",
+		"priority: 5",
+		"permissions:",
+		"auth-read: true",
+		"model-execute: true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Plugin YAML missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "auth-list:") || strings.Contains(text, "auth-write:") {
+		t.Fatalf("Plugin YAML included false permissions:\n%s", text)
+	}
+}
+
 func TestParseConfigBytes_PluginInstanceEmptyRawYAML(t *testing.T) {
 	cfg, errParse := ParseConfigBytes([]byte(`
 plugins:
