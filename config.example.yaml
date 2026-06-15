@@ -56,11 +56,14 @@ pprof:
 # If the same provider is configured as OpenAI-compatible, the native executor wins.
 # Plugin command-line flags and Management API routes are optional capabilities.
 # Existing native flags/routes and higher-priority plugin flags/routes cannot be replaced.
-# 插件列表 Management API 会读取插件 Metadata 中的 Logo 和 ConfigFields，用于管理端展示。
-# 单插件 enabled 只控制 plugins.configs.<pluginID>.enabled，不会隐式修改全局 plugins.enabled。
+# Plugin list Management API reads Logo and ConfigFields from plugin metadata for management UI display.
+# Per-plugin enabled only controls plugins.configs.<pluginID>.enabled and does not implicitly change global plugins.enabled.
 plugins:
   enabled: false
   dir: "plugins"
+  # Additional plugin store registries. The built-in official registry is always included.
+  # store-sources:
+  #   - "https://example.com/cliproxy-plugins/registry.json"
   configs:
     example:
       enabled: true
@@ -116,9 +119,10 @@ max-retry-interval: 30
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
-# disable-image-generation supports: false (default), true, or "chat".
+# disable-image-generation supports: false (default), true, "chat", or "passthrough".
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
 # - "chat": disable image_generation injection on non-images endpoints, but keep /v1/images/generations and /v1/images/edits enabled.
+# - "passthrough": never inject or strip image_generation on non-images endpoints (forward the client payload unchanged); behaves like "chat" on /v1/images/* endpoints.
 disable-image-generation: false
 
 # Base model used when proxying gpt-image-2 via the hosted image_generation tool (Responses API).
@@ -392,9 +396,9 @@ nonstream-keepalive-interval: 0
 #   xai:
 #     - name: "grok-4.3"
 #       alias: "grok-latest"
-#   qoder:                            # plugin provider keys are supported for OAuth plugins
-#     - name: "qmodel_latest"
-#       alias: "qlatest"
+#   sample-provider:                  # plugin provider keys are supported for OAuth plugins
+#     - name: "sample-model-latest"
+#       alias: "sample-latest"
 
 # OAuth provider excluded models
 # oauth-excluded-models:
