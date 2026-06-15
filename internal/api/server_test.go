@@ -274,10 +274,10 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	}
 }
 
-func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
+func TestVideosRoutesExposeOpenAICompatAndOpenAIPrefix(t *testing.T) {
 	server := newTestServer(t)
 
-	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"sora-2","prompt":"make a video"}`))
+	nativeReq := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"sora-2","prompt":"make a video","size":"bad"}`))
 	nativeReq.Header.Set("Authorization", "Bearer test-key")
 	nativeReq.Header.Set("Content-Type", "application/json")
 	nativeRR := httptest.NewRecorder()
@@ -285,8 +285,8 @@ func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 	if nativeRR.Code != http.StatusBadRequest {
 		t.Fatalf("native status = %d, want %d body=%s", nativeRR.Code, http.StatusBadRequest, nativeRR.Body.String())
 	}
-	if !strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
-		t.Fatalf("expected /v1/videos to keep xAI native validation, body=%s", nativeRR.Body.String())
+	if !strings.Contains(nativeRR.Body.String(), "size must be one of") || strings.Contains(nativeRR.Body.String(), "/v1/videos/generations") {
+		t.Fatalf("expected /v1/videos to use OpenAI-compatible create handler, body=%s", nativeRR.Body.String())
 	}
 
 	openAIReq := httptest.NewRequest(http.MethodPost, "/openai/v1/videos", strings.NewReader(`{"model":`))

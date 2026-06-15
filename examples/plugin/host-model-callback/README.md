@@ -45,6 +45,8 @@ plugins:
     host-model-callback:
       enabled: true
       priority: 1
+      permissions:
+        model-execute: true
 ```
 
 This plugin does not define plugin-specific configuration fields.

@@ -173,8 +173,21 @@ type PluginInstanceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Priority controls plugin startup and routing order.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Permissions grants sensitive host callbacks to this plugin. All fields
+	// default to false so existing plugin configs do not gain credential or
+	// model-execution capabilities implicitly.
+	Permissions PluginPermissions `yaml:"permissions,omitempty" json:"permissions,omitempty"`
 	// Raw preserves the full original plugin configuration YAML subtree.
 	Raw yaml.Node `yaml:"-" json:"-"`
+}
+
+// PluginPermissions controls access to sensitive host callbacks exposed to
+// dynamic plugins.
+type PluginPermissions struct {
+	AuthList     bool `yaml:"auth-list,omitempty" json:"auth-list,omitempty"`
+	AuthRead     bool `yaml:"auth-read,omitempty" json:"auth-read,omitempty"`
+	AuthWrite    bool `yaml:"auth-write,omitempty" json:"auth-write,omitempty"`
+	ModelExecute bool `yaml:"model-execute,omitempty" json:"model-execute,omitempty"`
 }
 
 // UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
@@ -216,6 +229,12 @@ func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
 				return fmt.Errorf("parse plugin priority: %w", errDecodePriority)
 			}
 			c.Priority = priority
+		case "permissions":
+			var permissions PluginPermissions
+			if errDecodePermissions := node.Decode(&permissions); errDecodePermissions != nil {
+				return fmt.Errorf("parse plugin permissions: %w", errDecodePermissions)
+			}
+			c.Permissions = permissions
 		}
 	}
 
@@ -225,7 +244,17 @@ func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
 // MarshalYAML returns the preserved raw plugin YAML subtree for lossless config output.
 func (c PluginInstanceConfig) MarshalYAML() (any, error) {
 	if c.Raw.Kind == 0 {
-		return defaultPluginInstanceConfigNode(), nil
+		node := defaultPluginInstanceConfigNode()
+		if c.Enabled != nil {
+			appendPluginInstanceConfigNode(node, "enabled", *c.Enabled)
+		}
+		if c.Priority != 0 {
+			appendPluginInstanceConfigNode(node, "priority", c.Priority)
+		}
+		if c.Permissions != (PluginPermissions{}) {
+			appendPluginInstanceConfigNode(node, "permissions", c.Permissions)
+		}
+		return node, nil
 	}
 	return deepCopyNode(&c.Raw), nil
 }
@@ -236,6 +265,20 @@ func defaultPluginInstanceConfigNode() *yaml.Node {
 		Tag:     "!!map",
 		Content: []*yaml.Node{},
 	}
+}
+
+func appendPluginInstanceConfigNode(node *yaml.Node, key string, value any) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+	var valueNode yaml.Node
+	if errEncode := valueNode.Encode(value); errEncode != nil {
+		return
+	}
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&valueNode,
+	)
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests.

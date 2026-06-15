@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,42 @@ func (s *memoryAuthStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("memory auth storage payload is empty")
 	}
 	return os.WriteFile(authFilePath, s.payload, 0o600)
+}
+
+func grantPluginPermissionsForTest(host *Host, id string, permissions config.PluginPermissions) {
+	host.snapshot.Store(&Snapshot{enabled: true, records: []capabilityRecord{{
+		id:          id,
+		permissions: permissions,
+	}}})
+}
+
+func TestHostAuthCallbacksRequireExplicitPluginPermission(t *testing.T) {
+	authDir := t.TempDir()
+	if errWrite := os.WriteFile(filepath.Join(authDir, "gemini-a.json"), []byte(`{"type":"gemini","email":"a@example.com"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	host := New()
+	host.runtimeConfig = &config.Config{AuthDir: authDir}
+	grantPluginPermissionsForTest(host, "plugin-a", config.PluginPermissions{})
+	ctx := withHostCallbackPluginID(context.Background(), "plugin-a")
+
+	if _, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostAuthList, nil); errCall == nil || !strings.Contains(errCall.Error(), "not allowed") {
+		t.Fatalf("host.auth.list error = %v, want permission denial", errCall)
+	}
+
+	grantPluginPermissionsForTest(host, "plugin-a", config.PluginPermissions{AuthList: true})
+	rawResp, errCall := host.callFromPlugin(ctx, pluginabi.MethodHostAuthList, nil)
+	if errCall != nil {
+		t.Fatalf("host.auth.list with permission error = %v", errCall)
+	}
+	resp, errDecode := decodeRPCEnvelope[rpcHostAuthListResponse](rawResp)
+	if errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(resp.Files) != 1 {
+		t.Fatalf("files = %#v, want one file", resp.Files)
+	}
 }
 
 func TestHostAuthListCallbackUsesAuthManager(t *testing.T) {

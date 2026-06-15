@@ -136,6 +136,36 @@ func callPlugin[T any](ctx context.Context, client pluginClient, method string, 
 	return out, nil
 }
 
+func isOptionalRPCMethodUnsupported(err error, method string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if msg == "" {
+		return false
+	}
+	for _, marker := range []string{"unknown method", "unsupported method"} {
+		if msg == marker || strings.HasSuffix(msg, ": "+marker) {
+			return true
+		}
+	}
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method == "" {
+		return false
+	}
+	for _, marker := range []string{"unknown method", "unsupported method"} {
+		for _, separator := range []string{": ", " "} {
+			if strings.Contains(msg, marker+separator+method) {
+				return true
+			}
+		}
+	}
+	if strings.Contains(msg, method) && strings.Contains(msg, "method not found") {
+		return true
+	}
+	return false
+}
+
 func sanitizePluginRequest(request any) any {
 	switch req := request.(type) {
 	case pluginapi.AuthLoginStartRequest:
@@ -444,10 +474,14 @@ func (a *rpcPluginAdapter) InterceptRequestBeforeAuth(ctx context.Context, req p
 func (a *rpcPluginAdapter) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
-	return callPlugin[pluginapi.RequestInterceptResponse](ctx, a.client, pluginabi.MethodRequestInterceptAfter, rpcRequestInterceptRequest{
+	resp, errCall := callPlugin[pluginapi.RequestInterceptResponse](ctx, a.client, pluginabi.MethodRequestInterceptAfter, rpcRequestInterceptRequest{
 		RequestInterceptRequest: req,
 		HostCallbackID:          callbackID,
 	})
+	if errCall != nil && isOptionalRPCMethodUnsupported(errCall, pluginabi.MethodRequestInterceptAfter) {
+		return pluginapi.RequestInterceptResponse{}, nil
+	}
+	return resp, errCall
 }
 
 func (a *rpcPluginAdapter) TranslateResponse(ctx context.Context, req pluginapi.ResponseTransformRequest) (pluginapi.PayloadResponse, error) {

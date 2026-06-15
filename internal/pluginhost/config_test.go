@@ -33,3 +33,29 @@ func TestRuntimeConfigYAMLAddsHostDefaultsToRawPluginConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeConfigYAMLAddsSynthesizedPermissions(t *testing.T) {
+	item := config.PluginInstanceConfig{
+		Priority: 2,
+		Permissions: config.PluginPermissions{
+			AuthList:     true,
+			ModelExecute: true,
+		},
+	}
+
+	got := string(runtimeConfigYAML(item, true))
+	for _, want := range []string{
+		"enabled: true",
+		"priority: 2",
+		"permissions:",
+		"auth-list: true",
+		"model-execute: true",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtimeConfigYAML() missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "auth-read:") || strings.Contains(got, "auth-write:") {
+		t.Fatalf("runtimeConfigYAML() included false permissions:\n%s", got)
+	}
+}

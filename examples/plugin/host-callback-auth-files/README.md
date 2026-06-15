@@ -45,6 +45,10 @@ plugins:
     host-callback-auth-files:
       enabled: true
       priority: 1
+      permissions:
+        auth-list: true
+        auth-read: true
+        auth-write: true
 ```
 
 This plugin does not define plugin-specific configuration fields.

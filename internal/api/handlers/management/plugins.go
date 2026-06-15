@@ -511,6 +511,12 @@ func pluginConfigNode(item config.PluginInstanceConfig) *yaml.Node {
 	if item.Priority != 0 {
 		setYAMLMappingValue(node, "priority", intYAMLNode(item.Priority))
 	}
+	if item.Permissions != (config.PluginPermissions{}) {
+		var permissionsNode yaml.Node
+		if errEncode := permissionsNode.Encode(item.Permissions); errEncode == nil {
+			setYAMLMappingValue(node, "permissions", &permissionsNode)
+		}
+	}
 	return node
 }
 

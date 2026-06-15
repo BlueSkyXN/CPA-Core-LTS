@@ -68,6 +68,12 @@ plugins:
     example:
       enabled: true
       priority: 1
+      # Sensitive host callbacks are denied by default and must be granted per plugin.
+      permissions:
+        auth-list: false      # allow host.auth.list
+        auth-read: false      # allow host.auth.get and host.auth.get_runtime
+        auth-write: false     # allow host.auth.save
+        model-execute: false  # allow host.model.execute and streaming variants
       config1: true
       config2: "string"
       config3: 3

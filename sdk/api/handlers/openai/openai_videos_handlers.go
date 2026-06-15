@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,13 @@ type xaiVideoCreateMetadata struct {
 	Size      string
 	CreatedAt int64
 }
+
+type videosCreateCompatTarget int
+
+const (
+	videosCreateCompatOpenAI videosCreateCompatTarget = iota
+	videosCreateCompatXAI
+)
 
 func videosModelBase(model string) string {
 	_, baseModel := imagesModelParts(model)
@@ -145,6 +153,26 @@ func readXAIVideosNativeRequest(c *gin.Context) ([]byte, error) {
 		return nil, fmt.Errorf("body must be valid JSON")
 	}
 	return rawJSON, nil
+}
+
+func videosCreateCompatTargetForJSON(rawJSON []byte) videosCreateCompatTarget {
+	model := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	if isXAIVideosModel(model) {
+		return videosCreateCompatXAI
+	}
+	return videosCreateCompatOpenAI
+}
+
+func readVideosCreateCompatRequest(c *gin.Context) ([]byte, error) {
+	rawBody, err := handlers.ReadRequestBody(c)
+	if err != nil {
+		return nil, err
+	}
+	if c != nil && c.Request != nil {
+		c.Request.Body = io.NopCloser(bytes.NewReader(rawBody))
+		c.Request.Header.Del("Content-Encoding")
+	}
+	return rawBody, nil
 }
 
 func videosCreateRequestFromForm(c *gin.Context) ([]byte, error) {
@@ -539,7 +567,7 @@ func (h *OpenAIAPIHandler) VideosCreate(c *gin.Context) {
 
 	videoModel := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
 	if videoModel == "" {
-		videoModel = defaultXAIVideosModel
+		videoModel = defaultOpenAIVideosModel
 	}
 	if rejectUnsupportedVideosModel(c, videoModel) {
 		return
@@ -552,6 +580,27 @@ func (h *OpenAIAPIHandler) VideosCreate(c *gin.Context) {
 	}
 
 	h.collectXAIVideosCreate(c, xaiReq, meta)
+}
+
+func (h *OpenAIAPIHandler) VideosCreateCompat(c *gin.Context) {
+	contentType := strings.ToLower(strings.TrimSpace(c.ContentType()))
+	switch contentType {
+	case "multipart/form-data", "application/x-www-form-urlencoded":
+		h.VideosCreate(c)
+		return
+	}
+
+	rawBody, err := readVideosCreateCompatRequest(c)
+	if err != nil {
+		writeVideosFailedError(c, http.StatusBadRequest, defaultOpenAIVideosModel, "invalid_request_error", fmt.Sprintf("Invalid request: %v", err))
+		return
+	}
+
+	if json.Valid(rawBody) && videosCreateCompatTargetForJSON(rawBody) == videosCreateCompatXAI {
+		h.XAIVideosGenerations(c)
+		return
+	}
+	h.VideosCreate(c)
 }
 
 func (h *OpenAIAPIHandler) XAIVideosGenerations(c *gin.Context) {

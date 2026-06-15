@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -287,7 +288,11 @@ func TestHostApplyConfigDispatchesInterceptorRPCMethods(t *testing.T) {
 	}
 
 	caps := h.Snapshot().records[0].plugin.Capabilities
-	reqResp, errReq := caps.RequestInterceptor.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{Body: []byte("request")})
+	requestInterceptor, okRequestInterceptor := caps.RequestInterceptor.(pluginapi.RequestInterceptorBeforeAuth)
+	if !okRequestInterceptor {
+		t.Fatalf("RequestInterceptor type = %T, want before-auth interceptor", caps.RequestInterceptor)
+	}
+	reqResp, errReq := requestInterceptor.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{Body: []byte("request")})
 	if errReq != nil {
 		t.Fatalf("InterceptRequestBeforeAuth() error = %v", errReq)
 	}
@@ -376,6 +381,33 @@ func TestRPCInterceptorsIncludeHostCallbackID(t *testing.T) {
 	}
 	if chunk.HostCallbackID == "" {
 		t.Fatal("stream chunk interceptor host_callback_id is empty")
+	}
+}
+
+func TestOptionalRPCMethodUnsupportedDetectionIsNarrow(t *testing.T) {
+	method := pluginabi.MethodRequestInterceptAfter
+	positive := []string{
+		"unknown method",
+		"decode plugin result request.intercept_after: unknown method",
+		"unknown method: request.intercept_after",
+		"unsupported method: request.intercept_after",
+		"request.intercept_after method not found",
+	}
+	for _, msg := range positive {
+		if !isOptionalRPCMethodUnsupported(fmt.Errorf("%s", msg), method) {
+			t.Fatalf("isOptionalRPCMethodUnsupported(%q) = false, want true", msg)
+		}
+	}
+
+	negative := []string{
+		"unsupported method value in request body",
+		"unknown method selected by model",
+		"request.intercept_after failed validation",
+	}
+	for _, msg := range negative {
+		if isOptionalRPCMethodUnsupported(fmt.Errorf("%s", msg), method) {
+			t.Fatalf("isOptionalRPCMethodUnsupported(%q) = true, want false", msg)
+		}
 	}
 }
 

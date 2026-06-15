@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 )
 
@@ -58,6 +60,113 @@ func TestVideosModelValidationAllowsXAIVideoModel(t *testing.T) {
 	}
 	if isSupportedVideosModel("codex/grok-imagine-video-1.5-preview") {
 		t.Fatal("expected codex/grok-imagine-video-1.5-preview to be rejected")
+	}
+}
+
+func TestVideosCreateCompatTargetForJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want videosCreateCompatTarget
+	}{
+		{
+			name: "xai prefix uses native xAI route",
+			body: `{"model":"xai/grok-imagine-video"}`,
+			want: videosCreateCompatXAI,
+		},
+		{
+			name: "x-ai prefix uses native xAI route",
+			body: `{"model":"x-ai/grok-imagine-video-1.5-preview"}`,
+			want: videosCreateCompatXAI,
+		},
+		{
+			name: "bare xAI video model uses native xAI route",
+			body: `{"model":"grok-imagine-video"}`,
+			want: videosCreateCompatXAI,
+		},
+		{
+			name: "sora model uses OpenAI wrapper",
+			body: `{"model":"sora-2"}`,
+			want: videosCreateCompatOpenAI,
+		},
+		{
+			name: "empty model uses OpenAI wrapper default",
+			body: `{}`,
+			want: videosCreateCompatOpenAI,
+		},
+		{
+			name: "unsupported provider stays with OpenAI wrapper validation",
+			body: `{"model":"codex/grok-imagine-video"}`,
+			want: videosCreateCompatOpenAI,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := videosCreateCompatTargetForJSON([]byte(tt.body)); got != tt.want {
+				t.Fatalf("videosCreateCompatTargetForJSON() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadVideosCreateCompatRequestDecodesContentEncoding(t *testing.T) {
+	encoder, errEncoder := zstd.NewWriter(nil)
+	if errEncoder != nil {
+		t.Fatalf("zstd.NewWriter() error = %v", errEncoder)
+	}
+	raw := []byte(`{"model":"xai/grok-imagine-video"}`)
+	encoded := encoder.EncodeAll(raw, nil)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST(videosPath, func(c *gin.Context) {
+		got, errRead := readVideosCreateCompatRequest(c)
+		if errRead != nil {
+			t.Fatalf("readVideosCreateCompatRequest() error = %v", errRead)
+		}
+		if !bytes.Equal(got, raw) {
+			t.Fatalf("decoded body = %q, want %q", got, raw)
+		}
+		if c.Request.Header.Get("Content-Encoding") != "" {
+			t.Fatalf("Content-Encoding = %q, want cleared for replay", c.Request.Header.Get("Content-Encoding"))
+		}
+		if target := videosCreateCompatTargetForJSON(got); target != videosCreateCompatXAI {
+			t.Fatalf("target = %v, want xAI", target)
+		}
+		replayed, errReplay := io.ReadAll(c.Request.Body)
+		if errReplay != nil {
+			t.Fatalf("read replay body: %v", errReplay)
+		}
+		if !bytes.Equal(replayed, raw) {
+			t.Fatalf("replay body = %q, want %q", replayed, raw)
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, videosPath, bytes.NewReader(encoded))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "zstd")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d body=%s", resp.Code, http.StatusNoContent, resp.Body.String())
+	}
+}
+
+func TestVideosCreateDefaultsToOpenAIModel(t *testing.T) {
+	handler := &OpenAIAPIHandler{}
+	body := strings.NewReader(`{"prompt":"make a video","size":"bad"}`)
+
+	resp := performVideosEndpointRequest(t, http.MethodPost, openAIVideosPath, "application/json", body, handler.VideosCreate)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", resp.Code, http.StatusBadRequest, resp.Body.String())
+	}
+	if got := gjson.Get(resp.Body.String(), "model").String(); got != defaultOpenAIVideosModel {
+		t.Fatalf("model = %q, want %s; body=%s", got, defaultOpenAIVideosModel, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "size must be one of") {
+		t.Fatalf("expected validation error before upstream execution, body=%s", resp.Body.String())
 	}
 }
 
