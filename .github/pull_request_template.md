@@ -21,6 +21,7 @@
 - [ ] `/v0/management/usage` still exists
 - [ ] `/v0/management/usage/export` still exists
 - [ ] `/v0/management/usage/import` still exists
+- [ ] `docs/lts/core-feature-contracts.yaml` reviewed for touched protected or protected-adjacent features
 - [ ] Usage record creation/schema reviewed or tested: API key, auth source, model, token breakdown, latency, success/failure
 - [ ] Management usage response shape reviewed or tested: `usage`, `failed_requests`, `apis`, `models`, `details`
 - [ ] Export/import roundtrip reviewed or tested when usage data shape is touched
@@ -37,6 +38,7 @@ Protected-adjacent upstream changes requiring review even without text conflicts
 - Management usage response shape
 - config schema / hot reload
 - panel asset source / release source
+- registry features listed in `docs/lts/core-feature-contracts.yaml`
 
 ## Conflict resolution notes
 
