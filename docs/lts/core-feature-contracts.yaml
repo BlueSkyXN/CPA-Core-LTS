@@ -1,0 +1,208 @@
+version: 1
+generated_from: docs/lts/sync-runbook.md
+maintenance_model: protected-full-sync-with-contract-registry
+
+status_definitions:
+  protected: LTS identity surface. Must remain present and compatible unless the LTS product direction changes.
+  lts-maintained: Downstream-owned or upstream-deprecated behavior that CPA-Core-LTS still supports.
+  shared: Shared upstream/LTS behavior that can evolve when compatibility is preserved.
+  coexist: Optional or adjacent capability that may coexist with protected LTS behavior but must not replace it.
+
+guard_policy:
+  purpose: Keep cheap sentinels around LTS identity surfaces; prove behavior with tests and smoke checks.
+  add_marker_when:
+    - The marker is a stable route, config key, exported field, release asset name, or directory boundary.
+    - A missing marker would make a sync PR unsafe to review without manual rediscovery.
+    - The marker can be checked without network, secrets, generated assets, or provider credentials.
+  avoid_marker_when:
+    - The marker is only a local implementation detail that can be renamed without contract drift.
+    - The check duplicates an existing behavior-level test without improving review clarity.
+    - The marker would make normal upstream refactors fail unless an LTS contract actually changed.
+  behavior_proof:
+    - scripts/check-lts-contract.sh is a sentinel gate, not a replacement for contract tests.
+    - Usage schema, response shape, import/export roundtrip, and runtime attribution require Go tests.
+    - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
+
+features:
+  - id: full-usage-statistics-core
+    status: protected
+    reason: Built-in request-level usage statistics are the primary CPA-Core-LTS protected delta.
+    core_files:
+      - internal/usage/
+      - internal/usage/logger_plugin.go
+      - internal/usage/logger_plugin_test.go
+      - internal/runtime/executor/helps/usage_helpers.go
+      - internal/runtime/executor/helps/usage_helpers_test.go
+      - internal/api/handlers/management/usage.go
+      - internal/api/handlers/management/usage_contract_test.go
+      - internal/api/server.go
+      - config.example.yaml
+    required_markers:
+      - usage-statistics-enabled
+      - internal/usage/
+      - UsageReporter
+      - RequestDetail
+      - auth_index
+      - latency_ms
+      - success_count
+      - failure_count
+      - failed_requests
+    validation:
+      - scripts/check-lts-contract.sh
+      - go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
+      - go build -o test-output ./cmd/server && rm -f test-output
+
+  - id: management-usage-api
+    status: protected
+    reason: CPA-Panel-LTS and TUI consume these Management API endpoints and response fields.
+    routes:
+      - /v0/management/usage
+      - /v0/management/usage/export
+      - /v0/management/usage/import
+      - /v0/management/usage-statistics-enabled
+    core_files:
+      - internal/api/server.go
+      - internal/api/handlers/management/usage.go
+      - internal/api/handlers/management/config_basic.go
+      - internal/api/handlers/management/usage_contract_test.go
+      - internal/tui/client.go
+      - internal/tui/usage_tab.go
+    required_markers:
+      - mgmt.GET("/usage"
+      - mgmt.GET("/usage/export"
+      - mgmt.POST("/usage/import"
+      - mgmt.GET("/usage-statistics-enabled"
+      - total_requests
+      - success_count
+      - failure_count
+      - total_tokens
+      - apis
+      - models
+      - details
+    validation:
+      - go test ./internal/api/handlers/management -run 'Usage|usage'
+      - go test ./test -run 'Usage|usage'
+
+  - id: panel-release-asset
+    status: protected
+    reason: CPA-Core-LTS must continue serving the CPA-Panel-LTS single-file management panel.
+    routes:
+      - /management.html
+    core_files:
+      - internal/managementasset/updater.go
+      - internal/managementasset/updater_test.go
+      - internal/api/server.go
+      - internal/config/config.go
+      - README.md
+      - README_CN.md
+      - README_JA.md
+    required_markers:
+      - BlueSkyXN/CPA-Panel-LTS
+      - management.html
+      - DefaultPanelGitHubRepository
+      - defaultManagementReleaseURL
+      - defaultManagementFallbackURL
+      - serveManagementControlPanel
+    validation:
+      - go test ./internal/managementasset
+      - go build -o test-output ./cmd/server && rm -f test-output
+
+  - id: auth-identity-attribution
+    status: protected
+    reason: Usage statistics and Panel status views depend on stable API key, auth source, and auth_index attribution.
+    core_files:
+      - internal/access/
+      - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/config_lists.go
+      - internal/auth/
+      - internal/runtime/executor/helps/usage_helpers.go
+      - internal/watcher/
+      - internal/pluginhost/auth_callbacks.go
+    required_markers:
+      - userApiKey
+      - auth_index
+      - auth file
+      - source
+      - api-key
+      - APIKey
+    validation:
+      - go test ./internal/api/handlers/management -run 'Auth|auth|Usage|usage'
+      - go test ./internal/watcher ./internal/auth/...
+
+  - id: provider-runtime-usage-seams
+    status: shared
+    reason: Upstream provider/runtime changes should be absorbed while preserving usage reporting hooks.
+    core_files:
+      - internal/runtime/executor/
+      - internal/runtime/executor/helps/usage_helpers.go
+      - internal/translator/
+      - internal/logging/
+      - internal/api/middleware/
+    required_markers:
+      - UsageReporter
+      - Report
+      - token
+      - latency
+      - failed
+    protected_adjacent_changes:
+      - request lifecycle
+      - streaming final usage
+      - WebSocket fallback
+      - model resolution
+      - token accounting
+      - logging metadata
+    validation:
+      - go test ./internal/runtime/executor/... ./internal/translator/... ./test -run 'Usage|usage|Translation|translation'
+
+  - id: config-compatibility-and-hot-reload
+    status: protected
+    reason: Existing user config must keep reading and hot-reloading while upstream config schema evolves.
+    core_files:
+      - internal/config/
+      - internal/watcher/
+      - internal/api/handlers/management/config_basic.go
+      - config.example.yaml
+    required_markers:
+      - usage-statistics-enabled
+      - panel-github-repository
+      - hot reload
+      - config diff
+      - UsageStatisticsEnabled
+      - DefaultPanelGitHubRepository
+    validation:
+      - go test ./internal/config ./internal/watcher/... ./internal/api/handlers/management -run 'Config|config|Usage|usage'
+
+  - id: redis-compatible-usage-queue
+    status: coexist
+    reason: Redis-compatible usage events can support external dashboards without replacing built-in full usage statistics.
+    routes:
+      - /v0/management/usage-queue
+    core_files:
+      - internal/redisqueue/
+      - internal/api/server.go
+      - internal/api/redis_queue_protocol_integration_test.go
+    required_markers:
+      - usage-queue
+      - redisqueue
+      - usage-statistics-enabled
+      - latency_ms
+      - auth_index
+    validation:
+      - go test ./internal/redisqueue ./internal/api -run 'Redis|redis|Usage|usage'
+
+  - id: hf-space-runtime-smoke
+    status: lts-maintained
+    reason: HF Space smoke is a live deployment check after merge, not a substitute for contract tests.
+    reference_space:
+      - BlueSkyXN/CPA-HFS-2026-03
+    runtime_checks:
+      - /healthz returns ok
+      - /management.html is served
+      - /v0/management/usage requires management auth rather than disappearing
+      - x-cpa-commit matches the intended Core commit when the Space exposes it
+    required_markers:
+      - CPA_COMMIT
+      - CPA_VERSION
+      - x-cpa-commit
+      - /management.html
+      - /v0/management/usage

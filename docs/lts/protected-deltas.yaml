@@ -5,6 +5,7 @@ maintenance_model:
   scheduled_sync: false
   cadence_guidance: frequent_small_syncs_when_requested
   optional_runtime_smoke: manual_huggingface_space
+  feature_contract_registry: docs/lts/core-feature-contracts.yaml
 
 upstream_source:
   repo: router-for-me/CLIProxyAPI
@@ -24,6 +25,7 @@ protected_deltas:
       - go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
       - behavior-contract-tests
     conflict_policy: preserve_or_reapply_lts_usage
+    registry_feature: full-usage-statistics-core
 
   - id: cpa-panel-lts-compatibility
     must_keep: true
@@ -35,6 +37,9 @@ protected_deltas:
       - panel-response-shape-review
       - management-usage-response-shape-test
     conflict_policy: preserve_panel_compatibility
+    registry_features:
+      - management-usage-api
+      - panel-release-asset
 
   - id: local-downstream-customizations
     must_keep: true
@@ -43,6 +48,11 @@ protected_deltas:
     validation:
       - manual_review_required
     conflict_policy: preserve_or_reapply_local_delta
+    registry_features:
+      - auth-identity-attribution
+      - provider-runtime-usage-seams
+      - config-compatibility-and-hot-reload
+      - redis-compatible-usage-queue
 
 sync_rules:
   default_mode: protected_full_sync
@@ -50,6 +60,7 @@ sync_rules:
   merge_commit_required: true
   squash_forbidden: true
   rebase_forbidden: true
+  contract_registry_required: true
   forbidden_shortcuts:
     - GitHub Sync fork
     - git pull upstream main on main

@@ -16,6 +16,24 @@ CLIProxyAPI upstream/main latest
 
 本仓库不是普通 mirror fork。`main` 是唯一产品主线；`upstream/main` 只是只读同步坐标。正常维护方式是 manual / AI-operated protected full-sync，不安排自动同步。
 
+## Contract registry
+
+Panel 的实践证明，单靠“这几个文件不能删”的文字规则不够；需要把受保护能力拆成可审查的 registry，再让脚本和 PR checklist 同时引用它。Core 使用 `docs/lts/core-feature-contracts.yaml` 作为 contract registry，定位如下：
+
+- `docs/lts/protected-deltas.yaml` 定义 LTS 产品边界和同步策略。
+- `docs/lts/core-feature-contracts.yaml` 定义每个受保护能力的文件、路由、marker、验证命令和 protected-adjacent 改动。
+- `scripts/check-lts-contract.sh` 负责检查 registry 存在、关键 marker 存在、核心源码路径仍然存在。
+- `.github/pull_request_template.md` 负责让评审者显式说明是否按 registry 做了 protected delta review。
+
+和 Panel 不同，Core 的正确模式仍然是 protected full-sync，不是 selective-port。原因是 Core 的受保护 delta 主要集中在 usage、Management API、panel asset source、auth/config attribution 等明确接口上；普通 provider/runtime/security upstream 变更默认吸收，只在 registry 标出的 protected-adjacent seam 上做保留或适配。
+
+保持这套方案轻量的规则：
+
+- 只为稳定 contract 增加 sentinel：route、config key、JSON 字段、release asset、目录边界。
+- 不为普通函数名、局部变量、临时实现细节增加 marker；这些应该由 tests 或人工 review 覆盖。
+- `scripts/check-lts-contract.sh` 只能证明“保护面没有明显消失”；不能替代 usage schema、response shape、import/export、runtime attribution 的 Go 测试。
+- 每次新增 registry feature，都要写清为什么它是 LTS 产品边界，而不是单次 sync 的临时关注点。
+
 ## 禁止操作
 
 - 不使用 GitHub `Sync fork`。
@@ -41,6 +59,7 @@ git rev-list --count origin/main..upstream/main
 git worktree list --porcelain
 git branch --list 'codex/*'
 git for-each-ref refs/remotes/origin/codex --format='%(refname:short)'
+scripts/check-lts-contract.sh
 ```
 
 如果工作区不干净，先确认改动来源。不要覆盖或丢弃用户改动。
@@ -105,6 +124,16 @@ git merge --no-ff --log <UPSTREAM_STAGE_SHA>
 - `internal/usage/`
 - `/v0/management/usage*`
 
+审查时先对照 `docs/lts/core-feature-contracts.yaml` 的对应 feature：
+
+- `full-usage-statistics-core`
+- `management-usage-api`
+- `panel-release-asset`
+- `auth-identity-attribution`
+- `provider-runtime-usage-seams`
+- `config-compatibility-and-hot-reload`
+- `redis-compatible-usage-queue`
+
 ## Conflict policy
 
 冲突解决原则：
@@ -130,6 +159,8 @@ go test ./...
 git diff --check
 ```
 
+`scripts/check-lts-contract.sh` 必须覆盖 `docs/lts/protected-deltas.yaml` 和 `docs/lts/core-feature-contracts.yaml` 两层文件；如果 guard 只证明单个文件存在，不能视为 contract review 完成。
+
 如果 `go test ./...` 因环境、网络或已知非本次改动原因无法完成，PR body 必须写明实际命令、失败位置和剩余风险。不能把未运行的检查写成通过。
 
 最小行为级 contract tests 必须覆盖：
@@ -148,6 +179,7 @@ git diff --check
 - stage 编号和分段理由
 - 冲突文件列表
 - protected delta review
+- contract registry features reviewed
 - 普通 upstream 改动吸收范围
 - 被覆盖的旧 upstream-port PR 范围，如有
 - validation 命令和结果
@@ -162,6 +194,7 @@ Protected delta review:
 - management usage API: preserved / changed / retested
 - CPA-Panel-LTS response shape: preserved / changed / retested
 - downstream auth/config/panel/source customizations: preserved / changed / retested
+- contract registry: reviewed features / changed features / skipped features with reason
 - upstream ordinary changes: absorbed
 ```
 
