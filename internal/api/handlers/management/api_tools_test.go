@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -208,5 +209,114 @@ func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	}
 	if gotCompat.ID != compatAuth.ID {
 		t.Fatalf("authByIndex(compat) returned %q, want %q", gotCompat.ID, compatAuth.ID)
+	}
+}
+
+func TestIsCodexQuotaResetConsumeAPICall(t *testing.T) {
+	t.Parallel()
+
+	resetURL := mustParseURL(t, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")
+	auth := &coreauth.Auth{Provider: "codex"}
+
+	if !isCodexQuotaResetConsumeAPICall(http.MethodPost, resetURL, apiCallTestResponse(http.MethodPost, resetURL.String(), http.StatusOK), auth) {
+		t.Fatal("expected Codex quota reset consume call to match")
+	}
+
+	cases := []struct {
+		name        string
+		method      string
+		target      string
+		finalMethod string
+		finalTarget string
+		statusCode  int
+		auth        *coreauth.Auth
+	}{
+		{
+			name:        "non post",
+			method:      http.MethodGet,
+			target:      resetURL.String(),
+			finalMethod: http.MethodGet,
+			finalTarget: resetURL.String(),
+			statusCode:  http.StatusOK,
+			auth:        auth,
+		},
+		{
+			name:        "failed upstream",
+			method:      http.MethodPost,
+			target:      resetURL.String(),
+			finalMethod: http.MethodPost,
+			finalTarget: resetURL.String(),
+			statusCode:  http.StatusTooManyRequests,
+			auth:        auth,
+		},
+		{
+			name:        "non codex auth",
+			method:      http.MethodPost,
+			target:      resetURL.String(),
+			finalMethod: http.MethodPost,
+			finalTarget: resetURL.String(),
+			statusCode:  http.StatusOK,
+			auth:        &coreauth.Auth{Provider: "gemini"},
+		},
+		{
+			name:        "wrong host",
+			method:      http.MethodPost,
+			target:      "https://example.com/backend-api/wham/rate-limit-reset-credits/consume",
+			finalMethod: http.MethodPost,
+			finalTarget: "https://example.com/backend-api/wham/rate-limit-reset-credits/consume",
+			statusCode:  http.StatusOK,
+			auth:        auth,
+		},
+		{
+			name:        "wrong path",
+			method:      http.MethodPost,
+			target:      "https://chatgpt.com/backend-api/wham/usage",
+			finalMethod: http.MethodPost,
+			finalTarget: "https://chatgpt.com/backend-api/wham/usage",
+			statusCode:  http.StatusOK,
+			auth:        auth,
+		},
+		{
+			name:        "redirected to login page",
+			method:      http.MethodPost,
+			target:      resetURL.String(),
+			finalMethod: http.MethodGet,
+			finalTarget: "https://chatgpt.com/auth/login",
+			statusCode:  http.StatusOK,
+			auth:        auth,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsed := mustParseURL(t, tc.target)
+			resp := apiCallTestResponse(tc.finalMethod, tc.finalTarget, tc.statusCode)
+			if isCodexQuotaResetConsumeAPICall(tc.method, parsed, resp, tc.auth) {
+				t.Fatal("expected call not to match")
+			}
+		})
+	}
+}
+
+func mustParseURL(t *testing.T, rawURL string) *url.URL {
+	t.Helper()
+	parsed, errParse := url.Parse(rawURL)
+	if errParse != nil {
+		t.Fatalf("parse URL %q: %v", rawURL, errParse)
+	}
+	return parsed
+}
+
+func apiCallTestResponse(method, rawURL string, statusCode int) *http.Response {
+	parsed, _ := url.Parse(rawURL)
+	return &http.Response{
+		StatusCode: statusCode,
+		Request: &http.Request{
+			Method: method,
+			URL:    parsed,
+		},
 	}
 }
