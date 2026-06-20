@@ -209,11 +209,47 @@ func (h *Handler) APICall(c *gin.Context) {
 		return
 	}
 
+	if isCodexQuotaResetConsumeAPICall(method, parsedURL, resp, auth) && h != nil && h.authManager != nil {
+		if h.authManager.ClearQuotaState(c.Request.Context(), auth.ID) {
+			log.WithField("auth_id", auth.ID).Debug("cleared Codex quota routing state after reset credit consume")
+		}
+	}
+
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
 		Body:       string(respBody),
 	})
+}
+
+func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *http.Response, auth *coreauth.Auth) bool {
+	if auth == nil || parsedURL == nil || resp == nil || resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false
+	}
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodPost {
+		return false
+	}
+	if strings.ToUpper(strings.TrimSpace(resp.Request.Method)) != http.MethodPost {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	return isCodexQuotaResetConsumeURL(parsedURL) && isCodexQuotaResetConsumeURL(resp.Request.URL)
+}
+
+func isCodexQuotaResetConsumeURL(target *url.URL) bool {
+	if target == nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(target.Hostname()))
+	if host != "chatgpt.com" {
+		return false
+	}
+	return strings.TrimSpace(target.EscapedPath()) == "/backend-api/wham/rate-limit-reset-credits/consume"
 }
 
 func firstNonEmptyString(values ...*string) string {
