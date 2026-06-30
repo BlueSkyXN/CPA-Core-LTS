@@ -3,7 +3,7 @@ name: docker-image
 on:
   push:
     tags:
-      - 'v*-lts.*'
+      - 'v*-tls-*'
 
 permissions:
   contents: read

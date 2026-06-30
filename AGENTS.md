@@ -107,7 +107,7 @@ These commands are confirmed from Go tooling, CI workflows, Docker files, source
 | `docker compose build` | Build container image | repo | Requires Docker daemon; not default sandbox validation |
 | `./docker-build.sh [--with-usage]` | Interactive Docker build/run helper | repo | Interactive and Docker required; `--with-usage` calls Management API and stores temp secret under `temp/stats/` |
 
-Workflow notes: `pr-test-build.yml` refreshes `internal/registry/models/models.json` from `router-for-me/models.git`; `lts-contract.yml` runs contract guard, usage/management tests, build, and observes `go test ./...`; `release.yaml` is tag-triggered for `v*-lts.*` and requires release context plus `GITHUB_TOKEN`.
+Workflow notes: `pr-test-build.yml` refreshes `internal/registry/models/models.json` from `router-for-me/models.git`; `lts-contract.yml` runs contract guard, usage/management tests, build, and observes `go test ./...`; `release.yaml` is tag-triggered for `v*-tls-*` and requires release context plus `GITHUB_TOKEN`.
 
 ## Global rules
 
