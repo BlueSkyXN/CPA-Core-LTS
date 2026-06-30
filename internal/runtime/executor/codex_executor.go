@@ -932,7 +932,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
-			if errRetry := abnormalRetry.RetryError(detail); errRetry != nil {
+			if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
 				reporter.PublishFailureWithDetail(ctx, detail, errRetry)
 				err = errRetry
 				return resp, err
@@ -1262,7 +1262,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				case "response.completed":
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						if buffering {
-							if errRetry := abnormalRetry.RetryError(detail); errRetry != nil {
+							if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
 								reporter.PublishFailureWithDetail(ctx, detail, errRetry)
 								bufferedChunks = nil
 								emitError(errRetry)

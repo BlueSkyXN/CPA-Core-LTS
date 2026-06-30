@@ -160,6 +160,7 @@ features:
     config_keys:
       - codex.abnormal-reasoning-retry.enabled
       - codex.abnormal-reasoning-retry.model-contains
+      - codex.abnormal-reasoning-retry.reasoning-efforts
       - codex.abnormal-reasoning-retry.reasoning-tokens
       - codex.abnormal-reasoning-retry.auth-kinds
       - codex.abnormal-reasoning-retry.auth-ids
@@ -178,6 +179,7 @@ features:
     required_markers:
       - abnormal-reasoning-retry
       - max-retries
+      - reasoning-efforts
       - RetryWithoutPenalty
       - CodexAbnormalReasoningRetryUsageMetadataKey
       - codex_abnormal_reasoning_response

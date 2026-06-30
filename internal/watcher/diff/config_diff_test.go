@@ -183,13 +183,14 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	newCfg := &config.Config{
 		Codex: config.CodexConfig{
 			AbnormalReasoningRetry: config.CodexAbnormalReasoningRetryConfig{
-				Enabled:         true,
-				ModelContains:   []string{"gpt-5.5", "custom"},
-				ReasoningTokens: []int64{516},
-				AuthKinds:       []string{"oauth", "api-key"},
-				AuthIDs:         []string{"auth-1"},
-				StreamBuffer:    &streamBuffer,
-				MaxRetries:      &maxRetries,
+				Enabled:          true,
+				ModelContains:    []string{"gpt-5.5", "custom"},
+				ReasoningEfforts: []string{"xhigh"},
+				ReasoningTokens:  []int64{516},
+				AuthKinds:        []string{"oauth", "api-key"},
+				AuthIDs:          []string{"auth-1"},
+				StreamBuffer:     &streamBuffer,
+				MaxRetries:       &maxRetries,
 			},
 		},
 	}
@@ -200,6 +201,7 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer: true -> false")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.max-retries: 2 -> 0")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.model-contains: updated (1 -> 2 entries)")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.reasoning-efforts: updated (0 -> 1 entries)")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.reasoning-tokens: updated (2 -> 1 entries)")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.auth-kinds: updated (1 -> 2 entries)")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.auth-ids: updated (0 -> 1 entries)")

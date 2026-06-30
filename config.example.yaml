@@ -175,6 +175,9 @@ codex:
     enabled: false
     model-contains:
       - "gpt-5.5"
+    # Optional translated Codex reasoning.effort filter. Empty means any effort.
+    # Examples: "medium", "high", "xhigh". Request body effort works even without a model suffix like gpt-5.5(xhigh).
+    reasoning-efforts: []
     reasoning-tokens:
       - 516
       - 1034

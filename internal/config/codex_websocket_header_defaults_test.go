@@ -72,6 +72,9 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if got, want := effective.ModelContains, []string{"gpt-5.5"}; !equalStringSlices(got, want) {
 		t.Fatalf("ModelContains = %#v, want %#v", got, want)
 	}
+	if len(effective.ReasoningEfforts) != 0 {
+		t.Fatalf("ReasoningEfforts = %#v, want empty", effective.ReasoningEfforts)
+	}
 	if got, want := effective.ReasoningTokens, []int64{516, 1034}; !equalInt64Slices(got, want) {
 		t.Fatalf("ReasoningTokens = %#v, want %#v", got, want)
 	}
@@ -100,6 +103,10 @@ codex:
       - "  gpt-5.5  "
       - "gpt-5.5"
       - "custom"
+    reasoning-efforts:
+      - " XHigh "
+      - "xhigh"
+      - "high"
     reasoning-tokens:
       - 516
       - 516
@@ -128,6 +135,9 @@ codex:
 	}
 	if got, want := effective.ModelContains, []string{"gpt-5.5", "custom"}; !equalStringSlices(got, want) {
 		t.Fatalf("ModelContains = %#v, want %#v", got, want)
+	}
+	if got, want := effective.ReasoningEfforts, []string{"xhigh", "high"}; !equalStringSlices(got, want) {
+		t.Fatalf("ReasoningEfforts = %#v, want %#v", got, want)
 	}
 	if got, want := effective.ReasoningTokens, []int64{516, 1034}; !equalInt64Slices(got, want) {
 		t.Fatalf("ReasoningTokens = %#v, want %#v", got, want)

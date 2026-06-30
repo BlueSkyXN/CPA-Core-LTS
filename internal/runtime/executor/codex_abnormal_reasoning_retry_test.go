@@ -153,6 +153,73 @@ func TestCodexExecutorAbnormalReasoningRetry_MatchesRequestedModelMetadata(t *te
 	assertRetryWithoutPenaltyError(t, err)
 }
 
+func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterUsesPayloadWithoutModelSuffix(t *testing.T) {
+	testCases := []struct {
+		name         string
+		sourceFormat string
+		payload      []byte
+	}{
+		{
+			name:         "responses reasoning.effort",
+			sourceFormat: "openai-response",
+			payload:      []byte(`{"model":"gpt-5.5","input":"hello","reasoning":{"effort":"xhigh"}}`),
+		},
+		{
+			name:         "chat reasoning_effort",
+			sourceFormat: "openai",
+			payload:      []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"xhigh"}`),
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+			usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
+			t.Cleanup(func() {
+				usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", noopUsagePlugin{})
+			})
+
+			server := newCodexAbnormalReasoningRetryServer(t, "gpt-5.5", 516)
+			defer server.Close()
+
+			executor := NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithEfforts([]string{"xhigh"}))
+			_, err := executor.Execute(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+				Model:   "gpt-5.5",
+				Payload: tc.payload,
+			}, cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FromString(tc.sourceFormat),
+				Stream:       false,
+			})
+			assertRetryWithoutPenaltyError(t, err)
+
+			record := recorder.waitForRecord(t, func(record usage.Record) bool {
+				return record.AuthID == "codex-oauth-1" && record.Model == "gpt-5.5" && record.Detail.ReasoningTokens == 516
+			})
+			if record.ReasoningEffort != "xhigh" {
+				t.Fatalf("record.ReasoningEffort = %q, want xhigh", record.ReasoningEffort)
+			}
+		})
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterSkipsMismatch(t *testing.T) {
+	server := newCodexAbnormalReasoningRetryServer(t, "gpt-5.5", 516)
+	defer server.Close()
+
+	executor := NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithEfforts([]string{"xhigh"}))
+	_, err := executor.Execute(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello","reasoning":{"effort":"high"}}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil when reasoning effort does not match", err)
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_PublishesFailedUsageForInterceptedAttempt(t *testing.T) {
 	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
 	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
@@ -530,6 +597,12 @@ func codexAbnormalReasoningRetryTestConfig(authIDs []string, streamBuffer *bool)
 			},
 		},
 	}
+}
+
+func codexAbnormalReasoningRetryTestConfigWithEfforts(efforts []string) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.ReasoningEfforts = efforts
+	return cfg
 }
 
 func codexAbnormalReasoningRetryTestAuth(baseURL string) *cliproxyauth.Auth {

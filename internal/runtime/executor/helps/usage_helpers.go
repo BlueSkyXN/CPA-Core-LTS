@@ -110,6 +110,13 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 	r.serviceTier = extractServiceTierFromPayload(payload)
 }
 
+func (r *UsageReporter) ReasoningEffort() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.reasoning)
+}
+
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
 	if r == nil || client == nil {
 		return client

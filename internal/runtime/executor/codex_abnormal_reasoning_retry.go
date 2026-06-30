@@ -15,11 +15,12 @@ import (
 )
 
 type codexAbnormalReasoningRetryPolicy struct {
-	enabled         bool
-	streamBuffer    bool
-	maxRetries      int
-	modelContains   []string
-	reasoningTokens map[int64]struct{}
+	enabled          bool
+	streamBuffer     bool
+	maxRetries       int
+	modelContains    []string
+	reasoningEfforts map[string]struct{}
+	reasoningTokens  map[int64]struct{}
 }
 
 type codexAbnormalReasoningRetryError struct {
@@ -102,12 +103,20 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 	if len(tokens) == 0 {
 		return codexAbnormalReasoningRetryPolicy{}
 	}
+	efforts := make(map[string]struct{}, len(effective.ReasoningEfforts))
+	for _, effort := range effective.ReasoningEfforts {
+		effort = normalizeCodexAbnormalReasoningRetryEffort(effort)
+		if effort != "" {
+			efforts[effort] = struct{}{}
+		}
+	}
 	return codexAbnormalReasoningRetryPolicy{
-		enabled:         true,
-		streamBuffer:    effective.StreamBuffer,
-		maxRetries:      effective.MaxRetries,
-		modelContains:   modelContains,
-		reasoningTokens: tokens,
+		enabled:          true,
+		streamBuffer:     effective.StreamBuffer,
+		maxRetries:       effective.MaxRetries,
+		modelContains:    modelContains,
+		reasoningEfforts: efforts,
+		reasoningTokens:  tokens,
 	}
 }
 
@@ -119,14 +128,23 @@ func (p codexAbnormalReasoningRetryPolicy) StreamBuffer() bool {
 	return p.enabled && p.streamBuffer
 }
 
-func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail) error {
+func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reasoningEffort string) error {
 	if !p.enabled || detail.ReasoningTokens <= 0 {
 		return nil
 	}
 	if _, ok := p.reasoningTokens[detail.ReasoningTokens]; !ok {
 		return nil
 	}
+	if len(p.reasoningEfforts) > 0 {
+		if _, ok := p.reasoningEfforts[normalizeCodexAbnormalReasoningRetryEffort(reasoningEffort)]; !ok {
+			return nil
+		}
+	}
 	return &codexAbnormalReasoningRetryError{detail: detail, maxRetries: p.maxRetries}
+}
+
+func normalizeCodexAbnormalReasoningRetryEffort(effort string) string {
+	return strings.ToLower(strings.TrimSpace(effort))
 }
 
 func isRetryWithoutPenaltyError(err error) bool {

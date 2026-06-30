@@ -388,6 +388,9 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	if !reflect.DeepEqual(oldCfg.ModelContains, newCfg.ModelContains) {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.model-contains: updated (%d -> %d entries)", len(oldCfg.ModelContains), len(newCfg.ModelContains)))
 	}
+	if !reflect.DeepEqual(oldCfg.ReasoningEfforts, newCfg.ReasoningEfforts) {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.reasoning-efforts: updated (%d -> %d entries)", len(oldCfg.ReasoningEfforts), len(newCfg.ReasoningEfforts)))
+	}
 	if !reflect.DeepEqual(oldCfg.ReasoningTokens, newCfg.ReasoningTokens) {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.reasoning-tokens: updated (%d -> %d entries)", len(oldCfg.ReasoningTokens), len(newCfg.ReasoningTokens)))
 	}
