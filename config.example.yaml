@@ -168,6 +168,20 @@ codex:
   # Some superstitious users believe request tracking identifiers can be used
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
+  # CPA-Core-LTS extra feature. When explicitly enabled, discard and retry
+  # matching Codex OAuth responses whose completed usage reports suspicious
+  # reasoning token counts. Disabled by default.
+  abnormal-reasoning-retry:
+    enabled: false
+    model-contains:
+      - "gpt-5.5"
+    reasoning-tokens:
+      - 516
+      - 1034
+    auth-kinds:
+      - "oauth"
+    auth-ids: []
+    stream-buffer: true
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

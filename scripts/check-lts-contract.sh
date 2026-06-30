@@ -89,6 +89,8 @@ require_grep "BlueSkyXN/CPA-Panel-LTS" internal/managementasset/updater.go inter
 require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
+require_grep "abnormal-reasoning-retry" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "RetryWithoutPenalty" sdk/cliproxy/auth/conductor.go docs/lts/core-feature-contracts.yaml
 
 python3 - <<'PY'
 from pathlib import Path
@@ -131,6 +133,7 @@ registry_required = [
     "panel-release-asset",
     "auth-identity-attribution",
     "provider-runtime-usage-seams",
+    "codex-abnormal-reasoning-retry",
     "config-compatibility-and-hot-reload",
     "redis-compatible-usage-queue",
     "hf-space-runtime-smoke",
@@ -146,6 +149,8 @@ registry_required = [
     "success_count",
     "failure_count",
     "go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'",
+    "abnormal-reasoning-retry",
+    "RetryWithoutPenalty",
 ]
 
 missing_registry = [item for item in registry_required if item not in registry_text]

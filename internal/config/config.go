@@ -306,7 +306,97 @@ type CodexHeaderDefaults struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
-	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
+	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
+}
+
+// CodexAbnormalReasoningRetryConfig controls the CPA-Core-LTS retry guard for
+// suspicious Codex successful responses.
+type CodexAbnormalReasoningRetryConfig struct {
+	Enabled         bool     `yaml:"enabled" json:"enabled"`
+	ModelContains   []string `yaml:"model-contains" json:"model-contains"`
+	ReasoningTokens []int64  `yaml:"reasoning-tokens" json:"reasoning-tokens"`
+	AuthKinds       []string `yaml:"auth-kinds" json:"auth-kinds"`
+	AuthIDs         []string `yaml:"auth-ids" json:"auth-ids"`
+	StreamBuffer    *bool    `yaml:"stream-buffer,omitempty" json:"stream-buffer,omitempty"`
+}
+
+// EffectiveCodexAbnormalReasoningRetryConfig is the sanitized runtime view of
+// CodexAbnormalReasoningRetryConfig. It is intentionally derived in memory so
+// existing config.yaml files are not rewritten to add default values.
+type EffectiveCodexAbnormalReasoningRetryConfig struct {
+	Enabled         bool
+	ModelContains   []string
+	ReasoningTokens []int64
+	AuthKinds       []string
+	AuthIDs         []string
+	StreamBuffer    bool
+}
+
+// Effective returns the runtime config with LTS defaults applied.
+func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalReasoningRetryConfig {
+	streamBuffer := true
+	if c.StreamBuffer != nil {
+		streamBuffer = *c.StreamBuffer
+	}
+	return EffectiveCodexAbnormalReasoningRetryConfig{
+		Enabled:         c.Enabled,
+		ModelContains:   defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
+		ReasoningTokens: defaultedPositiveInt64List(c.ReasoningTokens, []int64{516, 1034}),
+		AuthKinds:       defaultedTrimmedStringList(c.AuthKinds, []string{"oauth"}, true),
+		AuthIDs:         defaultedTrimmedStringList(c.AuthIDs, nil, false),
+		StreamBuffer:    streamBuffer,
+	}
+}
+
+func defaultedTrimmedStringList(values []string, defaults []string, lower bool) []string {
+	source := values
+	if len(source) == 0 {
+		source = defaults
+	}
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for _, value := range source {
+		trimmed := strings.TrimSpace(value)
+		if lower {
+			trimmed = strings.ToLower(trimmed)
+		}
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func defaultedPositiveInt64List(values []int64, defaults []int64) []int64 {
+	source := values
+	if len(source) == 0 {
+		source = defaults
+	}
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(source))
+	seen := make(map[int64]struct{}, len(source))
+	for _, value := range source {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // TLSConfig holds HTTPS server settings.

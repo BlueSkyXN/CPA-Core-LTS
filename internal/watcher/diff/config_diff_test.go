@@ -176,6 +176,32 @@ func TestBuildConfigChangeDetails_PayloadRules(t *testing.T) {
 	expectContains(t, details, "payload.filter: updated (1 -> 0 rules)")
 }
 
+func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
+	streamBuffer := false
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{
+		Codex: config.CodexConfig{
+			AbnormalReasoningRetry: config.CodexAbnormalReasoningRetryConfig{
+				Enabled:         true,
+				ModelContains:   []string{"gpt-5.5", "custom"},
+				ReasoningTokens: []int64{516},
+				AuthKinds:       []string{"oauth", "api-key"},
+				AuthIDs:         []string{"auth-1"},
+				StreamBuffer:    &streamBuffer,
+			},
+		},
+	}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+
+	expectContains(t, details, "codex.abnormal-reasoning-retry.enabled: false -> true")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer: true -> false")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.model-contains: updated (1 -> 2 entries)")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.reasoning-tokens: updated (2 -> 1 entries)")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.auth-kinds: updated (1 -> 2 entries)")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.auth-ids: updated (0 -> 1 entries)")
+}
+
 func TestBuildConfigChangeDetails_NoChanges(t *testing.T) {
 	cfg := &config.Config{
 		Port: 8080,

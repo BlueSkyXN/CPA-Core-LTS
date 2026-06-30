@@ -96,6 +96,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	changes = appendCodexAbnormalReasoningRetryChanges(changes, oldCfg.Codex.AbnormalReasoningRetry.Effective(), newCfg.Codex.AbnormalReasoningRetry.Effective())
 
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
@@ -369,6 +370,31 @@ func appendPayloadFilterRuleChanges(changes []string, section string, oldRules, 
 		return changes
 	}
 	return append(changes, fmt.Sprintf("payload.%s: updated (%d -> %d rules)", section, len(oldRules), len(newRules)))
+}
+
+func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg config.EffectiveCodexAbnormalReasoningRetryConfig) []string {
+	if reflect.DeepEqual(oldCfg, newCfg) {
+		return changes
+	}
+	if oldCfg.Enabled != newCfg.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.enabled: %t -> %t", oldCfg.Enabled, newCfg.Enabled))
+	}
+	if oldCfg.StreamBuffer != newCfg.StreamBuffer {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.stream-buffer: %t -> %t", oldCfg.StreamBuffer, newCfg.StreamBuffer))
+	}
+	if !reflect.DeepEqual(oldCfg.ModelContains, newCfg.ModelContains) {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.model-contains: updated (%d -> %d entries)", len(oldCfg.ModelContains), len(newCfg.ModelContains)))
+	}
+	if !reflect.DeepEqual(oldCfg.ReasoningTokens, newCfg.ReasoningTokens) {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.reasoning-tokens: updated (%d -> %d entries)", len(oldCfg.ReasoningTokens), len(newCfg.ReasoningTokens)))
+	}
+	if !reflect.DeepEqual(oldCfg.AuthKinds, newCfg.AuthKinds) {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.auth-kinds: updated (%d -> %d entries)", len(oldCfg.AuthKinds), len(newCfg.AuthKinds)))
+	}
+	if !reflect.DeepEqual(oldCfg.AuthIDs, newCfg.AuthIDs) {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.auth-ids: updated (%d -> %d entries)", len(oldCfg.AuthIDs), len(newCfg.AuthIDs)))
+	}
+	return changes
 }
 
 func equalStringMap(a, b map[string]string) bool {
