@@ -7,12 +7,12 @@ Key files: provider subdirectories under `antigravity/`, `claude/`, `codex/`, `g
 ## Why this is high-risk
 
 - Auth files may contain access tokens, refresh tokens, account IDs, API keys, project IDs, and provider metadata.
-- These structs feed watcher synthesis, SDK auth conductor, Management API auth-file endpoints, executor selection, and usage attribution.
+- These structs feed watcher synthesis, SDK auth conductor, plugin scheduler, Management API auth-file endpoints, executor selection, and usage attribution.
 - OAuth callback ports and browser behavior are user-visible CLI behavior.
 
 ## Required before changes
 
-- Trace the provider through CLI command, token storage, watcher/auth manager, executor, and management handlers.
+- Trace the provider through CLI command, token storage, watcher/auth manager, executor, SDK conductor, and management handlers.
 - Confirm logs use redacted summaries, not raw token payloads.
 - Preserve existing auth file compatibility unless a migration is explicitly requested.
 

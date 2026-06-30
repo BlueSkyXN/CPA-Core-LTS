@@ -7,14 +7,15 @@ Key files: `config.go`, `sdk_config.go`, `disable_image_generation_mode.go`, `ve
 ## Why this is high-risk
 
 - Config keys are user data and Management API surface, not just internal structs.
-- YAML tags, JSON tags, defaults, sanitize logic, hot reload, TUI labels, and Panel forms can all depend on the same key.
+- YAML tags, JSON tags, defaults, sanitize logic, hot reload, TUI labels, Panel forms, watcher diff, and SDK config can all depend on the same key.
 - Startup legacy migration is intentionally disabled in current code; do not re-enable persistence accidentally.
-- `usage-statistics-enabled` is part of the LTS contract and must remain configurable.
+- `usage-statistics-enabled`, `redis-usage-queue-*`, and `panel-github-repository` are LTS contract-adjacent.
 
 ## Required before changes
 
 - Search for the exact key in `internal/`, `sdk/`, `test/`, `config.example.yaml`, and Management API handlers.
-- Check whether the key appears in TUI config tabs or Panel-facing endpoints.
+- Check whether the key appears in TUI config tabs, Panel-facing endpoints, watcher diff, or SDK config structs.
+- Do not infer runtime defaults from `config.example.yaml` alone; verify `config.go` and `parse.go`.
 - Decide whether old config files must keep loading without mutation.
 
 ## Do not

@@ -1,15 +1,15 @@
 # sdk/cliproxy navigation card
 
 `sdk/cliproxy/` is the public embeddable SDK for constructing and running the proxy core from other Go programs.
-Read this card before changing public types, builder/service behavior, auth conductor, runtime provider binding, watcher integration, or usage plugin contracts.
+Read this card before changing public types, builder/service behavior, auth conductor, runtime provider binding, watcher integration, pluginhost wiring, or usage plugin contracts.
 Key files: `builder.go`, `service.go`, `types.go`, `providers.go`, `rtprovider.go`, `auth/`, `usage/`, `executor/`, `pipeline/`.
 
 ## Local invariants
 
 - Public structs, methods, and package paths are external API; avoid breaking changes unless user explicitly asks for a major contract change.
-- SDK auth conductor behavior must stay compatible with core auth manager, watcher updates, provider availability, cooldown, and recent request tracking.
+- SDK auth conductor behavior must stay compatible with core auth manager, watcher updates, provider availability, cooldown, quota state, and recent request tracking.
 - SDK usage records feed `internal/usage`; preserve token, auth index, source, latency, model, and failed state where available.
-- `sdk/config` and `internal/config` compatibility matters when embedding the service.
+- `sdk/config`, `internal/config`, `internal/pluginhost`, and `internal/watcher` compatibility matters when embedding the service.
 
 ## Local rules
 
@@ -21,7 +21,7 @@ Key files: `builder.go`, `service.go`, `types.go`, `providers.go`, `rtprovider.g
 
 - 不要 expose internal-only structs as public SDK surface without a clear compatibility reason.
 - 不要 make SDK startup require global process state, network calls, or interactive OAuth unless already configured by caller.
-- 不要 duplicate core auth/executor logic in SDK when an existing core helper can be reused safely.
+- 不要 duplicate core auth/executor/plugin logic in SDK when an existing core helper can be reused safely.
 
 ## Validation
 
