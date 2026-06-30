@@ -582,6 +582,8 @@ type PayloadRule struct {
 type PayloadModelRule struct {
 	// Name is the model name or wildcard pattern (e.g., "gpt-*", "*-5", "gemini-*-pro").
 	Name string `yaml:"name" json:"name"`
+	// Scope controls which model-name source Name matches: "any" (default), "requested", or "upstream".
+	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
 	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.

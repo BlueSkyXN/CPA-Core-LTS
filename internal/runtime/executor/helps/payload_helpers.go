@@ -6,13 +6,23 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+const (
+	payloadModelScopeAny       = "any"
+	payloadModelScopeRequested = "requested"
+	payloadModelScopeUpstream  = "upstream"
+)
+
+var payloadUnknownModelScopeWarnings sync.Map
 
 // ApplyPayloadConfigWithRoot behaves like applyPayloadConfig but treats all parameter
 // paths as relative to the provided root path (for example, "request" for Gemini CLI)
@@ -44,7 +54,7 @@ func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProt
 		model = strings.TrimSpace(model)
 		requestedModel = strings.TrimSpace(requestedModel)
 		if model != "" || requestedModel != "" {
-			candidates := payloadModelCandidates(model, requestedModel)
+			candidates := payloadModelCandidateSetFor(model, requestedModel)
 			source := original
 			if len(source) == 0 {
 				source = payload
@@ -214,25 +224,39 @@ func shouldStripImageGeneration(mode config.DisableImageGenerationMode, requestP
 	}
 }
 
-func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, payload []byte, root string, models []string) bool {
-	if len(rules) == 0 || len(models) == 0 {
+type payloadModelCandidateSet struct {
+	any       []string
+	requested []string
+	upstream  []string
+}
+
+func payloadModelCandidateSetFor(model, requestedModel string) payloadModelCandidateSet {
+	return payloadModelCandidateSet{
+		any:       payloadModelCandidates(model, requestedModel),
+		requested: payloadRequestedModelCandidates(requestedModel),
+		upstream:  payloadUpstreamModelCandidates(model),
+	}
+}
+
+func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, payload []byte, root string, candidates payloadModelCandidateSet) bool {
+	if len(rules) == 0 || len(candidates.any) == 0 {
 		return false
 	}
-	for _, model := range models {
-		for _, entry := range rules {
-			name := strings.TrimSpace(entry.Name)
-			if name == "" {
-				continue
-			}
-			if ep := strings.TrimSpace(entry.Protocol); ep != "" && protocol != "" && !strings.EqualFold(ep, protocol) {
-				continue
-			}
-			if !payloadFromProtocolMatches(entry.FromProtocol, fromProtocol) {
-				continue
-			}
-			if !payloadHeadersMatch(headers, entry.Headers) {
-				continue
-			}
+	for _, entry := range rules {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		if ep := strings.TrimSpace(entry.Protocol); ep != "" && protocol != "" && !strings.EqualFold(ep, protocol) {
+			continue
+		}
+		if !payloadFromProtocolMatches(entry.FromProtocol, fromProtocol) {
+			continue
+		}
+		if !payloadHeadersMatch(headers, entry.Headers) {
+			continue
+		}
+		for _, model := range payloadModelRuleCandidates(entry, candidates) {
 			if !matchModelPattern(name, model) {
 				continue
 			}
@@ -242,6 +266,33 @@ func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fr
 		}
 	}
 	return false
+}
+
+func payloadModelRuleCandidates(entry config.PayloadModelRule, candidates payloadModelCandidateSet) []string {
+	scope := strings.ToLower(strings.TrimSpace(entry.Scope))
+	switch scope {
+	case "", payloadModelScopeAny:
+		return candidates.any
+	case payloadModelScopeRequested:
+		return candidates.requested
+	case payloadModelScopeUpstream:
+		return candidates.upstream
+	default:
+		warnUnknownPayloadModelScope(entry.Scope)
+		return candidates.any
+	}
+}
+
+func warnUnknownPayloadModelScope(scope string) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return
+	}
+	key := strings.ToLower(scope)
+	if _, loaded := payloadUnknownModelScopeWarnings.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	log.Warnf("unknown payload model scope %q; falling back to any", scope)
 }
 
 func payloadModelRuleConditionsMatch(payload []byte, root string, rule config.PayloadModelRule) bool {
@@ -468,17 +519,48 @@ func payloadModelCandidates(model, requestedModel string) []string {
 	if model != "" {
 		addCandidate(model)
 	}
-	if requestedModel != "" {
-		parsed := thinking.ParseSuffix(requestedModel)
-		base := strings.TrimSpace(parsed.ModelName)
-		if base != "" {
-			addCandidate(base)
-		}
-		if parsed.HasSuffix {
-			addCandidate(requestedModel)
-		}
+	for _, candidate := range payloadRequestedModelCandidates(requestedModel) {
+		addCandidate(candidate)
 	}
 	return candidates
+}
+
+func payloadRequestedModelCandidates(requestedModel string) []string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return nil
+	}
+	candidates := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	addCandidate := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, value)
+	}
+	parsed := thinking.ParseSuffix(requestedModel)
+	base := strings.TrimSpace(parsed.ModelName)
+	if base != "" {
+		addCandidate(base)
+	}
+	if parsed.HasSuffix {
+		addCandidate(requestedModel)
+	}
+	return candidates
+}
+
+func payloadUpstreamModelCandidates(model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+	return []string{model}
 }
 
 // buildPayloadPath combines an optional root path with a relative parameter path.

@@ -458,6 +458,7 @@ nonstream-keepalive-interval: 0
 #   default: # Default rules only set parameters when they are missing in the payload.
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
+#           scope: "any" # optional: any (default), requested (client model), or upstream (resolved model)
 #           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
 #           from-protocol: "responses" # restricts the rule to the source protocol, options: openai, responses, gemini, claude
 #           headers: # all configured request headers must match; values support "*" wildcards
@@ -481,6 +482,7 @@ nonstream-keepalive-interval: 0
 #   override: # Override rules always set parameters, overwriting any existing values.
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
+#           scope: "requested" # use requested to distinguish aliases such as gpt-5.5-fast from upstream gpt-5.5
 #           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
 #       params: # JSON path (gjson/sjson syntax) -> value
 #         "reasoning.effort": "high"
