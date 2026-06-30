@@ -25,6 +25,8 @@ const ReasoningEffortMetadataKey = "reasoning_effort"
 const ServiceTierMetadataKey = "service_tier"
 
 const (
+	// CodexAbnormalReasoningRetryUsageMetadataKey carries discarded abnormal attempt usage for client-visible aggregate usage only.
+	CodexAbnormalReasoningRetryUsageMetadataKey = "codex_abnormal_reasoning_retry_usage"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.

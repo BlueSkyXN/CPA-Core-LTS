@@ -54,6 +54,51 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	requirePanelUsageShape(t, importStats.Snapshot())
 }
 
+func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prevEnabled := usage.StatisticsEnabled()
+	usage.SetStatisticsEnabled(true)
+	t.Cleanup(func() { usage.SetStatisticsEnabled(prevEnabled) })
+
+	stats := usage.NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "panel-client-key",
+		Provider:    "codex",
+		Model:       "gpt-5.5",
+		Source:      "auths/codex.json",
+		AuthIndex:   "1",
+		RequestedAt: time.Date(2026, 6, 10, 11, 31, 0, 0, time.UTC),
+		Failed:      true,
+		Fail: coreusage.Failure{
+			Body: "codex_abnormal_reasoning_response: codex abnormal reasoning response discarded",
+		},
+		Detail: coreusage.Detail{
+			InputTokens:     1,
+			OutputTokens:    2,
+			ReasoningTokens: 516,
+			TotalTokens:     3,
+		},
+	})
+
+	h := &Handler{}
+	h.SetUsageStatistics(stats)
+	payload := readUsageStatisticsResponse(t, h)
+	if payload.FailedRequests != 1 {
+		t.Fatalf("failed_requests = %d, want 1", payload.FailedRequests)
+	}
+	modelSnapshot := payload.Usage.APIs["panel-client-key"].Models["gpt-5.5"]
+	if len(modelSnapshot.Details) != 1 {
+		t.Fatalf("details len = %d, want 1", len(modelSnapshot.Details))
+	}
+	detail := modelSnapshot.Details[0]
+	if !detail.Failed {
+		t.Fatalf("detail.failed = false, want true")
+	}
+	if detail.FailureReason != "codex_abnormal_reasoning_response" {
+		t.Fatalf("detail.failure_reason = %q, want codex_abnormal_reasoning_response", detail.FailureReason)
+	}
+}
+
 func recordPanelContractUsage(stats *usage.RequestStatistics) {
 	stats.Record(context.Background(), coreusage.Record{
 		APIKey:          "panel-client-key",

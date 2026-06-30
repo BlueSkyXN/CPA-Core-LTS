@@ -1615,13 +1615,22 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
+	retryWithoutPenaltyCounts := make(map[string]int)
+	var retryWithoutPenaltyUsage coreusage.Detail
 	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
+		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
+		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errExec == nil {
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait)
+		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
+			retryWithoutPenaltyUsage = addRetryWithoutPenaltyUsageDetail(retryWithoutPenaltyUsage, detail)
+		}
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
+		if terminalErr != nil {
+			lastErr = terminalErr
+		}
 		if !shouldRetry {
 			break
 		}
@@ -1652,13 +1661,22 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
+	retryWithoutPenaltyCounts := make(map[string]int)
+	var retryWithoutPenaltyUsage coreusage.Detail
 	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
+		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
+		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errExec == nil {
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait)
+		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
+			retryWithoutPenaltyUsage = addRetryWithoutPenaltyUsageDetail(retryWithoutPenaltyUsage, detail)
+		}
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
+		if terminalErr != nil {
+			lastErr = terminalErr
+		}
 		if !shouldRetry {
 			break
 		}
@@ -1683,13 +1701,22 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
+	retryWithoutPenaltyCounts := make(map[string]int)
+	var retryWithoutPenaltyUsage coreusage.Detail
 	for attempt := 0; ; attempt++ {
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
+		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
+		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errStream == nil {
 			return result, nil
 		}
 		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait)
+		if detail, ok := retryWithoutPenaltyUsageDetail(errStream); ok {
+			retryWithoutPenaltyUsage = addRetryWithoutPenaltyUsageDetail(retryWithoutPenaltyUsage, detail)
+		}
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
+		if terminalErr != nil {
+			lastErr = terminalErr
+		}
 		if !shouldRetry {
 			break
 		}
@@ -2735,54 +2762,59 @@ func (m *Manager) retryAllowed(attempt int, providers []string) bool {
 	return false
 }
 
-func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration) (time.Duration, bool) {
+func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration, retryWithoutPenaltyCounts map[string]int) (time.Duration, bool, error) {
 	if err == nil {
-		return 0, false
+		return 0, false, nil
 	}
 	if isRetryWithoutPenaltyError(err) {
 		if !m.retryAllowed(attempt, providers) {
-			return 0, false
+			if class, _, ok := retryWithoutPenaltyLimit(err); ok {
+				return 0, false, newRetryWithoutPenaltyExhaustedError(err, class)
+			}
+			return 0, false, nil
 		}
-		return 0, true
+		if class, maxRetries, ok := retryWithoutPenaltyLimit(err); ok {
+			if maxRetries <= 0 {
+				return 0, false, newRetryWithoutPenaltyExhaustedError(err, class)
+			}
+			if retryWithoutPenaltyCounts == nil {
+				retryWithoutPenaltyCounts = make(map[string]int)
+			}
+			if retryWithoutPenaltyCounts[class] >= maxRetries {
+				return 0, false, newRetryWithoutPenaltyExhaustedError(err, class)
+			}
+			retryWithoutPenaltyCounts[class]++
+		}
+		return 0, true, nil
 	}
 	if maxWait <= 0 {
-		return 0, false
+		return 0, false, nil
 	}
 	status := statusCodeFromError(err)
 	if status == http.StatusOK {
-		return 0, false
+		return 0, false, nil
 	}
 	if isRequestInvalidError(err) {
-		return 0, false
+		return 0, false, nil
 	}
 	wait, found := m.closestCooldownWait(providers, model, attempt)
 	if found {
 		if wait > maxWait {
-			return 0, false
+			return 0, false, nil
 		}
-		return wait, true
+		return wait, true, nil
 	}
 	if status != http.StatusTooManyRequests {
-		return 0, false
+		return 0, false, nil
 	}
 	if !m.retryAllowed(attempt, providers) {
-		return 0, false
+		return 0, false, nil
 	}
 	retryAfter := retryAfterFromError(err)
 	if retryAfter == nil || *retryAfter <= 0 || *retryAfter > maxWait {
-		return 0, false
+		return 0, false, nil
 	}
-	return *retryAfter, true
-}
-
-func isRetryWithoutPenaltyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var retry interface {
-		RetryWithoutPenalty() bool
-	}
-	return errors.As(err, &retry) && retry.RetryWithoutPenalty()
+	return *retryAfter, true, nil
 }
 
 func waitForCooldown(ctx context.Context, wait time.Duration) error {

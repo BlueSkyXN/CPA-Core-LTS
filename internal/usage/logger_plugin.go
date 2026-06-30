@@ -97,6 +97,8 @@ type RequestDetail struct {
 	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
 	Tokens          TokenStats `json:"tokens"`
 	Failed          bool       `json:"failed"`
+	FailureReason   string     `json:"failure_reason,omitempty"`
+	FailureStatus   int        `json:"failure_status,omitempty"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -178,6 +180,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		failed = !resolveSuccess(ctx)
 	}
 	success := !failed
+	failureReason, failureStatus := safeFailureDetail(record, failed)
 	modelName := record.Model
 	if modelName == "" {
 		modelName = "unknown"
@@ -210,6 +213,8 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		ReasoningEffort: strings.TrimSpace(record.ReasoningEffort),
 		Tokens:          detail,
 		Failed:          failed,
+		FailureReason:   failureReason,
+		FailureStatus:   failureStatus,
 	})
 
 	s.requestsByDay[dayKey]++
@@ -390,19 +395,69 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%t|%s|%d|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
 		detail.Source,
 		detail.AuthIndex,
 		detail.Failed,
+		detail.FailureReason,
+		detail.FailureStatus,
 		tokens.InputTokens,
 		tokens.OutputTokens,
 		tokens.ReasoningTokens,
 		tokens.CachedTokens,
 		tokens.TotalTokens,
 	)
+}
+
+func safeFailureDetail(record coreusage.Record, failed bool) (string, int) {
+	if !failed {
+		return "", 0
+	}
+	status := record.Fail.StatusCode
+	if status < 0 {
+		status = 0
+	}
+	return extractSafeFailureReason(record.Fail.Body), status
+}
+
+func extractSafeFailureReason(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	candidate := body
+	if idx := strings.Index(candidate, ":"); idx > 0 {
+		candidate = candidate[:idx]
+	} else if fields := strings.Fields(candidate); len(fields) > 0 {
+		candidate = fields[0]
+	}
+	candidate = strings.TrimSpace(candidate)
+	if !isSafeFailureReason(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func isSafeFailureReason(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if (ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') ||
+			ch == '_' ||
+			ch == '-' ||
+			ch == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {

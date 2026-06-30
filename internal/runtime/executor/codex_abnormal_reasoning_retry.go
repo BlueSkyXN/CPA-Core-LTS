@@ -6,30 +6,69 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type codexAbnormalReasoningRetryPolicy struct {
 	enabled         bool
 	streamBuffer    bool
+	maxRetries      int
 	modelContains   []string
 	reasoningTokens map[int64]struct{}
 }
 
 type codexAbnormalReasoningRetryError struct {
-	reasoningTokens int64
+	detail     usage.Detail
+	maxRetries int
 }
+
+const (
+	codexAbnormalReasoningRetryClass            = "codex.abnormal-reasoning-retry"
+	codexAbnormalReasoningRetryUsageFailureCode = "codex_abnormal_reasoning_response"
+)
 
 func (e *codexAbnormalReasoningRetryError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return fmt.Sprintf("codex abnormal reasoning retry: reasoning_tokens=%d matched retry policy", e.reasoningTokens)
+	return fmt.Sprintf("%s: codex abnormal reasoning response discarded: reasoning_tokens=%d", codexAbnormalReasoningRetryUsageFailureCode, e.detail.ReasoningTokens)
 }
 
 func (e *codexAbnormalReasoningRetryError) RetryWithoutPenalty() bool {
 	return e != nil
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyClass() string {
+	if e == nil {
+		return ""
+	}
+	return codexAbnormalReasoningRetryClass
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyMaxRetries() int {
+	if e == nil {
+		return 0
+	}
+	return e.maxRetries
+}
+
+func (e *codexAbnormalReasoningRetryError) UsageFailureCode() string {
+	if e == nil {
+		return ""
+	}
+	return codexAbnormalReasoningRetryUsageFailureCode
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyUsageDetail() usage.Detail {
+	if e == nil {
+		return usage.Detail{}
+	}
+	return e.detail
 }
 
 func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth.Auth, requestedModel string, upstreamModels ...string) codexAbnormalReasoningRetryPolicy {
@@ -66,6 +105,7 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 	return codexAbnormalReasoningRetryPolicy{
 		enabled:         true,
 		streamBuffer:    effective.StreamBuffer,
+		maxRetries:      effective.MaxRetries,
 		modelContains:   modelContains,
 		reasoningTokens: tokens,
 	}
@@ -86,7 +126,7 @@ func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail) error
 	if _, ok := p.reasoningTokens[detail.ReasoningTokens]; !ok {
 		return nil
 	}
-	return &codexAbnormalReasoningRetryError{reasoningTokens: detail.ReasoningTokens}
+	return &codexAbnormalReasoningRetryError{detail: detail, maxRetries: p.maxRetries}
 }
 
 func isRetryWithoutPenaltyError(err error) bool {
@@ -186,4 +226,90 @@ func stringListContains(values []string, needle string, fold bool) bool {
 		}
 	}
 	return false
+}
+
+func patchCodexAbnormalReasoningClientUsage(eventData []byte, metadata map[string]any) []byte {
+	previous, ok := codexAbnormalReasoningRetryUsageFromMetadata(metadata)
+	if !ok {
+		return eventData
+	}
+	current, ok := helps.ParseCodexUsage(eventData)
+	if !ok {
+		return eventData
+	}
+	total := addCodexUsageDetail(previous, current)
+	usageNode := gjson.GetBytes(eventData, "response.usage")
+	if !usageNode.Exists() {
+		return eventData
+	}
+
+	out := eventData
+	out, _ = sjson.SetBytes(out, "response.usage.input_tokens", total.InputTokens)
+	out, _ = sjson.SetBytes(out, "response.usage.output_tokens", total.OutputTokens)
+	out, _ = sjson.SetBytes(out, "response.usage.total_tokens", total.TotalTokens)
+	if usageNode.Get("input_tokens_details.cached_tokens").Exists() || total.CachedTokens != 0 {
+		out, _ = sjson.SetBytes(out, "response.usage.input_tokens_details.cached_tokens", total.CachedTokens)
+	}
+	if usageNode.Get("prompt_tokens_details.cached_tokens").Exists() {
+		out, _ = sjson.SetBytes(out, "response.usage.prompt_tokens_details.cached_tokens", total.CachedTokens)
+	}
+	if usageNode.Get("output_tokens_details.reasoning_tokens").Exists() || total.ReasoningTokens != 0 {
+		out, _ = sjson.SetBytes(out, "response.usage.output_tokens_details.reasoning_tokens", total.ReasoningTokens)
+	}
+	if usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() {
+		out, _ = sjson.SetBytes(out, "response.usage.completion_tokens_details.reasoning_tokens", total.ReasoningTokens)
+	}
+	return out
+}
+
+func codexAbnormalReasoningRetryUsageFromMetadata(metadata map[string]any) (usage.Detail, bool) {
+	if len(metadata) == 0 {
+		return usage.Detail{}, false
+	}
+	raw := metadata[cliproxyexecutor.CodexAbnormalReasoningRetryUsageMetadataKey]
+	switch detail := raw.(type) {
+	case usage.Detail:
+		return detail, hasCodexUsageDetail(detail)
+	case *usage.Detail:
+		if detail == nil {
+			return usage.Detail{}, false
+		}
+		return *detail, hasCodexUsageDetail(*detail)
+	default:
+		return usage.Detail{}, false
+	}
+}
+
+func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
+	a = normalizeCodexUsageDetail(a)
+	b = normalizeCodexUsageDetail(b)
+	return usage.Detail{
+		InputTokens:         a.InputTokens + b.InputTokens,
+		OutputTokens:        a.OutputTokens + b.OutputTokens,
+		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
+		CachedTokens:        a.CachedTokens + b.CachedTokens,
+		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
+		TotalTokens:         a.TotalTokens + b.TotalTokens,
+	}
+}
+
+func normalizeCodexUsageDetail(detail usage.Detail) usage.Detail {
+	if detail.TotalTokens == 0 {
+		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		if total > 0 {
+			detail.TotalTokens = total
+		}
+	}
+	return detail
+}
+
+func hasCodexUsageDetail(detail usage.Detail) bool {
+	return detail.InputTokens != 0 ||
+		detail.OutputTokens != 0 ||
+		detail.ReasoningTokens != 0 ||
+		detail.CachedTokens != 0 ||
+		detail.CacheReadTokens != 0 ||
+		detail.CacheCreationTokens != 0 ||
+		detail.TotalTokens != 0
 }

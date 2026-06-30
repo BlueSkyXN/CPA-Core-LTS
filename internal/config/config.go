@@ -319,6 +319,7 @@ type CodexAbnormalReasoningRetryConfig struct {
 	AuthKinds       []string `yaml:"auth-kinds" json:"auth-kinds"`
 	AuthIDs         []string `yaml:"auth-ids" json:"auth-ids"`
 	StreamBuffer    *bool    `yaml:"stream-buffer,omitempty" json:"stream-buffer,omitempty"`
+	MaxRetries      *int     `yaml:"max-retries,omitempty" json:"max-retries,omitempty"`
 }
 
 // EffectiveCodexAbnormalReasoningRetryConfig is the sanitized runtime view of
@@ -331,6 +332,7 @@ type EffectiveCodexAbnormalReasoningRetryConfig struct {
 	AuthKinds       []string
 	AuthIDs         []string
 	StreamBuffer    bool
+	MaxRetries      int
 }
 
 // Effective returns the runtime config with LTS defaults applied.
@@ -339,6 +341,13 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 	if c.StreamBuffer != nil {
 		streamBuffer = *c.StreamBuffer
 	}
+	maxRetries := 2
+	if c.MaxRetries != nil {
+		maxRetries = *c.MaxRetries
+	}
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	return EffectiveCodexAbnormalReasoningRetryConfig{
 		Enabled:         c.Enabled,
 		ModelContains:   defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
@@ -346,6 +355,7 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 		AuthKinds:       defaultedTrimmedStringList(c.AuthKinds, []string{"oauth"}, true),
 		AuthIDs:         defaultedTrimmedStringList(c.AuthIDs, nil, false),
 		StreamBuffer:    streamBuffer,
+		MaxRetries:      maxRetries,
 	}
 }
 

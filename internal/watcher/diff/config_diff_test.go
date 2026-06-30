@@ -178,6 +178,7 @@ func TestBuildConfigChangeDetails_PayloadRules(t *testing.T) {
 
 func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	streamBuffer := false
+	maxRetries := 0
 	oldCfg := &config.Config{}
 	newCfg := &config.Config{
 		Codex: config.CodexConfig{
@@ -188,6 +189,7 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 				AuthKinds:       []string{"oauth", "api-key"},
 				AuthIDs:         []string{"auth-1"},
 				StreamBuffer:    &streamBuffer,
+				MaxRetries:      &maxRetries,
 			},
 		},
 	}
@@ -196,6 +198,7 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 
 	expectContains(t, details, "codex.abnormal-reasoning-retry.enabled: false -> true")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer: true -> false")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.max-retries: 2 -> 0")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.model-contains: updated (1 -> 2 entries)")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.reasoning-tokens: updated (2 -> 1 entries)")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.auth-kinds: updated (1 -> 2 entries)")

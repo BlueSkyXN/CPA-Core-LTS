@@ -90,7 +90,12 @@ require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep "abnormal-reasoning-retry" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "RetryWithoutPenalty" sdk/cliproxy/auth/conductor.go docs/lts/core-feature-contracts.yaml
+require_grep "max-retries" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "RetryWithoutPenalty" sdk/cliproxy/auth/conductor.go sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
+require_grep "CodexAbnormalReasoningRetryUsageMetadataKey" sdk/cliproxy/executor/types.go docs/lts/core-feature-contracts.yaml
+require_grep "codex_abnormal_reasoning_response" internal/runtime/executor/codex_abnormal_reasoning_retry.go docs/lts/core-feature-contracts.yaml
+require_grep "codex_abnormal_reasoning_retry_exhausted" sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
+require_grep "failure_reason" internal/usage/logger_plugin.go docs/lts/core-feature-contracts.yaml
 
 python3 - <<'PY'
 from pathlib import Path
@@ -150,7 +155,12 @@ registry_required = [
     "failure_count",
     "go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'",
     "abnormal-reasoning-retry",
+    "max-retries",
     "RetryWithoutPenalty",
+    "CodexAbnormalReasoningRetryUsageMetadataKey",
+    "codex_abnormal_reasoning_response",
+    "codex_abnormal_reasoning_retry_exhausted",
+    "failure_reason",
 ]
 
 missing_registry = [item for item in registry_required if item not in registry_text]

@@ -933,6 +933,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			if errRetry := abnormalRetry.RetryError(detail); errRetry != nil {
+				reporter.PublishFailureWithDetail(ctx, detail, errRetry)
 				err = errRetry
 				return resp, err
 			}
@@ -965,7 +966,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 
 		var param any
-		clientCompletedData := applyCodexIdentityExposeResponsePayload(completedData, identityState)
+		clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata)
+		clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
 		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		return resp, nil
@@ -1261,6 +1263,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						if buffering {
 							if errRetry := abnormalRetry.RetryError(detail); errRetry != nil {
+								reporter.PublishFailureWithDetail(ctx, detail, errRetry)
 								bufferedChunks = nil
 								emitError(errRetry)
 								return
@@ -1271,6 +1274,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					publishCodexImageToolUsage(ctx, reporter, body, data)
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					cacheCodexReasoningReplayFromCompleted(replayScope, data)
+					data = patchCodexAbnormalReasoningClientUsage(data, opts.Metadata)
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
 				}

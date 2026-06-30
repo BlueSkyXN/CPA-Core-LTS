@@ -89,6 +89,9 @@ func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 		RequestedAt:     time.Date(2026, 6, 10, 9, 15, 0, 0, time.UTC),
 		Latency:         1234 * time.Millisecond,
 		Failed:          true,
+		Fail: coreusage.Failure{
+			Body: "codex_abnormal_reasoning_response: codex abnormal reasoning response discarded",
+		},
 		Detail: coreusage.Detail{
 			InputTokens:         11,
 			OutputTokens:        13,
@@ -156,6 +159,9 @@ func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 	}
 	if !detail.Failed {
 		t.Fatalf("failed = false, want true")
+	}
+	if detail.FailureReason != "codex_abnormal_reasoning_response" {
+		t.Fatalf("failure_reason = %q, want codex_abnormal_reasoning_response", detail.FailureReason)
 	}
 	if detail.Tokens.InputTokens != 11 ||
 		detail.Tokens.OutputTokens != 13 ||

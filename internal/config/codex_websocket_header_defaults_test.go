@@ -84,6 +84,9 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if !effective.StreamBuffer {
 		t.Fatal("StreamBuffer = false, want true")
 	}
+	if effective.MaxRetries != 2 {
+		t.Fatalf("MaxRetries = %d, want 2", effective.MaxRetries)
+	}
 }
 
 func TestLoadConfigOptional_CodexAbnormalReasoningRetryExplicit(t *testing.T) {
@@ -108,6 +111,7 @@ codex:
       - " auth-1 "
       - "auth-1"
     stream-buffer: false
+    max-retries: 0
 `)
 	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
@@ -136,6 +140,33 @@ codex:
 	}
 	if effective.StreamBuffer {
 		t.Fatal("StreamBuffer = true, want false")
+	}
+	if effective.MaxRetries != 0 {
+		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
+	}
+}
+
+func TestLoadConfigOptional_CodexAbnormalReasoningRetryNegativeMaxRetriesClamped(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configYAML := []byte(`
+codex:
+  abnormal-reasoning-retry:
+    enabled: true
+    max-retries: -1
+`)
+	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+
+	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
+	if effective.MaxRetries != 0 {
+		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
 	}
 }
 
