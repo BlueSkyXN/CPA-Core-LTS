@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,11 @@ import (
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+)
+
+const (
+	retryWithoutPenaltyExhaustedBehaviorError       = "error"
+	retryWithoutPenaltyExhaustedBehaviorPassThrough = "pass-through"
 )
 
 func withRetryWithoutPenaltyUsageMetadata(opts cliproxyexecutor.Options, detail coreusage.Detail) cliproxyexecutor.Options {
@@ -63,6 +69,92 @@ func retryWithoutPenaltyUsageDetail(err error) (coreusage.Detail, bool) {
 	}
 	detail := withDetail.RetryWithoutPenaltyUsageDetail()
 	return detail, hasRetryWithoutPenaltyUsageDetail(detail)
+}
+
+func retryWithoutPenaltyExhaustedBehavior(err error) string {
+	if err == nil {
+		return retryWithoutPenaltyExhaustedBehaviorError
+	}
+	var withBehavior interface {
+		RetryWithoutPenaltyExhaustedBehavior() string
+	}
+	if !errors.As(err, &withBehavior) {
+		return retryWithoutPenaltyExhaustedBehaviorError
+	}
+	return normalizeRetryWithoutPenaltyExhaustedBehavior(withBehavior.RetryWithoutPenaltyExhaustedBehavior())
+}
+
+func normalizeRetryWithoutPenaltyExhaustedBehavior(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pass-through", "passthrough", "pass_through":
+		return retryWithoutPenaltyExhaustedBehaviorPassThrough
+	default:
+		return retryWithoutPenaltyExhaustedBehaviorError
+	}
+}
+
+func retryWithoutPenaltyFallbackResponse(err error) (cliproxyexecutor.Response, bool) {
+	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
+		return cliproxyexecutor.Response{}, false
+	}
+	var withFallback interface {
+		RetryWithoutPenaltyFallbackResponse() (cliproxyexecutor.Response, bool)
+	}
+	if !errors.As(err, &withFallback) {
+		return cliproxyexecutor.Response{}, false
+	}
+	resp, ok := withFallback.RetryWithoutPenaltyFallbackResponse()
+	if !ok {
+		return cliproxyexecutor.Response{}, false
+	}
+	return cloneRetryWithoutPenaltyResponse(resp), true
+}
+
+func retryWithoutPenaltyFallbackStreamResult(err error) (*cliproxyexecutor.StreamResult, bool) {
+	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
+		return nil, false
+	}
+	var withFallback interface {
+		RetryWithoutPenaltyFallbackStreamChunks() (http.Header, []cliproxyexecutor.StreamChunk, bool)
+	}
+	if !errors.As(err, &withFallback) {
+		return nil, false
+	}
+	headers, chunks, ok := withFallback.RetryWithoutPenaltyFallbackStreamChunks()
+	if !ok || len(chunks) == 0 {
+		return nil, false
+	}
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for i := range chunks {
+		chunk := chunks[i]
+		chunk.Payload = bytes.Clone(chunk.Payload)
+		out <- chunk
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{
+		Headers: cloneRetryWithoutPenaltyHeader(headers),
+		Chunks:  out,
+	}, true
+}
+
+func cloneRetryWithoutPenaltyResponse(resp cliproxyexecutor.Response) cliproxyexecutor.Response {
+	resp.Payload = bytes.Clone(resp.Payload)
+	resp.Headers = cloneRetryWithoutPenaltyHeader(resp.Headers)
+	if resp.Metadata != nil {
+		meta := make(map[string]any, len(resp.Metadata))
+		for key, value := range resp.Metadata {
+			meta[key] = value
+		}
+		resp.Metadata = meta
+	}
+	return resp
+}
+
+func cloneRetryWithoutPenaltyHeader(headers http.Header) http.Header {
+	if headers == nil {
+		return nil
+	}
+	return headers.Clone()
 }
 
 func addRetryWithoutPenaltyUsageDetail(a, b coreusage.Detail) coreusage.Detail {

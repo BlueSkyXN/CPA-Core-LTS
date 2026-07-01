@@ -310,31 +310,38 @@ type CodexConfig struct {
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
 }
 
+const (
+	CodexAbnormalReasoningRetryExhaustedBehaviorError       = "error"
+	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough = "pass-through"
+)
+
 // CodexAbnormalReasoningRetryConfig controls the CPA-Core-LTS retry guard for
 // suspicious Codex successful responses.
 type CodexAbnormalReasoningRetryConfig struct {
-	Enabled          bool     `yaml:"enabled" json:"enabled"`
-	ModelContains    []string `yaml:"model-contains" json:"model-contains"`
-	ReasoningEfforts []string `yaml:"reasoning-efforts" json:"reasoning-efforts"`
-	ReasoningTokens  []int64  `yaml:"reasoning-tokens" json:"reasoning-tokens"`
-	AuthKinds        []string `yaml:"auth-kinds" json:"auth-kinds"`
-	AuthIDs          []string `yaml:"auth-ids" json:"auth-ids"`
-	StreamBuffer     *bool    `yaml:"stream-buffer,omitempty" json:"stream-buffer,omitempty"`
-	MaxRetries       *int     `yaml:"max-retries,omitempty" json:"max-retries,omitempty"`
+	Enabled           bool     `yaml:"enabled" json:"enabled"`
+	ModelContains     []string `yaml:"model-contains" json:"model-contains"`
+	ReasoningEfforts  []string `yaml:"reasoning-efforts" json:"reasoning-efforts"`
+	ReasoningTokens   []int64  `yaml:"reasoning-tokens" json:"reasoning-tokens"`
+	AuthKinds         []string `yaml:"auth-kinds" json:"auth-kinds"`
+	AuthIDs           []string `yaml:"auth-ids" json:"auth-ids"`
+	StreamBuffer      *bool    `yaml:"stream-buffer,omitempty" json:"stream-buffer,omitempty"`
+	MaxRetries        *int     `yaml:"max-retries,omitempty" json:"max-retries,omitempty"`
+	ExhaustedBehavior string   `yaml:"exhausted-behavior,omitempty" json:"exhausted-behavior,omitempty"`
 }
 
 // EffectiveCodexAbnormalReasoningRetryConfig is the sanitized runtime view of
 // CodexAbnormalReasoningRetryConfig. It is intentionally derived in memory so
 // existing config.yaml files are not rewritten to add default values.
 type EffectiveCodexAbnormalReasoningRetryConfig struct {
-	Enabled          bool
-	ModelContains    []string
-	ReasoningEfforts []string
-	ReasoningTokens  []int64
-	AuthKinds        []string
-	AuthIDs          []string
-	StreamBuffer     bool
-	MaxRetries       int
+	Enabled           bool
+	ModelContains     []string
+	ReasoningEfforts  []string
+	ReasoningTokens   []int64
+	AuthKinds         []string
+	AuthIDs           []string
+	StreamBuffer      bool
+	MaxRetries        int
+	ExhaustedBehavior string
 }
 
 // Effective returns the runtime config with LTS defaults applied.
@@ -351,14 +358,26 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 		maxRetries = 0
 	}
 	return EffectiveCodexAbnormalReasoningRetryConfig{
-		Enabled:          c.Enabled,
-		ModelContains:    defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
-		ReasoningEfforts: defaultedTrimmedStringList(c.ReasoningEfforts, nil, true),
-		ReasoningTokens:  defaultedPositiveInt64List(c.ReasoningTokens, []int64{516, 1034}),
-		AuthKinds:        defaultedTrimmedStringList(c.AuthKinds, []string{"oauth"}, true),
-		AuthIDs:          defaultedTrimmedStringList(c.AuthIDs, nil, false),
-		StreamBuffer:     streamBuffer,
-		MaxRetries:       maxRetries,
+		Enabled:           c.Enabled,
+		ModelContains:     defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
+		ReasoningEfforts:  defaultedTrimmedStringList(c.ReasoningEfforts, nil, true),
+		ReasoningTokens:   defaultedPositiveInt64List(c.ReasoningTokens, []int64{516, 1034}),
+		AuthKinds:         defaultedTrimmedStringList(c.AuthKinds, []string{"oauth"}, true),
+		AuthIDs:           defaultedTrimmedStringList(c.AuthIDs, nil, false),
+		StreamBuffer:      streamBuffer,
+		MaxRetries:        maxRetries,
+		ExhaustedBehavior: normalizeCodexAbnormalReasoningRetryExhaustedBehavior(c.ExhaustedBehavior),
+	}
+}
+
+func normalizeCodexAbnormalReasoningRetryExhaustedBehavior(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "error":
+		return CodexAbnormalReasoningRetryExhaustedBehaviorError
+	case "pass-through", "passthrough", "pass_through":
+		return CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough
+	default:
+		return CodexAbnormalReasoningRetryExhaustedBehaviorError
 	}
 }
 

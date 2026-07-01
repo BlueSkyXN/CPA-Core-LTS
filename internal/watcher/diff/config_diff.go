@@ -385,6 +385,9 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	if oldCfg.MaxRetries != newCfg.MaxRetries {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.max-retries: %d -> %d", oldCfg.MaxRetries, newCfg.MaxRetries))
 	}
+	if oldCfg.ExhaustedBehavior != newCfg.ExhaustedBehavior {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.exhausted-behavior: %s -> %s", oldCfg.ExhaustedBehavior, newCfg.ExhaustedBehavior))
+	}
 	if !reflect.DeepEqual(oldCfg.ModelContains, newCfg.ModelContains) {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.model-contains: updated (%d -> %d entries)", len(oldCfg.ModelContains), len(newCfg.ModelContains)))
 	}

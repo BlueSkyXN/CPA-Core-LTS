@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -931,8 +932,17 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
+		completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
+				var param any
+				clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata)
+				clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
+				out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
+				fallbackResp := cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+				if errWithFallback := abnormalRetry.RetryErrorWithFallbackResponse(detail, reporter.ReasoningEffort(), fallbackResp); errWithFallback != nil {
+					errRetry = errWithFallback
+				}
 				reporter.PublishFailureWithDetail(ctx, detail, errRetry)
 				err = errRetry
 				return resp, err
@@ -941,28 +951,6 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 
-		completedData := eventData
-		outputResult := gjson.GetBytes(completedData, "response.output")
-		shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
-		if shouldPatchOutput {
-			completedDataPatched := completedData
-			completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output", []byte(`[]`))
-
-			indexes := make([]int64, 0, len(outputItemsByIndex))
-			for idx := range outputItemsByIndex {
-				indexes = append(indexes, idx)
-			}
-			sort.Slice(indexes, func(i, j int) bool {
-				return indexes[i] < indexes[j]
-			})
-			for _, idx := range indexes {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", outputItemsByIndex[idx])
-			}
-			for _, item := range outputItemsFallback {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", item)
-			}
-			completedData = completedDataPatched
-		}
 		cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 
 		var param any
@@ -1241,6 +1229,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			translatedLine := bytes.Clone(line)
 			flushAfterLine := false
+			var completedData []byte
+			var usageDetail usage.Detail
+			var usageDetailOK bool
+			var retryErr error
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
@@ -1261,20 +1253,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
 					if detail, ok := helps.ParseCodexUsage(data); ok {
+						usageDetail = detail
+						usageDetailOK = true
 						if buffering {
-							if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
-								reporter.PublishFailureWithDetail(ctx, detail, errRetry)
-								bufferedChunks = nil
-								emitError(errRetry)
-								return
-							}
+							retryErr = abnormalRetry.RetryError(detail, reporter.ReasoningEffort())
 						}
-						reporter.Publish(ctx, detail)
 					}
-					publishCodexImageToolUsage(ctx, reporter, body, data)
-					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
-					cacheCodexReasoningReplayFromCompleted(replayScope, data)
-					data = patchCodexAbnormalReasoningClientUsage(data, opts.Metadata)
+					completedData = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					data = patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata)
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
 				}
@@ -1282,6 +1268,28 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param)
+			if retryErr != nil {
+				fallbackChunks := cloneCodexAbnormalReasoningRetryStreamChunks(bufferedChunks)
+				for i := range chunks {
+					fallbackChunks = append(fallbackChunks, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[i])})
+				}
+				if usageDetailOK {
+					if errWithFallback := abnormalRetry.RetryErrorWithFallbackStreamChunks(usageDetail, reporter.ReasoningEffort(), httpResp.Header.Clone(), fallbackChunks); errWithFallback != nil {
+						retryErr = errWithFallback
+					}
+					reporter.PublishFailureWithDetail(ctx, usageDetail, retryErr)
+				}
+				bufferedChunks = nil
+				emitError(retryErr)
+				return
+			}
+			if usageDetailOK {
+				reporter.Publish(ctx, usageDetail)
+			}
+			if len(completedData) > 0 {
+				publishCodexImageToolUsage(ctx, reporter, body, completedData)
+				cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
+			}
 			for i := range chunks {
 				if ok := emitChunk(cliproxyexecutor.StreamChunk{Payload: chunks[i]}); !ok {
 					return

@@ -186,9 +186,12 @@ codex:
     auth-ids: []
     stream-buffer: true
     # Maximum extra retries caused by abnormal reasoning detection. Default: 2.
-    # Set to 0 to record the abnormal attempt as failed usage and return 502 without transparent retry.
+    # This limit is independent of the global request-retry setting.
+    # Set to 0 to record the abnormal attempt as failed usage and apply exhausted-behavior immediately.
+    # exhausted-behavior: "error" returns 502 (default); "pass-through" returns the exhausted abnormal response.
     # CPA usage is attempt-level; successful client response usage includes discarded attempts plus the delivered attempt.
     max-retries: 2
+    exhausted-behavior: "error"
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

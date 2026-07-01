@@ -437,6 +437,163 @@ func TestCodexExecutorAbnormalReasoningRetry_DefaultMaxRetriesAggregatesTwoAbnor
 	}
 }
 
+func TestCodexExecutorAbnormalReasoningRetry_ManagerMaxRetriesIndependentFromRequestRetry(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+			return
+		}
+		_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 7, 12)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(1, "")))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-independent-retry"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2 despite request-retry=0", calls)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+		t.Fatalf("client response usage.total_tokens = %d, want abnormal plus final total 15; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedNonStreaming(t *testing.T) {
+	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
+	t.Cleanup(func() {
+		usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", noopUsagePlugin{})
+	})
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(0, config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-pass-through"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 3 {
+		t.Fatalf("client response usage.total_tokens = %d, want delivered abnormal total 3; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 516 {
+		t.Fatalf("client response reasoning_tokens = %d, want 516; payload=%s", got, resp.Payload)
+	}
+
+	record := recorder.waitForRecord(t, func(record usage.Record) bool {
+		return record.AuthID == auth.ID && record.Model == "gpt-5.5" && record.Detail.ReasoningTokens == 516
+	})
+	if !record.Failed {
+		t.Fatalf("record.Failed = false, want true")
+	}
+	if !strings.Contains(record.Fail.Body, codexAbnormalReasoningRetryUsageFailureCode) {
+		t.Fatalf("record failure body = %q, want usage failure code %q", record.Fail.Body, codexAbnormalReasoningRetryUsageFailureCode)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughAggregatesDiscardedUsageWhenExhausted(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch calls {
+		case 1:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+		default:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 1034, 4, 6, 10)))
+		}
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(1, config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-pass-through-aggregate"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 13 {
+		t.Fatalf("client response usage.total_tokens = %d, want discarded plus delivered total 13; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1550 {
+		t.Fatalf("client response reasoning_tokens = %d, want discarded plus delivered reasoning 1550; payload=%s", got, resp.Payload)
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_ManagerAggregatesStreamingClientUsage(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -490,6 +647,72 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerAggregatesStreamingClientUsa
 	}
 	if !bytes.Contains(payload, []byte(`"reasoning_tokens":644`)) {
 		t.Fatalf("stream payload missing aggregated reasoning_tokens=644: %s", payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedStreaming(t *testing.T) {
+	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
+	t.Cleanup(func() {
+		usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", noopUsagePlugin{})
+	})
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"visible"}` + "\n\n"))
+		_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(0, config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-stream-pass-through"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil pass-through", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+	if !bytes.Contains(payload, []byte("visible")) {
+		t.Fatalf("stream payload missing buffered visible delta: %s", payload)
+	}
+	if !bytes.Contains(payload, []byte(`"reasoning_tokens":516`)) {
+		t.Fatalf("stream payload missing delivered abnormal reasoning_tokens=516: %s", payload)
+	}
+
+	record := recorder.waitForRecord(t, func(record usage.Record) bool {
+		return record.AuthID == auth.ID && record.Model == "gpt-5.5" && record.Detail.ReasoningTokens == 516
+	})
+	if !record.Failed {
+		t.Fatalf("record.Failed = false, want true")
 	}
 }
 
@@ -602,6 +825,13 @@ func codexAbnormalReasoningRetryTestConfig(authIDs []string, streamBuffer *bool)
 func codexAbnormalReasoningRetryTestConfigWithEfforts(efforts []string) *config.Config {
 	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
 	cfg.Codex.AbnormalReasoningRetry.ReasoningEfforts = efforts
+	return cfg
+}
+
+func codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(maxRetries int, exhaustedBehavior string) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.MaxRetries = &maxRetries
+	cfg.Codex.AbnormalReasoningRetry.ExhaustedBehavior = exhaustedBehavior
 	return cfg
 }
 

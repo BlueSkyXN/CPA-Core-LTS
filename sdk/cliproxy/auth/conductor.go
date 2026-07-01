@@ -1629,6 +1629,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
+			if resp, ok := retryWithoutPenaltyFallbackResponse(errExec); ok {
+				return resp, nil
+			}
 			lastErr = terminalErr
 		}
 		if !shouldRetry {
@@ -1675,6 +1678,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
+			if resp, ok := retryWithoutPenaltyFallbackResponse(errExec); ok {
+				return resp, nil
+			}
 			lastErr = terminalErr
 		}
 		if !shouldRetry {
@@ -1715,6 +1721,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
+			if result, ok := retryWithoutPenaltyFallbackStreamResult(errStream); ok {
+				return result, nil
+			}
 			lastErr = terminalErr
 		}
 		if !shouldRetry {
@@ -2767,12 +2776,6 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		return 0, false, nil
 	}
 	if isRetryWithoutPenaltyError(err) {
-		if !m.retryAllowed(attempt, providers) {
-			if class, _, ok := retryWithoutPenaltyLimit(err); ok {
-				return 0, false, newRetryWithoutPenaltyExhaustedError(err, class)
-			}
-			return 0, false, nil
-		}
 		if class, maxRetries, ok := retryWithoutPenaltyLimit(err); ok {
 			if maxRetries <= 0 {
 				return 0, false, newRetryWithoutPenaltyExhaustedError(err, class)
@@ -2784,6 +2787,10 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 				return 0, false, newRetryWithoutPenaltyExhaustedError(err, class)
 			}
 			retryWithoutPenaltyCounts[class]++
+			return 0, true, nil
+		}
+		if !m.retryAllowed(attempt, providers) {
+			return 0, false, nil
 		}
 		return 0, true, nil
 	}

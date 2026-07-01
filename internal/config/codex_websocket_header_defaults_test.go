@@ -90,6 +90,9 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if effective.MaxRetries != 2 {
 		t.Fatalf("MaxRetries = %d, want 2", effective.MaxRetries)
 	}
+	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorError {
+		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorError)
+	}
 }
 
 func TestLoadConfigOptional_CodexAbnormalReasoningRetryExplicit(t *testing.T) {
@@ -119,6 +122,7 @@ codex:
       - "auth-1"
     stream-buffer: false
     max-retries: 0
+    exhausted-behavior: "passthrough"
 `)
 	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
@@ -154,6 +158,9 @@ codex:
 	if effective.MaxRetries != 0 {
 		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
 	}
+	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough {
+		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)
+	}
 }
 
 func TestLoadConfigOptional_CodexAbnormalReasoningRetryNegativeMaxRetriesClamped(t *testing.T) {
@@ -177,6 +184,30 @@ codex:
 	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
 	if effective.MaxRetries != 0 {
 		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
+	}
+}
+
+func TestLoadConfigOptional_CodexAbnormalReasoningRetryInvalidExhaustedBehaviorDefaultsToError(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configYAML := []byte(`
+codex:
+  abnormal-reasoning-retry:
+    enabled: true
+    exhausted-behavior: unexpected
+`)
+	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+
+	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
+	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorError {
+		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorError)
 	}
 }
 

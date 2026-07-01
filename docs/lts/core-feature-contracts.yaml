@@ -166,6 +166,7 @@ features:
       - codex.abnormal-reasoning-retry.auth-ids
       - codex.abnormal-reasoning-retry.stream-buffer
       - codex.abnormal-reasoning-retry.max-retries
+      - codex.abnormal-reasoning-retry.exhausted-behavior
     core_files:
       - internal/config/config.go
       - internal/runtime/executor/codex_abnormal_reasoning_retry.go
@@ -179,6 +180,7 @@ features:
     required_markers:
       - abnormal-reasoning-retry
       - max-retries
+      - exhausted-behavior
       - reasoning-efforts
       - RetryWithoutPenalty
       - CodexAbnormalReasoningRetryUsageMetadataKey

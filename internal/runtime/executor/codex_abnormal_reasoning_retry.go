@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -15,17 +17,22 @@ import (
 )
 
 type codexAbnormalReasoningRetryPolicy struct {
-	enabled          bool
-	streamBuffer     bool
-	maxRetries       int
-	modelContains    []string
-	reasoningEfforts map[string]struct{}
-	reasoningTokens  map[int64]struct{}
+	enabled           bool
+	streamBuffer      bool
+	maxRetries        int
+	exhaustedBehavior string
+	modelContains     []string
+	reasoningEfforts  map[string]struct{}
+	reasoningTokens   map[int64]struct{}
 }
 
 type codexAbnormalReasoningRetryError struct {
-	detail     usage.Detail
-	maxRetries int
+	detail                usage.Detail
+	maxRetries            int
+	exhaustedBehavior     string
+	fallbackResponse      *cliproxyexecutor.Response
+	fallbackStreamHeaders http.Header
+	fallbackStreamChunks  []cliproxyexecutor.StreamChunk
 }
 
 const (
@@ -56,6 +63,27 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyMaxRetries() int {
 		return 0
 	}
 	return e.maxRetries
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyExhaustedBehavior() string {
+	if e == nil || strings.TrimSpace(e.exhaustedBehavior) == "" {
+		return config.CodexAbnormalReasoningRetryExhaustedBehaviorError
+	}
+	return e.exhaustedBehavior
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyFallbackResponse() (cliproxyexecutor.Response, bool) {
+	if e == nil || e.fallbackResponse == nil {
+		return cliproxyexecutor.Response{}, false
+	}
+	return cloneCodexAbnormalReasoningRetryResponse(*e.fallbackResponse), true
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyFallbackStreamChunks() (http.Header, []cliproxyexecutor.StreamChunk, bool) {
+	if e == nil || len(e.fallbackStreamChunks) == 0 {
+		return nil, nil, false
+	}
+	return cloneCodexAbnormalReasoningRetryHeader(e.fallbackStreamHeaders), cloneCodexAbnormalReasoningRetryStreamChunks(e.fallbackStreamChunks), true
 }
 
 func (e *codexAbnormalReasoningRetryError) UsageFailureCode() string {
@@ -111,12 +139,13 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 		}
 	}
 	return codexAbnormalReasoningRetryPolicy{
-		enabled:          true,
-		streamBuffer:     effective.StreamBuffer,
-		maxRetries:       effective.MaxRetries,
-		modelContains:    modelContains,
-		reasoningEfforts: efforts,
-		reasoningTokens:  tokens,
+		enabled:           true,
+		streamBuffer:      effective.StreamBuffer,
+		maxRetries:        effective.MaxRetries,
+		exhaustedBehavior: effective.ExhaustedBehavior,
+		modelContains:     modelContains,
+		reasoningEfforts:  efforts,
+		reasoningTokens:   tokens,
 	}
 }
 
@@ -129,6 +158,18 @@ func (p codexAbnormalReasoningRetryPolicy) StreamBuffer() bool {
 }
 
 func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reasoningEffort string) error {
+	return p.retryError(detail, reasoningEffort, nil, nil, nil)
+}
+
+func (p codexAbnormalReasoningRetryPolicy) RetryErrorWithFallbackResponse(detail usage.Detail, reasoningEffort string, fallback cliproxyexecutor.Response) error {
+	return p.retryError(detail, reasoningEffort, &fallback, nil, nil)
+}
+
+func (p codexAbnormalReasoningRetryPolicy) RetryErrorWithFallbackStreamChunks(detail usage.Detail, reasoningEffort string, headers http.Header, chunks []cliproxyexecutor.StreamChunk) error {
+	return p.retryError(detail, reasoningEffort, nil, headers, chunks)
+}
+
+func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reasoningEffort string, fallbackResponse *cliproxyexecutor.Response, fallbackStreamHeaders http.Header, fallbackStreamChunks []cliproxyexecutor.StreamChunk) error {
 	if !p.enabled || detail.ReasoningTokens <= 0 {
 		return nil
 	}
@@ -140,7 +181,52 @@ func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reaso
 			return nil
 		}
 	}
-	return &codexAbnormalReasoningRetryError{detail: detail, maxRetries: p.maxRetries}
+	err := &codexAbnormalReasoningRetryError{
+		detail:            detail,
+		maxRetries:        p.maxRetries,
+		exhaustedBehavior: p.exhaustedBehavior,
+	}
+	if fallbackResponse != nil {
+		resp := cloneCodexAbnormalReasoningRetryResponse(*fallbackResponse)
+		err.fallbackResponse = &resp
+	}
+	if len(fallbackStreamChunks) > 0 {
+		err.fallbackStreamHeaders = cloneCodexAbnormalReasoningRetryHeader(fallbackStreamHeaders)
+		err.fallbackStreamChunks = cloneCodexAbnormalReasoningRetryStreamChunks(fallbackStreamChunks)
+	}
+	return err
+}
+
+func cloneCodexAbnormalReasoningRetryResponse(resp cliproxyexecutor.Response) cliproxyexecutor.Response {
+	resp.Payload = bytes.Clone(resp.Payload)
+	resp.Headers = cloneCodexAbnormalReasoningRetryHeader(resp.Headers)
+	if resp.Metadata != nil {
+		meta := make(map[string]any, len(resp.Metadata))
+		for key, value := range resp.Metadata {
+			meta[key] = value
+		}
+		resp.Metadata = meta
+	}
+	return resp
+}
+
+func cloneCodexAbnormalReasoningRetryHeader(headers http.Header) http.Header {
+	if headers == nil {
+		return nil
+	}
+	return headers.Clone()
+}
+
+func cloneCodexAbnormalReasoningRetryStreamChunks(chunks []cliproxyexecutor.StreamChunk) []cliproxyexecutor.StreamChunk {
+	if len(chunks) == 0 {
+		return nil
+	}
+	out := make([]cliproxyexecutor.StreamChunk, len(chunks))
+	for i := range chunks {
+		out[i] = chunks[i]
+		out[i].Payload = bytes.Clone(chunks[i].Payload)
+	}
+	return out
 }
 
 func normalizeCodexAbnormalReasoningRetryEffort(effort string) string {
