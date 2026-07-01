@@ -98,6 +98,10 @@ require_grep "CodexAbnormalReasoningRetryUsageMetadataKey" sdk/cliproxy/executor
 require_grep "codex_abnormal_reasoning_response" internal/runtime/executor/codex_abnormal_reasoning_retry.go docs/lts/core-feature-contracts.yaml
 require_grep "codex_abnormal_reasoning_retry_exhausted" sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
 require_grep "failure_reason" internal/usage/logger_plugin.go docs/lts/core-feature-contracts.yaml
+require_grep "transient-error-cooldown-seconds" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "TransientErrorCooldownSeconds" internal/config/config.go internal/api/server.go sdk/cliproxy/service.go docs/lts/core-feature-contracts.yaml
+require_grep "SetTransientErrorCooldownSeconds" cmd/server/main.go internal/api/server.go sdk/cliproxy/auth/conductor.go sdk/cliproxy/service.go docs/lts/core-feature-contracts.yaml
+require_grep "nextTransientErrorRetryAfter" sdk/cliproxy/auth/conductor.go docs/lts/core-feature-contracts.yaml
 
 python3 - <<'PY'
 from pathlib import Path
@@ -165,6 +169,11 @@ registry_required = [
     "codex_abnormal_reasoning_response",
     "codex_abnormal_reasoning_retry_exhausted",
     "failure_reason",
+    "transient-error-cooldown-config",
+    "transient-error-cooldown-seconds",
+    "TransientErrorCooldownSeconds",
+    "SetTransientErrorCooldownSeconds",
+    "nextTransientErrorRetryAfter",
 ]
 
 missing_registry = [item for item in registry_required if item not in registry_text]

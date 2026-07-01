@@ -195,6 +195,29 @@ features:
       - go test ./sdk/cliproxy/auth
       - go test ./internal/watcher/diff
 
+  - id: transient-error-cooldown-config
+    status: lts-maintained
+    reason: CPA-Core-LTS exposes transient upstream error cooldown as a stable config key so cloud/HFS deployments and CPA-Panel-LTS can align cooldown behavior with retry windows instead of inheriting an internal 60s default.
+    config_keys:
+      - transient-error-cooldown-seconds
+    core_files:
+      - internal/config/config.go
+      - internal/config/parse.go
+      - internal/api/server.go
+      - internal/watcher/diff/config_diff.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/service.go
+      - config.example.yaml
+    required_markers:
+      - transient-error-cooldown-seconds
+      - TransientErrorCooldownSeconds
+      - SetTransientErrorCooldownSeconds
+      - nextTransientErrorRetryAfter
+    validation:
+      - go test ./internal/config
+      - go test ./internal/watcher/diff
+      - go test ./sdk/cliproxy/auth
+
   - id: config-compatibility-and-hot-reload
     status: protected
     reason: Existing user config must keep reading and hot-reloading while upstream config schema evolves.
