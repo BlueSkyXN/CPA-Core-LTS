@@ -80,6 +80,11 @@ type Config struct {
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
+	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
+	// 30 keeps the default aligned with max-retry-interval; 0 restores the legacy 60-second cooldown.
+	// Negative values disable transient error cooldowns.
+	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
+
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
@@ -906,6 +911,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsEnabled = false
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
+	cfg.TransientErrorCooldownSeconds = 30
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr

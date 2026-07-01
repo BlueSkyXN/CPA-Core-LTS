@@ -125,6 +125,10 @@ max-retry-interval: 30
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
+# Cooldown duration in seconds for transient upstream errors (408/500/502/503/504).
+# Default is 30 to align with max-retry-interval; set to 0 for the legacy 60-second cooldown; set to -1 to disable.
+transient-error-cooldown-seconds: 30
+
 # disable-image-generation supports: false (default), true, "chat", or "passthrough".
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
 # - "chat": disable image_generation injection on non-images endpoints, but keep /v1/images/generations and /v1/images/edits enabled.
