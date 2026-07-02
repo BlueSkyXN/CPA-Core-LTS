@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -204,6 +206,11 @@ func (p codexAbnormalReasoningRetryPolicy) StreamBufferMaxBytes() int64 {
 		return 0
 	}
 	return p.streamBufferMax
+}
+
+func (p codexAbnormalReasoningRetryPolicy) QualityHedgeStreamRewrite() bool {
+	return p.enabled && p.hedgeEnabled &&
+		strings.EqualFold(strings.TrimSpace(p.hedgeMode), config.CodexAbnormalReasoningHedgedRetryModeQuality)
 }
 
 func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reasoningEffort string) error {
@@ -545,6 +552,91 @@ func codexAbnormalReasoningRetryStreamMetadata(streamUsage *cliproxyexecutor.Ret
 		return nil
 	}
 	return meta
+}
+
+// codexAbnormalReasoningRetryStreamRecorder captures the raw upstream SSE lines
+// fed into stream translation so a quality-hedge finalizer can re-patch the
+// completed usage with the final discarded-attempt snapshot and re-translate the
+// whole stream. The completed event is kept in its usage-unpatched form; every
+// other line is kept exactly as it entered translation.
+type codexAbnormalReasoningRetryStreamRecorder struct {
+	lines          [][]byte
+	completedIndex int
+	completedData  []byte
+	recordedBytes  int64
+	maxBytes       int64
+	dropped        bool
+}
+
+func newCodexAbnormalReasoningRetryStreamRecorder(maxBytes int64) *codexAbnormalReasoningRetryStreamRecorder {
+	return &codexAbnormalReasoningRetryStreamRecorder{completedIndex: -1, maxBytes: maxBytes}
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) recordLine(line []byte) {
+	if r == nil || r.dropped || !r.reserve(int64(len(line))) {
+		return
+	}
+	r.lines = append(r.lines, bytes.Clone(line))
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) recordCompleted(completedData []byte) {
+	if r == nil || r.dropped || !r.reserve(int64(len(completedData))) {
+		return
+	}
+	r.completedData = bytes.Clone(completedData)
+	r.completedIndex = len(r.lines)
+	r.lines = append(r.lines, nil)
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) reserve(size int64) bool {
+	if r.maxBytes > 0 && r.recordedBytes+size > r.maxBytes {
+		r.dropped = true
+		r.lines = nil
+		r.completedData = nil
+		r.completedIndex = -1
+		return false
+	}
+	r.recordedBytes += size
+	return true
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) ready() bool {
+	return r != nil && !r.dropped && r.completedIndex >= 0
+}
+
+// finalizeCodexAbnormalReasoningRetryStreamFromRaw rebuilds the winning stream
+// from recorded raw upstream lines, mirroring the non-stream finalizer: the
+// completed event usage is re-patched with the final discarded-attempt snapshot
+// before the whole stream is re-translated, so the folded usage survives
+// translation into any downstream response format. Returns nil when no usable
+// recording exists and the caller must fall back to patching translated chunks.
+func finalizeCodexAbnormalReasoningRetryStreamFromRaw(ctx context.Context, to, responseFormat sdktranslator.Format, model string, originalPayload, body []byte, identityState codexIdentityConfuseState, recorder *codexAbnormalReasoningRetryStreamRecorder, headers http.Header, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, aggregation string) *cliproxyexecutor.StreamResult {
+	if !recorder.ready() {
+		return nil
+	}
+	var param any
+	var patched []cliproxyexecutor.StreamChunk
+	for i := range recorder.lines {
+		line := recorder.lines[i]
+		if i == recorder.completedIndex {
+			data := patchCodexAbnormalReasoningClientUsageWithSnapshot(recorder.completedData, previous, aggregation)
+			line = append([]byte("data: "), data...)
+			line = applyCodexIdentityExposeResponsePayload(line, identityState)
+		}
+		chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, model, originalPayload, body, line, &param)
+		for j := range chunks {
+			patched = append(patched, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[j])})
+		}
+	}
+	out := make(chan cliproxyexecutor.StreamChunk, len(patched))
+	for i := range patched {
+		out <- patched[i]
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{
+		Headers: cloneCodexAbnormalReasoningRetryHeader(headers),
+		Chunks:  out,
+	}
 }
 
 func finalizeCodexAbnormalReasoningRetryStream(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, aggregation string) *cliproxyexecutor.StreamResult {

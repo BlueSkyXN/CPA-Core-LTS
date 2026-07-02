@@ -1192,7 +1192,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true})
 		}
 	}()
-		return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out, Metadata: cloneSchedulerAnyMap(metadata)}
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out, Metadata: cloneSchedulerAnyMap(metadata)}
 }
 
 func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool) (*cliproxyexecutor.StreamResult, error) {
@@ -1290,7 +1290,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, streamResult.Metadata, buffered, remaining), nil
+		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, streamResult.Metadata, buffered, remaining), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}

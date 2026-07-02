@@ -1191,7 +1191,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamUsage := &cliproxyexecutor.RetryWithoutPenaltyStreamUsage{}
+	var qualityRecorder *codexAbnormalReasoningRetryStreamRecorder
+	if abnormalRetry.StreamBuffer() && abnormalRetry.QualityHedgeStreamRewrite() {
+		qualityRecorder = newCodexAbnormalReasoningRetryStreamRecorder(abnormalRetry.StreamBufferMaxBytes())
+	}
 	streamFinalizer := cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer(func(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) *cliproxyexecutor.StreamResult {
+		if result := finalizeCodexAbnormalReasoningRetryStreamFromRaw(ctx, to, responseFormat, req.Model, originalPayload, body, identityState, qualityRecorder, headers, previous, abnormalRetry.clientUsageAggregation); result != nil {
+			return result
+		}
 		return finalizeCodexAbnormalReasoningRetryStream(headers, chunks, previous, abnormalRetry.clientUsageAggregation)
 	})
 	go func() {
@@ -1301,6 +1308,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
+			if len(completedData) > 0 {
+				qualityRecorder.recordCompleted(completedData)
+			} else {
+				qualityRecorder.recordLine(translatedLine)
+			}
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param)
 			if retryErr != nil {
 				fallbackChunks := cloneCodexAbnormalReasoningRetryStreamChunks(bufferedChunks)

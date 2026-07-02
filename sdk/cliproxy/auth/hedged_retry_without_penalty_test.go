@@ -810,6 +810,104 @@ func TestManagerExecuteStream_HedgedRetryQualityReplaysWinnerOnly(t *testing.T) 
 	}
 }
 
+// Mixed-wave semantics: per the V1 hedged retry plan, an ordinary error only
+// becomes the wave error when the wave produced no abnormal signal ("两路都普通
+// 失败" case). When one lane is abnormal and another fails with an ordinary
+// error and no lane succeeded, the anti-degradation guard keeps retrying while
+// budget remains instead of surfacing the ordinary error.
+// maxRetryCredentials=1 keeps the ordinary error at lane level instead of
+// letting the lane rotate onto the other credential.
+func TestManagerExecute_HedgedRetryQualityMixedAbnormalAndOrdinaryContinuesWaves(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "retry"},
+				{kind: "success", delay: 25 * time.Millisecond, payload: "after-mixed", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, TotalTokens: 35}},
+			},
+			"auth-b": {{kind: "rate_limit", delay: 25 * time.Millisecond}},
+		},
+		maxRetries:      4,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 1)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want mixed wave to continue retrying", err)
+	}
+	if string(resp.Payload) != "after-mixed" {
+		t.Fatalf("payload = %q, want after-mixed winner from the follow-up wave", resp.Payload)
+	}
+	if calls := executor.callCount(); calls != 5 {
+		t.Fatalf("calls = %d, want trigger plus two waves of two lanes", calls)
+	}
+}
+
+func TestManagerExecute_HedgedRetryQualityMixedAbnormalAndOrdinaryExhaustsToExhaustedError(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "retry", delay: 25 * time.Millisecond},
+				{kind: "rate_limit"},
+			},
+		},
+		maxRetries:      2,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a")
+	manager.SetRetryConfig(0, 0, 1)
+
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	assertRetryWithoutPenaltyExhausted(t, err, "codex_abnormal_reasoning_retry_exhausted")
+	if statusCodeFromError(err) != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 exhausted rather than the ordinary lane error; err=%v", statusCodeFromError(err), err)
+	}
+	if calls := executor.callCount(); calls != 3 {
+		t.Fatalf("calls = %d, want initial trigger plus one mixed wave", calls)
+	}
+}
+
+func TestManagerExecuteStream_HedgedRetryQualityMixedAbnormalAndOrdinaryContinuesWaves(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		streamBehaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "retry"},
+				{kind: "success", delay: 25 * time.Millisecond, payload: "after-mixed-stream", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, TotalTokens: 35}},
+			},
+			"auth-b": {{kind: "rate_limit", delay: 25 * time.Millisecond}},
+		},
+		maxRetries:      4,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 1)
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want mixed wave to continue retrying", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if string(payload) != "after-mixed-stream" {
+		t.Fatalf("payload = %q, want after-mixed-stream winner from the follow-up wave", payload)
+	}
+}
+
 func TestManagerExecute_HedgedRetryCleanLoserCompletedCountsAsSuccess(t *testing.T) {
 	barrier := newHedgedRetryBarrier(2)
 	executor := &hedgedRetryTestExecutor{

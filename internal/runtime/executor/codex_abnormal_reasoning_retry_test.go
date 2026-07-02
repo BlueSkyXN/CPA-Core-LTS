@@ -745,6 +745,82 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerAggregatesStreamingClientUsa
 	}
 }
 
+func TestCodexExecutorAbnormalReasoningRetry_QualityStreamFoldsUsageIntoChatCompletionsFormat(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch n {
+		case 1:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+		case 2:
+			_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"clean"}` + "\n\n"))
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 200, 205)))
+		default:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 2, 4, 6)))
+		}
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithQualityHedge(2)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-quality-chat-fold"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 3 {
+		t.Fatalf("upstream calls = %d, want trigger plus two quality lanes", gotCalls)
+	}
+	if !bytes.Contains(payload, []byte("clean")) {
+		t.Fatalf("stream payload missing winner delta text: %s", payload)
+	}
+	// reasoning-fold 折算：trigger(1/2/516) 与 quality 波内 abnormal lane(2/4/516)
+	// 折入胜者(5/200/128)，并且必须以下游 chat-completions 的 usage 形状交付。
+	for _, want := range []string{
+		`"prompt_tokens":8`,
+		`"completion_tokens":1232`,
+		`"total_tokens":1240`,
+		`"reasoning_tokens":1160`,
+	} {
+		if !bytes.Contains(payload, []byte(want)) {
+			t.Fatalf("stream payload missing folded chat usage %s: %s", want, payload)
+		}
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedStreaming(t *testing.T) {
 	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
 	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
@@ -961,6 +1037,20 @@ func codexAbnormalReasoningRetryTestConfigWithEfforts(efforts []string) *config.
 func codexAbnormalReasoningRetryTestConfigWithAggregation(aggregation string) *config.Config {
 	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
 	cfg.Codex.AbnormalReasoningRetry.ClientUsageAggregation = aggregation
+	return cfg
+}
+
+func codexAbnormalReasoningRetryTestConfigWithQualityHedge(maxRetries int) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.MaxRetries = &maxRetries
+	hedgeDelayMS := 0
+	requireDistinctAuth := false
+	cfg.Codex.AbnormalReasoningRetry.HedgedRetry = config.CodexAbnormalReasoningHedgedRetryConfig{
+		Enabled:             true,
+		Mode:                config.CodexAbnormalReasoningHedgedRetryModeQuality,
+		HedgeDelayMS:        &hedgeDelayMS,
+		RequireDistinctAuth: &requireDistinctAuth,
+	}
 	return cfg
 }
 
