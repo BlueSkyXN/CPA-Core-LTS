@@ -394,8 +394,14 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	if oldCfg.ExhaustedBehavior != newCfg.ExhaustedBehavior {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.exhausted-behavior: %s -> %s", oldCfg.ExhaustedBehavior, newCfg.ExhaustedBehavior))
 	}
+	if oldCfg.ClientUsageAggregation != newCfg.ClientUsageAggregation {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.client-usage-aggregation: %s -> %s", oldCfg.ClientUsageAggregation, newCfg.ClientUsageAggregation))
+	}
 	if oldCfg.HedgedRetry.Enabled != newCfg.HedgedRetry.Enabled {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.hedged-retry.enabled: %t -> %t", oldCfg.HedgedRetry.Enabled, newCfg.HedgedRetry.Enabled))
+	}
+	if oldCfg.HedgedRetry.Mode != newCfg.HedgedRetry.Mode {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.hedged-retry.mode: %s -> %s", oldCfg.HedgedRetry.Mode, newCfg.HedgedRetry.Mode))
 	}
 	if oldCfg.HedgedRetry.HedgeDelayMS != newCfg.HedgedRetry.HedgeDelayMS {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms: %d -> %d", oldCfg.HedgedRetry.HedgeDelayMS, newCfg.HedgedRetry.HedgeDelayMS))

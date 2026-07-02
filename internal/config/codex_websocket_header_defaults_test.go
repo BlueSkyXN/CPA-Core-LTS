@@ -96,8 +96,14 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorError {
 		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorError)
 	}
+	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold {
+		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold)
+	}
 	if effective.HedgedRetry.Enabled {
 		t.Fatal("HedgedRetry.Enabled = true, want false")
+	}
+	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeSpeed {
+		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeSpeed)
 	}
 	if effective.HedgedRetry.HedgeDelayMS != 1000 {
 		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 1000", effective.HedgedRetry.HedgeDelayMS)
@@ -136,8 +142,10 @@ codex:
     stream-buffer-max-bytes: 4096
     max-retries: 0
     exhausted-behavior: "passthrough"
+    client-usage-aggregation: "sum"
     hedged-retry:
       enabled: true
+      mode: "quality"
       hedge-delay-ms: 250
       require-distinct-auth: false
 `)
@@ -181,8 +189,14 @@ codex:
 	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough {
 		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)
 	}
+	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationSum {
+		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationSum)
+	}
 	if !effective.HedgedRetry.Enabled {
 		t.Fatal("HedgedRetry.Enabled = false, want true")
+	}
+	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeQuality {
+		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeQuality)
 	}
 	if effective.HedgedRetry.HedgeDelayMS != 250 {
 		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 250", effective.HedgedRetry.HedgeDelayMS)
@@ -246,6 +260,35 @@ codex:
 	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
 	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorError {
 		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorError)
+	}
+}
+
+func TestLoadConfigOptional_CodexAbnormalReasoningRetryInvalidV2ModesDefault(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configYAML := []byte(`
+codex:
+  abnormal-reasoning-retry:
+    enabled: true
+    client-usage-aggregation: "legacy"
+    hedged-retry:
+      mode: "latency"
+`)
+	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+
+	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
+	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold {
+		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold)
+	}
+	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeSpeed {
+		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeSpeed)
 	}
 }
 

@@ -29,6 +29,16 @@ const ServiceTierMetadataKey = "service_tier"
 const (
 	// CodexAbnormalReasoningRetryUsageMetadataKey carries discarded abnormal attempt usage for client-visible aggregate usage only.
 	CodexAbnormalReasoningRetryUsageMetadataKey = "codex_abnormal_reasoning_retry_usage"
+	// RetryWithoutPenaltyUsageDetailMetadataKey carries attempt usage for retry-without-penalty hedge selection and client aggregation.
+	RetryWithoutPenaltyUsageDetailMetadataKey = "retry_without_penalty_usage_detail"
+	// RetryWithoutPenaltyHedgeScoreMetadataKey carries the score used to choose a quality-mode hedge winner.
+	RetryWithoutPenaltyHedgeScoreMetadataKey = "retry_without_penalty_hedge_score"
+	// RetryWithoutPenaltyResponseFinalizerMetadataKey carries a response finalizer for post-hedge client usage aggregation.
+	RetryWithoutPenaltyResponseFinalizerMetadataKey = "retry_without_penalty_response_finalizer"
+	// RetryWithoutPenaltyStreamFinalizerMetadataKey carries a stream finalizer for post-hedge client usage aggregation.
+	RetryWithoutPenaltyStreamFinalizerMetadataKey = "retry_without_penalty_stream_finalizer"
+	// RetryWithoutPenaltyStreamUsageMetadataKey carries mutable stream usage captured while chunks are produced.
+	RetryWithoutPenaltyStreamUsageMetadataKey = "retry_without_penalty_stream_usage"
 	// ExcludeAuthIDsMetadataKey instructs auth selection to skip the listed auth IDs.
 	ExcludeAuthIDsMetadataKey = "exclude_auth_ids"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
@@ -41,10 +51,34 @@ const (
 	ExecutionSessionMetadataKey = "execution_session_id"
 )
 
+// RetryWithoutPenaltyUsageSnapshot carries discarded-attempt usage in both the
+// legacy field-sum shape and the folded output-token shape needed by clients.
+type RetryWithoutPenaltyUsageSnapshot struct {
+	Detail             coreusage.Detail
+	FoldedOutputTokens int64
+}
+
+// RetryWithoutPenaltyResponseFinalizer rewrites a delivered non-stream response
+// after hedge selection has the final discarded-attempt usage snapshot.
+type RetryWithoutPenaltyResponseFinalizer func(Response, RetryWithoutPenaltyUsageSnapshot) Response
+
+// RetryWithoutPenaltyStreamFinalizer rewrites buffered stream chunks after hedge
+// selection has the final discarded-attempt usage snapshot.
+type RetryWithoutPenaltyStreamFinalizer func(http.Header, []StreamChunk, RetryWithoutPenaltyUsageSnapshot) *StreamResult
+
+// RetryWithoutPenaltyStreamUsage carries completed usage discovered while a
+// stream is produced. Producers set it before emitting the terminal usage chunk.
+type RetryWithoutPenaltyStreamUsage struct {
+	Detail     coreusage.Detail
+	HedgeScore int64
+	OK         bool
+}
+
 // UsageAccumulator is a thread-safe request-local usage accumulator carried in Options.Metadata.
 type UsageAccumulator struct {
-	mu     sync.Mutex
-	detail coreusage.Detail
+	mu                 sync.Mutex
+	detail             coreusage.Detail
+	foldedOutputTokens int64
 }
 
 // NewUsageAccumulator creates a UsageAccumulator seeded with initial usage.
@@ -60,9 +94,11 @@ func (a *UsageAccumulator) Add(detail coreusage.Detail) {
 		return
 	}
 	detail = normalizeUsageAccumulatorDetail(detail)
+	foldedOutputTokens := foldedUsageAccumulatorOutputTokens(detail)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.detail = addUsageAccumulatorDetail(a.detail, detail)
+	a.foldedOutputTokens += foldedOutputTokens
 }
 
 // Snapshot returns the current accumulated usage.
@@ -73,6 +109,20 @@ func (a *UsageAccumulator) Snapshot() coreusage.Detail {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.detail
+}
+
+// RetryWithoutPenaltySnapshot returns the field-sum and folded discarded usage
+// snapshots used by retry-without-penalty response finalizers.
+func (a *UsageAccumulator) RetryWithoutPenaltySnapshot() RetryWithoutPenaltyUsageSnapshot {
+	if a == nil {
+		return RetryWithoutPenaltyUsageSnapshot{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return RetryWithoutPenaltyUsageSnapshot{
+		Detail:             a.detail,
+		FoldedOutputTokens: a.foldedOutputTokens,
+	}
 }
 
 func addUsageAccumulatorDetail(a, b coreusage.Detail) coreusage.Detail {
@@ -87,6 +137,13 @@ func addUsageAccumulatorDetail(a, b coreusage.Detail) coreusage.Detail {
 		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
 		TotalTokens:         a.TotalTokens + b.TotalTokens,
 	}
+}
+
+func foldedUsageAccumulatorOutputTokens(detail coreusage.Detail) int64 {
+	if detail.OutputTokens >= detail.ReasoningTokens {
+		return detail.OutputTokens
+	}
+	return detail.ReasoningTokens
 }
 
 func normalizeUsageAccumulatorDetail(detail coreusage.Detail) coreusage.Detail {
@@ -210,6 +267,8 @@ type StreamResult struct {
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// Metadata exposes optional structured data for stream translators and retry helpers.
+	Metadata map[string]any
 }
 
 // StatusError represents an error that carries an HTTP-like status code.

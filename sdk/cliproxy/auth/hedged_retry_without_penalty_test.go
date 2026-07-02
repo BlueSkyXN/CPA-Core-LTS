@@ -17,6 +17,7 @@ import (
 type hedgedRetryTestError struct {
 	maxRetries         int
 	hedgeEnabled       bool
+	hedgeMode          string
 	hedgeDelay         time.Duration
 	requireDistinct    bool
 	authID             string
@@ -47,6 +48,10 @@ func (e hedgedRetryTestError) RetryWithoutPenaltyExhaustedBehavior() string {
 
 func (e hedgedRetryTestError) RetryWithoutPenaltyHedgePolicy() (bool, time.Duration, bool) {
 	return e.hedgeEnabled, e.hedgeDelay, e.requireDistinct
+}
+
+func (e hedgedRetryTestError) RetryWithoutPenaltyHedgeMode() string {
+	return e.hedgeMode
 }
 
 func (e hedgedRetryTestError) RetryWithoutPenaltyAuthID() string {
@@ -89,10 +94,12 @@ func (e hedgedRetryRateLimitError) RetryAfter() *time.Duration {
 }
 
 type hedgedRetryBehavior struct {
-	kind    string
-	delay   time.Duration
-	payload string
-	barrier *hedgedRetryBarrier
+	kind     string
+	delay    time.Duration
+	payload  string
+	usage    coreusage.Detail
+	finalize bool
+	barrier  *hedgedRetryBarrier
 }
 
 type hedgedRetryBarrier struct {
@@ -174,6 +181,7 @@ type hedgedRetryTestExecutor struct {
 	behaviors          map[string][]hedgedRetryBehavior
 	streamBehaviors    map[string][]hedgedRetryBehavior
 	maxRetries         int
+	hedgeMode          string
 	hedgeDelay         time.Duration
 	requireDistinct    bool
 	disableHedge       bool
@@ -207,7 +215,7 @@ func (e *hedgedRetryTestExecutor) Execute(ctx context.Context, auth *Auth, _ cli
 		if payload == "" {
 			payload = "ok"
 		}
-		return cliproxyexecutor.Response{Payload: []byte(payload)}, nil
+		return cliproxyexecutor.Response{Payload: []byte(payload), Metadata: hedgedRetryTestResponseMetadata(behavior)}, nil
 	}
 }
 
@@ -234,7 +242,54 @@ func (e *hedgedRetryTestExecutor) ExecuteStream(ctx context.Context, auth *Auth,
 		ch <- cliproxyexecutor.StreamChunk{Payload: []byte(payload)}
 	}
 	close(ch)
-	return &cliproxyexecutor.StreamResult{Chunks: ch}, nil
+	return &cliproxyexecutor.StreamResult{Chunks: ch, Metadata: hedgedRetryTestStreamMetadata(behavior)}, nil
+}
+
+func hedgedRetryTestResponseMetadata(behavior hedgedRetryBehavior) map[string]any {
+	if !hasRetryWithoutPenaltyUsageDetail(behavior.usage) && !behavior.finalize {
+		return nil
+	}
+	meta := map[string]any{}
+	if hasRetryWithoutPenaltyUsageDetail(behavior.usage) {
+		meta[cliproxyexecutor.RetryWithoutPenaltyUsageDetailMetadataKey] = behavior.usage
+		meta[cliproxyexecutor.RetryWithoutPenaltyHedgeScoreMetadataKey] = behavior.usage.OutputTokens
+	}
+	if behavior.finalize {
+		meta[cliproxyexecutor.RetryWithoutPenaltyResponseFinalizerMetadataKey] = cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer(func(resp cliproxyexecutor.Response, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) cliproxyexecutor.Response {
+			resp.Payload = []byte(fmt.Sprintf("%s|fold:%d|discarded:%d", resp.Payload, previous.FoldedOutputTokens, previous.Detail.TotalTokens))
+			return resp
+		})
+	}
+	return meta
+}
+
+func hedgedRetryTestStreamMetadata(behavior hedgedRetryBehavior) map[string]any {
+	if !hasRetryWithoutPenaltyUsageDetail(behavior.usage) && !behavior.finalize {
+		return nil
+	}
+	meta := map[string]any{}
+	if hasRetryWithoutPenaltyUsageDetail(behavior.usage) {
+		meta[cliproxyexecutor.RetryWithoutPenaltyStreamUsageMetadataKey] = &cliproxyexecutor.RetryWithoutPenaltyStreamUsage{
+			Detail:     behavior.usage,
+			HedgeScore: behavior.usage.OutputTokens,
+			OK:         true,
+		}
+	}
+	if behavior.finalize {
+		meta[cliproxyexecutor.RetryWithoutPenaltyStreamFinalizerMetadataKey] = cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer(func(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) *cliproxyexecutor.StreamResult {
+			out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+			for i := range chunks {
+				chunk := chunks[i]
+				if chunk.Err == nil {
+					chunk.Payload = []byte(fmt.Sprintf("%s|fold:%d|discarded:%d", chunk.Payload, previous.FoldedOutputTokens, previous.Detail.TotalTokens))
+				}
+				out <- chunk
+			}
+			close(out)
+			return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
+		})
+	}
+	return meta
 }
 
 func (e *hedgedRetryTestExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
@@ -293,6 +348,7 @@ func (e *hedgedRetryTestExecutor) retryError(authID string) error {
 	return hedgedRetryTestError{
 		maxRetries:         e.maxRetries,
 		hedgeEnabled:       !e.disableHedge,
+		hedgeMode:          e.hedgeMode,
 		hedgeDelay:         e.hedgeDelay,
 		requireDistinct:    e.requireDistinct,
 		authID:             authID,
@@ -619,6 +675,138 @@ func TestManagerExecute_HedgedRetrySelectedAuthCallbackReportsWinner(t *testing.
 	callbackMu.Unlock()
 	if len(got) == 0 || got[len(got)-1] != "auth-b" {
 		t.Fatalf("selected auth callbacks = %#v, want final winner auth-b", got)
+	}
+}
+
+func TestManagerExecute_HedgedRetryQualityWaitsForAbnormalAndFinalizesWinnerUsage(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "success", payload: "winner-ok", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 20, ReasoningTokens: 8, TotalTokens: 25}, finalize: true},
+			},
+			"auth-b": {{kind: "retry"}},
+		},
+		maxRetries:      2,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	var callbackMu sync.Mutex
+	var callbackAuthIDs []string
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(authID string) {
+				callbackMu.Lock()
+				defer callbackMu.Unlock()
+				callbackAuthIDs = append(callbackAuthIDs, authID)
+			},
+		},
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, opts)
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if string(resp.Payload) != "winner-ok|fold:1032|discarded:6" {
+		t.Fatalf("payload = %q, want finalized winner usage", resp.Payload)
+	}
+	callbackMu.Lock()
+	gotCallbacks := append([]string(nil), callbackAuthIDs...)
+	callbackMu.Unlock()
+	if len(gotCallbacks) == 0 || gotCallbacks[len(gotCallbacks)-1] != "auth-a" {
+		t.Fatalf("selected auth callbacks = %#v, want final winner auth-a", gotCallbacks)
+	}
+	if got := executor.callsSnapshot(); len(got) != 3 || got[0] != "auth-a" || got[1] != "auth-b" || got[2] != "auth-a" {
+		t.Fatalf("calls = %#v, want auth-a trigger, auth-b abnormal, auth-a winner", got)
+	}
+}
+
+func TestManagerExecute_HedgedRetryQualityChoosesLargestOutputAndFoldsLoser(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "success", payload: "big", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, ReasoningTokens: 8, TotalTokens: 35}, finalize: true},
+			},
+			"auth-b": {{kind: "success", payload: "small", usage: coreusage.Detail{InputTokens: 3, OutputTokens: 10, ReasoningTokens: 2, TotalTokens: 13}, finalize: true}},
+		},
+		maxRetries:      2,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if string(resp.Payload) != "big|fold:526|discarded:16" {
+		t.Fatalf("payload = %q, want big winner with trigger plus loser folded", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetryQualityBudgetCountsDispatchedLanes(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {{kind: "retry"}, {kind: "retry"}},
+			"auth-b": {{kind: "retry"}},
+		},
+		maxRetries:      2,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err == nil {
+		t.Fatal("Execute error = nil, want exhausted error")
+	}
+	if statusCodeFromError(err) != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; err=%v", statusCodeFromError(err), err)
+	}
+	if calls := executor.callCount(); calls != 3 {
+		t.Fatalf("calls = %d, want initial trigger plus exactly two quality lanes", calls)
+	}
+}
+
+func TestManagerExecuteStream_HedgedRetryQualityReplaysWinnerOnly(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		streamBehaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "success", payload: "big-stream", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, ReasoningTokens: 8, TotalTokens: 35}, finalize: true},
+			},
+			"auth-b": {{kind: "success", payload: "small-stream", usage: coreusage.Detail{InputTokens: 3, OutputTokens: 10, ReasoningTokens: 2, TotalTokens: 13}, finalize: true}},
+		},
+		maxRetries:      2,
+		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:      0,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if string(payload) != "big-stream|fold:526|discarded:16" {
+		t.Fatalf("payload = %q, want finalized big stream winner only", payload)
 	}
 }
 

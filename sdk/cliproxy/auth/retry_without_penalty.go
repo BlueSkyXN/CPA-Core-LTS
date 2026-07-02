@@ -15,6 +15,8 @@ import (
 const (
 	retryWithoutPenaltyExhaustedBehaviorError       = "error"
 	retryWithoutPenaltyExhaustedBehaviorPassThrough = "pass-through"
+	retryWithoutPenaltyHedgeModeSpeed               = "speed"
+	retryWithoutPenaltyHedgeModeQuality             = "quality"
 )
 
 func withRetryWithoutPenaltyUsageMetadata(opts cliproxyexecutor.Options, accumulator *cliproxyexecutor.UsageAccumulator) cliproxyexecutor.Options {
@@ -105,6 +107,7 @@ func retryWithoutPenaltyExhaustedBehavior(err error) string {
 
 type retryWithoutPenaltyHedgePolicy struct {
 	enabled             bool
+	mode                string
 	hedgeDelay          time.Duration
 	requireDistinctAuth bool
 	triggerAuthID       string
@@ -126,8 +129,15 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 	}
 	policy := retryWithoutPenaltyHedgePolicy{
 		enabled:             enabled,
+		mode:                retryWithoutPenaltyHedgeModeSpeed,
 		hedgeDelay:          hedgeDelay,
 		requireDistinctAuth: requireDistinctAuth,
+	}
+	var withMode interface {
+		RetryWithoutPenaltyHedgeMode() string
+	}
+	if errors.As(err, &withMode) {
+		policy.mode = normalizeRetryWithoutPenaltyHedgeMode(withMode.RetryWithoutPenaltyHedgeMode())
 	}
 	var withAuthID interface {
 		RetryWithoutPenaltyAuthID() string
@@ -136,6 +146,15 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 		policy.triggerAuthID = strings.TrimSpace(withAuthID.RetryWithoutPenaltyAuthID())
 	}
 	return policy, true
+}
+
+func normalizeRetryWithoutPenaltyHedgeMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "quality":
+		return retryWithoutPenaltyHedgeModeQuality
+	default:
+		return retryWithoutPenaltyHedgeModeSpeed
+	}
 }
 
 func normalizeRetryWithoutPenaltyExhaustedBehavior(value string) string {

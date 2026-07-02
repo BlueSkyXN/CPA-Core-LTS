@@ -316,55 +316,63 @@ type CodexConfig struct {
 }
 
 const (
-	CodexAbnormalReasoningRetryExhaustedBehaviorError       = "error"
-	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough = "pass-through"
+	CodexAbnormalReasoningRetryExhaustedBehaviorError              = "error"
+	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough        = "pass-through"
+	CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold = "reasoning-fold"
+	CodexAbnormalReasoningRetryClientUsageAggregationSum           = "sum"
+	CodexAbnormalReasoningHedgedRetryModeSpeed                     = "speed"
+	CodexAbnormalReasoningHedgedRetryModeQuality                   = "quality"
 )
 
 // CodexAbnormalReasoningRetryConfig controls the CPA-Core-LTS retry guard for
 // suspicious Codex successful responses.
 type CodexAbnormalReasoningRetryConfig struct {
-	Enabled              bool                                    `yaml:"enabled" json:"enabled"`
-	ModelContains        []string                                `yaml:"model-contains" json:"model-contains"`
-	ReasoningEfforts     []string                                `yaml:"reasoning-efforts" json:"reasoning-efforts"`
-	ReasoningTokens      []int64                                 `yaml:"reasoning-tokens" json:"reasoning-tokens"`
-	AuthKinds            []string                                `yaml:"auth-kinds" json:"auth-kinds"`
-	AuthIDs              []string                                `yaml:"auth-ids" json:"auth-ids"`
-	StreamBuffer         *bool                                   `yaml:"stream-buffer,omitempty" json:"stream-buffer,omitempty"`
-	StreamBufferMaxBytes *int64                                  `yaml:"stream-buffer-max-bytes,omitempty" json:"stream-buffer-max-bytes,omitempty"`
-	MaxRetries           *int                                    `yaml:"max-retries,omitempty" json:"max-retries,omitempty"`
-	ExhaustedBehavior    string                                  `yaml:"exhausted-behavior,omitempty" json:"exhausted-behavior,omitempty"`
-	HedgedRetry          CodexAbnormalReasoningHedgedRetryConfig `yaml:"hedged-retry" json:"hedged-retry"`
+	Enabled                bool                                    `yaml:"enabled" json:"enabled"`
+	ModelContains          []string                                `yaml:"model-contains" json:"model-contains"`
+	ReasoningEfforts       []string                                `yaml:"reasoning-efforts" json:"reasoning-efforts"`
+	ReasoningTokens        []int64                                 `yaml:"reasoning-tokens" json:"reasoning-tokens"`
+	AuthKinds              []string                                `yaml:"auth-kinds" json:"auth-kinds"`
+	AuthIDs                []string                                `yaml:"auth-ids" json:"auth-ids"`
+	StreamBuffer           *bool                                   `yaml:"stream-buffer,omitempty" json:"stream-buffer,omitempty"`
+	StreamBufferMaxBytes   *int64                                  `yaml:"stream-buffer-max-bytes,omitempty" json:"stream-buffer-max-bytes,omitempty"`
+	MaxRetries             *int                                    `yaml:"max-retries,omitempty" json:"max-retries,omitempty"`
+	ExhaustedBehavior      string                                  `yaml:"exhausted-behavior,omitempty" json:"exhausted-behavior,omitempty"`
+	ClientUsageAggregation string                                  `yaml:"client-usage-aggregation,omitempty" json:"client-usage-aggregation,omitempty"`
+	HedgedRetry            CodexAbnormalReasoningHedgedRetryConfig `yaml:"hedged-retry" json:"hedged-retry"`
 }
 
 // CodexAbnormalReasoningHedgedRetryConfig controls the optional hedged retry
 // lane launched after an abnormal reasoning retry has already been triggered.
 type CodexAbnormalReasoningHedgedRetryConfig struct {
-	Enabled             bool  `yaml:"enabled" json:"enabled"`
-	HedgeDelayMS        *int  `yaml:"hedge-delay-ms,omitempty" json:"hedge-delay-ms,omitempty"`
-	RequireDistinctAuth *bool `yaml:"require-distinct-auth,omitempty" json:"require-distinct-auth,omitempty"`
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	Mode                string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	HedgeDelayMS        *int   `yaml:"hedge-delay-ms,omitempty" json:"hedge-delay-ms,omitempty"`
+	RequireDistinctAuth *bool  `yaml:"require-distinct-auth,omitempty" json:"require-distinct-auth,omitempty"`
 }
 
 // EffectiveCodexAbnormalReasoningRetryConfig is the sanitized runtime view of
 // CodexAbnormalReasoningRetryConfig. It is intentionally derived in memory so
 // existing config.yaml files are not rewritten to add default values.
 type EffectiveCodexAbnormalReasoningRetryConfig struct {
-	Enabled              bool
-	ModelContains        []string
-	ReasoningEfforts     []string
-	ReasoningTokens      []int64
-	AuthKinds            []string
-	AuthIDs              []string
-	StreamBuffer         bool
-	StreamBufferMaxBytes int64
-	MaxRetries           int
-	ExhaustedBehavior    string
-	HedgedRetry          EffectiveCodexAbnormalReasoningHedgedRetryConfig
+	Enabled                bool
+	ModelContains          []string
+	ReasoningEfforts       []string
+	ReasoningTokens        []int64
+	AuthKinds              []string
+	AuthIDs                []string
+	StreamBuffer           bool
+	StreamBufferMaxBytes   int64
+	MaxRetries             int
+	ExhaustedBehavior      string
+	ClientUsageAggregation string
+	HedgedRetry            EffectiveCodexAbnormalReasoningHedgedRetryConfig
 }
 
 // EffectiveCodexAbnormalReasoningHedgedRetryConfig is the sanitized runtime view
 // of CodexAbnormalReasoningHedgedRetryConfig.
 type EffectiveCodexAbnormalReasoningHedgedRetryConfig struct {
 	Enabled             bool
+	Mode                string
 	HedgeDelayMS        int
 	RequireDistinctAuth bool
 }
@@ -401,18 +409,20 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 		requireDistinctAuth = *c.HedgedRetry.RequireDistinctAuth
 	}
 	return EffectiveCodexAbnormalReasoningRetryConfig{
-		Enabled:              c.Enabled,
-		ModelContains:        defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
-		ReasoningEfforts:     defaultedTrimmedStringList(c.ReasoningEfforts, nil, true),
-		ReasoningTokens:      defaultedPositiveInt64List(c.ReasoningTokens, []int64{516, 1034}),
-		AuthKinds:            defaultedTrimmedStringList(c.AuthKinds, []string{"oauth"}, true),
-		AuthIDs:              defaultedTrimmedStringList(c.AuthIDs, nil, false),
-		StreamBuffer:         streamBuffer,
-		StreamBufferMaxBytes: streamBufferMaxBytes,
-		MaxRetries:           maxRetries,
-		ExhaustedBehavior:    normalizeCodexAbnormalReasoningRetryExhaustedBehavior(c.ExhaustedBehavior),
+		Enabled:                c.Enabled,
+		ModelContains:          defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
+		ReasoningEfforts:       defaultedTrimmedStringList(c.ReasoningEfforts, nil, true),
+		ReasoningTokens:        defaultedPositiveInt64List(c.ReasoningTokens, []int64{516, 1034}),
+		AuthKinds:              defaultedTrimmedStringList(c.AuthKinds, []string{"oauth"}, true),
+		AuthIDs:                defaultedTrimmedStringList(c.AuthIDs, nil, false),
+		StreamBuffer:           streamBuffer,
+		StreamBufferMaxBytes:   streamBufferMaxBytes,
+		MaxRetries:             maxRetries,
+		ExhaustedBehavior:      normalizeCodexAbnormalReasoningRetryExhaustedBehavior(c.ExhaustedBehavior),
+		ClientUsageAggregation: normalizeCodexAbnormalReasoningRetryClientUsageAggregation(c.ClientUsageAggregation),
 		HedgedRetry: EffectiveCodexAbnormalReasoningHedgedRetryConfig{
 			Enabled:             c.HedgedRetry.Enabled,
+			Mode:                normalizeCodexAbnormalReasoningHedgedRetryMode(c.HedgedRetry.Mode),
 			HedgeDelayMS:        hedgeDelayMS,
 			RequireDistinctAuth: requireDistinctAuth,
 		},
@@ -427,6 +437,28 @@ func normalizeCodexAbnormalReasoningRetryExhaustedBehavior(value string) string 
 		return CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough
 	default:
 		return CodexAbnormalReasoningRetryExhaustedBehaviorError
+	}
+}
+
+func normalizeCodexAbnormalReasoningRetryClientUsageAggregation(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "reasoning-fold", "reasoning_fold", "fold":
+		return CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold
+	case "sum":
+		return CodexAbnormalReasoningRetryClientUsageAggregationSum
+	default:
+		return CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold
+	}
+}
+
+func normalizeCodexAbnormalReasoningHedgedRetryMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "speed":
+		return CodexAbnormalReasoningHedgedRetryModeSpeed
+	case "quality":
+		return CodexAbnormalReasoningHedgedRetryModeQuality
+	default:
+		return CodexAbnormalReasoningHedgedRetryModeSpeed
 	}
 }
 

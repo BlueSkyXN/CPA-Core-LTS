@@ -933,10 +933,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
+		var completedUsage usage.Detail
+		var completedUsageOK bool
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
+			completedUsage = detail
+			completedUsageOK = true
 			if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
 				var param any
-				clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata)
+				clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 				clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
 				out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
 				fallbackResp := cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
@@ -954,10 +958,19 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 
 		var param any
-		clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata)
+		clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 		clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
 		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+		if completedUsageOK {
+			resp.Metadata = codexAbnormalReasoningRetryResponseMetadata(completedUsage, func(base cliproxyexecutor.Response, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) cliproxyexecutor.Response {
+				var finalizerParam any
+				finalCompletedData := patchCodexAbnormalReasoningClientUsageWithSnapshot(completedData, previous, abnormalRetry.clientUsageAggregation)
+				finalCompletedData = applyCodexIdentityExposeResponsePayload(finalCompletedData, identityState)
+				base.Payload = sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, finalCompletedData, &finalizerParam)
+				return base
+			})
+		}
 		return resp, nil
 	}
 	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
@@ -1177,6 +1190,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
+	streamUsage := &cliproxyexecutor.RetryWithoutPenaltyStreamUsage{}
+	streamFinalizer := cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer(func(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) *cliproxyexecutor.StreamResult {
+		return finalizeCodexAbnormalReasoningRetryStream(headers, chunks, previous, abnormalRetry.clientUsageAggregation)
+	})
 	go func() {
 		defer close(out)
 		defer func() {
@@ -1277,7 +1294,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						}
 					}
 					completedData = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
-					data = patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata)
+					data = patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
 				}
@@ -1301,6 +1318,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return
 			}
 			if usageDetailOK {
+				streamUsage.Detail = usageDetail
+				streamUsage.HedgeScore = usageDetail.OutputTokens
+				streamUsage.OK = true
 				reporter.Publish(ctx, usageDetail)
 			}
 			if len(completedData) > 0 {
@@ -1328,7 +1348,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			_ = flushBuffered()
 		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{
+		Headers:  httpResp.Header.Clone(),
+		Chunks:   out,
+		Metadata: codexAbnormalReasoningRetryStreamMetadata(streamUsage, streamFinalizer),
+	}, nil
 }
 
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
