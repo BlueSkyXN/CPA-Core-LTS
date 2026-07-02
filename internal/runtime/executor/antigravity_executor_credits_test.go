@@ -20,6 +20,13 @@ import (
 )
 
 func resetAntigravityCreditsRetryState() {
+	antigravityCreditsHintRefreshByID.Range(func(_, value any) bool {
+		if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
+			state.mu.Lock()
+			state.mu.Unlock()
+		}
+		return true
+	})
 	antigravityCreditsFailureByAuth = sync.Map{}
 	antigravityShortCooldownByAuth = sync.Map{}
 	antigravityCreditsBalanceByAuth = sync.Map{}
