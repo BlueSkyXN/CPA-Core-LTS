@@ -1,6 +1,6 @@
 services:
   cli-proxy-api:
-    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
+    image: ${CLI_PROXY_IMAGE:?Set CLI_PROXY_IMAGE to a published image, or use ./docker-build.sh option 2 to build cli-proxy-api:local}
     pull_policy: always
     build:
       context: .

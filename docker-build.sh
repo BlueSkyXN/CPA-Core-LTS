@@ -100,7 +100,7 @@ wait_for_service() {
   port=$(get_port)
 
   echo "Waiting for service to be ready..."
-  for i in {1..30}; do
+  for _ in {1..30}; do
     if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}/" | grep -q "200"; then
       break
     fi
@@ -125,7 +125,7 @@ esac
 
 # --- Step 1: Choose Environment ---
 echo "Please select an option:"
-echo "1) Run using Pre-built Image (Recommended)"
+echo "1) Run using Pre-built Image (requires CLI_PROXY_IMAGE)"
 echo "2) Build from Source and Run (For Developers)"
 read -r -p "Enter choice [1-2]: " choice
 
@@ -133,6 +133,11 @@ read -r -p "Enter choice [1-2]: " choice
 case "$choice" in
   1)
     echo "--- Running with Pre-built Image ---"
+    if [[ -z "${CLI_PROXY_IMAGE:-}" ]]; then
+      echo "Error: CLI_PROXY_IMAGE must be set for pre-built image runs."
+      echo "Example: CLI_PROXY_IMAGE=ghcr.io/<owner>/<image>:<tag> ./docker-build.sh"
+      exit 1
+    fi
     if [[ "${WITH_USAGE}" == "true" ]]; then
       export_stats
     fi

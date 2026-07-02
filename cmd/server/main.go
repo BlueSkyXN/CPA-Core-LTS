@@ -40,6 +40,7 @@ import (
 )
 
 var (
+	ProductName       = "CLIProxyAPI"
 	Version           = "dev"
 	Commit            = "none"
 	BuildDate         = "unknown"
@@ -49,6 +50,7 @@ var (
 // init initializes the shared logger setup.
 func init() {
 	logging.SetupBaseLogger()
+	buildinfo.ProductName = ProductName
 	buildinfo.Version = Version
 	buildinfo.Commit = Commit
 	buildinfo.BuildDate = BuildDate
@@ -68,7 +70,7 @@ func shouldStartExampleAPIKeyWarningServer(cfg *config.Config, commandMode, tuiM
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
-	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	fmt.Printf("%s Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.ProductName, buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Command-line flags to control the application's behavior.
 	var login bool
@@ -514,7 +516,7 @@ func main() {
 		return
 	}
 
-	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	log.Infof("%s Version: %s, Commit: %s, BuiltAt: %s", buildinfo.ProductName, buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Set the log level based on the configuration.
 	util.SetLogLevel(cfg)

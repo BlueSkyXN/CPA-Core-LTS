@@ -4,6 +4,9 @@ package buildinfo
 // The following variables are overridden via ldflags during release builds.
 // Defaults cover local development builds.
 var (
+	// ProductName is the display name baked into startup version banners.
+	ProductName = "CLIProxyAPI"
+
 	// Version is the semantic version or git describe output of the binary.
 	Version = "dev"
 

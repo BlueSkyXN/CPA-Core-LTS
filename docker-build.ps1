@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 # --- Step 1: Choose Environment ---
 Write-Host "Please select an option:"
-Write-Host "1) Run using Pre-built Image (Recommended)"
+Write-Host "1) Run using Pre-built Image (requires CLI_PROXY_IMAGE)"
 Write-Host "2) Build from Source and Run (For Developers)"
 $choice = Read-Host -Prompt "Enter choice [1-2]"
 
@@ -16,6 +16,11 @@ $choice = Read-Host -Prompt "Enter choice [1-2]"
 switch ($choice) {
     "1" {
         Write-Host "--- Running with Pre-built Image ---"
+        if ([string]::IsNullOrWhiteSpace($env:CLI_PROXY_IMAGE)) {
+            Write-Host "Error: CLI_PROXY_IMAGE must be set for pre-built image runs."
+            Write-Host "Example: `$env:CLI_PROXY_IMAGE = 'ghcr.io/<owner>/<image>:<tag>'; ./docker-build.ps1"
+            exit 1
+        }
         docker compose up -d --remove-orphans --no-build
         Write-Host "Services are starting from remote image."
         Write-Host "Run 'docker compose logs -f' to see the logs."
