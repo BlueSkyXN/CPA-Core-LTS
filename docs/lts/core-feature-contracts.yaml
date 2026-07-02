@@ -165,8 +165,12 @@ features:
       - codex.abnormal-reasoning-retry.auth-kinds
       - codex.abnormal-reasoning-retry.auth-ids
       - codex.abnormal-reasoning-retry.stream-buffer
+      - codex.abnormal-reasoning-retry.stream-buffer-max-bytes
       - codex.abnormal-reasoning-retry.max-retries
       - codex.abnormal-reasoning-retry.exhausted-behavior
+      - codex.abnormal-reasoning-retry.hedged-retry.enabled
+      - codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms
+      - codex.abnormal-reasoning-retry.hedged-retry.require-distinct-auth
     core_files:
       - internal/config/config.go
       - internal/runtime/executor/codex_abnormal_reasoning_retry.go
@@ -174,14 +178,21 @@ features:
       - internal/runtime/executor/helps/usage_helpers.go
       - internal/usage/logger_plugin.go
       - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/hedged_retry_without_penalty.go
+      - sdk/cliproxy/auth/hedged_retry_without_penalty_test.go
       - sdk/cliproxy/auth/retry_without_penalty.go
       - sdk/cliproxy/executor/types.go
       - config.example.yaml
     required_markers:
       - abnormal-reasoning-retry
+      - hedged-retry
+      - hedge-delay-ms
+      - require-distinct-auth
+      - stream-buffer-max-bytes
       - max-retries
       - exhausted-behavior
       - reasoning-efforts
+      - ExcludeAuthIDsMetadataKey
       - RetryWithoutPenalty
       - CodexAbnormalReasoningRetryUsageMetadataKey
       - codex_abnormal_reasoning_response

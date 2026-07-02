@@ -153,6 +153,52 @@ func TestCodexExecutorAbnormalReasoningRetry_MatchesRequestedModelMetadata(t *te
 	assertRetryWithoutPenaltyError(t, err)
 }
 
+func TestCodexExecutorAbnormalReasoningRetry_ErrorCarriesHedgePolicyAndAuthID(t *testing.T) {
+	server := newCodexAbnormalReasoningRetryServer(t, "gpt-5.5", 516)
+	defer server.Close()
+
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	hedgeDelayMS := 25
+	requireDistinctAuth := false
+	cfg.Codex.AbnormalReasoningRetry.HedgedRetry = config.CodexAbnormalReasoningHedgedRetryConfig{
+		Enabled:             true,
+		HedgeDelayMS:        &hedgeDelayMS,
+		RequireDistinctAuth: &requireDistinctAuth,
+	}
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-policy"
+
+	executor := NewCodexExecutor(cfg)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	assertRetryWithoutPenaltyError(t, err)
+
+	var withPolicy interface {
+		RetryWithoutPenaltyHedgePolicy() (bool, time.Duration, bool)
+	}
+	if !errors.As(err, &withPolicy) {
+		t.Fatalf("error %T does not expose RetryWithoutPenaltyHedgePolicy", err)
+	}
+	enabled, delay, requireDistinct := withPolicy.RetryWithoutPenaltyHedgePolicy()
+	if !enabled || delay != 25*time.Millisecond || requireDistinct {
+		t.Fatalf("hedge policy = enabled:%t delay:%v requireDistinct:%t, want true/25ms/false", enabled, delay, requireDistinct)
+	}
+	var withAuthID interface {
+		RetryWithoutPenaltyAuthID() string
+	}
+	if !errors.As(err, &withAuthID) {
+		t.Fatalf("error %T does not expose RetryWithoutPenaltyAuthID", err)
+	}
+	if got := withAuthID.RetryWithoutPenaltyAuthID(); got != "codex-oauth-policy" {
+		t.Fatalf("RetryWithoutPenaltyAuthID = %q, want codex-oauth-policy", got)
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterUsesPayloadWithoutModelSuffix(t *testing.T) {
 	testCases := []struct {
 		name         string
@@ -807,6 +853,41 @@ func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferDisabledDoesNotRetry
 	}
 	if !sawPayload {
 		t.Fatal("expected visible streamed payload when stream-buffer=false")
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesFlushesAndDisablesRetry(t *testing.T) {
+	streamBufferMaxBytes := int64(1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"visible"}` + "\n\n"))
+		_, _ = w.Write([]byte(codexCompletedSSE("gpt-5.5", 1034)))
+	}))
+	defer server.Close()
+
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.StreamBufferMaxBytes = &streamBufferMaxBytes
+	executor := NewCodexExecutor(cfg)
+	result, err := executor.ExecuteStream(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v", err)
+	}
+
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil because buffer cap disables retry guard", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if !bytes.Contains(payload, []byte("visible")) {
+		t.Fatalf("stream payload missing flushed visible delta: %s", payload)
 	}
 }
 

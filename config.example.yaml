@@ -30,7 +30,7 @@ remote-management:
   # disable-auto-update-panel: false
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
-  panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+  panel-github-repository: "https://github.com/BlueSkyXN/CPA-Panel-LTS"
 
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
@@ -189,6 +189,8 @@ codex:
       - "oauth"
     auth-ids: []
     stream-buffer: true
+    # 0 means unlimited buffering while stream-buffer is enabled. Positive values flush buffered chunks and disable this guard for the current stream once exceeded.
+    stream-buffer-max-bytes: 0
     # Maximum extra retries caused by abnormal reasoning detection. Default: 2.
     # This limit is independent of the global request-retry setting.
     # Set to 0 to record the abnormal attempt as failed usage and apply exhausted-behavior immediately.
@@ -196,6 +198,12 @@ codex:
     # CPA usage is attempt-level; successful client response usage includes discarded attempts plus the delivered attempt.
     max-retries: 2
     exhausted-behavior: "error"
+    # Optional V1 hedged retry for abnormal attempts. When enabled, a retry lane starts first;
+    # after hedge-delay-ms, a second parallel lane may start to reduce tail latency. First success wins.
+    hedged-retry:
+      enabled: false
+      hedge-delay-ms: 1000
+      require-distinct-auth: true
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

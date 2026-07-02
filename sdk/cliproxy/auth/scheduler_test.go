@@ -959,6 +959,35 @@ func TestManager_SchedulerTracksRegisterAndUpdate(t *testing.T) {
 	}
 }
 
+func TestAuthSchedulerStoresAndReturnsOwnedSnapshots(t *testing.T) {
+	t.Parallel()
+
+	source := &Auth{ID: "auth-a", Provider: "gemini"}
+	scheduler := newAuthScheduler(&RoundRobinSelector{})
+	scheduler.rebuild([]*Auth{source})
+	source.Disabled = true
+
+	got, errPick := scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("scheduler.pickSingle() error = %v", errPick)
+	}
+	if got == nil || got.ID != "auth-a" {
+		t.Fatalf("scheduler.pickSingle() auth = %v, want auth-a", got)
+	}
+	if got.Disabled {
+		t.Fatalf("scheduler returned source mutation; got.Disabled = true")
+	}
+
+	got.Disabled = true
+	gotAgain, errPick := scheduler.pickSingle(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("scheduler.pickSingle() after returned mutation error = %v", errPick)
+	}
+	if gotAgain == nil || gotAgain.Disabled {
+		t.Fatalf("scheduler stored returned mutation; gotAgain = %#v", gotAgain)
+	}
+}
+
 func TestManager_PickNextMixed_UsesSchedulerRotation(t *testing.T) {
 	t.Parallel()
 

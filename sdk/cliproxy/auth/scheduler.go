@@ -47,7 +47,7 @@ type providerScheduler struct {
 	modelShards map[string]*modelScheduler
 }
 
-// scheduledAuthMeta stores the immutable scheduling fields derived from an auth snapshot.
+// scheduledAuthMeta stores the immutable scheduling fields derived from a scheduler-owned auth snapshot.
 type scheduledAuthMeta struct {
 	auth              *Auth
 	providerKey       string
@@ -533,9 +533,10 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	if auth == nil {
 		return
 	}
-	authID := strings.TrimSpace(auth.ID)
-	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
-	if authID == "" || providerKey == "" || auth.Disabled {
+	snapshot := auth.Clone()
+	authID := strings.TrimSpace(snapshot.ID)
+	providerKey := strings.ToLower(strings.TrimSpace(snapshot.Provider))
+	if authID == "" || providerKey == "" || snapshot.Disabled {
 		s.removeAuthLocked(authID)
 		return
 	}
@@ -544,7 +545,7 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 			previousState.removeAuthLocked(authID)
 		}
 	}
-	meta := buildScheduledAuthMeta(auth)
+	meta := buildScheduledAuthMeta(snapshot)
 	s.authProviders[authID] = providerKey
 	s.ensureProviderLocked(providerKey).upsertAuthLocked(meta, now)
 }
@@ -847,7 +848,7 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 	if picked == nil || picked.auth == nil {
 		return nil
 	}
-	return picked.auth
+	return picked.auth.Clone()
 }
 
 func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priority int) int {

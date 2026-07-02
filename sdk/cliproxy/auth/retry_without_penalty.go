@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -16,15 +17,15 @@ const (
 	retryWithoutPenaltyExhaustedBehaviorPassThrough = "pass-through"
 )
 
-func withRetryWithoutPenaltyUsageMetadata(opts cliproxyexecutor.Options, detail coreusage.Detail) cliproxyexecutor.Options {
-	if !hasRetryWithoutPenaltyUsageDetail(detail) {
+func withRetryWithoutPenaltyUsageMetadata(opts cliproxyexecutor.Options, accumulator *cliproxyexecutor.UsageAccumulator) cliproxyexecutor.Options {
+	if accumulator == nil || !hasRetryWithoutPenaltyUsageDetail(accumulator.Snapshot()) {
 		return opts
 	}
 	meta := make(map[string]any, len(opts.Metadata)+1)
 	for k, v := range opts.Metadata {
 		meta[k] = v
 	}
-	meta[cliproxyexecutor.CodexAbnormalReasoningRetryUsageMetadataKey] = detail
+	meta[cliproxyexecutor.CodexAbnormalReasoningRetryUsageMetadataKey] = accumulator
 	opts.Metadata = meta
 	return opts
 }
@@ -57,6 +58,24 @@ func retryWithoutPenaltyLimit(err error) (string, int, bool) {
 	return class, limited.RetryWithoutPenaltyMaxRetries(), true
 }
 
+func retryWithoutPenaltyRemainingRetries(err error, retryWithoutPenaltyCounts map[string]int) (string, int, error, bool) {
+	class, maxRetries, ok := retryWithoutPenaltyLimit(err)
+	if !ok {
+		return "", 0, nil, false
+	}
+	if maxRetries <= 0 {
+		return class, 0, newRetryWithoutPenaltyExhaustedError(err, class), true
+	}
+	used := 0
+	if retryWithoutPenaltyCounts != nil {
+		used = retryWithoutPenaltyCounts[class]
+	}
+	if used >= maxRetries {
+		return class, 0, newRetryWithoutPenaltyExhaustedError(err, class), true
+	}
+	return class, maxRetries - used, nil, true
+}
+
 func retryWithoutPenaltyUsageDetail(err error) (coreusage.Detail, bool) {
 	if err == nil {
 		return coreusage.Detail{}, false
@@ -82,6 +101,41 @@ func retryWithoutPenaltyExhaustedBehavior(err error) string {
 		return retryWithoutPenaltyExhaustedBehaviorError
 	}
 	return normalizeRetryWithoutPenaltyExhaustedBehavior(withBehavior.RetryWithoutPenaltyExhaustedBehavior())
+}
+
+type retryWithoutPenaltyHedgePolicy struct {
+	enabled             bool
+	hedgeDelay          time.Duration
+	requireDistinctAuth bool
+	triggerAuthID       string
+}
+
+func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedgePolicy, bool) {
+	if err == nil {
+		return retryWithoutPenaltyHedgePolicy{}, false
+	}
+	var withPolicy interface {
+		RetryWithoutPenaltyHedgePolicy() (bool, time.Duration, bool)
+	}
+	if !errors.As(err, &withPolicy) {
+		return retryWithoutPenaltyHedgePolicy{}, false
+	}
+	enabled, hedgeDelay, requireDistinctAuth := withPolicy.RetryWithoutPenaltyHedgePolicy()
+	if hedgeDelay < 0 {
+		hedgeDelay = 0
+	}
+	policy := retryWithoutPenaltyHedgePolicy{
+		enabled:             enabled,
+		hedgeDelay:          hedgeDelay,
+		requireDistinctAuth: requireDistinctAuth,
+	}
+	var withAuthID interface {
+		RetryWithoutPenaltyAuthID() string
+	}
+	if errors.As(err, &withAuthID) {
+		policy.triggerAuthID = strings.TrimSpace(withAuthID.RetryWithoutPenaltyAuthID())
+	}
+	return policy, true
 }
 
 func normalizeRetryWithoutPenaltyExhaustedBehavior(value string) string {

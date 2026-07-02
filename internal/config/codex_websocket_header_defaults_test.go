@@ -87,11 +87,23 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if !effective.StreamBuffer {
 		t.Fatal("StreamBuffer = false, want true")
 	}
+	if effective.StreamBufferMaxBytes != 0 {
+		t.Fatalf("StreamBufferMaxBytes = %d, want 0", effective.StreamBufferMaxBytes)
+	}
 	if effective.MaxRetries != 2 {
 		t.Fatalf("MaxRetries = %d, want 2", effective.MaxRetries)
 	}
 	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorError {
 		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorError)
+	}
+	if effective.HedgedRetry.Enabled {
+		t.Fatal("HedgedRetry.Enabled = true, want false")
+	}
+	if effective.HedgedRetry.HedgeDelayMS != 1000 {
+		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 1000", effective.HedgedRetry.HedgeDelayMS)
+	}
+	if !effective.HedgedRetry.RequireDistinctAuth {
+		t.Fatal("HedgedRetry.RequireDistinctAuth = false, want true")
 	}
 }
 
@@ -121,8 +133,13 @@ codex:
       - " auth-1 "
       - "auth-1"
     stream-buffer: false
+    stream-buffer-max-bytes: 4096
     max-retries: 0
     exhausted-behavior: "passthrough"
+    hedged-retry:
+      enabled: true
+      hedge-delay-ms: 250
+      require-distinct-auth: false
 `)
 	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
@@ -155,11 +172,23 @@ codex:
 	if effective.StreamBuffer {
 		t.Fatal("StreamBuffer = true, want false")
 	}
+	if effective.StreamBufferMaxBytes != 4096 {
+		t.Fatalf("StreamBufferMaxBytes = %d, want 4096", effective.StreamBufferMaxBytes)
+	}
 	if effective.MaxRetries != 0 {
 		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
 	}
 	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough {
 		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)
+	}
+	if !effective.HedgedRetry.Enabled {
+		t.Fatal("HedgedRetry.Enabled = false, want true")
+	}
+	if effective.HedgedRetry.HedgeDelayMS != 250 {
+		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 250", effective.HedgedRetry.HedgeDelayMS)
+	}
+	if effective.HedgedRetry.RequireDistinctAuth {
+		t.Fatal("HedgedRetry.RequireDistinctAuth = true, want false")
 	}
 }
 
@@ -171,6 +200,9 @@ codex:
   abnormal-reasoning-retry:
     enabled: true
     max-retries: -1
+    stream-buffer-max-bytes: -128
+    hedged-retry:
+      hedge-delay-ms: -25
 `)
 	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
@@ -184,6 +216,12 @@ codex:
 	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
 	if effective.MaxRetries != 0 {
 		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
+	}
+	if effective.StreamBufferMaxBytes != 0 {
+		t.Fatalf("StreamBufferMaxBytes = %d, want 0", effective.StreamBufferMaxBytes)
+	}
+	if effective.HedgedRetry.HedgeDelayMS != 0 {
+		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 0", effective.HedgedRetry.HedgeDelayMS)
 	}
 }
 

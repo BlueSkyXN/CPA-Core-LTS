@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -19,8 +20,13 @@ import (
 type codexAbnormalReasoningRetryPolicy struct {
 	enabled           bool
 	streamBuffer      bool
+	streamBufferMax   int64
 	maxRetries        int
 	exhaustedBehavior string
+	hedgeEnabled      bool
+	hedgeDelay        time.Duration
+	requireDistinct   bool
+	authID            string
 	modelContains     []string
 	reasoningEfforts  map[string]struct{}
 	reasoningTokens   map[int64]struct{}
@@ -30,6 +36,10 @@ type codexAbnormalReasoningRetryError struct {
 	detail                usage.Detail
 	maxRetries            int
 	exhaustedBehavior     string
+	hedgeEnabled          bool
+	hedgeDelay            time.Duration
+	requireDistinctAuth   bool
+	authID                string
 	fallbackResponse      *cliproxyexecutor.Response
 	fallbackStreamHeaders http.Header
 	fallbackStreamChunks  []cliproxyexecutor.StreamChunk
@@ -70,6 +80,20 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyExhaustedBehavior(
 		return config.CodexAbnormalReasoningRetryExhaustedBehaviorError
 	}
 	return e.exhaustedBehavior
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgePolicy() (bool, time.Duration, bool) {
+	if e == nil {
+		return false, 0, true
+	}
+	return e.hedgeEnabled, e.hedgeDelay, e.requireDistinctAuth
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyAuthID() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.authID)
 }
 
 func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyFallbackResponse() (cliproxyexecutor.Response, bool) {
@@ -141,8 +165,13 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 	return codexAbnormalReasoningRetryPolicy{
 		enabled:           true,
 		streamBuffer:      effective.StreamBuffer,
+		streamBufferMax:   effective.StreamBufferMaxBytes,
 		maxRetries:        effective.MaxRetries,
 		exhaustedBehavior: effective.ExhaustedBehavior,
+		hedgeEnabled:      effective.HedgedRetry.Enabled,
+		hedgeDelay:        time.Duration(effective.HedgedRetry.HedgeDelayMS) * time.Millisecond,
+		requireDistinct:   effective.HedgedRetry.RequireDistinctAuth,
+		authID:            strings.TrimSpace(auth.ID),
 		modelContains:     modelContains,
 		reasoningEfforts:  efforts,
 		reasoningTokens:   tokens,
@@ -155,6 +184,13 @@ func (p codexAbnormalReasoningRetryPolicy) Enabled() bool {
 
 func (p codexAbnormalReasoningRetryPolicy) StreamBuffer() bool {
 	return p.enabled && p.streamBuffer
+}
+
+func (p codexAbnormalReasoningRetryPolicy) StreamBufferMaxBytes() int64 {
+	if !p.enabled || p.streamBufferMax < 0 {
+		return 0
+	}
+	return p.streamBufferMax
 }
 
 func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reasoningEffort string) error {
@@ -182,9 +218,13 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 		}
 	}
 	err := &codexAbnormalReasoningRetryError{
-		detail:            detail,
-		maxRetries:        p.maxRetries,
-		exhaustedBehavior: p.exhaustedBehavior,
+		detail:              detail,
+		maxRetries:          p.maxRetries,
+		exhaustedBehavior:   p.exhaustedBehavior,
+		hedgeEnabled:        p.hedgeEnabled,
+		hedgeDelay:          p.hedgeDelay,
+		requireDistinctAuth: p.requireDistinct,
+		authID:              p.authID,
 	}
 	if fallbackResponse != nil {
 		resp := cloneCodexAbnormalReasoningRetryResponse(*fallbackResponse)
@@ -379,6 +419,9 @@ func codexAbnormalReasoningRetryUsageFromMetadata(metadata map[string]any) (usag
 			return usage.Detail{}, false
 		}
 		return *detail, hasCodexUsageDetail(*detail)
+	case *cliproxyexecutor.UsageAccumulator:
+		snapshot := detail.Snapshot()
+		return snapshot, hasCodexUsageDetail(snapshot)
 	default:
 		return usage.Detail{}, false
 	}

@@ -1635,8 +1635,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 	var lastErr error
 	retryWithoutPenaltyCounts := make(map[string]int)
-	var retryWithoutPenaltyUsage coreusage.Detail
-	for attempt := 0; ; attempt++ {
+	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
+	retryWithoutPenaltyHedgeState := &retryWithoutPenaltyHedgeRequestState{}
+	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errExec == nil {
@@ -1644,7 +1645,51 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		lastErr = errExec
 		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
-			retryWithoutPenaltyUsage = addRetryWithoutPenaltyUsageDetail(retryWithoutPenaltyUsage, detail)
+			retryWithoutPenaltyUsage.Add(detail)
+		}
+		if policy, ok := retryWithoutPenaltyHedgePolicyFromError(errExec); ok && policy.enabled && !m.HomeEnabled() {
+			class, remaining, terminalErr, limited := retryWithoutPenaltyRemainingRetries(errExec, retryWithoutPenaltyCounts)
+			if terminalErr != nil {
+				if resp, ok := retryWithoutPenaltyFallbackResponse(errExec); ok {
+					return resp, nil
+				}
+				lastErr = terminalErr
+				break
+			}
+			if limited && remaining > 0 {
+				outcome := m.executeRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState)
+				if outcome.disableSecondLane {
+					retryWithoutPenaltyHedgeState.secondLaneDisabled = true
+				}
+				if outcome.attempts > 0 {
+					retryWithoutPenaltyCounts[class] += outcome.attempts
+					attempt += outcome.attempts
+				}
+				if outcome.err == nil {
+					return outcome.response, nil
+				}
+				lastErr = outcome.err
+				if !outcome.usageAccounted {
+					if detail, ok := retryWithoutPenaltyUsageDetail(outcome.err); ok {
+						retryWithoutPenaltyUsage.Add(detail)
+					}
+				}
+				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
+				if terminalErr != nil {
+					if resp, ok := retryWithoutPenaltyFallbackResponse(outcome.err); ok {
+						return resp, nil
+					}
+					lastErr = terminalErr
+				}
+				if !shouldRetry {
+					break
+				}
+				if errWait := waitForCooldown(ctx, wait); errWait != nil {
+					return cliproxyexecutor.Response{}, errWait
+				}
+				attempt++
+				continue
+			}
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
@@ -1659,6 +1704,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
+		attempt++
 	}
 	if lastErr != nil {
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
@@ -1684,7 +1730,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 
 	var lastErr error
 	retryWithoutPenaltyCounts := make(map[string]int)
-	var retryWithoutPenaltyUsage coreusage.Detail
+	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
 	for attempt := 0; ; attempt++ {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
@@ -1693,7 +1739,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		}
 		lastErr = errExec
 		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
-			retryWithoutPenaltyUsage = addRetryWithoutPenaltyUsageDetail(retryWithoutPenaltyUsage, detail)
+			retryWithoutPenaltyUsage.Add(detail)
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
@@ -1727,8 +1773,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 
 	var lastErr error
 	retryWithoutPenaltyCounts := make(map[string]int)
-	var retryWithoutPenaltyUsage coreusage.Detail
-	for attempt := 0; ; attempt++ {
+	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
+	retryWithoutPenaltyHedgeState := &retryWithoutPenaltyHedgeRequestState{}
+	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errStream == nil {
@@ -1736,7 +1783,51 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		lastErr = errStream
 		if detail, ok := retryWithoutPenaltyUsageDetail(errStream); ok {
-			retryWithoutPenaltyUsage = addRetryWithoutPenaltyUsageDetail(retryWithoutPenaltyUsage, detail)
+			retryWithoutPenaltyUsage.Add(detail)
+		}
+		if policy, ok := retryWithoutPenaltyHedgePolicyFromError(errStream); ok && policy.enabled && !m.HomeEnabled() {
+			class, remaining, terminalErr, limited := retryWithoutPenaltyRemainingRetries(errStream, retryWithoutPenaltyCounts)
+			if terminalErr != nil {
+				if result, ok := retryWithoutPenaltyFallbackStreamResult(errStream); ok {
+					return result, nil
+				}
+				lastErr = terminalErr
+				break
+			}
+			if limited && remaining > 0 {
+				outcome := m.executeStreamRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState)
+				if outcome.disableSecondLane {
+					retryWithoutPenaltyHedgeState.secondLaneDisabled = true
+				}
+				if outcome.attempts > 0 {
+					retryWithoutPenaltyCounts[class] += outcome.attempts
+					attempt += outcome.attempts
+				}
+				if outcome.err == nil {
+					return outcome.stream, nil
+				}
+				lastErr = outcome.err
+				if !outcome.usageAccounted {
+					if detail, ok := retryWithoutPenaltyUsageDetail(outcome.err); ok {
+						retryWithoutPenaltyUsage.Add(detail)
+					}
+				}
+				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
+				if terminalErr != nil {
+					if result, ok := retryWithoutPenaltyFallbackStreamResult(outcome.err); ok {
+						return result, nil
+					}
+					lastErr = terminalErr
+				}
+				if !shouldRetry {
+					break
+				}
+				if errWait := waitForCooldown(ctx, wait); errWait != nil {
+					return nil, errWait
+				}
+				attempt++
+				continue
+			}
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
@@ -1751,6 +1842,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return nil, errWait
 		}
+		attempt++
 	}
 	if lastErr != nil {
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
@@ -1870,7 +1962,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
-	tried := make(map[string]struct{})
+	tried := excludedAuthIDsFromMetadata(opts.Metadata)
 	attempted := make(map[string]struct{})
 	var lastErr error
 	for {
@@ -1895,6 +1987,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		if errCtx := ctx.Err(); errCtx != nil {
+			return cliproxyexecutor.Response{}, errCtx
+		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -1974,7 +2069,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
-	tried := make(map[string]struct{})
+	tried := excludedAuthIDsFromMetadata(opts.Metadata)
 	attempted := make(map[string]struct{})
 	var lastErr error
 	for {
@@ -1999,6 +2094,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		if errCtx := ctx.Err(); errCtx != nil {
+			return cliproxyexecutor.Response{}, errCtx
+		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -2078,7 +2176,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
-	tried := make(map[string]struct{})
+	tried := excludedAuthIDsFromMetadata(opts.Metadata)
 	attempted := make(map[string]struct{})
 	var lastErr error
 	for {
@@ -2103,6 +2201,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		if errCtx := ctx.Err(); errCtx != nil {
+			return nil, errCtx
+		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -2380,6 +2481,47 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
 	default:
 		return ""
 	}
+}
+
+func excludedAuthIDsFromMetadata(meta map[string]any) map[string]struct{} {
+	excluded := make(map[string]struct{})
+	if len(meta) == 0 {
+		return excluded
+	}
+	add := func(authID string) {
+		authID = strings.TrimSpace(authID)
+		if authID != "" {
+			excluded[authID] = struct{}{}
+		}
+	}
+	raw, ok := meta[cliproxyexecutor.ExcludeAuthIDsMetadataKey]
+	if !ok || raw == nil {
+		return excluded
+	}
+	switch value := raw.(type) {
+	case string:
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	case []byte:
+		for _, part := range strings.Split(string(value), ",") {
+			add(part)
+		}
+	case []string:
+		for _, authID := range value {
+			add(authID)
+		}
+	case []any:
+		for _, item := range value {
+			switch authID := item.(type) {
+			case string:
+				add(authID)
+			case []byte:
+				add(string(authID))
+			}
+		}
+	}
+	return excluded
 }
 
 func disallowFreeAuthFromMetadata(meta map[string]any) bool {

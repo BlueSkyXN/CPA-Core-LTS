@@ -1190,13 +1190,29 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
 		buffering := abnormalRetry.StreamBuffer()
+		bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
+		var bufferedBytes int64
 		var bufferedChunks []cliproxyexecutor.StreamChunk
+		var flushBuffered func() bool
 		emitChunk := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if buffering {
 				if len(chunk.Payload) > 0 {
 					chunk.Payload = bytes.Clone(chunk.Payload)
 				}
+				if bufferMaxBytes > 0 && bufferedBytes+int64(len(chunk.Payload)) > bufferMaxBytes {
+					log.WithField("stream_buffer_max_bytes", bufferMaxBytes).Warn("codex abnormal reasoning retry stream buffer exceeded; disabling guard for current stream")
+					if !flushBuffered() {
+						return false
+					}
+					select {
+					case out <- chunk:
+						return true
+					case <-ctx.Done():
+						return false
+					}
+				}
 				bufferedChunks = append(bufferedChunks, chunk)
+				bufferedBytes += int64(len(chunk.Payload))
 				return true
 			}
 			select {
@@ -1206,7 +1222,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return false
 			}
 		}
-		flushBuffered := func() bool {
+		flushBuffered = func() bool {
 			buffering = false
 			for i := range bufferedChunks {
 				select {
@@ -1216,6 +1232,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 			}
 			bufferedChunks = nil
+			bufferedBytes = 0
 			return true
 		}
 		emitError := func(err error) {

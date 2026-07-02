@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"sync"
 
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
@@ -27,6 +29,8 @@ const ServiceTierMetadataKey = "service_tier"
 const (
 	// CodexAbnormalReasoningRetryUsageMetadataKey carries discarded abnormal attempt usage for client-visible aggregate usage only.
 	CodexAbnormalReasoningRetryUsageMetadataKey = "codex_abnormal_reasoning_retry_usage"
+	// ExcludeAuthIDsMetadataKey instructs auth selection to skip the listed auth IDs.
+	ExcludeAuthIDsMetadataKey = "exclude_auth_ids"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
@@ -36,6 +40,74 @@ const (
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
 )
+
+// UsageAccumulator is a thread-safe request-local usage accumulator carried in Options.Metadata.
+type UsageAccumulator struct {
+	mu     sync.Mutex
+	detail coreusage.Detail
+}
+
+// NewUsageAccumulator creates a UsageAccumulator seeded with initial usage.
+func NewUsageAccumulator(initial coreusage.Detail) *UsageAccumulator {
+	acc := &UsageAccumulator{}
+	acc.Add(initial)
+	return acc
+}
+
+// Add merges detail into the accumulator.
+func (a *UsageAccumulator) Add(detail coreusage.Detail) {
+	if a == nil || !hasUsageAccumulatorDetail(detail) {
+		return
+	}
+	detail = normalizeUsageAccumulatorDetail(detail)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.detail = addUsageAccumulatorDetail(a.detail, detail)
+}
+
+// Snapshot returns the current accumulated usage.
+func (a *UsageAccumulator) Snapshot() coreusage.Detail {
+	if a == nil {
+		return coreusage.Detail{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.detail
+}
+
+func addUsageAccumulatorDetail(a, b coreusage.Detail) coreusage.Detail {
+	a = normalizeUsageAccumulatorDetail(a)
+	b = normalizeUsageAccumulatorDetail(b)
+	return coreusage.Detail{
+		InputTokens:         a.InputTokens + b.InputTokens,
+		OutputTokens:        a.OutputTokens + b.OutputTokens,
+		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
+		CachedTokens:        a.CachedTokens + b.CachedTokens,
+		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
+		TotalTokens:         a.TotalTokens + b.TotalTokens,
+	}
+}
+
+func normalizeUsageAccumulatorDetail(detail coreusage.Detail) coreusage.Detail {
+	if detail.TotalTokens == 0 {
+		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		if total > 0 {
+			detail.TotalTokens = total
+		}
+	}
+	return detail
+}
+
+func hasUsageAccumulatorDetail(detail coreusage.Detail) bool {
+	return detail.InputTokens != 0 ||
+		detail.OutputTokens != 0 ||
+		detail.ReasoningTokens != 0 ||
+		detail.CachedTokens != 0 ||
+		detail.CacheReadTokens != 0 ||
+		detail.CacheCreationTokens != 0 ||
+		detail.TotalTokens != 0
+}
 
 // Request encapsulates the translated payload that will be sent to a provider executor.
 type Request struct {

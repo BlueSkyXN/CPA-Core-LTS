@@ -385,11 +385,23 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	if oldCfg.StreamBuffer != newCfg.StreamBuffer {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.stream-buffer: %t -> %t", oldCfg.StreamBuffer, newCfg.StreamBuffer))
 	}
+	if oldCfg.StreamBufferMaxBytes != newCfg.StreamBufferMaxBytes {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.stream-buffer-max-bytes: %d -> %d", oldCfg.StreamBufferMaxBytes, newCfg.StreamBufferMaxBytes))
+	}
 	if oldCfg.MaxRetries != newCfg.MaxRetries {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.max-retries: %d -> %d", oldCfg.MaxRetries, newCfg.MaxRetries))
 	}
 	if oldCfg.ExhaustedBehavior != newCfg.ExhaustedBehavior {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.exhausted-behavior: %s -> %s", oldCfg.ExhaustedBehavior, newCfg.ExhaustedBehavior))
+	}
+	if oldCfg.HedgedRetry.Enabled != newCfg.HedgedRetry.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.hedged-retry.enabled: %t -> %t", oldCfg.HedgedRetry.Enabled, newCfg.HedgedRetry.Enabled))
+	}
+	if oldCfg.HedgedRetry.HedgeDelayMS != newCfg.HedgedRetry.HedgeDelayMS {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms: %d -> %d", oldCfg.HedgedRetry.HedgeDelayMS, newCfg.HedgedRetry.HedgeDelayMS))
+	}
+	if oldCfg.HedgedRetry.RequireDistinctAuth != newCfg.HedgedRetry.RequireDistinctAuth {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.hedged-retry.require-distinct-auth: %t -> %t", oldCfg.HedgedRetry.RequireDistinctAuth, newCfg.HedgedRetry.RequireDistinctAuth))
 	}
 	if !reflect.DeepEqual(oldCfg.ModelContains, newCfg.ModelContains) {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.model-contains: updated (%d -> %d entries)", len(oldCfg.ModelContains), len(newCfg.ModelContains)))
