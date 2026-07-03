@@ -935,15 +935,27 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 		var completedUsage usage.Detail
 		var completedUsageOK bool
+		var responseFinalizer cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			completedUsage = detail
 			completedUsageOK = true
+			responseFinalizer = cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer(func(base cliproxyexecutor.Response, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) cliproxyexecutor.Response {
+				var finalizerParam any
+				finalCompletedData := patchCodexAbnormalReasoningClientUsageWithSnapshot(completedData, previous, abnormalRetry.clientUsageAggregation)
+				finalCompletedData = applyCodexIdentityExposeResponsePayload(finalCompletedData, identityState)
+				base.Payload = sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, finalCompletedData, &finalizerParam)
+				return base
+			})
 			if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
 				var param any
 				clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 				clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
 				out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
-				fallbackResp := cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+				fallbackResp := cliproxyexecutor.Response{
+					Payload:  out,
+					Headers:  httpResp.Header.Clone(),
+					Metadata: codexAbnormalReasoningRetryResponseMetadata(detail, responseFinalizer),
+				}
 				if errWithFallback := abnormalRetry.RetryErrorWithFallbackResponse(detail, reporter.ReasoningEffort(), fallbackResp); errWithFallback != nil {
 					errRetry = errWithFallback
 				}
@@ -963,13 +975,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		if completedUsageOK {
-			resp.Metadata = codexAbnormalReasoningRetryResponseMetadata(completedUsage, func(base cliproxyexecutor.Response, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) cliproxyexecutor.Response {
-				var finalizerParam any
-				finalCompletedData := patchCodexAbnormalReasoningClientUsageWithSnapshot(completedData, previous, abnormalRetry.clientUsageAggregation)
-				finalCompletedData = applyCodexIdentityExposeResponsePayload(finalCompletedData, identityState)
-				base.Payload = sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, finalCompletedData, &finalizerParam)
-				return base
-			})
+			resp.Metadata = codexAbnormalReasoningRetryResponseMetadata(completedUsage, responseFinalizer)
 		}
 		return resp, nil
 	}
@@ -1192,7 +1198,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamUsage := &cliproxyexecutor.RetryWithoutPenaltyStreamUsage{}
 	var qualityRecorder *codexAbnormalReasoningRetryStreamRecorder
-	if abnormalRetry.StreamBuffer() && abnormalRetry.QualityHedgeStreamRewrite() {
+	if abnormalRetry.StreamBuffer() {
 		qualityRecorder = newCodexAbnormalReasoningRetryStreamRecorder(abnormalRetry.StreamBufferMaxBytes())
 	}
 	streamFinalizer := cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer(func(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) *cliproxyexecutor.StreamResult {
@@ -1320,7 +1326,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					fallbackChunks = append(fallbackChunks, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[i])})
 				}
 				if usageDetailOK {
-					if errWithFallback := abnormalRetry.RetryErrorWithFallbackStreamChunks(usageDetail, reporter.ReasoningEffort(), httpResp.Header.Clone(), fallbackChunks); errWithFallback != nil {
+					if errWithFallback := abnormalRetry.RetryErrorWithFallbackStreamChunksAndFinalizer(usageDetail, reporter.ReasoningEffort(), httpResp.Header.Clone(), fallbackChunks, streamFinalizer); errWithFallback != nil {
 						retryErr = errWithFallback
 					}
 					reporter.PublishFailureWithDetail(ctx, usageDetail, retryErr)

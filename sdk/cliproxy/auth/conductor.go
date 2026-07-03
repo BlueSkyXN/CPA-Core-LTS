@@ -1637,6 +1637,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	retryWithoutPenaltyCounts := make(map[string]int)
 	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
 	retryWithoutPenaltyHedgeState := &retryWithoutPenaltyHedgeRequestState{}
+	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(false)
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
@@ -1647,17 +1648,18 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
 			retryWithoutPenaltyUsage.Add(detail)
 		}
+		retryWithoutPenaltyFallback.Consider(errExec, retryWithoutPenaltyAuthIDFromError(errExec))
 		if policy, ok := retryWithoutPenaltyHedgePolicyFromError(errExec); ok && policy.enabled && !m.HomeEnabled() {
 			class, remaining, terminalErr, limited := retryWithoutPenaltyRemainingRetries(errExec, retryWithoutPenaltyCounts)
 			if terminalErr != nil {
-				if resp, ok := retryWithoutPenaltyFallbackResponse(errExec); ok {
+				if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(errExec), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 					return resp, nil
 				}
 				lastErr = terminalErr
 				break
 			}
 			if limited && remaining > 0 {
-				outcome := m.executeRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState)
+				outcome := m.executeRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState, retryWithoutPenaltyFallback)
 				if outcome.disableSecondLane {
 					retryWithoutPenaltyHedgeState.secondLaneDisabled = true
 				}
@@ -1676,7 +1678,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 				}
 				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 				if terminalErr != nil {
-					if resp, ok := retryWithoutPenaltyFallbackResponse(outcome.err); ok {
+					if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 						return resp, nil
 					}
 					lastErr = terminalErr
@@ -1693,7 +1695,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
-			if resp, ok := retryWithoutPenaltyFallbackResponse(errExec); ok {
+			if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(errExec), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return resp, nil
 			}
 			lastErr = terminalErr
@@ -1775,6 +1777,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	retryWithoutPenaltyCounts := make(map[string]int)
 	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
 	retryWithoutPenaltyHedgeState := &retryWithoutPenaltyHedgeRequestState{}
+	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(true)
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
@@ -1785,17 +1788,18 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if detail, ok := retryWithoutPenaltyUsageDetail(errStream); ok {
 			retryWithoutPenaltyUsage.Add(detail)
 		}
+		retryWithoutPenaltyFallback.Consider(errStream, retryWithoutPenaltyAuthIDFromError(errStream))
 		if policy, ok := retryWithoutPenaltyHedgePolicyFromError(errStream); ok && policy.enabled && !m.HomeEnabled() {
 			class, remaining, terminalErr, limited := retryWithoutPenaltyRemainingRetries(errStream, retryWithoutPenaltyCounts)
 			if terminalErr != nil {
-				if result, ok := retryWithoutPenaltyFallbackStreamResult(errStream); ok {
+				if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(errStream), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 					return result, nil
 				}
 				lastErr = terminalErr
 				break
 			}
 			if limited && remaining > 0 {
-				outcome := m.executeStreamRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState)
+				outcome := m.executeStreamRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState, retryWithoutPenaltyFallback)
 				if outcome.disableSecondLane {
 					retryWithoutPenaltyHedgeState.secondLaneDisabled = true
 				}
@@ -1814,7 +1818,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 				}
 				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 				if terminalErr != nil {
-					if result, ok := retryWithoutPenaltyFallbackStreamResult(outcome.err); ok {
+					if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 						return result, nil
 					}
 					lastErr = terminalErr
@@ -1831,7 +1835,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
-			if result, ok := retryWithoutPenaltyFallbackStreamResult(errStream); ok {
+			if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(errStream), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return result, nil
 			}
 			lastErr = terminalErr

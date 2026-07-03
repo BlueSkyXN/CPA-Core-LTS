@@ -37,18 +37,19 @@ type codexAbnormalReasoningRetryPolicy struct {
 }
 
 type codexAbnormalReasoningRetryError struct {
-	detail                 usage.Detail
-	maxRetries             int
-	exhaustedBehavior      string
-	clientUsageAggregation string
-	hedgeEnabled           bool
-	hedgeMode              string
-	hedgeDelay             time.Duration
-	requireDistinctAuth    bool
-	authID                 string
-	fallbackResponse       *cliproxyexecutor.Response
-	fallbackStreamHeaders  http.Header
-	fallbackStreamChunks   []cliproxyexecutor.StreamChunk
+	detail                  usage.Detail
+	maxRetries              int
+	exhaustedBehavior       string
+	clientUsageAggregation  string
+	hedgeEnabled            bool
+	hedgeMode               string
+	hedgeDelay              time.Duration
+	requireDistinctAuth     bool
+	authID                  string
+	fallbackResponse        *cliproxyexecutor.Response
+	fallbackStreamHeaders   http.Header
+	fallbackStreamChunks    []cliproxyexecutor.StreamChunk
+	fallbackStreamFinalizer cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer
 }
 
 const (
@@ -97,7 +98,7 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgePolicy() (boo
 
 func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgeMode() string {
 	if e == nil || strings.TrimSpace(e.hedgeMode) == "" {
-		return config.CodexAbnormalReasoningHedgedRetryModeSpeed
+		return config.CodexAbnormalReasoningHedgedRetryModeQuality
 	}
 	return e.hedgeMode
 }
@@ -121,6 +122,13 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyFallbackStreamChun
 		return nil, nil, false
 	}
 	return cloneCodexAbnormalReasoningRetryHeader(e.fallbackStreamHeaders), cloneCodexAbnormalReasoningRetryStreamChunks(e.fallbackStreamChunks), true
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyFallbackStreamFinalizer() cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer {
+	if e == nil {
+		return nil
+	}
+	return e.fallbackStreamFinalizer
 }
 
 func (e *codexAbnormalReasoningRetryError) UsageFailureCode() string {
@@ -208,24 +216,23 @@ func (p codexAbnormalReasoningRetryPolicy) StreamBufferMaxBytes() int64 {
 	return p.streamBufferMax
 }
 
-func (p codexAbnormalReasoningRetryPolicy) QualityHedgeStreamRewrite() bool {
-	return p.enabled && p.hedgeEnabled &&
-		strings.EqualFold(strings.TrimSpace(p.hedgeMode), config.CodexAbnormalReasoningHedgedRetryModeQuality)
-}
-
 func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reasoningEffort string) error {
-	return p.retryError(detail, reasoningEffort, nil, nil, nil)
+	return p.retryError(detail, reasoningEffort, nil, nil, nil, nil)
 }
 
 func (p codexAbnormalReasoningRetryPolicy) RetryErrorWithFallbackResponse(detail usage.Detail, reasoningEffort string, fallback cliproxyexecutor.Response) error {
-	return p.retryError(detail, reasoningEffort, &fallback, nil, nil)
+	return p.retryError(detail, reasoningEffort, &fallback, nil, nil, nil)
 }
 
 func (p codexAbnormalReasoningRetryPolicy) RetryErrorWithFallbackStreamChunks(detail usage.Detail, reasoningEffort string, headers http.Header, chunks []cliproxyexecutor.StreamChunk) error {
-	return p.retryError(detail, reasoningEffort, nil, headers, chunks)
+	return p.retryError(detail, reasoningEffort, nil, headers, chunks, nil)
 }
 
-func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reasoningEffort string, fallbackResponse *cliproxyexecutor.Response, fallbackStreamHeaders http.Header, fallbackStreamChunks []cliproxyexecutor.StreamChunk) error {
+func (p codexAbnormalReasoningRetryPolicy) RetryErrorWithFallbackStreamChunksAndFinalizer(detail usage.Detail, reasoningEffort string, headers http.Header, chunks []cliproxyexecutor.StreamChunk, finalizer cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer) error {
+	return p.retryError(detail, reasoningEffort, nil, headers, chunks, finalizer)
+}
+
+func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reasoningEffort string, fallbackResponse *cliproxyexecutor.Response, fallbackStreamHeaders http.Header, fallbackStreamChunks []cliproxyexecutor.StreamChunk, fallbackStreamFinalizer cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer) error {
 	if !p.enabled || detail.ReasoningTokens <= 0 {
 		return nil
 	}
@@ -255,6 +262,7 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 	if len(fallbackStreamChunks) > 0 {
 		err.fallbackStreamHeaders = cloneCodexAbnormalReasoningRetryHeader(fallbackStreamHeaders)
 		err.fallbackStreamChunks = cloneCodexAbnormalReasoningRetryStreamChunks(fallbackStreamChunks)
+		err.fallbackStreamFinalizer = fallbackStreamFinalizer
 	}
 	return err
 }

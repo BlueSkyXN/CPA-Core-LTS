@@ -182,7 +182,15 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	maxRetries := 0
 	hedgeDelayMS := 250
 	requireDistinctAuth := false
-	oldCfg := &config.Config{}
+	oldCfg := &config.Config{
+		Codex: config.CodexConfig{
+			AbnormalReasoningRetry: config.CodexAbnormalReasoningRetryConfig{
+				HedgedRetry: config.CodexAbnormalReasoningHedgedRetryConfig{
+					Mode: config.CodexAbnormalReasoningHedgedRetryModeSpeed,
+				},
+			},
+		},
+	}
 	newCfg := &config.Config{
 		Codex: config.CodexConfig{
 			AbnormalReasoningRetry: config.CodexAbnormalReasoningRetryConfig{

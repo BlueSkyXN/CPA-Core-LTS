@@ -102,8 +102,8 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if effective.HedgedRetry.Enabled {
 		t.Fatal("HedgedRetry.Enabled = true, want false")
 	}
-	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeSpeed {
-		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeSpeed)
+	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeQuality {
+		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeQuality)
 	}
 	if effective.HedgedRetry.HedgeDelayMS != 1000 {
 		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 1000", effective.HedgedRetry.HedgeDelayMS)
@@ -287,6 +287,31 @@ codex:
 	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold {
 		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold)
 	}
+	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeQuality {
+		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeQuality)
+	}
+}
+
+func TestLoadConfigOptional_CodexAbnormalReasoningRetryExplicitSpeedMode(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configYAML := []byte(`
+codex:
+  abnormal-reasoning-retry:
+    enabled: true
+    hedged-retry:
+      mode: "speed"
+`)
+	if err := os.WriteFile(configPath, configYAML, 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+
+	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
 	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeSpeed {
 		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeSpeed)
 	}

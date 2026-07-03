@@ -621,8 +621,8 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedNonStreamin
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 3 {
-		t.Fatalf("client response usage.total_tokens = %d, want delivered abnormal total 3; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 517 {
+		t.Fatalf("client response usage.total_tokens = %d, want folded abnormal total 517; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 516 {
 		t.Fatalf("client response reasoning_tokens = %d, want 516; payload=%s", got, resp.Payload)
@@ -686,6 +686,58 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughAggregatesDiscardedUsage
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1550 {
 		t.Fatalf("client response reasoning_tokens = %d, want discarded plus delivered reasoning 1550; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughReturnsLongestNonStreamingFallback(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch calls {
+		case 1:
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "trigger", 516, 1, 5, 6)))
+		case 2:
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "long", 516, 1, 80, 81)))
+		default:
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "short", 516, 1, 20, 21)))
+		}
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(2, config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-pass-through-longest"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3", calls)
+	}
+	if !bytes.Contains(resp.Payload, []byte("long")) || bytes.Contains(resp.Payload, []byte("short")) {
+		t.Fatalf("client response payload = %s, want longest fallback only", resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 1551 {
+		t.Fatalf("client response usage.total_tokens = %d, want final folded total 1551; payload=%s", got, resp.Payload)
 	}
 }
 
@@ -884,6 +936,68 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedStreaming(t
 	})
 	if !record.Failed {
 		t.Fatalf("record.Failed = false, want true")
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughReturnsLongestStreamingFallback(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch calls {
+		case 1:
+			_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"trigger"}` + "\n\n"))
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "trigger", 516, 1, 5, 6)))
+		case 2:
+			_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"long"}` + "\n\n"))
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "long", 516, 1, 80, 81)))
+		default:
+			_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"short"}` + "\n\n"))
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "short", 516, 1, 20, 21)))
+		}
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(2, config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-stream-pass-through-longest"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil pass-through", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3", calls)
+	}
+	if !bytes.Contains(payload, []byte("long")) || bytes.Contains(payload, []byte("short")) {
+		t.Fatalf("stream payload = %s, want longest fallback only", payload)
+	}
+	if !bytes.Contains(payload, []byte(`"total_tokens":1551`)) {
+		t.Fatalf("stream payload missing final folded total_tokens=1551: %s", payload)
 	}
 }
 
@@ -1089,7 +1203,11 @@ func codexCompletedSSE(model string, reasoning int) string {
 }
 
 func codexCompletedSSEWithUsage(model string, reasoning, input, output, total int) string {
-	return `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"` + model + `","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":` + strconv.Itoa(input) + `,"output_tokens":` + strconv.Itoa(output) + `,"total_tokens":` + strconv.Itoa(total) + `,"output_tokens_details":{"reasoning_tokens":` + strconv.Itoa(reasoning) + `}}}}` + "\n\n"
+	return codexCompletedSSEWithTextAndUsage(model, "ok", reasoning, input, output, total)
+}
+
+func codexCompletedSSEWithTextAndUsage(model, text string, reasoning, input, output, total int) string {
+	return `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"` + model + `","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + text + `"}]}],"usage":{"input_tokens":` + strconv.Itoa(input) + `,"output_tokens":` + strconv.Itoa(output) + `,"total_tokens":` + strconv.Itoa(total) + `,"output_tokens_details":{"reasoning_tokens":` + strconv.Itoa(reasoning) + `}}}}` + "\n\n"
 }
 
 func assertRetryWithoutPenaltyError(t *testing.T, err error) {
