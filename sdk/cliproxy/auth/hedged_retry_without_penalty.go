@@ -158,12 +158,12 @@ func (c *retryWithoutPenaltyHedgeLaneCoordinator) release(laneName string) {
 	delete(c.laneAuth, laneName)
 }
 
-func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState) retryWithoutPenaltyHedgeOutcome {
+func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) retryWithoutPenaltyHedgeOutcome {
 	if remainingRetries <= 0 {
 		return retryWithoutPenaltyHedgeOutcome{}
 	}
 	if policy.mode == retryWithoutPenaltyHedgeModeQuality {
-		return m.executeRetryWithoutPenaltyHedgedQuality(ctx, providers, req, opts, maxRetryCredentials, class, policy, remainingRetries, accumulator, state)
+		return m.executeRetryWithoutPenaltyHedgedQuality(ctx, providers, req, opts, maxRetryCredentials, class, policy, remainingRetries, accumulator, state, fallbackCandidate)
 	}
 	attempts := 0
 	reservedAttempts := 0
@@ -263,7 +263,7 @@ func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, provider
 				return retryWithoutPenaltyHedgeOutcome{err: ctx.Err(), attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 			case res := <-resultCh:
 				pending--
-				if out, done := processRetryWithoutPenaltyExecuteHedgeResult(res, &attempts, &reservedAttempts, &usageAccounted, &disableSecondLane, &waveHadAbnormal, &waveOrdinaryErr, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr); done {
+				if out, done := processRetryWithoutPenaltyExecuteHedgeResult(res, &attempts, &reservedAttempts, &usageAccounted, &disableSecondLane, &waveHadAbnormal, &waveOrdinaryErr, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr, fallbackCandidate); done {
 					if timer != nil {
 						timer.Stop()
 					}
@@ -295,9 +295,9 @@ func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, provider
 		}
 		if waveHadAbnormal {
 			if attempts >= remainingRetries {
-				out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+				out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 				if out.err == nil {
-					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 				}
 				return out
 			}
@@ -312,9 +312,9 @@ func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, provider
 	}
 
 	if lastAbnormalErr != nil {
-		out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+		out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 		if out.err == nil {
-			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 		}
 		return out
 	}
@@ -322,12 +322,12 @@ func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, provider
 	return retryWithoutPenaltyHedgeOutcome{err: err, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 }
 
-func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState) retryWithoutPenaltyHedgeOutcome {
+func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) retryWithoutPenaltyHedgeOutcome {
 	if remainingRetries <= 0 {
 		return retryWithoutPenaltyHedgeOutcome{}
 	}
 	if policy.mode == retryWithoutPenaltyHedgeModeQuality {
-		return m.executeStreamRetryWithoutPenaltyHedgedQuality(ctx, providers, req, opts, maxRetryCredentials, class, policy, remainingRetries, accumulator, state)
+		return m.executeStreamRetryWithoutPenaltyHedgedQuality(ctx, providers, req, opts, maxRetryCredentials, class, policy, remainingRetries, accumulator, state, fallbackCandidate)
 	}
 	attempts := 0
 	reservedAttempts := 0
@@ -427,7 +427,7 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, pr
 				return retryWithoutPenaltyHedgeOutcome{err: ctx.Err(), attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 			case res := <-resultCh:
 				pending--
-				if out, done := processRetryWithoutPenaltyStreamHedgeResult(res, handles[res.name].cancel, &attempts, &reservedAttempts, &usageAccounted, &disableSecondLane, &waveHadAbnormal, &waveOrdinaryErr, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr); done {
+				if out, done := processRetryWithoutPenaltyStreamHedgeResult(res, handles[res.name].cancel, &attempts, &reservedAttempts, &usageAccounted, &disableSecondLane, &waveHadAbnormal, &waveOrdinaryErr, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr, fallbackCandidate); done {
 					if timer != nil {
 						timer.Stop()
 					}
@@ -460,9 +460,9 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, pr
 		}
 		if waveHadAbnormal {
 			if attempts >= remainingRetries {
-				out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+				out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 				if out.err == nil {
-					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 				}
 				return out
 			}
@@ -476,9 +476,9 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, pr
 		}
 	}
 	if lastAbnormalErr != nil {
-		out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+		out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 		if out.err == nil {
-			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 		}
 		return out
 	}
@@ -486,7 +486,7 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, pr
 	return retryWithoutPenaltyHedgeOutcome{err: err, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 }
 
-func (m *Manager) executeRetryWithoutPenaltyHedgedQuality(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState) retryWithoutPenaltyHedgeOutcome {
+func (m *Manager) executeRetryWithoutPenaltyHedgedQuality(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) retryWithoutPenaltyHedgeOutcome {
 	attempts := 0
 	reservedAttempts := 0
 	usageAccounted := false
@@ -623,12 +623,12 @@ func (m *Manager) executeRetryWithoutPenaltyHedgedQuality(ctx context.Context, p
 			return retryWithoutPenaltyHedgeOutcome{response: resp, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 		}
 
-		waveHadAbnormal, waveOrdinaryErr := retryWithoutPenaltySummarizeQualityErrors(results, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr)
+		waveHadAbnormal, waveOrdinaryErr := retryWithoutPenaltySummarizeQualityErrors(results, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr, fallbackCandidate)
 		if waveHadAbnormal {
 			if attempts >= remainingRetries {
-				out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+				out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 				if out.err == nil {
-					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 				}
 				return out
 			}
@@ -643,16 +643,16 @@ func (m *Manager) executeRetryWithoutPenaltyHedgedQuality(ctx context.Context, p
 	}
 
 	if lastAbnormalErr != nil {
-		out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+		out := retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 		if out.err == nil {
-			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 		}
 		return out
 	}
 	return retryWithoutPenaltyHedgeOutcome{err: lastZeroDispatchErr, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 }
 
-func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState) retryWithoutPenaltyHedgeOutcome {
+func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, class string, policy retryWithoutPenaltyHedgePolicy, remainingRetries int, accumulator *cliproxyexecutor.UsageAccumulator, state *retryWithoutPenaltyHedgeRequestState, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) retryWithoutPenaltyHedgeOutcome {
 	attempts := 0
 	reservedAttempts := 0
 	usageAccounted := false
@@ -799,12 +799,12 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Cont
 			return retryWithoutPenaltyHedgeOutcome{stream: stream, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 		}
 
-		waveHadAbnormal, waveOrdinaryErr := retryWithoutPenaltySummarizeQualityErrors(results, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr)
+		waveHadAbnormal, waveOrdinaryErr := retryWithoutPenaltySummarizeQualityErrors(results, &lastAbnormalErr, &lastAbnormalAuthID, &lastZeroDispatchErr, fallbackCandidate)
 		if waveHadAbnormal {
 			if attempts >= remainingRetries {
-				out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+				out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 				if out.err == nil {
-					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+					retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 				}
 				return out
 			}
@@ -819,16 +819,16 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Cont
 	}
 
 	if lastAbnormalErr != nil {
-		out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, lastAbnormalErr, attempts, disableSecondLane, usageAccounted)
+		out := retryWithoutPenaltyStreamHedgeExhaustedOutcome(class, fallbackCandidate.Err(lastAbnormalErr), attempts, disableSecondLane, usageAccounted, fallbackCandidate, accumulator)
 		if out.err == nil {
-			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, lastAbnormalAuthID)
+			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
 		}
 		return out
 	}
 	return retryWithoutPenaltyHedgeOutcome{err: lastZeroDispatchErr, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 }
 
-func processRetryWithoutPenaltyExecuteHedgeResult(res retryWithoutPenaltyHedgeLaneResult, attempts *int, reservedAttempts *int, usageAccounted *bool, disableSecondLane *bool, waveHadAbnormal *bool, waveOrdinaryErr *error, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error) (retryWithoutPenaltyHedgeOutcome, bool) {
+func processRetryWithoutPenaltyExecuteHedgeResult(res retryWithoutPenaltyHedgeLaneResult, attempts *int, reservedAttempts *int, usageAccounted *bool, disableSecondLane *bool, waveHadAbnormal *bool, waveOrdinaryErr *error, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) (retryWithoutPenaltyHedgeOutcome, bool) {
 	if res.dispatched {
 		(*attempts)++
 	} else if res.name == "secondary" {
@@ -846,6 +846,7 @@ func processRetryWithoutPenaltyExecuteHedgeResult(res retryWithoutPenaltyHedgeLa
 	if res.dispatched {
 		if isRetryWithoutPenaltyError(res.err) {
 			*waveHadAbnormal = true
+			fallbackCandidate.Consider(res.err, res.authID)
 			*lastAbnormalErr = res.err
 			if lastAbnormalAuthID != nil {
 				*lastAbnormalAuthID = res.authID
@@ -859,7 +860,7 @@ func processRetryWithoutPenaltyExecuteHedgeResult(res retryWithoutPenaltyHedgeLa
 	return retryWithoutPenaltyHedgeOutcome{}, false
 }
 
-func processRetryWithoutPenaltyStreamHedgeResult(res retryWithoutPenaltyHedgeLaneResult, winnerCancel context.CancelFunc, attempts *int, reservedAttempts *int, usageAccounted *bool, disableSecondLane *bool, waveHadAbnormal *bool, waveOrdinaryErr *error, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error) (retryWithoutPenaltyHedgeOutcome, bool) {
+func processRetryWithoutPenaltyStreamHedgeResult(res retryWithoutPenaltyHedgeLaneResult, winnerCancel context.CancelFunc, attempts *int, reservedAttempts *int, usageAccounted *bool, disableSecondLane *bool, waveHadAbnormal *bool, waveOrdinaryErr *error, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) (retryWithoutPenaltyHedgeOutcome, bool) {
 	if res.dispatched {
 		(*attempts)++
 	} else if res.name == "secondary" {
@@ -877,6 +878,7 @@ func processRetryWithoutPenaltyStreamHedgeResult(res retryWithoutPenaltyHedgeLan
 	if res.dispatched {
 		if isRetryWithoutPenaltyError(res.err) {
 			*waveHadAbnormal = true
+			fallbackCandidate.Consider(res.err, res.authID)
 			*lastAbnormalErr = res.err
 			if lastAbnormalAuthID != nil {
 				*lastAbnormalAuthID = res.authID
@@ -890,15 +892,15 @@ func processRetryWithoutPenaltyStreamHedgeResult(res retryWithoutPenaltyHedgeLan
 	return retryWithoutPenaltyHedgeOutcome{}, false
 }
 
-func retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class string, err error, attempts int, disableSecondLane bool, usageAccounted bool) retryWithoutPenaltyHedgeOutcome {
-	if resp, ok := retryWithoutPenaltyFallbackResponse(err); ok {
+func retryWithoutPenaltyExecuteHedgeExhaustedOutcome(class string, err error, attempts int, disableSecondLane bool, usageAccounted bool, fallbackCandidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) retryWithoutPenaltyHedgeOutcome {
+	if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(err, fallbackCandidate, accumulator); ok {
 		return retryWithoutPenaltyHedgeOutcome{response: resp, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 	}
 	return retryWithoutPenaltyHedgeOutcome{err: newRetryWithoutPenaltyExhaustedError(err, class), attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 }
 
-func retryWithoutPenaltyStreamHedgeExhaustedOutcome(class string, err error, attempts int, disableSecondLane bool, usageAccounted bool) retryWithoutPenaltyHedgeOutcome {
-	if stream, ok := retryWithoutPenaltyFallbackStreamResult(err); ok {
+func retryWithoutPenaltyStreamHedgeExhaustedOutcome(class string, err error, attempts int, disableSecondLane bool, usageAccounted bool, fallbackCandidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) retryWithoutPenaltyHedgeOutcome {
+	if stream, ok := retryWithoutPenaltyCandidateFallbackStreamResult(err, fallbackCandidate, accumulator); ok {
 		return retryWithoutPenaltyHedgeOutcome{stream: stream, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 	}
 	return retryWithoutPenaltyHedgeOutcome{err: newRetryWithoutPenaltyExhaustedError(err, class), attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
@@ -1018,7 +1020,7 @@ func retryWithoutPenaltyAddQualityStreamLosers(results []retryWithoutPenaltyHedg
 	return accounted
 }
 
-func retryWithoutPenaltySummarizeQualityErrors(results []retryWithoutPenaltyHedgeLaneResult, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error) (bool, error) {
+func retryWithoutPenaltySummarizeQualityErrors(results []retryWithoutPenaltyHedgeLaneResult, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) (bool, error) {
 	waveHadAbnormal := false
 	var waveOrdinaryErr error
 	for _, res := range results {
@@ -1028,6 +1030,7 @@ func retryWithoutPenaltySummarizeQualityErrors(results []retryWithoutPenaltyHedg
 		if res.dispatched {
 			if isRetryWithoutPenaltyError(res.err) {
 				waveHadAbnormal = true
+				fallbackCandidate.Consider(res.err, res.authID)
 				if lastAbnormalErr != nil {
 					*lastAbnormalErr = res.err
 				}

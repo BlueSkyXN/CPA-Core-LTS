@@ -92,6 +92,19 @@ func retryWithoutPenaltyUsageDetail(err error) (coreusage.Detail, bool) {
 	return detail, hasRetryWithoutPenaltyUsageDetail(detail)
 }
 
+func retryWithoutPenaltyAuthIDFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var withAuthID interface {
+		RetryWithoutPenaltyAuthID() string
+	}
+	if !errors.As(err, &withAuthID) {
+		return ""
+	}
+	return strings.TrimSpace(withAuthID.RetryWithoutPenaltyAuthID())
+}
+
 func retryWithoutPenaltyExhaustedBehavior(err error) string {
 	if err == nil {
 		return retryWithoutPenaltyExhaustedBehaviorError
@@ -111,6 +124,105 @@ type retryWithoutPenaltyHedgePolicy struct {
 	hedgeDelay          time.Duration
 	requireDistinctAuth bool
 	triggerAuthID       string
+}
+
+type retryWithoutPenaltyFallbackCandidate struct {
+	stream bool
+	set    bool
+	err    error
+	authID string
+	score  int64
+	detail coreusage.Detail
+}
+
+func newRetryWithoutPenaltyFallbackCandidate(stream bool) *retryWithoutPenaltyFallbackCandidate {
+	return &retryWithoutPenaltyFallbackCandidate{stream: stream}
+}
+
+func (c *retryWithoutPenaltyFallbackCandidate) Consider(err error, authID string) {
+	if c == nil || err == nil || !isRetryWithoutPenaltyError(err) {
+		return
+	}
+	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
+		return
+	}
+	if c.stream {
+		if _, ok := retryWithoutPenaltyFallbackStreamResult(err); !ok {
+			return
+		}
+	} else if _, ok := retryWithoutPenaltyFallbackResponse(err); !ok {
+		return
+	}
+	detail, _ := retryWithoutPenaltyUsageDetail(err)
+	score := detail.OutputTokens
+	if c.set && score <= c.score {
+		return
+	}
+	c.set = true
+	c.err = err
+	c.authID = strings.TrimSpace(authID)
+	c.score = score
+	c.detail = detail
+}
+
+func (c *retryWithoutPenaltyFallbackCandidate) Err(fallback error) error {
+	if c != nil && c.set && c.err != nil {
+		return c.err
+	}
+	return fallback
+}
+
+func (c *retryWithoutPenaltyFallbackCandidate) AuthID(fallback string) string {
+	if c != nil && c.set && c.authID != "" {
+		return c.authID
+	}
+	return fallback
+}
+
+func (c *retryWithoutPenaltyFallbackCandidate) PreviousUsageSnapshot(accumulator *cliproxyexecutor.UsageAccumulator) cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot {
+	if accumulator == nil {
+		return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}
+	}
+	snapshot := accumulator.RetryWithoutPenaltySnapshot()
+	if c == nil || !c.set || !hasRetryWithoutPenaltyUsageDetail(c.detail) {
+		return snapshot
+	}
+	selected := normalizeRetryWithoutPenaltyUsageDetail(c.detail)
+	snapshot.Detail = subtractRetryWithoutPenaltyUsageDetail(snapshot.Detail, selected)
+	snapshot.FoldedOutputTokens -= foldedRetryWithoutPenaltyUsageOutputTokens(selected)
+	if snapshot.FoldedOutputTokens < 0 {
+		snapshot.FoldedOutputTokens = 0
+	}
+	return snapshot
+}
+
+func subtractRetryWithoutPenaltyUsageDetail(total, selected coreusage.Detail) coreusage.Detail {
+	total = normalizeRetryWithoutPenaltyUsageDetail(total)
+	selected = normalizeRetryWithoutPenaltyUsageDetail(selected)
+	return coreusage.Detail{
+		InputTokens:         subtractRetryWithoutPenaltyInt64(total.InputTokens, selected.InputTokens),
+		OutputTokens:        subtractRetryWithoutPenaltyInt64(total.OutputTokens, selected.OutputTokens),
+		ReasoningTokens:     subtractRetryWithoutPenaltyInt64(total.ReasoningTokens, selected.ReasoningTokens),
+		CachedTokens:        subtractRetryWithoutPenaltyInt64(total.CachedTokens, selected.CachedTokens),
+		CacheReadTokens:     subtractRetryWithoutPenaltyInt64(total.CacheReadTokens, selected.CacheReadTokens),
+		CacheCreationTokens: subtractRetryWithoutPenaltyInt64(total.CacheCreationTokens, selected.CacheCreationTokens),
+		TotalTokens:         subtractRetryWithoutPenaltyInt64(total.TotalTokens, selected.TotalTokens),
+	}
+}
+
+func subtractRetryWithoutPenaltyInt64(total, selected int64) int64 {
+	if total <= selected {
+		return 0
+	}
+	return total - selected
+}
+
+func foldedRetryWithoutPenaltyUsageOutputTokens(detail coreusage.Detail) int64 {
+	detail = normalizeRetryWithoutPenaltyUsageDetail(detail)
+	if detail.OutputTokens >= detail.ReasoningTokens {
+		return detail.OutputTokens
+	}
+	return detail.ReasoningTokens
 }
 
 func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedgePolicy, bool) {
@@ -183,6 +295,18 @@ func retryWithoutPenaltyFallbackResponse(err error) (cliproxyexecutor.Response, 
 	return cloneRetryWithoutPenaltyResponse(resp), true
 }
 
+func retryWithoutPenaltyCandidateFallbackResponse(err error, candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) (cliproxyexecutor.Response, bool) {
+	resp, ok := retryWithoutPenaltyFallbackResponse(err)
+	if !ok {
+		return cliproxyexecutor.Response{}, false
+	}
+	finalizer, _ := resp.Metadata[cliproxyexecutor.RetryWithoutPenaltyResponseFinalizerMetadataKey].(cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer)
+	if finalizer == nil {
+		return resp, true
+	}
+	return finalizer(resp, candidate.PreviousUsageSnapshot(accumulator)), true
+}
+
 func retryWithoutPenaltyFallbackStreamResult(err error) (*cliproxyexecutor.StreamResult, bool) {
 	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
 		return nil, false
@@ -196,6 +320,43 @@ func retryWithoutPenaltyFallbackStreamResult(err error) (*cliproxyexecutor.Strea
 	headers, chunks, ok := withFallback.RetryWithoutPenaltyFallbackStreamChunks()
 	if !ok || len(chunks) == 0 {
 		return nil, false
+	}
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for i := range chunks {
+		chunk := chunks[i]
+		chunk.Payload = bytes.Clone(chunk.Payload)
+		out <- chunk
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{
+		Headers: cloneRetryWithoutPenaltyHeader(headers),
+		Chunks:  out,
+	}, true
+}
+
+func retryWithoutPenaltyCandidateFallbackStreamResult(err error, candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) (*cliproxyexecutor.StreamResult, bool) {
+	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
+		return nil, false
+	}
+	var withFallback interface {
+		RetryWithoutPenaltyFallbackStreamChunks() (http.Header, []cliproxyexecutor.StreamChunk, bool)
+	}
+	if !errors.As(err, &withFallback) {
+		return nil, false
+	}
+	headers, chunks, ok := withFallback.RetryWithoutPenaltyFallbackStreamChunks()
+	if !ok || len(chunks) == 0 {
+		return nil, false
+	}
+	var withFinalizer interface {
+		RetryWithoutPenaltyFallbackStreamFinalizer() cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer
+	}
+	if errors.As(err, &withFinalizer) {
+		if finalizer := withFinalizer.RetryWithoutPenaltyFallbackStreamFinalizer(); finalizer != nil {
+			if result := finalizer(headers, chunks, candidate.PreviousUsageSnapshot(accumulator)); result != nil {
+				return result, true
+			}
+		}
 	}
 	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
 	for i := range chunks {

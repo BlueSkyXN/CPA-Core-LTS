@@ -21,6 +21,7 @@ type hedgedRetryTestError struct {
 	hedgeDelay         time.Duration
 	requireDistinct    bool
 	authID             string
+	usage              coreusage.Detail
 	exhaustedBehavior  string
 	fallbackPayload    []byte
 	fallbackStreamData []cliproxyexecutor.StreamChunk
@@ -59,6 +60,9 @@ func (e hedgedRetryTestError) RetryWithoutPenaltyAuthID() string {
 }
 
 func (e hedgedRetryTestError) RetryWithoutPenaltyUsageDetail() coreusage.Detail {
+	if hasRetryWithoutPenaltyUsageDetail(e.usage) {
+		return e.usage
+	}
 	return coreusage.Detail{InputTokens: 1, OutputTokens: 2, ReasoningTokens: 516, TotalTokens: 3}
 }
 
@@ -202,7 +206,7 @@ func (e *hedgedRetryTestExecutor) Execute(ctx context.Context, auth *Auth, _ cli
 	}
 	switch behavior.kind {
 	case "retry":
-		return cliproxyexecutor.Response{}, e.retryError(authID)
+		return cliproxyexecutor.Response{}, e.retryError(authID, behavior)
 	case "rate_limit":
 		return cliproxyexecutor.Response{}, hedgedRetryRateLimitError{retryAfter: time.Millisecond}
 	case "wait_cancel":
@@ -228,7 +232,7 @@ func (e *hedgedRetryTestExecutor) ExecuteStream(ctx context.Context, auth *Auth,
 	ch := make(chan cliproxyexecutor.StreamChunk, 1)
 	switch behavior.kind {
 	case "retry":
-		ch <- cliproxyexecutor.StreamChunk{Err: e.retryError(authID)}
+		ch <- cliproxyexecutor.StreamChunk{Err: e.retryError(authID, behavior)}
 	case "rate_limit":
 		return nil, hedgedRetryRateLimitError{retryAfter: time.Millisecond}
 	case "wait_cancel":
@@ -344,7 +348,19 @@ func (e *hedgedRetryTestExecutor) wait(ctx context.Context, behavior hedgedRetry
 	}
 }
 
-func (e *hedgedRetryTestExecutor) retryError(authID string) error {
+func (e *hedgedRetryTestExecutor) retryError(authID string, behavior hedgedRetryBehavior) error {
+	usageDetail := behavior.usage
+	if !hasRetryWithoutPenaltyUsageDetail(usageDetail) {
+		usageDetail = coreusage.Detail{InputTokens: 1, OutputTokens: 2, ReasoningTokens: 516, TotalTokens: 3}
+	}
+	fallbackPayload := e.fallbackPayload
+	if behavior.payload != "" {
+		fallbackPayload = []byte(behavior.payload)
+	}
+	fallbackStreamData := e.fallbackStreamData
+	if behavior.payload != "" {
+		fallbackStreamData = []cliproxyexecutor.StreamChunk{{Payload: []byte(behavior.payload)}}
+	}
 	return hedgedRetryTestError{
 		maxRetries:         e.maxRetries,
 		hedgeEnabled:       !e.disableHedge,
@@ -352,9 +368,10 @@ func (e *hedgedRetryTestExecutor) retryError(authID string) error {
 		hedgeDelay:         e.hedgeDelay,
 		requireDistinct:    e.requireDistinct,
 		authID:             authID,
+		usage:              usageDetail,
 		exhaustedBehavior:  e.exhaustedBehavior,
-		fallbackPayload:    e.fallbackPayload,
-		fallbackStreamData: e.fallbackStreamData,
+		fallbackPayload:    fallbackPayload,
+		fallbackStreamData: fallbackStreamData,
 	}
 }
 
@@ -383,6 +400,21 @@ func (e *hedgedRetryTestExecutor) streamCallCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return len(e.streamCalls)
+}
+
+func collectHedgedRetryStreamPayload(t *testing.T, result *cliproxyexecutor.StreamResult) []byte {
+	t.Helper()
+	if result == nil {
+		t.Fatal("stream result = nil")
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	return payload
 }
 
 func newHedgedRetryTestManager(t *testing.T, executor *hedgedRetryTestExecutor, authIDs ...string) (*Manager, []string) {
@@ -612,6 +644,161 @@ func TestManagerExecute_HedgedRetryPassThroughAfterDoubleAbnormal(t *testing.T) 
 	}
 }
 
+func TestManagerExecute_RetryWithoutPenaltyPassThroughReturnsLongestSerialAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "long", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}},
+				{kind: "retry", payload: "short", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 20, ReasoningTokens: 516, TotalTokens: 21}},
+			},
+		},
+		maxRetries:        2,
+		disableHedge:      true,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a")
+	manager.SetRetryConfig(0, 0, 0)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if string(resp.Payload) != "long" {
+		t.Fatalf("payload = %q, want longest serial abnormal fallback", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetrySpeedPassThroughReturnsLongestAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "short", delay: 5 * time.Millisecond, usage: coreusage.Detail{InputTokens: 1, OutputTokens: 20, ReasoningTokens: 516, TotalTokens: 21}},
+			},
+			"auth-b": {
+				{kind: "retry", payload: "long", delay: 25 * time.Millisecond, usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}},
+			},
+		},
+		maxRetries:        2,
+		hedgeDelay:        0,
+		requireDistinct:   false,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if string(resp.Payload) != "long" {
+		t.Fatalf("payload = %q, want longest speed hedge abnormal fallback", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetryQualityPassThroughReturnsLongestAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "short", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 20, ReasoningTokens: 516, TotalTokens: 21}},
+			},
+			"auth-b": {
+				{kind: "retry", payload: "long", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}},
+			},
+		},
+		maxRetries:        2,
+		hedgeMode:         retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:        0,
+		requireDistinct:   false,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if string(resp.Payload) != "long" {
+		t.Fatalf("payload = %q, want longest quality hedge abnormal fallback", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetryPassThroughIgnoresOrdinaryErrors(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "rate_limit"},
+			},
+			"auth-b": {
+				{kind: "retry", payload: "abnormal", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 50, ReasoningTokens: 516, TotalTokens: 51}},
+			},
+		},
+		maxRetries:        2,
+		hedgeMode:         retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:        0,
+		requireDistinct:   false,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 1)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want abnormal pass-through", err)
+	}
+	if string(resp.Payload) != "abnormal" {
+		t.Fatalf("payload = %q, want abnormal fallback rather than ordinary error", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetryPassThroughTieKeepsFirstCompletedAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "tie-second", delay: 25 * time.Millisecond, usage: coreusage.Detail{InputTokens: 1, OutputTokens: 50, ReasoningTokens: 516, TotalTokens: 51}},
+			},
+			"auth-b": {
+				{kind: "retry", payload: "tie-first", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 50, ReasoningTokens: 516, TotalTokens: 51}},
+			},
+		},
+		maxRetries:        2,
+		hedgeDelay:        0,
+		requireDistinct:   false,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if string(resp.Payload) != "tie-first" {
+		t.Fatalf("payload = %q, want first completed tied abnormal fallback", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetryErrorExhaustedIgnoresFallbackCandidate(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {{kind: "retry", payload: "abnormal", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}}},
+		},
+		maxRetries:      0,
+		disableHedge:    true,
+		requireDistinct: false,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a")
+	manager.SetRetryConfig(0, 0, 0)
+
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	assertRetryWithoutPenaltyExhausted(t, err, "codex_abnormal_reasoning_retry_exhausted")
+}
+
 func TestManagerExecute_HedgedRetryWinnerSeesTriggerAndPrimaryAbnormalUsage(t *testing.T) {
 	executor := &hedgedRetryTestExecutor{
 		behaviors: map[string][]hedgedRetryBehavior{
@@ -807,6 +994,91 @@ func TestManagerExecuteStream_HedgedRetryQualityReplaysWinnerOnly(t *testing.T) 
 	}
 	if string(payload) != "big-stream|fold:526|discarded:16" {
 		t.Fatalf("payload = %q, want finalized big stream winner only", payload)
+	}
+}
+
+func TestManagerExecuteStream_RetryWithoutPenaltyPassThroughReturnsLongestSerialAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		streamBehaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "long-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}},
+				{kind: "retry", payload: "short-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 20, ReasoningTokens: 516, TotalTokens: 21}},
+			},
+		},
+		maxRetries:        2,
+		disableHedge:      true,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a")
+	manager.SetRetryConfig(0, 0, 0)
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil pass-through", err)
+	}
+	payload := collectHedgedRetryStreamPayload(t, result)
+	if string(payload) != "long-stream" {
+		t.Fatalf("payload = %q, want longest serial abnormal stream", payload)
+	}
+}
+
+func TestManagerExecuteStream_HedgedRetrySpeedPassThroughReturnsLongestAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		streamBehaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "short-stream", delay: 5 * time.Millisecond, usage: coreusage.Detail{InputTokens: 1, OutputTokens: 20, ReasoningTokens: 516, TotalTokens: 21}},
+			},
+			"auth-b": {
+				{kind: "retry", payload: "long-stream", delay: 25 * time.Millisecond, usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}},
+			},
+		},
+		maxRetries:        2,
+		hedgeDelay:        0,
+		requireDistinct:   false,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil pass-through", err)
+	}
+	payload := collectHedgedRetryStreamPayload(t, result)
+	if string(payload) != "long-stream" {
+		t.Fatalf("payload = %q, want longest speed hedge abnormal stream", payload)
+	}
+}
+
+func TestManagerExecuteStream_HedgedRetryQualityPassThroughReturnsLongestAbnormal(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		streamBehaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+				{kind: "retry", payload: "short-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 20, ReasoningTokens: 516, TotalTokens: 21}},
+			},
+			"auth-b": {
+				{kind: "retry", payload: "long-stream", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 80, ReasoningTokens: 516, TotalTokens: 81}},
+			},
+		},
+		maxRetries:        2,
+		hedgeMode:         retryWithoutPenaltyHedgeModeQuality,
+		hedgeDelay:        0,
+		requireDistinct:   false,
+		exhaustedBehavior: retryWithoutPenaltyExhaustedBehaviorPassThrough,
+	}
+	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
+	manager.SetRetryConfig(0, 0, 0)
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil pass-through", err)
+	}
+	payload := collectHedgedRetryStreamPayload(t, result)
+	if string(payload) != "long-stream" {
+		t.Fatalf("payload = %q, want longest quality hedge abnormal stream", payload)
 	}
 }
 

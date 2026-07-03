@@ -453,12 +453,12 @@ func normalizeCodexAbnormalReasoningRetryClientUsageAggregation(value string) st
 
 func normalizeCodexAbnormalReasoningHedgedRetryMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "speed":
+	case "speed":
 		return CodexAbnormalReasoningHedgedRetryModeSpeed
 	case "quality":
 		return CodexAbnormalReasoningHedgedRetryModeQuality
 	default:
-		return CodexAbnormalReasoningHedgedRetryModeSpeed
+		return CodexAbnormalReasoningHedgedRetryModeQuality
 	}
 }
 

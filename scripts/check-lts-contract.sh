@@ -97,6 +97,7 @@ require_grep "exhausted-behavior" internal/config/config.go config.example.yaml 
 require_grep "client-usage-aggregation" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "reasoning-fold" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "quality" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "longest abnormal pass-through fallback" config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "reasoning-efforts" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "RetryWithoutPenalty" sdk/cliproxy/auth/conductor.go sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
 require_grep "ExcludeAuthIDsMetadataKey" sdk/cliproxy/executor/types.go docs/lts/core-feature-contracts.yaml
@@ -176,6 +177,7 @@ registry_required = [
     "client-usage-aggregation",
     "reasoning-fold",
     "quality",
+    "longest abnormal pass-through fallback",
     "reasoning-efforts",
     "ExcludeAuthIDsMetadataKey",
     "RetryWithoutPenalty",
