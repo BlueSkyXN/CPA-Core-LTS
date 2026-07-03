@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,36 +14,41 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 type codexAbnormalReasoningRetryPolicy struct {
-	enabled           bool
-	streamBuffer      bool
-	streamBufferMax   int64
-	maxRetries        int
-	exhaustedBehavior string
-	hedgeEnabled      bool
-	hedgeDelay        time.Duration
-	requireDistinct   bool
-	authID            string
-	modelContains     []string
-	reasoningEfforts  map[string]struct{}
-	reasoningTokens   map[int64]struct{}
+	enabled                bool
+	streamBuffer           bool
+	streamBufferMax        int64
+	maxRetries             int
+	exhaustedBehavior      string
+	clientUsageAggregation string
+	hedgeEnabled           bool
+	hedgeMode              string
+	hedgeDelay             time.Duration
+	requireDistinct        bool
+	authID                 string
+	modelContains          []string
+	reasoningEfforts       map[string]struct{}
+	reasoningTokens        map[int64]struct{}
 }
 
 type codexAbnormalReasoningRetryError struct {
-	detail                usage.Detail
-	maxRetries            int
-	exhaustedBehavior     string
-	hedgeEnabled          bool
-	hedgeDelay            time.Duration
-	requireDistinctAuth   bool
-	authID                string
-	fallbackResponse      *cliproxyexecutor.Response
-	fallbackStreamHeaders http.Header
-	fallbackStreamChunks  []cliproxyexecutor.StreamChunk
+	detail                 usage.Detail
+	maxRetries             int
+	exhaustedBehavior      string
+	clientUsageAggregation string
+	hedgeEnabled           bool
+	hedgeMode              string
+	hedgeDelay             time.Duration
+	requireDistinctAuth    bool
+	authID                 string
+	fallbackResponse       *cliproxyexecutor.Response
+	fallbackStreamHeaders  http.Header
+	fallbackStreamChunks   []cliproxyexecutor.StreamChunk
 }
 
 const (
@@ -87,6 +93,13 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgePolicy() (boo
 		return false, 0, true
 	}
 	return e.hedgeEnabled, e.hedgeDelay, e.requireDistinctAuth
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgeMode() string {
+	if e == nil || strings.TrimSpace(e.hedgeMode) == "" {
+		return config.CodexAbnormalReasoningHedgedRetryModeSpeed
+	}
+	return e.hedgeMode
 }
 
 func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyAuthID() string {
@@ -163,18 +176,20 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 		}
 	}
 	return codexAbnormalReasoningRetryPolicy{
-		enabled:           true,
-		streamBuffer:      effective.StreamBuffer,
-		streamBufferMax:   effective.StreamBufferMaxBytes,
-		maxRetries:        effective.MaxRetries,
-		exhaustedBehavior: effective.ExhaustedBehavior,
-		hedgeEnabled:      effective.HedgedRetry.Enabled,
-		hedgeDelay:        time.Duration(effective.HedgedRetry.HedgeDelayMS) * time.Millisecond,
-		requireDistinct:   effective.HedgedRetry.RequireDistinctAuth,
-		authID:            strings.TrimSpace(auth.ID),
-		modelContains:     modelContains,
-		reasoningEfforts:  efforts,
-		reasoningTokens:   tokens,
+		enabled:                true,
+		streamBuffer:           effective.StreamBuffer,
+		streamBufferMax:        effective.StreamBufferMaxBytes,
+		maxRetries:             effective.MaxRetries,
+		exhaustedBehavior:      effective.ExhaustedBehavior,
+		clientUsageAggregation: effective.ClientUsageAggregation,
+		hedgeEnabled:           effective.HedgedRetry.Enabled,
+		hedgeMode:              effective.HedgedRetry.Mode,
+		hedgeDelay:             time.Duration(effective.HedgedRetry.HedgeDelayMS) * time.Millisecond,
+		requireDistinct:        effective.HedgedRetry.RequireDistinctAuth,
+		authID:                 strings.TrimSpace(auth.ID),
+		modelContains:          modelContains,
+		reasoningEfforts:       efforts,
+		reasoningTokens:        tokens,
 	}
 }
 
@@ -191,6 +206,11 @@ func (p codexAbnormalReasoningRetryPolicy) StreamBufferMaxBytes() int64 {
 		return 0
 	}
 	return p.streamBufferMax
+}
+
+func (p codexAbnormalReasoningRetryPolicy) QualityHedgeStreamRewrite() bool {
+	return p.enabled && p.hedgeEnabled &&
+		strings.EqualFold(strings.TrimSpace(p.hedgeMode), config.CodexAbnormalReasoningHedgedRetryModeQuality)
 }
 
 func (p codexAbnormalReasoningRetryPolicy) RetryError(detail usage.Detail, reasoningEffort string) error {
@@ -218,13 +238,15 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 		}
 	}
 	err := &codexAbnormalReasoningRetryError{
-		detail:              detail,
-		maxRetries:          p.maxRetries,
-		exhaustedBehavior:   p.exhaustedBehavior,
-		hedgeEnabled:        p.hedgeEnabled,
-		hedgeDelay:          p.hedgeDelay,
-		requireDistinctAuth: p.requireDistinct,
-		authID:              p.authID,
+		detail:                 detail,
+		maxRetries:             p.maxRetries,
+		exhaustedBehavior:      p.exhaustedBehavior,
+		clientUsageAggregation: p.clientUsageAggregation,
+		hedgeEnabled:           p.hedgeEnabled,
+		hedgeMode:              p.hedgeMode,
+		hedgeDelay:             p.hedgeDelay,
+		requireDistinctAuth:    p.requireDistinct,
+		authID:                 p.authID,
 	}
 	if fallbackResponse != nil {
 		resp := cloneCodexAbnormalReasoningRetryResponse(*fallbackResponse)
@@ -372,16 +394,20 @@ func stringListContains(values []string, needle string, fold bool) bool {
 	return false
 }
 
-func patchCodexAbnormalReasoningClientUsage(eventData []byte, metadata map[string]any) []byte {
-	previous, ok := codexAbnormalReasoningRetryUsageFromMetadata(metadata)
+func patchCodexAbnormalReasoningClientUsage(eventData []byte, metadata map[string]any, aggregation string) []byte {
+	previous, ok := codexAbnormalReasoningRetryUsageSnapshotFromMetadata(metadata)
 	if !ok {
 		return eventData
 	}
+	return patchCodexAbnormalReasoningClientUsageWithSnapshot(eventData, previous, aggregation)
+}
+
+func patchCodexAbnormalReasoningClientUsageWithSnapshot(eventData []byte, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, aggregation string) []byte {
 	current, ok := helps.ParseCodexUsage(eventData)
 	if !ok {
 		return eventData
 	}
-	total := addCodexUsageDetail(previous, current)
+	total := codexAbnormalReasoningRetryAggregateClientUsage(previous, current, aggregation)
 	usageNode := gjson.GetBytes(eventData, "response.usage")
 	if !usageNode.Exists() {
 		return eventData
@@ -407,23 +433,77 @@ func patchCodexAbnormalReasoningClientUsage(eventData []byte, metadata map[strin
 }
 
 func codexAbnormalReasoningRetryUsageFromMetadata(metadata map[string]any) (usage.Detail, bool) {
-	if len(metadata) == 0 {
+	snapshot, ok := codexAbnormalReasoningRetryUsageSnapshotFromMetadata(metadata)
+	if !ok {
 		return usage.Detail{}, false
+	}
+	return snapshot.Detail, hasCodexUsageDetail(snapshot.Detail)
+}
+
+func codexAbnormalReasoningRetryUsageSnapshotFromMetadata(metadata map[string]any) (cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, bool) {
+	if len(metadata) == 0 {
+		return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}, false
 	}
 	raw := metadata[cliproxyexecutor.CodexAbnormalReasoningRetryUsageMetadataKey]
 	switch detail := raw.(type) {
+	case cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot:
+		return detail, hasCodexUsageDetail(detail.Detail)
+	case *cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot:
+		if detail == nil {
+			return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}, false
+		}
+		return *detail, hasCodexUsageDetail(detail.Detail)
 	case usage.Detail:
-		return detail, hasCodexUsageDetail(detail)
+		if !hasCodexUsageDetail(detail) {
+			return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}, false
+		}
+		return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{
+			Detail:             detail,
+			FoldedOutputTokens: foldedCodexUsageOutputTokens(detail),
+		}, true
 	case *usage.Detail:
 		if detail == nil {
-			return usage.Detail{}, false
+			return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}, false
 		}
-		return *detail, hasCodexUsageDetail(*detail)
+		if !hasCodexUsageDetail(*detail) {
+			return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}, false
+		}
+		return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{
+			Detail:             *detail,
+			FoldedOutputTokens: foldedCodexUsageOutputTokens(*detail),
+		}, true
 	case *cliproxyexecutor.UsageAccumulator:
-		snapshot := detail.Snapshot()
-		return snapshot, hasCodexUsageDetail(snapshot)
+		snapshot := detail.RetryWithoutPenaltySnapshot()
+		return snapshot, hasCodexUsageDetail(snapshot.Detail)
 	default:
-		return usage.Detail{}, false
+		return cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{}, false
+	}
+}
+
+func codexAbnormalReasoningRetryAggregateClientUsage(previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, current usage.Detail, aggregation string) usage.Detail {
+	if aggregation == config.CodexAbnormalReasoningRetryClientUsageAggregationSum {
+		return addCodexUsageDetail(previous.Detail, current)
+	}
+	previousDetail := normalizeCodexUsageDetail(previous.Detail)
+	current = normalizeCodexUsageDetail(current)
+	foldedPreviousOutput := previous.FoldedOutputTokens
+	if foldedPreviousOutput == 0 && hasCodexUsageDetail(previousDetail) {
+		foldedPreviousOutput = foldedCodexUsageOutputTokens(previousDetail)
+	}
+	deliveredOutput := current.OutputTokens
+	if current.ReasoningTokens > deliveredOutput {
+		deliveredOutput = current.ReasoningTokens
+	}
+	input := previousDetail.InputTokens + current.InputTokens
+	output := deliveredOutput + foldedPreviousOutput
+	return usage.Detail{
+		InputTokens:         input,
+		OutputTokens:        output,
+		ReasoningTokens:     current.ReasoningTokens + foldedPreviousOutput,
+		CachedTokens:        previousDetail.CachedTokens + current.CachedTokens,
+		CacheReadTokens:     previousDetail.CacheReadTokens + current.CacheReadTokens,
+		CacheCreationTokens: previousDetail.CacheCreationTokens + current.CacheCreationTokens,
+		TotalTokens:         input + output,
 	}
 }
 
@@ -439,6 +519,162 @@ func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
 		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
 		TotalTokens:         a.TotalTokens + b.TotalTokens,
 	}
+}
+
+func foldedCodexUsageOutputTokens(detail usage.Detail) int64 {
+	detail = normalizeCodexUsageDetail(detail)
+	if detail.OutputTokens >= detail.ReasoningTokens {
+		return detail.OutputTokens
+	}
+	return detail.ReasoningTokens
+}
+
+func codexAbnormalReasoningRetryResponseMetadata(detail usage.Detail, finalizer cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer) map[string]any {
+	meta := map[string]any{
+		cliproxyexecutor.RetryWithoutPenaltyUsageDetailMetadataKey: detail,
+		cliproxyexecutor.RetryWithoutPenaltyHedgeScoreMetadataKey:  detail.OutputTokens,
+	}
+	if finalizer != nil {
+		meta[cliproxyexecutor.RetryWithoutPenaltyResponseFinalizerMetadataKey] = finalizer
+	}
+	return meta
+}
+
+func codexAbnormalReasoningRetryStreamMetadata(streamUsage *cliproxyexecutor.RetryWithoutPenaltyStreamUsage, finalizer cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer) map[string]any {
+	meta := map[string]any{}
+	if streamUsage != nil {
+		meta[cliproxyexecutor.RetryWithoutPenaltyStreamUsageMetadataKey] = streamUsage
+	}
+	if finalizer != nil {
+		meta[cliproxyexecutor.RetryWithoutPenaltyStreamFinalizerMetadataKey] = finalizer
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
+// codexAbnormalReasoningRetryStreamRecorder captures the raw upstream SSE lines
+// fed into stream translation so a quality-hedge finalizer can re-patch the
+// completed usage with the final discarded-attempt snapshot and re-translate the
+// whole stream. The completed event is kept in its usage-unpatched form; every
+// other line is kept exactly as it entered translation.
+type codexAbnormalReasoningRetryStreamRecorder struct {
+	lines          [][]byte
+	completedIndex int
+	completedData  []byte
+	recordedBytes  int64
+	maxBytes       int64
+	dropped        bool
+}
+
+func newCodexAbnormalReasoningRetryStreamRecorder(maxBytes int64) *codexAbnormalReasoningRetryStreamRecorder {
+	return &codexAbnormalReasoningRetryStreamRecorder{completedIndex: -1, maxBytes: maxBytes}
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) recordLine(line []byte) {
+	if r == nil || r.dropped || !r.reserve(int64(len(line))) {
+		return
+	}
+	r.lines = append(r.lines, bytes.Clone(line))
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) recordCompleted(completedData []byte) {
+	if r == nil || r.dropped || !r.reserve(int64(len(completedData))) {
+		return
+	}
+	r.completedData = bytes.Clone(completedData)
+	r.completedIndex = len(r.lines)
+	r.lines = append(r.lines, nil)
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) reserve(size int64) bool {
+	if r.maxBytes > 0 && r.recordedBytes+size > r.maxBytes {
+		r.dropped = true
+		r.lines = nil
+		r.completedData = nil
+		r.completedIndex = -1
+		return false
+	}
+	r.recordedBytes += size
+	return true
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) ready() bool {
+	return r != nil && !r.dropped && r.completedIndex >= 0
+}
+
+// finalizeCodexAbnormalReasoningRetryStreamFromRaw rebuilds the winning stream
+// from recorded raw upstream lines, mirroring the non-stream finalizer: the
+// completed event usage is re-patched with the final discarded-attempt snapshot
+// before the whole stream is re-translated, so the folded usage survives
+// translation into any downstream response format. Returns nil when no usable
+// recording exists and the caller must fall back to patching translated chunks.
+func finalizeCodexAbnormalReasoningRetryStreamFromRaw(ctx context.Context, to, responseFormat sdktranslator.Format, model string, originalPayload, body []byte, identityState codexIdentityConfuseState, recorder *codexAbnormalReasoningRetryStreamRecorder, headers http.Header, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, aggregation string) *cliproxyexecutor.StreamResult {
+	if !recorder.ready() {
+		return nil
+	}
+	var param any
+	var patched []cliproxyexecutor.StreamChunk
+	for i := range recorder.lines {
+		line := recorder.lines[i]
+		if i == recorder.completedIndex {
+			data := patchCodexAbnormalReasoningClientUsageWithSnapshot(recorder.completedData, previous, aggregation)
+			line = append([]byte("data: "), data...)
+			line = applyCodexIdentityExposeResponsePayload(line, identityState)
+		}
+		chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, model, originalPayload, body, line, &param)
+		for j := range chunks {
+			patched = append(patched, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[j])})
+		}
+	}
+	out := make(chan cliproxyexecutor.StreamChunk, len(patched))
+	for i := range patched {
+		out <- patched[i]
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{
+		Headers: cloneCodexAbnormalReasoningRetryHeader(headers),
+		Chunks:  out,
+	}
+}
+
+func finalizeCodexAbnormalReasoningRetryStream(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, aggregation string) *cliproxyexecutor.StreamResult {
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for i := range chunks {
+		chunk := chunks[i]
+		if chunk.Err == nil && len(chunk.Payload) > 0 {
+			chunk.Payload = patchCodexAbnormalReasoningStreamPayload(chunk.Payload, previous, aggregation)
+		}
+		if len(chunk.Payload) > 0 {
+			chunk.Payload = bytes.Clone(chunk.Payload)
+		}
+		out <- chunk
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{
+		Headers: cloneCodexAbnormalReasoningRetryHeader(headers),
+		Chunks:  out,
+	}
+}
+
+func patchCodexAbnormalReasoningStreamPayload(payload []byte, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot, aggregation string) []byte {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return payload
+	}
+	if bytes.HasPrefix(trimmed, []byte("data:")) {
+		data := bytes.TrimSpace(trimmed[len("data:"):])
+		if !gjson.GetBytes(data, "response.usage").Exists() {
+			return payload
+		}
+		patched := patchCodexAbnormalReasoningClientUsageWithSnapshot(data, previous, aggregation)
+		return append([]byte("data: "), patched...)
+	}
+	if !gjson.GetBytes(trimmed, "response.usage").Exists() {
+		return payload
+	}
+	return patchCodexAbnormalReasoningClientUsageWithSnapshot(trimmed, previous, aggregation)
 }
 
 func normalizeCodexUsageDetail(detail usage.Detail) usage.Detail {

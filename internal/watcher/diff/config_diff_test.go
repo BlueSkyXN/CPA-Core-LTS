@@ -186,18 +186,20 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	newCfg := &config.Config{
 		Codex: config.CodexConfig{
 			AbnormalReasoningRetry: config.CodexAbnormalReasoningRetryConfig{
-				Enabled:              true,
-				ModelContains:        []string{"gpt-5.5", "custom"},
-				ReasoningEfforts:     []string{"xhigh"},
-				ReasoningTokens:      []int64{516},
-				AuthKinds:            []string{"oauth", "api-key"},
-				AuthIDs:              []string{"auth-1"},
-				StreamBuffer:         &streamBuffer,
-				StreamBufferMaxBytes: &streamBufferMaxBytes,
-				MaxRetries:           &maxRetries,
-				ExhaustedBehavior:    config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough,
+				Enabled:                true,
+				ModelContains:          []string{"gpt-5.5", "custom"},
+				ReasoningEfforts:       []string{"xhigh"},
+				ReasoningTokens:        []int64{516},
+				AuthKinds:              []string{"oauth", "api-key"},
+				AuthIDs:                []string{"auth-1"},
+				StreamBuffer:           &streamBuffer,
+				StreamBufferMaxBytes:   &streamBufferMaxBytes,
+				MaxRetries:             &maxRetries,
+				ExhaustedBehavior:      config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough,
+				ClientUsageAggregation: config.CodexAbnormalReasoningRetryClientUsageAggregationSum,
 				HedgedRetry: config.CodexAbnormalReasoningHedgedRetryConfig{
 					Enabled:             true,
+					Mode:                config.CodexAbnormalReasoningHedgedRetryModeQuality,
 					HedgeDelayMS:        &hedgeDelayMS,
 					RequireDistinctAuth: &requireDistinctAuth,
 				},
@@ -212,7 +214,9 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer-max-bytes: 0 -> 4096")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.max-retries: 2 -> 0")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.exhausted-behavior: error -> pass-through")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.client-usage-aggregation: reasoning-fold -> sum")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.hedged-retry.enabled: false -> true")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.hedged-retry.mode: speed -> quality")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms: 1000 -> 250")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.hedged-retry.require-distinct-auth: true -> false")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.model-contains: updated (1 -> 2 entries)")

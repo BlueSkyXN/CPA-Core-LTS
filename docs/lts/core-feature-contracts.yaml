@@ -168,7 +168,9 @@ features:
       - codex.abnormal-reasoning-retry.stream-buffer-max-bytes
       - codex.abnormal-reasoning-retry.max-retries
       - codex.abnormal-reasoning-retry.exhausted-behavior
+      - codex.abnormal-reasoning-retry.client-usage-aggregation
       - codex.abnormal-reasoning-retry.hedged-retry.enabled
+      - codex.abnormal-reasoning-retry.hedged-retry.mode
       - codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms
       - codex.abnormal-reasoning-retry.hedged-retry.require-distinct-auth
     core_files:
@@ -186,6 +188,9 @@ features:
     required_markers:
       - abnormal-reasoning-retry
       - hedged-retry
+      - client-usage-aggregation
+      - reasoning-fold
+      - quality
       - hedge-delay-ms
       - require-distinct-auth
       - stream-buffer-max-bytes

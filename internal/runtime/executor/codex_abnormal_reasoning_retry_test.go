@@ -350,14 +350,14 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndA
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
-		t.Fatalf("client response usage.total_tokens = %d, want abnormal plus final total 15; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 650 {
+		t.Fatalf("client response usage.total_tokens = %d, want reasoning-fold total 650; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
 		t.Fatalf("client response usage.input_tokens = %d, want abnormal plus final input 6; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
-		t.Fatalf("client response usage.output_tokens = %d, want abnormal plus final output 9; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 644 {
+		t.Fatalf("client response usage.output_tokens = %d, want folded output 644; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want abnormal plus final reasoning 644; payload=%s", got, resp.Payload)
@@ -388,6 +388,55 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndA
 	}
 	if successRecord.Detail.TotalTokens != 12 || successRecord.Detail.ReasoningTokens != 128 {
 		t.Fatalf("success record detail = %+v, want final attempt total=12 reasoning=128", successRecord.Detail)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumKeepsLegacyShape(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+			return
+		}
+		_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 7, 12)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithAggregation(config.CodexAbnormalReasoningRetryClientUsageAggregationSum)))
+	manager.SetRetryConfig(1, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-sum-aggregate"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+		t.Fatalf("client response usage.total_tokens = %d, want legacy total 15; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+		t.Fatalf("client response usage.output_tokens = %d, want legacy output 9; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+		t.Fatalf("client response usage.reasoning_tokens = %d, want legacy reasoning 644; payload=%s", got, resp.Payload)
 	}
 }
 
@@ -441,14 +490,14 @@ func TestCodexExecutorAbnormalReasoningRetry_DefaultMaxRetriesAggregatesTwoAbnor
 	if calls != 3 {
 		t.Fatalf("upstream calls = %d, want 3", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 25 {
-		t.Fatalf("client response usage.total_tokens = %d, want abnormal attempts plus final total 25; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 1688 {
+		t.Fatalf("client response usage.total_tokens = %d, want folded total 1688; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 10 {
 		t.Fatalf("client response usage.input_tokens = %d, want abnormal attempts plus final input 10; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 15 {
-		t.Fatalf("client response usage.output_tokens = %d, want abnormal attempts plus final output 15; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 1678 {
+		t.Fatalf("client response usage.output_tokens = %d, want folded output 1678; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1678 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want abnormal attempts plus final reasoning 1678; payload=%s", got, resp.Payload)
@@ -524,8 +573,8 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerMaxRetriesIndependentFromReq
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2 despite request-retry=0", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
-		t.Fatalf("client response usage.total_tokens = %d, want abnormal plus final total 15; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 650 {
+		t.Fatalf("client response usage.total_tokens = %d, want folded total 650; payload=%s", got, resp.Payload)
 	}
 }
 
@@ -632,8 +681,8 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughAggregatesDiscardedUsage
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 13 {
-		t.Fatalf("client response usage.total_tokens = %d, want discarded plus delivered total 13; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 1555 {
+		t.Fatalf("client response usage.total_tokens = %d, want folded pass-through total 1555; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1550 {
 		t.Fatalf("client response reasoning_tokens = %d, want discarded plus delivered reasoning 1550; payload=%s", got, resp.Payload)
@@ -688,11 +737,87 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerAggregatesStreamingClientUsa
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if !bytes.Contains(payload, []byte(`"total_tokens":15`)) {
-		t.Fatalf("stream payload missing aggregated total_tokens=15: %s", payload)
+	if !bytes.Contains(payload, []byte(`"total_tokens":650`)) {
+		t.Fatalf("stream payload missing folded total_tokens=650: %s", payload)
 	}
 	if !bytes.Contains(payload, []byte(`"reasoning_tokens":644`)) {
 		t.Fatalf("stream payload missing aggregated reasoning_tokens=644: %s", payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_QualityStreamFoldsUsageIntoChatCompletionsFormat(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch n {
+		case 1:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+		case 2:
+			_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"clean"}` + "\n\n"))
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 200, 205)))
+		default:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 2, 4, 6)))
+		}
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithQualityHedge(2)))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-quality-chat-fold"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v, want nil", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v, want nil", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 3 {
+		t.Fatalf("upstream calls = %d, want trigger plus two quality lanes", gotCalls)
+	}
+	if !bytes.Contains(payload, []byte("clean")) {
+		t.Fatalf("stream payload missing winner delta text: %s", payload)
+	}
+	// reasoning-fold 折算：trigger(1/2/516) 与 quality 波内 abnormal lane(2/4/516)
+	// 折入胜者(5/200/128)，并且必须以下游 chat-completions 的 usage 形状交付。
+	for _, want := range []string{
+		`"prompt_tokens":8`,
+		`"completion_tokens":1232`,
+		`"total_tokens":1240`,
+		`"reasoning_tokens":1160`,
+	} {
+		if !bytes.Contains(payload, []byte(want)) {
+			t.Fatalf("stream payload missing folded chat usage %s: %s", want, payload)
+		}
 	}
 }
 
@@ -906,6 +1031,26 @@ func codexAbnormalReasoningRetryTestConfig(authIDs []string, streamBuffer *bool)
 func codexAbnormalReasoningRetryTestConfigWithEfforts(efforts []string) *config.Config {
 	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
 	cfg.Codex.AbnormalReasoningRetry.ReasoningEfforts = efforts
+	return cfg
+}
+
+func codexAbnormalReasoningRetryTestConfigWithAggregation(aggregation string) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.ClientUsageAggregation = aggregation
+	return cfg
+}
+
+func codexAbnormalReasoningRetryTestConfigWithQualityHedge(maxRetries int) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.MaxRetries = &maxRetries
+	hedgeDelayMS := 0
+	requireDistinctAuth := false
+	cfg.Codex.AbnormalReasoningRetry.HedgedRetry = config.CodexAbnormalReasoningHedgedRetryConfig{
+		Enabled:             true,
+		Mode:                config.CodexAbnormalReasoningHedgedRetryModeQuality,
+		HedgeDelayMS:        &hedgeDelayMS,
+		RequireDistinctAuth: &requireDistinctAuth,
+	}
 	return cfg
 }
 
