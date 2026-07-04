@@ -1336,7 +1336,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return
 			}
 			if usageDetailOK {
-				streamUsage.Detail = usageDetail
+				streamUsage.Detail = normalizeCodexUsageDetail(usageDetail)
 				streamUsage.HedgeScore = usageDetail.OutputTokens
 				streamUsage.OK = true
 				reporter.Publish(ctx, usageDetail)

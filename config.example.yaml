@@ -195,11 +195,14 @@ codex:
     # This limit is independent of the global request-retry setting.
     # Set to 0 to record the abnormal attempt as failed usage and apply exhausted-behavior immediately.
     # exhausted-behavior: "error" returns 502 (default); "pass-through" returns the exhausted abnormal response.
-    # CPA usage is attempt-level. successful client response usage includes discarded attempts plus the delivered attempt.
-    # client-usage-aggregation: "reasoning-fold" (default) folds discarded output into reasoning tokens so visible output remains the delivered attempt only; "sum" preserves the legacy field-sum shape.
+    # CPA internal usage remains attempt-level and records discarded retry costs separately.
+    # client-usage-aggregation only controls the client-visible response.usage shape:
+    # "delivered-only" (default) returns the delivered/fallback attempt's upstream usage unchanged;
+    # "sum" adds input/cache/output/reasoning/total fields across all attempts;
+    # "sum-with-delivered-total" adds small fields across attempts but keeps total_tokens from the delivered/fallback attempt.
     max-retries: 2
     exhausted-behavior: "error"
-    client-usage-aggregation: "reasoning-fold"
+    client-usage-aggregation: "delivered-only"
     # Optional hedged retry for abnormal attempts. When enabled, a retry lane starts first;
     # after hedge-delay-ms, a second parallel lane may start. Default mode is "quality".
     # mode: "quality" waits for dispatched lanes and selects the largest output_tokens winner; "speed" keeps first-success-wins behavior.

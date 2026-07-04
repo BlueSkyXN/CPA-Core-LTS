@@ -303,7 +303,7 @@ func TestCodexExecutorAbnormalReasoningRetry_PublishesFailedUsageForInterceptedA
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndAggregatesClientUsage(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndDeliversRawClientUsage(t *testing.T) {
 	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
 	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
 	t.Cleanup(func() {
@@ -350,17 +350,17 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndA
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 650 {
-		t.Fatalf("client response usage.total_tokens = %d, want reasoning-fold total 650; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
-		t.Fatalf("client response usage.input_tokens = %d, want abnormal plus final input 6; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
+		t.Fatalf("client response usage.input_tokens = %d, want delivered input 5; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 644 {
-		t.Fatalf("client response usage.output_tokens = %d, want folded output 644; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 7 {
+		t.Fatalf("client response usage.output_tokens = %d, want delivered output 7; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
-		t.Fatalf("client response usage.reasoning_tokens = %d, want abnormal plus final reasoning 644; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 128 {
+		t.Fatalf("client response usage.reasoning_tokens = %d, want delivered reasoning 128; payload=%s", got, resp.Payload)
 	}
 
 	records := recorder.waitForRecords(t, func(record usage.Record) bool {
@@ -391,7 +391,7 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndA
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumKeepsLegacyShape(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumSumsFields(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -430,17 +430,124 @@ func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumKeepsLegac
 		t.Fatalf("Execute error = %v, want nil", err)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
-		t.Fatalf("client response usage.total_tokens = %d, want legacy total 15; payload=%s", got, resp.Payload)
+		t.Fatalf("client response usage.total_tokens = %d, want summed total 15; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+		t.Fatalf("client response usage.input_tokens = %d, want summed input 6; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
-		t.Fatalf("client response usage.output_tokens = %d, want legacy output 9; payload=%s", got, resp.Payload)
+		t.Fatalf("client response usage.output_tokens = %d, want summed output 9; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
-		t.Fatalf("client response usage.reasoning_tokens = %d, want legacy reasoning 644; payload=%s", got, resp.Payload)
+		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_DefaultMaxRetriesAggregatesTwoAbnormalAttempts(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumUsesCodexFallbackWhenPreviousTotalMissing(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsageNoTotal("gpt-5.5", 516, 1, 2)))
+			return
+		}
+		_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 7, 12)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithAggregation(config.CodexAbnormalReasoningRetryClientUsageAggregationSum)))
+	manager.SetRetryConfig(1, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-sum-missing-previous-total"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+		t.Fatalf("client response usage.total_tokens = %d, want summed Codex fallback total 15; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+		t.Fatalf("client response usage.input_tokens = %d, want summed input 6; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+		t.Fatalf("client response usage.output_tokens = %d, want summed output 9; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumWithDeliveredTotal(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+			return
+		}
+		_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 7, 12)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithAggregation(config.CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal)))
+	manager.SetRetryConfig(1, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-sum-delivered-total"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+		t.Fatalf("client response usage.input_tokens = %d, want summed input 6; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+		t.Fatalf("client response usage.output_tokens = %d, want summed output 9; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_DefaultMaxRetriesDeliversFinalUsageWithTwoAbnormalAttempts(t *testing.T) {
 	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
 	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
 	t.Cleanup(func() {
@@ -490,17 +597,17 @@ func TestCodexExecutorAbnormalReasoningRetry_DefaultMaxRetriesAggregatesTwoAbnor
 	if calls != 3 {
 		t.Fatalf("upstream calls = %d, want 3", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 1688 {
-		t.Fatalf("client response usage.total_tokens = %d, want folded total 1688; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 10 {
-		t.Fatalf("client response usage.input_tokens = %d, want abnormal attempts plus final input 10; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
+		t.Fatalf("client response usage.input_tokens = %d, want delivered input 5; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 1678 {
-		t.Fatalf("client response usage.output_tokens = %d, want folded output 1678; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 7 {
+		t.Fatalf("client response usage.output_tokens = %d, want delivered output 7; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1678 {
-		t.Fatalf("client response usage.reasoning_tokens = %d, want abnormal attempts plus final reasoning 1678; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 128 {
+		t.Fatalf("client response usage.reasoning_tokens = %d, want delivered reasoning 128; payload=%s", got, resp.Payload)
 	}
 
 	records := recorder.waitForRecords(t, func(record usage.Record) bool {
@@ -573,8 +680,8 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerMaxRetriesIndependentFromReq
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2 despite request-retry=0", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 650 {
-		t.Fatalf("client response usage.total_tokens = %d, want folded total 650; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
 }
 
@@ -621,8 +728,14 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedNonStreamin
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 517 {
-		t.Fatalf("client response usage.total_tokens = %d, want folded abnormal total 517; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 3 {
+		t.Fatalf("client response usage.total_tokens = %d, want delivered abnormal total 3; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 1 {
+		t.Fatalf("client response usage.input_tokens = %d, want delivered abnormal input 1; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 2 {
+		t.Fatalf("client response usage.output_tokens = %d, want delivered abnormal output 2; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 516 {
 		t.Fatalf("client response reasoning_tokens = %d, want 516; payload=%s", got, resp.Payload)
@@ -639,7 +752,7 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedNonStreamin
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_PassThroughAggregatesDiscardedUsageWhenExhausted(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughDeliversSelectedFallbackUsageWhenExhausted(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -681,11 +794,76 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughAggregatesDiscardedUsage
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 1555 {
-		t.Fatalf("client response usage.total_tokens = %d, want folded pass-through total 1555; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 10 {
+		t.Fatalf("client response usage.total_tokens = %d, want selected fallback total 10; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 4 {
+		t.Fatalf("client response usage.input_tokens = %d, want selected fallback input 4; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 6 {
+		t.Fatalf("client response usage.output_tokens = %d, want selected fallback output 6; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1034 {
+		t.Fatalf("client response reasoning_tokens = %d, want selected fallback reasoning 1034; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PassThroughSumWithDeliveredTotalKeepsFallbackTotal(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch calls {
+		case 1:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
+		default:
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 1034, 4, 6, 10)))
+		}
+	}))
+	defer server.Close()
+
+	cfg := codexAbnormalReasoningRetryTestConfigWithMaxAndExhausted(1, config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough)
+	cfg.Codex.AbnormalReasoningRetry.ClientUsageAggregation = config.CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(cfg))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-pass-through-sum-delivered-total"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil pass-through", err)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 10 {
+		t.Fatalf("client response usage.total_tokens = %d, want selected fallback total 10; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
+		t.Fatalf("client response usage.input_tokens = %d, want summed input 5; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 8 {
+		t.Fatalf("client response usage.output_tokens = %d, want summed output 8; payload=%s", got, resp.Payload)
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1550 {
-		t.Fatalf("client response reasoning_tokens = %d, want discarded plus delivered reasoning 1550; payload=%s", got, resp.Payload)
+		t.Fatalf("client response reasoning_tokens = %d, want summed reasoning 1550; payload=%s", got, resp.Payload)
 	}
 }
 
@@ -736,12 +914,12 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughReturnsLongestNonStreami
 	if !bytes.Contains(resp.Payload, []byte("long")) || bytes.Contains(resp.Payload, []byte("short")) {
 		t.Fatalf("client response payload = %s, want longest fallback only", resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 1551 {
-		t.Fatalf("client response usage.total_tokens = %d, want final folded total 1551; payload=%s", got, resp.Payload)
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 81 {
+		t.Fatalf("client response usage.total_tokens = %d, want longest fallback total 81; payload=%s", got, resp.Payload)
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_ManagerAggregatesStreamingClientUsage(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_ManagerDeliversStreamingClientUsage(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -789,15 +967,15 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerAggregatesStreamingClientUsa
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if !bytes.Contains(payload, []byte(`"total_tokens":650`)) {
-		t.Fatalf("stream payload missing folded total_tokens=650: %s", payload)
+	if !bytes.Contains(payload, []byte(`"total_tokens":12`)) {
+		t.Fatalf("stream payload missing delivered total_tokens=12: %s", payload)
 	}
-	if !bytes.Contains(payload, []byte(`"reasoning_tokens":644`)) {
-		t.Fatalf("stream payload missing aggregated reasoning_tokens=644: %s", payload)
+	if !bytes.Contains(payload, []byte(`"reasoning_tokens":128`)) {
+		t.Fatalf("stream payload missing delivered reasoning_tokens=128: %s", payload)
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_QualityStreamFoldsUsageIntoChatCompletionsFormat(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_QualityStreamDeliversWinnerUsageIntoChatCompletionsFormat(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -823,7 +1001,7 @@ func TestCodexExecutorAbnormalReasoningRetry_QualityStreamFoldsUsageIntoChatComp
 	manager.SetRetryConfig(0, 0, 0)
 
 	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
-	auth.ID = "codex-oauth-quality-chat-fold"
+	auth.ID = "codex-oauth-quality-chat-delivered"
 	reg := registry.GetGlobalRegistry()
 	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
 	t.Cleanup(func() {
@@ -859,16 +1037,14 @@ func TestCodexExecutorAbnormalReasoningRetry_QualityStreamFoldsUsageIntoChatComp
 	if !bytes.Contains(payload, []byte("clean")) {
 		t.Fatalf("stream payload missing winner delta text: %s", payload)
 	}
-	// reasoning-fold 折算：trigger(1/2/516) 与 quality 波内 abnormal lane(2/4/516)
-	// 折入胜者(5/200/128)，并且必须以下游 chat-completions 的 usage 形状交付。
 	for _, want := range []string{
-		`"prompt_tokens":8`,
-		`"completion_tokens":1232`,
-		`"total_tokens":1240`,
-		`"reasoning_tokens":1160`,
+		`"prompt_tokens":5`,
+		`"completion_tokens":200`,
+		`"total_tokens":205`,
+		`"reasoning_tokens":128`,
 	} {
 		if !bytes.Contains(payload, []byte(want)) {
-			t.Fatalf("stream payload missing folded chat usage %s: %s", want, payload)
+			t.Fatalf("stream payload missing delivered chat usage %s: %s", want, payload)
 		}
 	}
 }
@@ -926,6 +1102,9 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedStreaming(t
 	}
 	if !bytes.Contains(payload, []byte("visible")) {
 		t.Fatalf("stream payload missing buffered visible delta: %s", payload)
+	}
+	if !bytes.Contains(payload, []byte(`"total_tokens":3`)) {
+		t.Fatalf("stream payload missing delivered abnormal total_tokens=3: %s", payload)
 	}
 	if !bytes.Contains(payload, []byte(`"reasoning_tokens":516`)) {
 		t.Fatalf("stream payload missing delivered abnormal reasoning_tokens=516: %s", payload)
@@ -996,8 +1175,8 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughReturnsLongestStreamingF
 	if !bytes.Contains(payload, []byte("long")) || bytes.Contains(payload, []byte("short")) {
 		t.Fatalf("stream payload = %s, want longest fallback only", payload)
 	}
-	if !bytes.Contains(payload, []byte(`"total_tokens":1551`)) {
-		t.Fatalf("stream payload missing final folded total_tokens=1551: %s", payload)
+	if !bytes.Contains(payload, []byte(`"total_tokens":81`)) {
+		t.Fatalf("stream payload missing longest fallback total_tokens=81: %s", payload)
 	}
 }
 
@@ -1204,6 +1383,10 @@ func codexCompletedSSE(model string, reasoning int) string {
 
 func codexCompletedSSEWithUsage(model string, reasoning, input, output, total int) string {
 	return codexCompletedSSEWithTextAndUsage(model, "ok", reasoning, input, output, total)
+}
+
+func codexCompletedSSEWithUsageNoTotal(model string, reasoning, input, output int) string {
+	return `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"` + model + `","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":` + strconv.Itoa(input) + `,"output_tokens":` + strconv.Itoa(output) + `,"output_tokens_details":{"reasoning_tokens":` + strconv.Itoa(reasoning) + `}}}}` + "\n\n"
 }
 
 func codexCompletedSSEWithTextAndUsage(model, text string, reasoning, input, output, total int) string {

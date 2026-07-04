@@ -316,12 +316,13 @@ type CodexConfig struct {
 }
 
 const (
-	CodexAbnormalReasoningRetryExhaustedBehaviorError              = "error"
-	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough        = "pass-through"
-	CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold = "reasoning-fold"
-	CodexAbnormalReasoningRetryClientUsageAggregationSum           = "sum"
-	CodexAbnormalReasoningHedgedRetryModeSpeed                     = "speed"
-	CodexAbnormalReasoningHedgedRetryModeQuality                   = "quality"
+	CodexAbnormalReasoningRetryExhaustedBehaviorError                      = "error"
+	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough                = "pass-through"
+	CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly         = "delivered-only"
+	CodexAbnormalReasoningRetryClientUsageAggregationSum                   = "sum"
+	CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal = "sum-with-delivered-total"
+	CodexAbnormalReasoningHedgedRetryModeSpeed                             = "speed"
+	CodexAbnormalReasoningHedgedRetryModeQuality                           = "quality"
 )
 
 // CodexAbnormalReasoningRetryConfig controls the CPA-Core-LTS retry guard for
@@ -442,12 +443,16 @@ func normalizeCodexAbnormalReasoningRetryExhaustedBehavior(value string) string 
 
 func normalizeCodexAbnormalReasoningRetryClientUsageAggregation(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "reasoning-fold", "reasoning_fold", "fold":
-		return CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold
+	case "", "delivered-only", "delivered_only", "delivered":
+		return CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly
 	case "sum":
 		return CodexAbnormalReasoningRetryClientUsageAggregationSum
+	case "sum-with-delivered-total", "sum_with_delivered_total":
+		return CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal
+	case "reasoning-fold", "reasoning_fold", "fold":
+		return CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly
 	default:
-		return CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold
+		return CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly
 	}
 }
 

@@ -95,7 +95,8 @@ require_grep "stream-buffer-max-bytes" internal/config/config.go config.example.
 require_grep "max-retries" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "exhausted-behavior" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "client-usage-aggregation" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "reasoning-fold" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "delivered-only" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "sum-with-delivered-total" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "quality" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "longest abnormal pass-through fallback" config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "reasoning-efforts" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
@@ -175,7 +176,8 @@ registry_required = [
     "max-retries",
     "exhausted-behavior",
     "client-usage-aggregation",
-    "reasoning-fold",
+    "delivered-only",
+    "sum-with-delivered-total",
     "quality",
     "longest abnormal pass-through fallback",
     "reasoning-efforts",

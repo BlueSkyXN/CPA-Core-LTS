@@ -156,7 +156,7 @@ features:
 
   - id: codex-abnormal-reasoning-retry
     status: lts-maintained
-    reason: CPA-Core-LTS can optionally discard and retry suspicious Codex OAuth responses with attempt-level CPA accounting, default quality hedging, longest abnormal pass-through fallback, and aggregate client-visible usage, without changing plugin ABI or Panel UI.
+    reason: CPA-Core-LTS can optionally discard and retry suspicious Codex OAuth responses with attempt-level CPA accounting, default quality hedging, longest abnormal pass-through fallback, and separated client-visible usage modes, without changing plugin ABI.
     config_keys:
       - codex.abnormal-reasoning-retry.enabled
       - codex.abnormal-reasoning-retry.model-contains
@@ -189,7 +189,8 @@ features:
       - abnormal-reasoning-retry
       - hedged-retry
       - client-usage-aggregation
-      - reasoning-fold
+      - delivered-only
+      - sum-with-delivered-total
       - quality
       - longest abnormal pass-through fallback
       - hedge-delay-ms
