@@ -305,9 +305,6 @@ func TestCodexAbnormalReasoningRetryClientUsageAggregationNormalization(t *testi
 		{name: "sum", value: "sum", want: CodexAbnormalReasoningRetryClientUsageAggregationSum},
 		{name: "sum with delivered total", value: "sum-with-delivered-total", want: CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal},
 		{name: "sum with delivered total alias", value: "SUM_WITH_DELIVERED_TOTAL", want: CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal},
-		{name: "legacy reasoning fold", value: "reasoning-fold", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
-		{name: "legacy reasoning fold alias", value: "reasoning_fold", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
-		{name: "legacy fold alias", value: "fold", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
 		{name: "unknown", value: "legacy", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
 	}
 	for _, tt := range tests {

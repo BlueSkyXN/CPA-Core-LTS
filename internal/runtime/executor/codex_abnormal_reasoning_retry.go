@@ -515,19 +515,8 @@ func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
 	}
 }
 
-func foldedCodexUsageOutputTokens(detail usage.Detail) int64 {
-	detail = normalizeCodexUsageDetail(detail)
-	if detail.OutputTokens >= detail.ReasoningTokens {
-		return detail.OutputTokens
-	}
-	return detail.ReasoningTokens
-}
-
 func normalizeCodexAbnormalReasoningRetryUsageSnapshot(snapshot cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot {
 	snapshot.Detail = normalizeCodexUsageDetail(snapshot.Detail)
-	if snapshot.FoldedOutputTokens == 0 && hasCodexUsageDetail(snapshot.Detail) {
-		snapshot.FoldedOutputTokens = foldedCodexUsageOutputTokens(snapshot.Detail)
-	}
 	return snapshot
 }
 

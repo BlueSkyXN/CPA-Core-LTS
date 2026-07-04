@@ -449,8 +449,6 @@ func normalizeCodexAbnormalReasoningRetryClientUsageAggregation(value string) st
 		return CodexAbnormalReasoningRetryClientUsageAggregationSum
 	case "sum-with-delivered-total", "sum_with_delivered_total":
 		return CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal
-	case "reasoning-fold", "reasoning_fold", "fold":
-		return CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly
 	default:
 		return CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly
 	}

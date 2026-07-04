@@ -200,6 +200,7 @@ codex:
     # "delivered-only" (default) returns the delivered/fallback attempt's upstream usage unchanged;
     # "sum" adds input/cache/output/reasoning/total fields across all attempts;
     # "sum-with-delivered-total" adds small fields across attempts but keeps total_tokens from the delivered/fallback attempt.
+    # Unsupported values are ignored and default to "delivered-only"; the removed "reasoning-fold" mode is not a supported setting.
     max-retries: 2
     exhausted-behavior: "error"
     client-usage-aggregation: "delivered-only"
