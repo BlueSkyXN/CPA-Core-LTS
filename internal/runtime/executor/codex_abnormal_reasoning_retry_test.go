@@ -56,6 +56,12 @@ func TestCodexExecutorAbnormalReasoningRetry_NonStreaming(t *testing.T) {
 			reasoning: 128,
 		},
 		{
+			name:      "observe only does not retry",
+			cfg:       codexAbnormalReasoningRetryTestConfigWithAction(config.CodexAbnormalReasoningRetryActionObserveOnly),
+			model:     "gpt-5.5",
+			reasoning: 516,
+		},
+		{
 			name:      "model mismatch",
 			cfg:       codexAbnormalReasoningRetryTestConfig(nil, nil),
 			model:     "gpt-5.4",
@@ -388,6 +394,92 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndD
 	}
 	if successRecord.Detail.TotalTokens != 12 || successRecord.Detail.ReasoningTokens != 128 {
 		t.Fatalf("success record detail = %+v, want final attempt total=12 reasoning=128", successRecord.Detail)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_BestNonSpecialKeepsShorterSuccess(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "special", 516, 1, 80, 81)))
+			return
+		}
+		_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "non-special", 128, 5, 20, 25)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithDeliveryPolicy(config.CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial)))
+	manager.SetRetryConfig(1, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-best-non-special"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if !bytes.Contains(resp.Payload, []byte("non-special")) || bytes.Contains(resp.Payload, []byte(`"text":"special"`)) {
+		t.Fatalf("payload = %s, want non-special success", resp.Payload)
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_MaxOutputCanReturnLongerSpecial(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "special", 516, 1, 80, 81)))
+			return
+		}
+		_, _ = w.Write([]byte(codexCompletedSSEWithTextAndUsage("gpt-5.5", "short-success", 128, 5, 20, 25)))
+	}))
+	defer server.Close()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithDeliveryPolicy(config.CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput)))
+	manager.SetRetryConfig(1, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-max-output-special"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth.ID)
+	})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if !bytes.Contains(resp.Payload, []byte(`"text":"special"`)) || bytes.Contains(resp.Payload, []byte("short-success")) {
+		t.Fatalf("payload = %s, want longer special fallback", resp.Payload)
 	}
 }
 
@@ -1327,9 +1419,21 @@ func codexAbnormalReasoningRetryTestConfigWithEfforts(efforts []string) *config.
 	return cfg
 }
 
+func codexAbnormalReasoningRetryTestConfigWithAction(action string) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.Action = action
+	return cfg
+}
+
 func codexAbnormalReasoningRetryTestConfigWithAggregation(aggregation string) *config.Config {
 	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
 	cfg.Codex.AbnormalReasoningRetry.ClientUsageAggregation = aggregation
+	return cfg
+}
+
+func codexAbnormalReasoningRetryTestConfigWithDeliveryPolicy(deliveryPolicy string) *config.Config {
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.DeliveryPolicy = deliveryPolicy
 	return cfg
 }
 

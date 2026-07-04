@@ -614,11 +614,17 @@ func (m *Manager) executeRetryWithoutPenaltyHedgedQuality(ctx context.Context, p
 			timer.Stop()
 		}
 
+		retryWithoutPenaltyConsiderQualityFallbackCandidates(results, fallbackCandidate)
+
 		if winner := retryWithoutPenaltySelectQualityResponseWinner(results); winner >= 0 {
 			if retryWithoutPenaltyAddQualityResponseLosers(results, winner, accumulator) {
 				usageAccounted = true
 			}
 			resp := retryWithoutPenaltyFinalizeQualityResponse(results[winner].response, accumulator)
+			if fallbackResp, ok := retryWithoutPenaltyMaybeSelectFallbackResponse(resp, fallbackCandidate, accumulator); ok {
+				retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
+				return retryWithoutPenaltyHedgeOutcome{response: fallbackResp, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
+			}
 			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, results[winner].authID)
 			return retryWithoutPenaltyHedgeOutcome{response: resp, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 		}
@@ -790,11 +796,17 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Cont
 			timer.Stop()
 		}
 
+		retryWithoutPenaltyConsiderQualityFallbackCandidates(results, fallbackCandidate)
+
 		if winner := retryWithoutPenaltySelectQualityStreamWinner(results); winner >= 0 {
 			if retryWithoutPenaltyAddQualityStreamLosers(results, winner, accumulator) {
 				usageAccounted = true
 			}
 			stream := retryWithoutPenaltyFinalizeQualityStream(results[winner], accumulator)
+			if fallbackStream, ok := retryWithoutPenaltyMaybeSelectFallbackStreamResult(stream, fallbackCandidate, accumulator); ok {
+				retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, fallbackCandidate.AuthID(lastAbnormalAuthID))
+				return retryWithoutPenaltyHedgeOutcome{stream: fallbackStream, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
+			}
 			retryWithoutPenaltyHedgePublishSelectedAuthCallback(selectedCallback, results[winner].authID)
 			return retryWithoutPenaltyHedgeOutcome{stream: stream, attempts: attempts, disableSecondLane: disableSecondLane, usageAccounted: usageAccounted}
 		}
@@ -954,14 +966,24 @@ func collectRetryWithoutPenaltyStreamChunks(ctx context.Context, ch <-chan clipr
 func retryWithoutPenaltySelectQualityResponseWinner(results []retryWithoutPenaltyHedgeLaneResult) int {
 	winner := -1
 	var winnerScore int64
+	var winnerPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy
 	for i, res := range results {
 		if !res.dispatched || res.err != nil {
 			continue
 		}
+		detail, _ := retryWithoutPenaltyResponseUsage(res.response.Metadata)
+		policy, hasPolicy := retryWithoutPenaltyCandidatePolicyFromMetadata(res.response.Metadata, detail)
+		if hasPolicy && policy.DeliveryPolicy == retryWithoutPenaltyDeliveryPolicyLatest {
+			winner = i
+			winnerScore = retryWithoutPenaltyHedgeScore(res.response.Metadata)
+			winnerPolicy = policy
+			continue
+		}
 		score := retryWithoutPenaltyHedgeScore(res.response.Metadata)
-		if winner < 0 || score > winnerScore {
+		if winner < 0 || retryWithoutPenaltyResponseCandidateBetter(winnerScore, winnerPolicy, score, policy, hasPolicy) {
 			winner = i
 			winnerScore = score
+			winnerPolicy = policy
 		}
 	}
 	return winner
@@ -970,17 +992,26 @@ func retryWithoutPenaltySelectQualityResponseWinner(results []retryWithoutPenalt
 func retryWithoutPenaltySelectQualityStreamWinner(results []retryWithoutPenaltyHedgeLaneResult) int {
 	winner := -1
 	var winnerScore int64
+	var winnerPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy
 	for i, res := range results {
 		if !res.dispatched || res.err != nil {
 			continue
 		}
-		_, score, ok := retryWithoutPenaltyStreamUsage(res.streamMetadata)
+		detail, score, ok := retryWithoutPenaltyStreamUsage(res.streamMetadata)
 		if !ok {
 			score = retryWithoutPenaltyHedgeScore(res.streamMetadata)
 		}
-		if winner < 0 || score > winnerScore {
+		policy, hasPolicy := retryWithoutPenaltyCandidatePolicyFromMetadata(res.streamMetadata, detail)
+		if hasPolicy && policy.DeliveryPolicy == retryWithoutPenaltyDeliveryPolicyLatest {
 			winner = i
 			winnerScore = score
+			winnerPolicy = policy
+			continue
+		}
+		if winner < 0 || retryWithoutPenaltyResponseCandidateBetter(winnerScore, winnerPolicy, score, policy, hasPolicy) {
+			winner = i
+			winnerScore = score
+			winnerPolicy = policy
 		}
 	}
 	return winner
@@ -1018,6 +1049,18 @@ func retryWithoutPenaltyAddQualityStreamLosers(results []retryWithoutPenaltyHedg
 		}
 	}
 	return accounted
+}
+
+func retryWithoutPenaltyConsiderQualityFallbackCandidates(results []retryWithoutPenaltyHedgeLaneResult, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) {
+	if fallbackCandidate == nil {
+		return
+	}
+	for _, res := range results {
+		if res.err == nil || !res.dispatched || !isRetryWithoutPenaltyError(res.err) {
+			continue
+		}
+		fallbackCandidate.Consider(res.err, res.authID)
+	}
 }
 
 func retryWithoutPenaltySummarizeQualityErrors(results []retryWithoutPenaltyHedgeLaneResult, lastAbnormalErr *error, lastAbnormalAuthID *string, lastZeroDispatchErr *error, fallbackCandidate *retryWithoutPenaltyFallbackCandidate) (bool, error) {
@@ -1124,6 +1167,72 @@ func retryWithoutPenaltyUsageFromMetadata(meta map[string]any) (coreusage.Detail
 		return *detail, hasRetryWithoutPenaltyUsageDetail(*detail)
 	default:
 		return coreusage.Detail{}, false
+	}
+}
+
+func retryWithoutPenaltyCandidatePolicyFromMetadata(meta map[string]any, detail coreusage.Detail) (cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, bool) {
+	if len(meta) == 0 {
+		return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{}, false
+	}
+	var policy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy
+	switch value := meta[cliproxyexecutor.RetryWithoutPenaltyCandidatePolicyMetadataKey].(type) {
+	case cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy:
+		policy = value
+	case *cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy:
+		if value == nil {
+			return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{}, false
+		}
+		policy = *value
+	default:
+		switch value := meta[cliproxyexecutor.RetryWithoutPenaltyStreamUsageMetadataKey].(type) {
+		case *cliproxyexecutor.RetryWithoutPenaltyStreamUsage:
+			if value == nil {
+				return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{}, false
+			}
+			policy = value.CandidatePolicy
+		case cliproxyexecutor.RetryWithoutPenaltyStreamUsage:
+			policy = value.CandidatePolicy
+		default:
+			return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{}, false
+		}
+	}
+	policy = normalizeRetryWithoutPenaltyCandidatePolicy(policy, detail)
+	if policy.DeliveryPolicy == "" && policy.FallbackPolicy == "" && policy.CandidateKind == "" {
+		return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{}, false
+	}
+	return policy, true
+}
+
+func retryWithoutPenaltyResponseCandidateBetter(currentScore int64, currentPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, nextScore int64, nextPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, hasNextPolicy bool) bool {
+	if !hasNextPolicy {
+		return nextScore > currentScore
+	}
+	switch nextPolicy.DeliveryPolicy {
+	case retryWithoutPenaltyDeliveryPolicyLatest:
+		return true
+	case retryWithoutPenaltyDeliveryPolicyFirstNonSpecial:
+		return false
+	case retryWithoutPenaltyDeliveryPolicyBestNonSpecial:
+		if currentPolicy.CandidateKind != nextPolicy.CandidateKind {
+			return nextPolicy.CandidateKind == cliproxyexecutor.RetryWithoutPenaltyCandidateKindNonSpecial
+		}
+		fallthrough
+	case retryWithoutPenaltyDeliveryPolicyMaxOutput:
+		if nextScore != currentScore {
+			return nextScore > currentScore
+		}
+		if nextPolicy.VisibleTokens != currentPolicy.VisibleTokens {
+			return nextPolicy.VisibleTokens > currentPolicy.VisibleTokens
+		}
+		return false
+	default:
+		if nextScore != currentScore {
+			return nextScore > currentScore
+		}
+		if nextPolicy.VisibleTokens != currentPolicy.VisibleTokens {
+			return nextPolicy.VisibleTokens > currentPolicy.VisibleTokens
+		}
+		return false
 	}
 }
 

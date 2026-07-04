@@ -69,6 +69,9 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if effective.Enabled {
 		t.Fatal("Enabled = true, want false")
 	}
+	if effective.Action != CodexAbnormalReasoningRetryActionDisabled {
+		t.Fatalf("Action = %q, want %q", effective.Action, CodexAbnormalReasoningRetryActionDisabled)
+	}
 	if got, want := effective.ModelContains, []string{"gpt-5.5"}; !equalStringSlices(got, want) {
 		t.Fatalf("ModelContains = %#v, want %#v", got, want)
 	}
@@ -99,6 +102,12 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly {
 		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly)
 	}
+	if effective.DeliveryPolicy != CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial {
+		t.Fatalf("DeliveryPolicy = %q, want %q", effective.DeliveryPolicy, CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial)
+	}
+	if effective.FallbackPolicy != CodexAbnormalReasoningRetryFallbackPolicyBestSpecial {
+		t.Fatalf("FallbackPolicy = %q, want %q", effective.FallbackPolicy, CodexAbnormalReasoningRetryFallbackPolicyBestSpecial)
+	}
 	if effective.HedgedRetry.Enabled {
 		t.Fatal("HedgedRetry.Enabled = true, want false")
 	}
@@ -120,6 +129,7 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryExplicit(t *testing.T) {
 codex:
   abnormal-reasoning-retry:
     enabled: true
+    action: "observe-only"
     model-contains:
       - "  gpt-5.5  "
       - "gpt-5.5"
@@ -143,6 +153,8 @@ codex:
     max-retries: 0
     exhausted-behavior: "passthrough"
     client-usage-aggregation: "sum"
+    delivery-policy: "max-output"
+    fallback-policy: "latest-special"
     hedged-retry:
       enabled: true
       mode: "quality"
@@ -161,6 +173,9 @@ codex:
 	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
 	if !effective.Enabled {
 		t.Fatal("Enabled = false, want true")
+	}
+	if effective.Action != CodexAbnormalReasoningRetryActionObserveOnly {
+		t.Fatalf("Action = %q, want %q", effective.Action, CodexAbnormalReasoningRetryActionObserveOnly)
 	}
 	if got, want := effective.ModelContains, []string{"gpt-5.5", "custom"}; !equalStringSlices(got, want) {
 		t.Fatalf("ModelContains = %#v, want %#v", got, want)
@@ -191,6 +206,12 @@ codex:
 	}
 	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationSum {
 		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationSum)
+	}
+	if effective.DeliveryPolicy != CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput {
+		t.Fatalf("DeliveryPolicy = %q, want %q", effective.DeliveryPolicy, CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput)
+	}
+	if effective.FallbackPolicy != CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial {
+		t.Fatalf("FallbackPolicy = %q, want %q", effective.FallbackPolicy, CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial)
 	}
 	if !effective.HedgedRetry.Enabled {
 		t.Fatal("HedgedRetry.Enabled = false, want true")
@@ -270,7 +291,10 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryInvalidV2ModesDefault(t *
 codex:
   abnormal-reasoning-retry:
     enabled: true
+    action: "unexpected"
     client-usage-aggregation: "legacy"
+    delivery-policy: "salvage-collapsed"
+    fallback-policy: "longest"
     hedged-retry:
       mode: "latency"
 `)
@@ -286,6 +310,15 @@ codex:
 	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
 	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly {
 		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly)
+	}
+	if effective.Action != CodexAbnormalReasoningRetryActionRetry {
+		t.Fatalf("Action = %q, want %q", effective.Action, CodexAbnormalReasoningRetryActionRetry)
+	}
+	if effective.DeliveryPolicy != CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial {
+		t.Fatalf("DeliveryPolicy = %q, want %q", effective.DeliveryPolicy, CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial)
+	}
+	if effective.FallbackPolicy != CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial {
+		t.Fatalf("FallbackPolicy = %q, want %q", effective.FallbackPolicy, CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial)
 	}
 	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeQuality {
 		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeQuality)
@@ -311,6 +344,74 @@ func TestCodexAbnormalReasoningRetryClientUsageAggregationNormalization(t *testi
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeCodexAbnormalReasoningRetryClientUsageAggregation(tt.value); got != tt.want {
 				t.Fatalf("normalizeCodexAbnormalReasoningRetryClientUsageAggregation(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCodexAbnormalReasoningRetryActionNormalization(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		enabled bool
+		want    string
+	}{
+		{name: "empty disabled", value: "", enabled: false, want: CodexAbnormalReasoningRetryActionDisabled},
+		{name: "empty retry", value: "", enabled: true, want: CodexAbnormalReasoningRetryActionRetry},
+		{name: "retry", value: "retry", enabled: false, want: CodexAbnormalReasoningRetryActionRetry},
+		{name: "observe only", value: "observe_only", enabled: false, want: CodexAbnormalReasoningRetryActionObserveOnly},
+		{name: "disabled", value: "off", enabled: true, want: CodexAbnormalReasoningRetryActionDisabled},
+		{name: "unknown derives enabled", value: "unexpected", enabled: true, want: CodexAbnormalReasoningRetryActionRetry},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCodexAbnormalReasoningRetryAction(tt.value, tt.enabled); got != tt.want {
+				t.Fatalf("normalizeCodexAbnormalReasoningRetryAction(%q, %v) = %q, want %q", tt.value, tt.enabled, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCodexAbnormalReasoningRetryDeliveryPolicyNormalization(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", value: "", want: CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial},
+		{name: "best", value: "best-non-special", want: CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial},
+		{name: "best alias", value: "normal_first", want: CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial},
+		{name: "first", value: "first_non_special", want: CodexAbnormalReasoningRetryDeliveryPolicyFirstNonSpecial},
+		{name: "max output", value: "longest", want: CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput},
+		{name: "latest", value: "last", want: CodexAbnormalReasoningRetryDeliveryPolicyLatest},
+		{name: "unsupported salvage", value: "salvage-collapsed", want: CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial},
+		{name: "unknown", value: "unexpected", want: CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCodexAbnormalReasoningRetryDeliveryPolicy(tt.value); got != tt.want {
+				t.Fatalf("normalizeCodexAbnormalReasoningRetryDeliveryPolicy(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCodexAbnormalReasoningRetryFallbackPolicyNormalization(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", value: "", want: CodexAbnormalReasoningRetryFallbackPolicyBestSpecial},
+		{name: "best", value: "best_special", want: CodexAbnormalReasoningRetryFallbackPolicyBestSpecial},
+		{name: "max output", value: "longest", want: CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial},
+		{name: "latest", value: "last", want: CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial},
+		{name: "unknown", value: "unexpected", want: CodexAbnormalReasoningRetryFallbackPolicyBestSpecial},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCodexAbnormalReasoningRetryFallbackPolicy(tt.value); got != tt.want {
+				t.Fatalf("normalizeCodexAbnormalReasoningRetryFallbackPolicy(%q) = %q, want %q", tt.value, got, tt.want)
 			}
 		})
 	}

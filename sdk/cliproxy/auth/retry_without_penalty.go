@@ -13,10 +13,17 @@ import (
 )
 
 const (
-	retryWithoutPenaltyExhaustedBehaviorError       = "error"
-	retryWithoutPenaltyExhaustedBehaviorPassThrough = "pass-through"
-	retryWithoutPenaltyHedgeModeSpeed               = "speed"
-	retryWithoutPenaltyHedgeModeQuality             = "quality"
+	retryWithoutPenaltyExhaustedBehaviorError         = "error"
+	retryWithoutPenaltyExhaustedBehaviorPassThrough   = "pass-through"
+	retryWithoutPenaltyHedgeModeSpeed                 = "speed"
+	retryWithoutPenaltyHedgeModeQuality               = "quality"
+	retryWithoutPenaltyDeliveryPolicyBestNonSpecial   = "best-non-special"
+	retryWithoutPenaltyDeliveryPolicyFirstNonSpecial  = "first-non-special"
+	retryWithoutPenaltyDeliveryPolicyMaxOutput        = "max-output"
+	retryWithoutPenaltyDeliveryPolicyLatest           = "latest"
+	retryWithoutPenaltyFallbackPolicyBestSpecial      = "best-special"
+	retryWithoutPenaltyFallbackPolicyMaxOutputSpecial = "max-output-special"
+	retryWithoutPenaltyFallbackPolicyLatestSpecial    = "latest-special"
 )
 
 func withRetryWithoutPenaltyUsageMetadata(opts cliproxyexecutor.Options, accumulator *cliproxyexecutor.UsageAccumulator) cliproxyexecutor.Options {
@@ -121,6 +128,8 @@ func retryWithoutPenaltyExhaustedBehavior(err error) string {
 type retryWithoutPenaltyHedgePolicy struct {
 	enabled             bool
 	mode                string
+	deliveryPolicy      string
+	fallbackPolicy      string
 	hedgeDelay          time.Duration
 	requireDistinctAuth bool
 	triggerAuthID       string
@@ -133,6 +142,7 @@ type retryWithoutPenaltyFallbackCandidate struct {
 	authID string
 	score  int64
 	detail coreusage.Detail
+	policy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy
 }
 
 func newRetryWithoutPenaltyFallbackCandidate(stream bool) *retryWithoutPenaltyFallbackCandidate {
@@ -143,19 +153,17 @@ func (c *retryWithoutPenaltyFallbackCandidate) Consider(err error, authID string
 	if c == nil || err == nil || !isRetryWithoutPenaltyError(err) {
 		return
 	}
-	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
-		return
-	}
 	if c.stream {
-		if _, ok := retryWithoutPenaltyFallbackStreamResult(err); !ok {
+		if _, _, ok := retryWithoutPenaltyRawFallbackStreamChunks(err); !ok {
 			return
 		}
-	} else if _, ok := retryWithoutPenaltyFallbackResponse(err); !ok {
+	} else if _, ok := retryWithoutPenaltyRawFallbackResponse(err); !ok {
 		return
 	}
 	detail, _ := retryWithoutPenaltyUsageDetail(err)
-	score := detail.OutputTokens
-	if c.set && score <= c.score {
+	policy := retryWithoutPenaltyCandidatePolicyFromError(err, detail)
+	score := retryWithoutPenaltyFallbackScore(detail, policy)
+	if c.set && !retryWithoutPenaltyFallbackCandidateBetter(c.detail, c.policy, c.score, detail, policy, score) {
 		return
 	}
 	c.set = true
@@ -163,6 +171,7 @@ func (c *retryWithoutPenaltyFallbackCandidate) Consider(err error, authID string
 	c.authID = strings.TrimSpace(authID)
 	c.score = score
 	c.detail = detail
+	c.policy = policy
 }
 
 func (c *retryWithoutPenaltyFallbackCandidate) Err(fallback error) error {
@@ -242,6 +251,8 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 	policy := retryWithoutPenaltyHedgePolicy{
 		enabled:             enabled,
 		mode:                retryWithoutPenaltyHedgeModeSpeed,
+		deliveryPolicy:      retryWithoutPenaltyDeliveryPolicyBestNonSpecial,
+		fallbackPolicy:      retryWithoutPenaltyFallbackPolicyBestSpecial,
 		hedgeDelay:          hedgeDelay,
 		requireDistinctAuth: requireDistinctAuth,
 	}
@@ -251,6 +262,17 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 	if errors.As(err, &withMode) {
 		policy.mode = normalizeRetryWithoutPenaltyHedgeMode(withMode.RetryWithoutPenaltyHedgeMode())
 	}
+	if deliveryPolicy := retryWithoutPenaltyDeliveryPolicyFromError(err); deliveryPolicy != "" {
+		policy.deliveryPolicy = deliveryPolicy
+		if deliveryPolicy == retryWithoutPenaltyDeliveryPolicyFirstNonSpecial {
+			policy.mode = retryWithoutPenaltyHedgeModeSpeed
+		} else {
+			policy.mode = retryWithoutPenaltyHedgeModeQuality
+		}
+	}
+	if fallbackPolicy := retryWithoutPenaltyFallbackPolicyFromError(err); fallbackPolicy != "" {
+		policy.fallbackPolicy = fallbackPolicy
+	}
 	var withAuthID interface {
 		RetryWithoutPenaltyAuthID() string
 	}
@@ -258,6 +280,60 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 		policy.triggerAuthID = strings.TrimSpace(withAuthID.RetryWithoutPenaltyAuthID())
 	}
 	return policy, true
+}
+
+func retryWithoutPenaltyDeliveryPolicyFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var withPolicy interface {
+		RetryWithoutPenaltyDeliveryPolicy() string
+	}
+	if !errors.As(err, &withPolicy) {
+		return ""
+	}
+	return normalizeRetryWithoutPenaltyDeliveryPolicy(withPolicy.RetryWithoutPenaltyDeliveryPolicy())
+}
+
+func retryWithoutPenaltyFallbackPolicyFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var withPolicy interface {
+		RetryWithoutPenaltyFallbackPolicy() string
+	}
+	if !errors.As(err, &withPolicy) {
+		return ""
+	}
+	return normalizeRetryWithoutPenaltyFallbackPolicy(withPolicy.RetryWithoutPenaltyFallbackPolicy())
+}
+
+func normalizeRetryWithoutPenaltyDeliveryPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case retryWithoutPenaltyDeliveryPolicyFirstNonSpecial:
+		return retryWithoutPenaltyDeliveryPolicyFirstNonSpecial
+	case retryWithoutPenaltyDeliveryPolicyMaxOutput:
+		return retryWithoutPenaltyDeliveryPolicyMaxOutput
+	case retryWithoutPenaltyDeliveryPolicyLatest:
+		return retryWithoutPenaltyDeliveryPolicyLatest
+	case retryWithoutPenaltyDeliveryPolicyBestNonSpecial:
+		return retryWithoutPenaltyDeliveryPolicyBestNonSpecial
+	default:
+		return ""
+	}
+}
+
+func normalizeRetryWithoutPenaltyFallbackPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case retryWithoutPenaltyFallbackPolicyMaxOutputSpecial:
+		return retryWithoutPenaltyFallbackPolicyMaxOutputSpecial
+	case retryWithoutPenaltyFallbackPolicyLatestSpecial:
+		return retryWithoutPenaltyFallbackPolicyLatestSpecial
+	case retryWithoutPenaltyFallbackPolicyBestSpecial:
+		return retryWithoutPenaltyFallbackPolicyBestSpecial
+	default:
+		return ""
+	}
 }
 
 func normalizeRetryWithoutPenaltyHedgeMode(value string) string {
@@ -275,6 +351,93 @@ func normalizeRetryWithoutPenaltyExhaustedBehavior(value string) string {
 		return retryWithoutPenaltyExhaustedBehaviorPassThrough
 	default:
 		return retryWithoutPenaltyExhaustedBehaviorError
+	}
+}
+
+func retryWithoutPenaltyCandidatePolicyFromError(err error, detail coreusage.Detail) cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy {
+	var policy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy
+	if err != nil {
+		var withPolicy interface {
+			RetryWithoutPenaltyCandidatePolicy() cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy
+		}
+		if errors.As(err, &withPolicy) {
+			policy = withPolicy.RetryWithoutPenaltyCandidatePolicy()
+		}
+	}
+	policy = normalizeRetryWithoutPenaltyCandidatePolicy(policy, detail)
+	if policy.CandidateKind == "" {
+		policy.CandidateKind = cliproxyexecutor.RetryWithoutPenaltyCandidateKindSpecial
+	}
+	if policy.FallbackPolicy == "" {
+		if fallbackPolicy := retryWithoutPenaltyFallbackPolicyFromError(err); fallbackPolicy != "" {
+			policy.FallbackPolicy = fallbackPolicy
+		} else {
+			policy.FallbackPolicy = retryWithoutPenaltyFallbackPolicyBestSpecial
+		}
+	}
+	return policy
+}
+
+func normalizeRetryWithoutPenaltyCandidatePolicy(policy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, detail coreusage.Detail) cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy {
+	if hasRetryWithoutPenaltyUsageDetail(detail) {
+		detail = normalizeRetryWithoutPenaltyUsageDetail(detail)
+		if policy.ReasoningTokens == 0 {
+			policy.ReasoningTokens = detail.ReasoningTokens
+		}
+		if policy.OutputTokens == 0 {
+			policy.OutputTokens = detail.OutputTokens
+		}
+	}
+	if policy.VisibleTokens == 0 && policy.OutputTokens > policy.ReasoningTokens {
+		policy.VisibleTokens = policy.OutputTokens - policy.ReasoningTokens
+	}
+	policy.DeliveryPolicy = normalizeRetryWithoutPenaltyDeliveryPolicy(policy.DeliveryPolicy)
+	policy.FallbackPolicy = normalizeRetryWithoutPenaltyFallbackPolicy(policy.FallbackPolicy)
+	switch strings.ToLower(strings.TrimSpace(policy.CandidateKind)) {
+	case cliproxyexecutor.RetryWithoutPenaltyCandidateKindNonSpecial:
+		policy.CandidateKind = cliproxyexecutor.RetryWithoutPenaltyCandidateKindNonSpecial
+	case cliproxyexecutor.RetryWithoutPenaltyCandidateKindSpecial:
+		policy.CandidateKind = cliproxyexecutor.RetryWithoutPenaltyCandidateKindSpecial
+	default:
+		policy.CandidateKind = ""
+	}
+	return policy
+}
+
+func retryWithoutPenaltyFallbackScore(detail coreusage.Detail, policy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy) int64 {
+	policy = normalizeRetryWithoutPenaltyCandidatePolicy(policy, detail)
+	if policy.OutputTokens > 0 {
+		return policy.OutputTokens
+	}
+	detail = normalizeRetryWithoutPenaltyUsageDetail(detail)
+	return detail.OutputTokens
+}
+
+func retryWithoutPenaltyFallbackCandidateBetter(currentDetail coreusage.Detail, currentPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, currentScore int64, nextDetail coreusage.Detail, nextPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, nextScore int64) bool {
+	currentPolicy = normalizeRetryWithoutPenaltyCandidatePolicy(currentPolicy, currentDetail)
+	nextPolicy = normalizeRetryWithoutPenaltyCandidatePolicy(nextPolicy, nextDetail)
+	switch nextPolicy.FallbackPolicy {
+	case retryWithoutPenaltyFallbackPolicyLatestSpecial:
+		return true
+	case retryWithoutPenaltyFallbackPolicyMaxOutputSpecial:
+		if nextScore != currentScore {
+			return nextScore > currentScore
+		}
+		if nextPolicy.VisibleTokens != currentPolicy.VisibleTokens {
+			return nextPolicy.VisibleTokens > currentPolicy.VisibleTokens
+		}
+		return true
+	default:
+		if nextPolicy.ReasoningTokens != currentPolicy.ReasoningTokens {
+			return nextPolicy.ReasoningTokens > currentPolicy.ReasoningTokens
+		}
+		if nextScore != currentScore {
+			return nextScore > currentScore
+		}
+		if nextPolicy.VisibleTokens != currentPolicy.VisibleTokens {
+			return nextPolicy.VisibleTokens > currentPolicy.VisibleTokens
+		}
+		return true
 	}
 }
 
@@ -307,6 +470,47 @@ func retryWithoutPenaltyCandidateFallbackResponse(err error, candidate *retryWit
 	return finalizer(resp, candidate.PreviousUsageSnapshot(accumulator)), true
 }
 
+func retryWithoutPenaltyMaybeSelectFallbackResponse(resp cliproxyexecutor.Response, candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) (cliproxyexecutor.Response, bool) {
+	if candidate == nil || !candidate.set || candidate.err == nil {
+		return cliproxyexecutor.Response{}, false
+	}
+	detail, ok := retryWithoutPenaltyResponseUsage(resp.Metadata)
+	if !ok {
+		return cliproxyexecutor.Response{}, false
+	}
+	score := retryWithoutPenaltyHedgeScore(resp.Metadata)
+	policy, hasPolicy := retryWithoutPenaltyCandidatePolicyFromMetadata(resp.Metadata, detail)
+	if !hasPolicy {
+		return cliproxyexecutor.Response{}, false
+	}
+	if !retryWithoutPenaltyFallbackShouldReplaceDelivered(detail, policy, score, candidate) {
+		return cliproxyexecutor.Response{}, false
+	}
+	fallbackResp, ok := retryWithoutPenaltyRawFallbackResponse(candidate.err)
+	if !ok {
+		return cliproxyexecutor.Response{}, false
+	}
+	finalizer, _ := fallbackResp.Metadata[cliproxyexecutor.RetryWithoutPenaltyResponseFinalizerMetadataKey].(cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer)
+	if finalizer == nil {
+		return fallbackResp, true
+	}
+	return finalizer(fallbackResp, retryWithoutPenaltyMixedFallbackSnapshot(candidate, accumulator, detail)), true
+}
+
+func retryWithoutPenaltyRawFallbackResponse(err error) (cliproxyexecutor.Response, bool) {
+	var withFallback interface {
+		RetryWithoutPenaltyFallbackResponse() (cliproxyexecutor.Response, bool)
+	}
+	if !errors.As(err, &withFallback) {
+		return cliproxyexecutor.Response{}, false
+	}
+	resp, ok := withFallback.RetryWithoutPenaltyFallbackResponse()
+	if !ok {
+		return cliproxyexecutor.Response{}, false
+	}
+	return cloneRetryWithoutPenaltyResponse(resp), true
+}
+
 func retryWithoutPenaltyFallbackStreamResult(err error) (*cliproxyexecutor.StreamResult, bool) {
 	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
 		return nil, false
@@ -334,17 +538,37 @@ func retryWithoutPenaltyFallbackStreamResult(err error) (*cliproxyexecutor.Strea
 	}, true
 }
 
+func retryWithoutPenaltyMaybeSelectFallbackStreamResult(result *cliproxyexecutor.StreamResult, candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) (*cliproxyexecutor.StreamResult, bool) {
+	if result == nil || candidate == nil || !candidate.set || candidate.err == nil {
+		return nil, false
+	}
+	detail, score, ok := retryWithoutPenaltyStreamUsage(result.Metadata)
+	if !ok {
+		return nil, false
+	}
+	policy, hasPolicy := retryWithoutPenaltyCandidatePolicyFromMetadata(result.Metadata, detail)
+	if !hasPolicy {
+		return nil, false
+	}
+	if !retryWithoutPenaltyFallbackShouldReplaceDelivered(detail, policy, score, candidate) {
+		return nil, false
+	}
+	return retryWithoutPenaltyRawCandidateFallbackStreamResultWithSnapshot(candidate.err, retryWithoutPenaltyMixedFallbackSnapshot(candidate, accumulator, detail))
+}
+
 func retryWithoutPenaltyCandidateFallbackStreamResult(err error, candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) (*cliproxyexecutor.StreamResult, bool) {
 	if retryWithoutPenaltyExhaustedBehavior(err) != retryWithoutPenaltyExhaustedBehaviorPassThrough {
 		return nil, false
 	}
-	var withFallback interface {
-		RetryWithoutPenaltyFallbackStreamChunks() (http.Header, []cliproxyexecutor.StreamChunk, bool)
-	}
-	if !errors.As(err, &withFallback) {
-		return nil, false
-	}
-	headers, chunks, ok := withFallback.RetryWithoutPenaltyFallbackStreamChunks()
+	return retryWithoutPenaltyRawCandidateFallbackStreamResult(err, candidate, accumulator)
+}
+
+func retryWithoutPenaltyRawCandidateFallbackStreamResult(err error, candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator) (*cliproxyexecutor.StreamResult, bool) {
+	return retryWithoutPenaltyRawCandidateFallbackStreamResultWithSnapshot(err, candidate.PreviousUsageSnapshot(accumulator))
+}
+
+func retryWithoutPenaltyRawCandidateFallbackStreamResultWithSnapshot(err error, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) (*cliproxyexecutor.StreamResult, bool) {
+	headers, chunks, ok := retryWithoutPenaltyRawFallbackStreamChunks(err)
 	if !ok || len(chunks) == 0 {
 		return nil, false
 	}
@@ -353,7 +577,7 @@ func retryWithoutPenaltyCandidateFallbackStreamResult(err error, candidate *retr
 	}
 	if errors.As(err, &withFinalizer) {
 		if finalizer := withFinalizer.RetryWithoutPenaltyFallbackStreamFinalizer(); finalizer != nil {
-			if result := finalizer(headers, chunks, candidate.PreviousUsageSnapshot(accumulator)); result != nil {
+			if result := finalizer(headers, chunks, previous); result != nil {
 				return result, true
 			}
 		}
@@ -369,6 +593,52 @@ func retryWithoutPenaltyCandidateFallbackStreamResult(err error, candidate *retr
 		Headers: cloneRetryWithoutPenaltyHeader(headers),
 		Chunks:  out,
 	}, true
+}
+
+func retryWithoutPenaltyRawFallbackStreamChunks(err error) (http.Header, []cliproxyexecutor.StreamChunk, bool) {
+	var withFallback interface {
+		RetryWithoutPenaltyFallbackStreamChunks() (http.Header, []cliproxyexecutor.StreamChunk, bool)
+	}
+	if !errors.As(err, &withFallback) {
+		return nil, nil, false
+	}
+	headers, chunks, ok := withFallback.RetryWithoutPenaltyFallbackStreamChunks()
+	if !ok || len(chunks) == 0 {
+		return nil, nil, false
+	}
+	return headers, chunks, true
+}
+
+func retryWithoutPenaltyFallbackShouldReplaceDelivered(deliveredDetail coreusage.Detail, deliveredPolicy cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy, deliveredScore int64, candidate *retryWithoutPenaltyFallbackCandidate) bool {
+	if candidate == nil || !candidate.set {
+		return false
+	}
+	deliveredPolicy = normalizeRetryWithoutPenaltyCandidatePolicy(deliveredPolicy, deliveredDetail)
+	candidatePolicy := normalizeRetryWithoutPenaltyCandidatePolicy(candidate.policy, candidate.detail)
+	deliveryPolicy := deliveredPolicy.DeliveryPolicy
+	if deliveryPolicy == "" {
+		deliveryPolicy = candidatePolicy.DeliveryPolicy
+	}
+	if deliveryPolicy != retryWithoutPenaltyDeliveryPolicyMaxOutput {
+		return false
+	}
+	if candidate.score != deliveredScore {
+		return candidate.score > deliveredScore
+	}
+	if candidatePolicy.VisibleTokens != deliveredPolicy.VisibleTokens {
+		return candidatePolicy.VisibleTokens > deliveredPolicy.VisibleTokens
+	}
+	return false
+}
+
+func retryWithoutPenaltyMixedFallbackSnapshot(candidate *retryWithoutPenaltyFallbackCandidate, accumulator *cliproxyexecutor.UsageAccumulator, deliveredDetail coreusage.Detail) cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot {
+	snapshot := candidate.PreviousUsageSnapshot(accumulator)
+	if hasRetryWithoutPenaltyUsageDetail(deliveredDetail) {
+		delivered := normalizeRetryWithoutPenaltyUsageDetail(deliveredDetail)
+		snapshot.Detail = addRetryWithoutPenaltyUsageDetail(snapshot.Detail, delivered)
+		snapshot.FoldedOutputTokens += foldedRetryWithoutPenaltyUsageOutputTokens(delivered)
+	}
+	return snapshot
 }
 
 func cloneRetryWithoutPenaltyResponse(resp cliproxyexecutor.Response) cliproxyexecutor.Response {

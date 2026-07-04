@@ -382,6 +382,9 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	if oldCfg.Enabled != newCfg.Enabled {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.enabled: %t -> %t", oldCfg.Enabled, newCfg.Enabled))
 	}
+	if oldCfg.Action != newCfg.Action {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.action: %s -> %s", oldCfg.Action, newCfg.Action))
+	}
 	if oldCfg.StreamBuffer != newCfg.StreamBuffer {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.stream-buffer: %t -> %t", oldCfg.StreamBuffer, newCfg.StreamBuffer))
 	}
@@ -393,6 +396,12 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	}
 	if oldCfg.ExhaustedBehavior != newCfg.ExhaustedBehavior {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.exhausted-behavior: %s -> %s", oldCfg.ExhaustedBehavior, newCfg.ExhaustedBehavior))
+	}
+	if oldCfg.DeliveryPolicy != newCfg.DeliveryPolicy {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.delivery-policy: %s -> %s", oldCfg.DeliveryPolicy, newCfg.DeliveryPolicy))
+	}
+	if oldCfg.FallbackPolicy != newCfg.FallbackPolicy {
+		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.fallback-policy: %s -> %s", oldCfg.FallbackPolicy, newCfg.FallbackPolicy))
 	}
 	if oldCfg.ClientUsageAggregation != newCfg.ClientUsageAggregation {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.client-usage-aggregation: %s -> %s", oldCfg.ClientUsageAggregation, newCfg.ClientUsageAggregation))

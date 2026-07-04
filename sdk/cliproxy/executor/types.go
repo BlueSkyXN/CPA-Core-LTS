@@ -33,6 +33,8 @@ const (
 	RetryWithoutPenaltyUsageDetailMetadataKey = "retry_without_penalty_usage_detail"
 	// RetryWithoutPenaltyHedgeScoreMetadataKey carries the score used to choose a quality-mode hedge winner.
 	RetryWithoutPenaltyHedgeScoreMetadataKey = "retry_without_penalty_hedge_score"
+	// RetryWithoutPenaltyCandidatePolicyMetadataKey carries policy-aware candidate selection metadata.
+	RetryWithoutPenaltyCandidatePolicyMetadataKey = "retry_without_penalty_candidate_policy"
 	// RetryWithoutPenaltyResponseFinalizerMetadataKey carries a response finalizer for post-hedge client usage aggregation.
 	RetryWithoutPenaltyResponseFinalizerMetadataKey = "retry_without_penalty_response_finalizer"
 	// RetryWithoutPenaltyStreamFinalizerMetadataKey carries a stream finalizer for post-hedge client usage aggregation.
@@ -51,11 +53,28 @@ const (
 	ExecutionSessionMetadataKey = "execution_session_id"
 )
 
+const (
+	RetryWithoutPenaltyCandidateKindNonSpecial = "non-special"
+	RetryWithoutPenaltyCandidateKindSpecial    = "special"
+)
+
 // RetryWithoutPenaltyUsageSnapshot carries discarded-attempt usage in both the
 // legacy field-sum shape and the folded output-token shape needed by clients.
 type RetryWithoutPenaltyUsageSnapshot struct {
 	Detail             coreusage.Detail
 	FoldedOutputTokens int64
+}
+
+// RetryWithoutPenaltyCandidatePolicy carries policy-aware candidate selection
+// metadata for retry-without-penalty results. It is additive metadata: callers
+// that do not understand it can keep using RetryWithoutPenaltyHedgeScore.
+type RetryWithoutPenaltyCandidatePolicy struct {
+	DeliveryPolicy  string
+	FallbackPolicy  string
+	CandidateKind   string
+	ReasoningTokens int64
+	OutputTokens    int64
+	VisibleTokens   int64
 }
 
 // RetryWithoutPenaltyResponseFinalizer rewrites a delivered non-stream response
@@ -69,9 +88,10 @@ type RetryWithoutPenaltyStreamFinalizer func(http.Header, []StreamChunk, RetryWi
 // RetryWithoutPenaltyStreamUsage carries completed usage discovered while a
 // stream is produced. Producers set it before emitting the terminal usage chunk.
 type RetryWithoutPenaltyStreamUsage struct {
-	Detail     coreusage.Detail
-	HedgeScore int64
-	OK         bool
+	Detail          coreusage.Detail
+	HedgeScore      int64
+	CandidatePolicy RetryWithoutPenaltyCandidatePolicy
+	OK              bool
 }
 
 // UsageAccumulator is a thread-safe request-local usage accumulator carried in Options.Metadata.

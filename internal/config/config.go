@@ -316,11 +316,21 @@ type CodexConfig struct {
 }
 
 const (
+	CodexAbnormalReasoningRetryActionRetry                                 = "retry"
+	CodexAbnormalReasoningRetryActionObserveOnly                           = "observe-only"
+	CodexAbnormalReasoningRetryActionDisabled                              = "disabled"
 	CodexAbnormalReasoningRetryExhaustedBehaviorError                      = "error"
 	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough                = "pass-through"
 	CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly         = "delivered-only"
 	CodexAbnormalReasoningRetryClientUsageAggregationSum                   = "sum"
 	CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal = "sum-with-delivered-total"
+	CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial                = "best-non-special"
+	CodexAbnormalReasoningRetryDeliveryPolicyFirstNonSpecial               = "first-non-special"
+	CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput                     = "max-output"
+	CodexAbnormalReasoningRetryDeliveryPolicyLatest                        = "latest"
+	CodexAbnormalReasoningRetryFallbackPolicyBestSpecial                   = "best-special"
+	CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial              = "max-output-special"
+	CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial                 = "latest-special"
 	CodexAbnormalReasoningHedgedRetryModeSpeed                             = "speed"
 	CodexAbnormalReasoningHedgedRetryModeQuality                           = "quality"
 )
@@ -329,6 +339,7 @@ const (
 // suspicious Codex successful responses.
 type CodexAbnormalReasoningRetryConfig struct {
 	Enabled                bool                                    `yaml:"enabled" json:"enabled"`
+	Action                 string                                  `yaml:"action,omitempty" json:"action,omitempty"`
 	ModelContains          []string                                `yaml:"model-contains" json:"model-contains"`
 	ReasoningEfforts       []string                                `yaml:"reasoning-efforts" json:"reasoning-efforts"`
 	ReasoningTokens        []int64                                 `yaml:"reasoning-tokens" json:"reasoning-tokens"`
@@ -339,6 +350,8 @@ type CodexAbnormalReasoningRetryConfig struct {
 	MaxRetries             *int                                    `yaml:"max-retries,omitempty" json:"max-retries,omitempty"`
 	ExhaustedBehavior      string                                  `yaml:"exhausted-behavior,omitempty" json:"exhausted-behavior,omitempty"`
 	ClientUsageAggregation string                                  `yaml:"client-usage-aggregation,omitempty" json:"client-usage-aggregation,omitempty"`
+	DeliveryPolicy         string                                  `yaml:"delivery-policy,omitempty" json:"delivery-policy,omitempty"`
+	FallbackPolicy         string                                  `yaml:"fallback-policy,omitempty" json:"fallback-policy,omitempty"`
 	HedgedRetry            CodexAbnormalReasoningHedgedRetryConfig `yaml:"hedged-retry" json:"hedged-retry"`
 }
 
@@ -356,6 +369,7 @@ type CodexAbnormalReasoningHedgedRetryConfig struct {
 // existing config.yaml files are not rewritten to add default values.
 type EffectiveCodexAbnormalReasoningRetryConfig struct {
 	Enabled                bool
+	Action                 string
 	ModelContains          []string
 	ReasoningEfforts       []string
 	ReasoningTokens        []int64
@@ -366,6 +380,8 @@ type EffectiveCodexAbnormalReasoningRetryConfig struct {
 	MaxRetries             int
 	ExhaustedBehavior      string
 	ClientUsageAggregation string
+	DeliveryPolicy         string
+	FallbackPolicy         string
 	HedgedRetry            EffectiveCodexAbnormalReasoningHedgedRetryConfig
 }
 
@@ -409,8 +425,10 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 	if c.HedgedRetry.RequireDistinctAuth != nil {
 		requireDistinctAuth = *c.HedgedRetry.RequireDistinctAuth
 	}
+	action := normalizeCodexAbnormalReasoningRetryAction(c.Action, c.Enabled)
 	return EffectiveCodexAbnormalReasoningRetryConfig{
-		Enabled:                c.Enabled,
+		Enabled:                action == CodexAbnormalReasoningRetryActionRetry || action == CodexAbnormalReasoningRetryActionObserveOnly,
+		Action:                 action,
 		ModelContains:          defaultedTrimmedStringList(c.ModelContains, []string{"gpt-5.5"}, false),
 		ReasoningEfforts:       defaultedTrimmedStringList(c.ReasoningEfforts, nil, true),
 		ReasoningTokens:        defaultedPositiveInt64List(c.ReasoningTokens, []int64{516, 1034}),
@@ -421,12 +439,30 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 		MaxRetries:             maxRetries,
 		ExhaustedBehavior:      normalizeCodexAbnormalReasoningRetryExhaustedBehavior(c.ExhaustedBehavior),
 		ClientUsageAggregation: normalizeCodexAbnormalReasoningRetryClientUsageAggregation(c.ClientUsageAggregation),
+		DeliveryPolicy:         normalizeCodexAbnormalReasoningRetryDeliveryPolicy(c.DeliveryPolicy),
+		FallbackPolicy:         normalizeCodexAbnormalReasoningRetryFallbackPolicy(c.FallbackPolicy),
 		HedgedRetry: EffectiveCodexAbnormalReasoningHedgedRetryConfig{
 			Enabled:             c.HedgedRetry.Enabled,
 			Mode:                normalizeCodexAbnormalReasoningHedgedRetryMode(c.HedgedRetry.Mode),
 			HedgeDelayMS:        hedgeDelayMS,
 			RequireDistinctAuth: requireDistinctAuth,
 		},
+	}
+}
+
+func normalizeCodexAbnormalReasoningRetryAction(value string, enabled bool) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexAbnormalReasoningRetryActionRetry:
+		return CodexAbnormalReasoningRetryActionRetry
+	case "observe_only", "observe-only", "observe":
+		return CodexAbnormalReasoningRetryActionObserveOnly
+	case CodexAbnormalReasoningRetryActionDisabled, "disable", "off":
+		return CodexAbnormalReasoningRetryActionDisabled
+	default:
+		if enabled {
+			return CodexAbnormalReasoningRetryActionRetry
+		}
+		return CodexAbnormalReasoningRetryActionDisabled
 	}
 }
 
@@ -451,6 +487,34 @@ func normalizeCodexAbnormalReasoningRetryClientUsageAggregation(value string) st
 		return CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal
 	default:
 		return CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly
+	}
+}
+
+func normalizeCodexAbnormalReasoningRetryDeliveryPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "best-non-special", "best_non_special", "normal-first", "normal_first":
+		return CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial
+	case "first-non-special", "first_non_special", "first-normal", "first_normal":
+		return CodexAbnormalReasoningRetryDeliveryPolicyFirstNonSpecial
+	case "max-output", "max_output", "longest":
+		return CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput
+	case "latest", "last":
+		return CodexAbnormalReasoningRetryDeliveryPolicyLatest
+	default:
+		return CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial
+	}
+}
+
+func normalizeCodexAbnormalReasoningRetryFallbackPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "best-special", "best_special":
+		return CodexAbnormalReasoningRetryFallbackPolicyBestSpecial
+	case "max-output-special", "max_output_special", "max-output", "max_output", "longest":
+		return CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial
+	case "latest-special", "latest_special", "latest", "last":
+		return CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial
+	default:
+		return CodexAbnormalReasoningRetryFallbackPolicyBestSpecial
 	}
 }
 

@@ -954,7 +954,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 				fallbackResp := cliproxyexecutor.Response{
 					Payload:  out,
 					Headers:  httpResp.Header.Clone(),
-					Metadata: codexAbnormalReasoningRetryResponseMetadata(detail, responseFinalizer),
+					Metadata: codexAbnormalReasoningRetryResponseMetadata(detail, responseFinalizer, abnormalRetry),
 				}
 				if errWithFallback := abnormalRetry.RetryErrorWithFallbackResponse(detail, reporter.ReasoningEffort(), fallbackResp); errWithFallback != nil {
 					errRetry = errWithFallback
@@ -975,7 +975,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		if completedUsageOK {
-			resp.Metadata = codexAbnormalReasoningRetryResponseMetadata(completedUsage, responseFinalizer)
+			resp.Metadata = codexAbnormalReasoningRetryResponseMetadata(completedUsage, responseFinalizer, abnormalRetry)
 		}
 		return resp, nil
 	}
@@ -1338,6 +1338,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if usageDetailOK {
 				streamUsage.Detail = normalizeCodexUsageDetail(usageDetail)
 				streamUsage.HedgeScore = usageDetail.OutputTokens
+				streamUsage.CandidatePolicy = codexAbnormalReasoningRetryCandidatePolicy(usageDetail, abnormalRetry.deliveryPolicy, abnormalRetry.fallbackPolicy, cliproxyexecutor.RetryWithoutPenaltyCandidateKindNonSpecial)
 				streamUsage.OK = true
 				reporter.Publish(ctx, usageDetail)
 			}
