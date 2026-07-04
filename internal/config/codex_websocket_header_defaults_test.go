@@ -96,8 +96,8 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if effective.ExhaustedBehavior != CodexAbnormalReasoningRetryExhaustedBehaviorError {
 		t.Fatalf("ExhaustedBehavior = %q, want %q", effective.ExhaustedBehavior, CodexAbnormalReasoningRetryExhaustedBehaviorError)
 	}
-	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold {
-		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold)
+	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly {
+		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly)
 	}
 	if effective.HedgedRetry.Enabled {
 		t.Fatal("HedgedRetry.Enabled = true, want false")
@@ -284,11 +284,38 @@ codex:
 	}
 
 	effective := cfg.Codex.AbnormalReasoningRetry.Effective()
-	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold {
-		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationReasoningFold)
+	if effective.ClientUsageAggregation != CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly {
+		t.Fatalf("ClientUsageAggregation = %q, want %q", effective.ClientUsageAggregation, CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly)
 	}
 	if effective.HedgedRetry.Mode != CodexAbnormalReasoningHedgedRetryModeQuality {
 		t.Fatalf("HedgedRetry.Mode = %q, want %q", effective.HedgedRetry.Mode, CodexAbnormalReasoningHedgedRetryModeQuality)
+	}
+}
+
+func TestCodexAbnormalReasoningRetryClientUsageAggregationNormalization(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", value: "", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "delivered only", value: "delivered-only", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "delivered only alias", value: "Delivered_Only", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "delivered alias", value: " delivered ", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "sum", value: "sum", want: CodexAbnormalReasoningRetryClientUsageAggregationSum},
+		{name: "sum with delivered total", value: "sum-with-delivered-total", want: CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal},
+		{name: "sum with delivered total alias", value: "SUM_WITH_DELIVERED_TOTAL", want: CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal},
+		{name: "legacy reasoning fold", value: "reasoning-fold", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "legacy reasoning fold alias", value: "reasoning_fold", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "legacy fold alias", value: "fold", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+		{name: "unknown", value: "legacy", want: CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCodexAbnormalReasoningRetryClientUsageAggregation(tt.value); got != tt.want {
+				t.Fatalf("normalizeCodexAbnormalReasoningRetryClientUsageAggregation(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
 	}
 }
 
