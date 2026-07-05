@@ -196,6 +196,28 @@ func (s *delayedPrimaryHedgeSelector) callCount() int {
 	return s.calls
 }
 
+type sequenceHedgeSelector struct {
+	mu      sync.Mutex
+	authIDs []string
+}
+
+func (s *sequenceHedgeSelector) Pick(_ context.Context, _ string, _ string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	s.mu.Lock()
+	var authID string
+	if len(s.authIDs) > 0 {
+		authID = s.authIDs[0]
+		s.authIDs = s.authIDs[1:]
+	}
+	s.mu.Unlock()
+	if authID != "" {
+		return pickHedgedRetryTestAuth(auths, authID)
+	}
+	if len(auths) == 0 {
+		return nil, &Error{Code: "no_auth", Message: "test auth unavailable"}
+	}
+	return auths[0], nil
+}
+
 func pickHedgedRetryTestAuth(auths []*Auth, authID string) (*Auth, error) {
 	for _, auth := range auths {
 		if auth != nil && auth.ID == authID {
@@ -789,6 +811,50 @@ func TestManagerExecute_RetryWithoutPenaltyMaxOutputCanReturnLongerSpecialInMixe
 	}
 	if string(resp.Payload) != "special" {
 		t.Fatalf("payload = %q, want longer special fallback", resp.Payload)
+	}
+}
+
+func TestManagerExecute_HedgedRetrySpeedModeIgnoresDeliveryPolicySelector(t *testing.T) {
+	executor := &hedgedRetryTestExecutor{
+		behaviors: map[string][]hedgedRetryBehavior{
+			"auth-a": {
+				{kind: "retry", payload: "trigger", usage: coreusage.Detail{InputTokens: 1, OutputTokens: 5, ReasoningTokens: 516, TotalTokens: 6}},
+			},
+			"auth-b": {
+				{
+					kind:    "success",
+					payload: "fast-short",
+					delay:   10 * time.Millisecond,
+					usage:   coreusage.Detail{InputTokens: 5, OutputTokens: 20, ReasoningTokens: 8, TotalTokens: 25},
+					policy:  hedgedRetryTestCandidatePolicy(retryWithoutPenaltyDeliveryPolicyMaxOutput),
+				},
+			},
+			"auth-c": {
+				{
+					kind:    "success",
+					payload: "slow-long",
+					delay:   50 * time.Millisecond,
+					usage:   coreusage.Detail{InputTokens: 5, OutputTokens: 80, ReasoningTokens: 8, TotalTokens: 85},
+					policy:  hedgedRetryTestCandidatePolicy(retryWithoutPenaltyDeliveryPolicyMaxOutput),
+				},
+			},
+		},
+		maxRetries:      2,
+		hedgeMode:       retryWithoutPenaltyHedgeModeSpeed,
+		hedgeDelay:      0,
+		requireDistinct: true,
+		deliveryPolicy:  retryWithoutPenaltyDeliveryPolicyMaxOutput,
+	}
+	selector := &sequenceHedgeSelector{authIDs: []string{"auth-a", "auth-b", "auth-c"}}
+	manager, _ := newHedgedRetryTestManagerWithSelector(t, selector, executor, "auth-a", "auth-b", "auth-c")
+	manager.SetRetryConfig(0, 0, 0)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil", err)
+	}
+	if string(resp.Payload) != "fast-short" {
+		t.Fatalf("payload = %q, want speed mode first-success result; calls=%v", resp.Payload, executor.callsSnapshot())
 	}
 }
 

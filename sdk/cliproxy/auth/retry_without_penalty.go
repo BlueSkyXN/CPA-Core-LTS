@@ -264,11 +264,6 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 	}
 	if deliveryPolicy := retryWithoutPenaltyDeliveryPolicyFromError(err); deliveryPolicy != "" {
 		policy.deliveryPolicy = deliveryPolicy
-		if deliveryPolicy == retryWithoutPenaltyDeliveryPolicyFirstNonSpecial {
-			policy.mode = retryWithoutPenaltyHedgeModeSpeed
-		} else {
-			policy.mode = retryWithoutPenaltyHedgeModeQuality
-		}
 	}
 	if fallbackPolicy := retryWithoutPenaltyFallbackPolicyFromError(err); fallbackPolicy != "" {
 		policy.fallbackPolicy = fallbackPolicy
