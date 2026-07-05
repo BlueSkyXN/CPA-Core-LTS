@@ -204,6 +204,8 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 				StreamBufferMaxBytes:   &streamBufferMaxBytes,
 				MaxRetries:             &maxRetries,
 				ExhaustedBehavior:      config.CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough,
+				DeliveryPolicy:         config.CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput,
+				FallbackPolicy:         config.CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial,
 				ClientUsageAggregation: config.CodexAbnormalReasoningRetryClientUsageAggregationSum,
 				HedgedRetry: config.CodexAbnormalReasoningHedgedRetryConfig{
 					Enabled:             true,
@@ -218,10 +220,13 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	details := BuildConfigChangeDetails(oldCfg, newCfg)
 
 	expectContains(t, details, "codex.abnormal-reasoning-retry.enabled: false -> true")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.action: disabled -> retry")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer: true -> false")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer-max-bytes: 0 -> 4096")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.max-retries: 2 -> 0")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.exhausted-behavior: error -> pass-through")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.delivery-policy: best-non-special -> max-output")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.fallback-policy: best-special -> latest-special")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.client-usage-aggregation: delivered-only -> sum")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.hedged-retry.enabled: false -> true")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.hedged-retry.mode: speed -> quality")

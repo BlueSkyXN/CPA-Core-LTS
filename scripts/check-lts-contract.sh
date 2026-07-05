@@ -90,6 +90,12 @@ require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep "abnormal-reasoning-retry" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "observe-only" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "delivery-policy" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "fallback-policy" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "best-non-special" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "first-non-special" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
+require_grep "max-output-special" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "hedged-retry" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "stream-buffer-max-bytes" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "max-retries" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
@@ -98,7 +104,6 @@ require_grep "client-usage-aggregation" internal/config/config.go config.example
 require_grep "delivered-only" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "sum-with-delivered-total" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "quality" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "longest abnormal pass-through fallback" config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "reasoning-efforts" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
 require_grep "RetryWithoutPenalty" sdk/cliproxy/auth/conductor.go sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
 require_grep "ExcludeAuthIDsMetadataKey" sdk/cliproxy/executor/types.go docs/lts/core-feature-contracts.yaml

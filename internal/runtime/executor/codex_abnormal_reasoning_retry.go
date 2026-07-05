@@ -15,6 +15,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -23,9 +24,12 @@ type codexAbnormalReasoningRetryPolicy struct {
 	enabled                bool
 	streamBuffer           bool
 	streamBufferMax        int64
+	action                 string
 	maxRetries             int
 	exhaustedBehavior      string
 	clientUsageAggregation string
+	deliveryPolicy         string
+	fallbackPolicy         string
 	hedgeEnabled           bool
 	hedgeMode              string
 	hedgeDelay             time.Duration
@@ -41,6 +45,8 @@ type codexAbnormalReasoningRetryError struct {
 	maxRetries              int
 	exhaustedBehavior       string
 	clientUsageAggregation  string
+	deliveryPolicy          string
+	fallbackPolicy          string
 	hedgeEnabled            bool
 	hedgeMode               string
 	hedgeDelay              time.Duration
@@ -101,6 +107,27 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgeMode() string
 		return config.CodexAbnormalReasoningHedgedRetryModeQuality
 	}
 	return e.hedgeMode
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyDeliveryPolicy() string {
+	if e == nil {
+		return ""
+	}
+	return e.deliveryPolicy
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyFallbackPolicy() string {
+	if e == nil {
+		return ""
+	}
+	return e.fallbackPolicy
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyCandidatePolicy() cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy {
+	if e == nil {
+		return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{}
+	}
+	return codexAbnormalReasoningRetryCandidatePolicy(e.detail, e.deliveryPolicy, e.fallbackPolicy, cliproxyexecutor.RetryWithoutPenaltyCandidateKindSpecial)
 }
 
 func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyAuthID() string {
@@ -187,9 +214,12 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 		enabled:                true,
 		streamBuffer:           effective.StreamBuffer,
 		streamBufferMax:        effective.StreamBufferMaxBytes,
+		action:                 effective.Action,
 		maxRetries:             effective.MaxRetries,
 		exhaustedBehavior:      effective.ExhaustedBehavior,
 		clientUsageAggregation: effective.ClientUsageAggregation,
+		deliveryPolicy:         effective.DeliveryPolicy,
+		fallbackPolicy:         effective.FallbackPolicy,
 		hedgeEnabled:           effective.HedgedRetry.Enabled,
 		hedgeMode:              effective.HedgedRetry.Mode,
 		hedgeDelay:             time.Duration(effective.HedgedRetry.HedgeDelayMS) * time.Millisecond,
@@ -206,7 +236,11 @@ func (p codexAbnormalReasoningRetryPolicy) Enabled() bool {
 }
 
 func (p codexAbnormalReasoningRetryPolicy) StreamBuffer() bool {
-	return p.enabled && p.streamBuffer
+	return p.enabled && p.action == config.CodexAbnormalReasoningRetryActionRetry && p.streamBuffer
+}
+
+func (p codexAbnormalReasoningRetryPolicy) ObserveOnly() bool {
+	return p.enabled && p.action == config.CodexAbnormalReasoningRetryActionObserveOnly
 }
 
 func (p codexAbnormalReasoningRetryPolicy) StreamBufferMaxBytes() int64 {
@@ -245,11 +279,29 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 			return nil
 		}
 	}
+	if p.action == config.CodexAbnormalReasoningRetryActionObserveOnly {
+		visibleTokens := detail.OutputTokens - detail.ReasoningTokens
+		if visibleTokens < 0 {
+			visibleTokens = 0
+		}
+		log.WithFields(log.Fields{
+			"auth_id":          p.authID,
+			"reasoning_effort": normalizeCodexAbnormalReasoningRetryEffort(reasoningEffort),
+			"reasoning_tokens": detail.ReasoningTokens,
+			"output_tokens":    detail.OutputTokens,
+			"visible_tokens":   visibleTokens,
+			"total_tokens":     detail.TotalTokens,
+			"action":           p.action,
+		}).Info("codex abnormal reasoning retry observe-only match")
+		return nil
+	}
 	err := &codexAbnormalReasoningRetryError{
 		detail:                 detail,
 		maxRetries:             p.maxRetries,
 		exhaustedBehavior:      p.exhaustedBehavior,
 		clientUsageAggregation: p.clientUsageAggregation,
+		deliveryPolicy:         p.deliveryPolicy,
+		fallbackPolicy:         p.fallbackPolicy,
 		hedgeEnabled:           p.hedgeEnabled,
 		hedgeMode:              p.hedgeMode,
 		hedgeDelay:             p.hedgeDelay,
@@ -520,11 +572,29 @@ func normalizeCodexAbnormalReasoningRetryUsageSnapshot(snapshot cliproxyexecutor
 	return snapshot
 }
 
-func codexAbnormalReasoningRetryResponseMetadata(detail usage.Detail, finalizer cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer) map[string]any {
+func codexAbnormalReasoningRetryCandidatePolicy(detail usage.Detail, deliveryPolicy, fallbackPolicy, candidateKind string) cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy {
 	detail = normalizeCodexUsageDetail(detail)
+	visibleTokens := detail.OutputTokens - detail.ReasoningTokens
+	if visibleTokens < 0 {
+		visibleTokens = 0
+	}
+	return cliproxyexecutor.RetryWithoutPenaltyCandidatePolicy{
+		DeliveryPolicy:  deliveryPolicy,
+		FallbackPolicy:  fallbackPolicy,
+		CandidateKind:   candidateKind,
+		ReasoningTokens: detail.ReasoningTokens,
+		OutputTokens:    detail.OutputTokens,
+		VisibleTokens:   visibleTokens,
+	}
+}
+
+func codexAbnormalReasoningRetryResponseMetadata(detail usage.Detail, finalizer cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer, policy codexAbnormalReasoningRetryPolicy) map[string]any {
+	detail = normalizeCodexUsageDetail(detail)
+	candidatePolicy := codexAbnormalReasoningRetryCandidatePolicy(detail, policy.deliveryPolicy, policy.fallbackPolicy, cliproxyexecutor.RetryWithoutPenaltyCandidateKindNonSpecial)
 	meta := map[string]any{
-		cliproxyexecutor.RetryWithoutPenaltyUsageDetailMetadataKey: detail,
-		cliproxyexecutor.RetryWithoutPenaltyHedgeScoreMetadataKey:  detail.OutputTokens,
+		cliproxyexecutor.RetryWithoutPenaltyUsageDetailMetadataKey:     detail,
+		cliproxyexecutor.RetryWithoutPenaltyHedgeScoreMetadataKey:      detail.OutputTokens,
+		cliproxyexecutor.RetryWithoutPenaltyCandidatePolicyMetadataKey: candidatePolicy,
 	}
 	if finalizer != nil {
 		meta[cliproxyexecutor.RetryWithoutPenaltyResponseFinalizerMetadataKey] = finalizer

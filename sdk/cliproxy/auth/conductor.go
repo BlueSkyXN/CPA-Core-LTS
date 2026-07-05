@@ -1642,6 +1642,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errExec == nil {
+			if fallbackResp, ok := retryWithoutPenaltyMaybeSelectFallbackResponse(resp, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
+				return fallbackResp, nil
+			}
 			return resp, nil
 		}
 		lastErr = errExec
@@ -1782,6 +1785,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
 		if errStream == nil {
+			if fallbackResult, ok := retryWithoutPenaltyMaybeSelectFallbackStreamResult(result, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
+				return fallbackResult, nil
+			}
 			return result, nil
 		}
 		lastErr = errStream
