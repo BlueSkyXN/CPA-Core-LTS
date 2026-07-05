@@ -37,7 +37,7 @@ CPA-Core-LTS 提供三层防御：
 
 | 目标 | `action` | `max-retries` | `exhausted-behavior` | `delivery-policy` | `fallback-policy` | `client-usage-aggregation` | `hedged-retry.mode` | 说明 |
 | --- | --- | ---: | --- | --- | --- | --- | --- | --- |
-| 当前 HFS 推荐 | `retry` | `2` | `pass-through` | `best-non-special` | `best-special` | `sum-with-delivered-total` | `quality` | 兼顾质量、兜底和 Codex compact；客户端能看到 retry 小项成本，但 `total_tokens` 不累加 hidden retry。 |
+| 推荐（默认） | `retry` | `2` | `pass-through` | `best-non-special` | `best-special` | `sum-with-delivered-total` | `quality` | 兼顾质量、兜底和 Codex compact；客户端能看到 retry 小项成本，但 `total_tokens` 不累加 hidden retry。 |
 | 最标准 OpenAI-compatible shape | `retry` | `2` | `pass-through` | `best-non-special` | `best-special` | `delivered-only` | `quality` | 全字段 usage 自洽；客户端看不到 hidden retry 小项成本。 |
 | 灰度观察 | `observe-only` | 任意 | 任意 | 任意 | 任意 | 任意 | 任意 | 只记录命中日志，不重试、不改响应；streaming 不会为了观察而完整缓冲。 |
 | 快速止损关闭 | `disabled` | 任意 | 任意 | 任意 | 任意 | 任意 | 任意 | 完全停用检测；建议同时写 `enabled: false`，避免旧配置面误解。 |
@@ -72,7 +72,7 @@ codex:
       mode: quality
 ```
 
-PRO / STD 可用不同 `model-contains` 控制命中范围，例如 PRO 用 `gpt-5.5-super`，STD 用 `gpt-5.5`。
+多实例部署时可为不同实例配置不同的 `model-contains`，按需缩窄或扩大命中范围。
 
 ### 字段详解：顶层开关与命中范围
 
@@ -80,8 +80,8 @@ PRO / STD 可用不同 `model-contains` 控制命中范围，例如 PRO 用 `gpt
 | --- | --- | --- | --- | --- |
 | `enabled` | 默认 `false` | `true` / `false` | 新配置建议与 `action` 同步：`action: retry` 写 `enabled: true`，`disabled` 写 `false` | 历史入口；不要只改 `enabled` 而忘记 `action`。 |
 | `action` | 推荐 `retry` | `retry` / `observe-only` / `disabled` | 生产选 `retry`；灰度选 `observe-only`；关闭选 `disabled` | `observe-only` 只打日志不重试不改响应。 |
-| `model-contains` | 代码默认 `gpt-5.5`；HFS PRO 用 `gpt-5.5-super` | 字符串列表 | 先小范围上 `gpt-5.5-super`，确认后再扩 | 过宽影响不需要防线的模型；过窄漏掉流量。 |
-| `reasoning-efforts` | HFS 推荐 `xhigh` | 字符串列表；空列表不限 | 当前证据主要来自 xhigh | 空列表会扩大到所有 effort，可能误伤。 |
+| `model-contains` | 代码默认 `gpt-5.5` | 字符串列表 | 建议先用精确子串小范围验证，确认后再扩大 | 过宽影响不需要防线的模型；过窄漏掉流量。 |
+| `reasoning-efforts` | 推荐 `xhigh` | 字符串列表；空列表不限 | 当前证据主要来自 xhigh | 空列表会扩大到所有 effort，可能误伤。 |
 | `reasoning-tokens` | `516, 1034` | 正整数列表 | 保持精确值；不要用"低于某阈值" | `reasoning_tokens == 0` 不等于降智。 |
 | `auth-kinds` | `oauth` | 字符串列表 | Codex OAuth 路径选 `oauth` | 放开到 API key 可能影响非 Codex upstream。 |
 | `auth-ids` | 空（不限） | auth id 列表 | 灰度时填少量；稳定后留空 | 用于安全放量。 |
@@ -127,9 +127,9 @@ all-special 指 retry 耗尽后所有候选都是 special。只有 `exhausted-be
 | --- | --- | --- | --- | --- |
 | `delivered-only` | 最终 attempt 原始值 | 最终 attempt 原始值 | **Core 默认** | 看不到 hidden retry 成本。 |
 | `sum` | 所有 attempt 相加 | 所有 attempt 相加 | 不推荐 | 会触发 Codex premature compact。 |
-| `sum-with-delivered-total` | 所有 attempt 相加 | 最终 attempt 值 | HFS 选择 | usage shape 非标准，小项可大于 total。 |
+| `sum-with-delivered-total` | 所有 attempt 相加 | 最终 attempt 值 | 可选（诊断） | usage shape 非标准，小项可大于 total。 |
 
-HFS 选择 `sum-with-delivered-total` 的原因：Codex compact 主要看 `total_tokens`，而用户希望看到 hidden retry 的小项成本。该模式有意分离两套语义。
+`sum-with-delivered-total` 适用于需要观察 hidden retry 成本、但又不希望触发 Codex premature compact 的场景。Codex compact 主要看 `total_tokens`，该模式将小项成本可见和 context pressure 隔离为两套独立语义。
 
 ### 字段详解：Streaming 缓冲
 
@@ -153,7 +153,7 @@ HFS 选择 `sum-with-delivered-total` 的原因：Codex compact 主要看 `total
 
 | 目标 | `enabled` | `delay-ms` | `distinct-auth` | `mode` |
 | --- | --- | ---: | --- | --- |
-| HFS 推荐 | `true` | `1000` | `true` | `quality` |
+| 推荐（默认） | `true` | `1000` | `true` | `quality` |
 | 更强比较 | `true` | `0` | `true` | `quality` |
 | 低延迟 | `true` | `1000` | `true` | `speed` |
 | 最省成本 | `false` | — | — | — |
@@ -174,7 +174,7 @@ HFS 选择 `sum-with-delivered-total` 的原因：Codex compact 主要看 `total
 | 场景 | 推荐 |
 | --- | --- |
 | 最标准 OpenAI-compatible usage | `client-usage-aggregation: delivered-only` |
-| HFS：展示 retry 成本但避免 premature compact | `client-usage-aggregation: sum-with-delivered-total` |
+| 展示 retry 成本但避免 premature compact | `client-usage-aggregation: sum-with-delivered-total` |
 | mixed pool 生产默认 | `delivery-policy: best-non-special` |
 | all-special pass-through 默认 | `fallback-policy: best-special` |
 | 灰度观察 / 降风险回滚 | `action: observe-only` |
@@ -213,11 +213,11 @@ non-streaming final response 和 streaming finalizer 遵守相同的 client usag
 
 旧的 `reasoning-fold` 把 reasoning tokens fold 到 output/total，与 Codex CLI usage 语义冲突，已移除。SDK 公开字段 `FoldedOutputTokens` 为兼容保留，但 Codex executor 的 client-visible usage 不应消费它。
 
-#### Config、Panel、HFS 分工
+#### Core 与 Panel 分工
 
 - **Core**：实现三模式、归一化、payload patch、attempt-level usage records 和测试。
-- **Panel**：展示并写入枚举值；CPA-Panel-LTS PR `#8` 已合并。
-- **HFS**：按部署场景选择 runtime config。
+- **Panel**：展示并写入枚举值（CPA-Panel-LTS 已合并对应支持）。
+- **部署侧**：按实际场景选择 runtime config 组合。
 
 ### 算法设计
 
@@ -345,11 +345,11 @@ git diff --check
 
 - visual editor 能展示并保存 `action`、`delivery-policy`、`fallback-policy`、`client-usage-aggregation`。
 - 保存时以 `action` 为权威，同步写旧 `enabled` 布尔字段。
-- 旧 Panel 不应在新 Core 配置上做 visual save；先升级 Panel 再改 HFS config。
+- 旧 Panel 不应在新 Core 配置上做 visual save；先升级 Panel 再改部署配置。
 
-#### HFS/live runtime
+#### Live runtime
 
-- Space Variables 或挂载配置中的实际值。
+- 部署环境变量或挂载配置中的实际值。
 - runtime log 中加载的配置路径、Core release tag/commit 或响应头 `x-cpa-commit`。
 - 实际 Codex response sample 中 `usage.total_tokens` 是否保持 delivered/fallback attempt total。
 - `sum-with-delivered-total` 下小项合计大于 `total_tokens` 是正常诊断语义，不是聚合错误。
@@ -362,7 +362,7 @@ git diff --check
 
 ### 背景研究：516/1034 现象
 
-上游有时会将 reasoning tokens 截断到固定值（典型如 516/1034），导致模型推理链严重缩短、输出质量骤降。`local/codex-degraded-reasoning-516-study-2026-07-04.md` 用 535 行 usage 事件和 `candy_reason_probe.py` 复核了这个现象：
+上游有时会将 reasoning tokens 截断到固定值（典型如 516/1034），导致模型推理链严重缩短、输出质量骤降。基于 535 行 usage 事件和探测脚本的复核结论：
 
 - 84 条 failed 记录全部精确等于 516（80 条）或 1034（4 条）。
 - gpt-5.5 xhigh 16 路糖果题探测中，reasoning=516 的 3 条样本 0/3 全错，非 516 的 13 条 13/13 全对。
@@ -372,11 +372,11 @@ git diff --check
 
 - `reasoning_tokens == 0` 不等于降智。它常见于工具步、秒回或不需要深推理的普通 turn；用"低 reasoning 阈值"拦截会误伤。
 - `output_tokens` 包含 hidden reasoning，`visible = output_tokens - reasoning_tokens`。可见输出长短不能单独代表质量；516 样本甚至可能比健康回答的可见输出更长。
-- probe 的 3 条 516 样本提供的是质量 ground truth，不等同于"当时生产 Core 一定已经拦截了 probe"。`local/codex-degraded-reasoning-516-study-2026-07-04.md` 明确把"probe 为何未被拦截"列为部署/config open issue，需要用 `x-cpa-commit`、runtime config 和真实代理路径另行验证。
+- probe 的 3 条 516 样本提供的是质量 ground truth，不等同于"当时生产 Core 一定已经拦截了 probe"。"probe 为何未被拦截"属于部署/config open issue，需要用 `x-cpa-commit`、runtime config 和真实代理路径另行验证。
 
 ### Codex CLI 源码回读
 
-以下结论来自本机 Codex CLI 源码回读，源码路径 `/Volumes/TP4000PRO/Program/codex`，回读 commit 为 `98d28aab54`。
+以下结论来自 Codex CLI 源码回读（基于 commit `98d28aab54`）。
 
 #### 上下文窗口和 auto compact 参数
 
