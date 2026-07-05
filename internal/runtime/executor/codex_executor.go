@@ -1304,6 +1304,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						usageDetailOK = true
 						if buffering {
 							retryErr = abnormalRetry.RetryError(detail, reporter.ReasoningEffort())
+						} else if abnormalRetry.ObserveOnly() {
+							_ = abnormalRetry.RetryError(detail, reporter.ReasoningEffort())
 						}
 					}
 					completedData = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)

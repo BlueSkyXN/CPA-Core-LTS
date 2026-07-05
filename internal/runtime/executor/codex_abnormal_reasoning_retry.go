@@ -236,7 +236,11 @@ func (p codexAbnormalReasoningRetryPolicy) Enabled() bool {
 }
 
 func (p codexAbnormalReasoningRetryPolicy) StreamBuffer() bool {
-	return p.enabled && p.streamBuffer
+	return p.enabled && p.action == config.CodexAbnormalReasoningRetryActionRetry && p.streamBuffer
+}
+
+func (p codexAbnormalReasoningRetryPolicy) ObserveOnly() bool {
+	return p.enabled && p.action == config.CodexAbnormalReasoningRetryActionObserveOnly
 }
 
 func (p codexAbnormalReasoningRetryPolicy) StreamBufferMaxBytes() int64 {
