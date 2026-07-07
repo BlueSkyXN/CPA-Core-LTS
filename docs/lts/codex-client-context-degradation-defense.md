@@ -4,6 +4,13 @@ CPA-Core-LTS 针对 Codex 上游 reasoning 截断（516/1034 现象）的多层�
 
 本文件不新增 LTS contract marker；受保护能力以 `docs/lts/core-feature-contracts.yaml` 的 `codex-abnormal-reasoning-retry` 为准。
 
+维护本文件时以当前代码和可提交配置为准，不以 `local/` 研究材料为准。具体顺序：
+
+1. 先核对 `internal/config/config.go` 的枚举、默认值和归一化。
+2. 再核对 `internal/runtime/executor/codex_abnormal_reasoning_retry.go` 与 `sdk/cliproxy/auth/*retry_without_penalty*.go` 的 runtime 行为。
+3. 最后同步 `config.example.yaml`、`docs/lts/core-feature-contracts.yaml`、`scripts/check-lts-contract.sh` 和 `CPA-Panel-LTS` 配置面影响；没有 contract marker 变化时不要为了本文新增 marker。
+4. 区分"代码默认"和"部署推荐"。Core 默认偏保守，HFS / Codex 生产入口可以显式启用更积极的组合。
+
 文档分三层：
 
 - **简介 + 配置指南** — 面向运维，说明问题本质和配置方法。

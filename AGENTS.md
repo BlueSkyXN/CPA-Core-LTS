@@ -48,7 +48,7 @@
 | `config.example.yaml` | 用户配置示例和 schema 可见面 | No | 新增/改名/删除 config key 前，同时读 `internal/config/AGENTS.md` |
 | `Dockerfile` / `docker-compose*.yml` / `docker-build.*` | 容器构建和本地 Docker 运行 | No | 修改镜像、端口、volume、usage backup 脚本前 |
 | `docs/` | SDK 文档、多语言 README 相关资料 | No | 修改 SDK 行为或公开接口文档前 |
-| `docs/lts/` | LTS contract registry、protected delta、sync runbook | Yes | 修改 protected contract、sync runbook、guard marker 前 |
+| `docs/lts/` | LTS contract registry、protected delta、sync runbook、Codex abnormal retry 指南 | Yes | 修改 protected contract、sync runbook、guard marker、Codex abnormal retry 配置指南前 |
 | `examples/` | SDK/translator/plugin/http-request 示例 | No | 修改公开示例或 API 使用方式前，必要时检查对应 SDK 卡片 |
 | `internal/access/` | API key/access manager 适配 | No | 修改鉴权判定或 auth manager 集成前，同时读 `internal/auth/AGENTS.md` |
 | `internal/api/` | Gin server、middleware、Management API、Amp/WebSocket endpoints | Yes | 修改 routes、middleware、Management API、Amp endpoints、HTTP/WebSocket 协议前 |
@@ -156,4 +156,5 @@ If validation cannot be run, say exactly which command was skipped and why. Do n
 - `docker-build.sh --with-usage` 会通过 Management API export/import 统计并在 `temp/stats/.api_secret` 保存临时管理密钥；不要把该目录纳入 Git。
 - `internal/registry/models/models.json` 由 workflow 远程刷新；离线环境下不要假设模型目录一定最新。
 - `docs/lts/` 是维护策略和同步 runbook 的可提交文档目录；新增或修改 contract marker 时必须同步检查 `scripts/check-lts-contract.sh`。
+- Codex abnormal reasoning retry 的配置语义、交付策略、fallback 策略和 client usage shaping 说明集中维护在 `docs/lts/codex-client-context-degradation-defense.md`。修改 `codex.abnormal-reasoning-retry` 的 config key、默认值、delivery/fallback 行为、client usage aggregation 或 hedged retry 语义时，先核对当前 Go 代码，再同步该文档、`config.example.yaml`、必要的 LTS contract marker / guard，以及 `CPA-Panel-LTS` 配置面影响。
 - HF Space `BlueSkyXN/CPA-HFS-2026-03` smoke 要区分 Space Variables、runtime log 和响应头 `x-cpa-commit` 的真实 commit。
