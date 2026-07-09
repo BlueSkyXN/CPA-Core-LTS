@@ -492,7 +492,7 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	}
 	snapshot := auth.Clone()
 	authID := strings.TrimSpace(snapshot.ID)
-	providerKey := strings.ToLower(strings.TrimSpace(snapshot.Provider))
+	providerKey := executorKeyFromAuth(snapshot)
 	if authID == "" || providerKey == "" || snapshot.Disabled {
 		s.removeAuthLocked(authID)
 		return
@@ -539,7 +539,7 @@ func (s *authScheduler) ensureProviderLocked(providerKey string) *providerSchedu
 
 // buildScheduledAuthMeta extracts the scheduling metadata needed for shard bookkeeping.
 func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
-	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+	providerKey := executorKeyFromAuth(auth)
 	return &scheduledAuthMeta{
 		auth:              auth,
 		providerKey:       providerKey,

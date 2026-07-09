@@ -208,6 +208,96 @@ func TestApplyOAuthModelAlias_SuffixPreservation(t *testing.T) {
 	}
 }
 
+func TestApplyOAuthModelAlias_ForceMappingSameBasePreservesSuffix(t *testing.T) {
+	t.Parallel()
+
+	aliases := map[string][]internalconfig.OAuthModelAlias{
+		"antigravity": {{
+			Name:         "gemini-2.5-pro",
+			Alias:        "gemini-2.5-pro(8192)",
+			ForceMapping: true,
+		}},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(aliases)
+
+	auth := &Auth{ID: "test-auth-id", Provider: "antigravity"}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "gemini-2.5-pro(8192)")
+	if resolvedModel != "gemini-2.5-pro(8192)" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gemini-2.5-pro(8192)")
+	}
+}
+
+func TestApplyOAuthModelAlias_PerAuthForceMappingSameBasePreservesSuffix(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+
+	auth := &Auth{
+		ID:       "test-auth-id",
+		Provider: "antigravity",
+		Attributes: map[string]string{
+			"model_aliases": `[{"name":"gemini-2.5-pro","alias":"gemini-2.5-pro(8192)","force-mapping":true}]`,
+		},
+	}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "gemini-2.5-pro(8192)")
+	if resolvedModel != "gemini-2.5-pro(8192)" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gemini-2.5-pro(8192)")
+	}
+}
+
+func TestApplyOAuthModelAlias_PerAuthOverridesGlobalAlias(t *testing.T) {
+	t.Parallel()
+
+	globalAliases := map[string][]internalconfig.OAuthModelAlias{
+		"codex": {{Name: "gpt-5-global", Alias: "gpt-5.5"}},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+	mgr.SetOAuthModelAlias(globalAliases)
+
+	auth := &Auth{
+		ID:       "codex-auth-id",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind":     "oauth",
+			"model_aliases": `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"}]`,
+		},
+	}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "gpt-5.5(high)")
+	if resolvedModel != "gpt-5.3-codex-spark(high)" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gpt-5.3-codex-spark(high)")
+	}
+}
+
+func TestApplyOAuthModelAlias_PerAuthAliasSkipsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+
+	auth := &Auth{
+		ID:       "codex-api-key-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind":     "api_key",
+			"model_aliases": `[{"name":"gpt-5.3-codex-spark","alias":"gpt-5.5"}]`,
+		},
+	}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "gpt-5.5")
+	if resolvedModel != "gpt-5.5" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gpt-5.5")
+	}
+}
+
 func TestApplyOAuthModelAlias_PluginProvider(t *testing.T) {
 	t.Parallel()
 
@@ -243,5 +333,39 @@ func TestApplyOAuthModelAlias_PluginProviderSkipsAPIKey(t *testing.T) {
 	resolvedModel := mgr.applyOAuthModelAlias(auth, "sample-latest")
 	if resolvedModel != "sample-latest" {
 		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "sample-latest")
+	}
+}
+func TestApplyOAuthModelAliasWithResult_ForceMappingUsesConfigAliasNotRequestSuffix(t *testing.T) {
+	t.Parallel()
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {{
+			Name: "gpt-5.4", Alias: "gpt-5.4-fast", Fork: true, ForceMapping: true,
+		}},
+	})
+	auth := &Auth{ID: "t", Provider: "codex"}
+	res := mgr.applyOAuthModelAliasWithResult(auth, "gpt-5.4-fast(high)")
+	if res.UpstreamModel != "gpt-5.4(high)" {
+		t.Fatalf("upstream = %q want gpt-5.4(high)", res.UpstreamModel)
+	}
+	if res.OriginalAlias != "gpt-5.4-fast" {
+		t.Fatalf("OriginalAlias = %q want gpt-5.4-fast", res.OriginalAlias)
+	}
+}
+func TestApplyOAuthModelAliasWithResult_NoForceMappingPreservesRequestedModelInOriginalAlias(t *testing.T) {
+	t.Parallel()
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {{
+			Name: "gpt-5.4", Alias: "gpt-5.4-fast", Fork: true, ForceMapping: false,
+		}},
+	})
+	auth := &Auth{ID: "t", Provider: "codex"}
+	res := mgr.applyOAuthModelAliasWithResult(auth, "gpt-5.4-fast(high)")
+	if res.ForceMapping {
+		t.Fatal("expected ForceMapping false")
+	}
+	if res.OriginalAlias != "gpt-5.4-fast(high)" {
+		t.Fatalf("OriginalAlias = %q want requested model when force-mapping off", res.OriginalAlias)
 	}
 }
