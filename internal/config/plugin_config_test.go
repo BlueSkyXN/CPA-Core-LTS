@@ -151,10 +151,10 @@ plugins:
 		t.Fatal("Plugins.Configs[\"sample\"] missing")
 	}
 	if plugin.Enabled == nil {
-		t.Fatal("Plugin.Enabled = nil, want false pointer")
+		t.Fatal("Plugin.Enabled = nil, want true pointer")
 	}
-	if *plugin.Enabled {
-		t.Fatal("Plugin.Enabled = true, want false")
+	if !*plugin.Enabled {
+		t.Fatal("Plugin.Enabled = false, want true")
 	}
 	if plugin.Priority != 0 {
 		t.Fatalf("Plugin.Priority = %d, want 0", plugin.Priority)

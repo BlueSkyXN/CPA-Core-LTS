@@ -50,7 +50,7 @@ func runtimeConfigFromConfig(cfg *config.Config) runtimeConfig {
 
 	for _, id := range ids {
 		item := cfg.Plugins.Configs[id]
-		enabled := false
+		enabled := true
 		if item.Enabled != nil {
 			enabled = *item.Enabled
 		}

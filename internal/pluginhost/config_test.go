@@ -60,19 +60,44 @@ func TestRuntimeConfigYAMLAddsSynthesizedPermissions(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfigYAMLDefaultsEnabledFalse(t *testing.T) {
+func TestRuntimeConfigYAMLDefaultsEnabledTrue(t *testing.T) {
 	item := config.PluginInstanceConfig{
 		Priority: 3,
 	}
 
-	got := string(runtimeConfigYAML(item, false))
+	got := string(runtimeConfigYAML(item, true))
 	for _, want := range []string{
-		"enabled: false",
+		"enabled: true",
 		"priority: 3",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtimeConfigYAML() missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+func TestRuntimeConfigFromConfigDefaultsConfiguredPluginEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Priority: 3,
+				},
+			},
+		},
+	}
+
+	got := runtimeConfigFromConfig(cfg)
+	item, ok := got.Items["alpha"]
+	if !ok {
+		t.Fatal("runtimeConfigFromConfig() missing alpha item")
+	}
+	if !item.Enabled {
+		t.Fatal("runtimeConfigFromConfig() alpha enabled = false, want true")
+	}
+	if !strings.Contains(string(item.ConfigYAML), "enabled: true") {
+		t.Fatalf("runtimeConfigFromConfig() alpha ConfigYAML missing enabled true:\n%s", item.ConfigYAML)
 	}
 }
 
