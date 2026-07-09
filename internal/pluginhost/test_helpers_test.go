@@ -9,8 +9,10 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"gopkg.in/yaml.v3"
 )
 
 type testSymbolLoader struct {
@@ -37,6 +39,8 @@ type testSymbolLookup struct {
 	shutdownCalls       int
 	registerOverride    func([]byte) pluginapi.Plugin
 	reconfigureOverride func([]byte) pluginapi.Plugin
+	schemaVersion       uint32
+	lastLifecycle       rpcLifecycleRequest
 }
 
 func newTestSymbolLookup(plugin *testPlugin) *testSymbolLookup {
@@ -136,6 +140,19 @@ func (l *testSymbolLookup) Call(ctx context.Context, method string, request []by
 			return nil, errPick
 		}
 		return marshalRPCResult(resp)
+	case pluginabi.MethodModelRoute:
+		if l.active.Capabilities.ModelRouter == nil {
+			return nil, fmt.Errorf("missing model router")
+		}
+		var req pluginapi.ModelRouteRequest
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		resp, errRoute := l.active.Capabilities.ModelRouter.RouteModel(ctx, req)
+		if errRoute != nil {
+			return nil, errRoute
+		}
+		return marshalRPCResult(resp)
 	case pluginabi.MethodUsageHandle:
 		if l.active.Capabilities.UsagePlugin == nil {
 			return marshalRPCResult(rpcEmptyResponse{})
@@ -160,6 +177,7 @@ func (l *testSymbolLookup) callLifecycle(request []byte, reload bool) ([]byte, e
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, errUnmarshal
 	}
+	l.lastLifecycle = req
 	var plugin pluginapi.Plugin
 	if reload {
 		if l.reconfigureOverride != nil {
@@ -175,8 +193,12 @@ func (l *testSymbolLookup) callLifecycle(request []byte, reload bool) ([]byte, e
 		}
 	}
 	l.active = plugin
+	schemaVersion := l.schemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = pluginabi.SchemaVersion
+	}
 	return marshalRPCResult(rpcRegistration{
-		SchemaVersion: pluginabi.SchemaVersion,
+		SchemaVersion: schemaVersion,
 		Metadata:      plugin.Metadata,
 		Capabilities:  rpcCapabilitiesFromPlugin(plugin),
 	})
@@ -280,6 +302,15 @@ func (f schedulerFunc) Pick(ctx context.Context, req pluginapi.SchedulerPickRequ
 	return f(ctx, req)
 }
 
+type modelRouterFunc func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, error)
+
+func (f modelRouterFunc) RouteModel(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, error) {
+	if f == nil {
+		return pluginapi.ModelRouteResponse{}, fmt.Errorf("missing model router callback")
+	}
+	return f(ctx, req)
+}
+
 type responseInterceptorFunc struct {
 	interceptResponse    func(context.Context, pluginapi.ResponseInterceptRequest) (pluginapi.ResponseInterceptResponse, error)
 	interceptStreamChunk func(context.Context, pluginapi.StreamChunkInterceptRequest) (pluginapi.StreamChunkInterceptResponse, error)
@@ -313,4 +344,40 @@ func makePluginDir(t *testing.T, ids ...string) string {
 		}
 	}
 	return root
+}
+
+func makeVersionedPluginDir(t *testing.T, id string, versions ...string) (string, map[string]string) {
+	t.Helper()
+	root := t.TempDir()
+	paths := make(map[string]string, len(versions))
+	for _, version := range versions {
+		paths[version] = writeVersionedPluginFile(t, root, id, version)
+	}
+	return root, paths
+}
+
+func writeVersionedPluginFile(t *testing.T, root, id, version string) string {
+	t.Helper()
+	archDir := filepath.Join(root, runtime.GOOS, runtime.GOARCH)
+	if errMkdirAll := os.MkdirAll(archDir, 0o755); errMkdirAll != nil {
+		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
+	}
+	path := filepath.Join(archDir, fmt.Sprintf("%s-v%s%s", id, version, pluginExtension(runtime.GOOS)))
+	if errWriteFile := os.WriteFile(path, []byte("x"), 0o644); errWriteFile != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, errWriteFile)
+	}
+	return path
+}
+
+func enabledPluginConfigWithStoreVersion(t *testing.T, version string) config.PluginInstanceConfig {
+	t.Helper()
+	var node yaml.Node
+	if errDecode := yaml.Unmarshal([]byte(fmt.Sprintf("store:\n  version: %s\n", version)), &node); errDecode != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", errDecode)
+	}
+	enabled := true
+	return config.PluginInstanceConfig{
+		Enabled: &enabled,
+		Raw:     *node.Content[0],
+	}
 }

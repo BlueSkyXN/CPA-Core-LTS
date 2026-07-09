@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -64,19 +67,25 @@ var corsExposedResponseHeaders = []string{
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
 
+const (
+	exampleAPIKeyManagementPath = "/management.html"
+	exampleAPIKeyManagementURL  = "/management.html?safe-mode=configure"
+)
+
 type serverOptionConfig struct {
-	extraMiddleware      []gin.HandlerFunc
-	engineConfigurator   func(*gin.Engine)
-	routerConfigurator   func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
-	requestLoggerFactory func(*config.Config, string) logging.RequestLogger
-	localPassword        string
-	keepAliveEnabled     bool
-	keepAliveTimeout     time.Duration
-	keepAliveOnTimeout   func()
-	postAuthHook         auth.PostAuthHook
-	postAuthPersistHook  auth.PostAuthHook
-	pluginHost           *pluginhost.Host
-	configReloadHook     func(context.Context, *config.Config)
+	extraMiddleware       []gin.HandlerFunc
+	engineConfigurator    func(*gin.Engine)
+	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
+	localPassword         string
+	keepAliveEnabled      bool
+	keepAliveTimeout      time.Duration
+	keepAliveOnTimeout    func()
+	postAuthHook          auth.PostAuthHook
+	postAuthPersistHook   auth.PostAuthHook
+	pluginHost            *pluginhost.Host
+	configReloadHook      func(context.Context, *config.Config)
+	exampleAPIKeySafeMode bool
 }
 
 // ServerOption customises HTTP server construction.
@@ -176,6 +185,13 @@ func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOpti
 	}
 }
 
+// WithExampleAPIKeySafeMode blocks proxy API endpoints while template API keys remain configured.
+func WithExampleAPIKeySafeMode() ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.exampleAPIKeySafeMode = true
+	}
+}
+
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
 type Server struct {
@@ -244,6 +260,9 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	exampleAPIKeySafeModeEnabled bool
+	exampleAPIKeySafeModeActive  atomic.Bool
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -323,8 +342,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+
+		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
@@ -360,6 +382,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
+	engine.Use(s.exampleAPIKeySafeModeMiddleware())
 
 	// Setup routes
 	s.setupRoutes()
@@ -430,6 +453,71 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	}
 }
 
+func (s *Server) exampleAPIKeySafeModeRequired(cfg *config.Config) bool {
+	return s != nil && s.exampleAPIKeySafeModeEnabled && cfg != nil && safemode.HasExampleAPIKeys(cfg.APIKeys)
+}
+
+func (s *Server) exampleAPIKeySafeModeMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || !s.exampleAPIKeySafeModeActive.Load() || c == nil || c.Request == nil || c.Request.URL == nil {
+			c.Next()
+			return
+		}
+
+		path := c.Request.URL.Path
+		if path == exampleAPIKeyManagementPath && c.Query("safe-mode") == "configure" {
+			c.Next()
+			return
+		}
+		if (path == "/" || path == exampleAPIKeyManagementPath) && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) {
+			s.serveExampleAPIKeyWarningPage(c)
+			return
+		}
+		if !isExampleAPIKeySafeModeProxyPath(path) {
+			c.Next()
+			return
+		}
+
+		c.Header("X-CPA-SAFE-MODE", "example-api-key")
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error":   "unsafe_example_api_key",
+			"message": "Proxy API endpoints are disabled because api-keys contains template values. Open /management.html?safe-mode=configure, update api-keys in Management, then retry.",
+		})
+	}
+}
+
+func (s *Server) serveExampleAPIKeyWarningPage(c *gin.Context) {
+	cfg := s.cfg
+	var keys []string
+	if cfg != nil {
+		keys = safemode.ExampleAPIKeys(cfg.APIKeys)
+	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		c.Abort()
+		return
+	}
+	c.String(http.StatusOK, safemode.ExampleAPIKeyWarningPageHTML(keys, exampleAPIKeyManagementURL))
+	c.Abort()
+}
+
+func isExampleAPIKeySafeModeProxyPath(path string) bool {
+	switch {
+	case path == "/v1" || strings.HasPrefix(path, "/v1/"):
+		return true
+	case path == "/v1beta" || strings.HasPrefix(path, "/v1beta/"):
+		return true
+	case path == "/openai/v1" || strings.HasPrefix(path, "/openai/v1/"):
+		return true
+	case path == "/backend-api/codex" || strings.HasPrefix(path, "/backend-api/codex/"):
+		return true
+	default:
+		return false
+	}
+}
+
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
@@ -447,7 +535,6 @@ func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
-	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 
@@ -494,6 +581,7 @@ func (s *Server) setupRoutes() {
 	v1beta.Use(AuthMiddleware(s.accessManager))
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
+		v1beta.POST("/interactions", geminiHandlers.Interactions)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
 		v1beta.GET("/models/*action", s.geminiGetHandler(geminiHandlers))
 	}
@@ -509,7 +597,6 @@ func (s *Server) setupRoutes() {
 			},
 		})
 	})
-	s.engine.POST("/v1internal:method", geminiCLIHandlers.CLIHandler)
 
 	// OAuth callback endpoints (reuse main server port)
 	// These endpoints receive provider redirects and persist
@@ -537,20 +624,6 @@ func (s *Server) setupRoutes() {
 		}
 		if state != "" {
 			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "codex", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
-	s.engine.GET("/google/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "gemini", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -634,6 +707,9 @@ func (s *Server) registerManagementRoutes() {
 
 	log.Info("management routes registered after secret key configuration")
 
+	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
+	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
@@ -688,6 +764,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/quota-exceeded/switch-preview-model", s.mgmt.GetSwitchPreviewModel)
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
+		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
 
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
@@ -699,6 +776,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
 		mgmt.PATCH("/gemini-api-key", s.mgmt.PatchGeminiKey)
 		mgmt.DELETE("/gemini-api-key", s.mgmt.DeleteGeminiKey)
+
+		mgmt.GET("/interactions-api-key", s.mgmt.GetInteractionsKeys)
+		mgmt.PUT("/interactions-api-key", s.mgmt.PutInteractionsKeys)
+		mgmt.PATCH("/interactions-api-key", s.mgmt.PatchInteractionsKey)
+		mgmt.DELETE("/interactions-api-key", s.mgmt.DeleteInteractionsKey)
 
 		mgmt.GET("/logs", s.mgmt.GetLogs)
 		mgmt.DELETE("/logs", s.mgmt.DeleteLogs)
@@ -793,11 +875,9 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
 		mgmt.GET("/codex-auth-url", s.mgmt.RequestCodexToken)
-		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
-		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
 }
@@ -1016,10 +1096,20 @@ func (s *Server) watchKeepAlive() {
 	}
 }
 
+// isAnthropicModelsRequest reports whether a /v1/models request should be served in
+// Anthropic format. Anthropic API clients send the Anthropic-Version header; Claude
+// Code additionally uses a claude-cli User-Agent.
+func isAnthropicModelsRequest(c *gin.Context) bool {
+	if c.GetHeader("Anthropic-Version") != "" {
+		return true
+	}
+	return strings.HasPrefix(c.GetHeader("User-Agent"), "claude-cli")
+}
+
 // unifiedModelsHandler creates a unified handler for the /v1/models endpoint
-// that routes to different handlers based on the User-Agent header.
-// If User-Agent starts with "claude-cli", it routes to Claude handler,
-// otherwise it routes to OpenAI handler.
+// that routes to different handlers based on the request.
+// Anthropic API requests (Anthropic-Version header, or a claude-cli User-Agent)
+// route to the Claude handler, otherwise they route to the OpenAI handler.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if _, ok := c.Request.URL.Query()["client_version"]; ok {
@@ -1036,14 +1126,10 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
-		userAgent := c.GetHeader("User-Agent")
-
-		// Route to Claude handler if User-Agent starts with "claude-cli"
-		if strings.HasPrefix(userAgent, "claude-cli") {
-			// log.Debugf("Routing /v1/models to Claude handler for User-Agent: %s", userAgent)
+		// Route to Claude handler for Anthropic API requests.
+		if isAnthropicModelsRequest(c) {
 			claudeHandler.ClaudeModels(c)
 		} else {
-			// log.Debugf("Routing /v1/models to OpenAI handler for User-Agent: %s", userAgent)
 			openaiHandler.OpenAIModels(c)
 		}
 	}
@@ -1100,10 +1186,12 @@ func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.Ha
 }
 
 type homeModelEntry struct {
-	id          string
-	created     int64
-	ownedBy     string
-	displayName string
+	id                  string
+	created             int64
+	ownedBy             string
+	displayName         string
+	contextLength       int
+	maxCompletionTokens int
 }
 
 func (s *Server) handleHomeModels(c *gin.Context) {
@@ -1112,25 +1200,10 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		return
 	}
 
-	userAgent := c.GetHeader("User-Agent")
-	isClaude := strings.HasPrefix(userAgent, "claude-cli")
+	isClaude := isAnthropicModelsRequest(c)
 
 	if isClaude {
-		out := make([]map[string]any, 0, len(entries))
-		for _, entry := range entries {
-			model := map[string]any{
-				"id":       entry.id,
-				"object":   "model",
-				"owned_by": entry.ownedBy,
-			}
-			if entry.created > 0 {
-				model["created_at"] = entry.created
-			}
-			if entry.displayName != "" {
-				model["display_name"] = entry.displayName
-			}
-			out = append(out, model)
-		}
+		out := formatHomeClaudeModels(entries)
 		firstID := ""
 		lastID := ""
 		if len(out) > 0 {
@@ -1168,6 +1241,42 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		"object": "list",
 		"data":   filtered,
 	})
+}
+
+func formatHomeClaudeModels(entries []homeModelEntry) []map[string]any {
+	out := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, formatHomeClaudeModel(entry))
+	}
+	return out
+}
+
+func formatHomeClaudeModel(entry homeModelEntry) map[string]any {
+	displayName := entry.displayName
+	if displayName == "" {
+		displayName = entry.id
+	}
+	maxInput := entry.contextLength
+	if maxInput <= 0 {
+		maxInput = registry.DefaultClaudeMaxInputTokens
+	}
+	maxOutput := entry.maxCompletionTokens
+	if maxOutput <= 0 {
+		maxOutput = registry.DefaultClaudeMaxOutputTokens
+	}
+	model := map[string]any{
+		"id":               entry.id,
+		"object":           "model",
+		"owned_by":         entry.ownedBy,
+		"type":             "model",
+		"display_name":     displayName,
+		"max_input_tokens": maxInput,
+		"max_tokens":       maxOutput,
+	}
+	if entry.created > 0 {
+		model["created_at"] = time.Unix(entry.created, 0).UTC().Format(time.RFC3339)
+	}
+	return model
 }
 
 func (s *Server) handleHomeGeminiModels(c *gin.Context) {
@@ -1385,20 +1494,6 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 			}
 			seen[id] = struct{}{}
 
-			created := int64(0)
-			switch v := model["created"].(type) {
-			case float64:
-				created = int64(v)
-			case int64:
-				created = v
-			case int:
-				created = int64(v)
-			case json.Number:
-				if n, err := v.Int64(); err == nil {
-					created = n
-				}
-			}
-
 			ownedBy, _ := model["owned_by"].(string)
 			ownedBy = strings.TrimSpace(ownedBy)
 			displayName, _ := model["display_name"].(string)
@@ -1409,10 +1504,12 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 			}
 
 			out = append(out, homeModelEntry{
-				id:          id,
-				created:     created,
-				ownedBy:     ownedBy,
-				displayName: displayName,
+				id:                  id,
+				created:             homeModelInt64Value(model, "created"),
+				ownedBy:             ownedBy,
+				displayName:         displayName,
+				contextLength:       int(homeModelInt64Value(model, "context_length", "contextLength", "inputTokenLimit", "max_input_tokens")),
+				maxCompletionTokens: int(homeModelInt64Value(model, "max_completion_tokens", "maxCompletionTokens", "outputTokenLimit", "max_tokens")),
 			})
 		}
 	}
@@ -1422,6 +1519,28 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 		return nil, fmt.Errorf("home models payload contains no models")
 	}
 	return out, nil
+}
+
+func homeModelInt64Value(model map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		switch value := model[key].(type) {
+		case float64:
+			return int64(value)
+		case int64:
+			return value
+		case int:
+			return int64(value)
+		case json.Number:
+			if n, errInt := value.Int64(); errInt == nil {
+				return n
+			}
+		case string:
+			if n, errParse := strconv.ParseInt(strings.TrimSpace(value), 10, 64); errParse == nil {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
@@ -1585,13 +1704,14 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
+func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 	if s == nil || s.accessManager == nil || newCfg == nil {
-		return
+		return false
 	}
 	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg); err != nil {
-		return
+		return false
 	}
+	return true
 }
 
 // UpdateClients updates the server's client list and configuration.
@@ -1702,7 +1822,14 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
 
-	s.applyAccessConfig(oldCfg, cfg)
+	exampleAPIKeySafeModeRequired := s.exampleAPIKeySafeModeRequired(cfg)
+	if exampleAPIKeySafeModeRequired {
+		s.exampleAPIKeySafeModeActive.Store(true)
+	}
+	accessConfigApplied := s.applyAccessConfig(oldCfg, cfg)
+	if accessConfigApplied || exampleAPIKeySafeModeRequired {
+		s.exampleAPIKeySafeModeActive.Store(exampleAPIKeySafeModeRequired)
+	}
 	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
@@ -1749,6 +1876,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		authEntries = util.CountAuthFiles(context.Background(), tokenStore)
 	}
 	geminiAPIKeyCount := len(cfg.GeminiKey)
+	interactionsAPIKeyCount := len(cfg.InteractionsKey)
 	claudeAPIKeyCount := len(cfg.ClaudeKey)
 	codexAPIKeyCount := len(cfg.CodexKey)
 	vertexAICompatCount := len(cfg.VertexCompatAPIKey)
@@ -1761,11 +1889,12 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		openAICompatCount += len(entry.APIKeyEntries)
 	}
 
-	total := authEntries + geminiAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + vertexAICompatCount + openAICompatCount
-	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Claude API keys + %d Codex keys + %d Vertex-compat + %d OpenAI-compat)\n",
+	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + vertexAICompatCount + openAICompatCount
+	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d Vertex-compat + %d OpenAI-compat)\n",
 		total,
 		authEntries,
 		geminiAPIKeyCount,
+		interactionsAPIKeyCount,
 		claudeAPIKeyCount,
 		codexAPIKeyCount,
 		vertexAICompatCount,

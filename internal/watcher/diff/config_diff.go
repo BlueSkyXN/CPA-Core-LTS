@@ -45,8 +45,14 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.DisableCooling != newCfg.DisableCooling {
 		changes = append(changes, fmt.Sprintf("disable-cooling: %t -> %t", oldCfg.DisableCooling, newCfg.DisableCooling))
 	}
+	if oldCfg.SaveCooldownStatus != newCfg.SaveCooldownStatus {
+		changes = append(changes, fmt.Sprintf("save-cooldown-status: %t -> %t", oldCfg.SaveCooldownStatus, newCfg.SaveCooldownStatus))
+	}
 	if oldCfg.TransientErrorCooldownSeconds != newCfg.TransientErrorCooldownSeconds {
 		changes = append(changes, fmt.Sprintf("transient-error-cooldown-seconds: %d -> %d", oldCfg.TransientErrorCooldownSeconds, newCfg.TransientErrorCooldownSeconds))
+	}
+	if oldCfg.DisableClaudeCloakMode != newCfg.DisableClaudeCloakMode {
+		changes = append(changes, fmt.Sprintf("disable-claude-cloak-mode: %t -> %t", oldCfg.DisableClaudeCloakMode, newCfg.DisableClaudeCloakMode))
 	}
 	if oldCfg.DisableImageGeneration != newCfg.DisableImageGeneration {
 		changes = append(changes, fmt.Sprintf("disable-image-generation: %v -> %v", oldCfg.DisableImageGeneration, newCfg.DisableImageGeneration))
@@ -147,6 +153,39 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 		}
 	}
+	if len(oldCfg.InteractionsKey) != len(newCfg.InteractionsKey) {
+		changes = append(changes, fmt.Sprintf("interactions-api-key count: %d -> %d", len(oldCfg.InteractionsKey), len(newCfg.InteractionsKey)))
+	} else {
+		for i := range oldCfg.InteractionsKey {
+			o := oldCfg.InteractionsKey[i]
+			n := newCfg.InteractionsKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("interactions[%d].base-url: %s -> %s", i, strings.TrimSpace(o.BaseURL), strings.TrimSpace(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.ProxyURL) != strings.TrimSpace(n.ProxyURL) {
+				changes = append(changes, fmt.Sprintf("interactions[%d].proxy-url: %s -> %s", i, formatProxyURL(o.ProxyURL), formatProxyURL(n.ProxyURL)))
+			}
+			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
+				changes = append(changes, fmt.Sprintf("interactions[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("interactions[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("interactions[%d].headers: updated", i))
+			}
+			oldModels := SummarizeGeminiModels(o.Models)
+			newModels := SummarizeGeminiModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("interactions[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+			oldExcluded := SummarizeExcludedModels(o.ExcludedModels)
+			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
+			if oldExcluded.hash != newExcluded.hash {
+				changes = append(changes, fmt.Sprintf("interactions[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+		}
+	}
 
 	// Claude keys (do not print key material)
 	if len(oldCfg.ClaudeKey) != len(newCfg.ClaudeKey) {
@@ -179,6 +218,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("claude[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+			if o.RebuildMidSystemMessage != n.RebuildMidSystemMessage {
+				changes = append(changes, fmt.Sprintf("claude[%d].rebuild-mid-system-message: %t -> %t", i, o.RebuildMidSystemMessage, n.RebuildMidSystemMessage))
 			}
 			if o.Cloak != nil && n.Cloak != nil {
 				if strings.TrimSpace(o.Cloak.Mode) != strings.TrimSpace(n.Cloak.Mode) {

@@ -45,10 +45,46 @@ type ClaudeExecutor struct {
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
 const claudeToolPrefix = ""
 
+func shouldSanitizeClaudeMessagesForUpstream(baseModel string) bool {
+	return sigcompat.SignatureProviderFromModelName(baseModel) == sigcompat.SignatureProviderClaude
+}
+
 func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body []byte, baseModel string) []byte {
-	sanitized, report := sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel)
-	logClaudeSignatureSanitizeReport(ctx, baseModel, report)
-	return sanitized
+	sanitized := body
+	if shouldSanitizeClaudeMessagesForUpstream(baseModel) {
+		var report sigcompat.SignatureSanitizeReport
+		sanitized, report = sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel)
+		logClaudeSignatureSanitizeReport(ctx, baseModel, report)
+	}
+	return sanitizeClaudeWebSearchDomains(sanitized)
+}
+
+// sanitizeClaudeWebSearchDomains removes empty allowed_domains/blocked_domains
+// arrays from built-in web_search tools. Some clients (e.g. litellm) emit an
+// empty array instead of omitting the field, and Anthropic rejects it with
+// "Empty list of domains is ambiguous. Provide at least one domain or null.".
+// Deleting the key is equivalent to leaving it unset.
+func sanitizeClaudeWebSearchDomains(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return body
+	}
+	tools.ForEach(func(index, tool gjson.Result) bool {
+		if !strings.HasPrefix(tool.Get("type").String(), "web_search_") {
+			return true
+		}
+		for _, field := range []string{"allowed_domains", "blocked_domains"} {
+			value := tool.Get(field)
+			if value.Exists() && value.IsArray() && len(value.Array()) == 0 {
+				path := fmt.Sprintf("tools.%d.%s", index.Int(), field)
+				if updated, errDelete := sjson.DeleteBytes(body, path); errDelete == nil {
+					body = updated
+				}
+			}
+		}
+		return true
+	})
+	return body
 }
 
 func logClaudeSignatureSanitizeReport(ctx context.Context, baseModel string, report sigcompat.SignatureSanitizeReport) {
@@ -190,6 +226,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
+	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+		body = rebuildMidSystemMessagesToTopLevel(body)
+	}
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
@@ -205,7 +244,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
-	body = normalizeClaudeTemperatureForThinking(body)
+	body = normalizeClaudeSamplingForUpstream(body)
 
 	// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
 	if countCacheControls(body) == 0 {
@@ -377,6 +416,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return nil, err
 	}
+	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+		body = rebuildMidSystemMessagesToTopLevel(body)
+	}
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
@@ -392,7 +434,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
-	body = normalizeClaudeTemperatureForThinking(body)
+	body = normalizeClaudeSamplingForUpstream(body)
 
 	// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
 	if countCacheControls(body) == 0 {
@@ -499,10 +541,24 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}()
 
-		// If the response target is Claude, directly forward the SSE stream without translation.
+		// If the response target is Claude, directly forward complete SSE events without translation.
 		if responseFormat == to {
 			scanner := bufio.NewScanner(decodedBody)
 			scanner.Buffer(nil, 52_428_800) // 50MB
+			var event bytes.Buffer
+			flushEvent := func() bool {
+				if event.Len() == 0 {
+					return true
+				}
+				cloned := bytes.Clone(event.Bytes())
+				event.Reset()
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -510,15 +566,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					reporter.Publish(ctx, detail)
 				}
 				line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
-				// Forward the line as-is to preserve SSE format
-				cloned := make([]byte, len(line)+1)
-				copy(cloned, line)
-				cloned[len(line)] = '\n'
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
-				case <-ctx.Done():
+				event.Write(line)
+				event.WriteByte('\n')
+				if len(bytes.TrimSpace(line)) == 0 && !flushEvent() {
 					return
 				}
+			}
+			if !flushEvent() {
+				return
 			}
 			if errScan := scanner.Err(); errScan != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
@@ -645,6 +700,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	stream := from != to
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, stream)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+		body = rebuildMidSystemMessagesToTopLevel(body)
+	}
 
 	if !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
 		body = checkSystemInstructions(body)
@@ -820,21 +878,15 @@ func disableThinkingIfToolChoiceForced(body []byte) []byte {
 	return body
 }
 
-// normalizeClaudeTemperatureForThinking keeps Anthropic message requests valid when
-// thinking is enabled. Anthropic rejects temperatures other than 1 when
-// thinking.type is enabled/adaptive/auto.
-func normalizeClaudeTemperatureForThinking(body []byte) []byte {
-	if !gjson.GetBytes(body, "temperature").Exists() {
-		return body
-	}
+// normalizeClaudeSamplingForUpstream keeps Anthropic message requests valid.
+func normalizeClaudeSamplingForUpstream(body []byte) []byte {
+	body, _ = sjson.DeleteBytes(body, "temperature")
 
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	switch thinkingType {
 	case "enabled", "adaptive", "auto":
-		if temp := gjson.GetBytes(body, "temperature"); temp.Exists() && temp.Type == gjson.Number && temp.Float() == 1 {
-			return body
-		}
-		body, _ = sjson.SetBytes(body, "temperature", 1)
+		body, _ = sjson.DeleteBytes(body, "top_p")
+		body, _ = sjson.DeleteBytes(body, "top_k")
 	}
 	return body
 }
@@ -1110,6 +1162,91 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 
 func checkSystemInstructions(payload []byte) []byte {
 	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.63", "", "")
+}
+
+func rebuildMidSystemMessagesToTopLevel(payload []byte) []byte {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.IsArray() {
+		return payload
+	}
+
+	var movedSystemParts []string
+	keptMessages := make([]string, 0, int(messages.Get("#").Int()))
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if strings.EqualFold(strings.TrimSpace(message.Get("role").String()), "system") {
+			movedSystemParts = append(movedSystemParts, claudeSystemTextParts(message.Get("content"))...)
+			return true
+		}
+		keptMessages = append(keptMessages, message.Raw)
+		return true
+	})
+	if len(movedSystemParts) == 0 {
+		return payload
+	}
+
+	systemParts := claudeSystemTextParts(gjson.GetBytes(payload, "system"))
+	systemParts = append(systemParts, movedSystemParts...)
+	if len(systemParts) > 0 {
+		if updated, errSetSystem := sjson.SetRawBytes(payload, "system", rawJSONArray(systemParts)); errSetSystem == nil {
+			payload = updated
+		}
+	}
+	if updated, errSetMessages := sjson.SetRawBytes(payload, "messages", rawJSONArray(keptMessages)); errSetMessages == nil {
+		payload = updated
+	}
+	return payload
+}
+
+func claudeSystemTextParts(content gjson.Result) []string {
+	if !content.Exists() {
+		return nil
+	}
+	if content.Type == gjson.String {
+		text := content.String()
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		block := []byte(`{"type":"text","text":""}`)
+		block, _ = sjson.SetBytes(block, "text", text)
+		return []string{string(block)}
+	}
+	if !content.IsArray() {
+		return nil
+	}
+
+	var parts []string
+	content.ForEach(func(_, item gjson.Result) bool {
+		if item.Type == gjson.String {
+			text := item.String()
+			if strings.TrimSpace(text) != "" {
+				block := []byte(`{"type":"text","text":""}`)
+				block, _ = sjson.SetBytes(block, "text", text)
+				parts = append(parts, string(block))
+			}
+			return true
+		}
+		if item.IsObject() && item.Get("type").String() == "text" && strings.TrimSpace(item.Get("text").String()) != "" {
+			parts = append(parts, item.Raw)
+		}
+		return true
+	})
+	return parts
+}
+
+func rawJSONArray(items []string) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	var builder strings.Builder
+	builder.WriteByte('[')
+	for i, item := range items {
+		if i > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(item)
+	}
+	builder.WriteByte(']')
+	return []byte(builder.String())
 }
 
 func isClaudeOAuthToken(apiKey string) bool {
@@ -1587,29 +1724,46 @@ func getWorkloadFromContext(ctx context.Context) string {
 	return ""
 }
 
-// getCloakConfigFromAuth extracts cloak configuration from auth attributes.
-// Returns (cloakMode, strictMode, sensitiveWords, cacheUserID).
-func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (string, bool, []string, bool) {
-	if auth == nil || auth.Attributes == nil {
-		return "auto", false, nil, false
+// getCloakConfigFromAuth extracts cloak configuration from the auth's attributes,
+// falling back to its stored metadata (the raw OAuth/token JSON). Returns
+// (cloakMode, strictMode, sensitiveWords, cacheUserID); an empty cloakMode means
+// the credential did not explicitly configure a mode.
+func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (cloakMode string, strictMode bool, sensitiveWords []string, cacheUserID bool) {
+	if auth == nil {
+		return "", false, nil, false
 	}
 
-	cloakMode := auth.Attributes["cloak_mode"]
-	if cloakMode == "" {
-		cloakMode = "auto"
+	// lookupCloakAttr prefers the executor-facing Attributes, then falls back to the
+	// raw metadata blob (e.g. the OAuth/token JSON) so file-based credentials can
+	// carry cloak settings without a matching claude-api-key config entry.
+	lookupCloakAttr := func(key string) string {
+		if auth.Attributes != nil {
+			if value := strings.TrimSpace(auth.Attributes[key]); value != "" {
+				return value
+			}
+		}
+		if auth.Metadata != nil {
+			if value, ok := auth.Metadata[key].(string); ok {
+				return strings.TrimSpace(value)
+			}
+		}
+		return ""
 	}
 
-	strictMode := strings.ToLower(auth.Attributes["cloak_strict_mode"]) == "true"
+	// An empty cloakMode means this credential did not explicitly configure a mode,
+	// allowing the caller to fall back to the global/default behavior.
+	cloakMode = lookupCloakAttr("cloak_mode")
 
-	var sensitiveWords []string
-	if wordsStr := auth.Attributes["cloak_sensitive_words"]; wordsStr != "" {
+	strictMode = strings.EqualFold(lookupCloakAttr("cloak_strict_mode"), "true")
+
+	if wordsStr := lookupCloakAttr("cloak_sensitive_words"); wordsStr != "" {
 		sensitiveWords = strings.Split(wordsStr, ",")
 		for i := range sensitiveWords {
 			sensitiveWords[i] = strings.TrimSpace(sensitiveWords[i])
 		}
 	}
 
-	cacheUserID := strings.EqualFold(strings.TrimSpace(auth.Attributes["cloak_cache_user_id"]), "true")
+	cacheUserID = strings.EqualFold(lookupCloakAttr("cloak_cache_user_id"), "true")
 
 	return cloakMode, strictMode, sensitiveWords, cacheUserID
 }
@@ -1871,11 +2025,22 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	cloakCfg := resolveClaudeKeyCloakConfig(cfg, auth)
 	attrMode, attrStrict, attrWords, attrCache := getCloakConfigFromAuth(auth)
 
-	// Determine cloak settings
-	cloakMode := attrMode
+	// Determine cloak settings. Precedence (low -> high):
+	//   built-in "auto" default
+	//   -> global disable-claude-cloak-mode switch (forces "never")
+	//   -> per-credential settings from auth attributes/metadata
+	//   -> per claude-api-key cloak config
+	cloakMode := "auto"
+	if cfg != nil && cfg.DisableClaudeCloakMode {
+		cloakMode = "never"
+	}
 	strictMode := attrStrict
 	sensitiveWords := attrWords
 	cacheUserID := attrCache
+
+	if attrMode != "" {
+		cloakMode = attrMode
+	}
 
 	if cloakCfg != nil {
 		if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" {

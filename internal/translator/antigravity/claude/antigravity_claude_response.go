@@ -95,7 +95,7 @@ var toolUseIDCounter uint64
 // Parameters:
 //   - ctx: The context for the request, used for cancellation and timeout handling
 //   - modelName: The name of the model being used for the response (unused in current implementation)
-//   - rawJSON: The raw JSON response from the Gemini CLI API
+//   - rawJSON: The raw JSON response from the Antigravity API
 //   - param: A pointer to a parameter object for maintaining state between calls
 //
 // Returns:
@@ -158,7 +158,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.usage.output_tokens", candidatesTokenCount.Int())
 		}
 
-		// Override default values with actual response metadata if available from the Gemini CLI response
+		// Override default values with actual response metadata if available from the Antigravity response
 		if modelVersionResult := gjson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
 			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
 		}
@@ -212,83 +212,51 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 			// Handle text content (both regular content and thinking)
 			if partTextResult.Exists() {
-				// Process thinking content (internal reasoning)
-				if partResult.Get("thought").Bool() || hasThoughtSignature {
-					if hasThoughtSignature {
-						// log.Debug("Branch: signature_delta")
-
-						// Flush co-located text before emitting the signature
-						if partText := partTextResult.String(); partText != "" {
-							if params.ResponseType != 2 {
-								if params.ResponseType != 0 {
-									appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
-									params.ResponseIndex++
-								}
-								appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
-								params.ResponseType = 2
-								params.CurrentThinkingText.Reset()
-							}
+				partText := partTextResult.String()
+				if partResult.Get("thought").Bool() {
+					if partText != "" {
+						if params.ResponseType == 2 {
 							params.CurrentThinkingText.WriteString(partText)
 							data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partText)
 							appendEvent("content_block_delta", string(data))
-						}
-
-						appendThinkingSignature(thoughtSignatureResult.String())
-					} else if params.ResponseType == 2 { // Continue existing thinking block if already in thinking state
-						params.CurrentThinkingText.WriteString(partTextResult.String())
-						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partTextResult.String())
-						appendEvent("content_block_delta", string(data))
-						params.HasContent = true
-					} else {
-						// Transition from another state to thinking
-						// First, close any existing content block
-						if params.ResponseType != 0 {
-							if params.ResponseType == 2 {
-								// output = output + "event: content_block_delta\n"
-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
-								// output = output + "\n\n\n"
-							}
-							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
-							params.ResponseIndex++
-						}
-
-						// Start a new thinking content block
-						appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
-						data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partTextResult.String())
-						appendEvent("content_block_delta", string(data))
-						params.ResponseType = 2 // Set state to thinking
-						params.HasContent = true
-						// Start accumulating thinking text for signature caching
-						params.CurrentThinkingText.Reset()
-						params.CurrentThinkingText.WriteString(partTextResult.String())
-					}
-				} else {
-					finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason")
-					if partTextResult.String() != "" || !finishReasonResult.Exists() {
-						// Process regular text content (user-visible output)
-						// Continue existing text block if already in content state
-						if params.ResponseType == 1 {
-							data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partTextResult.String())
-							appendEvent("content_block_delta", string(data))
 							params.HasContent = true
 						} else {
-							// Transition from another state to text content
-							// First, close any existing content block
 							if params.ResponseType != 0 {
-								if params.ResponseType == 2 {
-									// output = output + "event: content_block_delta\n"
-									// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
-									// output = output + "\n\n\n"
-								}
 								appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
 								params.ResponseIndex++
 							}
-							if partTextResult.String() != "" {
-								// Start a new text content block
+							appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex))
+							data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex)), "delta.thinking", partText)
+							appendEvent("content_block_delta", string(data))
+							params.ResponseType = 2
+							params.HasContent = true
+							params.CurrentThinkingText.Reset()
+							params.CurrentThinkingText.WriteString(partText)
+						}
+					}
+					if hasThoughtSignature {
+						appendThinkingSignature(thoughtSignatureResult.String())
+					}
+				} else {
+					if hasThoughtSignature {
+						appendThinkingSignature(thoughtSignatureResult.String())
+					}
+					finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason")
+					if partText != "" || !finishReasonResult.Exists() {
+						if params.ResponseType == 1 {
+							data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
+							appendEvent("content_block_delta", string(data))
+							params.HasContent = true
+						} else {
+							if params.ResponseType != 0 {
+								appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+								params.ResponseIndex++
+							}
+							if partText != "" {
 								appendEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex))
-								data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partTextResult.String())
+								data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":""}}`, params.ResponseIndex)), "delta.text", partText)
 								appendEvent("content_block_delta", string(data))
-								params.ResponseType = 1 // Set state to content
+								params.ResponseType = 1
 								params.HasContent = true
 							}
 						}
@@ -454,12 +422,12 @@ func resolveStopReason(params *Params) string {
 	return "end_turn"
 }
 
-// ConvertAntigravityResponseToClaudeNonStream converts a non-streaming Gemini CLI response to a non-streaming Claude response.
+// ConvertAntigravityResponseToClaudeNonStream converts a non-streaming Antigravity response to a non-streaming Claude response.
 //
 // Parameters:
 //   - ctx: The context for the request.
 //   - modelName: The name of the model.
-//   - rawJSON: The raw JSON response from the Gemini CLI API.
+//   - rawJSON: The raw JSON response from the Antigravity API.
 //   - param: A pointer to a parameter object for the conversion.
 //
 // Returns:
@@ -556,8 +524,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				sig = part.Get("thought_signature")
 			}
 			hasThoughtSignature := sig.Exists() && sig.String() != "" && !part.Get("functionCall").Exists()
-			isThought := part.Get("thought").Bool() || hasThoughtSignature
-			if hasThoughtSignature {
+			isThought := part.Get("thought").Bool()
+			if hasThoughtSignature && (isThought || thinkingBuilder.Len() > 0) {
 				thinkingSignature = sig.String()
 			}
 

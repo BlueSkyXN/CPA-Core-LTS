@@ -59,3 +59,92 @@ func TestRuntimeConfigYAMLAddsSynthesizedPermissions(t *testing.T) {
 		t.Fatalf("runtimeConfigYAML() included false permissions:\n%s", got)
 	}
 }
+
+func TestRuntimeConfigYAMLDefaultsEnabledTrue(t *testing.T) {
+	item := config.PluginInstanceConfig{
+		Priority: 3,
+	}
+
+	got := string(runtimeConfigYAML(item, true))
+	for _, want := range []string{
+		"enabled: true",
+		"priority: 3",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtimeConfigYAML() missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRuntimeConfigFromConfigDefaultsConfiguredPluginEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Priority: 3,
+				},
+			},
+		},
+	}
+
+	got := runtimeConfigFromConfig(cfg)
+	item, ok := got.Items["alpha"]
+	if !ok {
+		t.Fatal("runtimeConfigFromConfig() missing alpha item")
+	}
+	if !item.Enabled {
+		t.Fatal("runtimeConfigFromConfig() alpha enabled = false, want true")
+	}
+	if !strings.Contains(string(item.ConfigYAML), "enabled: true") {
+		t.Fatalf("runtimeConfigFromConfig() alpha ConfigYAML missing enabled true:\n%s", item.ConfigYAML)
+	}
+}
+
+func TestRuntimeConfigFromConfigExtractsStoreVersion(t *testing.T) {
+	var node yaml.Node
+	if errDecode := yaml.Unmarshal([]byte("store:\n  version: 1.0.3\n  release-tag: v1.0.3\n"), &node); errDecode != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", errDecode)
+	}
+	enabled := true
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Enabled: &enabled,
+					Raw:     *node.Content[0],
+				},
+			},
+		},
+	}
+
+	got := runtimeConfigFromConfig(cfg)
+	if got.Items["alpha"].Version != "1.0.3" {
+		t.Fatalf("runtimeConfigFromConfig() version = %q, want 1.0.3", got.Items["alpha"].Version)
+	}
+}
+
+func TestRuntimeConfigFromConfigDerivesStoreVersionFromReleaseTag(t *testing.T) {
+	var node yaml.Node
+	if errDecode := yaml.Unmarshal([]byte("store:\n  release-tag: v1.0.3\n"), &node); errDecode != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", errDecode)
+	}
+	enabled := true
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Enabled: &enabled,
+					Raw:     *node.Content[0],
+				},
+			},
+		},
+	}
+
+	got := runtimeConfigFromConfig(cfg)
+	if got.Items["alpha"].Version != "1.0.3" {
+		t.Fatalf("runtimeConfigFromConfig() version = %q, want 1.0.3", got.Items["alpha"].Version)
+	}
+}

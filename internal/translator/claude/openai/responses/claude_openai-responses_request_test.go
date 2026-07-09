@@ -2,12 +2,44 @@ package responses
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
+
+func TestConvertOpenAIResponsesRequestToClaude_SanitizesToolCallIDsForClaude(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"input": [
+			{
+				"type": "function_call",
+				"call_id": "call.with space:1",
+				"name": "Read",
+				"arguments": "{\"path\":\"README.md\"}"
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "call.with space:1",
+				"output": "ok"
+			}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+	toolUseID := resultJSON.Get("messages.0.content.0.id").String()
+	toolResultID := resultJSON.Get("messages.1.content.0.tool_use_id").String()
+
+	if toolUseID != "call_with_space_1" {
+		t.Fatalf("tool_use id = %q, want %q", toolUseID, "call_with_space_1")
+	}
+	if toolResultID != toolUseID {
+		t.Fatalf("tool_result tool_use_id = %q, want same sanitized id %q", toolResultID, toolUseID)
+	}
+}
 
 func TestConvertOpenAIResponsesRequestToClaude_ReasoningItemToThinkingBlock(t *testing.T) {
 	rawSignature, expectedSignature := testClaudeResponsesThinkingSignature(t)
@@ -122,6 +154,133 @@ func TestConvertOpenAIResponsesRequestToClaude_DropsIncompatibleReasoningSignatu
 	}
 	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "user" {
 		t.Fatalf("first message role = %q, want user. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_FunctionCallOutputPreservesInputImage(t *testing.T) {
+	const imageB64 = "iVBORw0KGgo="
+	dataURL := "data:image/png;base64," + imageB64
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"function_call",
+				"call_id":"call_view_image_1",
+				"name":"view_image",
+				"arguments":"{}"
+			},
+			{
+				"type":"function_call_output",
+				"call_id":"call_view_image_1",
+				"output":[
+					{
+						"type":"input_image",
+						"image_url":"` + dataURL + `",
+						"detail":"high"
+					}
+				]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	toolResult := root.Get("messages.1.content.0")
+	if got := toolResult.Get("type").String(); got != "tool_result" {
+		t.Fatalf("tool_result type = %q, want tool_result. Output: %s", got, string(out))
+	}
+	if got := toolResult.Get("content.0.type").String(); got != "image" {
+		t.Fatalf("tool_result content block type = %q, want image. Output: %s", got, string(out))
+	}
+	if got := toolResult.Get("content.0.source.media_type").String(); got != "image/png" {
+		t.Fatalf("image media_type = %q, want image/png. Output: %s", got, string(out))
+	}
+	if got := toolResult.Get("content.0.source.data").String(); got != imageB64 {
+		t.Fatalf("image data = %q, want raw base64 without data URL prefix", got)
+	}
+	if strings.Contains(toolResult.Get("content").Raw, "data:image") {
+		t.Fatalf("tool_result content must not embed data URL as text. Output: %s", string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_KeepsToolUseAdjacentToToolResult(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{
+				"type":"function_call",
+				"call_id":"call_00_awGuheXs4aRbtedNK8LE3743",
+				"name":"js",
+				"arguments":"{\"code\":\"nodeRepl.write('ok')\",\"title\":\"List Obsidian vault contents\"}"
+			},
+			{
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"output_text","text":"I'll check your Obsidian vault for articles."}]
+			},
+			{
+				"type":"function_call_output",
+				"call_id":"call_00_awGuheXs4aRbtedNK8LE3743",
+				"output":"Wall time: 0.1963 seconds\nOutput:\n[{\"type\":\"text\",\"text\":\"\"}]"
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	if got := root.Get("messages.0.role").String(); got != "assistant" {
+		t.Fatalf("first message role = %q, want assistant. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.0.content").String(); got != "I'll check your Obsidian vault for articles." {
+		t.Fatalf("first message content = %q, want assistant text. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.1.content.0.type").String(); got != "tool_use" {
+		t.Fatalf("second message first content type = %q, want tool_use. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.1.content.0.id").String(); got != "call_00_awGuheXs4aRbtedNK8LE3743" {
+		t.Fatalf("tool_use id = %q, want call_00_awGuheXs4aRbtedNK8LE3743. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.2.content.0.type").String(); got != "tool_result" {
+		t.Fatalf("third message first content type = %q, want tool_result. Output: %s", got, string(out))
+	}
+	if got := root.Get("messages.2.content.0.tool_use_id").String(); got != "call_00_awGuheXs4aRbtedNK8LE3743" {
+		t.Fatalf("tool_result id = %q, want call_00_awGuheXs4aRbtedNK8LE3743. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_DropsApplyPatchCustomTool(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],
+		"tools":[
+			{
+				"type":"custom",
+				"name":"apply_patch",
+				"description":"Use the apply_patch tool to edit files.",
+				"format":{"type":"grammar","syntax":"lark","definition":"start: patch"}
+			},
+			{
+				"type":"function",
+				"name":"exec_command",
+				"description":"Runs a command.",
+				"parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	if got := root.Get("tools.#").Int(); got != 1 {
+		t.Fatalf("tools count = %d, want 1. Output: %s", got, string(out))
+	}
+	if got := root.Get("tools.0.name").String(); got != "exec_command" {
+		t.Fatalf("tools.0.name = %q, want exec_command. Output: %s", got, string(out))
+	}
+	if got := root.Get("tools.#(name==\"apply_patch\")").Raw; got != "" {
+		t.Fatalf("apply_patch custom tool should be dropped. Output: %s", string(out))
 	}
 }
 

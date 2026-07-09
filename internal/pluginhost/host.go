@@ -3,7 +3,8 @@ package pluginhost
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,8 @@ import (
 type loadedPlugin struct {
 	id         string
 	path       string
+	version    string
+	name       string
 	registered bool
 	client     pluginClient
 }
@@ -30,16 +33,25 @@ type modelExecutor interface {
 }
 
 type pluginUnloadTarget struct {
-	id     string
-	path   string
-	client pluginClient
+	id      string
+	name    string
+	path    string
+	version string
+	client  pluginClient
 }
 
 type Host struct {
+	applyMu                sync.Mutex
 	mu                     sync.Mutex
 	loader                 pluginLoader
 	loaded                 map[string]*loadedPlugin
+	retired                map[string][]*loadedPlugin
+	loading                map[string]struct{}
 	fused                  map[string]string
+	pluginFileVersions     map[string]string
+	activePluginVersions   map[string]string
+	activePluginPaths      map[string]string
+	cleanupFilesPending    bool
 	runtimeConfig          *config.Config
 	authManager            *coreauth.Manager
 	modelExecutor          modelExecutor
@@ -65,7 +77,13 @@ func New() *Host {
 	h := &Host{
 		loader:                 defaultPluginLoader(),
 		loaded:                 make(map[string]*loadedPlugin),
+		retired:                make(map[string][]*loadedPlugin),
+		loading:                make(map[string]struct{}),
 		fused:                  make(map[string]string),
+		pluginFileVersions:     make(map[string]string),
+		activePluginVersions:   make(map[string]string),
+		activePluginPaths:      make(map[string]string),
+		cleanupFilesPending:    true,
 		modelClientIDs:         make(map[string]struct{}),
 		executorModelClientIDs: make(map[string]struct{}),
 		modelProviders:         make(map[string]string),
@@ -134,6 +152,30 @@ func (h *Host) PluginLoaded(id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	_, ok := h.loaded[id]
+	if ok {
+		return true
+	}
+	return len(h.retired[id]) > 0
+}
+
+// PluginBusy reports whether a plugin dynamic library is loaded or being loaded.
+func (h *Host) PluginBusy(id string) bool {
+	if h == nil {
+		return false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.loaded[id]; ok {
+		return true
+	}
+	if len(h.retired[id]) > 0 {
+		return true
+	}
+	_, ok := h.loading[id]
 	return ok
 }
 
@@ -141,32 +183,43 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	if h == nil {
 		return
 	}
+	h.applyMu.Lock()
+	defer h.applyMu.Unlock()
 
 	rc := runtimeConfigFromConfig(cfg)
 	h.mu.Lock()
 	h.runtimeConfig = cfg
+	h.mu.Unlock()
 
 	if !rc.Enabled {
+		h.mu.Lock()
 		h.managementRoutes = make(map[string]managementRouteRecord)
 		h.resourceRoutes = make(map[string]resourceRouteRecord)
+		h.rebuildActivePluginMapsLocked(nil)
 		h.snapshot.Store(emptySnapshot())
 		h.mu.Unlock()
 		h.refreshThinkingProviders(nil)
 		return
 	}
 
-	files, errSelect := selectPluginFiles(rc.Dir)
+	desiredVersions := desiredPluginVersions(rc.Items)
+	files, errSelect := selectPluginFiles(rc.Dir, desiredVersions)
 	if errSelect != nil {
 		log.Warnf("pluginhost: failed to select plugin files: %v", errSelect)
+		h.mu.Lock()
 		h.managementRoutes = make(map[string]managementRouteRecord)
 		h.resourceRoutes = make(map[string]resourceRouteRecord)
+		h.rebuildActivePluginMapsLocked(nil)
 		h.snapshot.Store(emptySnapshot())
 		h.mu.Unlock()
 		h.refreshThinkingProviders(nil)
 		return
 	}
+	files = h.withLoadedPluginFallbacks(files, rc.Items, desiredVersions)
 
 	records := make([]capabilityRecord, 0, len(files))
+	loadedFiles := make([]pluginFile, 0, len(files))
+	hotReloadLogs := make([]log.Fields, 0)
 	for _, file := range files {
 		item, ok := rc.Items[file.ID]
 		if !ok {
@@ -175,55 +228,152 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		if !item.Enabled {
 			continue
 		}
-		if _, disabled := h.fused[file.ID]; disabled {
+		h.mu.Lock()
+		lp := h.loaded[file.ID]
+		var replaced *loadedPlugin
+		if lp != nil && cleanPluginPath(lp.path) != cleanPluginPath(file.Path) {
+			replaced = lp
+			lp = nil
+		}
+		_, disabled := h.fused[file.ID]
+		h.mu.Unlock()
+		if disabled && replaced == nil {
 			continue
 		}
 
-		lp := h.loaded[file.ID]
+		loadedNow := false
+		var hotReloadFields log.Fields
 		if lp == nil {
-			loaded, errLoad := h.loadLocked(file)
+			h.mu.Lock()
+			h.loading[file.ID] = struct{}{}
+			h.mu.Unlock()
+
+			loaded, errLoad := h.load(file)
+			h.mu.Lock()
+			delete(h.loading, file.ID)
 			if errLoad != nil {
+				h.mu.Unlock()
 				log.Warnf("pluginhost: failed to load plugin %s from %s: %v", file.ID, file.Path, errLoad)
 				continue
 			}
+			// ApplyConfig, UnloadPlugin, and ShutdownAll are serialized by applyMu,
+			// so a nil read cannot race into a duplicate load.
 			lp = loaded
+			if replaced != nil {
+				hotReloadFields = pluginHotReloadLogFields(file.ID, file.Version, file.Path, replaced.version, replaced.path)
+				h.retireLoadedPluginLocked(replaced)
+				delete(h.fused, file.ID)
+				h.removePluginRuntimeStateLocked(file.ID)
+			}
 			h.loaded[file.ID] = lp
-			log.WithFields(log.Fields{
-				"plugin_id": file.ID,
-				"path":      file.Path,
-			}).Info("pluginhost: plugin loaded")
+			loadedNow = true
+			h.mu.Unlock()
+			log.WithFields(pluginLogFields(file.ID, "", file.Version, file.Path)).Info("pluginhost: plugin loaded")
 		}
 
-		plugin, okCall := h.callRegisterLocked(ctx, lp, item)
+		plugin, okCall := h.callRegister(ctx, lp, item)
 		if !okCall {
 			continue
 		}
+		plugin.Metadata = clonePluginMetadata(plugin.Metadata)
+		h.mu.Lock()
+		if lp != nil {
+			lp.name = strings.TrimSpace(plugin.Metadata.Name)
+			if strings.TrimSpace(lp.version) == "" {
+				lp.version = strings.TrimSpace(plugin.Metadata.Version)
+			}
+		}
+		h.mu.Unlock()
+		if loadedNow {
+			log.WithFields(pluginLogFieldsFromMetadata(file.ID, plugin.Metadata, file.Path)).Info("pluginhost: plugin registered")
+		}
+		if hotReloadFields != nil {
+			hotReloadLogs = append(hotReloadLogs, hotReloadFields)
+		}
 		records = append(records, capabilityRecord{
 			id:          file.ID,
+			path:        file.Path,
+			version:     file.Version,
 			priority:    item.Priority,
 			permissions: item.Permissions,
 			meta:        plugin.Metadata,
 			plugin:      plugin,
 		})
+		loadedFiles = append(loadedFiles, file)
 	}
 
 	sortRecords(records)
+	h.mu.Lock()
+	cleanupFiles := h.cleanupFilesPending
+	if len(loadedFiles) > 0 {
+		h.cleanupFilesPending = false
+	}
+	h.rebuildActivePluginMapsLocked(records)
 	h.snapshot.Store(&Snapshot{enabled: true, records: records})
 	h.mu.Unlock()
 	h.refreshThinkingProviders(records)
+	for _, fields := range hotReloadLogs {
+		log.WithFields(fields).Info("pluginhost: plugin hot reloaded")
+	}
+	if cleanupFiles && len(loadedFiles) > 0 {
+		if errCleanup := cleanupUnselectedPluginFiles(rc.Dir, loadedFiles); errCleanup != nil {
+			log.Warnf("pluginhost: failed to clean old plugin files: %v", errCleanup)
+		}
+	}
 }
 
-func (h *Host) loadLocked(file pluginFile) (*loadedPlugin, error) {
+func (h *Host) load(file pluginFile) (*loadedPlugin, error) {
 	client, errOpen := h.loader.Open(file, h)
 	if errOpen != nil {
 		return nil, errOpen
 	}
 
 	return &loadedPlugin{
-		id:     file.ID,
-		path:   file.Path,
-		client: newGuardedPluginClient(client),
+		id:      file.ID,
+		path:    file.Path,
+		version: file.Version,
+		client:  newGuardedPluginClient(client),
 	}, nil
+}
+
+func (h *Host) withLoadedPluginFallbacks(files []pluginFile, items map[string]runtimeItemConfig, desired map[string]string) []pluginFile {
+	if h == nil || len(desired) == 0 {
+		return files
+	}
+	selected := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		id := strings.TrimSpace(file.ID)
+		if id != "" {
+			selected[id] = struct{}{}
+		}
+	}
+	ids := make([]string, 0, len(desired))
+	for id := range desired {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, id := range ids {
+		if _, ok := selected[id]; ok {
+			continue
+		}
+		if item, ok := items[id]; ok && !item.Enabled {
+			continue
+		}
+		lp := h.loaded[id]
+		if lp == nil || strings.TrimSpace(lp.path) == "" {
+			continue
+		}
+		files = append(files, pluginFile{
+			ID:      id,
+			Path:    lp.path,
+			Version: strings.TrimSpace(lp.version),
+		})
+		selected[id] = struct{}{}
+	}
+	return files
 }
 
 // UnloadPlugin removes one plugin from the active runtime and closes its dynamic library.
@@ -236,16 +386,33 @@ func (h *Host) UnloadPlugin(id string) bool {
 		return false
 	}
 
-	var target pluginUnloadTarget
+	h.applyMu.Lock()
+	defer h.applyMu.Unlock()
+
+	targets := make([]pluginUnloadTarget, 0)
 	h.mu.Lock()
 	lp := h.loaded[id]
-	if lp == nil {
+	if lp != nil {
+		targets = append(targets, pluginUnloadTarget{id: lp.id, name: lp.name, path: lp.path, version: lp.version, client: lp.client})
+	}
+	for _, retired := range h.retired[id] {
+		if retired == nil {
+			continue
+		}
+		targets = append(targets, pluginUnloadTarget{id: retired.id, name: retired.name, path: retired.path, version: retired.version, client: retired.client})
+	}
+	if len(targets) == 0 {
 		h.mu.Unlock()
 		return false
 	}
-	target = pluginUnloadTarget{id: lp.id, path: lp.path, client: lp.client}
 	delete(h.loaded, id)
+	delete(h.retired, id)
 	delete(h.fused, id)
+	delete(h.activePluginVersions, id)
+	delete(h.activePluginPaths, id)
+	for _, target := range targets {
+		delete(h.pluginFileVersions, cleanPluginPath(target.path))
+	}
 	records, enabled := h.snapshotWithoutPluginLocked(id)
 	h.removePluginRuntimeStateLocked(id)
 	h.snapshot.Store(&Snapshot{enabled: enabled, records: records})
@@ -253,13 +420,12 @@ func (h *Host) UnloadPlugin(id string) bool {
 
 	h.refreshThinkingProviders(records)
 	h.RegisterFrontendAuthProviders()
-	if target.client != nil {
-		target.client.Shutdown()
+	for _, target := range targets {
+		if target.client != nil {
+			target.client.Shutdown()
+		}
+		log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
 	}
-	log.WithFields(log.Fields{
-		"plugin_id": target.id,
-		"path":      target.path,
-	}).Info("pluginhost: plugin unloaded")
 	return true
 }
 
@@ -269,6 +435,9 @@ func (h *Host) ShutdownAll() {
 		return
 	}
 
+	h.applyMu.Lock()
+	defer h.applyMu.Unlock()
+
 	targets := make([]pluginUnloadTarget, 0)
 	h.mu.Lock()
 	for _, lp := range h.loaded {
@@ -276,12 +445,30 @@ func (h *Host) ShutdownAll() {
 			continue
 		}
 		targets = append(targets, pluginUnloadTarget{
-			id:     lp.id,
-			path:   lp.path,
-			client: lp.client,
+			id:      lp.id,
+			name:    lp.name,
+			path:    lp.path,
+			version: lp.version,
+			client:  lp.client,
 		})
 	}
+	for _, retiredPlugins := range h.retired {
+		for _, lp := range retiredPlugins {
+			if lp == nil || lp.client == nil {
+				continue
+			}
+			targets = append(targets, pluginUnloadTarget{
+				id:      lp.id,
+				name:    lp.name,
+				path:    lp.path,
+				version: lp.version,
+				client:  lp.client,
+			})
+		}
+	}
 	h.loaded = make(map[string]*loadedPlugin)
+	h.retired = make(map[string][]*loadedPlugin)
+	h.loading = make(map[string]struct{})
 	h.modelClientIDs = make(map[string]struct{})
 	h.executorModelClientIDs = make(map[string]struct{})
 	h.modelProviders = make(map[string]string)
@@ -292,6 +479,9 @@ func (h *Host) ShutdownAll() {
 	h.commandLineHits = make(map[string]struct{})
 	h.managementRoutes = make(map[string]managementRouteRecord)
 	h.resourceRoutes = make(map[string]resourceRouteRecord)
+	h.pluginFileVersions = make(map[string]string)
+	h.activePluginVersions = make(map[string]string)
+	h.activePluginPaths = make(map[string]string)
 	h.snapshot.Store(emptySnapshot())
 	h.mu.Unlock()
 
@@ -299,11 +489,49 @@ func (h *Host) ShutdownAll() {
 	h.RegisterFrontendAuthProviders()
 	for _, target := range targets {
 		target.client.Shutdown()
-		log.WithFields(log.Fields{
-			"plugin_id": target.id,
-			"path":      target.path,
-		}).Info("pluginhost: plugin unloaded")
+		log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
 	}
+}
+
+func cleanPluginPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
+}
+
+func (h *Host) retireLoadedPluginLocked(lp *loadedPlugin) {
+	if h == nil || lp == nil {
+		return
+	}
+	h.retired[lp.id] = append(h.retired[lp.id], lp)
+}
+
+func (h *Host) recordCurrent(record capabilityRecord) bool {
+	return h.pluginIdentityCurrent(record.id, record.path, record.version)
+}
+
+func (h *Host) pluginIdentityCurrent(id string, path string, version string) bool {
+	if h == nil {
+		return false
+	}
+	version = strings.TrimSpace(version)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	path = cleanPluginPath(path)
+	if path == "" || h.activePluginPaths[id] != path {
+		return false
+	}
+	activePathVersion, okVersion := h.pluginFileVersions[path]
+	if !okVersion || activePathVersion != version {
+		return false
+	}
+	return h.activePluginVersions[id] == version
 }
 
 func (h *Host) snapshotWithoutPluginLocked(id string) ([]capabilityRecord, bool) {
@@ -346,17 +574,36 @@ func (h *Host) removePluginRuntimeStateLocked(id string) {
 	delete(h.modelRegistrations, id)
 }
 
-func (h *Host) callRegisterLocked(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {
+func (h *Host) rebuildActivePluginMapsLocked(records []capabilityRecord) {
+	h.pluginFileVersions = make(map[string]string, len(records))
+	h.activePluginVersions = make(map[string]string, len(records))
+	h.activePluginPaths = make(map[string]string, len(records))
+	for _, record := range records {
+		id := strings.TrimSpace(record.id)
+		path := cleanPluginPath(record.path)
+		if id == "" || path == "" {
+			continue
+		}
+		h.pluginFileVersions[path] = strings.TrimSpace(record.version)
+		h.activePluginVersions[id] = strings.TrimSpace(record.version)
+		h.activePluginPaths[id] = path
+	}
+}
+
+func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {
 	if lp == nil {
 		return pluginapi.Plugin{}, false
 	}
 
 	method := pluginabi.MethodPluginRegister
-	if lp.registered {
+	h.mu.Lock()
+	registered := lp.registered
+	h.mu.Unlock()
+	if registered {
 		method = pluginabi.MethodPluginReconfigure
 	}
 
-	plugin, okCall := h.safePluginCallLocked(ctx, lp.id, method, func() pluginapi.Plugin {
+	plugin, okCall := h.safePluginCall(ctx, lp.id, method, func() pluginapi.Plugin {
 		plugin, errRegister := registerRPCPlugin(ctx, h, lp.id, lp.client, method, item.ConfigYAML)
 		if errRegister != nil {
 			log.Warnf("pluginhost: plugin %s %s failed: %v", lp.id, method, errRegister)
@@ -367,7 +614,9 @@ func (h *Host) callRegisterLocked(ctx context.Context, lp *loadedPlugin, item ru
 	if !okCall {
 		return pluginapi.Plugin{}, false
 	}
+	h.mu.Lock()
 	lp.registered = true
+	h.mu.Unlock()
 	if !validPlugin(plugin) {
 		log.Warnf("pluginhost: plugin %s returned invalid metadata or no capabilities", lp.id)
 		return pluginapi.Plugin{}, false
@@ -375,11 +624,10 @@ func (h *Host) callRegisterLocked(ctx context.Context, lp *loadedPlugin, item ru
 	return plugin, true
 }
 
-func (h *Host) safePluginCallLocked(ctx context.Context, id, method string, fn func() pluginapi.Plugin) (out pluginapi.Plugin, ok bool) {
+func (h *Host) safePluginCall(ctx context.Context, id, method string, fn func() pluginapi.Plugin) (out pluginapi.Plugin, ok bool) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			h.fused[id] = fmt.Sprintf("%s panic: %v", method, recovered)
-			log.WithField("plugin_id", id).WithField("method", method).Errorf("pluginhost: plugin panic recovered: %v\n%s", recovered, debug.Stack())
+			h.fusePlugin(id, method, recovered)
 			out = pluginapi.Plugin{}
 			ok = false
 		}
@@ -414,6 +662,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.AuthProvider != nil ||
 		caps.FrontendAuthProvider != nil ||
 		caps.Scheduler != nil ||
+		caps.ModelRouter != nil ||
 		caps.Executor != nil ||
 		caps.RequestTranslator != nil ||
 		caps.RequestNormalizer != nil ||

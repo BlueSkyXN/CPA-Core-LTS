@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var defaultRuntimeConfigYAML = []byte("enabled: true\npriority: 0\n")
+var defaultRuntimeConfigYAML = []byte("enabled: false\npriority: 0\n")
 
 type runtimeConfig struct {
 	Enabled bool
@@ -23,6 +23,7 @@ type runtimeItemConfig struct {
 	Enabled     bool
 	Priority    int
 	Permissions config.PluginPermissions
+	Version     string
 	ConfigYAML  []byte
 }
 
@@ -59,6 +60,7 @@ func runtimeConfigFromConfig(cfg *config.Config) runtimeConfig {
 			Enabled:     enabled,
 			Priority:    item.Priority,
 			Permissions: item.Permissions,
+			Version:     pluginConfigDesiredVersion(item),
 			ConfigYAML:  runtimeConfigYAML(item, enabled),
 		}
 	}
@@ -68,7 +70,7 @@ func runtimeConfigFromConfig(cfg *config.Config) runtimeConfig {
 func defaultRuntimeItemConfig(id string) runtimeItemConfig {
 	return runtimeItemConfig{
 		ID:         id,
-		Enabled:    true,
+		Enabled:    false,
 		Priority:   0,
 		ConfigYAML: append([]byte(nil), defaultRuntimeConfigYAML...),
 	}
@@ -81,6 +83,73 @@ func runtimeConfigYAML(item config.PluginInstanceConfig, enabled bool) []byte {
 		return append([]byte(nil), defaultRuntimeConfigYAML...)
 	}
 	return append(append([]byte(nil), rawYAML...), '\n')
+}
+
+func desiredPluginVersions(items map[string]runtimeItemConfig) map[string]string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(items))
+	for id, item := range items {
+		id = strings.TrimSpace(id)
+		version := strings.TrimSpace(item.Version)
+		if id == "" || version == "" {
+			continue
+		}
+		out[id] = version
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func pluginConfigDesiredVersion(item config.PluginInstanceConfig) string {
+	storeNode := yamlMappingValue(&item.Raw, "store")
+	if storeNode == nil {
+		return ""
+	}
+	if version := normalizePluginDesiredVersion(yamlScalarString(yamlMappingValue(storeNode, "version"))); version != "" {
+		return version
+	}
+	return normalizePluginDesiredVersion(yamlScalarString(yamlMappingValue(storeNode, "release-tag")))
+}
+
+func normalizePluginDesiredVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') {
+		version = version[1:]
+	}
+	if !validPluginVersion(version) {
+		return ""
+	}
+	return version
+}
+
+func yamlScalarString(node *yaml.Node) string {
+	if node == nil || node.Kind == 0 {
+		return ""
+	}
+	if node.Kind == yaml.ScalarNode {
+		return strings.TrimSpace(node.Value)
+	}
+	var value string
+	if errDecode := node.Decode(&value); errDecode != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func yamlMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index] != nil && node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
+	return nil
 }
 
 func normalizedConfigNode(item config.PluginInstanceConfig, enabled bool) *yaml.Node {

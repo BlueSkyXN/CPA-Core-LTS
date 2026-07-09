@@ -10,6 +10,8 @@ import (
 
 type capabilityRecord struct {
 	id          string
+	path        string
+	version     string
 	priority    int
 	permissions config.PluginPermissions
 	meta        pluginapi.Metadata
@@ -27,6 +29,7 @@ type RegisteredPluginInfo struct {
 	Priority      int
 	Metadata      pluginapi.Metadata
 	SupportsOAuth bool
+	OAuthProvider string
 	Menus         []RegisteredPluginMenu
 }
 
@@ -41,24 +44,66 @@ func emptySnapshot() *Snapshot {
 	return &Snapshot{}
 }
 
-// RegisteredPlugins returns a stable copy of plugin metadata in the current runtime snapshot.
-func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
-	snap := h.Snapshot()
+func (h *Host) activeRecords() []capabilityRecord {
+	return h.activeRecordsFromSnapshot(h.Snapshot())
+}
+
+func (h *Host) activeRecordsFromSnapshot(snap *Snapshot) []capabilityRecord {
 	if snap == nil || len(snap.records) == 0 {
 		return nil
 	}
-	menusByPlugin := h.registeredPluginMenus()
-	out := make([]RegisteredPluginInfo, 0, len(snap.records))
+	out := make([]capabilityRecord, 0, len(snap.records))
 	for _, record := range snap.records {
+		if h.recordCurrent(record) {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+// RegisteredPlugins returns a stable copy of plugin metadata in the current runtime snapshot.
+func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
+	records := h.activeRecords()
+	if len(records) == 0 {
+		return nil
+	}
+	menusByPlugin := h.registeredPluginMenus()
+	out := make([]RegisteredPluginInfo, 0, len(records))
+	for _, record := range records {
+		authProvider := record.plugin.Capabilities.AuthProvider
+		oauthProvider := ""
+		if authProvider != nil && !h.isPluginFused(record.id) {
+			if identifier, okIdentifier := h.callAuthProviderIdentifier(record.id, authProvider); okIdentifier {
+				oauthProvider = identifier
+			}
+		}
 		out = append(out, RegisteredPluginInfo{
 			ID:            record.id,
 			Priority:      record.priority,
-			Metadata:      record.meta,
-			SupportsOAuth: record.plugin.Capabilities.AuthProvider != nil,
+			Metadata:      clonePluginMetadata(record.meta),
+			SupportsOAuth: authProvider != nil,
+			OAuthProvider: oauthProvider,
 			Menus:         menusByPlugin[record.id],
 		})
 	}
 	return out
+}
+
+// PluginRegistered reports whether a plugin is active in the current runtime snapshot.
+func (h *Host) PluginRegistered(id string) bool {
+	if h == nil {
+		return false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if record.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) registeredPluginMenus() map[string][]RegisteredPluginMenu {
@@ -94,4 +139,24 @@ func sortRecords(records []capabilityRecord) {
 		}
 		return records[i].priority > records[j].priority
 	})
+}
+
+func clonePluginMetadata(meta pluginapi.Metadata) pluginapi.Metadata {
+	if len(meta.ConfigFields) == 0 {
+		return meta
+	}
+	meta.ConfigFields = cloneConfigFields(meta.ConfigFields)
+	return meta
+}
+
+func cloneConfigFields(fields []pluginapi.ConfigField) []pluginapi.ConfigField {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]pluginapi.ConfigField, len(fields))
+	copy(out, fields)
+	for index := range out {
+		out[index].EnumValues = append([]string(nil), fields[index].EnumValues...)
+	}
+	return out
 }

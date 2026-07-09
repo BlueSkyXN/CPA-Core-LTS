@@ -71,15 +71,15 @@ func TestHostAuthCallbacksRequireExplicitPluginPermission(t *testing.T) {
 
 func TestHostAuthListCallbackUsesAuthManager(t *testing.T) {
 	authDir := t.TempDir()
-	path := filepath.Join(authDir, "gemini-a.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"gemini","email":"a@example.com","api_key":"k1"}`), 0o600); errWrite != nil {
+	path := filepath.Join(authDir, "demo-a.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"demo","email":"a@example.com","api_key":"k1"}`), 0o600); errWrite != nil {
 		t.Fatalf("write auth file: %v", errWrite)
 	}
 
 	auth := &coreauth.Auth{
-		ID:       "gemini-a.json",
-		Provider: "gemini",
-		FileName: "gemini-a.json",
+		ID:       "demo-a.json",
+		Provider: "demo",
+		FileName: "demo-a.json",
 		Label:    "a@example.com",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
@@ -87,11 +87,11 @@ func TestHostAuthListCallbackUsesAuthManager(t *testing.T) {
 			"source": path,
 		},
 		Metadata: map[string]any{
-			"type":    "gemini",
+			"type":    "demo",
 			"email":   "a@example.com",
 			"api_key": "k1",
 		},
-		Storage: &memoryAuthStorage{payload: []byte(`{"type":"gemini","email":"a@example.com","api_key":"k1"}`)},
+		Storage: &memoryAuthStorage{payload: []byte(`{"type":"demo","email":"a@example.com","api_key":"k1"}`)},
 	}
 	auth.EnsureIndex()
 
@@ -114,22 +114,22 @@ func TestHostAuthListCallbackUsesAuthManager(t *testing.T) {
 		t.Fatalf("files = %#v, want one entry", resp.Files)
 	}
 	entry := resp.Files[0]
-	if entry.AuthIndex != auth.Index || entry.Name != "gemini-a.json" || entry.Email != "a@example.com" {
+	if entry.AuthIndex != auth.Index || entry.Name != "demo-a.json" || entry.Email != "a@example.com" {
 		t.Fatalf("entry = %#v, want auth index and file metadata", entry)
 	}
 }
 
 func TestHostAuthGetCallbackReturnsPhysicalJSONByAuthIndex(t *testing.T) {
 	authDir := t.TempDir()
-	path := filepath.Join(authDir, "gemini-b.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"gemini","email":"b@example.com","api_key":"k2"}`), 0o600); errWrite != nil {
+	path := filepath.Join(authDir, "demo-b.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"demo","email":"b@example.com","api_key":"k2"}`), 0o600); errWrite != nil {
 		t.Fatalf("write auth file: %v", errWrite)
 	}
 
 	auth := &coreauth.Auth{
-		ID:       "gemini-b.json",
-		Provider: "gemini",
-		FileName: "gemini-b.json",
+		ID:       "demo-b.json",
+		Provider: "demo",
+		FileName: "demo-b.json",
 		Label:    "b@example.com",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
@@ -137,11 +137,11 @@ func TestHostAuthGetCallbackReturnsPhysicalJSONByAuthIndex(t *testing.T) {
 			"source": path,
 		},
 		Metadata: map[string]any{
-			"type":    "gemini",
+			"type":    "demo",
 			"email":   "b@example.com",
 			"api_key": "k2",
 		},
-		Storage: &memoryAuthStorage{payload: []byte(`{"type":"gemini","email":"b@example.com","api_key":"changed"}`)},
+		Storage: &memoryAuthStorage{payload: []byte(`{"type":"demo","email":"b@example.com","api_key":"changed"}`)},
 	}
 	auth.EnsureIndex()
 
@@ -163,7 +163,7 @@ func TestHostAuthGetCallbackReturnsPhysicalJSONByAuthIndex(t *testing.T) {
 	if errDecode != nil {
 		t.Fatalf("decode response: %v", errDecode)
 	}
-	if resp.AuthIndex != auth.Index || resp.Name != "gemini-b.json" {
+	if resp.AuthIndex != auth.Index || resp.Name != "demo-b.json" {
 		t.Fatalf("response = %#v, want auth index and name", resp)
 	}
 	var decoded map[string]any
@@ -208,20 +208,20 @@ func TestHostAuthListCallbackFallsBackToDisk(t *testing.T) {
 
 func TestHostAuthGetRuntimeCallbackReturnsRuntimeInfo(t *testing.T) {
 	auth := &coreauth.Auth{
-		ID:       "gemini-runtime.json",
-		Provider: "gemini",
-		FileName: "gemini-runtime.json",
+		ID:       "demo-runtime.json",
+		Provider: "demo",
+		FileName: "demo-runtime.json",
 		Label:    "runtime@example.com",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
 			"runtime_only": "true",
 		},
 		Metadata: map[string]any{
-			"type":    "gemini",
+			"type":    "demo",
 			"email":   "runtime@example.com",
 			"api_key": "runtime-key",
 		},
-		Storage: &memoryAuthStorage{payload: []byte(`{"type":"gemini","email":"runtime@example.com","api_key":"runtime-key"}`)},
+		Storage: &memoryAuthStorage{payload: []byte(`{"type":"demo","email":"runtime@example.com","api_key":"runtime-key"}`)},
 	}
 	auth.EnsureIndex()
 
@@ -256,7 +256,7 @@ func TestHostAuthSaveCallbackWritesPhysicalFile(t *testing.T) {
 
 	req, errMarshal := json.Marshal(pluginapi.HostAuthSaveRequest{
 		Name: "saved.json",
-		JSON: json.RawMessage(`{"type":"gemini","email":"saved@example.com","api_key":"saved-key"}`),
+		JSON: json.RawMessage(`{"type":"demo","email":"saved@example.com","api_key":"saved-key"}`),
 	})
 	if errMarshal != nil {
 		t.Fatalf("marshal request: %v", errMarshal)
@@ -276,7 +276,7 @@ func TestHostAuthSaveCallbackWritesPhysicalFile(t *testing.T) {
 	if errRead != nil {
 		t.Fatalf("read saved file: %v", errRead)
 	}
-	if string(data) != `{"type":"gemini","email":"saved@example.com","api_key":"saved-key"}` {
+	if string(data) != `{"type":"demo","email":"saved@example.com","api_key":"saved-key"}` {
 		t.Fatalf("saved file = %q, want credential json", string(data))
 	}
 	auths := host.currentAuthManager().List()

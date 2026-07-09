@@ -26,6 +26,7 @@ var codexClientAllowedReasoningLevels = map[string]struct{}{
 	"medium": {},
 	"high":   {},
 	"xhigh":  {},
+	"max":    {},
 }
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
@@ -66,11 +67,67 @@ func buildCodexClientModels(models []map[string]any) []map[string]any {
 		result = append(result, entry)
 	}
 
+	applyCodexClientNonTemplatePriorities(result, templates)
+
 	sort.SliceStable(result, func(i, j int) bool {
 		return codexClientModelPriority(result[i]) < codexClientModelPriority(result[j])
 	})
 
 	return result
+}
+
+func maxCodexClientTemplatePriority(templates map[string]map[string]any) int {
+	maxPriority := 0
+	for _, template := range templates {
+		priority := codexClientModelPriority(template)
+		if priority > maxPriority {
+			maxPriority = priority
+		}
+	}
+	return maxPriority
+}
+
+func applyCodexClientNonTemplatePriorities(result []map[string]any, templates map[string]map[string]any) {
+	if len(result) == 0 {
+		return
+	}
+
+	basePriority := maxCodexClientTemplatePriority(templates)
+	type nonTemplateEntry struct {
+		index       int
+		displayName string
+		slug        string
+	}
+
+	pending := make([]nonTemplateEntry, 0)
+	for index, entry := range result {
+		slug := stringModelValue(entry, "slug")
+		if _, ok := templates[slug]; ok {
+			continue
+		}
+		displayName := stringModelValue(entry, "display_name")
+		if displayName == "" {
+			displayName = slug
+		}
+		pending = append(pending, nonTemplateEntry{
+			index:       index,
+			displayName: displayName,
+			slug:        slug,
+		})
+	}
+
+	sort.SliceStable(pending, func(i, j int) bool {
+		left := strings.ToLower(pending[i].displayName)
+		right := strings.ToLower(pending[j].displayName)
+		if left == right {
+			return pending[i].slug < pending[j].slug
+		}
+		return left < right
+	})
+
+	for rank, entry := range pending {
+		result[entry.index]["priority"] = basePriority + 100*(rank+1)
+	}
 }
 
 func loadCodexClientModelTemplates() (map[string]map[string]any, map[string]any, error) {
@@ -116,6 +173,10 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 		}
 		if info.Type == registry.OpenAIImageModelType {
 			entry["visibility"] = "hide"
+			delete(entry, "input_modalities")
+			delete(entry, "supports_image_detail_original")
+		} else {
+			applyCodexClientInputModalitiesMetadata(entry, info.SupportedInputModalities)
 		}
 		applyCodexClientThinkingMetadata(entry, info.Thinking)
 	}
@@ -130,8 +191,8 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 	entry["slug"] = id
 	entry["display_name"] = displayName
 	entry["description"] = description
-	entry["priority"] = 100
 	entry["prefer_websockets"] = false
+	entry["service_tiers"] = []any{}
 	delete(entry, "apply_patch_tool_type")
 	delete(entry, "upgrade")
 	delete(entry, "availability_nux")
@@ -151,8 +212,35 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 
 func applyCodexClientVisibilityOverride(entry map[string]any, id string) {
 	switch strings.TrimSpace(id) {
-	case "grok-imagine-image-quality", "gpt-image-2", "grok-imagine-image", "grok-imagine-video", "grok-imagine-video-1.5-preview":
+	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "grok-imagine-image", "grok-imagine-video", "grok-imagine-video-1.5-preview":
 		entry["visibility"] = "hide"
+	}
+}
+
+func applyCodexClientInputModalitiesMetadata(entry map[string]any, modalities []string) {
+	if len(modalities) == 0 {
+		return
+	}
+	codexModalities := make([]any, 0, len(modalities))
+	supportsImage := false
+	for _, raw := range modalities {
+		modality := strings.ToLower(strings.TrimSpace(raw))
+		if modality == "" {
+			continue
+		}
+		codexModalities = append(codexModalities, modality)
+		if modality == "image" {
+			supportsImage = true
+		}
+	}
+	if len(codexModalities) == 0 {
+		return
+	}
+	entry["input_modalities"] = codexModalities
+	if supportsImage {
+		entry["supports_image_detail_original"] = true
+	} else {
+		delete(entry, "supports_image_detail_original")
 	}
 }
 
@@ -249,6 +337,8 @@ func codexClientReasoningDescription(level string) string {
 		return "Greater reasoning depth for complex problems"
 	case "xhigh":
 		return "Extra high reasoning depth for complex problems"
+	case "max":
+		return "Maximum available reasoning depth for complex problems"
 	default:
 		return level
 	}
