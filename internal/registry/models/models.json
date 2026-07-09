@@ -120,6 +120,28 @@
       }
     },
     {
+      "id": "claude-sonnet-5",
+      "object": "model",
+      "created": 1782777600,
+      "owned_by": "anthropic",
+      "type": "claude",
+      "display_name": "Claude Sonnet 5",
+      "description": "Anthropic's agentic Sonnet model for coding, tool use, and enterprise workflows",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "thinking": {
+        "zero_allowed": true,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    {
       "id": "claude-fable-5",
       "object": "model",
       "created": 1781049600,
@@ -1944,9 +1966,9 @@
       "object": "model",
       "owned_by": "antigravity",
       "type": "antigravity",
-      "display_name": "Gemini 3.5 Flash",
+      "display_name": "Gemini 3.5 Flash (High)",
       "name": "gemini-3-flash-agent",
-      "description": "Gemini 3.5 Flash",
+      "description": "Gemini 3.5 Flash (High)",
       "context_length": 1048576,
       "max_completion_tokens": 65536,
       "thinking": {
@@ -2060,8 +2082,29 @@
       "object": "model",
       "owned_by": "antigravity",
       "type": "antigravity",
-      "display_name": "Gemini 3.5 Flash (Low)",
+      "display_name": "Gemini 3.5 Flash (Medium)",
       "name": "gemini-3.5-flash-low",
+      "description": "Gemini 3.5 Flash (Medium)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
+      "thinking": {
+        "min": 1,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "gemini-3.5-flash-extra-low",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.5 Flash (Low)",
+      "name": "gemini-3.5-flash-extra-low",
       "description": "Gemini 3.5 Flash (Low)",
       "context_length": 1048576,
       "max_completion_tokens": 65535,
@@ -2089,6 +2132,26 @@
       "description": "Grok Build 0.1 is xAI’s fast coding model trained specifically for agentic software engineering workflows.",
       "context_length": 256000,
       "max_completion_tokens": 256000
+    },
+    {
+      "id": "grok-4.5",
+      "object": "model",
+      "created": 1783526400,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.5",
+      "name": "grok-4.5",
+      "description": "SpaceXAI's intelligent coding model for agentic software, engineering, and workflow tasks.",
+      "context_length": 500000,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "zero_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
     },
     {
       "id": "grok-4.3",
