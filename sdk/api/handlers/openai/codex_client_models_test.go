@@ -139,7 +139,6 @@ func TestCodexClientModelsResponse_GPT56UltraReasoningMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
 	}
-
 	bySlug := make(map[string]map[string]any, len(models))
 	for _, model := range models {
 		bySlug[stringModelValue(model, "slug")] = model
