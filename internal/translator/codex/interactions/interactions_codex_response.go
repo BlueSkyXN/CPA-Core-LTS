@@ -16,6 +16,7 @@ type codexToInteractionsStreamState struct {
 	Started          bool
 	Completed        bool
 	Done             bool
+	ServiceTier      string
 	ActiveStepOpen   bool
 	ActiveStepType   string
 	ActiveStepIndex  int
@@ -30,16 +31,15 @@ type codexToInteractionsStreamState struct {
 
 func ConvertCodexResponseToInteractions(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	_ = ctx
-	_ = originalRequestRawJSON
-	_ = requestRawJSON
 	if param == nil {
 		var local any
 		param = &local
 	}
 	if *param == nil {
 		*param = &codexToInteractionsStreamState{
-			ID:    fmt.Sprintf("interaction_%d", time.Now().UnixNano()),
-			Model: modelName,
+			ID:          fmt.Sprintf("interaction_%d", time.Now().UnixNano()),
+			Model:       modelName,
+			ServiceTier: resolveCodexInteractionsServiceTier(gjson.Result{}, originalRequestRawJSON, requestRawJSON),
 		}
 	}
 	st := (*param).(*codexToInteractionsStreamState)
@@ -80,8 +80,6 @@ func ConvertCodexResponseToInteractions(ctx context.Context, modelName string, o
 
 func ConvertCodexResponseToInteractionsNonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	_ = ctx
-	_ = originalRequestRawJSON
-	_ = requestRawJSON
 	root := gjson.ParseBytes(rawJSON)
 	response := root.Get("response")
 	if !response.Exists() {
@@ -111,6 +109,7 @@ func ConvertCodexResponseToInteractionsNonStream(ctx context.Context, modelName 
 		}
 		return true
 	})
+	out, _ = sjson.SetBytes(out, "service_tier", resolveCodexInteractionsServiceTier(response, originalRequestRawJSON, requestRawJSON))
 	out = setCodexInteractionsUsage(out, "usage", response.Get("usage"), false)
 	return out
 }
@@ -132,6 +131,7 @@ func codexStreamEventType(rawJSON []byte) string {
 }
 
 func appendCodexInteractionsCreated(out [][]byte, st *codexToInteractionsStreamState, response gjson.Result) [][]byte {
+	updateCodexInteractionsServiceTierFromResponse(st, response)
 	if st.Started {
 		return out
 	}
@@ -156,6 +156,7 @@ func appendCodexInteractionsCreated(out [][]byte, st *codexToInteractionsStreamS
 }
 
 func appendCodexInteractionsCompleted(out [][]byte, st *codexToInteractionsStreamState, response gjson.Result) [][]byte {
+	updateCodexInteractionsServiceTierFromResponse(st, response)
 	if st.Completed {
 		return out
 	}
@@ -163,15 +164,73 @@ func appendCodexInteractionsCompleted(out [][]byte, st *codexToInteractionsStrea
 	if st.CreatedAt > 0 {
 		created = time.Unix(st.CreatedAt, 0).UTC()
 	}
-	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","service_tier":"standard","object":"interaction","model":""},"event_type":"interaction.completed"}`)
+	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","object":"interaction","model":""},"event_type":"interaction.completed"}`)
 	completed, _ = sjson.SetBytes(completed, "interaction.id", st.ID)
 	completed, _ = sjson.SetBytes(completed, "interaction.created", created.Format(time.RFC3339))
 	completed, _ = sjson.SetBytes(completed, "interaction.updated", time.Now().UTC().Format(time.RFC3339))
 	completed, _ = sjson.SetBytes(completed, "interaction.model", st.Model)
+	completed, _ = sjson.SetBytes(completed, "interaction.service_tier", st.ServiceTier)
 	completed = setCodexInteractionsUsage(completed, "interaction.usage", response.Get("usage"), true)
 	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
 	st.Completed = true
 	return out
+}
+
+func resolveCodexInteractionsServiceTier(response gjson.Result, originalRequestRawJSON, requestRawJSON []byte) string {
+	if tier := normalizeCodexInteractionsResponseServiceTier(response.Get("service_tier")); tier != "" {
+		return tier
+	}
+
+	if outboundRequest, ok := parseCodexInteractionsRequest(requestRawJSON); ok {
+		if tier := normalizeCodexInteractionsResponseServiceTier(outboundRequest.Get("service_tier")); tier != "" {
+			return tier
+		}
+		// A readable outbound request is authoritative. A missing or unsupported
+		// tier therefore means standard and must not fall back to client intent.
+		return "standard"
+	}
+
+	if originalRequest, ok := parseCodexInteractionsRequest(originalRequestRawJSON); ok {
+		if tier := normalizeCodexInteractionsResponseServiceTier(originalRequest.Get("service_tier")); tier != "" {
+			return tier
+		}
+	}
+	return "standard"
+}
+
+func updateCodexInteractionsServiceTierFromResponse(st *codexToInteractionsStreamState, response gjson.Result) {
+	if st == nil {
+		return
+	}
+	if tier := normalizeCodexInteractionsResponseServiceTier(response.Get("service_tier")); tier != "" {
+		st.ServiceTier = tier
+	}
+}
+
+func parseCodexInteractionsRequest(rawJSON []byte) (gjson.Result, bool) {
+	rawJSON = bytes.TrimSpace(rawJSON)
+	if len(rawJSON) == 0 || !gjson.ValidBytes(rawJSON) {
+		return gjson.Result{}, false
+	}
+	request := gjson.ParseBytes(rawJSON)
+	if !request.IsObject() {
+		return gjson.Result{}, false
+	}
+	return request, true
+}
+
+func normalizeCodexInteractionsResponseServiceTier(serviceTier gjson.Result) string {
+	if !serviceTier.Exists() || serviceTier.Type != gjson.String {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(serviceTier.String())) {
+	case "priority", "fast":
+		return "priority"
+	case "standard", "default":
+		return "standard"
+	default:
+		return ""
+	}
 }
 
 func appendCodexInteractionsDone(out [][]byte, st *codexToInteractionsStreamState) [][]byte {
