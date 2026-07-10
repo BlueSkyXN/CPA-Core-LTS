@@ -71,6 +71,13 @@ func TestConvertInteractionsRequestToCodexUsesBodyStream(t *testing.T) {
 	}
 }
 
+func TestConvertInteractionsRequestToCodexNormalizesFastServiceTier(t *testing.T) {
+	out := ConvertInteractionsRequestToCodex("codex-test", []byte(`{"model":"codex-test","service_tier":"fast","input":"hi"}`), false)
+	if got := gjson.GetBytes(out, "service_tier").String(); got != "priority" {
+		t.Fatalf("service_tier = %q, want priority. Output: %s", got, string(out))
+	}
+}
+
 func TestConvertInteractionsRequestToCodexFunctionDeclarations(t *testing.T) {
 	out := ConvertInteractionsRequestToCodex("codex-test", []byte(`{"model":"codex-test","input":"hi","tools":[{"function_declarations":[{"name":"lookup","description":"Lookup data","parameters":{"type":"object","$schema":"http://json-schema.org/draft-07/schema#","properties":{"q":{"type":"string"}}}}]}]}`), false)
 	if got := gjson.GetBytes(out, "tools.0.type").String(); got != "function" {
@@ -142,6 +149,179 @@ func TestConvertCodexResponseToInteractionsStreamCompletesAfterSteps(t *testing.
 	completed := findCodexInteractionsEventPayload(events, "interaction.completed")
 	if gotTokens := gjson.GetBytes(completed, "interaction.usage.total_tokens").Int(); gotTokens != 3 {
 		t.Fatalf("total_tokens = %d, want 3. Payload: %s", gotTokens, string(completed))
+	}
+}
+
+func TestConvertCodexResponseToInteractionsServiceTierResolution(t *testing.T) {
+	tests := []struct {
+		name             string
+		originalRequest  []byte
+		outboundRequest  []byte
+		upstreamResponse string
+		want             string
+	}{
+		{
+			name:             "actual outbound priority",
+			originalRequest:  []byte(`{"service_tier":"priority"}`),
+			outboundRequest:  []byte(`{"service_tier":"priority"}`),
+			upstreamResponse: `{}`,
+			want:             "priority",
+		},
+		{
+			name:             "fast intent normalized by actual outbound",
+			originalRequest:  []byte(`{"service_tier":"fast"}`),
+			outboundRequest:  []byte(`{"service_tier":"priority"}`),
+			upstreamResponse: `{}`,
+			want:             "priority",
+		},
+		{
+			name:             "upstream priority overrides standard outbound",
+			originalRequest:  []byte(`{"service_tier":"default"}`),
+			outboundRequest:  []byte(`{"service_tier":"default"}`),
+			upstreamResponse: `{"service_tier":"priority"}`,
+			want:             "priority",
+		},
+		{
+			name:             "upstream standard overrides priority outbound",
+			originalRequest:  []byte(`{"service_tier":"priority"}`),
+			outboundRequest:  []byte(`{"service_tier":"priority"}`),
+			upstreamResponse: `{"service_tier":"standard"}`,
+			want:             "standard",
+		},
+		{
+			name:             "known outbound missing blocks original priority",
+			originalRequest:  []byte(`{"service_tier":"priority"}`),
+			outboundRequest:  []byte(`{}`),
+			upstreamResponse: `{}`,
+			want:             "standard",
+		},
+		{
+			name:             "unavailable outbound falls back to original fast",
+			originalRequest:  []byte(`{"service_tier":"fast"}`),
+			outboundRequest:  nil,
+			upstreamResponse: `{}`,
+			want:             "priority",
+		},
+		{
+			name:             "unreadable outbound falls back to original priority",
+			originalRequest:  []byte(`{"service_tier":"priority"}`),
+			outboundRequest:  []byte(`{`),
+			upstreamResponse: `{}`,
+			want:             "priority",
+		},
+		{
+			name:             "outbound default maps to standard",
+			originalRequest:  []byte(`{"service_tier":"priority"}`),
+			outboundRequest:  []byte(`{"service_tier":"default"}`),
+			upstreamResponse: `{}`,
+			want:             "standard",
+		},
+		{
+			name:             "outbound standard remains standard",
+			originalRequest:  []byte(`{"service_tier":"priority"}`),
+			outboundRequest:  []byte(`{"service_tier":"standard"}`),
+			upstreamResponse: `{}`,
+			want:             "standard",
+		},
+		{
+			name:             "all sources unavailable",
+			originalRequest:  nil,
+			outboundRequest:  nil,
+			upstreamResponse: `{}`,
+			want:             "standard",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := `{"type":"response.completed","response":` + tt.upstreamResponse + `}`
+
+			var param any
+			events := ConvertCodexResponseToInteractions(
+				context.Background(),
+				"codex-test",
+				tt.originalRequest,
+				tt.outboundRequest,
+				[]byte("data: "+response),
+				&param,
+			)
+			completed := findCodexInteractionsEventPayload(events, "interaction.completed")
+			if got := gjson.GetBytes(completed, "interaction.service_tier").String(); got != tt.want {
+				t.Fatalf("stream service_tier = %q, want %q. Payload: %s", got, tt.want, string(completed))
+			}
+
+			nonStream := ConvertCodexResponseToInteractionsNonStream(
+				context.Background(),
+				"codex-test",
+				tt.originalRequest,
+				tt.outboundRequest,
+				[]byte(response),
+				nil,
+			)
+			if got := gjson.GetBytes(nonStream, "service_tier").String(); got != tt.want {
+				t.Fatalf("non-stream service_tier = %q, want %q. Payload: %s", got, tt.want, string(nonStream))
+			}
+		})
+	}
+}
+
+func TestConvertCodexResponseToInteractionsDoneFallbackPreservesResolvedServiceTier(t *testing.T) {
+	var param any
+	var events [][]byte
+	originalRequest := []byte(`{"service_tier":"fast"}`)
+	outboundRequest := []byte(`{"service_tier":"priority"}`)
+
+	events = append(events, ConvertCodexResponseToInteractions(
+		context.Background(),
+		"codex-test",
+		originalRequest,
+		outboundRequest,
+		[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"codex-test"}}`),
+		&param,
+	)...)
+	events = append(events, ConvertCodexResponseToInteractions(
+		context.Background(),
+		"codex-test",
+		originalRequest,
+		outboundRequest,
+		[]byte(`data: [DONE]`),
+		&param,
+	)...)
+
+	completed := findCodexInteractionsEventPayload(events, "interaction.completed")
+	if got := gjson.GetBytes(completed, "interaction.service_tier").String(); got != "priority" {
+		t.Fatalf("service_tier = %q, want priority. Payload: %s", got, string(completed))
+	}
+	if got, want := strings.Join(codexInteractionsEventNames(events), ","), "interaction.created,interaction.status_update,interaction.completed,done"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
+func TestConvertCodexResponseToInteractionsDoneFallbackUsesUpstreamCreatedServiceTier(t *testing.T) {
+	var param any
+	var events [][]byte
+	outboundRequest := []byte(`{"service_tier":"priority"}`)
+
+	events = append(events, ConvertCodexResponseToInteractions(
+		context.Background(),
+		"codex-test",
+		nil,
+		outboundRequest,
+		[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"codex-test","service_tier":"standard"}}`),
+		&param,
+	)...)
+	events = append(events, ConvertCodexResponseToInteractions(
+		context.Background(),
+		"codex-test",
+		nil,
+		outboundRequest,
+		[]byte(`data: [DONE]`),
+		&param,
+	)...)
+
+	completed := findCodexInteractionsEventPayload(events, "interaction.completed")
+	if got := gjson.GetBytes(completed, "interaction.service_tier").String(); got != "standard" {
+		t.Fatalf("service_tier = %q, want standard. Payload: %s", got, string(completed))
 	}
 }
 
