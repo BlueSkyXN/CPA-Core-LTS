@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +78,81 @@ func TestCodexExecutorDropsUnsupportedReasoningSummaryForSpark(t *testing.T) {
 				t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, gotBody)
 			}
 		})
+	}
+}
+
+func TestCodexExecutorDropsUnsupportedReasoningSummaryAfterPayloadOverride(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Errorf("read request body: %v", errRead)
+			return
+		}
+		gotBody = bytes.Clone(body)
+		if gjson.GetBytes(body, "reasoning.summary").Exists() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(sparkUnsupportedReasoningSummaryError))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewCodexExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll},
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "gpt-5.3-codex-spark", Protocol: "codex"}},
+					Params: map[string]any{"reasoning.summary": "auto"},
+				},
+			},
+		},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test", "base_url": server.URL}}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex-spark",
+		Payload: []byte(`{"model":"gpt-5.3-codex-spark","reasoning":{"effort":"xhigh"},"input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute() returned the upstream compatibility error: %v", err)
+	}
+	if gjson.GetBytes(gotBody, "reasoning.summary").Exists() {
+		t.Fatalf("payload.override restored reasoning.summary in Spark request: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, gotBody)
+	}
+}
+
+func TestCodexExecutorSparkMaxReasoningEffortRemainsRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected upstream request for locally invalid Spark effort")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	exec := NewCodexExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test", "base_url": server.URL}}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex-spark",
+		Payload: []byte(`{"model":"gpt-5.3-codex-spark","reasoning":{"effort":"max","summary":"auto"},"input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want unsupported max effort error")
+	}
+	const want = `level "max" not supported, valid levels: low, medium, high, xhigh`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Execute() error = %q, want %q", err, want)
 	}
 }
 

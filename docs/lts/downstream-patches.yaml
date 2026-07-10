@@ -90,3 +90,27 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream assigns equivalent connection generations, validates reader/request ownership atomically, keeps channels request-owned, and passes every listed concurrency regression after the downstream implementation is removed.
+
+  - id: codex-spark-reasoning-summary-compat
+    reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
+    introduced_in: 37e306f939e8ef363254a49cdc7f924a6ceceff5
+    affected_upstream_range: through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61)
+    files:
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_reasoning_summary_compat_test.go
+      - sdk/api/handlers/openai/codex_client_models_test.go
+    regression_tests:
+      - TestCodexExecutorDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexExecutorDropsUnsupportedReasoningSummaryAfterPayloadOverride
+      - TestCodexExecutorSparkMaxReasoningEffortRemainsRejected
+      - TestCodexExecutorExecuteStreamDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexExecutorCompactDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexWebsocketsExecutorDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexWebsocketsExecutorExecuteStreamDropsUnsupportedReasoningSummaryForSpark
+      - TestSanitizeCodexUnsupportedReasoningSummaryRemovesEmptyReasoningObject
+      - TestCodexExecutorPreservesReasoningSummaryForSupportedModel
+      - TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream removes reasoning.summary for gpt-5.3-codex-spark after all request overrides while preserving reasoning.effort and the listed regressions pass without the downstream implementation.
