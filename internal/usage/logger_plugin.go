@@ -495,34 +495,24 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 		TotalTokens:         detail.TotalTokens,
 	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CacheReadTokens + detail.CacheCreationTokens
 	}
 	if tokens.CachedTokens == 0 {
 		if tokens.CacheReadTokens != 0 {
 			tokens.CachedTokens = tokens.CacheReadTokens
-		} else if tokens.CacheCreationTokens != 0 {
-			tokens.CachedTokens = tokens.CacheCreationTokens
 		}
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
 	}
 	return tokens
 }
 
 func normaliseTokenStats(tokens TokenStats) TokenStats {
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
+		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CacheReadTokens + tokens.CacheCreationTokens
 	}
 	if tokens.CachedTokens == 0 {
 		if tokens.CacheReadTokens != 0 {
 			tokens.CachedTokens = tokens.CacheReadTokens
-		} else if tokens.CacheCreationTokens != 0 {
-			tokens.CachedTokens = tokens.CacheCreationTokens
 		}
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
 	}
 	return tokens
 }

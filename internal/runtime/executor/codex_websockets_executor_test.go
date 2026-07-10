@@ -1240,6 +1240,53 @@ func TestApplyCodexPromptCacheHeadersSetsSessionIDAndLegacyConversation(t *testi
 	}
 }
 
+func TestApplyCodexPromptCacheHeadersOpenAIChatPreservesExplicitKey(t *testing.T) {
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.6-sol",
+		Payload: []byte(`{"model":"gpt-5.6-sol","prompt_cache_key":"tenant:explicit"}`),
+	}
+
+	body, headers := applyCodexPromptCacheHeaders("openai", req, []byte(`{"model":"gpt-5.6-sol"}`))
+	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
+		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
+	}
+	if got := headers["session_id"]; len(got) != 1 || got[0] != "tenant:explicit" {
+		t.Fatalf("session_id = %#v, want [tenant:explicit]", got)
+	}
+	if got := headers.Get("Conversation_id"); got != "tenant:explicit" {
+		t.Fatalf("Conversation_id = %q, want tenant:explicit", got)
+	}
+}
+
+func TestApplyCodexPromptCacheHeadersOpenAIChatUsesStableAPIKeyFallback(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Set("userApiKey", "test-api-key")
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	req := cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(`{"model":"gpt-5.6-sol"}`)}
+
+	firstBody, firstHeaders, err := applyCodexPromptCacheHeadersWithContext(ctx, sdktranslator.FromString("openai"), req, []byte(`{"model":"gpt-5.6-sol"}`))
+	if err != nil {
+		t.Fatalf("first prompt cache headers: %v", err)
+	}
+	secondBody, secondHeaders, err := applyCodexPromptCacheHeadersWithContext(ctx, sdktranslator.FromString("openai"), req, []byte(`{"model":"gpt-5.6-sol"}`))
+	if err != nil {
+		t.Fatalf("second prompt cache headers: %v", err)
+	}
+
+	firstKey := gjson.GetBytes(firstBody, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(secondBody, "prompt_cache_key").String()
+	if firstKey == "" || secondKey != firstKey {
+		t.Fatalf("stable fallback keys = (%q, %q), want same non-empty key", firstKey, secondKey)
+	}
+	if got := firstHeaders.Get("Conversation_id"); got != firstKey {
+		t.Fatalf("first Conversation_id = %q, want %q", got, firstKey)
+	}
+	if got := secondHeaders.Get("Conversation_id"); got != secondKey {
+		t.Fatalf("second Conversation_id = %q, want %q", got, secondKey)
+	}
+}
+
 func TestApplyCodexPromptCacheHeadersClaudeUsesClaudeCodeSessionID(t *testing.T) {
 	firstReq := cliproxyexecutor.Request{
 		Model: "gpt-5-codex-claude-ws-cache-session",
