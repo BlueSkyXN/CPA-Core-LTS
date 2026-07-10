@@ -65,6 +65,12 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 	// Model
 	out, _ = sjson.SetBytes(out, "model", modelName)
+	if v := gjson.GetBytes(rawJSON, "prompt_cache_key"); v.Exists() {
+		out, _ = sjson.SetBytes(out, "prompt_cache_key", v.String())
+	}
+	if v := gjson.GetBytes(rawJSON, "prompt_cache_options"); v.Exists() && v.IsObject() {
+		out, _ = sjson.SetRawBytes(out, "prompt_cache_options", []byte(v.Raw))
+	}
 
 	// Build tool name shortening map from original tools (if any)
 	originalToolNameMap := map[string]string{}
@@ -168,6 +174,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 							part := []byte(`{}`)
 							part, _ = sjson.SetBytes(part, "type", partType)
 							part, _ = sjson.SetBytes(part, "text", it.Get("text").String())
+							part = attachPromptCacheBreakpoint(part, it)
 							msg, _ = sjson.SetRawBytes(msg, "content.-1", part)
 						case "image_url":
 							// Map image inputs to input_image for Responses API
@@ -177,6 +184,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 								if u := it.Get("image_url.url"); u.Exists() {
 									part, _ = sjson.SetBytes(part, "image_url", u.String())
 								}
+								part = attachPromptCacheBreakpoint(part, it)
 								msg, _ = sjson.SetRawBytes(msg, "content.-1", part)
 							}
 						case "file":
@@ -190,6 +198,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 									if filename != "" {
 										part, _ = sjson.SetBytes(part, "filename", filename)
 									}
+									part = attachPromptCacheBreakpoint(part, it)
 									msg, _ = sjson.SetRawBytes(msg, "content.-1", part)
 								}
 							}
@@ -204,6 +213,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 									if audioFormat != "" {
 										part, _ = sjson.SetBytes(part, "format", audioFormat)
 									}
+									part = attachPromptCacheBreakpoint(part, it)
 									msg, _ = sjson.SetRawBytes(msg, "content.-1", part)
 								}
 							}
@@ -373,6 +383,24 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	return out
 }
 
+func attachPromptCacheBreakpoint(part []byte, source gjson.Result) []byte {
+	switch gjson.GetBytes(part, "type").String() {
+	case "input_text", "input_image", "input_file":
+	default:
+		return part
+	}
+
+	breakpoint := source.Get("prompt_cache_breakpoint")
+	if !breakpoint.Exists() || !breakpoint.IsObject() {
+		return part
+	}
+	updated, err := sjson.SetRawBytes(part, "prompt_cache_breakpoint", []byte(breakpoint.Raw))
+	if err != nil {
+		return part
+	}
+	return updated
+}
+
 func setToolCallOutputContent(funcOutput []byte, content gjson.Result) []byte {
 	switch {
 	case content.Type == gjson.String:
@@ -399,6 +427,7 @@ func appendToolOutputContentPart(output []byte, item gjson.Result) []byte {
 		part := []byte(`{}`)
 		part, _ = sjson.SetBytes(part, "type", "input_text")
 		part, _ = sjson.SetBytes(part, "text", item.Get("text").String())
+		part = attachPromptCacheBreakpoint(part, item)
 		output, _ = sjson.SetRawBytes(output, "-1", part)
 	case "image_url":
 		imageURL := item.Get("image_url.url").String()
@@ -417,6 +446,7 @@ func appendToolOutputContentPart(output []byte, item gjson.Result) []byte {
 		if detail := item.Get("image_url.detail").String(); detail != "" {
 			part, _ = sjson.SetBytes(part, "detail", detail)
 		}
+		part = attachPromptCacheBreakpoint(part, item)
 		output, _ = sjson.SetRawBytes(output, "-1", part)
 	case "file":
 		fileID := item.Get("file.file_id").String()
@@ -439,6 +469,7 @@ func appendToolOutputContentPart(output []byte, item gjson.Result) []byte {
 		if filename := item.Get("file.filename").String(); filename != "" {
 			part, _ = sjson.SetBytes(part, "filename", filename)
 		}
+		part = attachPromptCacheBreakpoint(part, item)
 		output, _ = sjson.SetRawBytes(output, "-1", part)
 	default:
 		output = appendToolOutputFallbackPart(output, item)
@@ -454,6 +485,7 @@ func appendToolOutputFallbackPart(output []byte, item gjson.Result) []byte {
 	part := []byte(`{}`)
 	part, _ = sjson.SetBytes(part, "type", "input_text")
 	part, _ = sjson.SetBytes(part, "text", text)
+	part = attachPromptCacheBreakpoint(part, item)
 	output, _ = sjson.SetRawBytes(output, "-1", part)
 	return output
 }

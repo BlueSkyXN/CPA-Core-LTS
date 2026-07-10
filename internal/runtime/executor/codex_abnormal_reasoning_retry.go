@@ -496,11 +496,21 @@ func patchCodexAbnormalReasoningClientUsageWithSnapshot(eventData []byte, previo
 	out, _ = sjson.SetBytes(out, "response.usage.input_tokens", total.InputTokens)
 	out, _ = sjson.SetBytes(out, "response.usage.output_tokens", total.OutputTokens)
 	out, _ = sjson.SetBytes(out, "response.usage.total_tokens", total.TotalTokens)
-	if usageNode.Get("input_tokens_details.cached_tokens").Exists() || total.CachedTokens != 0 {
-		out, _ = sjson.SetBytes(out, "response.usage.input_tokens_details.cached_tokens", total.CachedTokens)
+	cacheReadTokens := total.CacheReadTokens
+	if cacheReadTokens == 0 {
+		cacheReadTokens = total.CachedTokens
+	}
+	if usageNode.Get("input_tokens_details.cached_tokens").Exists() || cacheReadTokens != 0 {
+		out, _ = sjson.SetBytes(out, "response.usage.input_tokens_details.cached_tokens", cacheReadTokens)
 	}
 	if usageNode.Get("prompt_tokens_details.cached_tokens").Exists() {
-		out, _ = sjson.SetBytes(out, "response.usage.prompt_tokens_details.cached_tokens", total.CachedTokens)
+		out, _ = sjson.SetBytes(out, "response.usage.prompt_tokens_details.cached_tokens", cacheReadTokens)
+	}
+	if usageNode.Get("input_tokens_details.cache_write_tokens").Exists() || total.CacheCreationTokens != 0 {
+		out, _ = sjson.SetBytes(out, "response.usage.input_tokens_details.cache_write_tokens", total.CacheCreationTokens)
+	}
+	if usageNode.Get("prompt_tokens_details.cache_write_tokens").Exists() {
+		out, _ = sjson.SetBytes(out, "response.usage.prompt_tokens_details.cache_write_tokens", total.CacheCreationTokens)
 	}
 	if usageNode.Get("output_tokens_details.reasoning_tokens").Exists() || total.ReasoningTokens != 0 {
 		out, _ = sjson.SetBytes(out, "response.usage.output_tokens_details.reasoning_tokens", total.ReasoningTokens)

@@ -40,6 +40,34 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("exported_at is zero")
 	}
 	requirePanelUsageShape(t, exported.Usage)
+	exportedJSON, err := json.Marshal(exported)
+	if err != nil {
+		t.Fatalf("marshal exported usage: %v", err)
+	}
+	if !bytes.Contains(exportedJSON, []byte(`"service_tier":"priority"`)) {
+		t.Fatalf("exported usage missing service_tier: %s", exportedJSON)
+	}
+	var legacyDecoded struct {
+		Version int `json:"version"`
+		Usage   struct {
+			TotalRequests int64 `json:"total_requests"`
+			APIs          map[string]struct {
+				Models map[string]struct {
+					Details []struct {
+						Source string           `json:"source"`
+						Tokens usage.TokenStats `json:"tokens"`
+					} `json:"details"`
+				} `json:"models"`
+			} `json:"apis"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(exportedJSON, &legacyDecoded); err != nil {
+		t.Fatalf("legacy decoder rejected additive service_tier field: %v", err)
+	}
+	legacyDetails := legacyDecoded.Usage.APIs["panel-client-key"].Models["gpt-5.4"].Details
+	if legacyDecoded.Version != 1 || legacyDecoded.Usage.TotalRequests != 1 || len(legacyDetails) != 1 || legacyDetails[0].Source != "auths/openai.json" || legacyDetails[0].Tokens.TotalTokens != 17 {
+		t.Fatalf("legacy decoded export lost existing fields: version=%d usage=%+v details=%+v", legacyDecoded.Version, legacyDecoded.Usage, legacyDetails)
+	}
 
 	importStats := usage.NewRequestStatistics()
 	importHandler := &Handler{}
@@ -67,6 +95,7 @@ func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
 		Model:       "gpt-5.5",
 		Source:      "auths/codex.json",
 		AuthIndex:   "1",
+		ServiceTier: "priority",
 		RequestedAt: time.Date(2026, 6, 10, 11, 31, 0, 0, time.UTC),
 		Failed:      true,
 		Fail: coreusage.Failure{
@@ -97,6 +126,105 @@ func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
 	if detail.FailureReason != "codex_abnormal_reasoning_response" {
 		t.Fatalf("detail.failure_reason = %q, want codex_abnormal_reasoning_response", detail.FailureReason)
 	}
+	if detail.ServiceTier != "priority" {
+		t.Fatalf("detail.service_tier = %q, want priority", detail.ServiceTier)
+	}
+}
+
+func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const legacyExport = `{
+		"version": 1,
+		"exported_at": "2026-06-10T12:00:00Z",
+		"usage": {
+			"total_requests": 1,
+			"success_count": 1,
+			"failure_count": 0,
+			"total_tokens": 9,
+			"apis": {
+				"legacy-client-key": {
+					"total_requests": 1,
+					"total_tokens": 9,
+					"models": {
+						"gpt-5.4": {
+							"total_requests": 1,
+							"total_tokens": 9,
+							"details": [{
+								"timestamp": "2026-06-10T12:00:00Z",
+								"latency_ms": 100,
+								"source": "auths/legacy.json",
+								"auth_index": "0",
+								"tokens": {
+									"input_tokens": 4,
+									"output_tokens": 5,
+									"reasoning_tokens": 0,
+									"cached_tokens": 0,
+									"total_tokens": 9
+								},
+								"failed": false
+							}]
+						}
+					}
+				}
+			},
+			"requests_by_day": {"2026-06-10": 1},
+			"requests_by_hour": {"12": 1},
+			"tokens_by_day": {"2026-06-10": 9},
+			"tokens_by_hour": {"12": 9}
+		}
+	}`
+
+	stats := usage.NewRequestStatistics()
+	h := &Handler{}
+	h.SetUsageStatistics(stats)
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/usage/import", bytes.NewBufferString(legacyExport))
+	h.ImportUsageStatistics(ginCtx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy import status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var importResult struct {
+		Added          int64 `json:"added"`
+		Skipped        int64 `json:"skipped"`
+		TotalRequests  int64 `json:"total_requests"`
+		FailedRequests int64 `json:"failed_requests"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &importResult); err != nil {
+		t.Fatalf("unmarshal legacy import response: %v body=%s", err, rec.Body.String())
+	}
+	if importResult.Added != 1 || importResult.Skipped != 0 || importResult.TotalRequests != 1 || importResult.FailedRequests != 0 {
+		t.Fatalf("legacy import result = %+v, want added=1 skipped=0 total_requests=1 failed_requests=0", importResult)
+	}
+
+	snapshot := stats.Snapshot()
+	details := snapshot.APIs["legacy-client-key"].Models["gpt-5.4"].Details
+	if len(details) != 1 {
+		t.Fatalf("legacy details len = %d, want 1", len(details))
+	}
+	if details[0].ServiceTier != "" {
+		t.Fatalf("legacy detail.service_tier = %q, want empty/unknown", details[0].ServiceTier)
+	}
+	if snapshot.TotalRequests != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 || snapshot.TotalTokens != 9 {
+		t.Fatalf("legacy snapshot totals = %+v, want requests=1 success=1 failure=0 tokens=9", snapshot)
+	}
+	if snapshot.RequestsByDay["2026-06-10"] != 1 || snapshot.RequestsByHour["12"] != 1 || snapshot.TokensByDay["2026-06-10"] != 9 || snapshot.TokensByHour["12"] != 9 {
+		t.Fatalf("legacy snapshot buckets = requests/day:%v requests/hour:%v tokens/day:%v tokens/hour:%v", snapshot.RequestsByDay, snapshot.RequestsByHour, snapshot.TokensByDay, snapshot.TokensByHour)
+	}
+
+	reexported := exportUsageStatistics(t, h)
+	if reexported.Version != 1 {
+		t.Fatalf("legacy re-export version = %d, want 1", reexported.Version)
+	}
+	reexportedJSON, err := json.Marshal(reexported)
+	if err != nil {
+		t.Fatalf("marshal legacy re-export: %v", err)
+	}
+	if bytes.Contains(reexportedJSON, []byte(`"service_tier"`)) {
+		t.Fatalf("legacy re-export fabricated service_tier: %s", reexportedJSON)
+	}
 }
 
 func recordPanelContractUsage(stats *usage.RequestStatistics) {
@@ -108,6 +236,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		Source:          "auths/openai.json",
 		AuthIndex:       "1",
 		ReasoningEffort: "medium",
+		ServiceTier:     "priority",
 		RequestedAt:     time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:         2 * time.Second,
 		Detail: coreusage.Detail{
@@ -254,6 +383,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.ReasoningEffort != "medium" {
 		t.Fatalf("detail.reasoning_effort = %q, want medium", detail.ReasoningEffort)
+	}
+	if detail.ServiceTier != "priority" {
+		t.Fatalf("detail.service_tier = %q, want priority", detail.ServiceTier)
 	}
 	if detail.LatencyMs != 2000 {
 		t.Fatalf("detail.latency_ms = %d, want 2000", detail.LatencyMs)

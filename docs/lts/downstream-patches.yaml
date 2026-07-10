@@ -1,10 +1,26 @@
 version: 1
 
 patches:
+  - id: codex-interactions-service-tier-response
+    reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
+    introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
+    affected_upstream_range: through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; router-for-me/CLIProxyAPI#4189 remains open, and upstream response translation still hardcodes streaming service_tier to standard and omits it from non-streaming interactions
+    files:
+      - internal/translator/codex/interactions/interactions_codex_response.go
+      - internal/translator/codex/interactions/interactions_codex_test.go
+    regression_tests:
+      - TestConvertInteractionsRequestToCodexNormalizesFastServiceTier
+      - TestConvertCodexResponseToInteractionsServiceTierResolution
+      - TestConvertCodexResponseToInteractionsDoneFallbackPreservesResolvedServiceTier
+      - TestConvertCodexResponseToInteractionsDoneFallbackUsesUpstreamCreatedServiceTier
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4189
+    state: required
+    retire_when: Upstream reports the effective Codex service tier consistently for streaming, non-streaming, and DONE-fallback Interactions completions; distinguishes an available outbound request without a tier from unavailable outbound request data; and all listed regression tests pass without the downstream implementation.
+
   - id: codex-image-generation-tool-dedup
     reason: Codex 0.144+ can send the image_gen namespace, so Core must not inject a duplicate legacy image_generation tool while still preserving the fallback for unrelated namespaces.
     introduced_in: cb874364950e41e733ab114793af17100f87b06d
-    affected_upstream_range: LTS baseline through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58); equivalent namespace and flattened-function checks entered upstream at f9162d391c954446e3519214b51de50d07bf4913 / cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d and are included in the pending ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61) sync target
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; equivalent namespace and flattened-function checks entered upstream at f9162d391c954446e3519214b51de50d07bf4913 / cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d, while the downstream helper and named regressions remain for one merged removable baseline before retirement
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_executor_imagegen_test.go
@@ -12,8 +28,8 @@ patches:
       - TestEnsureImageGenerationTool_ExtensionNamespaceDoesNotInjectLegacyTool
       - TestEnsureImageGenerationTool_UnrelatedNamespaceStillInjectsLegacyTool
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4175
-    state: upstreamed
-    retire_when: The LTS upstream/main baseline contains f9162d391c954446e3519214b51de50d07bf4913 or an equivalent namespace and flattened-function check, and the downstream tests pass after adapting to the upstream implementation.
+    state: removable
+    retire_when: After this removable state is merged, remove the downstream helper while retaining the upstream namespace and flattened-function behavior; the listed regressions and the responses-lite image-tool regressions must pass, and the removal commit must be recorded in retired_in.
 
   - id: plugin-configured-enable-default
     reason: A configured plugin without an explicit enabled field must inherit the enabled plugin subsystem default instead of being silently disabled during YAML parsing or runtime config synthesis.
@@ -33,9 +49,9 @@ patches:
     retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
 
   - id: codex-gpt56-ultra-level
-    reason: Temporary downstream compatibility patch while upstream has only partial Ultra support. Upstream main advertises GPT-5.6 Ultra client metadata, but still lacks a complete first-class parser/suffix contract and the official Codex client boundary where logical Ultra enables client-side delegation while server-side HTTP/WebSocket requests use reasoning.effort=max.
+    reason: Temporary downstream compatibility patch after upstream added partial GPT-5.6 Ultra client metadata and then removed Ultra from models.json. CPA-Core-LTS preserves the catalog/client preset boundary while canonicalizing known Sol/Terra Ultra requests to reasoning.effort=max on the final HTTP/WebSocket wire.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: LTS baseline through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61); upstream main includes partial Ultra client metadata but still lacks the shared thinking level, payload-override-safe final wire canonicalization, usage/retry alignment, and HTTP/WebSocket regression coverage
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe and removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, but still lacks the shared thinking level, model-aware custom-model behavior, payload-override-safe final wire canonicalization, usage/retry alignment, and HTTP/WebSocket regression coverage
     files:
       - config.example.yaml
       - docs/lts/codex-client-context-degradation-defense.md
@@ -115,3 +131,27 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream assigns equivalent connection generations, validates reader/request ownership atomically, keeps channels request-owned, and passes every listed concurrency regression after the downstream implementation is removed.
+
+  - id: codex-spark-reasoning-summary-compat
+    reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
+    introduced_in: 37e306f939e8ef363254a49cdc7f924a6ceceff5
+    affected_upstream_range: through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream still forwards reasoning.summary for gpt-5.3-codex-spark and has no equivalent post-override HTTP/WebSocket sanitization
+    files:
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_reasoning_summary_compat_test.go
+      - sdk/api/handlers/openai/codex_client_models_test.go
+    regression_tests:
+      - TestCodexExecutorDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexExecutorDropsUnsupportedReasoningSummaryAfterPayloadOverride
+      - TestCodexExecutorSparkMaxReasoningEffortRemainsRejected
+      - TestCodexExecutorExecuteStreamDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexExecutorCompactDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexWebsocketsExecutorDropsUnsupportedReasoningSummaryForSpark
+      - TestCodexWebsocketsExecutorExecuteStreamDropsUnsupportedReasoningSummaryForSpark
+      - TestSanitizeCodexUnsupportedReasoningSummaryRemovesEmptyReasoningObject
+      - TestCodexExecutorPreservesReasoningSummaryForSupportedModel
+      - TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream removes reasoning.summary for gpt-5.3-codex-spark after all request overrides while preserving reasoning.effort and the listed regressions pass without the downstream implementation.
