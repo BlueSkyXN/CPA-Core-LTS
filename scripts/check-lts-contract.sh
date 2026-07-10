@@ -16,6 +16,14 @@ require_path() {
   fi
 }
 
+require_absent_path() {
+  local path="$1"
+  if [ -e "$path" ]; then
+    echo "forbidden LTS contract path present: $path" >&2
+    exit 1
+  fi
+}
+
 require_grep() {
   local pattern="$1"
   shift
@@ -25,11 +33,44 @@ require_grep() {
   fi
 }
 
+forbid_grep_ci() {
+  local pattern="$1"
+  shift
+  if git grep -n -I -i -E -- "$pattern" -- "$@"; then
+    echo "forbidden promotional marker '$pattern' found in: $*" >&2
+    exit 1
+  fi
+}
+
 module_path="$(sed -n 's/^module //p' go.mod)"
 if [ "$module_path" != "github.com/router-for-me/CLIProxyAPI/v7" ]; then
   echo "unexpected Go module path: $module_path" >&2
   exit 1
 fi
+
+# Keep CPA-Core-LTS documentation commercial-neutral across future upstream syncs.
+for promotional_asset in \
+  assets/apikey.png \
+  assets/aicodemirror.png \
+  assets/bmoplus.png \
+  assets/catapi.png \
+  assets/claudeapi.png \
+  assets/code0.png \
+  assets/cyberpay.jpg \
+  assets/fennoai.png \
+  assets/lingtrue.png \
+  assets/packycode-cn.png \
+  assets/packycode-en.png \
+  assets/packycode.png \
+  assets/poixeai.png \
+  assets/qiniucloud.png \
+  assets/runapi.png \
+  assets/unity2.jpg \
+  assets/visioncoder.png; do
+  require_absent_path "$promotional_asset"
+done
+forbid_grep_ci '(^|[^[:alnum:]_])(sponsor(ship)?|affiliate)([^[:alnum:]_]|$)|赞助|スポンサー|[?&](aff|invitecode|utm_source)=|promo[[:space:]_-]*code|优惠码|邀请码|专属(链接|福利)|専用リンク' \
+  README.md README_CN.md README_JA.md
 
 if git grep -n "github.com/router-for-me/CLIProxyAPI/v6" -- . ':(exclude)scripts/check-lts-contract.sh'; then
   echo "legacy v6 module path references found; CPA-Core-LTS now follows upstream /v7" >&2
