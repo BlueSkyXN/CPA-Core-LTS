@@ -46,25 +46,25 @@ func TestGPT56UltraCodexThinking(t *testing.T) {
 			name:       "sol body",
 			model:      "gpt-5.6-sol",
 			body:       `{"model":"gpt-5.6-sol","reasoning":{"effort":"ultra"}}`,
-			wantEffort: "ultra",
+			wantEffort: "max",
 		},
 		{
 			name:       "sol suffix overrides body",
 			model:      "gpt-5.6-sol(ultra)",
 			body:       `{"model":"gpt-5.6-sol","reasoning":{"effort":"low"}}`,
-			wantEffort: "ultra",
+			wantEffort: "max",
 		},
 		{
 			name:       "terra body",
 			model:      "gpt-5.6-terra",
 			body:       `{"model":"gpt-5.6-terra","reasoning":{"effort":"ultra"}}`,
-			wantEffort: "ultra",
+			wantEffort: "max",
 		},
 		{
 			name:       "terra suffix overrides body",
 			model:      "gpt-5.6-terra(ultra)",
 			body:       `{"model":"gpt-5.6-terra","reasoning":{"effort":"low"}}`,
-			wantEffort: "ultra",
+			wantEffort: "max",
 		},
 		{
 			name:       "luna keeps max support",
@@ -109,6 +109,44 @@ func TestGPT56UltraCodexThinking(t *testing.T) {
 				t.Fatalf("reasoning.effort = %q, want %q; body=%s", got, tt.wantEffort, out)
 			}
 		})
+	}
+}
+
+func TestGPT56MaxCodexThinkingPreserved(t *testing.T) {
+	models := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+	for _, model := range models {
+		model := model
+		t.Run(model+" body", func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","reasoning":{"effort":"max"}}`)
+			out, err := thinking.ApplyThinking(body, model, "codex", "codex", "codex")
+			if err != nil {
+				t.Fatalf("ApplyThinking() error = %v", err)
+			}
+			if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "max" {
+				t.Fatalf("reasoning.effort = %q, want max; body=%s", got, out)
+			}
+		})
+		t.Run(model+" suffix", func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","reasoning":{"effort":"low"}}`)
+			out, err := thinking.ApplyThinking(body, model+"(max)", "codex", "codex", "codex")
+			if err != nil {
+				t.Fatalf("ApplyThinking() error = %v", err)
+			}
+			if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "max" {
+				t.Fatalf("reasoning.effort = %q, want max; body=%s", got, out)
+			}
+		})
+	}
+}
+
+func TestUnknownCustomCodexModelPreservesLiteralUltra(t *testing.T) {
+	body := []byte(`{"model":"custom-codex-ultra","reasoning":{"effort":"ultra"}}`)
+	out, err := thinking.ApplyThinking(body, "custom-codex-ultra", "codex", "codex", "codex")
+	if err != nil {
+		t.Fatalf("ApplyThinking() error = %v", err)
+	}
+	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
+		t.Fatalf("reasoning.effort = %q, want ultra; body=%s", got, out)
 	}
 }
 

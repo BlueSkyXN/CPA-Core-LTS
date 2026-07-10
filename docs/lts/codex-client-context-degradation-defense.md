@@ -86,6 +86,18 @@ codex:
 
 多实例部署时可为不同实例配置不同的 `model-contains`，按需缩窄或扩大命中范围。
 
+### GPT-5.6 Max / Ultra 的 effort 过滤边界
+
+`reasoning-efforts` 匹配的是 CPA 最终 translated/runtime effort，不是 Codex 客户端 UI 中保存的 preset。对 registry 已知的 GPT-5.6 模型：
+
+- `gpt-5.6-sol` / `gpt-5.6-terra` 的逻辑 `Ultra` 在官方 Codex request 和 CPA 最终出站层都会 canonicalize 为 `max`；因此 filter `[ultra]` 与 `[max]` 在这两个模型上等价，部署配置推荐写 `[max]`。
+- CPA 无法用该字段区分“客户端选择 Max”与“客户端选择 Ultra”，因为官方 Codex 客户端在请求抵达 CPA 前已经把 Ultra 转成 Max；Proactive multi-agent 也由客户端负责。
+- `gpt-5.6-luna` 不支持 Ultra，请求或 payload override 中的 literal `ultra` 会在发往上游前被拒绝。
+- unknown / `UserDefined` Codex 模型保持 literal 匹配：`[ultra]` 只匹配 runtime `ultra`，不会被当作 `[max]`，以免改写私有 upstream 的语义。
+- 空列表继续表示“不按 effort 过滤”，本次临时 downstream patch 不改变这一既有语义。
+
+这项兼容映射只是在 upstream 尚未给出完整 Ultra server-side 解法期间的临时行为；生命周期和退休条件见 `docs/lts/downstream-patches.yaml` 的 `codex-gpt56-ultra-level`。
+
 ### 两个最容易混淆的选择
 
 `delivery-policy` 和 `fallback-policy` 管的不是同一件事：
@@ -130,7 +142,7 @@ fallback-policy: best-special
 | `enabled` | 默认 `false` | `true` / `false` | 建议与 `action` 同步：`retry` 写 `true`，`disabled` 写 `false` | 历史入口；勿只改 `enabled` 而忘 `action`。 |
 | `action` | 推荐 `retry` | `retry` / `observe-only` / `disabled` | 生产 `retry`；灰度 `observe-only`；关闭 `disabled` | `observe-only` 只打日志，不重试不改响应。 |
 | `model-contains` | 代码默认 `gpt-5.5` | 字符串列表 | 先用精确子串小范围验证，再扩大 | 过宽误伤无关模型；过窄漏掉流量。 |
-| `reasoning-efforts` | 推荐 `xhigh` | 字符串列表；空列表不限 | 当前证据主要来自 xhigh | 空列表扩大到所有 effort，可能误伤。 |
+| `reasoning-efforts` | 推荐 `xhigh`；GPT-5.6 Ultra 场景写 `max` | 字符串列表；空列表不限 | 当前降智证据主要来自 xhigh；known Sol/Terra 的 `ultra` / `max` runtime 等价 | 无法区分客户端 Max/Ultra；unknown/UserDefined 保持 literal；空列表扩大到所有 effort，可能误伤。 |
 | `reasoning-tokens` | `516, 1034` | 正整数列表 | 保持精确值，不要用"低于某阈值" | `reasoning_tokens == 0` 不等于降智。 |
 | `auth-kinds` | `oauth` | 字符串列表 | Codex OAuth 路径选 `oauth` | 放开到 API key 可能波及非 Codex upstream。 |
 | `auth-ids` | 空（不限） | auth id 列表 | 灰度时填少量，稳定后留空 | 用于安全放量。 |
