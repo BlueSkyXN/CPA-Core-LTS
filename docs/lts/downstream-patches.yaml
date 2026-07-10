@@ -1,6 +1,22 @@
 version: 1
 
 patches:
+  - id: codex-interactions-service-tier-response
+    reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
+    introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
+    affected_upstream_range: through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; router-for-me/CLIProxyAPI#4189 remains open, and upstream response translation still hardcodes streaming service_tier to standard and omits it from non-streaming interactions
+    files:
+      - internal/translator/codex/interactions/interactions_codex_response.go
+      - internal/translator/codex/interactions/interactions_codex_test.go
+    regression_tests:
+      - TestConvertInteractionsRequestToCodexNormalizesFastServiceTier
+      - TestConvertCodexResponseToInteractionsServiceTierResolution
+      - TestConvertCodexResponseToInteractionsDoneFallbackPreservesResolvedServiceTier
+      - TestConvertCodexResponseToInteractionsDoneFallbackUsesUpstreamCreatedServiceTier
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4189
+    state: required
+    retire_when: Upstream reports the effective Codex service tier consistently for streaming, non-streaming, and DONE-fallback Interactions completions; distinguishes an available outbound request without a tier from unavailable outbound request data; and all listed regression tests pass without the downstream implementation.
+
   - id: codex-image-generation-tool-dedup
     reason: Codex 0.144+ can send the image_gen namespace, so Core must not inject a duplicate legacy image_generation tool while still preserving the fallback for unrelated namespaces.
     introduced_in: cb874364950e41e733ab114793af17100f87b06d
