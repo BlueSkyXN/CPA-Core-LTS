@@ -383,14 +383,18 @@ func TestCodexWebsocketsEnsureUpstreamConnRedialsForLunaHeaderProfile(t *testing
 	auth := &cliproxyauth.Auth{ID: "auth-1"}
 
 	normalHeaders := http.Header{"User-Agent": []string{normalUA}}
-	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, normalModel, normalHeaders)
+	normalProfile := resolveCodexModelHeaderProfile(normalModel)
+	normalKey := newCodexWebsocketConnectionKey(auth.ID, wsURL, normalModel, normalProfile.digest)
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, normalKey, normalHeaders)
 	if err != nil {
 		t.Fatalf("ensureUpstreamConn(normal) error = %v", err)
 	}
 
 	lunaHeaders := http.Header{"User-Agent": []string{normalUA}}
-	applyModelHeaderOverrides(lunaHeaders, lunaModel)
-	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, lunaModel, lunaHeaders)
+	lunaProfile := resolveCodexModelHeaderProfile(lunaModel)
+	applyModelHeaderOverrides(lunaHeaders, lunaProfile)
+	lunaKey := newCodexWebsocketConnectionKey(auth.ID, wsURL, lunaModel, lunaProfile.digest)
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, lunaKey, lunaHeaders)
 	if err != nil {
 		t.Fatalf("ensureUpstreamConn(luna) error = %v", err)
 	}
@@ -413,6 +417,87 @@ func TestCodexWebsocketsEnsureUpstreamConnRedialsForLunaHeaderProfile(t *testing
 	case errDisconnect, ok := <-disconnectCh:
 		t.Fatalf("planned connection profile change signaled upstream disconnect: err=%v ok=%v", errDisconnect, ok)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestCodexWebsocketsEnsureUpstreamConnUsesAppliedHeaderProfileSnapshot(t *testing.T) {
+	const (
+		modelID  = "test-codex-websocket-profile-snapshot"
+		clientID = "test-codex-websocket-profile-snapshot-client"
+	)
+
+	reg := registry.GetGlobalRegistry()
+	registerProfile := func(userAgent string) {
+		reg.RegisterClient(clientID, "codex", []*registry.ModelInfo{{
+			ID: modelID,
+			Config: &registry.ModelConfig{OverrideHeader: map[string]string{
+				"user-agent": userAgent,
+			}},
+		}})
+	}
+	registerProfile("snapshot-a/1.0")
+	t.Cleanup(func() { reg.UnregisterClient(clientID) })
+
+	profileA := resolveCodexModelHeaderProfile(modelID)
+	headersA := http.Header{}
+	applyModelHeaderOverrides(headersA, profileA)
+
+	// Change the live registry after request headers and their connection key
+	// profile have been captured. The first dial must still use snapshot A.
+	registerProfile("snapshot-b/1.0")
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	handshakes := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes <- r.UserAgent()
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "sess-applied-header-profile-snapshot"
+	defer exec.CloseExecutionSession(sessionID)
+	sess := exec.getOrCreateSession(sessionID)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	auth := &cliproxyauth.Auth{ID: "auth-profile-snapshot"}
+
+	keyA := newCodexWebsocketConnectionKey(auth.ID, wsURL, modelID, profileA.digest)
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, keyA, headersA)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(snapshot A) error = %v", err)
+	}
+
+	profileB := resolveCodexModelHeaderProfile(modelID)
+	headersB := http.Header{}
+	applyModelHeaderOverrides(headersB, profileB)
+	keyB := newCodexWebsocketConnectionKey(auth.ID, wsURL, modelID, profileB.digest)
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, keyB, headersB)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(snapshot B) error = %v", err)
+	}
+	if secondConn == firstConn {
+		t.Fatal("updated applied profile reused the snapshot A websocket; want redial")
+	}
+
+	for index, wantUserAgent := range []string{"snapshot-a/1.0", "snapshot-b/1.0"} {
+		select {
+		case gotUserAgent := <-handshakes:
+			if gotUserAgent != wantUserAgent {
+				t.Fatalf("handshake %d User-Agent = %q, want %q", index+1, gotUserAgent, wantUserAgent)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for handshake %d", index+1)
+		}
 	}
 }
 
@@ -446,13 +531,15 @@ func TestCodexWebsocketsEnsureUpstreamConnReusesMatchingConnectionKey(t *testing
 		"X-Client-Request-Id": []string{"request-1"},
 	}
 
-	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, "gpt-5.4", headers)
+	profile := resolveCodexModelHeaderProfile("gpt-5.4")
+	connectionKey := newCodexWebsocketConnectionKey(auth.ID, wsURL, "gpt-5.4", profile.digest)
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, connectionKey, headers)
 	if err != nil {
 		t.Fatalf("ensureUpstreamConn(first) error = %v", err)
 	}
 	secondHeaders := headers.Clone()
 	secondHeaders.Set("X-Client-Request-Id", "request-2")
-	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, "gpt-5.4", secondHeaders)
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, connectionKey, secondHeaders)
 	if err != nil {
 		t.Fatalf("ensureUpstreamConn(second) error = %v", err)
 	}
@@ -1011,7 +1098,7 @@ func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
 	}
 
 	applyCodexHeaders(req, auth, "oauth-token", true, cfg)
-	applyModelHeaderOverrides(req.Header, "gpt-5.6-luna")
+	applyModelHeaderOverrides(req.Header, resolveCodexModelHeaderProfile("gpt-5.6-luna"))
 
 	if got := req.Header.Get("User-Agent"); got != wantUA {
 		t.Fatalf("User-Agent = %q, want %q", got, wantUA)
@@ -1020,7 +1107,7 @@ func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
 		t.Fatal("expected Session_id to be set for Mac OS User-Agent override")
 	}
 
-	applyModelHeaderOverrides(req.Header, "gpt-5.4")
+	applyModelHeaderOverrides(req.Header, resolveCodexModelHeaderProfile("gpt-5.4"))
 	if got := req.Header.Get("User-Agent"); got != wantUA {
 		t.Fatalf("User-Agent after no-op override = %q, want %q", got, wantUA)
 	}
@@ -1046,7 +1133,7 @@ func TestApplyModelHeaderOverridesMultipleHeaders(t *testing.T) {
 	headers.Set("Originator", "old-origin")
 	headers.Set("X-Test-Header", "old-value")
 
-	applyModelHeaderOverrides(headers, "test-override-headers-model")
+	applyModelHeaderOverrides(headers, resolveCodexModelHeaderProfile("test-override-headers-model"))
 
 	if got := headers.Get("User-Agent"); got != "custom-ua/1.0" {
 		t.Fatalf("User-Agent = %q, want custom-ua/1.0", got)
