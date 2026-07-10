@@ -87,7 +87,7 @@ type modelStats struct {
 	Details       []RequestDetail
 }
 
-// RequestDetail stores the timestamp, latency, and token usage for a single request.
+// RequestDetail stores request-level metadata and token usage for a single request.
 type RequestDetail struct {
 	Timestamp       time.Time  `json:"timestamp"`
 	LatencyMs       int64      `json:"latency_ms"`
@@ -95,6 +95,7 @@ type RequestDetail struct {
 	AuthIndex       string     `json:"auth_index"`
 	Alias           string     `json:"alias,omitempty"`
 	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	ServiceTier     string     `json:"service_tier,omitempty"`
 	Tokens          TokenStats `json:"tokens"`
 	Failed          bool       `json:"failed"`
 	FailureReason   string     `json:"failure_reason,omitempty"`
@@ -211,6 +212,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		AuthIndex:       record.AuthIndex,
 		Alias:           strings.TrimSpace(record.Alias),
 		ReasoningEffort: strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:     strings.TrimSpace(record.ServiceTier),
 		Tokens:          detail,
 		Failed:          failed,
 		FailureReason:   failureReason,
