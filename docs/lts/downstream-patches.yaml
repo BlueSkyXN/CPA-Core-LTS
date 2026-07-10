@@ -110,7 +110,7 @@ patches:
   - id: codex-spark-reasoning-summary-compat
     reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
     introduced_in: 37e306f939e8ef363254a49cdc7f924a6ceceff5
-    affected_upstream_range: through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61)
+    affected_upstream_range: through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream still forwards reasoning.summary for gpt-5.3-codex-spark and has no equivalent post-override HTTP/WebSocket sanitization
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_websockets_executor.go
