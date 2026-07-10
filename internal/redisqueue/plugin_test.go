@@ -77,7 +77,6 @@ func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 				InputTokens:         1200,
 				OutputTokens:        10,
 				CacheCreationTokens: 1024,
-				TotalTokens:         1210,
 			},
 		})
 
@@ -85,6 +84,7 @@ func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 		var tokens struct {
 			CachedTokens        int64 `json:"cached_tokens"`
 			CacheCreationTokens int64 `json:"cache_creation_tokens"`
+			TotalTokens         int64 `json:"total_tokens"`
 		}
 		if err := json.Unmarshal(payload["tokens"], &tokens); err != nil {
 			t.Fatalf("unmarshal tokens: %v", err)
@@ -94,6 +94,9 @@ func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 		}
 		if tokens.CacheCreationTokens != 1024 {
 			t.Fatalf("cache_creation_tokens = %d, want 1024", tokens.CacheCreationTokens)
+		}
+		if tokens.TotalTokens != 2234 {
+			t.Fatalf("total_tokens = %d, want 2234 with cache creation included", tokens.TotalTokens)
 		}
 	})
 }

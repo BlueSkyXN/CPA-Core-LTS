@@ -86,7 +86,6 @@ func TestRequestStatisticsDoesNotTreatCacheCreationAsCacheRead(t *testing.T) {
 			InputTokens:         1200,
 			OutputTokens:        10,
 			CacheCreationTokens: 1024,
-			TotalTokens:         1210,
 		},
 	})
 
@@ -96,6 +95,9 @@ func TestRequestStatisticsDoesNotTreatCacheCreationAsCacheRead(t *testing.T) {
 	}
 	if detail.Tokens.CacheCreationTokens != 1024 {
 		t.Fatalf("cache_creation_tokens = %d, want 1024", detail.Tokens.CacheCreationTokens)
+	}
+	if detail.Tokens.TotalTokens != 2234 {
+		t.Fatalf("total_tokens = %d, want 2234 with cache creation included", detail.Tokens.TotalTokens)
 	}
 }
 
