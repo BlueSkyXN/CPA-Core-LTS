@@ -43,6 +43,68 @@ const (
 
 var dataTag = []byte("data:")
 
+type codexModelHeaderProfile struct {
+	overrides map[string]string
+	digest    [sha256.Size]byte
+}
+
+func resolveCodexModelHeaderProfile(modelName string) codexModelHeaderProfile {
+	rawOverrides := registry.ModelOverrideHeaders(strings.TrimSpace(modelName), "codex")
+	if len(rawOverrides) == 0 {
+		return codexModelHeaderProfile{}
+	}
+
+	type headerEntry struct {
+		key   string
+		value string
+	}
+	entries := make([]headerEntry, 0, len(rawOverrides))
+	for key, value := range rawOverrides {
+		key = http.CanonicalHeaderKey(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		entries = append(entries, headerEntry{key: key, value: value})
+	}
+	if len(entries) == 0 {
+		return codexModelHeaderProfile{}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		leftKey := strings.ToLower(entries[i].key)
+		rightKey := strings.ToLower(entries[j].key)
+		if leftKey != rightKey {
+			return leftKey < rightKey
+		}
+		return entries[i].value < entries[j].value
+	})
+
+	overrides := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		// Duplicate keys that differ only by case resolve deterministically.
+		overrides[entry.key] = entry.value
+	}
+
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return strings.ToLower(keys[i]) < strings.ToLower(keys[j])
+	})
+
+	var serialized strings.Builder
+	for _, key := range keys {
+		value := overrides[key]
+		normalizedKey := strings.ToLower(key)
+		_, _ = fmt.Fprintf(&serialized, "%d:%s%d:%s", len(normalizedKey), normalizedKey, len(value), value)
+	}
+
+	return codexModelHeaderProfile{
+		overrides: overrides,
+		digest:    sha256.Sum256([]byte(serialized.String())),
+	}
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
@@ -748,6 +810,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return e.executeOpenAIImage(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -805,7 +868,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyModelHeaderOverrides(httpReq.Header, modelHeaderProfile)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -946,6 +1009,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -994,7 +1058,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyModelHeaderOverrides(httpReq.Header, modelHeaderProfile)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -1058,6 +1122,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeOpenAIImageStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -1114,7 +1179,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
-	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyModelHeaderOverrides(httpReq.Header, modelHeaderProfile)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -1723,16 +1788,15 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	applyCodexHeadersFromSources(r, auth, token, stream, cfg, ginHeaders)
 }
 
-// applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.
-func applyModelHeaderOverrides(headers http.Header, modelName string) {
+// applyModelHeaderOverrides forces a resolved model profile onto upstream headers.
+func applyModelHeaderOverrides(headers http.Header, profile codexModelHeaderProfile) {
 	if headers == nil {
 		return
 	}
-	overrides := registry.ModelOverrideHeaders(modelName)
-	if len(overrides) == 0 {
+	if len(profile.overrides) == 0 {
 		return
 	}
-	for key, value := range overrides {
+	for key, value := range profile.overrides {
 		headers.Set(key, value)
 	}
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && codexSessionHeaderValue(headers) == "" {
