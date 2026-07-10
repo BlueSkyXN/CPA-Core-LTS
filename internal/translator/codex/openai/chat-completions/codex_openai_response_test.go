@@ -168,3 +168,22 @@ func TestConvertCodexResponseToOpenAI_NonStreamMultiMessageEmptyTrailingKeepsCon
 		t.Fatalf("expected content %q, got %q; resp=%s", "the real answer", got.String(), string(out))
 	}
 }
+
+func TestConvertCodexResponseToOpenAI_PreservesCacheWriteTokens(t *testing.T) {
+	ctx := context.Background()
+	upstream := []byte(`{"type":"response.completed","response":{"id":"resp_cache","created_at":1700000000,"model":"gpt-5.6-sol","status":"completed","usage":{"input_tokens":1200,"output_tokens":10,"total_tokens":1210,"input_tokens_details":{"cached_tokens":128,"cache_write_tokens":1024},"output_tokens_details":{"reasoning_tokens":2}},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`)
+
+	nonStream := ConvertCodexResponseToOpenAINonStream(ctx, "gpt-5.6-sol", nil, nil, upstream, nil)
+	if got := gjson.GetBytes(nonStream, "usage.prompt_tokens_details.cache_write_tokens").Int(); got != 1024 {
+		t.Fatalf("non-stream cache_write_tokens = %d, want 1024; output=%s", got, nonStream)
+	}
+
+	var param any
+	stream := ConvertCodexResponseToOpenAI(ctx, "gpt-5.6-sol", nil, nil, append([]byte("data: "), upstream...), &param)
+	if len(stream) != 1 {
+		t.Fatalf("stream chunks = %d, want 1", len(stream))
+	}
+	if got := gjson.GetBytes(stream[0], "usage.prompt_tokens_details.cache_write_tokens").Int(); got != 1024 {
+		t.Fatalf("stream cache_write_tokens = %d, want 1024; output=%s", got, stream[0])
+	}
+}

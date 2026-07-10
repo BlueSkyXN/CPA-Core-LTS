@@ -535,6 +535,26 @@ func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumSumsFields
 	}
 }
 
+func TestPatchCodexAbnormalReasoningClientUsageSumsCacheReadAndWrite(t *testing.T) {
+	current := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":40}}}}`)
+	previous := cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot{Detail: usage.Detail{
+		InputTokens:         50,
+		OutputTokens:        10,
+		CachedTokens:        5,
+		CacheReadTokens:     5,
+		CacheCreationTokens: 7,
+		TotalTokens:         60,
+	}}
+
+	patched := patchCodexAbnormalReasoningClientUsageWithSnapshot(current, previous, config.CodexAbnormalReasoningRetryClientUsageAggregationSum)
+	if got := gjson.GetBytes(patched, "response.usage.input_tokens_details.cached_tokens").Int(); got != 35 {
+		t.Fatalf("cached_tokens = %d, want 35; payload=%s", got, patched)
+	}
+	if got := gjson.GetBytes(patched, "response.usage.input_tokens_details.cache_write_tokens").Int(); got != 47 {
+		t.Fatalf("cache_write_tokens = %d, want 47; payload=%s", got, patched)
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumUsesCodexFallbackWhenPreviousTotalMissing(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

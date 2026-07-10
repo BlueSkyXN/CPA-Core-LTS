@@ -225,6 +225,26 @@ func TestConvertOpenAIResponsesRequestToCodex_OriginalIssue(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToCodexPreservesPromptCacheControls(t *testing.T) {
+	input := []byte(`{
+		"model":"gpt-5.6-sol",
+		"prompt_cache_key":"tenant:responses",
+		"prompt_cache_options":{"mode":"explicit"},
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"stable prefix","prompt_cache_breakpoint":{"mode":"explicit"}}]}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToCodex("gpt-5.6-sol", input, true)
+	if got := gjson.GetBytes(out, "prompt_cache_key").String(); got != "tenant:responses" {
+		t.Fatalf("prompt_cache_key = %q, want tenant:responses; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "prompt_cache_options.mode").String(); got != "explicit" {
+		t.Fatalf("prompt_cache_options.mode = %q, want explicit; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "input.0.content.0.prompt_cache_breakpoint.mode").String(); got != "explicit" {
+		t.Fatalf("prompt_cache_breakpoint.mode = %q, want explicit; output=%s", got, out)
+	}
+}
+
 // TestConvertSystemRoleToDeveloper_AssistantRole tests that assistant role is preserved
 func TestConvertSystemRoleToDeveloper_AssistantRole(t *testing.T) {
 	inputJSON := []byte(`{

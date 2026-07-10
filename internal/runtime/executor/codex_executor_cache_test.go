@@ -70,6 +70,30 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_StablePromptCacheKeyFrom
 	}
 }
 
+func TestCodexExecutorCacheHelper_OpenAIChatCompletions_PreservesExplicitPromptCacheKey(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Set("userApiKey", "test-api-key")
+
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	executor := &CodexExecutor{}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.6-sol",
+		Payload: []byte(`{"model":"gpt-5.6-sol","prompt_cache_key":"tenant:explicit"}`),
+	}
+
+	httpReq, body, _, err := executor.cacheHelper(ctx, sdktranslator.FromString("openai"), "https://example.com/responses", nil, req, req.Payload, []byte(`{"model":"gpt-5.6-sol","stream":true,"prompt_cache_key":"tenant:explicit"}`))
+	if err != nil {
+		t.Fatalf("cacheHelper error: %v", err)
+	}
+	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
+		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
+	}
+	if got := httpReq.Header["Session_id"]; len(got) != 1 || got[0] != "tenant:explicit" {
+		t.Fatalf("Session_id = %#v, want [tenant:explicit]", got)
+	}
+}
+
 func TestCodexExecutorCacheHelper_ClaudeUsesClaudeCodeSessionID(t *testing.T) {
 	executor := &CodexExecutor{}
 	ctx := context.Background()

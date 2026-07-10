@@ -64,6 +64,40 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	})
 }
 
+func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		plugin := &usageQueuePlugin{}
+		plugin.HandleUsage(ctx, coreusage.Record{
+			Provider: "codex",
+			Model:    "gpt-5.6-sol",
+			Detail: coreusage.Detail{
+				InputTokens:         1200,
+				OutputTokens:        10,
+				CacheCreationTokens: 1024,
+				TotalTokens:         1210,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		var tokens struct {
+			CachedTokens        int64 `json:"cached_tokens"`
+			CacheCreationTokens int64 `json:"cache_creation_tokens"`
+		}
+		if err := json.Unmarshal(payload["tokens"], &tokens); err != nil {
+			t.Fatalf("unmarshal tokens: %v", err)
+		}
+		if tokens.CachedTokens != 0 {
+			t.Fatalf("cached_tokens = %d, want 0 for creation-only usage", tokens.CachedTokens)
+		}
+		if tokens.CacheCreationTokens != 1024 {
+			t.Fatalf("cache_creation_tokens = %d, want 1024", tokens.CacheCreationTokens)
+		}
+	})
+}
+
 func TestUsageQueuePluginAsyncUsesRecordResponseHeaders(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")

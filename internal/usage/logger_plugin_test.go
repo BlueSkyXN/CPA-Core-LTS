@@ -72,6 +72,29 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestStatisticsDoesNotTreatCacheCreationAsCacheRead(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "test-key",
+		Model:       "gpt-5.6-sol",
+		RequestedAt: time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
+		Detail: coreusage.Detail{
+			InputTokens:         1200,
+			OutputTokens:        10,
+			CacheCreationTokens: 1024,
+			TotalTokens:         1210,
+		},
+	})
+
+	detail := stats.Snapshot().APIs["test-key"].Models["gpt-5.6-sol"].Details[0]
+	if detail.Tokens.CachedTokens != 0 {
+		t.Fatalf("cached_tokens = %d, want 0 for creation-only usage", detail.Tokens.CachedTokens)
+	}
+	if detail.Tokens.CacheCreationTokens != 1024 {
+		t.Fatalf("cache_creation_tokens = %d, want 1024", detail.Tokens.CacheCreationTokens)
+	}
+}
+
 func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 	prevEnabled := StatisticsEnabled()
 	SetStatisticsEnabled(true)

@@ -178,7 +178,8 @@ func TestToolCallWithContent(t *testing.T) {
 
 func TestToolCallOutputWithMultimodalContent(t *testing.T) {
 	input := []byte(`{
-		"model": "gpt-4o",
+		"model": "gpt-5.6-sol",
+		"prompt_cache_options": {"mode": "explicit"},
 		"messages": [
 			{"role": "user", "content": "Show me the generated result."},
 			{
@@ -196,10 +197,10 @@ func TestToolCallOutputWithMultimodalContent(t *testing.T) {
 				"role": "tool",
 				"tool_call_id": "call_output_1",
 				"content": [
-					{"type":"text","text":"Rendered result attached."},
-					{"type":"image_url","image_url":{"url":"https://example.com/generated.png","detail":"high"}},
+					{"type":"text","text":"Rendered result attached.","prompt_cache_breakpoint":{"mode":"explicit"}},
+					{"type":"image_url","image_url":{"url":"https://example.com/generated.png","detail":"high"},"prompt_cache_breakpoint":{"mode":"explicit"}},
 					{"type":"image_url","image_url":{"file_id":"file-img-123"}},
-					{"type":"file","file":{"file_id":"file-doc-123","filename":"doc.pdf"}},
+					{"type":"file","file":{"file_id":"file-doc-123","filename":"doc.pdf"},"prompt_cache_breakpoint":{"mode":"explicit"}},
 					{"type":"file","file":{"file_data":"SGVsbG8=","filename":"inline.txt"}},
 					{"type":"file","file":{"file_url":"https://example.com/report.pdf","filename":"report.pdf"}}
 				]
@@ -213,7 +214,7 @@ func TestToolCallOutputWithMultimodalContent(t *testing.T) {
 		]
 	}`)
 
-	out := ConvertOpenAIRequestToCodex("gpt-4o", input, true)
+	out := ConvertOpenAIRequestToCodex("gpt-5.6-sol", input, true)
 	result := string(out)
 
 	output := gjson.Get(result, "input.2.output")
@@ -228,6 +229,9 @@ func TestToolCallOutputWithMultimodalContent(t *testing.T) {
 	if parts[0].Get("type").String() != "input_text" || parts[0].Get("text").String() != "Rendered result attached." {
 		t.Fatalf("part 0: expected input_text with rendered text, got %s", parts[0].Raw)
 	}
+	if got := parts[0].Get("prompt_cache_breakpoint.mode").String(); got != "explicit" {
+		t.Fatalf("part 0: prompt_cache_breakpoint.mode = %q, want explicit; part=%s", got, parts[0].Raw)
+	}
 	if parts[1].Get("type").String() != "input_image" {
 		t.Fatalf("part 1: expected input_image, got %s", parts[1].Raw)
 	}
@@ -237,6 +241,9 @@ func TestToolCallOutputWithMultimodalContent(t *testing.T) {
 	if parts[1].Get("detail").String() != "high" {
 		t.Errorf("part 1: unexpected detail %s", parts[1].Get("detail").String())
 	}
+	if got := parts[1].Get("prompt_cache_breakpoint.mode").String(); got != "explicit" {
+		t.Fatalf("part 1: prompt_cache_breakpoint.mode = %q, want explicit; part=%s", got, parts[1].Raw)
+	}
 	if parts[2].Get("type").String() != "input_image" || parts[2].Get("file_id").String() != "file-img-123" {
 		t.Fatalf("part 2: expected file_id-backed input_image, got %s", parts[2].Raw)
 	}
@@ -245,6 +252,9 @@ func TestToolCallOutputWithMultimodalContent(t *testing.T) {
 	}
 	if parts[3].Get("filename").String() != "doc.pdf" {
 		t.Errorf("part 3: unexpected filename %s", parts[3].Get("filename").String())
+	}
+	if got := parts[3].Get("prompt_cache_breakpoint.mode").String(); got != "explicit" {
+		t.Fatalf("part 3: prompt_cache_breakpoint.mode = %q, want explicit; part=%s", got, parts[3].Raw)
 	}
 	if parts[4].Get("type").String() != "input_file" || parts[4].Get("file_data").String() != "SGVsbG8=" {
 		t.Fatalf("part 4: expected file_data-backed input_file, got %s", parts[4].Raw)
@@ -382,6 +392,89 @@ func TestConvertOpenAIRequestToCodexPreservesInputAudio(t *testing.T) {
 	}
 	if parts[1].Get("format").String() != "mp3" {
 		t.Fatalf("part 1: expected audio format mp3, got %s", parts[1].Get("format").String())
+	}
+}
+
+func TestConvertOpenAIRequestToCodexPreservesPromptCacheControls(t *testing.T) {
+	input := []byte(`{
+		"model": "gpt-5.6-sol",
+		"prompt_cache_key": "tenant:acme:support-v1",
+		"prompt_cache_options": {"mode": "explicit"},
+		"messages": [
+			{
+				"role": "system",
+				"content": [
+					{
+						"type": "text",
+						"text": "stable prefix",
+						"prompt_cache_breakpoint": {"mode": "explicit"}
+					}
+				]
+			},
+			{"role": "user", "content": "hello"}
+		]
+	}`)
+
+	out := ConvertOpenAIRequestToCodex("gpt-5.6-sol", input, true)
+	if got := gjson.GetBytes(out, "prompt_cache_key").String(); got != "tenant:acme:support-v1" {
+		t.Fatalf("prompt_cache_key = %q, want explicit client key; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "prompt_cache_options.mode").String(); got != "explicit" {
+		t.Fatalf("prompt_cache_options.mode = %q, want explicit; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "input.0.content.0.prompt_cache_breakpoint.mode").String(); got != "explicit" {
+		t.Fatalf("prompt_cache_breakpoint.mode = %q, want explicit; output=%s", got, out)
+	}
+}
+
+func TestConvertOpenAIRequestToCodexDoesNotAttachBreakpointsToUnsupportedResponsesBlocks(t *testing.T) {
+	input := []byte(`{
+		"model": "gpt-5.6-sol",
+		"prompt_cache_options": {"mode": "explicit"},
+		"messages": [
+			{
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "prior answer",
+						"prompt_cache_breakpoint": {"mode": "explicit"}
+					}
+				]
+			},
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "input_audio",
+						"input_audio": {"data": "SUQzBA==", "format": "mp3"},
+						"prompt_cache_breakpoint": {"mode": "explicit"}
+					},
+					{
+						"type": "text",
+						"text": "current question",
+						"prompt_cache_breakpoint": {"mode": "explicit"}
+					}
+				]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIRequestToCodex("gpt-5.6-sol", input, true)
+	if got := gjson.GetBytes(out, "input.0.content.0.type").String(); got != "output_text" {
+		t.Fatalf("assistant content type = %q, want output_text; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "input.0.content.0.prompt_cache_breakpoint"); got.Exists() {
+		t.Fatalf("assistant output_text unexpectedly retained prompt_cache_breakpoint; output=%s", out)
+	}
+	if got := gjson.GetBytes(out, "input.1.content.0.type").String(); got != "input_audio" {
+		t.Fatalf("user audio content type = %q, want input_audio; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "input.1.content.0.prompt_cache_breakpoint"); got.Exists() {
+		t.Fatalf("input_audio unexpectedly retained prompt_cache_breakpoint; output=%s", out)
+	}
+	if got := gjson.GetBytes(out, "input.1.content.1.prompt_cache_breakpoint.mode").String(); got != "explicit" {
+		t.Fatalf("supported input_text breakpoint mode = %q, want explicit; output=%s", got, out)
 	}
 }
 

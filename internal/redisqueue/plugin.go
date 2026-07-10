@@ -77,12 +77,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if tokens.CachedTokens == 0 {
 		if tokens.CacheReadTokens != 0 {
 			tokens.CachedTokens = tokens.CacheReadTokens
-		} else if tokens.CacheCreationTokens != 0 {
-			tokens.CachedTokens = tokens.CacheCreationTokens
 		}
 	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
+		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CacheReadTokens + tokens.CacheCreationTokens
 	}
 
 	failed := record.Failed
