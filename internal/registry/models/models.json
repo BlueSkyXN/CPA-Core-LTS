@@ -1449,7 +1449,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },
@@ -1597,7 +1598,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },
@@ -1621,7 +1623,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },
@@ -1792,7 +1795,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },
@@ -1816,7 +1820,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },
@@ -1987,7 +1992,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },
@@ -2011,7 +2017,8 @@
           "medium",
           "high",
           "xhigh",
-          "max"
+          "max",
+          "ultra"
         ]
       }
     },

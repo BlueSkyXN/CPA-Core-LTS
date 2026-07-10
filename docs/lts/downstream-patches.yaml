@@ -33,9 +33,9 @@ patches:
     retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
 
   - id: codex-gpt56-ultra-level
-    reason: Upstream v7.2.58 advertises GPT-5.6 catalog entries but does not provide first-class ultra parsing, validation ordering, or Codex client metadata support.
+    reason: CPA-Core-LTS preserves GPT-5.6 Ultra as a client compatibility level while upstream no longer advertises Ultra in models.json and still lacks first-class parsing, validation ordering, and complete Codex client semantics.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: LTS baseline through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61); upstream main 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe only preserves ultra in Codex client metadata and still lacks the shared thinking level implementation
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe, then removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, while LTS retains the catalog level and shared thinking implementation
     files:
       - internal/thinking/types.go
       - internal/thinking/suffix.go
