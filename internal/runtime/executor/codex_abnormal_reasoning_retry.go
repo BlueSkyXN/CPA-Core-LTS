@@ -11,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -36,6 +37,7 @@ type codexAbnormalReasoningRetryPolicy struct {
 	requireDistinct        bool
 	authID                 string
 	modelContains          []string
+	reasoningModel         string
 	reasoningEfforts       map[string]struct{}
 	reasoningTokens        map[int64]struct{}
 }
@@ -203,9 +205,10 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 	if len(tokens) == 0 {
 		return codexAbnormalReasoningRetryPolicy{}
 	}
+	reasoningModel := codexAbnormalReasoningRetryModel(requestedModel, upstreamModels...)
 	efforts := make(map[string]struct{}, len(effective.ReasoningEfforts))
 	for _, effort := range effective.ReasoningEfforts {
-		effort = normalizeCodexAbnormalReasoningRetryEffort(effort)
+		effort = normalizeCodexAbnormalReasoningRetryEffort(effort, reasoningModel)
 		if effort != "" {
 			efforts[effort] = struct{}{}
 		}
@@ -226,6 +229,7 @@ func newCodexAbnormalReasoningRetryPolicy(cfg *config.Config, auth *cliproxyauth
 		requireDistinct:        effective.HedgedRetry.RequireDistinctAuth,
 		authID:                 strings.TrimSpace(auth.ID),
 		modelContains:          modelContains,
+		reasoningModel:         reasoningModel,
 		reasoningEfforts:       efforts,
 		reasoningTokens:        tokens,
 	}
@@ -275,7 +279,7 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 		return nil
 	}
 	if len(p.reasoningEfforts) > 0 {
-		if _, ok := p.reasoningEfforts[normalizeCodexAbnormalReasoningRetryEffort(reasoningEffort)]; !ok {
+		if _, ok := p.reasoningEfforts[normalizeCodexAbnormalReasoningRetryEffort(reasoningEffort, p.reasoningModel)]; !ok {
 			return nil
 		}
 	}
@@ -286,7 +290,7 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 		}
 		log.WithFields(log.Fields{
 			"auth_id":          p.authID,
-			"reasoning_effort": normalizeCodexAbnormalReasoningRetryEffort(reasoningEffort),
+			"reasoning_effort": normalizeCodexAbnormalReasoningRetryEffort(reasoningEffort, p.reasoningModel),
 			"reasoning_tokens": detail.ReasoningTokens,
 			"output_tokens":    detail.OutputTokens,
 			"visible_tokens":   visibleTokens,
@@ -352,8 +356,19 @@ func cloneCodexAbnormalReasoningRetryStreamChunks(chunks []cliproxyexecutor.Stre
 	return out
 }
 
-func normalizeCodexAbnormalReasoningRetryEffort(effort string) string {
+func normalizeCodexAbnormalReasoningRetryEffort(effort, model string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	effort = thinking.CanonicalCodexWireEffortForModel(effort, model)
 	return strings.ToLower(strings.TrimSpace(effort))
+}
+
+func codexAbnormalReasoningRetryModel(requestedModel string, upstreamModels ...string) string {
+	for i := len(upstreamModels) - 1; i >= 0; i-- {
+		if model := thinking.ParseSuffix(strings.TrimSpace(upstreamModels[i])).ModelName; model != "" {
+			return model
+		}
+	}
+	return thinking.ParseSuffix(strings.TrimSpace(requestedModel)).ModelName
 }
 
 func isRetryWithoutPenaltyError(err error) bool {

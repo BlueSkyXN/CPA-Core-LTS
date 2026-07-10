@@ -272,6 +272,75 @@ func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterSkipsMismatch(
 	}
 }
 
+func TestCodexAbnormalReasoningRetryEffortCanonicalizationIsModelAware(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		filters       []string
+		runtimeEffort string
+		wantRetry     bool
+	}{
+		{name: "known ultra filter matches final max", model: "gpt-5.6-sol", filters: []string{"ultra"}, runtimeEffort: "max", wantRetry: true},
+		{name: "known max filter matches final max", model: "gpt-5.6-terra", filters: []string{"max"}, runtimeEffort: "max", wantRetry: true},
+		{name: "empty filter keeps any-effort semantics", model: "gpt-5.6-sol", filters: nil, runtimeEffort: "high", wantRetry: true},
+		{name: "custom ultra remains literal", model: "custom-codex-ultra-retry", filters: []string{"ultra"}, runtimeEffort: "ultra", wantRetry: true},
+		{name: "custom ultra filter does not alias max", model: "custom-codex-ultra-retry", filters: []string{"ultra"}, runtimeEffort: "max", wantRetry: false},
+		{name: "custom max filter does not alias ultra", model: "custom-codex-ultra-retry", filters: []string{"max"}, runtimeEffort: "ultra", wantRetry: false},
+		{name: "luna ultra filter does not alias max", model: "gpt-5.6-luna", filters: []string{"ultra"}, runtimeEffort: "max", wantRetry: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := codexAbnormalReasoningRetryTestConfigWithEfforts(tt.filters)
+			cfg.Codex.AbnormalReasoningRetry.ModelContains = []string{tt.model}
+			policy := newCodexAbnormalReasoningRetryPolicy(cfg, codexAbnormalReasoningRetryTestAuth(""), tt.model, tt.model)
+			err := policy.RetryError(usage.Detail{ReasoningTokens: 516}, tt.runtimeEffort)
+			if tt.wantRetry {
+				assertRetryWithoutPenaltyError(t, err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("RetryError() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_PayloadOverrideUltraUsesFinalMaxUsage(t *testing.T) {
+	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+	usage.RegisterNamedPlugin("codex-gpt56-ultra-usage-test", recorder)
+	t.Cleanup(func() {
+		usage.RegisterNamedPlugin("codex-gpt56-ultra-usage-test", noopUsagePlugin{})
+	})
+
+	server := newCodexAbnormalReasoningRetryServer(t, "gpt-5.6-sol", 516)
+	defer server.Close()
+
+	cfg := codexAbnormalReasoningRetryTestConfigWithEfforts([]string{"ultra"})
+	cfg.Codex.AbnormalReasoningRetry.ModelContains = []string{"gpt-5.6-sol"}
+	cfg.Payload.Override = []config.PayloadRule{
+		{
+			Models: []config.PayloadModelRule{{Name: "gpt-5.6-sol"}},
+			Params: map[string]any{"reasoning.effort": "ultra"},
+		},
+	}
+	executor := NewCodexExecutor(cfg)
+	_, err := executor.Execute(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gpt-5.6-sol",
+		Payload: []byte(`{"model":"gpt-5.6-sol","input":"hello","reasoning":{"effort":"max"}}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+	})
+	assertRetryWithoutPenaltyError(t, err)
+
+	record := recorder.waitForRecord(t, func(record usage.Record) bool {
+		return record.AuthID == "codex-oauth-1" && record.Model == "gpt-5.6-sol" && record.Detail.ReasoningTokens == 516
+	})
+	if record.ReasoningEffort != "max" {
+		t.Fatalf("record.ReasoningEffort = %q, want max", record.ReasoningEffort)
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_PublishesFailedUsageForInterceptedAttempt(t *testing.T) {
 	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
 	usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)

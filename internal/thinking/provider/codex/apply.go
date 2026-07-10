@@ -59,7 +59,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	}
 
 	if config.Mode == thinking.ModeLevel {
-		result, _ := sjson.SetBytes(body, "reasoning.effort", string(config.Level))
+		result, _ := sjson.SetBytes(body, "reasoning.effort", thinking.CanonicalCodexWireEffort(string(config.Level), modelInfo))
 		return result, nil
 	}
 
@@ -80,7 +80,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return body, nil
 	}
 
-	result, _ := sjson.SetBytes(body, "reasoning.effort", effort)
+	result, _ := sjson.SetBytes(body, "reasoning.effort", thinking.CanonicalCodexWireEffort(effort, modelInfo))
 	return result, nil
 }
 

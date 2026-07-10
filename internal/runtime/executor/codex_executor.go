@@ -882,6 +882,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if errReplay != nil {
 		return resp, errReplay
 	}
+	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
+	if err != nil {
+		return resp, err
+	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
@@ -1073,6 +1077,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
+	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
+	if err != nil {
+		return resp, err
+	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
@@ -1194,6 +1202,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if errReplay != nil {
 		return nil, errReplay
+	}
+	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
+	if err != nil {
+		return nil, err
 	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
@@ -1443,7 +1455,6 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -1451,6 +1462,10 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body, _ = sjson.SetBytes(body, "stream", false)
 	body = normalizeCodexInstructions(body)
+	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
 
 	enc, err := tokenizerForCodexModel(baseModel)
 	if err != nil {

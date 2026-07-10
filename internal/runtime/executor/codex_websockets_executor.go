@@ -374,6 +374,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errPromptCache != nil {
 		return resp, errPromptCache
 	}
+	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
+	if err != nil {
+		return resp, err
+	}
 	clientBody := body
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
@@ -608,6 +612,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body)
 	if errPromptCache != nil {
 		return nil, errPromptCache
+	}
+	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
+	if err != nil {
+		return nil, err
 	}
 	clientBody := body
 	var identityState codexIdentityConfuseState

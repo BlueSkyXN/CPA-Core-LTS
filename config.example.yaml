@@ -201,7 +201,10 @@ codex:
     model-contains:
       - "gpt-5.5"
     # Optional translated Codex reasoning.effort filter. Empty means any effort.
-    # Examples: "medium", "high", "xhigh". Request body effort works even without a model suffix like gpt-5.5(xhigh).
+    # Examples: "medium", "high", "xhigh", "max". Request body effort works even without a model suffix like gpt-5.5(xhigh).
+    # For known GPT-5.6 Sol/Terra models, "ultra" is a client preset whose final CPA/upstream effort is "max",
+    # so filters ["ultra"] and ["max"] are equivalent and cannot distinguish a Codex client Max selection from Ultra.
+    # Unknown/UserDefined Codex models keep literal effort matching; their "ultra" is not aliased to "max".
     reasoning-efforts: []
     reasoning-tokens:
       - 516

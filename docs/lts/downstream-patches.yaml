@@ -49,25 +49,50 @@ patches:
     retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
 
   - id: codex-gpt56-ultra-level
-    reason: CPA-Core-LTS preserves GPT-5.6 Ultra as a client compatibility level while upstream no longer advertises Ultra in models.json and still lacks first-class parsing, validation ordering, and complete Codex client semantics.
+    reason: Temporary downstream compatibility patch after upstream added partial GPT-5.6 Ultra client metadata and then removed Ultra from models.json. CPA-Core-LTS preserves the catalog/client preset boundary while canonicalizing known Sol/Terra Ultra requests to reasoning.effort=max on the final HTTP/WebSocket wire.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe, then removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, while LTS retains the catalog level and shared thinking implementation
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe and removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, but still lacks the shared thinking level, model-aware custom-model behavior, payload-override-safe final wire canonicalization, usage/retry alignment, and HTTP/WebSocket regression coverage
     files:
+      - config.example.yaml
+      - docs/lts/codex-client-context-degradation-defense.md
       - internal/thinking/types.go
       - internal/thinking/suffix.go
       - internal/thinking/validate.go
+      - internal/thinking/codex_wire.go
+      - internal/thinking/codex_wire_test.go
+      - internal/thinking/provider/codex/apply.go
       - internal/thinking/gpt56_ultra_test.go
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_abnormal_reasoning_retry.go
+      - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
+      - internal/runtime/executor/codex_ultra_wire_test.go
       - sdk/api/handlers/openai/codex_client_models.go
       - sdk/api/handlers/openai/codex_client_models_test.go
     regression_tests:
       - TestParseLevelSuffixUltra
       - TestGPT56UltraCodexThinking
+      - TestGPT56MaxCodexThinkingPreserved
+      - TestUnknownCustomCodexModelPreservesLiteralUltra
       - TestUltraClampsToMaxWhenCrossProviderTargetStopsAtMax
+      - TestCanonicalCodexWireEffortIsModelAware
+      - TestNormalizeCodexReasoningEffortForWire
+      - TestCodexExecutorExecuteCanonicalizesGPT56UltraFinalWire
+      - TestCodexExecutorExecutePreservesGPT56MaxFinalWire
+      - TestCodexExecutorExecuteStreamCanonicalizesGPT56UltraSuffixFinalWire
+      - TestCodexExecutorCompactCanonicalizesPayloadOverrideUltraFinalWire
+      - TestCodexExecutorFinalGuardRejectsLunaUltraPayloadOverride
+      - TestCodexExecutorUnknownCustomModelPreservesLiteralUltraFinalWire
+      - TestCodexExecutorCountTokensRunsGPT56WireValidation
+      - TestCodexWebsocketsExecuteCanonicalizesUltraAcrossReusedConnection
+      - TestCodexWebsocketsExecuteStreamCanonicalizesPayloadOverrideUltraFinalWire
+      - TestCodexAbnormalReasoningRetryEffortCanonicalizationIsModelAware
+      - TestCodexExecutorAbnormalReasoningRetry_PayloadOverrideUltraUsesFinalMaxUsage
       - TestCodexClientModelsResponse_GPT56UltraReasoningMetadata
       - TestCodexClientReasoningDescriptionUltra
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4160 (partial client-metadata equivalent only)
     state: required
-    retire_when: Upstream exposes an equivalent ultra level across suffix parsing, validation/clamping, provider application, and Codex client model metadata, and these regression tests pass after removing the downstream implementation.
+    retire_when: Upstream publishes a complete and authoritative Ultra server-side solution covering parser/suffix semantics, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, and HTTP/WebSocket paths while preserving the client-side proactive multi-agent boundary; all listed Max/Ultra regressions must pass after removing this downstream implementation.
 
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.

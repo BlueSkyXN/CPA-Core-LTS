@@ -54,10 +54,12 @@ const (
 	LevelHigh ThinkingLevel = "high"
 	// LevelXHigh sets extra-high thinking effort
 	LevelXHigh ThinkingLevel = "xhigh"
-	// LevelMax sets maximum thinking effort.
-	// This is currently used by Claude 4.6 adaptive thinking (opus supports "max").
+	// LevelMax sets maximum thinking effort. It is used by Claude 4.6 adaptive
+	// thinking and as the official Codex upstream wire value for GPT-5.6 Max/Ultra.
 	LevelMax ThinkingLevel = "max"
-	// LevelUltra sets ultra thinking effort for models that explicitly advertise it.
+	// LevelUltra represents the Codex client Ultra preset. Official Codex upstream
+	// requests canonicalize it to LevelMax; proactive multi-agent delegation is
+	// implemented by the Codex client rather than the proxy.
 	LevelUltra ThinkingLevel = "ultra"
 )
 
