@@ -39,6 +39,7 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 		Model:           "gpt-5.4",
 		Alias:           "client-gpt",
 		ReasoningEffort: "medium",
+		ServiceTier:     " priority ",
 		RequestedAt:     time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
 		Detail: coreusage.Detail{
 			InputTokens:         10,
@@ -60,6 +61,9 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.ReasoningEffort != "medium" {
 		t.Fatalf("reasoning_effort = %q, want %q", detail.ReasoningEffort, "medium")
+	}
+	if detail.ServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want %q", detail.ServiceTier, "priority")
 	}
 	if detail.Tokens.CacheReadTokens != 7 {
 		t.Fatalf("cache_read_tokens = %d, want 7", detail.Tokens.CacheReadTokens)
@@ -109,6 +113,7 @@ func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 		Source:          "auths/anthropic.json",
 		AuthIndex:       "2",
 		ReasoningEffort: "high",
+		ServiceTier:     coreusage.DefaultServiceTier,
 		RequestedAt:     time.Date(2026, 6, 10, 9, 15, 0, 0, time.UTC),
 		Latency:         1234 * time.Millisecond,
 		Failed:          true,
@@ -177,6 +182,9 @@ func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 	if detail.ReasoningEffort != "high" {
 		t.Fatalf("reasoning_effort = %q, want high", detail.ReasoningEffort)
 	}
+	if detail.ServiceTier != coreusage.DefaultServiceTier {
+		t.Fatalf("service_tier = %q, want %q", detail.ServiceTier, coreusage.DefaultServiceTier)
+	}
 	if detail.LatencyMs != 1234 {
 		t.Fatalf("latency_ms = %d, want 1234", detail.LatencyMs)
 	}
@@ -230,7 +238,7 @@ func TestRequestStatisticsEnabledToggleStopsNewRecordsButKeepsSnapshotReadable(t
 	}
 }
 
-func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
+func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTier(t *testing.T) {
 	stats := NewRequestStatistics()
 	timestamp := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
 	first := StatisticsSnapshot{
@@ -260,10 +268,11 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 				Models: map[string]ModelSnapshot{
 					"gpt-5.4": {
 						Details: []RequestDetail{{
-							Timestamp: timestamp,
-							LatencyMs: 2500,
-							Source:    "user@example.com",
-							AuthIndex: "0",
+							Timestamp:   timestamp,
+							LatencyMs:   2500,
+							Source:      "user@example.com",
+							AuthIndex:   "0",
+							ServiceTier: "priority",
 							Tokens: TokenStats{
 								InputTokens:  10,
 								OutputTokens: 20,
@@ -290,5 +299,8 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 	details := snapshot.APIs["test-key"].Models["gpt-5.4"].Details
 	if len(details) != 1 {
 		t.Fatalf("details len = %d, want 1", len(details))
+	}
+	if details[0].ServiceTier != "" {
+		t.Fatalf("service_tier = %q, want legacy unknown to remain empty", details[0].ServiceTier)
 	}
 }

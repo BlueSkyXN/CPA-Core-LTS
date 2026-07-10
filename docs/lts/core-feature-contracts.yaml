@@ -37,6 +37,7 @@ features:
       - RequestDetail
       - auth_index
       - latency_ms
+      - service_tier
       - success_count
       - failure_count
       - failed_requests
@@ -75,6 +76,7 @@ features:
       - apis
       - models
       - details
+      - service_tier
     validation:
       - go test ./internal/api/handlers/management -run 'Usage|usage'
       - go test ./test -run 'Usage|usage'
