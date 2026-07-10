@@ -90,6 +90,8 @@ require_grep "BlueSkyXN/CPA-Panel-LTS" internal/managementasset/updater.go inter
 require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
+require_grep 'json:"service_tier,omitempty"' internal/usage
+require_grep "service_tier" internal/api/handlers/management/usage_contract_test.go
 
 go test ./scripts/ltsregistry -count=1
 
