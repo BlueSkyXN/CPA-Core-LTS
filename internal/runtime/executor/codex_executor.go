@@ -39,6 +39,7 @@ const (
 	codexUserAgent             = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
+	codexSparkModel            = "gpt-5.3-codex-spark"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
 )
@@ -304,6 +305,25 @@ func translateCodexRequestPair(from, to sdktranslator.Format, model string, orig
 	originalTranslated := sdktranslator.TranslateRequest(from, to, model, originalPayload, stream)
 	body := sdktranslator.TranslateRequest(from, to, model, payload, stream)
 	return originalTranslated, body
+}
+
+// sanitizeCodexUnsupportedReasoningSummary keeps reasoning effort enabled for
+// Spark while removing the summary field that its upstream rejects.
+func sanitizeCodexUnsupportedReasoningSummary(body []byte, modelName string) []byte {
+	if !strings.EqualFold(strings.TrimSpace(modelName), codexSparkModel) {
+		return body
+	}
+
+	out := body
+	if gjson.GetBytes(out, "reasoning.summary").Exists() {
+		out, _ = sjson.DeleteBytes(out, "reasoning.summary")
+	}
+
+	reasoning := gjson.GetBytes(out, "reasoning")
+	if reasoning.IsObject() && len(reasoning.Map()) == 0 {
+		out, _ = sjson.DeleteBytes(out, "reasoning")
+	}
+	return out
 }
 
 type codexReasoningReplayScope struct {
@@ -846,6 +866,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -1044,6 +1065,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
@@ -1157,6 +1179,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	abnormalRetry := newCodexAbnormalReasoningRetryPolicy(e.cfg, auth, requestedModel, req.Model, baseModel)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
