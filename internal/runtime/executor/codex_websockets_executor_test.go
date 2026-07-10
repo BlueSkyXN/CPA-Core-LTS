@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -344,6 +345,130 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for disconnect signal")
+	}
+}
+
+func TestCodexWebsocketsEnsureUpstreamConnRedialsForLunaHeaderProfile(t *testing.T) {
+	const (
+		normalModel = "gpt-5.4"
+		lunaModel   = "gpt-5.6-luna"
+		normalUA    = "codex-tui/test-normal"
+		lunaUA      = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+	)
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	handshakes := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes <- r.UserAgent()
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "sess-model-header-profile-change"
+	defer exec.CloseExecutionSession(sessionID)
+	sess := exec.getOrCreateSession(sessionID)
+	disconnectCh := exec.UpstreamDisconnectChan(sessionID)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+
+	normalHeaders := http.Header{"User-Agent": []string{normalUA}}
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, normalModel, normalHeaders)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(normal) error = %v", err)
+	}
+
+	lunaHeaders := http.Header{"User-Agent": []string{normalUA}}
+	applyModelHeaderOverrides(lunaHeaders, lunaModel)
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, lunaModel, lunaHeaders)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(luna) error = %v", err)
+	}
+	if secondConn == firstConn {
+		t.Fatal("Luna header profile reused the normal-model websocket; want a fresh connection")
+	}
+
+	for i, wantUA := range []string{normalUA, lunaUA} {
+		select {
+		case gotUA := <-handshakes:
+			if gotUA != wantUA {
+				t.Fatalf("handshake %d User-Agent = %q, want %q", i+1, gotUA, wantUA)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for handshake %d", i+1)
+		}
+	}
+
+	select {
+	case errDisconnect, ok := <-disconnectCh:
+		t.Fatalf("planned connection profile change signaled upstream disconnect: err=%v ok=%v", errDisconnect, ok)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestCodexWebsocketsEnsureUpstreamConnReusesMatchingConnectionKey(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	handshakes := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes <- struct{}{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "sess-matching-connection-key"
+	defer exec.CloseExecutionSession(sessionID)
+	sess := exec.getOrCreateSession(sessionID)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+	headers := http.Header{
+		"User-Agent":          []string{"codex-tui/test"},
+		"X-Client-Request-Id": []string{"request-1"},
+	}
+
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, "gpt-5.4", headers)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(first) error = %v", err)
+	}
+	secondHeaders := headers.Clone()
+	secondHeaders.Set("X-Client-Request-Id", "request-2")
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, "gpt-5.4", secondHeaders)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(second) error = %v", err)
+	}
+	if secondConn != firstConn {
+		t.Fatal("matching connection key redialed; want websocket reuse")
+	}
+
+	select {
+	case <-handshakes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for initial websocket handshake")
+	}
+	select {
+	case <-handshakes:
+		t.Fatal("matching connection key created a second websocket handshake")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -866,6 +991,71 @@ func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 	}
 	if got := req.Header.Get("x-codex-beta-features"); got != "" {
 		t.Fatalf("x-codex-beta-features = %q, want empty", got)
+	}
+}
+
+func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
+	const wantUA = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	cfg := &config.Config{
+		CodexHeaderDefaults: config.CodexHeaderDefaults{
+			UserAgent: "config-ua",
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Metadata: map[string]any{"email": "user@example.com"},
+	}
+
+	applyCodexHeaders(req, auth, "oauth-token", true, cfg)
+	applyModelHeaderOverrides(req.Header, "gpt-5.6-luna")
+
+	if got := req.Header.Get("User-Agent"); got != wantUA {
+		t.Fatalf("User-Agent = %q, want %q", got, wantUA)
+	}
+	if got := codexSessionHeaderValue(req.Header); got == "" {
+		t.Fatal("expected Session_id to be set for Mac OS User-Agent override")
+	}
+
+	applyModelHeaderOverrides(req.Header, "gpt-5.4")
+	if got := req.Header.Get("User-Agent"); got != wantUA {
+		t.Fatalf("User-Agent after no-op override = %q, want %q", got, wantUA)
+	}
+}
+
+func TestApplyModelHeaderOverridesMultipleHeaders(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	clientID := "test-model-header-override"
+	reg.RegisterClient(clientID, "codex", []*registry.ModelInfo{{
+		ID: "test-override-headers-model",
+		Config: &registry.ModelConfig{
+			OverrideHeader: map[string]string{
+				"user-agent":    "custom-ua/1.0",
+				"originator":    "custom-origin",
+				"x-test-header": "forced-value",
+			},
+		},
+	}})
+	t.Cleanup(func() { reg.UnregisterClient(clientID) })
+
+	headers := http.Header{}
+	headers.Set("User-Agent", "old-ua")
+	headers.Set("Originator", "old-origin")
+	headers.Set("X-Test-Header", "old-value")
+
+	applyModelHeaderOverrides(headers, "test-override-headers-model")
+
+	if got := headers.Get("User-Agent"); got != "custom-ua/1.0" {
+		t.Fatalf("User-Agent = %q, want custom-ua/1.0", got)
+	}
+	if got := headers.Get("Originator"); got != "custom-origin" {
+		t.Fatalf("Originator = %q, want custom-origin", got)
+	}
+	if got := headers.Get("X-Test-Header"); got != "forced-value" {
+		t.Fatalf("X-Test-Header = %q, want forced-value", got)
 	}
 }
 

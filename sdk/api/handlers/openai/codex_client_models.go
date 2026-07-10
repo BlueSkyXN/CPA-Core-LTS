@@ -27,6 +27,7 @@ var codexClientAllowedReasoningLevels = map[string]struct{}{
 	"high":   {},
 	"xhigh":  {},
 	"max":    {},
+	"ultra":  {},
 }
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
@@ -221,16 +222,21 @@ func applyCodexClientInputModalitiesMetadata(entry map[string]any, modalities []
 	if len(modalities) == 0 {
 		return
 	}
-	codexModalities := make([]any, 0, len(modalities))
+	// Codex client only accepts text/image input modalities.
+	codexModalities := make([]any, 0, 2)
+	seen := make(map[string]struct{}, 2)
 	supportsImage := false
 	for _, raw := range modalities {
-		modality := strings.ToLower(strings.TrimSpace(raw))
-		if modality == "" {
-			continue
-		}
-		codexModalities = append(codexModalities, modality)
-		if modality == "image" {
-			supportsImage = true
+		switch modality := strings.ToLower(strings.TrimSpace(raw)); modality {
+		case "text", "image":
+			if _, ok := seen[modality]; ok {
+				continue
+			}
+			seen[modality] = struct{}{}
+			codexModalities = append(codexModalities, modality)
+			if modality == "image" {
+				supportsImage = true
+			}
 		}
 	}
 	if len(codexModalities) == 0 {
@@ -339,6 +345,8 @@ func codexClientReasoningDescription(level string) string {
 		return "Extra high reasoning depth for complex problems"
 	case "max":
 		return "Maximum available reasoning depth for complex problems"
+	case "ultra":
+		return "Maximum reasoning with automatic task delegation"
 	default:
 		return level
 	}
