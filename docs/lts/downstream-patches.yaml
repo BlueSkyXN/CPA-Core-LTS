@@ -4,7 +4,7 @@ patches:
   - id: codex-image-generation-tool-dedup
     reason: Codex 0.144+ can send the image_gen namespace, so Core must not inject a duplicate legacy image_generation tool while still preserving the fallback for unrelated namespaces.
     introduced_in: cb874364950e41e733ab114793af17100f87b06d
-    affected_upstream_range: LTS baseline through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58); upstream main contains the equivalent change at cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d
+    affected_upstream_range: LTS baseline through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58); equivalent namespace and flattened-function checks entered upstream at f9162d391c954446e3519214b51de50d07bf4913 / cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d and are included in the pending ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61) sync target
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_executor_imagegen_test.go
@@ -18,7 +18,7 @@ patches:
   - id: plugin-configured-enable-default
     reason: A configured plugin without an explicit enabled field must inherit the enabled plugin subsystem default instead of being silently disabled during YAML parsing or runtime config synthesis.
     introduced_in: f3ff2f889026c6a28dc2d14f602c4fef108a0347
-    affected_upstream_range: through cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d (upstream dev checked after v7.2.58)
+    affected_upstream_range: through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61); no equivalent configured-plugin enable default exists in the synced upstream baseline
     files:
       - internal/config/config.go
       - internal/config/plugin_config_test.go
@@ -35,7 +35,7 @@ patches:
   - id: codex-gpt56-ultra-level
     reason: Upstream v7.2.58 advertises GPT-5.6 catalog entries but does not provide first-class ultra parsing, validation ordering, or Codex client metadata support.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: LTS baseline through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58); upstream main 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe only preserves ultra in Codex client metadata and still lacks the shared thinking level implementation
+    affected_upstream_range: LTS baseline through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61); upstream main 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe only preserves ultra in Codex client metadata and still lacks the shared thinking level implementation
     files:
       - internal/thinking/types.go
       - internal/thinking/suffix.go
@@ -56,7 +56,7 @@ patches:
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58)
+    affected_upstream_range: through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61); no provider-owned immutable model-header snapshot equivalent exists in the synced upstream baseline
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_openai_images.go
@@ -76,7 +76,7 @@ patches:
   - id: codex-websocket-reader-generation
     reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58)
+    affected_upstream_range: through ca67caf0872eef65f8eaedf2e127cf214a49621d (v7.2.61); no equivalent WebSocket reader generation ownership exists in the synced upstream baseline
     files:
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
