@@ -663,7 +663,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 // extractOpenAIConfig extracts thinking configuration from OpenAI format request body.
 //
 // OpenAI API format:
-//   - reasoning_effort: "none", "low", "medium", "high" (discrete levels)
+//   - reasoning_effort: a model-supported discrete level
 //
 // OpenAI uses level-based thinking configuration only, no numeric budget support.
 // The "none" value is treated specially to return ModeNone.
@@ -683,7 +683,7 @@ func extractOpenAIConfig(body []byte) ThinkingConfig {
 // extractCodexConfig extracts thinking configuration from Codex format request body.
 //
 // Codex API format (OpenAI Responses API):
-//   - reasoning.effort: "none", "low", "medium", "high"
+//   - reasoning.effort: a model-supported discrete level
 //
 // This is similar to OpenAI but uses nested field "reasoning.effort" instead of "reasoning_effort".
 func extractCodexConfig(body []byte) ThinkingConfig {

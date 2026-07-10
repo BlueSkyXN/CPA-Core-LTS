@@ -686,8 +686,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
-	if got := int(codexClientTestPriority(custom["priority"])); got != 129 {
-		t.Fatalf("custom priority = %v, want 129", custom["priority"])
+	wantCustomPriority := codexClientTestMaxTemplatePriority(t) + 100
+	if got := codexClientTestPriority(custom["priority"]); got != wantCustomPriority {
+		t.Fatalf("custom priority = %v, want max template priority + 100 = %d", custom["priority"], wantCustomPriority)
 	}
 	if got, _ := custom["description"].(string); got != "Custom model from registry" {
 		t.Fatalf("custom description = %q, want Custom model from registry", got)
@@ -752,6 +753,28 @@ func codexClientTestPriority(raw any) int {
 	default:
 		return -1
 	}
+}
+
+func codexClientTestMaxTemplatePriority(t *testing.T) int {
+	t.Helper()
+
+	var catalog struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &catalog); err != nil {
+		t.Fatalf("failed to parse embedded codex client model catalog: %v", err)
+	}
+	if len(catalog.Models) == 0 {
+		t.Fatal("embedded codex client model catalog is empty")
+	}
+
+	maxPriority := codexClientTestPriority(catalog.Models[0]["priority"])
+	for _, model := range catalog.Models[1:] {
+		if priority := codexClientTestPriority(model["priority"]); priority > maxPriority {
+			maxPriority = priority
+		}
+	}
+	return maxPriority
 }
 
 func assertCodexSupportedReasoningLevels(t *testing.T, model map[string]any, want []string) {

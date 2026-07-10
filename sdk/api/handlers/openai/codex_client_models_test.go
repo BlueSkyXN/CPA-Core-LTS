@@ -128,3 +128,80 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 		t.Fatalf("image endpoint model should not expose input_modalities from registry: %#v", imageEntry["input_modalities"])
 	}
 }
+
+func TestCodexClientModelsResponse_GPT56UltraReasoningMetadata(t *testing.T) {
+	resp := CodexClientModelsResponse([]map[string]any{
+		{"id": "gpt-5.6-sol"},
+		{"id": "gpt-5.6-terra"},
+		{"id": "gpt-5.6-luna"},
+	})
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
+	}
+
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, model := range models {
+		bySlug[stringModelValue(model, "slug")] = model
+	}
+
+	for _, slug := range []string{"gpt-5.6-sol", "gpt-5.6-terra"} {
+		model := bySlug[slug]
+		if model == nil {
+			t.Fatalf("expected codex entry for %q", slug)
+		}
+		assertCodexClientReasoningEfforts(t, model, []string{"low", "medium", "high", "xhigh", "max", "ultra"})
+		if got := codexClientReasoningLevelDescription(model, "ultra"); got != "Maximum reasoning with automatic task delegation" {
+			t.Fatalf("%s ultra description = %q, want automatic task delegation description", slug, got)
+		}
+	}
+
+	luna := bySlug["gpt-5.6-luna"]
+	if luna == nil {
+		t.Fatal("expected codex entry for gpt-5.6-luna")
+	}
+	assertCodexClientReasoningEfforts(t, luna, []string{"low", "medium", "high", "xhigh", "max"})
+	if got := codexClientReasoningLevelDescription(luna, "ultra"); got != "" {
+		t.Fatalf("gpt-5.6-luna unexpectedly exposes ultra description %q", got)
+	}
+}
+
+func TestCodexClientReasoningDescriptionUltra(t *testing.T) {
+	const want = "Maximum reasoning with automatic task delegation"
+	if got := codexClientReasoningDescription("ultra"); got != want {
+		t.Fatalf("ultra description = %q, want %q", got, want)
+	}
+}
+
+func assertCodexClientReasoningEfforts(t *testing.T, model map[string]any, want []string) {
+	t.Helper()
+
+	rawLevels, ok := model["supported_reasoning_levels"].([]any)
+	if !ok {
+		t.Fatalf("%s supported_reasoning_levels = %#v, want array", stringModelValue(model, "slug"), model["supported_reasoning_levels"])
+	}
+	if len(rawLevels) != len(want) {
+		t.Fatalf("%s supported_reasoning_levels length = %d, want %d: %#v", stringModelValue(model, "slug"), len(rawLevels), len(want), rawLevels)
+	}
+	for index, wantEffort := range want {
+		level, ok := rawLevels[index].(map[string]any)
+		if !ok {
+			t.Fatalf("%s supported_reasoning_levels[%d] = %#v, want object", stringModelValue(model, "slug"), index, rawLevels[index])
+		}
+		if got := stringModelValue(level, "effort"); got != wantEffort {
+			t.Fatalf("%s supported_reasoning_levels[%d].effort = %q, want %q", stringModelValue(model, "slug"), index, got, wantEffort)
+		}
+	}
+}
+
+func codexClientReasoningLevelDescription(model map[string]any, effort string) string {
+	rawLevels, _ := model["supported_reasoning_levels"].([]any)
+	for _, rawLevel := range rawLevels {
+		level, ok := rawLevel.(map[string]any)
+		if !ok || stringModelValue(level, "effort") != effort {
+			continue
+		}
+		return stringModelValue(level, "description")
+	}
+	return ""
+}

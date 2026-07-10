@@ -1,7 +1,7 @@
 // Package codex implements thinking configuration for Codex (OpenAI Responses API) models.
 //
-// Codex models use the reasoning.effort format with discrete levels
-// (low/medium/high). This is similar to OpenAI but uses nested field
+// Codex models use the reasoning.effort format with model-defined discrete levels.
+// This is similar to OpenAI but uses nested field
 // "reasoning.effort" instead of "reasoning_effort".
 // See: _bmad-output/planning-artifacts/architecture.md#Epic-8
 package codex
@@ -16,7 +16,7 @@ import (
 // Applier implements thinking.ProviderApplier for Codex models.
 //
 // Codex-specific behavior:
-//   - Output format: reasoning.effort (string: low/medium/high/xhigh)
+//   - Output format: reasoning.effort (model-supported string level)
 //   - Level-only mode: no numeric budget support
 //   - Some models support ZeroAllowed (gpt-5.1, gpt-5.2)
 type Applier struct{}

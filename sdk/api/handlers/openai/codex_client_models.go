@@ -27,6 +27,7 @@ var codexClientAllowedReasoningLevels = map[string]struct{}{
 	"high":   {},
 	"xhigh":  {},
 	"max":    {},
+	"ultra":  {},
 }
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
@@ -344,6 +345,8 @@ func codexClientReasoningDescription(level string) string {
 		return "Extra high reasoning depth for complex problems"
 	case "max":
 		return "Maximum available reasoning depth for complex problems"
+	case "ultra":
+		return "Maximum reasoning with automatic task delegation"
 	default:
 		return level
 	}

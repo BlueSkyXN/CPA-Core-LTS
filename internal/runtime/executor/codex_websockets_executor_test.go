@@ -348,6 +348,130 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 	}
 }
 
+func TestCodexWebsocketsEnsureUpstreamConnRedialsForLunaHeaderProfile(t *testing.T) {
+	const (
+		normalModel = "gpt-5.4"
+		lunaModel   = "gpt-5.6-luna"
+		normalUA    = "codex-tui/test-normal"
+		lunaUA      = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+	)
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	handshakes := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes <- r.UserAgent()
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "sess-model-header-profile-change"
+	defer exec.CloseExecutionSession(sessionID)
+	sess := exec.getOrCreateSession(sessionID)
+	disconnectCh := exec.UpstreamDisconnectChan(sessionID)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+
+	normalHeaders := http.Header{"User-Agent": []string{normalUA}}
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, normalModel, normalHeaders)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(normal) error = %v", err)
+	}
+
+	lunaHeaders := http.Header{"User-Agent": []string{normalUA}}
+	applyModelHeaderOverrides(lunaHeaders, lunaModel)
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, lunaModel, lunaHeaders)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(luna) error = %v", err)
+	}
+	if secondConn == firstConn {
+		t.Fatal("Luna header profile reused the normal-model websocket; want a fresh connection")
+	}
+
+	for i, wantUA := range []string{normalUA, lunaUA} {
+		select {
+		case gotUA := <-handshakes:
+			if gotUA != wantUA {
+				t.Fatalf("handshake %d User-Agent = %q, want %q", i+1, gotUA, wantUA)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for handshake %d", i+1)
+		}
+	}
+
+	select {
+	case errDisconnect, ok := <-disconnectCh:
+		t.Fatalf("planned connection profile change signaled upstream disconnect: err=%v ok=%v", errDisconnect, ok)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestCodexWebsocketsEnsureUpstreamConnReusesMatchingConnectionKey(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	handshakes := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes <- struct{}{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "sess-matching-connection-key"
+	defer exec.CloseExecutionSession(sessionID)
+	sess := exec.getOrCreateSession(sessionID)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+	headers := http.Header{
+		"User-Agent":          []string{"codex-tui/test"},
+		"X-Client-Request-Id": []string{"request-1"},
+	}
+
+	firstConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, "gpt-5.4", headers)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(first) error = %v", err)
+	}
+	secondHeaders := headers.Clone()
+	secondHeaders.Set("X-Client-Request-Id", "request-2")
+	secondConn, _, err := exec.ensureUpstreamConn(context.Background(), auth, sess, auth.ID, wsURL, "gpt-5.4", secondHeaders)
+	if err != nil {
+		t.Fatalf("ensureUpstreamConn(second) error = %v", err)
+	}
+	if secondConn != firstConn {
+		t.Fatal("matching connection key redialed; want websocket reuse")
+	}
+
+	select {
+	case <-handshakes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for initial websocket handshake")
+	}
+	select {
+	case <-handshakes:
+		t.Fatal("matching connection key created a second websocket handshake")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) {
 	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil)
 

@@ -13,7 +13,7 @@ const (
 	ErrInvalidSuffix ErrorCode = "INVALID_SUFFIX"
 
 	// ErrUnknownLevel indicates the level value is not in the valid list.
-	// Example: "model(ultra)" where "ultra" is not a valid level
+	// Example: "model(extreme)" where "extreme" is not a valid level
 	ErrUnknownLevel ErrorCode = "UNKNOWN_LEVEL"
 
 	// ErrThinkingNotSupported indicates the model does not support thinking.
