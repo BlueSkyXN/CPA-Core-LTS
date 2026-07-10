@@ -1,0 +1,92 @@
+version: 1
+
+patches:
+  - id: codex-image-generation-tool-dedup
+    reason: Codex 0.144+ can send the image_gen namespace, so Core must not inject a duplicate legacy image_generation tool while still preserving the fallback for unrelated namespaces.
+    introduced_in: cb874364950e41e733ab114793af17100f87b06d
+    affected_upstream_range: LTS baseline through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58); upstream main contains the equivalent change at cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d
+    files:
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_executor_imagegen_test.go
+    regression_tests:
+      - TestEnsureImageGenerationTool_ExtensionNamespaceDoesNotInjectLegacyTool
+      - TestEnsureImageGenerationTool_UnrelatedNamespaceStillInjectsLegacyTool
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4175
+    state: upstreamed
+    retire_when: The LTS upstream/main baseline contains f9162d391c954446e3519214b51de50d07bf4913 or an equivalent namespace and flattened-function check, and the downstream tests pass after adapting to the upstream implementation.
+
+  - id: plugin-configured-enable-default
+    reason: A configured plugin without an explicit enabled field must inherit the enabled plugin subsystem default instead of being silently disabled during YAML parsing or runtime config synthesis.
+    introduced_in: f3ff2f889026c6a28dc2d14f602c4fef108a0347
+    affected_upstream_range: through cfa90f9fbf3f79dabb2eb468d6a098efac8ff06d (upstream dev checked after v7.2.58)
+    files:
+      - internal/config/config.go
+      - internal/config/plugin_config_test.go
+      - internal/pluginhost/config.go
+      - internal/pluginhost/config_test.go
+    regression_tests:
+      - TestParseConfigBytes_PluginInstanceEmptyRawYAML
+      - TestRuntimeConfigYAMLDefaultsEnabledTrue
+      - TestRuntimeConfigFromConfigDefaultsConfiguredPluginEnabled
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
+
+  - id: codex-gpt56-ultra-level
+    reason: Upstream v7.2.58 advertises GPT-5.6 catalog entries but does not provide first-class ultra parsing, validation ordering, or Codex client metadata support.
+    introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
+    affected_upstream_range: LTS baseline through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58); upstream main 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe only preserves ultra in Codex client metadata and still lacks the shared thinking level implementation
+    files:
+      - internal/thinking/types.go
+      - internal/thinking/suffix.go
+      - internal/thinking/validate.go
+      - internal/thinking/gpt56_ultra_test.go
+      - sdk/api/handlers/openai/codex_client_models.go
+      - sdk/api/handlers/openai/codex_client_models_test.go
+    regression_tests:
+      - TestParseLevelSuffixUltra
+      - TestGPT56UltraCodexThinking
+      - TestUltraClampsToMaxWhenCrossProviderTargetStopsAtMax
+      - TestCodexClientModelsResponse_GPT56UltraReasoningMetadata
+      - TestCodexClientReasoningDescriptionUltra
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4160 (partial client-metadata equivalent only)
+    state: required
+    retire_when: Upstream exposes an equivalent ultra level across suffix parsing, validation/clamping, provider application, and Codex client model metadata, and these regression tests pass after removing the downstream implementation.
+
+  - id: codex-model-header-provider-snapshot
+    reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.
+    introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
+    affected_upstream_range: through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58)
+    files:
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_openai_images.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_model_header_profile_test.go
+      - internal/runtime/executor/codex_websockets_executor_test.go
+    regression_tests:
+      - TestResolveCodexModelHeaderProfileUsesCodexProviderRegardlessOfRegistrationOrder
+      - TestCodexModelHeaderProfileIsStableSnapshot
+      - TestCodexModelHeaderProfileDigestNormalizesHeaderKeys
+      - TestCodexWebsocketsEnsureUpstreamConnRedialsForLunaHeaderProfile
+      - TestCodexWebsocketsEnsureUpstreamConnUsesAppliedHeaderProfileSnapshot
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream resolves model headers by provider-owned immutable snapshot and uses the same snapshot for every Codex transport handshake and connection identity, with all listed regression tests passing after the downstream implementation is removed.
+
+  - id: codex-websocket-reader-generation
+    reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request.
+    introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
+    affected_upstream_range: through 26d45fd46a2d2911adef14772465131066dae465 (v7.2.58)
+    files:
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_websockets_executor_test.go
+    regression_tests:
+      - TestCodexWebsocketHandshakeFailureReleasesExecutionSession
+      - TestCodexWebsocketStaleReaderCannotCloseNewActiveChannel
+      - TestCodexWebsocketGenerationRetryRebindUsesCurrentConnection
+      - TestCodexWebsocketGenerationRetryRebindRejectedAfterSessionClose
+      - TestCodexWebsocketGenerationSessionCloseCancelsActiveRequest
+      - TestCodexWebsocketGenerationSessionCloseDoesNotBlockOnFullActiveChannel
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream assigns equivalent connection generations, validates reader/request ownership atomically, keeps channels request-owned, and passes every listed concurrency regression after the downstream implementation is removed.
