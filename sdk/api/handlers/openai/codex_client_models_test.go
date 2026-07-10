@@ -166,6 +166,32 @@ func TestCodexClientModelsResponse_GPT56UltraReasoningMetadata(t *testing.T) {
 	}
 }
 
+func TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff(t *testing.T) {
+	resp := CodexClientModelsResponse([]map[string]any{{"id": "gpt-5.3-codex-spark"}})
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
+	}
+
+	var spark map[string]any
+	for _, model := range models {
+		if stringModelValue(model, "slug") == "gpt-5.3-codex-spark" {
+			spark = model
+			break
+		}
+	}
+	if spark == nil {
+		t.Fatal("expected codex entry for gpt-5.3-codex-spark")
+	}
+	if supports, okSupports := spark["supports_reasoning_summaries"].(bool); !okSupports || !supports {
+		t.Fatalf("supports_reasoning_summaries = %#v, want true so reasoning.effort remains enabled", spark["supports_reasoning_summaries"])
+	}
+	if got := stringModelValue(spark, "default_reasoning_summary"); got != "none" {
+		t.Fatalf("default_reasoning_summary = %q, want none", got)
+	}
+	assertCodexClientReasoningEfforts(t, spark, []string{"low", "medium", "high", "xhigh"})
+}
+
 func TestCodexClientReasoningDescriptionUltra(t *testing.T) {
 	const want = "Maximum reasoning with automatic task delegation"
 	if got := codexClientReasoningDescription("ultra"); got != want {
