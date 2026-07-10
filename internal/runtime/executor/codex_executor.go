@@ -1949,18 +1949,7 @@ func isImageGenerationFunctionTool(tool gjson.Result) bool {
 	case "function":
 		return tool.Get("name").String() == "image_gen.imagegen"
 	case "namespace":
-		if tool.Get("name").String() != "image_gen" {
-			return false
-		}
-		tools := tool.Get("tools")
-		if !tools.IsArray() {
-			return false
-		}
-		for _, nestedTool := range tools.Array() {
-			if nestedTool.Get("type").String() == "function" && nestedTool.Get("name").String() == "imagegen" {
-				return true
-			}
-		}
+		return isCodexExtensionImageGenerationTool(tool)
 	}
 	return false
 }
