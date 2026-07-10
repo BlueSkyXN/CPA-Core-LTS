@@ -176,9 +176,6 @@ const LoginSuccessHtml = `<!DOCTYPE html>
             This window will close automatically in <span id="countdown">10</span> seconds
         </div>
         
-        <div class="footer">
-            <p>Powered by <a href="https://chatgpt.com" target="_blank">ChatGPT</a></p>
-        </div>
     </div>
     
     <script>
