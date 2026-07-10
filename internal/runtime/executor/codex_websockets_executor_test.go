@@ -290,6 +290,72 @@ func TestCodexWebsocketsExecuteStreamMapsMessageTooBigClose(t *testing.T) {
 	}
 }
 
+func TestCodexWebsocketHandshakeFailureReleasesExecutionSession(t *testing.T) {
+	tests := []struct {
+		name            string
+		handshakeStatus int
+	}{
+		{name: "upgrade-required-fallback", handshakeStatus: http.StatusUpgradeRequired},
+		{name: "upstream-status-error", handshakeStatus: http.StatusTooManyRequests},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if websocket.IsWebSocketUpgrade(r) {
+					w.WriteHeader(tt.handshakeStatus)
+					_, _ = w.Write([]byte(`{"error":{"message":"websocket rejected"}}`))
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":{"message":"http fallback stopped"}}`))
+			}))
+			defer server.Close()
+
+			exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+			auth := &cliproxyauth.Auth{
+				ID:         "auth-handshake-" + tt.name,
+				Provider:   "codex",
+				Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL},
+			}
+			sessionID := "session-handshake-" + tt.name
+			req := cliproxyexecutor.Request{
+				Model:   "gpt-5.4",
+				Payload: []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":"hello"}]}`),
+			}
+			opts := cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FromString("openai-response"),
+				Metadata: map[string]any{
+					cliproxyexecutor.ExecutionSessionMetadataKey: sessionID,
+				},
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, _ := exec.ExecuteStream(ctx, auth, req, opts)
+			if result != nil {
+				for range result.Chunks {
+				}
+			}
+
+			sess := exec.getOrCreateSession(sessionID)
+			acquired := make(chan struct{})
+			go func() {
+				sess.reqMu.Lock()
+				close(acquired)
+				sess.reqMu.Unlock()
+			}()
+			select {
+			case <-acquired:
+			case <-time.After(2 * time.Second):
+				t.Fatal("websocket handshake failure left the execution session locked")
+			}
+			exec.CloseExecutionSession(sessionID)
+		})
+	}
+}
+
 func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -327,13 +393,15 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 	}
 	sess.connMu.Lock()
 	sess.conn = conn
+	sess.connGen = 1
 	sess.authID = "auth-1"
 	sess.wsURL = "ws://example.test/responses"
 	sess.readerConn = conn
+	sess.readerGen = 1
 	sess.connMu.Unlock()
 
 	upstreamErr := errors.New("upstream gone")
-	exec.invalidateUpstreamConn(sess, conn, "test_invalidate", upstreamErr)
+	exec.invalidateUpstreamConn(sess, codexWebsocketConnectionRef{conn: conn, generation: 1}, "test_invalidate", upstreamErr)
 
 	select {
 	case errRead, ok := <-disconnectCh:
@@ -345,6 +413,314 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for disconnect signal")
+	}
+}
+
+func TestCodexWebsocketStaleReaderCannotCloseNewActiveChannel(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	serverReady := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		serverReady <- struct{}{}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	oldConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	select {
+	case <-serverReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for websocket server")
+	}
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sess := &codexWebsocketSession{sessionID: "stale-reader-generation"}
+	oldConnection := codexWebsocketConnectionRef{conn: oldConn, generation: 1}
+	newConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 2}
+
+	sess.connMu.Lock()
+	sess.conn = oldConnection.conn
+	sess.connGen = oldConnection.generation
+	sess.readerConn = oldConnection.conn
+	sess.readerGen = oldConnection.generation
+	sess.connMu.Unlock()
+
+	readerDone := make(chan struct{})
+	go func() {
+		exec.readUpstreamLoop(sess, oldConnection)
+		close(readerDone)
+	}()
+
+	readCh := make(chan codexWebsocketRead, 4)
+	sess.connMu.Lock()
+	sess.conn = newConnection.conn
+	sess.connGen = newConnection.generation
+	sess.readerConn = newConnection.conn
+	sess.readerGen = newConnection.generation
+	sess.connMu.Unlock()
+	requestSignal, errActive := sess.setActiveConnection(newConnection, readCh)
+	if errActive != nil {
+		t.Fatalf("install new active connection: %v", errActive)
+	}
+	if requestSignal == nil {
+		t.Fatal("install new active connection returned a nil request signal")
+	}
+
+	if errClose := oldConn.Close(); errClose != nil {
+		t.Fatalf("close old websocket: %v", errClose)
+	}
+	select {
+	case <-readerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stale reader did not exit")
+	}
+
+	if activeCh, _, ok := sess.activeFor(newConnection); !ok || activeCh != readCh {
+		t.Fatal("stale reader cleared the new connection active channel")
+	}
+	select {
+	case event, ok := <-readCh:
+		if !ok {
+			t.Fatal("stale reader closed the new connection active channel")
+		}
+		t.Fatalf("stale reader delivered an event to the new connection: %#v", event)
+	default:
+	}
+
+	sess.clearActiveConnection(newConnection, readCh)
+	sess.connMu.Lock()
+	sess.conn = nil
+	sess.readerConn = nil
+	sess.connMu.Unlock()
+}
+
+func TestCodexWebsocketGenerationRetryRebindUsesCurrentConnection(t *testing.T) {
+	sess := &codexWebsocketSession{sessionID: "retry-generation-rebind"}
+	oldConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 1}
+	newConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 2}
+	readCh := make(chan codexWebsocketRead, 4)
+
+	sess.conn = oldConnection.conn
+	sess.connGen = oldConnection.generation
+	_, errActive := sess.setActiveConnection(oldConnection, readCh)
+	if errActive != nil {
+		t.Fatalf("install initial retry connection: %v", errActive)
+	}
+	sess.connMu.Lock()
+	sess.conn = newConnection.conn
+	sess.connGen = newConnection.generation
+	sess.connMu.Unlock()
+	requestSignal, errActive := sess.setActiveConnection(newConnection, readCh)
+	if errActive != nil {
+		t.Fatalf("rebind retry connection: %v", errActive)
+	}
+
+	if delivered := sess.dispatchRead(oldConnection, codexWebsocketRead{err: errors.New("stale retry error")}, true); delivered {
+		t.Fatal("stale connection delivered an error after retry rebind")
+	}
+	wantPayload := []byte(`{"type":"response.completed"}`)
+	if delivered := sess.dispatchRead(newConnection, codexWebsocketRead{msgType: websocket.TextMessage, payload: wantPayload}, false); !delivered {
+		t.Fatal("current retry connection did not deliver its response")
+	}
+
+	msgType, payload, errRead := readCodexWebsocketMessage(context.Background(), sess, newConnection, readCh, requestSignal)
+	if errRead != nil {
+		t.Fatalf("read current retry response: %v", errRead)
+	}
+	if msgType != websocket.TextMessage || !bytes.Equal(payload, wantPayload) {
+		t.Fatalf("retry response = type %d payload %s, want type %d payload %s", msgType, payload, websocket.TextMessage, wantPayload)
+	}
+	sess.clearActiveConnection(newConnection, readCh)
+}
+
+func TestCodexWebsocketGenerationRetryRebindRejectedAfterSessionClose(t *testing.T) {
+	sess := &codexWebsocketSession{sessionID: "retry-rebind-after-close"}
+	oldConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 11}
+	retryConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 12}
+	readCh := make(chan codexWebsocketRead, 1)
+
+	sess.conn = oldConnection.conn
+	sess.connGen = oldConnection.generation
+	_, errActive := sess.setActiveConnection(oldConnection, readCh)
+	if errActive != nil {
+		t.Fatalf("install initial retry active connection: %v", errActive)
+	}
+
+	// Simulate a successful retry dial followed by session shutdown before the
+	// request can rebind its active channel to the returned generation.
+	sess.connMu.Lock()
+	sess.conn = nil
+	sess.connGen = retryConnection.generation + 1
+	sess.closed = true
+	sess.connMu.Unlock()
+	sess.cancelActiveConnection(errors.New("test session closed"))
+
+	if _, errActive := sess.setActiveConnection(retryConnection, readCh); errActive == nil {
+		t.Fatal("closed session accepted a retry generation rebind")
+	}
+	if _, _, active := sess.activeFor(oldConnection); active {
+		t.Fatal("closed session retained the pre-retry active connection")
+	}
+	if _, _, active := sess.activeFor(retryConnection); active {
+		t.Fatal("closed session installed the retry active connection")
+	}
+}
+
+func TestCodexWebsocketGenerationSessionCloseCancelsActiveRequest(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+
+	sess := &codexWebsocketSession{
+		sessionID:  "generation-session-close",
+		conn:       conn,
+		connGen:    7,
+		readerConn: conn,
+		readerGen:  7,
+		wsURL:      wsURL,
+		authID:     "auth-session-close",
+	}
+	connection := codexWebsocketConnectionRef{conn: conn, generation: 7}
+	readCh := make(chan codexWebsocketRead, 1)
+	requestSignal, errActive := sess.setActiveConnection(connection, readCh)
+	if errActive != nil {
+		t.Fatalf("install session close active connection: %v", errActive)
+	}
+
+	closeCodexWebsocketSession(sess, "test_close")
+
+	_, _, errRead := readCodexWebsocketMessage(context.Background(), sess, connection, readCh, requestSignal)
+	if errRead == nil || !strings.Contains(errRead.Error(), "test_close") {
+		t.Fatalf("session close read error = %v, want generation-scoped close error", errRead)
+	}
+	if _, _, active := sess.activeFor(connection); active {
+		t.Fatal("session close left the active request installed")
+	}
+	sess.connMu.Lock()
+	currentConn := sess.conn
+	currentGeneration := sess.connGen
+	sess.connMu.Unlock()
+	if currentConn != nil || currentGeneration == connection.generation {
+		t.Fatalf("session close state = conn %p generation %d, want nil and a new generation", currentConn, currentGeneration)
+	}
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	connectionKey := newCodexWebsocketConnectionKey("auth-session-close", wsURL, "gpt-5.4", codexModelHeaderProfile{}.digest)
+	if _, _, errEnsure := exec.ensureUpstreamConn(context.Background(), nil, sess, connectionKey, http.Header{}); errEnsure == nil {
+		t.Fatal("closed session accepted a replacement connection")
+	}
+	lateReadCh := make(chan codexWebsocketRead, 1)
+	if _, errActive := sess.setActiveConnection(connection, lateReadCh); errActive == nil {
+		t.Fatal("closed session accepted an active request after connection setup")
+	}
+	if _, _, active := sess.activeFor(connection); active {
+		t.Fatal("closed session retained a late active request")
+	}
+	select {
+	case event, ok := <-readCh:
+		if !ok {
+			t.Fatal("session close closed the request-owned channel after delivering the error")
+		}
+		if event.connection != connection || event.err == nil || !strings.Contains(event.err.Error(), "test_close") {
+			t.Fatalf("queued session close event = %#v, want generation-scoped close error", event)
+		}
+	default:
+	}
+	select {
+	case _, ok := <-readCh:
+		if !ok {
+			t.Fatal("session close closed the request-owned channel")
+		}
+		t.Fatal("session close delivered more than one terminal event")
+	default:
+	}
+}
+
+func TestCodexWebsocketGenerationSessionCloseDoesNotBlockOnFullActiveChannel(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	connection := codexWebsocketConnectionRef{conn: conn, generation: 17}
+	sess := &codexWebsocketSession{
+		sessionID:  "generation-session-close-full-channel",
+		conn:       conn,
+		connGen:    connection.generation,
+		readerConn: conn,
+		readerGen:  connection.generation,
+		wsURL:      wsURL,
+		authID:     "auth-session-close-full-channel",
+	}
+	readCh := make(chan codexWebsocketRead, 1)
+	readCh <- codexWebsocketRead{connection: connection, msgType: websocket.TextMessage, payload: []byte(`{"type":"response.output_text.delta"}`)}
+	requestSignal, errActive := sess.setActiveConnection(connection, readCh)
+	if errActive != nil {
+		t.Fatalf("install full-channel active connection: %v", errActive)
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		closeCodexWebsocketSession(sess, "full_channel_close")
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session close blocked while the request-owned channel was full")
+	}
+	select {
+	case <-requestSignal.ctx.Done():
+		if cause := context.Cause(requestSignal.ctx); cause == nil || !strings.Contains(cause.Error(), "full_channel_close") {
+			t.Fatalf("request cancellation cause = %v, want full_channel_close", cause)
+		}
+	default:
+		t.Fatal("session close did not cancel the request signal")
+	}
+	if _, _, active := sess.activeFor(connection); active {
+		t.Fatal("session close left the full-channel request active")
+	}
+	select {
+	case _, ok := <-readCh:
+		if !ok {
+			t.Fatal("session close closed the request-owned channel")
+		}
+	default:
+		t.Fatal("session close unexpectedly drained the request-owned channel")
 	}
 }
 
