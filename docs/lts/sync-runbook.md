@@ -18,12 +18,25 @@ CLIProxyAPI upstream/main latest
 
 ## Contract registry
 
-Panel 的实践证明，单靠“这几个文件不能删”的文字规则不够；需要把受保护能力拆成可审查的 registry，再让脚本和 PR checklist 同时引用它。Core 使用 `docs/lts/core-feature-contracts.yaml` 作为 contract registry，定位如下：
+Panel 的实践证明，单靠“这几个文件不能删”的文字规则不够；需要把产品能力、维护功能、临时补丁和审查边界拆开，再让脚本和 PR checklist 同时引用。Core 使用 version 2 contract registry，定位如下：
 
 - `docs/lts/protected-deltas.yaml` 定义 LTS 产品边界和同步策略。
-- `docs/lts/core-feature-contracts.yaml` 定义每个受保护能力的文件、路由、marker、验证命令和 protected-adjacent 改动。
-- `scripts/check-lts-contract.sh` 负责检查 registry 存在、关键 marker 存在、核心源码路径仍然存在。
+- `docs/lts/core-feature-contracts.yaml` 把 `retained-capability`、`lts-feature`、`review_seams`、`validation_profiles` 和能力关系分别登记。
+- `docs/lts/downstream-patches.yaml` 只登记需要随 upstream baseline 复查和退休的下游补丁；普通 upstream model/catalog 吸收不登记为 LTS feature。
+- `go run ./scripts/ltsregistry --root .` 严格解析三份 YAML，检查枚举、引用、路径、marker、补丁测试和退休条件。
+- `scripts/check-lts-contract.sh` 保留少量产品身份 sentinel，并调用结构化 validator。
 - `.github/pull_request_template.md` 负责让评审者显式说明是否按 registry 做了 protected delta review。
+
+分类字段的含义：
+
+- `kind: retained-capability`：LTS 产品身份的一部分，例如完整 usage、Management usage API、Panel 兼容和 auth/config 兼容。
+- `kind: lts-feature`：CPA-Core-LTS 长期维护但不提升为核心身份契约的功能，例如 abnormal reasoning retry、transient cooldown 和 Redis-compatible usage queue。
+- `support`：表达支持强度，使用 `protected / maintained / optional / upstream-shared`，不再用单一 `status` 混合产品重要性和来源关系。
+- `owner`：表达维护归属，使用 `cpa-core-lts / upstream / shared`。
+- `upstream_relation`：表达与 upstream 的关系，使用 `downstream-only / divergent / upstream-equivalent / removed-upstream`。
+- `review_seams`：只表达每次 sync 必须人工审查的边界，不伪装成产品 feature。
+- `validation_profiles`：只表达运行态交付证据，不伪装成长期维护能力。
+- `relationships`：表达 coexist 等能力关系；Redis queue 与 built-in full usage 的关系不再挤进支持级别。
 
 和 Panel 不同，Core 的正确模式仍然是 protected full-sync，不是 selective-port。原因是 Core 的受保护 delta 主要集中在 usage、Management API、panel asset source、auth/config attribution 等明确接口上；普通 provider/runtime/security upstream 变更默认吸收，只在 registry 标出的 protected-adjacent seam 上做保留或适配。
 
@@ -33,6 +46,7 @@ Panel 的实践证明，单靠“这几个文件不能删”的文字规则不�
 - 不为普通函数名、局部变量、临时实现细节增加 marker；这些应该由 tests 或人工 review 覆盖。
 - `scripts/check-lts-contract.sh` 只能证明“保护面没有明显消失”；不能替代 usage schema、response shape、import/export、runtime attribution 的 Go 测试。
 - 每次新增 registry feature，都要写清为什么它是 LTS 产品边界，而不是单次 sync 的临时关注点。
+- 每个 active downstream patch 都必须有 affected upstream range、真实存在的 regression tests 和明确的 `retire_when`。
 
 ## 禁止操作
 
@@ -124,15 +138,39 @@ git merge --no-ff --log <UPSTREAM_STAGE_SHA>
 - `internal/usage/`
 - `/v0/management/usage*`
 
-审查时先对照 `docs/lts/core-feature-contracts.yaml` 的对应 feature：
+审查时先对照 `docs/lts/core-feature-contracts.yaml` 的 retained capability、LTS feature 或 review seam：
 
 - `full-usage-statistics-core`
 - `management-usage-api`
 - `panel-release-asset`
 - `auth-identity-attribution`
-- `provider-runtime-usage-seams`
 - `config-compatibility-and-hot-reload`
 - `redis-compatible-usage-queue`
+- review seam `provider-runtime-usage-seams`
+
+同时逐项检查 `docs/lts/downstream-patches.yaml`。普通 GPT/model catalog 更新属于 upstream/shared absorption；只有 LTS 仍需携带的差异才进入 patch ledger。
+
+## Downstream patch lifecycle
+
+Patch ledger 使用以下状态：
+
+- `required`：当前 upstream baseline 尚无等价实现，本地代码和 regression tests 必须存在。
+- `upstreamed`：upstream 已合并等价实现，但尚未进入当前 LTS sync baseline。
+- `removable`：当前 baseline 已含等价实现；必须先用 ledger 中的 tests 验证，再删除本地实现。
+- `retired`：本地实现已删除；条目保留并记录 `retired_in`，用于历史追溯。
+
+每次 protected full-sync 都执行：
+
+1. 对照 upstream from/to range 搜索 active patch 的等价实现或 upstream PR。
+2. 逐项记录 `patch-still-required / upstream-equivalent / retired`，不能因为无文本冲突而跳过。
+3. 如果等价实现只在 upstream dev 或未进入本轮 baseline，状态改为 `upstreamed`，不能提前删除。
+4. 如果当前 baseline 已包含等价实现，先把状态改为 `removable`，在代码仍存在时运行原 regression tests，并把该状态作为一个独立 PR 或已合并基线。
+5. 后续 retirement PR 先提交删除 downstream 实现的 commit，再提交 ledger commit，把状态从 `removable` 改为 `retired`，并令 `retired_in` 指向前一个删除 commit；最终 PR head 必须重新通过 validator。历史条目不得删除。
+6. 没有等价 upstream 修复时保持 `required`，必要时另行准备 upstream issue/PR，但不把发布 upstream PR 混入 sync 操作。
+
+Validator 会把当前 ledger 与 `--base-ref`（CI 使用 PR base branch）比较，禁止删除历史条目、越级退休、改写 `introduced_in` 或已退休记录。`upstreamed / removable` 可以在 upstream 修复被撤回或等价判断被推翻时保守回退为 `required`，但不能绕过验证直接前进。`upstreamed / removable / retired` 必须提供具体 upstream issue、PR 或 commit。`retired_in` 必须填写实际删除 downstream 实现且可达于当前产品历史的 commit；由于 `required -> retired` 和 `upstreamed -> retired` 都被禁止，补丁发现等价实现、进入 `removable`、最终退休不能压缩成同一个未合并基线。
+
+如果同一 PR 内产生 ledger 引用的实现 commit（`introduced_in`）或删除 commit（`retired_in`），该 downstream patch PR 必须使用 **Create a merge commit**，禁止 squash 或 rebase；否则被引用的 SHA 会被改写并立即失效。若实现 commit 已经在 `main` 上，后续只登记该既有 SHA 的治理 PR 不因此强制使用 merge commit。
 
 ## Conflict policy
 
@@ -153,13 +191,14 @@ sync PR 合入 `main` 前至少运行：
 
 ```bash
 scripts/check-lts-contract.sh
+go run ./scripts/ltsregistry --root .
 go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
 go build -o test-output ./cmd/server && rm -f test-output
 go test ./...
 git diff --check
 ```
 
-`scripts/check-lts-contract.sh` 必须覆盖 `docs/lts/protected-deltas.yaml` 和 `docs/lts/core-feature-contracts.yaml` 两层文件；如果 guard 只证明单个文件存在，不能视为 contract review 完成。
+`scripts/check-lts-contract.sh` 必须调用结构化 validator，覆盖 registry、protected deltas 和 patch ledger；如果 guard 只证明文件存在或 marker 只存在于 registry 自身，不能视为 contract review 完成。
 
 如果 `go test ./...` 因环境、网络或已知非本次改动原因无法完成，PR body 必须写明实际命令、失败位置和剩余风险。不能把未运行的检查写成通过。
 
@@ -180,6 +219,7 @@ git diff --check
 - 冲突文件列表
 - protected delta review
 - contract registry features reviewed
+- downstream patch ledger conclusions
 - 普通 upstream 改动吸收范围
 - 被覆盖的旧 upstream-port PR 范围，如有
 - validation 命令和结果
@@ -190,23 +230,24 @@ Protected delta review 建议使用固定格式：
 
 ```text
 Protected delta review:
-- usage statistics: preserved / changed / retested
-- management usage API: preserved / changed / retested
-- CPA-Panel-LTS response shape: preserved / changed / retested
-- downstream auth/config/panel/source customizations: preserved / changed / retested
-- contract registry: reviewed features / changed features / skipped features with reason
+- retained capabilities: preserved / adapted / newly-added
+- LTS-owned features: preserved / adapted / newly-added
+- shared review seams: reviewed / adapted / not-touched with reason
+- downstream patches: patch-still-required / upstream-equivalent / retired
+- validation profiles: run / skipped with reason
 - upstream ordinary changes: absorbed
 ```
 
 ## Merge policy
 
-upstream sync PR 合入 `main` 时必须选择 Create a merge commit。
+upstream sync PR，以及在本 PR 内产生 `introduced_in` 或 `retired_in` 所指 commit 的 downstream patch PR，合入 `main` 时必须选择 Create a merge commit。
 
 禁止：
 
 - squash and merge
 - rebase and merge
 - 把 sync PR 拆成文件覆盖 commit
+- squash 或 rebase 在本 PR 内产生 patch provenance commit 的 introduction / retirement PR
 
 原因是 merge commit 会推进 merge-base，让 Git 记住本轮 upstream 历史和冲突解决。否则下一轮 sync 会重新计算已处理过的 upstream commits。
 

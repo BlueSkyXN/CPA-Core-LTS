@@ -1,3 +1,5 @@
+version: 2
+
 maintenance_model:
   type: protected-full-sync
   product_branch: main
@@ -6,13 +8,15 @@ maintenance_model:
   cadence_guidance: frequent_small_syncs_when_requested
   optional_runtime_smoke: manual_huggingface_space
   feature_contract_registry: docs/lts/core-feature-contracts.yaml
+  downstream_patch_ledger: docs/lts/downstream-patches.yaml
 
 upstream_source:
   repo: router-for-me/CLIProxyAPI
   branch: main
 
-protected_deltas:
+retained_capabilities:
   - id: full-usage-statistics
+    registry_feature: full-usage-statistics-core
     must_keep: true
     markers:
       - usage-statistics-enabled
@@ -23,36 +27,104 @@ protected_deltas:
     validation:
       - scripts/check-lts-contract.sh
       - go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
-      - behavior-contract-tests
     conflict_policy: preserve_or_reapply_lts_usage
-    registry_feature: full-usage-statistics-core
+
+  - id: management-usage-api
+    registry_feature: management-usage-api
+    must_keep: true
+    markers:
+      - /v0/management/usage
+      - /v0/management/usage/export
+      - /v0/management/usage/import
+      - /v0/management/usage-statistics-enabled
+    validation:
+      - management-usage-response-shape-test
+      - export-import-roundtrip-test
+    conflict_policy: preserve_management_usage_contract
 
   - id: cpa-panel-lts-compatibility
+    registry_feature: panel-release-asset
     must_keep: true
     markers:
-      - CPA-Panel-LTS
+      - BlueSkyXN/CPA-Panel-LTS
+      - management.html
       - management usage response shape
-      - usage page compatibility
     validation:
       - panel-response-shape-review
-      - management-usage-response-shape-test
+      - go test ./internal/managementasset
     conflict_policy: preserve_panel_compatibility
-    registry_features:
-      - management-usage-api
-      - panel-release-asset
 
-  - id: local-downstream-customizations
+  - id: auth-identity-attribution
+    registry_feature: auth-identity-attribution
     must_keep: true
     markers:
-      - auth/config/panel/release/source customizations
+      - API key attribution
+      - auth source attribution
+      - auth_index
     validation:
-      - manual_review_required
-    conflict_policy: preserve_or_reapply_local_delta
-    registry_features:
-      - auth-identity-attribution
-      - provider-runtime-usage-seams
-      - config-compatibility-and-hot-reload
-      - redis-compatible-usage-queue
+      - auth-attribution-contract-review
+    conflict_policy: preserve_auth_identity_attribution
+
+  - id: config-and-hot-reload-compatibility
+    registry_feature: config-compatibility-and-hot-reload
+    must_keep: true
+    markers:
+      - usage-statistics-enabled
+      - panel-github-repository
+      - config hot reload
+    validation:
+      - config-compatibility-tests
+      - watcher-diff-tests
+    conflict_policy: preserve_config_compatibility
+
+lts_owned_features:
+  - id: codex-abnormal-reasoning-retry
+    registry_feature: codex-abnormal-reasoning-retry
+    maintenance_policy: long-term-maintained
+    markers:
+      - abnormal-reasoning-retry
+      - hedged-retry
+      - RetryWithoutPenalty
+    validation:
+      - codex-abnormal-reasoning-regression-tests
+      - hedged-retry-race-tests
+    conflict_policy: adapt_lts_feature_to_upstream_runtime
+
+  - id: transient-error-cooldown
+    registry_feature: transient-error-cooldown-config
+    maintenance_policy: long-term-maintained
+    markers:
+      - transient-error-cooldown-seconds
+      - SetTransientErrorCooldownSeconds
+    validation:
+      - transient-cooldown-config-tests
+    conflict_policy: adapt_lts_feature_to_upstream_auth_scheduler
+
+  - id: redis-compatible-usage-queue
+    registry_feature: redis-compatible-usage-queue
+    maintenance_policy: long-term-maintained-optional-integration
+    markers:
+      - /v0/management/usage-queue
+      - internal/redisqueue/
+    validation:
+      - redis-usage-queue-contract-tests
+    conflict_policy: preserve_queue_without_replacing_full_usage
+
+shared_review_seams:
+  - id: provider-runtime-usage-seams
+    registry_seam: provider-runtime-usage-seams
+    review_required: true
+    review_when:
+      - request lifecycle changes
+      - provider runtime or WebSocket ownership changes
+      - model resolution changes
+      - token accounting or final usage changes
+      - logging metadata changes
+    validation:
+      - targeted provider/runtime tests
+      - usage attribution review
+      - go test ./internal/runtime/executor/... ./internal/translator/...
+    conflict_policy: absorb_upstream_and_adapt_lts_hooks
 
 sync_rules:
   default_mode: protected_full_sync
@@ -61,20 +133,12 @@ sync_rules:
   squash_forbidden: true
   rebase_forbidden: true
   contract_registry_required: true
+  downstream_patch_review_required: true
+  patch_provenance_merge_commit_required: true
   forbidden_shortcuts:
     - GitHub Sync fork
     - git pull upstream main on main
     - git checkout upstream/main -- .
 
-runtime_smoke:
-  mode: manual-ai-operated
-  scheduled: false
-  reference_space: BlueSkyXN/CPA-HFS-2026-03
-  requirements:
-    - Build the CPA-Core-LTS branch or exact sync commit being reviewed.
-    - Enable usage-statistics-enabled for the smoke run.
-    - Use the CPA-Panel-LTS management panel release source.
-    - Verify /healthz returns ok.
-    - Verify /management.html is served.
-    - Verify /v0/management/usage and export endpoints exist and require management authentication rather than disappearing.
-    - Do not publish management passwords, API keys, auth files, or Hugging Face secrets in PR text or logs.
+runtime_validation_profiles:
+  - hf-space-runtime-smoke

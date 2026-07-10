@@ -6,6 +6,7 @@ echo "Checking CPA-Core-LTS protected contract sentinels..."
 test -d internal/usage
 test -f docs/lts/protected-deltas.yaml
 test -f docs/lts/core-feature-contracts.yaml
+test -f docs/lts/downstream-patches.yaml
 
 require_path() {
   local path="$1"
@@ -89,121 +90,17 @@ require_grep "BlueSkyXN/CPA-Panel-LTS" internal/managementasset/updater.go inter
 require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
-require_grep "abnormal-reasoning-retry" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "observe-only" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "delivery-policy" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "fallback-policy" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "best-non-special" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "first-non-special" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "max-output-special" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "hedged-retry" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "stream-buffer-max-bytes" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "max-retries" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "exhausted-behavior" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "client-usage-aggregation" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "delivered-only" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "sum-with-delivered-total" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "quality" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "reasoning-efforts" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "RetryWithoutPenalty" sdk/cliproxy/auth/conductor.go sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
-require_grep "ExcludeAuthIDsMetadataKey" sdk/cliproxy/executor/types.go docs/lts/core-feature-contracts.yaml
-require_grep "CodexAbnormalReasoningRetryUsageMetadataKey" sdk/cliproxy/executor/types.go docs/lts/core-feature-contracts.yaml
-require_grep "codex_abnormal_reasoning_response" internal/runtime/executor/codex_abnormal_reasoning_retry.go docs/lts/core-feature-contracts.yaml
-require_grep "codex_abnormal_reasoning_retry_exhausted" sdk/cliproxy/auth/retry_without_penalty.go docs/lts/core-feature-contracts.yaml
-require_grep "failure_reason" internal/usage/logger_plugin.go docs/lts/core-feature-contracts.yaml
-require_grep "transient-error-cooldown-seconds" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml
-require_grep "TransientErrorCooldownSeconds" internal/config/config.go internal/api/server.go sdk/cliproxy/service.go docs/lts/core-feature-contracts.yaml
-require_grep "SetTransientErrorCooldownSeconds" cmd/server/main.go internal/api/server.go sdk/cliproxy/auth/conductor.go sdk/cliproxy/service.go docs/lts/core-feature-contracts.yaml
-require_grep "nextTransientErrorRetryAfter" sdk/cliproxy/auth/conductor.go docs/lts/core-feature-contracts.yaml
 
-python3 - <<'PY'
-from pathlib import Path
-import sys
+go test ./scripts/ltsregistry -count=1
 
-path = Path("docs/lts/protected-deltas.yaml")
-text = path.read_text(encoding="utf-8")
-
-required = [
-    "protected-full-sync",
-    "full-usage-statistics",
-    "usage-statistics-enabled",
-    "internal/usage/",
-    "/v0/management/usage",
-    "/v0/management/usage/export",
-    "/v0/management/usage/import",
-    "cpa-panel-lts-compatibility",
-    "local-downstream-customizations",
-    "preserve_or_reapply_lts_usage",
-    "core-feature-contracts.yaml",
-    "contract_registry_required",
-]
-
-missing = [item for item in required if item not in text]
-if missing:
-    for item in missing:
-        print(f"missing protected contract marker: {item}", file=sys.stderr)
-    sys.exit(1)
-
-registry_path = Path("docs/lts/core-feature-contracts.yaml")
-registry_text = registry_path.read_text(encoding="utf-8")
-
-registry_required = [
-    "maintenance_model: protected-full-sync-with-contract-registry",
-    "guard_policy",
-    "sentinel gate",
-    "not a replacement for contract tests",
-    "full-usage-statistics-core",
-    "management-usage-api",
-    "panel-release-asset",
-    "auth-identity-attribution",
-    "provider-runtime-usage-seams",
-    "codex-abnormal-reasoning-retry",
-    "config-compatibility-and-hot-reload",
-    "redis-compatible-usage-queue",
-    "hf-space-runtime-smoke",
-    "usage-statistics-enabled",
-    "/v0/management/usage",
-    "/v0/management/usage/export",
-    "/v0/management/usage/import",
-    "/v0/management/usage-statistics-enabled",
-    "BlueSkyXN/CPA-Panel-LTS",
-    "management.html",
-    "auth_index",
-    "latency_ms",
-    "success_count",
-    "failure_count",
-    "go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'",
-    "abnormal-reasoning-retry",
-    "hedged-retry",
-    "stream-buffer-max-bytes",
-    "hedge-delay-ms",
-    "require-distinct-auth",
-    "max-retries",
-    "exhausted-behavior",
-    "client-usage-aggregation",
-    "delivered-only",
-    "sum-with-delivered-total",
-    "quality",
-    "longest abnormal pass-through fallback",
-    "reasoning-efforts",
-    "ExcludeAuthIDsMetadataKey",
-    "RetryWithoutPenalty",
-    "CodexAbnormalReasoningRetryUsageMetadataKey",
-    "codex_abnormal_reasoning_response",
-    "codex_abnormal_reasoning_retry_exhausted",
-    "failure_reason",
-    "transient-error-cooldown-config",
-    "transient-error-cooldown-seconds",
-    "TransientErrorCooldownSeconds",
-    "SetTransientErrorCooldownSeconds",
-    "nextTransientErrorRetryAfter",
-]
-
-missing_registry = [item for item in registry_required if item not in registry_text]
-if missing_registry:
-    for item in missing_registry:
-        print(f"missing core feature contract marker: {item}", file=sys.stderr)
-    sys.exit(1)
-PY
+validator_args=(--root .)
+if [ -n "${GITHUB_BASE_REF:-}" ]; then
+  base_remote_ref="refs/remotes/origin/${GITHUB_BASE_REF}"
+  if ! git rev-parse --verify --quiet "${base_remote_ref}^{commit}" >/dev/null; then
+    git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}:$base_remote_ref"
+  fi
+  validator_args+=(--base-ref "$base_remote_ref")
+fi
+go run ./scripts/ltsregistry "${validator_args[@]}"
 
 echo "CPA-Core-LTS protected contract sentinels passed."
