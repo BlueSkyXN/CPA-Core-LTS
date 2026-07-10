@@ -1873,12 +1873,29 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 		return body
 	}
 	for _, t := range tools.Array() {
-		if t.Get("type").String() == "image_generation" {
+		if t.Get("type").String() == "image_generation" || isCodexExtensionImageGenerationTool(t) {
 			return body
 		}
 	}
 	body, _ = sjson.SetRawBytes(body, "tools.-1", imageGenToolJSON)
 	return body
+}
+
+func isCodexExtensionImageGenerationTool(tool gjson.Result) bool {
+	// Codex 0.144+ replaces hosted image_generation with this extension-backed namespace when available.
+	if tool.Get("type").String() != "namespace" || tool.Get("name").String() != "image_gen" {
+		return false
+	}
+	nestedTools := tool.Get("tools")
+	if !nestedTools.IsArray() {
+		return false
+	}
+	for _, nestedTool := range nestedTools.Array() {
+		if nestedTool.Get("type").String() == "function" && nestedTool.Get("name").String() == "imagegen" {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeCodexParallelToolCallsForTools(body []byte) []byte {

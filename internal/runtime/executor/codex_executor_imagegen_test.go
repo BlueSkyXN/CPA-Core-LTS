@@ -58,6 +58,32 @@ func TestEnsureImageGenerationTool_AlreadyPresent(t *testing.T) {
 	}
 }
 
+func TestEnsureImageGenerationTool_ExtensionNamespaceDoesNotInjectLegacyTool(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","tools":[{"type":"namespace","name":"image_gen","description":"Tools in the image_gen namespace.","tools":[{"type":"function","name":"imagegen","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}]}]}`)
+	result := ensureImageGenerationTool(body, "gpt-5.5", nil)
+
+	if string(result) != string(body) {
+		t.Fatalf("expected extension-backed image generation request to remain unchanged, got %s", string(result))
+	}
+	tools := gjson.GetBytes(result, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("expected only the client image_gen namespace, got %d tools: %s", len(tools), string(result))
+	}
+}
+
+func TestEnsureImageGenerationTool_UnrelatedNamespaceStillInjectsLegacyTool(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","tools":[{"type":"namespace","name":"weather","tools":[{"type":"function","name":"forecast","parameters":{"type":"object"}}]}]}`)
+	result := ensureImageGenerationTool(body, "gpt-5.5", nil)
+
+	tools := gjson.GetBytes(result, "tools").Array()
+	if len(tools) != 2 {
+		t.Fatalf("expected unrelated namespace plus legacy image generation tool, got %d tools: %s", len(tools), string(result))
+	}
+	if got := tools[1].Get("type").String(); got != "image_generation" {
+		t.Fatalf("expected injected legacy image generation tool, got type %q: %s", got, string(result))
+	}
+}
+
 func TestEnsureImageGenerationTool_EmptyToolsArray(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[]}`)
 	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
