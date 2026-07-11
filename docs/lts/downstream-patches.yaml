@@ -126,6 +126,42 @@ patches:
     state: required
     retire_when: Upstream resolves model headers by provider-owned immutable snapshot and uses the same snapshot for every Codex transport handshake and connection identity, with all listed regression tests passing after the downstream implementation is removed.
 
+  - id: codex-oauth-client-identity-finalization
+    reason: Codex OAuth requests must finalize the official Originator, User-Agent, optional Version floor, and macOS Session_id after model-specific header overrides; otherwise the backend can reject a valid model route with a misleading 404 Model not found response.
+    introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8 (v7.2.62); upstream/main through e99a2056baa981345f4a93600039725363ffca46 (v7.2.66) has no equivalent final identity pass shared by HTTP, compact, streaming, WebSocket, and image paths
+    files:
+      - config.example.yaml
+      - internal/runtime/executor/codex_client_identity.go
+      - internal/runtime/executor/codex_client_identity_test.go
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_openai_images.go
+      - internal/runtime/executor/codex_websockets_executor.go
+    regression_tests:
+      - TestCodexExecutorFinalizesLunaClientIdentityVersion
+      - TestCodexWebsocketsExecutorFinalizesClientIdentity
+      - TestFinalizeCodexClientIdentityHeaders
+      - TestCodexDirectImageOAuthFinalizesClientIdentity
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream finalizes one coherent official Codex OAuth identity after every model/header override across HTTP, compact, streaming, WebSocket, and image transports; preserves API-key requests and omitted Version headers; and all listed regressions pass after removing the downstream implementation.
+
+  - id: codex-model-not-found-request-scope
+    reason: An OpenAI-style 404 with error.type invalid_request_error and error.param model is a request/model routing failure, not evidence of unhealthy Codex credentials; retrying every auth or applying the generic 12-hour model cooldown can suspend the entire model pool.
+    introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8 (v7.2.62); upstream/main through e99a2056baa981345f4a93600039725363ffca46 (v7.2.66) still applies generic 404 retry and cooldown handling without this typed request-scope boundary
+    files:
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_overrides_test.go
+    regression_tests:
+      - TestManager_MarkResult_CodexModelNotFoundDoesNotCooldownAuth
+      - TestManager_CodexModelNotFoundStopsRetryWithoutSuspendingAuth
+      - TestIsRequestScopedModelNotFoundMessage
+      - TestManager_MarkResult_GenericNotFoundStillCooldownsModel
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream recognizes only the typed invalid_request_error model 404 as request-scoped, stops futile cross-auth retries without marking credentials or the model unavailable, preserves generic 404 cooldown behavior, and all listed regressions pass after removing the downstream implementation.
+
   - id: codex-websocket-reader-generation
     reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
