@@ -1,6 +1,44 @@
 version: 1
 
 patches:
+  - id: codex-model-fallback
+    reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
+    introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
+    affected_upstream_range: through e99a2056baa981345f4a93600039725363ffca46 (v7.2.66); the synced upstream baseline has no typed, configurable cross-model fallback with a conservative reasoning-continuity gate, target-model auth reselection, and pre-delivery streaming boundary.
+    files:
+      - config.example.yaml
+      - docs/lts/codex-429-resilience.md
+      - docs/lts/core-feature-contracts.yaml
+      - docs/lts/protected-deltas.yaml
+      - internal/config/config.go
+      - internal/config/codex_model_fallback_test.go
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_executor_retry_test.go
+      - internal/runtime/executor/codex_model_fallback.go
+      - internal/runtime/executor/codex_model_fallback_test.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/openai_compat_executor.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - scripts/check-lts-contract.sh
+      - sdk/cliproxy/auth/codex_model_fallback.go
+      - sdk/cliproxy/auth/codex_model_fallback_test.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/executor/types.go
+    regression_tests:
+      - TestLoadConfigOptionalCodexModelFallback
+      - TestCodexModelFallbackEffectiveDefaultsAndNormalizesMappings
+      - TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback
+      - TestCodexExecutorModelFallbackSameModelOnlyBlocksClientReasoning
+      - TestCodexExecutorModelFallbackSameModelOnlyBlocksSourceReplayCache
+      - TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair
+      - TestManagerExecuteCodexModelFallbackSelectsCredentialForTargetModel
+      - TestManagerExecuteStreamCodexModelFallbackBeforeFirstPayload
+      - TestManagerExecuteStreamCodexModelFallbackDoesNotReplayAfterPayload
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream provides typed usage-limit and capacity-only model fallback after same-model auth exhaustion, reselects credentials for each target model, blocks or explicitly resets cross-model reasoning state without copying encrypted_content, preserves pre-delivery stream replay safety, and all listed regressions pass after removing the downstream implementation.
+
   - id: codex-interactions-service-tier-response
     reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
     introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
