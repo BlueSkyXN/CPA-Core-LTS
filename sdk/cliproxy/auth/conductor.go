@@ -4617,9 +4617,37 @@ func isRequestScopedNotFoundMessage(message string) bool {
 		return false
 	}
 	lower := strings.ToLower(message)
-	return strings.Contains(lower, "item with id") &&
+	if strings.Contains(lower, "item with id") &&
 		strings.Contains(lower, "not found") &&
-		strings.Contains(lower, "items are not persisted when `store` is set to false")
+		strings.Contains(lower, "items are not persisted when `store` is set to false") {
+		return true
+	}
+	return isRequestScopedModelNotFoundMessage(message)
+}
+
+// isRequestScopedModelNotFoundMessage identifies the OpenAI-style 404 emitted
+// when request/model routing or Codex client identity is rejected. This shape
+// is not evidence of unhealthy credentials, and penalizing each auth can
+// otherwise suspend an entire model pool for hours.
+func isRequestScopedModelNotFoundMessage(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if !strings.Contains(lower, "model not found") || !strings.Contains(lower, "invalid_request_error") {
+		return false
+	}
+
+	var payload struct {
+		Error struct {
+			Type  string `json:"type"`
+			Param any    `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(message), &payload); err == nil {
+		return strings.EqualFold(strings.TrimSpace(payload.Error.Type), "invalid_request_error") &&
+			strings.EqualFold(strings.TrimSpace(fmt.Sprint(payload.Error.Param)), "model")
+	}
+
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(lower)
+	return strings.Contains(compact, `"param":"model"`) || strings.Contains(compact, "param=model")
 }
 
 func isRequestScopedNotFoundResultError(err *Error) bool {
@@ -4632,9 +4660,10 @@ func isRequestScopedNotFoundResultError(err *Error) bool {
 // isRequestInvalidError returns true if the error represents a client request
 // error that should not be retried. Specifically, it treats 400 responses with
 // "invalid_request_error", request-scoped 404 item misses caused by `store=false`,
-// and all 422 responses as request-shape failures, where switching auths or
-// pooled upstream models will not help. Model-support errors are excluded so
-// routing can fall through to another auth or upstream.
+// OpenAI-style 404 model-routing failures, and all 422 responses as request-shape
+// failures, where switching auths or pooled upstream models will not help.
+// Model-support errors are excluded so routing can fall through to another auth
+// or upstream.
 func isRequestInvalidError(err error) bool {
 	if err == nil {
 		return false
