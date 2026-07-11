@@ -497,6 +497,30 @@ func TestSessionAffinitySelector_SameSessionSameAuth(t *testing.T) {
 	}
 }
 
+func TestSessionAffinitySelector_ExplicitExecutionSessionMetadata(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelector(&RoundRobinSelector{})
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "execution-session-1"},
+	}
+	if got := ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata); got != "execution:execution-session-1" {
+		t.Fatalf("ExtractSessionID() = %q", got)
+	}
+	first, err := selector.Pick(context.Background(), "codex", "gpt-5", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() error = %v", err)
+	}
+	second, err := selector.Pick(context.Background(), "codex", "gpt-5", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() second error = %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("auth IDs = %q/%q, want sticky", first.ID, second.ID)
+	}
+}
+
 func TestSessionAffinitySelector_NoSessionFallback(t *testing.T) {
 	t.Parallel()
 

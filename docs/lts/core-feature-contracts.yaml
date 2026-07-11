@@ -287,6 +287,37 @@ features:
       - go test ./internal/runtime/executor -run 'Codex.*ModelFallback|Codex.*Retry|Codex.*Signature'
       - go test ./sdk/cliproxy/auth -run 'CodexModelFallback'
 
+  - id: codex-rate-limit-continuity
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: CPA-Core-LTS preserves successful Codex sessions while a fresh-session usage-limit 429 is observed, then confirms auth/model exhaustion through an established-session failure or a single reserved canary.
+    config_keys:
+      - codex.rate-limit-continuity.enabled
+      - codex.rate-limit-continuity.observation-window-seconds
+      - codex.rate-limit-continuity.established-success-threshold
+      - codex.rate-limit-continuity.established-session-ttl-seconds
+      - routing.session-affinity
+    core_files:
+      - internal/config/config.go
+      - sdk/cliproxy/auth/codex_rate_limit_continuity.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/selector.go
+      - config.example.yaml
+      - docs/lts/codex-429-resilience.md
+    required_markers:
+      - rate-limit-continuity
+      - observation-window-seconds
+      - established-success-threshold
+      - codexRateLimitContinuityStore
+      - codexRateLimitObservationPendingError
+      - ExecutionSessionMetadataKey
+    validation:
+      - go test ./internal/config ./internal/watcher/diff
+      - go test ./sdk/cliproxy/auth -run 'CodexRateLimitContinuity|SessionAffinitySelector_ExplicitExecutionSessionMetadata'
+      - go test -race ./sdk/cliproxy/auth -run 'CodexRateLimitContinuity'
+
   - id: redis-compatible-usage-queue
     kind: lts-feature
     support: maintained

@@ -90,6 +90,18 @@ lts_owned_features:
       - codex-model-fallback-race-tests
     conflict_policy: adapt_lts_feature_to_upstream_auth_and_codex_runtime
 
+  - id: codex-rate-limit-continuity
+    registry_feature: codex-rate-limit-continuity
+    maintenance_policy: long-term-maintained
+    markers:
+      - rate-limit-continuity
+      - codexRateLimitContinuityStore
+      - established-success-threshold
+    validation:
+      - codex-rate-limit-continuity-regression-tests
+      - codex-rate-limit-continuity-race-tests
+    conflict_policy: adapt_lts_feature_to_upstream_auth_selection_and_session_affinity
+
   - id: codex-abnormal-reasoning-retry
     registry_feature: codex-abnormal-reasoning-retry
     maintenance_policy: long-term-maintained

@@ -171,6 +171,9 @@ type Result struct {
 	RetryAfter *time.Duration
 	// Error describes the failure when Success is false.
 	Error *Error
+	// ModelFallbackReason carries a typed provider failure classification used
+	// by Codex model fallback and rate-limit continuity decisions.
+	ModelFallbackReason string
 }
 
 // Selector chooses an auth candidate for execution.
@@ -252,6 +255,10 @@ type Manager struct {
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
 
+	// codexRateLimitContinuity is an in-memory, process-local observation state.
+	// It is intentionally independent from persisted cooldown state.
+	codexRateLimitContinuity *codexRateLimitContinuityStore
+
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
@@ -274,14 +281,15 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:            store,
-		executors:        make(map[string]ProviderExecutor),
-		selector:         selector,
-		hook:             hook,
-		auths:            make(map[string]*Auth),
-		homeRuntimeAuths: make(map[string]map[string]*Auth),
-		providerOffsets:  make(map[string]int),
-		modelPoolOffsets: make(map[string]int),
+		store:                    store,
+		executors:                make(map[string]ProviderExecutor),
+		selector:                 selector,
+		hook:                     hook,
+		auths:                    make(map[string]*Auth),
+		homeRuntimeAuths:         make(map[string]map[string]*Auth),
+		providerOffsets:          make(map[string]int),
+		modelPoolOffsets:         make(map[string]int),
+		codexRateLimitContinuity: newCodexRateLimitContinuityStore(),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -516,6 +524,9 @@ func (m *Manager) SetSelector(selector Selector) {
 	m.mu.Lock()
 	m.selector = selector
 	m.mu.Unlock()
+	if _, ok := selector.(*SessionAffinitySelector); !ok && m.codexRateLimitContinuity != nil {
+		m.codexRateLimitContinuity.clear()
+	}
 	if m.scheduler != nil {
 		m.scheduler.setSelector(selector)
 		m.syncScheduler()
@@ -556,6 +567,7 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 		cfg = &internalconfig.Config{}
 	}
 	m.runtimeConfig.Store(cfg)
+	m.clearCodexRateLimitContinuityIfDisabled(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if !cfg.Home.Enabled {
 		m.clearHomeRuntimeAuths()
@@ -1794,6 +1806,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		defer m.abandonCodexRateLimitContinuityAttempt(ctx)
 		var failed bool
 		forward := true
 		var rewriter *StreamRewriter
@@ -1808,7 +1821,14 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 					if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 						rerr.HTTPStatus = se.StatusCode()
 					}
-					m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr})
+					m.MarkResult(ctx, Result{
+						AuthID:              auth.ID,
+						Provider:            provider,
+						Model:               resultModel,
+						Success:             false,
+						Error:               rerr,
+						ModelFallbackReason: modelFallbackReasonFromError(chunk.Err),
+					})
 				}
 			}
 			if !forward {
@@ -1923,6 +1943,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
+			result.ModelFallbackReason = modelFallbackReasonFromError(errStream)
 			m.MarkResult(ctx, result)
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
@@ -1970,6 +1991,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+				result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
@@ -1981,6 +2003,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+				result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
@@ -1992,6 +2015,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
+			result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 			m.MarkResult(ctx, result)
 			discardStreamChunks(streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
@@ -2342,6 +2366,9 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 func (m *Manager) invalidateSessionAffinity(authID string) {
 	if m == nil || authID == "" {
 		return
+	}
+	if m.codexRateLimitContinuity != nil {
+		m.codexRateLimitContinuity.removeAuth(authID)
 	}
 	if invalidator, ok := m.selector.(interface{ InvalidateAuth(string) }); ok && invalidator != nil {
 		invalidator.InvalidateAuth(authID)
@@ -2770,6 +2797,16 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, auth, provider, routeModel, opts)
+		if !allowed {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[auth.ID] = struct{}{}
+			lastErr = codexRateLimitObservationPendingError{}
+			continue
+		}
+		defer m.abandonCodexRateLimitContinuityAttempt(attemptCtx)
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
@@ -2779,7 +2816,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 
 		tried[auth.ID] = struct{}{}
-		execCtx := ctx
+		execCtx := attemptCtx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -2850,6 +2887,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
 				}
+				result.ModelFallbackReason = modelFallbackReasonFromError(errExec)
 				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
@@ -3032,6 +3070,21 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return nil, errPick
 		}
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, auth, provider, routeModel, opts)
+		if !allowed {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[auth.ID] = struct{}{}
+			lastErr = codexRateLimitObservationPendingError{}
+			continue
+		}
+		streamHandedOff := false
+		defer func(attemptCtx context.Context, handedOff *bool) {
+			if !*handedOff {
+				m.abandonCodexRateLimitContinuityAttempt(attemptCtx)
+			}
+		}(attemptCtx, &streamHandedOff)
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
@@ -3041,7 +3094,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 
 		tried[auth.ID] = struct{}{}
-		execCtx := ctx
+		execCtx := attemptCtx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -3084,6 +3137,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
+		streamHandedOff = true
 		return streamResult, nil
 	}
 }
@@ -3976,6 +4030,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if result.AuthID == "" {
 		return
 	}
+	continuityDisposition := m.observeCodexRateLimitContinuityResult(ctx, result)
 
 	shouldResumeModel := false
 	shouldSuspendModel := false
@@ -4000,7 +4055,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			auth.Failed++
 		}
 
-		if result.Success {
+		if continuityDisposition == codexRateLimitContinuityRecordOnly {
+			auth.UpdatedAt = now
+		} else if result.Success {
 			if result.Model != "" {
 				state := ensureModelState(auth, result.Model)
 				resetModelState(state, now)
@@ -4016,6 +4073,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
+		} else if continuityDisposition == codexRateLimitContinuityObserveOnly {
+			auth.UpdatedAt = now
 		} else {
 			if result.Model != "" {
 				if !isRequestScopedNotFoundResultError(result.Error) {
@@ -5185,13 +5244,16 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	candidates = cloneAuthSlice(candidates)
+	m.mu.RUnlock()
+	candidates, errAvailable := m.filterCodexRateLimitContinuityCandidates(candidates, model, opts)
 	if errAvailable != nil {
-		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
 	}
-	available = cloneAuthSlice(available)
-	m.mu.RUnlock()
+	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	if errAvailable != nil {
+		return nil, nil, "", errAvailable
+	}
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
 	if errPick != nil {

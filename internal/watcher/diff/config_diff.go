@@ -106,6 +106,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
 	changes = appendCodexModelFallbackChanges(changes, oldCfg.Codex.ModelFallback.Effective(), newCfg.Codex.ModelFallback.Effective())
+	changes = appendCodexRateLimitContinuityChanges(changes, oldCfg.Codex.RateLimitContinuity.Effective(), newCfg.Codex.RateLimitContinuity.Effective())
 	changes = appendCodexAbnormalReasoningRetryChanges(changes, oldCfg.Codex.AbnormalReasoningRetry.Effective(), newCfg.Codex.AbnormalReasoningRetry.Effective())
 
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
@@ -494,6 +495,25 @@ func appendCodexModelFallbackChanges(changes []string, oldCfg, newCfg config.Eff
 	}
 	if !reflect.DeepEqual(oldCfg.Mappings, newCfg.Mappings) {
 		changes = append(changes, fmt.Sprintf("codex.model-fallback.mappings: updated (%d -> %d entries)", len(oldCfg.Mappings), len(newCfg.Mappings)))
+	}
+	return changes
+}
+
+func appendCodexRateLimitContinuityChanges(changes []string, oldCfg, newCfg config.EffectiveCodexRateLimitContinuityConfig) []string {
+	if oldCfg == newCfg {
+		return changes
+	}
+	if oldCfg.Enabled != newCfg.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.rate-limit-continuity.enabled: %t -> %t", oldCfg.Enabled, newCfg.Enabled))
+	}
+	if oldCfg.ObservationWindowSeconds != newCfg.ObservationWindowSeconds {
+		changes = append(changes, fmt.Sprintf("codex.rate-limit-continuity.observation-window-seconds: %d -> %d", oldCfg.ObservationWindowSeconds, newCfg.ObservationWindowSeconds))
+	}
+	if oldCfg.EstablishedSuccessThreshold != newCfg.EstablishedSuccessThreshold {
+		changes = append(changes, fmt.Sprintf("codex.rate-limit-continuity.established-success-threshold: %d -> %d", oldCfg.EstablishedSuccessThreshold, newCfg.EstablishedSuccessThreshold))
+	}
+	if oldCfg.EstablishedSessionTTLSeconds != newCfg.EstablishedSessionTTLSeconds {
+		changes = append(changes, fmt.Sprintf("codex.rate-limit-continuity.established-session-ttl-seconds: %d -> %d", oldCfg.EstablishedSessionTTLSeconds, newCfg.EstablishedSessionTTLSeconds))
 	}
 	return changes
 }
