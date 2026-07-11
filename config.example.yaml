@@ -190,6 +190,29 @@ codex:
   # Some superstitious users believe request tracking identifiers can be used
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
+  # CPA-Core-LTS extra feature. After all same-model credentials fail with a
+  # precisely classified Codex usage-limit or model-capacity response, try the
+  # configured target models in order. Disabled by default.
+  model-fallback:
+    enabled: false
+    # Supported triggers: "usage-limit" and "capacity". Empty means both.
+    triggers:
+      - "usage-limit"
+      - "capacity"
+    # "same-model-only" (default) blocks cross-model fallback when the request
+    # or source-session cache contains model-private reasoning continuity.
+    # "context-reset" explicitly drops reasoning items before the fallback and
+    # keeps replayable tool-call pairs when available. This is a lossy fallback,
+    # not a repair or migration of reasoning.encrypted_content.
+    reasoning-continuity: "same-model-only"
+    # Exact, case-insensitive source model mappings. Targets are tried in order.
+    mappings: []
+    # Example:
+    # mappings:
+    #   - from: "gpt-5.6-sol"
+    #     to:
+    #       - "gpt-5.6-terra"
+    #       - "gpt-5.5"
   # CPA-Core-LTS extra feature. When explicitly enabled, discard and retry
   # matching Codex OAuth responses whose completed usage reports suspicious
   # reasoning token counts. Disabled by default.

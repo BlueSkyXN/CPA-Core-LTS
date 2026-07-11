@@ -252,6 +252,41 @@ features:
       - go test ./internal/watcher/diff
       - go test ./sdk/cliproxy/auth
 
+  - id: codex-model-fallback
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: CPA-Core-LTS provides opt-in, typed Codex quota/capacity model fallback without replaying model-private reasoning signatures across models.
+    config_keys:
+      - codex.model-fallback.enabled
+      - codex.model-fallback.triggers
+      - codex.model-fallback.reasoning-continuity
+      - codex.model-fallback.mappings
+    core_files:
+      - internal/config/config.go
+      - internal/runtime/executor/codex_model_fallback.go
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - sdk/cliproxy/auth/codex_model_fallback.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/executor/types.go
+      - config.example.yaml
+      - docs/lts/codex-429-resilience.md
+    required_markers:
+      - model-fallback
+      - reasoning-continuity
+      - same-model-only
+      - context-reset
+      - ModelFallbackReason
+      - ModelFallbackBlocked
+      - CodexModelFallbackSourceModelMetadataKey
+      - CodexModelFallbackReasoningContinuityMetadataKey
+    validation:
+      - go test ./internal/config ./internal/watcher/diff
+      - go test ./internal/runtime/executor -run 'Codex.*ModelFallback|Codex.*Retry|Codex.*Signature'
+      - go test ./sdk/cliproxy/auth -run 'CodexModelFallback'
+
   - id: redis-compatible-usage-queue
     kind: lts-feature
     support: maintained

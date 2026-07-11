@@ -54,6 +54,10 @@ const (
 	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
+	// CodexModelFallbackSourceModelMetadataKey records the source model that exhausted before a configured Codex fallback attempt.
+	CodexModelFallbackSourceModelMetadataKey = "codex_model_fallback_source_model"
+	// CodexModelFallbackReasoningContinuityMetadataKey carries the configured reasoning-continuity policy for a Codex fallback attempt.
+	CodexModelFallbackReasoningContinuityMetadataKey = "codex_model_fallback_reasoning_continuity"
 )
 
 const (

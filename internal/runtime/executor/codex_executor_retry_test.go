@@ -72,6 +72,9 @@ func TestNewCodexStatusErrTreatsCapacityAsRetryableRateLimit(t *testing.T) {
 	if err.RetryAfter() != nil {
 		t.Fatalf("expected nil explicit retryAfter for capacity fallback, got %v", *err.RetryAfter())
 	}
+	if got := err.ModelFallbackReason(); got != "capacity" {
+		t.Fatalf("ModelFallbackReason() = %q, want capacity", got)
+	}
 }
 
 func TestNewCodexStatusErrTreatsUsageLimitAsRetryableRateLimit(t *testing.T) {
@@ -88,6 +91,16 @@ func TestNewCodexStatusErrTreatsUsageLimitAsRetryableRateLimit(t *testing.T) {
 	}
 	if *retryAfter != 120*time.Second {
 		t.Fatalf("retryAfter = %v, want %v", *retryAfter, 120*time.Second)
+	}
+	if got := err.ModelFallbackReason(); got != "usage-limit" {
+		t.Fatalf("ModelFallbackReason() = %q, want usage-limit", got)
+	}
+}
+
+func TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback(t *testing.T) {
+	err := newCodexStatusErr(http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}`))
+	if got := err.ModelFallbackReason(); got != "" {
+		t.Fatalf("ModelFallbackReason() = %q, want empty", got)
 	}
 }
 

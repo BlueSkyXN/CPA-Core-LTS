@@ -329,10 +329,15 @@ type CodexHeaderDefaults struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
+	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
 }
 
 const (
+	CodexModelFallbackTriggerUsageLimit                                    = "usage-limit"
+	CodexModelFallbackTriggerCapacity                                      = "capacity"
+	CodexModelFallbackReasoningContinuitySameModelOnly                     = "same-model-only"
+	CodexModelFallbackReasoningContinuityContextReset                      = "context-reset"
 	CodexAbnormalReasoningRetryActionRetry                                 = "retry"
 	CodexAbnormalReasoningRetryActionObserveOnly                           = "observe-only"
 	CodexAbnormalReasoningRetryActionDisabled                              = "disabled"
@@ -351,6 +356,109 @@ const (
 	CodexAbnormalReasoningHedgedRetryModeSpeed                             = "speed"
 	CodexAbnormalReasoningHedgedRetryModeQuality                           = "quality"
 )
+
+// CodexModelFallbackConfig controls ordered, opt-in fallback between Codex
+// models after a precisely classified quota or capacity failure.
+type CodexModelFallbackConfig struct {
+	Enabled             bool                        `yaml:"enabled" json:"enabled"`
+	Triggers            []string                    `yaml:"triggers" json:"triggers"`
+	ReasoningContinuity string                      `yaml:"reasoning-continuity,omitempty" json:"reasoning-continuity,omitempty"`
+	Mappings            []CodexModelFallbackMapping `yaml:"mappings" json:"mappings"`
+}
+
+// CodexModelFallbackMapping defines ordered target models for one requested
+// Codex model. From is matched case-insensitively after trimming.
+type CodexModelFallbackMapping struct {
+	From string   `yaml:"from" json:"from"`
+	To   []string `yaml:"to" json:"to"`
+}
+
+// EffectiveCodexModelFallbackConfig is the sanitized runtime view of
+// CodexModelFallbackConfig. Defaults are derived in memory so existing config
+// files are not rewritten.
+type EffectiveCodexModelFallbackConfig struct {
+	Enabled             bool
+	Triggers            []string
+	ReasoningContinuity string
+	Mappings            []CodexModelFallbackMapping
+}
+
+// Effective returns a normalized model-fallback policy.
+func (c CodexModelFallbackConfig) Effective() EffectiveCodexModelFallbackConfig {
+	triggers := defaultedTrimmedStringList(c.Triggers, []string{
+		CodexModelFallbackTriggerUsageLimit,
+		CodexModelFallbackTriggerCapacity,
+	}, true)
+	filteredTriggers := make([]string, 0, len(triggers))
+	for _, trigger := range triggers {
+		switch trigger {
+		case CodexModelFallbackTriggerUsageLimit, CodexModelFallbackTriggerCapacity:
+			filteredTriggers = append(filteredTriggers, trigger)
+		}
+	}
+
+	reasoningContinuity := strings.ToLower(strings.TrimSpace(c.ReasoningContinuity))
+	if reasoningContinuity != CodexModelFallbackReasoningContinuityContextReset {
+		reasoningContinuity = CodexModelFallbackReasoningContinuitySameModelOnly
+	}
+
+	mappings := make([]CodexModelFallbackMapping, 0, len(c.Mappings))
+	for _, mapping := range c.Mappings {
+		from := strings.TrimSpace(mapping.From)
+		if from == "" {
+			continue
+		}
+		seen := make(map[string]struct{}, len(mapping.To))
+		to := make([]string, 0, len(mapping.To))
+		for _, target := range mapping.To {
+			target = strings.TrimSpace(target)
+			key := strings.ToLower(target)
+			if target == "" || strings.EqualFold(target, from) {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			to = append(to, target)
+		}
+		if len(to) == 0 {
+			continue
+		}
+		mappings = append(mappings, CodexModelFallbackMapping{From: from, To: to})
+	}
+
+	return EffectiveCodexModelFallbackConfig{
+		Enabled:             c.Enabled,
+		Triggers:            filteredTriggers,
+		ReasoningContinuity: reasoningContinuity,
+		Mappings:            mappings,
+	}
+}
+
+// TargetsFor returns the ordered fallback targets for model and trigger.
+func (c EffectiveCodexModelFallbackConfig) TargetsFor(model, trigger string) []string {
+	if !c.Enabled || strings.TrimSpace(model) == "" || strings.TrimSpace(trigger) == "" {
+		return nil
+	}
+	trigger = strings.ToLower(strings.TrimSpace(trigger))
+	allowed := false
+	for _, candidate := range c.Triggers {
+		if candidate == trigger {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil
+	}
+	for _, mapping := range c.Mappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.From), strings.TrimSpace(model)) {
+			return append([]string(nil), mapping.To...)
+		}
+	}
+	return nil
+}
 
 // CodexAbnormalReasoningRetryConfig controls the CPA-Core-LTS retry guard for
 // suspicious Codex successful responses.

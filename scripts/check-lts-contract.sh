@@ -116,6 +116,7 @@ require_path internal/managementasset/updater.go
 require_path internal/config/config.go
 require_path internal/redisqueue
 require_path config.example.yaml
+require_path docs/lts/codex-429-resilience.md
 
 require_grep "mgmt.GET(\"/usage\"" internal/api/server.go
 require_grep "mgmt.GET(\"/usage/export\"" internal/api/server.go
@@ -129,6 +130,8 @@ require_grep "managementAssetName" internal/managementasset/updater.go
 require_grep "serveManagementControlPanel" internal/api/server.go
 require_grep "BlueSkyXN/CPA-Panel-LTS" internal/managementasset/updater.go internal/managementasset/updater_test.go internal/config/config.go
 require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
+require_grep "codex.model-fallback" docs/lts/core-feature-contracts.yaml docs/lts/codex-429-resilience.md
+require_grep "CodexModelFallbackSourceModelMetadataKey" sdk/cliproxy/executor/types.go sdk/cliproxy/auth/codex_model_fallback.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep 'json:"service_tier,omitempty"' internal/usage

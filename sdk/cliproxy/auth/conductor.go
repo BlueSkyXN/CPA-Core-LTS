@@ -1893,6 +1893,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
+			if isModelFallbackBlockedError(errStream) {
+				return nil, errStream
+			}
 			if isRetryWithoutPenaltyError(errStream) {
 				return nil, errStream
 			}
@@ -1903,6 +1906,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				if errStream != nil {
 					if errCtx := ctx.Err(); errCtx != nil {
 						return nil, errCtx
+					}
+					if isModelFallbackBlockedError(errStream) {
+						return nil, errStream
 					}
 					if isRetryWithoutPenaltyError(errStream) {
 						return nil, errStream
@@ -2375,6 +2381,14 @@ func (m *Manager) Load(ctx context.Context) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	resp, err := m.executeWithoutModelFallback(ctx, providers, req, opts)
+	if err == nil {
+		return resp, nil
+	}
+	return m.executeCodexModelFallback(ctx, providers, req, opts, err)
+}
+
+func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -2520,6 +2534,22 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	result, err := m.executeStreamWithoutModelFallback(ctx, providers, req, opts)
+	if err == nil {
+		return result, nil
+	}
+	result, err = m.executeStreamCodexModelFallback(ctx, providers, req, opts, err)
+	if err == nil {
+		return result, nil
+	}
+	var bootstrapErr *streamBootstrapError
+	if errors.As(err, &bootstrapErr) && bootstrapErr != nil {
+		return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
+	}
+	return nil, err
+}
+
+func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -2613,10 +2643,6 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			} else if ok {
 				return result, nil
 			}
-		}
-		var bootstrapErr *streamBootstrapError
-		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-			return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
 		}
 		return nil, lastErr
 	}
@@ -2792,6 +2818,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				if isModelFallbackBlockedError(errExec) {
+					return cliproxyexecutor.Response{}, errExec
+				}
 				if isRetryWithoutPenaltyError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
@@ -2802,6 +2831,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					if errExec != nil {
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
+						}
+						if isModelFallbackBlockedError(errExec) {
+							return cliproxyexecutor.Response{}, errExec
 						}
 						if isRetryWithoutPenaltyError(errExec) {
 							return cliproxyexecutor.Response{}, errExec

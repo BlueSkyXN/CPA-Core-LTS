@@ -841,7 +841,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer func() {
-		if !isRetryWithoutPenaltyError(err) {
+		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)
 		}
 	}()
@@ -878,9 +878,16 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
-	if errReplay != nil {
-		return resp, errReplay
+	body, replayScope, skipReplay, errFallback := prepareCodexModelFallbackBody(ctx, from, req, opts, body)
+	if errFallback != nil {
+		return resp, errFallback
+	}
+	if !skipReplay {
+		var errReplay error
+		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		if errReplay != nil {
+			return resp, errReplay
+		}
 	}
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
 	if err != nil {
@@ -1045,7 +1052,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer func() {
-		if !isRetryWithoutPenaltyError(err) {
+		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)
 		}
 	}()
@@ -1196,9 +1203,16 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
-	if errReplay != nil {
-		return nil, errReplay
+	body, replayScope, skipReplay, errFallback := prepareCodexModelFallbackBody(ctx, from, req, opts, body)
+	if errFallback != nil {
+		return nil, errFallback
+	}
+	if !skipReplay {
+		var errReplay error
+		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		if errReplay != nil {
+			return nil, errReplay
+		}
 	}
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
 	if err != nil {
@@ -1905,11 +1919,16 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	errCode := statusCode
-	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) {
+	fallbackReason := ""
+	if isCodexModelCapacityError(body) {
 		errCode = http.StatusTooManyRequests
+		fallbackReason = config.CodexModelFallbackTriggerCapacity
+	} else if isCodexUsageLimitError(body) {
+		errCode = http.StatusTooManyRequests
+		fallbackReason = config.CodexModelFallbackTriggerUsageLimit
 	}
 	body = classifyCodexStatusError(errCode, body)
-	err := statusErr{code: errCode, msg: string(body)}
+	err := statusErr{code: errCode, msg: string(body), modelFallbackReason: fallbackReason}
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
 	}
