@@ -306,3 +306,146 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTier(t *test
 		t.Fatalf("service_tier = %q, want legacy unknown to remain empty", details[0].ServiceTier)
 	}
 }
+
+func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
+	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
+	legacy := cacheCreationSnapshot(timestamp, TokenStats{
+		InputTokens:         1200,
+		OutputTokens:        10,
+		CachedTokens:        1024,
+		CacheCreationTokens: 1024,
+		TotalTokens:         1210,
+	})
+	canonical := cacheCreationSnapshot(timestamp, TokenStats{
+		InputTokens:         1200,
+		OutputTokens:        10,
+		CacheCreationTokens: 1024,
+		TotalTokens:         2234,
+	})
+
+	tests := []struct {
+		name            string
+		first           StatisticsSnapshot
+		second          StatisticsSnapshot
+		wantTotalTokens int64
+	}{
+		{
+			name:            "legacy then canonical",
+			first:           legacy,
+			second:          canonical,
+			wantTotalTokens: 1210,
+		},
+		{
+			name:            "canonical then legacy",
+			first:           canonical,
+			second:          legacy,
+			wantTotalTokens: 2234,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := NewRequestStatistics()
+
+			result := stats.MergeSnapshot(tt.first)
+			if result.Added != 1 || result.Skipped != 0 {
+				t.Fatalf("first merge = %+v, want added=1 skipped=0", result)
+			}
+
+			result = stats.MergeSnapshot(tt.second)
+			if result.Added != 0 || result.Skipped != 1 {
+				t.Fatalf("second merge = %+v, want added=0 skipped=1", result)
+			}
+
+			snapshot := stats.Snapshot()
+			model := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"]
+			if snapshot.TotalRequests != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 {
+				t.Fatalf("snapshot request totals = requests:%d success:%d failure:%d, want 1/1/0", snapshot.TotalRequests, snapshot.SuccessCount, snapshot.FailureCount)
+			}
+			if snapshot.TotalTokens != tt.wantTotalTokens || model.TotalTokens != tt.wantTotalTokens {
+				t.Fatalf("snapshot token totals = total:%d model:%d, want %d", snapshot.TotalTokens, model.TotalTokens, tt.wantTotalTokens)
+			}
+			if len(model.Details) != 1 {
+				t.Fatalf("details len = %d, want 1", len(model.Details))
+			}
+			if snapshot.RequestsByDay["2026-07-11"] != 1 || snapshot.RequestsByHour["09"] != 1 {
+				t.Fatalf("request buckets = day:%v hour:%v, want one request", snapshot.RequestsByDay, snapshot.RequestsByHour)
+			}
+			if snapshot.TokensByDay["2026-07-11"] != tt.wantTotalTokens || snapshot.TokensByHour["09"] != tt.wantTotalTokens {
+				t.Fatalf("token buckets = day:%v hour:%v, want %d", snapshot.TokensByDay, snapshot.TokensByHour, tt.wantTotalTokens)
+			}
+		})
+	}
+}
+
+func TestRequestStatisticsMergeSnapshotCacheCreationAliasDoesNotHideCacheReadAndWrite(t *testing.T) {
+	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
+	creationOnly := cacheCreationSnapshot(timestamp, TokenStats{
+		InputTokens:         1200,
+		OutputTokens:        10,
+		CachedTokens:        1024,
+		CacheCreationTokens: 1024,
+		TotalTokens:         1210,
+	})
+	readAndWrite := cacheCreationSnapshot(timestamp, TokenStats{
+		InputTokens:         1200,
+		OutputTokens:        10,
+		CachedTokens:        1024,
+		CacheReadTokens:     1024,
+		CacheCreationTokens: 1024,
+		TotalTokens:         3258,
+	})
+
+	stats := NewRequestStatistics()
+	if result := stats.MergeSnapshot(creationOnly); result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("creation-only merge = %+v, want added=1 skipped=0", result)
+	}
+	if result := stats.MergeSnapshot(readAndWrite); result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("read-and-write merge = %+v, want added=1 skipped=0", result)
+	}
+
+	snapshot := stats.Snapshot()
+	details := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"].Details
+	if snapshot.TotalRequests != 2 || len(details) != 2 {
+		t.Fatalf("merged requests = total:%d details:%d, want 2/2", snapshot.TotalRequests, len(details))
+	}
+}
+
+func TestRequestStatisticsMergeSnapshotTotalOnlyIdentityRemainsDistinct(t *testing.T) {
+	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
+	first := cacheCreationSnapshot(timestamp, TokenStats{TotalTokens: 100})
+	second := cacheCreationSnapshot(timestamp, TokenStats{TotalTokens: 200})
+
+	stats := NewRequestStatistics()
+	if result := stats.MergeSnapshot(first); result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("first total-only merge = %+v, want added=1 skipped=0", result)
+	}
+	if result := stats.MergeSnapshot(second); result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("second total-only merge = %+v, want added=1 skipped=0", result)
+	}
+
+	snapshot := stats.Snapshot()
+	details := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"].Details
+	if snapshot.TotalRequests != 2 || snapshot.TotalTokens != 300 || len(details) != 2 {
+		t.Fatalf("total-only snapshot = requests:%d tokens:%d details:%d, want 2/300/2", snapshot.TotalRequests, snapshot.TotalTokens, len(details))
+	}
+}
+
+func cacheCreationSnapshot(timestamp time.Time, tokens TokenStats) StatisticsSnapshot {
+	return StatisticsSnapshot{
+		APIs: map[string]APISnapshot{
+			"cache-key": {
+				Models: map[string]ModelSnapshot{
+					"gpt-5.6-sol": {
+						Details: []RequestDetail{{
+							Timestamp: timestamp,
+							Source:    "auths/codex.json",
+							AuthIndex: "0",
+							Tokens:    tokens,
+						}},
+					},
+				},
+			},
+		},
+	}
+}

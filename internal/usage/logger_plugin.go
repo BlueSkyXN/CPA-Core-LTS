@@ -396,8 +396,25 @@ func (s *RequestStatistics) recordImported(apiName, modelName string, stats *api
 func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
+	cacheReadTokens := tokens.CacheReadTokens
+	legacyCacheCreationAlias := tokens.CacheCreationTokens > 0 &&
+		cacheReadTokens == 0 &&
+		tokens.CachedTokens == tokens.CacheCreationTokens
+	if cacheReadTokens == 0 && !legacyCacheCreationAlias {
+		cacheReadTokens = tokens.CachedTokens
+	}
+
+	totalTokensFallback := int64(0)
+	if tokens.InputTokens == 0 &&
+		tokens.OutputTokens == 0 &&
+		tokens.ReasoningTokens == 0 &&
+		cacheReadTokens == 0 &&
+		tokens.CacheCreationTokens == 0 {
+		totalTokensFallback = tokens.TotalTokens
+	}
+
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%s|%d|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%t|%s|%d|%d|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
@@ -409,8 +426,9 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 		tokens.InputTokens,
 		tokens.OutputTokens,
 		tokens.ReasoningTokens,
-		tokens.CachedTokens,
-		tokens.TotalTokens,
+		cacheReadTokens,
+		tokens.CacheCreationTokens,
+		totalTokensFallback,
 	)
 }
 

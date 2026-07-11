@@ -192,9 +192,17 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 	}
 
 	if info := GetGlobalRegistry().GetModelInfo(modelID, p); info != nil {
-		return cloneModelInfo(info)
+		info = cloneModelInfo(info)
+		if p == "codex" {
+			return applyCodexCompatibility(info)
+		}
+		return info
 	}
-	return cloneModelInfo(LookupStaticModelInfo(modelID))
+	info := cloneModelInfo(LookupStaticModelInfo(modelID))
+	if p == "codex" {
+		return applyCodexCompatibility(info)
+	}
+	return info
 }
 
 // ModelOverrideHeaders returns models.json config.override_header for the model, if any.
