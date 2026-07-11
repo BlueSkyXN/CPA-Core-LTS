@@ -227,6 +227,93 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 }
 
+func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
+	legacy := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
+		InputTokens:         1200,
+		OutputTokens:        10,
+		CachedTokens:        1024,
+		CacheCreationTokens: 1024,
+		TotalTokens:         1210,
+	})
+	canonical := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
+		InputTokens:         1200,
+		OutputTokens:        10,
+		CacheCreationTokens: 1024,
+		TotalTokens:         2234,
+	})
+
+	tests := []struct {
+		name            string
+		first           usage.StatisticsSnapshot
+		second          usage.StatisticsSnapshot
+		wantTotalTokens int64
+	}{
+		{
+			name:            "legacy then canonical",
+			first:           legacy,
+			second:          canonical,
+			wantTotalTokens: 1210,
+		},
+		{
+			name:            "canonical then legacy",
+			first:           canonical,
+			second:          legacy,
+			wantTotalTokens: 2234,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := usage.NewRequestStatistics()
+			h := &Handler{}
+			h.SetUsageStatistics(stats)
+
+			firstResult := importUsageStatistics(t, h, tt.first)
+			if firstResult.Added != 1 || firstResult.Skipped != 0 || firstResult.TotalRequests != 1 {
+				t.Fatalf("first import result = %+v, want added=1 skipped=0 total_requests=1", firstResult)
+			}
+
+			secondResult := importUsageStatistics(t, h, tt.second)
+			if secondResult.Added != 0 || secondResult.Skipped != 1 || secondResult.TotalRequests != 1 {
+				t.Fatalf("second import result = %+v, want added=0 skipped=1 total_requests=1", secondResult)
+			}
+
+			snapshot := stats.Snapshot()
+			model := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"]
+			if snapshot.TotalRequests != 1 || snapshot.TotalTokens != tt.wantTotalTokens || len(model.Details) != 1 {
+				t.Fatalf("snapshot after imports = requests:%d tokens:%d details:%d, want 1/%d/1", snapshot.TotalRequests, snapshot.TotalTokens, len(model.Details), tt.wantTotalTokens)
+			}
+			if snapshot.RequestsByDay["2026-07-11"] != 1 || snapshot.RequestsByHour["09"] != 1 {
+				t.Fatalf("request buckets after imports = day:%v hour:%v, want one request", snapshot.RequestsByDay, snapshot.RequestsByHour)
+			}
+			if snapshot.TokensByDay["2026-07-11"] != tt.wantTotalTokens || snapshot.TokensByHour["09"] != tt.wantTotalTokens {
+				t.Fatalf("token buckets after imports = day:%v hour:%v, want %d", snapshot.TokensByDay, snapshot.TokensByHour, tt.wantTotalTokens)
+			}
+		})
+	}
+}
+
+func usageCacheCreationSnapshot(timestamp time.Time, tokens usage.TokenStats) usage.StatisticsSnapshot {
+	return usage.StatisticsSnapshot{
+		APIs: map[string]usage.APISnapshot{
+			"cache-key": {
+				Models: map[string]usage.ModelSnapshot{
+					"gpt-5.6-sol": {
+						Details: []usage.RequestDetail{{
+							Timestamp: timestamp,
+							Source:    "auths/codex.json",
+							AuthIndex: "0",
+							Tokens:    tokens,
+						}},
+					},
+				},
+			},
+		},
+	}
+}
+
 func recordPanelContractUsage(stats *usage.RequestStatistics) {
 	stats.Record(context.Background(), coreusage.Record{
 		APIKey:          "panel-client-key",
