@@ -21,6 +21,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate GPT-5.6 Ultra compatibility
+        run: |
+          go test ./internal/registry ./internal/thinking \
+            ./internal/runtime/executor ./sdk/api/handlers/openai \
+            -run 'GPT56|Ultra|CodexWire' -count=1
       - name: Build
         run: |
           go build -o test-output ./cmd/server

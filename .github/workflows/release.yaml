@@ -20,7 +20,37 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
 
 jobs:
+  validate-release-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - name: Refresh models catalog
+        run: |
+          set -euo pipefail
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Validate GPT-5.6 Ultra compatibility
+        run: |
+          go test ./internal/registry ./internal/thinking \
+            ./internal/runtime/executor ./sdk/api/handlers/openai \
+            -run 'GPT56|Ultra|CodexWire' -count=1
+      - name: Upload validated models catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-models-catalog
+          path: internal/registry/models/models.json
+          if-no-files-found: error
+          retention-days: 1
+
   prepare-release:
+    needs: validate-release-catalog
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -145,12 +175,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
-      - name: Refresh models catalog
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+      - name: Download validated models catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-models-catalog
+          path: internal/registry/models
       - name: Fetch tags
         shell: bash
         run: git fetch --force --tags
@@ -279,12 +308,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
-      - name: Refresh models catalog
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+      - name: Download validated models catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-models-catalog
+          path: internal/registry/models
       - name: Fetch tags
         shell: bash
         run: git fetch --force --tags
@@ -426,12 +454,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
-      - name: Refresh models catalog
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+      - name: Download validated models catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-models-catalog
+          path: internal/registry/models
       - name: Fetch tags
         shell: bash
         run: git fetch --force --tags
@@ -573,10 +600,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
-      - name: Refresh models catalog
-        run: |
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+      - name: Download validated models catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-models-catalog
+          path: internal/registry/models
       - name: Fetch tags
         run: git fetch --force --tags
       - uses: actions/setup-go@v6
