@@ -39,6 +39,41 @@ patches:
     state: required
     retire_when: Upstream provides typed usage-limit and capacity-only model fallback after same-model auth exhaustion, reselects credentials for each target model, blocks or explicitly resets cross-model reasoning state without copying encrypted_content, preserves pre-delivery stream replay safety, and all listed regressions pass after removing the downstream implementation.
 
+  - id: codex-rate-limit-continuity
+    reason: A fresh Codex session can receive usage_limit_reached while previously successful sessions on the same auth/model are still allowed to finish, so Core needs a bounded observation state instead of immediately suspending the auth/model for every session.
+    introduced_in: 6ee281422e460ac7d5db8d69ef3fe6b49560e96a
+    affected_upstream_range: through e99a2056baa981345f4a93600039725363ffca46 (v7.2.66); the synced upstream baseline immediately writes model quota cooldown for every 429 and has no success-established session lease, fresh-session quarantine, single-canary reservation, or generation guard integrated with session affinity.
+    files:
+      - config.example.yaml
+      - docs/lts/codex-429-resilience.md
+      - docs/lts/core-feature-contracts.yaml
+      - docs/lts/protected-deltas.yaml
+      - internal/config/config.go
+      - internal/config/codex_rate_limit_continuity_test.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - scripts/check-lts-contract.sh
+      - sdk/cliproxy/auth/codex_rate_limit_continuity.go
+      - sdk/cliproxy/auth/codex_rate_limit_continuity_test.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/selector.go
+      - sdk/cliproxy/auth/selector_test.go
+    regression_tests:
+      - TestLoadConfigOptionalCodexRateLimitContinuity
+      - TestSessionAffinitySelector_ExplicitExecutionSessionMetadata
+      - TestCodexRateLimitContinuityFirstFreshUsageLimitBecomesSuspect
+      - TestCodexRateLimitContinuityOnlyOneConcurrentCanary
+      - TestCodexRateLimitContinuityConfirmedGenerationRejectsStaleResult
+      - TestManagerCodexRateLimitContinuityKeepsEstablishedSessionAndExcludesFresh
+      - TestManagerCodexRateLimitContinuityEstablishedFailureConfirmsCooldown
+      - TestManagerCodexRateLimitContinuityConcurrentCanaryCallsSelectorCallbackOnce
+      - TestManagerCodexRateLimitContinuityLongStreamIsNotCancelledByFresh429
+      - TestManagerCodexRateLimitContinuityPendingFreshSessionUsesModelFallback
+      - TestManagerCodexRateLimitContinuityConfirmedCooldownUsesModelFallback
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream distinguishes successful established sessions from fresh sessions for typed Codex usage limits; preserves established streams during observation; reserves only one fresh canary; prevents stale results from clearing or double-advancing confirmed cooldown; composes with session affinity and model fallback; and all listed regressions pass after removing the downstream implementation.
+
   - id: codex-interactions-service-tier-response
     reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
     introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
