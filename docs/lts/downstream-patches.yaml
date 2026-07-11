@@ -28,7 +28,8 @@ patches:
       - TestEnsureImageGenerationTool_ExtensionNamespaceDoesNotInjectLegacyTool
       - TestEnsureImageGenerationTool_UnrelatedNamespaceStillInjectsLegacyTool
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4175
-    state: removable
+    state: retired
+    retired_in: 087804e59a07141401809bc25d06a1ff244bdb8f
     retire_when: After this removable state is merged, remove the downstream helper while retaining the upstream namespace and flattened-function behavior; the listed regressions and the responses-lite image-tool regressions must pass, and the removal commit must be recorded in retired_in.
 
   - id: plugin-configured-enable-default

@@ -1988,7 +1988,18 @@ func isImageGenerationFunctionTool(tool gjson.Result) bool {
 	case "function":
 		return tool.Get("name").String() == "image_gen.imagegen"
 	case "namespace":
-		return isCodexExtensionImageGenerationTool(tool)
+		if tool.Get("name").String() != "image_gen" {
+			return false
+		}
+		tools := tool.Get("tools")
+		if !tools.IsArray() {
+			return false
+		}
+		for _, nestedTool := range tools.Array() {
+			if nestedTool.Get("type").String() == "function" && nestedTool.Get("name").String() == "imagegen" {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -2028,23 +2039,6 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 	}
 	body, _ = sjson.SetRawBytes(body, "tools.-1", imageGenToolJSON)
 	return body
-}
-
-func isCodexExtensionImageGenerationTool(tool gjson.Result) bool {
-	// Codex 0.144+ replaces hosted image_generation with this extension-backed namespace when available.
-	if tool.Get("type").String() != "namespace" || tool.Get("name").String() != "image_gen" {
-		return false
-	}
-	nestedTools := tool.Get("tools")
-	if !nestedTools.IsArray() {
-		return false
-	}
-	for _, nestedTool := range nestedTools.Array() {
-		if nestedTool.Get("type").String() == "function" && nestedTool.Get("name").String() == "imagegen" {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeCodexParallelToolCallsForTools(body []byte) []byte {
