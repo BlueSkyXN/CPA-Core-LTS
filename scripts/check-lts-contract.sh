@@ -132,7 +132,10 @@ require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep 'json:"service_tier,omitempty"' internal/usage
-require_grep "service_tier" internal/api/handlers/management/usage_contract_test.go
+require_grep 'json:"request_service_tier,omitempty"' internal/usage
+require_grep 'json:"response_service_tier,omitempty"' internal/usage
+require_grep "request_service_tier" internal/api/handlers/management/usage_contract_test.go
+require_grep "response_service_tier" internal/api/handlers/management/usage_contract_test.go
 
 go test ./scripts/ltsregistry -count=1
 

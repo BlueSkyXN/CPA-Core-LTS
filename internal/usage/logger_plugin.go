@@ -89,17 +89,19 @@ type modelStats struct {
 
 // RequestDetail stores request-level metadata and token usage for a single request.
 type RequestDetail struct {
-	Timestamp       time.Time  `json:"timestamp"`
-	LatencyMs       int64      `json:"latency_ms"`
-	Source          string     `json:"source"`
-	AuthIndex       string     `json:"auth_index"`
-	Alias           string     `json:"alias,omitempty"`
-	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
-	ServiceTier     string     `json:"service_tier,omitempty"`
-	Tokens          TokenStats `json:"tokens"`
-	Failed          bool       `json:"failed"`
-	FailureReason   string     `json:"failure_reason,omitempty"`
-	FailureStatus   int        `json:"failure_status,omitempty"`
+	Timestamp           time.Time  `json:"timestamp"`
+	LatencyMs           int64      `json:"latency_ms"`
+	Source              string     `json:"source"`
+	AuthIndex           string     `json:"auth_index"`
+	Alias               string     `json:"alias,omitempty"`
+	ReasoningEffort     string     `json:"reasoning_effort,omitempty"`
+	ServiceTier         string     `json:"service_tier,omitempty"`
+	RequestServiceTier  string     `json:"request_service_tier,omitempty"`
+	ResponseServiceTier string     `json:"response_service_tier,omitempty"`
+	Tokens              TokenStats `json:"tokens"`
+	Failed              bool       `json:"failed"`
+	FailureReason       string     `json:"failure_reason,omitempty"`
+	FailureStatus       int        `json:"failure_status,omitempty"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -186,6 +188,14 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if modelName == "" {
 		modelName = "unknown"
 	}
+	requestServiceTier := strings.TrimSpace(record.RequestServiceTier)
+	if requestServiceTier == "" {
+		requestServiceTier = strings.TrimSpace(record.ServiceTier)
+	}
+	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
+	if responseServiceTier == "" {
+		responseServiceTier = strings.TrimSpace(record.Detail.ResponseServiceTier)
+	}
 	dayKey := timestamp.Format("2006-01-02")
 	hourKey := timestamp.Hour()
 
@@ -206,17 +216,19 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.apis[statsKey] = stats
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:       timestamp,
-		LatencyMs:       normaliseLatency(record.Latency),
-		Source:          record.Source,
-		AuthIndex:       record.AuthIndex,
-		Alias:           strings.TrimSpace(record.Alias),
-		ReasoningEffort: strings.TrimSpace(record.ReasoningEffort),
-		ServiceTier:     strings.TrimSpace(record.ServiceTier),
-		Tokens:          detail,
-		Failed:          failed,
-		FailureReason:   failureReason,
-		FailureStatus:   failureStatus,
+		Timestamp:           timestamp,
+		LatencyMs:           normaliseLatency(record.Latency),
+		Source:              record.Source,
+		AuthIndex:           record.AuthIndex,
+		Alias:               strings.TrimSpace(record.Alias),
+		ReasoningEffort:     strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:         requestServiceTier,
+		RequestServiceTier:  requestServiceTier,
+		ResponseServiceTier: responseServiceTier,
+		Tokens:              detail,
+		Failed:              failed,
+		FailureReason:       failureReason,
+		FailureStatus:       failureStatus,
 	})
 
 	s.requestsByDay[dayKey]++
@@ -347,6 +359,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			}
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
+				detail = normaliseServiceTierAliases(detail)
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
 				}
@@ -366,6 +379,16 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	}
 
 	return result
+}
+
+func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
+	if strings.TrimSpace(detail.RequestServiceTier) == "" && strings.TrimSpace(detail.ServiceTier) != "" {
+		detail.RequestServiceTier = detail.ServiceTier
+	}
+	if strings.TrimSpace(detail.ServiceTier) == "" && strings.TrimSpace(detail.RequestServiceTier) != "" {
+		detail.ServiceTier = detail.RequestServiceTier
+	}
+	return detail
 }
 
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
