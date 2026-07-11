@@ -222,7 +222,8 @@ codex:
     observation-window-seconds: 30
     # Established-session successes can open the canary gate earlier.
     established-success-threshold: 2
-    # Successful session leases are process-local and expire after this interval.
+    # Successful session leases are process-local and expire after this interval;
+    # normally keep it aligned with routing.session-affinity-ttl.
     established-session-ttl-seconds: 3600
   # CPA-Core-LTS extra feature. When explicitly enabled, discard and retry
   # matching Codex OAuth responses whose completed usage reports suspicious

@@ -68,7 +68,8 @@ codex:
 The state is scoped by Codex auth ID and the auth-selection model. Successful
 sessions receive process-local leases. A selector cache binding alone does not
 make a session established: the request must complete successfully on that
-auth/model first.
+auth/model first. Operators should normally align
+`established-session-ttl-seconds` with `routing.session-affinity-ttl`.
 
 When a fresh session receives the first typed usage-limit 429:
 
