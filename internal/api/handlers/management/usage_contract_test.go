@@ -47,6 +47,12 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"service_tier":"priority"`)) {
 		t.Fatalf("exported usage missing service_tier: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"request_service_tier":"priority"`)) {
+		t.Fatalf("exported usage missing request_service_tier: %s", exportedJSON)
+	}
+	if !bytes.Contains(exportedJSON, []byte(`"response_service_tier":"standard"`)) {
+		t.Fatalf("exported usage missing response_service_tier: %s", exportedJSON)
+	}
 	var legacyDecoded struct {
 		Version int `json:"version"`
 		Usage   struct {
@@ -62,7 +68,7 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(exportedJSON, &legacyDecoded); err != nil {
-		t.Fatalf("legacy decoder rejected additive service_tier field: %v", err)
+		t.Fatalf("legacy decoder rejected additive service-tier fields: %v", err)
 	}
 	legacyDetails := legacyDecoded.Usage.APIs["panel-client-key"].Models["gpt-5.4"].Details
 	if legacyDecoded.Version != 1 || legacyDecoded.Usage.TotalRequests != 1 || len(legacyDetails) != 1 || legacyDetails[0].Source != "auths/openai.json" || legacyDetails[0].Tokens.TotalTokens != 17 {
@@ -207,6 +213,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].ServiceTier != "" {
 		t.Fatalf("legacy detail.service_tier = %q, want empty/unknown", details[0].ServiceTier)
 	}
+	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" {
+		t.Fatalf("legacy detail service tiers = request:%q response:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier)
+	}
 	if snapshot.TotalRequests != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 || snapshot.TotalTokens != 9 {
 		t.Fatalf("legacy snapshot totals = %+v, want requests=1 success=1 failure=0 tokens=9", snapshot)
 	}
@@ -224,6 +233,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 	if bytes.Contains(reexportedJSON, []byte(`"service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated service_tier: %s", reexportedJSON)
+	}
+	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) {
+		t.Fatalf("legacy re-export fabricated explicit service-tier fields: %s", reexportedJSON)
 	}
 }
 
@@ -316,16 +328,18 @@ func usageCacheCreationSnapshot(timestamp time.Time, tokens usage.TokenStats) us
 
 func recordPanelContractUsage(stats *usage.RequestStatistics) {
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey:          "panel-client-key",
-		Provider:        "openai",
-		Model:           "gpt-5.4",
-		Alias:           "panel-visible-model",
-		Source:          "auths/openai.json",
-		AuthIndex:       "1",
-		ReasoningEffort: "medium",
-		ServiceTier:     "priority",
-		RequestedAt:     time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
-		Latency:         2 * time.Second,
+		APIKey:              "panel-client-key",
+		Provider:            "openai",
+		Model:               "gpt-5.4",
+		Alias:               "panel-visible-model",
+		Source:              "auths/openai.json",
+		AuthIndex:           "1",
+		ReasoningEffort:     "medium",
+		ServiceTier:         "priority",
+		RequestServiceTier:  "priority",
+		ResponseServiceTier: "standard",
+		RequestedAt:         time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
+		Latency:             2 * time.Second,
 		Detail: coreusage.Detail{
 			InputTokens:     5,
 			OutputTokens:    7,
@@ -473,6 +487,12 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.ServiceTier != "priority" {
 		t.Fatalf("detail.service_tier = %q, want priority", detail.ServiceTier)
+	}
+	if detail.RequestServiceTier != "priority" {
+		t.Fatalf("detail.request_service_tier = %q, want priority", detail.RequestServiceTier)
+	}
+	if detail.ResponseServiceTier != "standard" {
+		t.Fatalf("detail.response_service_tier = %q, want standard", detail.ResponseServiceTier)
 	}
 	if detail.LatencyMs != 2000 {
 		t.Fatalf("detail.latency_ms = %d, want 2000", detail.LatencyMs)

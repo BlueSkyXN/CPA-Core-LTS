@@ -35,12 +35,14 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	stats := NewRequestStatistics()
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey:          "test-key",
-		Model:           "gpt-5.4",
-		Alias:           "client-gpt",
-		ReasoningEffort: "medium",
-		ServiceTier:     " priority ",
-		RequestedAt:     time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
+		APIKey:              "test-key",
+		Model:               "gpt-5.4",
+		Alias:               "client-gpt",
+		ReasoningEffort:     "medium",
+		ServiceTier:         "legacy-default",
+		RequestServiceTier:  " priority ",
+		ResponseServiceTier: " standard ",
+		RequestedAt:         time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
 		Detail: coreusage.Detail{
 			InputTokens:         10,
 			OutputTokens:        20,
@@ -65,6 +67,12 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	if detail.ServiceTier != "priority" {
 		t.Fatalf("service_tier = %q, want %q", detail.ServiceTier, "priority")
 	}
+	if detail.RequestServiceTier != "priority" {
+		t.Fatalf("request_service_tier = %q, want %q", detail.RequestServiceTier, "priority")
+	}
+	if detail.ResponseServiceTier != "standard" {
+		t.Fatalf("response_service_tier = %q, want %q", detail.ResponseServiceTier, "standard")
+	}
 	if detail.Tokens.CacheReadTokens != 7 {
 		t.Fatalf("cache_read_tokens = %d, want 7", detail.Tokens.CacheReadTokens)
 	}
@@ -73,6 +81,27 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.Tokens.CachedTokens != 7 {
 		t.Fatalf("cached_tokens = %d, want 7", detail.Tokens.CachedTokens)
+	}
+}
+
+func TestRequestStatisticsRecordFallsBackToLegacyAndDetailServiceTiers(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "test-key",
+		Model:       "gpt-5.4",
+		ServiceTier: " priority ",
+		Detail: coreusage.Detail{
+			ResponseServiceTier: " default ",
+			TotalTokens:         1,
+		},
+	})
+
+	detail := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0]
+	if detail.ServiceTier != "priority" || detail.RequestServiceTier != "priority" {
+		t.Fatalf("request tiers = service:%q request:%q, want priority aliases", detail.ServiceTier, detail.RequestServiceTier)
+	}
+	if detail.ResponseServiceTier != "default" {
+		t.Fatalf("response_service_tier = %q, want default", detail.ResponseServiceTier)
 	}
 }
 
@@ -108,17 +137,19 @@ func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 
 	stats := NewRequestStatistics()
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey:          "client-api-key",
-		Provider:        "anthropic",
-		Model:           "claude-sonnet-4.5",
-		Alias:           "panel-alias",
-		Source:          "auths/anthropic.json",
-		AuthIndex:       "2",
-		ReasoningEffort: "high",
-		ServiceTier:     coreusage.DefaultServiceTier,
-		RequestedAt:     time.Date(2026, 6, 10, 9, 15, 0, 0, time.UTC),
-		Latency:         1234 * time.Millisecond,
-		Failed:          true,
+		APIKey:              "client-api-key",
+		Provider:            "anthropic",
+		Model:               "claude-sonnet-4.5",
+		Alias:               "panel-alias",
+		Source:              "auths/anthropic.json",
+		AuthIndex:           "2",
+		ReasoningEffort:     "high",
+		ServiceTier:         coreusage.DefaultServiceTier,
+		RequestServiceTier:  coreusage.DefaultServiceTier,
+		ResponseServiceTier: "standard",
+		RequestedAt:         time.Date(2026, 6, 10, 9, 15, 0, 0, time.UTC),
+		Latency:             1234 * time.Millisecond,
+		Failed:              true,
 		Fail: coreusage.Failure{
 			Body: "codex_abnormal_reasoning_response: codex abnormal reasoning response discarded",
 		},
@@ -187,6 +218,12 @@ func TestRequestStatisticsRecordPreservesLTSUsageContractFields(t *testing.T) {
 	if detail.ServiceTier != coreusage.DefaultServiceTier {
 		t.Fatalf("service_tier = %q, want %q", detail.ServiceTier, coreusage.DefaultServiceTier)
 	}
+	if detail.RequestServiceTier != coreusage.DefaultServiceTier {
+		t.Fatalf("request_service_tier = %q, want %q", detail.RequestServiceTier, coreusage.DefaultServiceTier)
+	}
+	if detail.ResponseServiceTier != "standard" {
+		t.Fatalf("response_service_tier = %q, want standard", detail.ResponseServiceTier)
+	}
 	if detail.LatencyMs != 1234 {
 		t.Fatalf("latency_ms = %d, want 1234", detail.LatencyMs)
 	}
@@ -240,7 +277,7 @@ func TestRequestStatisticsEnabledToggleStopsNewRecordsButKeepsSnapshotReadable(t
 	}
 }
 
-func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTier(t *testing.T) {
+func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTiers(t *testing.T) {
 	stats := NewRequestStatistics()
 	timestamp := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
 	first := StatisticsSnapshot{
@@ -270,11 +307,13 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTier(t *test
 				Models: map[string]ModelSnapshot{
 					"gpt-5.4": {
 						Details: []RequestDetail{{
-							Timestamp:   timestamp,
-							LatencyMs:   2500,
-							Source:      "user@example.com",
-							AuthIndex:   "0",
-							ServiceTier: "priority",
+							Timestamp:           timestamp,
+							LatencyMs:           2500,
+							Source:              "user@example.com",
+							AuthIndex:           "0",
+							ServiceTier:         "priority",
+							RequestServiceTier:  "priority",
+							ResponseServiceTier: "standard",
 							Tokens: TokenStats{
 								InputTokens:  10,
 								OutputTokens: 20,
@@ -304,6 +343,56 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTier(t *test
 	}
 	if details[0].ServiceTier != "" {
 		t.Fatalf("service_tier = %q, want legacy unknown to remain empty", details[0].ServiceTier)
+	}
+	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" {
+		t.Fatalf("service tier metadata = request:%q response:%q, want legacy unknown to remain empty", details[0].RequestServiceTier, details[0].ResponseServiceTier)
+	}
+}
+
+func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T) {
+	timestamp := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		detail RequestDetail
+	}{
+		{
+			name: "legacy alias populates request tier",
+			detail: RequestDetail{
+				ServiceTier:         " priority ",
+				ResponseServiceTier: " standard ",
+			},
+		},
+		{
+			name: "request tier populates legacy alias",
+			detail: RequestDetail{
+				RequestServiceTier:  " priority ",
+				ResponseServiceTier: " standard ",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.detail.Timestamp = timestamp
+			tt.detail.Tokens.TotalTokens = 1
+			snapshot := StatisticsSnapshot{APIs: map[string]APISnapshot{
+				"test-key": {Models: map[string]ModelSnapshot{
+					"gpt-5.4": {Details: []RequestDetail{tt.detail}},
+				}},
+			}}
+			stats := NewRequestStatistics()
+			result := stats.MergeSnapshot(snapshot)
+			if result.Added != 1 || result.Skipped != 0 {
+				t.Fatalf("merge result = %+v, want added=1 skipped=0", result)
+			}
+			got := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0]
+			if got.ServiceTier != " priority " || got.RequestServiceTier != " priority " {
+				t.Fatalf("request tiers = service:%q request:%q, want preserved aliases", got.ServiceTier, got.RequestServiceTier)
+			}
+			if got.ResponseServiceTier != " standard " {
+				t.Fatalf("response_service_tier = %q, want preserved raw import value", got.ResponseServiceTier)
+			}
+		})
 	}
 }
 
