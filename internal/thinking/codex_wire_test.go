@@ -90,3 +90,25 @@ func TestNormalizeCodexReasoningEffortForWire(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeCodexReasoningEffortForWirePreservesUserDefinedGPT56Ultra(t *testing.T) {
+	registryRef := registry.GetGlobalRegistry()
+	clientID := "test-user-defined-gpt56-ultra-passthrough"
+	registryRef.RegisterClient(clientID, "codex", []*registry.ModelInfo{{
+		ID:          "gpt-5.6-sol",
+		UserDefined: true,
+		Thinking: &registry.ThinkingSupport{
+			Levels: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+	}})
+	t.Cleanup(func() { registryRef.UnregisterClient(clientID) })
+
+	body := []byte(`{"reasoning":{"effort":"ultra"}}`)
+	out, err := thinking.NormalizeCodexReasoningEffortForWire(body, "gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("NormalizeCodexReasoningEffortForWire() error = %v", err)
+	}
+	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
+		t.Fatalf("reasoning.effort = %q, want literal ultra for user-defined model; body=%s", got, out)
+	}
+}

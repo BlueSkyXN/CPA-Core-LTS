@@ -49,12 +49,19 @@ patches:
     retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
 
   - id: codex-gpt56-ultra-level
-    reason: Temporary downstream compatibility patch after upstream added partial GPT-5.6 Ultra client metadata and then removed Ultra from models.json. CPA-Core-LTS preserves the catalog/client preset boundary while canonicalizing known Sol/Terra Ultra requests to reasoning.effort=max on the final HTTP/WebSocket wire.
+    reason: Temporary downstream compatibility patch after upstream added partial GPT-5.6 Ultra client metadata and then removed Ultra from models.json. The official models catalog refreshed by PR and release builds remains max-only, so CPA-Core-LTS applies a stable non-generated Codex capability overlay for logical Sol/Terra Ultra while keeping Luna max-only, then canonicalizes supported Ultra requests to reasoning.effort=max on the final HTTP/WebSocket wire.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe and removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, but still lacks the shared thinking level, model-aware custom-model behavior, payload-override-safe final wire canonicalization, usage/retry alignment, and HTTP/WebSocket regression coverage
+    affected_upstream_range: LTS baseline through 3554b63721aac9b4202bf2ef88ba7a82b4e5caf8; upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe and removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, while router-for-me/models.git main at 9e658ffbc94b0d46392019c59d47d7dc7e5a2b96 still exposes Sol/Terra/Luna only through max; neither source provides the stable provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final wire canonicalization, usage/retry alignment, or HTTP/WebSocket regression coverage
     files:
+      - .github/workflows/pr-test-build.yml
+      - .github/workflows/release.yaml
       - config.example.yaml
       - docs/lts/codex-client-context-degradation-defense.md
+      - internal/registry/codex_compatibility.go
+      - internal/registry/codex_gpt56_compatibility_test.go
+      - internal/registry/model_definitions.go
+      - internal/registry/model_registry.go
+      - internal/registry/models/models.json
       - internal/thinking/types.go
       - internal/thinking/suffix.go
       - internal/thinking/validate.go
@@ -75,8 +82,13 @@ patches:
       - TestGPT56MaxCodexThinkingPreserved
       - TestUnknownCustomCodexModelPreservesLiteralUltra
       - TestUltraClampsToMaxWhenCrossProviderTargetStopsAtMax
+      - TestCodexGPT56UltraCompatibilityCoversStaticTierModels
+      - TestLookupModelInfoAppliesCodexGPT56UltraCompatibility
+      - TestLookupModelInfoAppliesCodexGPT56UltraCompatibilityToDynamicProviderInfo
+      - TestLookupModelInfoDoesNotApplyCodexGPT56UltraCompatibilityToOtherProviders
       - TestCanonicalCodexWireEffortIsModelAware
       - TestNormalizeCodexReasoningEffortForWire
+      - TestNormalizeCodexReasoningEffortForWirePreservesUserDefinedGPT56Ultra
       - TestCodexExecutorExecuteCanonicalizesGPT56UltraFinalWire
       - TestCodexExecutorExecutePreservesGPT56MaxFinalWire
       - TestCodexExecutorExecuteStreamCanonicalizesGPT56UltraSuffixFinalWire

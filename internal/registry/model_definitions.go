@@ -52,22 +52,22 @@ func GetAIStudioModels() []*ModelInfo {
 
 // GetCodexFreeModels returns model definitions for the Codex free plan tier.
 func GetCodexFreeModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexFree))
+	return withCodexCompatibility(WithCodexBuiltins(cloneModelInfos(getModels().CodexFree)))
 }
 
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.
 func GetCodexTeamModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexTeam))
+	return withCodexCompatibility(WithCodexBuiltins(cloneModelInfos(getModels().CodexTeam)))
 }
 
 // GetCodexPlusModels returns model definitions for the Codex plus plan tier.
 func GetCodexPlusModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPlus))
+	return withCodexCompatibility(WithCodexBuiltins(cloneModelInfos(getModels().CodexPlus)))
 }
 
 // GetCodexProModels returns model definitions for the Codex pro plan tier.
 func GetCodexProModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPro))
+	return withCodexCompatibility(WithCodexBuiltins(cloneModelInfos(getModels().CodexPro)))
 }
 
 // GetKimiModels returns the standard Kimi (Moonshot AI) model definitions.
