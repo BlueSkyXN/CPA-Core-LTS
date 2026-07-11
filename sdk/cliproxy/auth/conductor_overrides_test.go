@@ -15,6 +15,8 @@ import (
 
 const requestScopedNotFoundMessage = "Item with id 'rs_0b5f3eb6f51f175c0169ca74e4a85881998539920821603a74' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
 
+const codexModelNotFoundMessage = `{"error":{"message":"Model not found gpt-5.6-luna","type":"invalid_request_error","param":"model"}}`
+
 func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(3, 30*time.Second, 0)
@@ -1270,5 +1272,186 @@ func TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth(t *testing
 	}
 	if state := updatedBad.ModelStates[model]; state != nil {
 		t.Fatalf("expected request-scoped 404 to avoid bad auth model cooldown state, got %#v", state)
+	}
+}
+
+func TestManager_MarkResult_CodexModelNotFoundDoesNotCooldownAuth(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+
+	auth := &Auth{
+		ID:       "codex-auth-1",
+		Provider: "codex",
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5.6-luna"
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error: &Error{
+			HTTPStatus: http.StatusNotFound,
+			Message:    codexModelNotFoundMessage,
+		},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	if updated.Unavailable {
+		t.Fatalf("expected Codex model-not-found 404 to keep auth available")
+	}
+	if !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("expected Codex model-not-found 404 to keep auth cooldown unset, got %v", updated.NextRetryAfter)
+	}
+	if state := updated.ModelStates[model]; state != nil {
+		t.Fatalf("expected Codex model-not-found 404 to avoid model cooldown state, got %#v", state)
+	}
+}
+
+func TestManager_CodexModelNotFoundStopsRetryWithoutSuspendingAuth(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id: "codex",
+		executeErrors: map[string]error{
+			"aa-bad-auth": &Error{
+				HTTPStatus: http.StatusNotFound,
+				Message:    codexModelNotFoundMessage,
+			},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	model := "gpt-5.6-luna"
+	badAuth := &Auth{ID: "aa-bad-auth", Provider: "codex"}
+	goodAuth := &Auth{ID: "bb-good-auth", Provider: "codex"}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(badAuth.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(goodAuth.ID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(badAuth.ID)
+		reg.UnregisterClient(goodAuth.ID)
+	})
+
+	if _, errRegister := m.Register(context.Background(), badAuth); errRegister != nil {
+		t.Fatalf("register bad auth: %v", errRegister)
+	}
+	if _, errRegister := m.Register(context.Background(), goodAuth); errRegister != nil {
+		t.Fatalf("register good auth: %v", errRegister)
+	}
+
+	_, errExecute := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errExecute == nil {
+		t.Fatal("expected model-not-found error")
+	}
+	if statusCodeFromError(errExecute) != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", statusCodeFromError(errExecute), http.StatusNotFound)
+	}
+
+	got := executor.ExecuteCalls()
+	want := []string{badAuth.ID}
+	if len(got) != len(want) {
+		t.Fatalf("execute calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("execute call %d auth = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	updatedBad, ok := m.GetByID(badAuth.ID)
+	if !ok || updatedBad == nil {
+		t.Fatalf("expected bad auth to remain registered")
+	}
+	if updatedBad.Unavailable {
+		t.Fatalf("expected model-not-found auth to remain available")
+	}
+	if !updatedBad.NextRetryAfter.IsZero() {
+		t.Fatalf("expected model-not-found auth cooldown unset, got %v", updatedBad.NextRetryAfter)
+	}
+	if state := updatedBad.ModelStates[model]; state != nil {
+		t.Fatalf("expected model-not-found error to avoid model state, got %#v", state)
+	}
+}
+
+func TestIsRequestScopedModelNotFoundMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{
+			name:    "Codex identity routing error",
+			message: codexModelNotFoundMessage,
+			want:    true,
+		},
+		{
+			name:    "formatted JSON",
+			message: "{\n  \"error\": {\n    \"message\": \"Model not found gpt-5.6-luna\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"model\"\n  }\n}",
+			want:    true,
+		},
+		{
+			name:    "wrapped status error",
+			message: "status 404: " + codexModelNotFoundMessage,
+			want:    true,
+		},
+		{
+			name:    "plain missing route lacks typed param",
+			message: "Model not found gpt-5.6-luna",
+		},
+		{
+			name:    "different invalid parameter",
+			message: `{"error":{"message":"Model not found gpt-5.6-luna","type":"invalid_request_error","param":"input"}}`,
+		},
+		{
+			name:    "explicit account model support error",
+			message: `{"detail":"The 'gpt-5.6-luna' model is not supported when using Codex with a ChatGPT account."}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRequestScopedModelNotFoundMessage(tt.message); got != tt.want {
+				t.Fatalf("isRequestScopedModelNotFoundMessage() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManager_MarkResult_GenericNotFoundStillCooldownsModel(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "generic-404-auth", Provider: "codex"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5.6-luna"
+	before := time.Now()
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error: &Error{
+			HTTPStatus: http.StatusNotFound,
+			Message:    `{"error":{"message":"resource not found","type":"server_error"}}`,
+		},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth to remain registered")
+	}
+	state := updated.ModelStates[model]
+	if state == nil || !state.Unavailable {
+		t.Fatalf("generic 404 model state = %#v, want unavailable", state)
+	}
+	if state.NextRetryAfter.Before(before.Add(11 * time.Hour)) {
+		t.Fatalf("generic 404 retry time = %v, want roughly 12 hours", state.NextRetryAfter)
 	}
 }
