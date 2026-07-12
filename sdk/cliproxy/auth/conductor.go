@@ -171,6 +171,9 @@ type Result struct {
 	RetryAfter *time.Duration
 	// Error describes the failure when Success is false.
 	Error *Error
+	// ModelFallbackReason carries a typed provider failure classification used
+	// by Codex model fallback and rate-limit continuity decisions.
+	ModelFallbackReason string
 }
 
 // Selector chooses an auth candidate for execution.
@@ -252,6 +255,22 @@ type Manager struct {
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
 
+	// codexRateLimitContinuity is an in-memory, process-local observation state.
+	// It is intentionally independent from persisted cooldown state.
+	codexRateLimitContinuity *codexRateLimitContinuityStore
+	// codexRateLimitContinuityLifecycle invalidates requests that started before
+	// a global config/selector/auth snapshot reset. Auth and session removal are
+	// scoped through the continuity store instead of advancing this global value.
+	// It is protected by manager.mu and intentionally process-local.
+	codexRateLimitContinuityLifecycle uint64
+
+	// continuityTransitionHook is an internal test seam. It runs while MarkResult
+	// owns manager.mu after continuity observation and before ModelState mutation.
+	continuityTransitionHook func()
+	// continuityBeforeDispatchHook is an internal test seam invoked after
+	// continuity admission and before the final dispatch recheck.
+	continuityBeforeDispatchHook func()
+
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
@@ -274,14 +293,15 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:            store,
-		executors:        make(map[string]ProviderExecutor),
-		selector:         selector,
-		hook:             hook,
-		auths:            make(map[string]*Auth),
-		homeRuntimeAuths: make(map[string]map[string]*Auth),
-		providerOffsets:  make(map[string]int),
-		modelPoolOffsets: make(map[string]int),
+		store:                    store,
+		executors:                make(map[string]ProviderExecutor),
+		selector:                 selector,
+		hook:                     hook,
+		auths:                    make(map[string]*Auth),
+		homeRuntimeAuths:         make(map[string]map[string]*Auth),
+		providerOffsets:          make(map[string]int),
+		modelPoolOffsets:         make(map[string]int),
+		codexRateLimitContinuity: newCodexRateLimitContinuityStore(),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -515,6 +535,12 @@ func (m *Manager) SetSelector(selector Selector) {
 	}
 	m.mu.Lock()
 	m.selector = selector
+	if m.codexRateLimitContinuity != nil {
+		m.advanceCodexRateLimitContinuityLifecycleLocked()
+		// Selector identity and TTL are part of the lease contract. Replacing
+		// either invalidates all absolute process-local deadlines.
+		m.codexRateLimitContinuity.clear()
+	}
 	m.mu.Unlock()
 	if m.scheduler != nil {
 		m.scheduler.setSelector(selector)
@@ -555,7 +581,17 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
 	}
+	// Publish policy and invalidate old absolute deadlines atomically with
+	// respect to begin/MarkResult, preserving manager -> continuity lock order.
+	m.mu.Lock()
+	previous, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	settingsChanged := codexRateLimitContinuitySettingsChanged(previous, cfg)
 	m.runtimeConfig.Store(cfg)
+	if settingsChanged && m.codexRateLimitContinuity != nil {
+		m.advanceCodexRateLimitContinuityLifecycleLocked()
+		m.codexRateLimitContinuity.clear()
+	}
+	m.mu.Unlock()
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if !cfg.Home.Enabled {
 		m.clearHomeRuntimeAuths()
@@ -1794,6 +1830,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		defer m.abandonCodexRateLimitContinuityAttempt(ctx)
 		var failed bool
 		forward := true
 		var rewriter *StreamRewriter
@@ -1808,7 +1845,15 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 					if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 						rerr.HTTPStatus = se.StatusCode()
 					}
-					m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr})
+					m.MarkResult(ctx, Result{
+						AuthID:              auth.ID,
+						Provider:            provider,
+						Model:               resultModel,
+						Success:             false,
+						Error:               rerr,
+						RetryAfter:          retryAfterFromError(chunk.Err),
+						ModelFallbackReason: modelFallbackReasonFromError(chunk.Err),
+					})
 				}
 			}
 			if !forward {
@@ -1879,6 +1924,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
 	didRefreshOnUnauthorized := false
+	selectedPublished := false
 	for idx, execModel := range execModels {
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
@@ -1888,7 +1934,14 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		execOpts := opts
 		execReq, execOpts = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
-		publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+		if allowed, confirmed := m.codexRateLimitContinuityDispatchDisposition(ctx); !allowed {
+			m.abandonCodexRateLimitContinuityAttempt(ctx)
+			return nil, codexRateLimitObservationPendingError{confirmed: confirmed}
+		}
+		if !selectedPublished {
+			publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+			selectedPublished = true
+		}
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}
@@ -1929,6 +1982,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
+			result.ModelFallbackReason = modelFallbackReasonFromError(errStream)
 			m.MarkResult(ctx, result)
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
@@ -1977,6 +2031,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+				result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
@@ -1988,6 +2043,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+				result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
@@ -1999,6 +2055,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
+			result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 			m.MarkResult(ctx, result)
 			discardStreamChunks(streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
@@ -2350,7 +2407,13 @@ func (m *Manager) invalidateSessionAffinity(authID string) {
 	if m == nil || authID == "" {
 		return
 	}
-	if invalidator, ok := m.selector.(interface{ InvalidateAuth(string) }); ok && invalidator != nil {
+	m.mu.Lock()
+	if m.codexRateLimitContinuity != nil {
+		m.codexRateLimitContinuity.removeAuth(authID)
+	}
+	selector := m.selector
+	m.mu.Unlock()
+	if invalidator, ok := selector.(interface{ InvalidateAuth(string) }); ok && invalidator != nil {
 		invalidator.InvalidateAuth(authID)
 	}
 }
@@ -2368,6 +2431,12 @@ func (m *Manager) Load(ctx context.Context) error {
 		return err
 	}
 	m.auths = make(map[string]*Auth, len(items))
+	if m.codexRateLimitContinuity != nil {
+		// Credentials are a new runtime snapshot; continuity leases cannot be
+		// safely carried over a Load boundary.
+		m.advanceCodexRateLimitContinuityLifecycleLocked()
+		m.codexRateLimitContinuity.clear()
+	}
 	for _, auth := range items {
 		if auth == nil || auth.ID == "" {
 			continue
@@ -2388,6 +2457,7 @@ func (m *Manager) Load(ctx context.Context) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)
 		opts = withCodexModelFallbackRequestBudget(opts, false)
@@ -2612,6 +2682,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)
 		opts = withCodexModelFallbackRequestBudget(opts, true)
@@ -2859,6 +2930,19 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, auth, provider, routeModel, opts)
+		if !allowed {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[auth.ID] = struct{}{}
+			lastErr = codexRateLimitObservationPendingError{}
+			continue
+		}
+		if m.continuityBeforeDispatchHook != nil {
+			m.continuityBeforeDispatchHook()
+		}
+		defer m.abandonCodexRateLimitContinuityAttempt(attemptCtx)
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
@@ -2867,7 +2951,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 
 		tried[auth.ID] = struct{}{}
-		execCtx := ctx
+		execCtx := attemptCtx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -2892,6 +2976,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		var authErr error
 		didRefreshOnUnauthorized := false
+		selectedPublished := false
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -2901,7 +2986,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execOpts := opts
 			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
-			publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+			if allowed, confirmed := m.codexRateLimitContinuityDispatchDisposition(execCtx); !allowed {
+				m.abandonCodexRateLimitContinuityAttempt(execCtx)
+				return cliproxyexecutor.Response{}, codexRateLimitObservationPendingError{confirmed: confirmed}
+			}
+			if !selectedPublished {
+				publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+				selectedPublished = true
+			}
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
@@ -2944,6 +3036,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
 				}
+				result.ModelFallbackReason = modelFallbackReasonFromError(errExec)
 				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
@@ -3001,7 +3094,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 		if errCtx := ctx.Err(); errCtx != nil {
 			return cliproxyexecutor.Response{}, errCtx
 		}
@@ -3032,6 +3124,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		var authErr error
 		didRefreshOnUnauthorized := false
+		selectedPublished := false
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -3041,6 +3134,13 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			execOpts := opts
 			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			if !selectedPublished {
+				publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+				selectedPublished = true
+			}
+			if errCtx := execCtx.Err(); errCtx != nil {
+				return cliproxyexecutor.Response{}, errCtx
+			}
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -3126,6 +3226,24 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return nil, errPick
 		}
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, auth, provider, routeModel, opts)
+		if !allowed {
+			if tried == nil {
+				tried = make(map[string]struct{})
+			}
+			tried[auth.ID] = struct{}{}
+			lastErr = codexRateLimitObservationPendingError{}
+			continue
+		}
+		if m.continuityBeforeDispatchHook != nil {
+			m.continuityBeforeDispatchHook()
+		}
+		streamHandedOff := false
+		defer func(attemptCtx context.Context, handedOff *bool) {
+			if !*handedOff {
+				m.abandonCodexRateLimitContinuityAttempt(attemptCtx)
+			}
+		}(attemptCtx, &streamHandedOff)
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
@@ -3134,7 +3252,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 
 		tried[auth.ID] = struct{}{}
-		execCtx := ctx
+		execCtx := attemptCtx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -3177,6 +3295,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
+		streamHandedOff = true
 		return streamResult, nil
 	}
 }
@@ -4079,6 +4198,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	cooldownStateChanged := false
 
 	m.mu.Lock()
+	// The continuity state transition and the ModelState/cooldown mutation must
+	// be one manager critical section. begin() rechecks the continuity state
+	// before dispatch, so an in-flight candidate cannot clear a newly confirmed
+	// cooldown between observation and the availability write.
+	continuityDisposition := m.observeCodexRateLimitContinuityResult(ctx, result)
+	if m.continuityTransitionHook != nil {
+		m.continuityTransitionHook()
+	}
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
 		var cooldownRecordsBefore []CooldownStateRecord
@@ -4093,7 +4220,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			auth.Failed++
 		}
 
-		if result.Success {
+		if continuityDisposition == codexRateLimitContinuityRecordOnly {
+			auth.UpdatedAt = now
+		} else if result.Success {
 			if result.Model != "" {
 				state := ensureModelState(auth, result.Model)
 				resetModelState(state, now)
@@ -4109,6 +4238,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
+		} else if continuityDisposition == codexRateLimitContinuityObserveOnly {
+			auth.UpdatedAt = now
 		} else {
 			if result.Model != "" {
 				if !isRequestScopedNotFoundResultError(result.Error) {
@@ -5016,6 +5147,13 @@ func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 
 // CloseExecutionSession asks all registered executors to release the supplied execution session.
 func (m *Manager) CloseExecutionSession(sessionID string) {
+	m.closeExecutionSession(sessionID, "", "")
+}
+
+// closeExecutionSession releases an execution session while optionally
+// preserving the already-admitted target auth/model attempt that triggered a
+// context-reset fallback. The source session state is still cleared.
+func (m *Manager) closeExecutionSession(sessionID, preserveAuthID, preserveRouteModel string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if m == nil || sessionID == "" {
 		return
@@ -5023,9 +5161,25 @@ func (m *Manager) CloseExecutionSession(sessionID string) {
 
 	m.mu.Lock()
 	if sessionID == CloseAllExecutionSessionsID {
+		if m.codexRateLimitContinuity != nil {
+			m.advanceCodexRateLimitContinuityLifecycleLocked()
+		}
 		m.clearHomeRuntimeAuthsLocked()
+		if m.codexRateLimitContinuity != nil {
+			m.codexRateLimitContinuity.clear()
+		}
 	} else {
 		m.clearHomeRuntimeAuthsForSessionLocked(sessionID)
+		if m.codexRateLimitContinuity != nil {
+			var preserve *codexRateLimitContinuityKey
+			if auth := m.auths[strings.TrimSpace(preserveAuthID)]; auth != nil {
+				if modelKey := m.selectionModelKeyForAuth(auth, preserveRouteModel); modelKey != "" {
+					key := codexRateLimitContinuityKey{authID: auth.ID, model: modelKey}
+					preserve = &key
+				}
+			}
+			m.codexRateLimitContinuity.removeSessionPreservingKey("execution:"+sessionID, preserve)
+		}
 	}
 	executors := make([]ProviderExecutor, 0, len(m.executors))
 	for _, exec := range m.executors {
@@ -5278,13 +5432,16 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	candidates = cloneAuthSlice(candidates)
+	m.mu.RUnlock()
+	candidates, errAvailable := m.filterCodexRateLimitContinuityCandidates(candidates, model, opts)
 	if errAvailable != nil {
-		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
 	}
-	available = cloneAuthSlice(available)
-	m.mu.RUnlock()
+	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	if errAvailable != nil {
+		return nil, nil, "", errAvailable
+	}
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
 	if errPick != nil {

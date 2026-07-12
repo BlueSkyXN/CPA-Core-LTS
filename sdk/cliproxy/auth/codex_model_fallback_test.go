@@ -651,6 +651,99 @@ func TestManagerExecuteCodexModelFallbackContextResetDropsSourcePinAndPublishesT
 	}
 }
 
+func TestManagerExecuteCodexModelFallbackContextResetContinuesOrderedTargetsWithContinuity(t *testing.T) {
+	initial := &codexFallbackTestError{message: "source usage limit", reason: internalconfig.CodexModelFallbackTriggerUsageLimit}
+	targetLimit := &codexFallbackTestError{message: "target usage limit", reason: internalconfig.CodexModelFallbackTriggerUsageLimit}
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{
+		"gpt-source":   initial,
+		"gpt-target-a": targetLimit,
+	}}
+	selector := NewSessionAffinitySelector(&FillFirstSelector{})
+	manager := NewManager(nil, selector, nil)
+	t.Cleanup(selector.Stop)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{SessionAffinity: true},
+		Codex: internalconfig.CodexConfig{
+			RateLimitContinuity: internalconfig.CodexRateLimitContinuityConfig{
+				Enabled:                      true,
+				ObservationWindowSeconds:     10,
+				EstablishedSuccessThreshold:  2,
+				EstablishedSessionTTLSeconds: 3600,
+			},
+			ModelFallback: internalconfig.CodexModelFallbackConfig{
+				Enabled:             true,
+				ReasoningContinuity: internalconfig.CodexModelFallbackReasoningContinuityContextReset,
+				Mappings: []internalconfig.CodexModelFallbackMapping{{
+					From: "gpt-source",
+					To:   []string{"gpt-target-a", "gpt-target-b"},
+				}},
+			},
+		},
+	})
+	manager.RegisterExecutor(executor)
+
+	reg := registry.GetGlobalRegistry()
+	authModels := map[string]string{
+		"fallback-source":   "gpt-source",
+		"fallback-target-a": "gpt-target-a",
+		"fallback-target-b": "gpt-target-b",
+	}
+	for authID, model := range authModels {
+		reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}})
+		if _, err := manager.Register(context.Background(), &Auth{ID: authID, Provider: "codex", Status: StatusActive}); err != nil {
+			t.Fatalf("Register(%s) error = %v", authID, err)
+		}
+	}
+	t.Cleanup(func() {
+		for authID := range authModels {
+			reg.UnregisterClient(authID)
+		}
+	})
+
+	var callbacks []string
+	sessionID := "ordered-context-reset"
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.PinnedAuthMetadataKey:                           "fallback-source",
+		cliproxyexecutor.ExecutionSessionMetadataKey:                     sessionID,
+		cliproxyexecutor.CodexModelFallbackContextResetReplayMetadataKey: true,
+		cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(authID string) {
+			callbacks = append(callbacks, authID)
+		},
+	}})
+	if err != nil || string(resp.Payload) != "gpt-target-b" {
+		t.Fatalf("Execute() response/error = %q/%v, want target B success", resp.Payload, err)
+	}
+	calls, _ := executor.snapshot()
+	if len(calls) != 3 || calls[0] != "gpt-source" || calls[1] != "gpt-target-a" || calls[2] != "gpt-target-b" {
+		t.Fatalf("calls = %#v, want source, target A, target B", calls)
+	}
+	if authCalls := executor.authSnapshot(); len(authCalls) != 3 || authCalls[0] != "fallback-source" || authCalls[1] != "fallback-target-a" || authCalls[2] != "fallback-target-b" {
+		t.Fatalf("auth calls = %#v", authCalls)
+	}
+	if len(callbacks) != 2 || callbacks[0] != "fallback-source" || callbacks[1] != "fallback-target-b" {
+		t.Fatalf("selected callbacks = %#v, want source and final target B", callbacks)
+	}
+	if closed := executor.closedSnapshot(); len(closed) != 1 || closed[0] != sessionID {
+		t.Fatalf("closed source sessions = %#v, want one close", closed)
+	}
+
+	manager.codexRateLimitContinuity.mu.Lock()
+	stateA := manager.codexRateLimitContinuity.states[codexRateLimitContinuityKey{authID: "fallback-target-a", model: "gpt-target-a"}]
+	stateB := manager.codexRateLimitContinuity.states[codexRateLimitContinuityKey{authID: "fallback-target-b", model: "gpt-target-b"}]
+	leaseB := time.Time{}
+	if stateB != nil {
+		leaseB = stateB.establishedSessions["execution:"+sessionID]
+	}
+	manager.codexRateLimitContinuity.mu.Unlock()
+	if stateA == nil || stateA.phase != codexRateLimitContinuityFreshBlocked {
+		t.Fatalf("target A continuity state = %+v, want FreshBlocked", stateA)
+	}
+	if stateB == nil || stateB.phase != codexRateLimitContinuityHealthy || leaseB.IsZero() {
+		t.Fatalf("target B continuity state = %+v lease=%v, want Healthy established", stateB, leaseB)
+	}
+}
+
 func TestManagerExecuteCodexModelFallbackContinuesAfterTargetAuthNotFound(t *testing.T) {
 	initial := &codexFallbackTestError{message: "usage limit", reason: internalconfig.CodexModelFallbackTriggerUsageLimit}
 	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": initial}}

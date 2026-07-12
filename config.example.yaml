@@ -213,6 +213,18 @@ codex:
     #     to:
     #       - "gpt-5.6-terra"
     #       - "gpt-5.5"
+  # CPA-Core-LTS extra feature. Keep established Codex sessions on an auth/model
+  # while a fresh-session usage-limit 429 is observed. Requires
+  # routing.session-affinity and a stable session identifier. Disabled by default.
+  rate-limit-continuity:
+    enabled: false
+    # After this many seconds, one fresh session may act as the canary.
+    observation-window-seconds: 30
+    # Established-session successes can open the canary gate earlier.
+    established-success-threshold: 2
+    # Successful session leases are process-local. The effective TTL is capped by
+    # routing.session-affinity-ttl and the active selector cache TTL.
+    established-session-ttl-seconds: 3600
   # CPA-Core-LTS extra feature. When explicitly enabled, discard and retry
   # matching Codex OAuth responses whose completed usage reports suspicious
   # reasoning token counts. Disabled by default.

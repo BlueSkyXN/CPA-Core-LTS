@@ -301,7 +301,7 @@ func isCodexModelFallbackZeroDispatchError(err error) bool {
 	return false
 }
 
-func codexModelFallbackSelectedAuthCollector(opts cliproxyexecutor.Options, onDispatch func()) (cliproxyexecutor.Options, func()) {
+func codexModelFallbackSelectedAuthCollector(opts cliproxyexecutor.Options, onDispatch func(string)) (cliproxyexecutor.Options, func()) {
 	if len(opts.Metadata) == 0 {
 		return opts, func() {}
 	}
@@ -323,7 +323,7 @@ func codexModelFallbackSelectedAuthCollector(opts cliproxyexecutor.Options, onDi
 		}
 		dispatchOnce.Do(func() {
 			if onDispatch != nil {
-				onDispatch()
+				onDispatch(authID)
 			}
 		})
 		mu.Lock()
@@ -377,11 +377,11 @@ func (m *Manager) executeCodexModelFallback(ctx context.Context, providers []str
 		fallbackReq := req
 		fallbackReq.Model = target
 		fallbackOpts := withCodexModelFallbackMetadata(opts, sourceModel, target, effective.ReasoningContinuity)
-		fallbackOpts, publishSelected := codexModelFallbackSelectedAuthCollector(fallbackOpts, func() {
+		fallbackOpts, publishSelected := codexModelFallbackSelectedAuthCollector(fallbackOpts, func(targetAuthID string) {
 			closeSourceOnce.Do(func() {
 				if effective.ReasoningContinuity == internalconfig.CodexModelFallbackReasoningContinuityContextReset && codexModelFallbackContextResetAllowed(fallbackOpts.Metadata) {
 					if sessionID := codexModelFallbackMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); sessionID != "" {
-						m.CloseExecutionSession(sessionID)
+						m.closeExecutionSession(sessionID, targetAuthID, target)
 					}
 				}
 			})
@@ -445,11 +445,11 @@ func (m *Manager) executeStreamCodexModelFallback(ctx context.Context, providers
 		fallbackReq := req
 		fallbackReq.Model = target
 		fallbackOpts := withCodexModelFallbackMetadata(opts, sourceModel, target, effective.ReasoningContinuity)
-		fallbackOpts, publishSelected := codexModelFallbackSelectedAuthCollector(fallbackOpts, func() {
+		fallbackOpts, publishSelected := codexModelFallbackSelectedAuthCollector(fallbackOpts, func(targetAuthID string) {
 			closeSourceOnce.Do(func() {
 				if effective.ReasoningContinuity == internalconfig.CodexModelFallbackReasoningContinuityContextReset && codexModelFallbackContextResetAllowed(fallbackOpts.Metadata) {
 					if sessionID := codexModelFallbackMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); sessionID != "" {
-						m.CloseExecutionSession(sessionID)
+						m.closeExecutionSession(sessionID, targetAuthID, target)
 					}
 				}
 			})

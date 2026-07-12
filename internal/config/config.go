@@ -330,6 +330,7 @@ type CodexHeaderDefaults struct {
 type CodexConfig struct {
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
 	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
+	RateLimitContinuity    CodexRateLimitContinuityConfig    `yaml:"rate-limit-continuity" json:"rate-limit-continuity"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
 }
 
@@ -338,6 +339,9 @@ const (
 	CodexModelFallbackTriggerCapacity                                      = "capacity"
 	CodexModelFallbackReasoningContinuitySameModelOnly                     = "same-model-only"
 	CodexModelFallbackReasoningContinuityContextReset                      = "context-reset"
+	CodexRateLimitContinuityDefaultObservationWindowSeconds                = 30
+	CodexRateLimitContinuityDefaultEstablishedSuccessThreshold             = 2
+	CodexRateLimitContinuityDefaultEstablishedSessionTTLSeconds            = 3600
 	CodexAbnormalReasoningRetryActionRetry                                 = "retry"
 	CodexAbnormalReasoningRetryActionObserveOnly                           = "observe-only"
 	CodexAbnormalReasoningRetryActionDisabled                              = "disabled"
@@ -458,6 +462,47 @@ func (c EffectiveCodexModelFallbackConfig) TargetsFor(model, trigger string) []s
 		}
 	}
 	return nil
+}
+
+// CodexRateLimitContinuityConfig controls the in-memory observation window
+// used to distinguish a fresh-session usage limit from an auth/model-wide
+// quota failure. It is effective only while routing.session-affinity is enabled.
+type CodexRateLimitContinuityConfig struct {
+	Enabled                      bool `yaml:"enabled" json:"enabled"`
+	ObservationWindowSeconds     int  `yaml:"observation-window-seconds" json:"observation-window-seconds"`
+	EstablishedSuccessThreshold  int  `yaml:"established-success-threshold" json:"established-success-threshold"`
+	EstablishedSessionTTLSeconds int  `yaml:"established-session-ttl-seconds" json:"established-session-ttl-seconds"`
+}
+
+// EffectiveCodexRateLimitContinuityConfig is the sanitized runtime view of
+// CodexRateLimitContinuityConfig.
+type EffectiveCodexRateLimitContinuityConfig struct {
+	Enabled                      bool
+	ObservationWindowSeconds     int
+	EstablishedSuccessThreshold  int
+	EstablishedSessionTTLSeconds int
+}
+
+// Effective returns a normalized rate-limit continuity policy.
+func (c CodexRateLimitContinuityConfig) Effective() EffectiveCodexRateLimitContinuityConfig {
+	observationWindowSeconds := c.ObservationWindowSeconds
+	if observationWindowSeconds <= 0 {
+		observationWindowSeconds = CodexRateLimitContinuityDefaultObservationWindowSeconds
+	}
+	establishedSuccessThreshold := c.EstablishedSuccessThreshold
+	if establishedSuccessThreshold <= 0 {
+		establishedSuccessThreshold = CodexRateLimitContinuityDefaultEstablishedSuccessThreshold
+	}
+	establishedSessionTTLSeconds := c.EstablishedSessionTTLSeconds
+	if establishedSessionTTLSeconds <= 0 {
+		establishedSessionTTLSeconds = CodexRateLimitContinuityDefaultEstablishedSessionTTLSeconds
+	}
+	return EffectiveCodexRateLimitContinuityConfig{
+		Enabled:                      c.Enabled,
+		ObservationWindowSeconds:     observationWindowSeconds,
+		EstablishedSuccessThreshold:  establishedSuccessThreshold,
+		EstablishedSessionTTLSeconds: establishedSessionTTLSeconds,
+	}
 }
 
 // CodexAbnormalReasoningRetryConfig controls the CPA-Core-LTS retry guard for
@@ -761,9 +806,9 @@ type RoutingConfig struct {
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Session IDs are extracted from multiple sources:
-	// metadata.user_id (Claude Code session format), X-Session-ID, Session_id (Codex),
-	// X-Amp-Thread-Id (Amp CLI thread), X-Client-Request-Id (PI), metadata.user_id,
-	// conversation_id, or message hash.
+	// explicit execution_session_id metadata, metadata.user_id (Claude Code session
+	// format), X-Session-ID, Session_id (Codex), X-Amp-Thread-Id (Amp CLI thread),
+	// X-Client-Request-Id (PI), metadata.user_id, conversation_id, or message hash.
 	// Automatic failover is always enabled when bound auth becomes unavailable.
 	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
 

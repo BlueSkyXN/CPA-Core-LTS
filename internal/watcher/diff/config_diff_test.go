@@ -261,6 +261,26 @@ func TestBuildConfigChangeDetails_CodexModelFallback(t *testing.T) {
 	expectContains(t, details, "codex.model-fallback.mappings: updated (0 -> 1 entries)")
 }
 
+func TestBuildConfigChangeDetails_CodexRateLimitContinuity(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{
+		Codex: config.CodexConfig{
+			RateLimitContinuity: config.CodexRateLimitContinuityConfig{
+				Enabled:                      true,
+				ObservationWindowSeconds:     12,
+				EstablishedSuccessThreshold:  3,
+				EstablishedSessionTTLSeconds: 900,
+			},
+		},
+	}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "codex.rate-limit-continuity.enabled: false -> true")
+	expectContains(t, details, "codex.rate-limit-continuity.observation-window-seconds: 30 -> 12")
+	expectContains(t, details, "codex.rate-limit-continuity.established-success-threshold: 2 -> 3")
+	expectContains(t, details, "codex.rate-limit-continuity.established-session-ttl-seconds: 3600 -> 900")
+}
+
 func TestBuildConfigChangeDetails_NoChanges(t *testing.T) {
 	cfg := &config.Config{
 		Port: 8080,
