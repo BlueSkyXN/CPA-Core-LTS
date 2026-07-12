@@ -1400,6 +1400,116 @@ func codexContinuityConversationOptions(conversationID string) cliproxyexecutor.
 	return cliproxyexecutor.Options{OriginalRequest: []byte(`{"conversation_id":"` + conversationID + `"}`)}
 }
 
+func TestManagerSelectAuthForRequestReturnsContinuityContext(t *testing.T) {
+	manager := newCodexContinuityManager(
+		t,
+		&codexContinuityTestExecutor{},
+		[]string{"auth-a"},
+		[]string{"gpt-5"},
+		1,
+	)
+	selected, resultCtx, err := manager.SelectAuthForRequest(
+		context.Background(),
+		"codex",
+		"gpt-5",
+		codexContinuityOptions("search-session"),
+	)
+	if err != nil {
+		t.Fatalf("SelectAuthForRequest() error = %v", err)
+	}
+	if selected == nil || selected.ID != "auth-a" {
+		t.Fatalf("selected = %#v, want auth-a", selected)
+	}
+	attempt, ok := codexRateLimitContinuityAttemptFromContext(resultCtx)
+	if !ok {
+		t.Fatal("SelectAuthForRequest() did not return a continuity attempt context")
+	}
+	lifecycle, hasLifecycle := codexRateLimitContinuityLifecycleFromContext(resultCtx)
+	if !hasLifecycle || lifecycle != manager.codexRateLimitContinuityLifecycle {
+		t.Fatalf("request lifecycle = %d present=%t, want current lifecycle %d", lifecycle, hasLifecycle, manager.codexRateLimitContinuityLifecycle)
+	}
+	if attempt.key.authID != selected.ID || attempt.key.model != "gpt-5" || attempt.sessionID != "execution:search-session" {
+		t.Fatalf("attempt = %#v, want auth/model/session binding", attempt)
+	}
+	manager.MarkResult(resultCtx, Result{
+		AuthID:   selected.ID,
+		Provider: "codex",
+		Model:    "gpt-5",
+		Success:  true,
+	})
+}
+
+func TestManagerConfirmSelectedAuthDispatchRejectsConfirmedBarrierAndAbandons(t *testing.T) {
+	manager := newCodexContinuityManager(
+		t,
+		&codexContinuityTestExecutor{},
+		[]string{"auth-a"},
+		[]string{"gpt-5"},
+		1,
+	)
+	_, resultCtx, err := manager.SelectAuthForRequest(
+		context.Background(),
+		"codex",
+		"gpt-5",
+		codexContinuityOptions("search-session"),
+	)
+	if err != nil {
+		t.Fatalf("SelectAuthForRequest() error = %v", err)
+	}
+	attempt, ok := codexRateLimitContinuityAttemptFromContext(resultCtx)
+	if !ok {
+		t.Fatal("SelectAuthForRequest() did not return a continuity attempt")
+	}
+	manager.codexRateLimitContinuity.mu.Lock()
+	state := manager.codexRateLimitContinuity.states[attempt.key]
+	setCodexRateLimitContinuityPhase(state, codexRateLimitContinuityConfirmedCooldown)
+	manager.codexRateLimitContinuity.mu.Unlock()
+
+	err = manager.ConfirmSelectedAuthDispatch(resultCtx)
+	if err == nil {
+		t.Fatal("ConfirmSelectedAuthDispatch() succeeded after confirmed cooldown")
+	}
+	statusError, ok := err.(interface{ StatusCode() int })
+	if !ok || statusError.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("ConfirmSelectedAuthDispatch() error = %#v, want HTTP 429", err)
+	}
+	manager.codexRateLimitContinuity.mu.Lock()
+	defer manager.codexRateLimitContinuity.mu.Unlock()
+	if got := len(manager.codexRateLimitContinuity.activeAttempts); got != 0 {
+		t.Fatalf("active attempts after rejected dispatch = %d, want 0", got)
+	}
+	if got := state.inFlight[attempt.sessionID]; got != 0 {
+		t.Fatalf("in-flight after rejected dispatch = %d, want 0", got)
+	}
+}
+
+func TestManagerConfirmSelectedAuthDispatchRejectsLifecycleReset(t *testing.T) {
+	manager := newCodexContinuityManager(
+		t,
+		&codexContinuityTestExecutor{},
+		[]string{"auth-a"},
+		[]string{"gpt-5"},
+		1,
+	)
+	_, resultCtx, err := manager.SelectAuthForRequest(
+		context.Background(),
+		"codex",
+		"gpt-5",
+		codexContinuityOptions("search-session"),
+	)
+	if err != nil {
+		t.Fatalf("SelectAuthForRequest() error = %v", err)
+	}
+	manager.mu.Lock()
+	manager.advanceCodexRateLimitContinuityLifecycleLocked()
+	manager.codexRateLimitContinuity.clear()
+	manager.mu.Unlock()
+
+	if err = manager.ConfirmSelectedAuthDispatch(resultCtx); err == nil {
+		t.Fatal("ConfirmSelectedAuthDispatch() succeeded after lifecycle reset")
+	}
+}
+
 func TestManagerCodexRateLimitContinuityKeepsEstablishedSessionAndExcludesFresh(t *testing.T) {
 	usageLimit := &codexFallbackTestError{message: "usage limit", reason: internalconfig.CodexModelFallbackTriggerUsageLimit}
 	executor := &codexContinuityTestExecutor{failures: map[string]error{

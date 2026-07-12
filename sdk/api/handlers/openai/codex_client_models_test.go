@@ -129,9 +129,23 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	}
 }
 
+func TestCodexClientModelsResponse_AppliesDisplayNameToTemplateModel(t *testing.T) {
+	resp := CodexClientModelsResponse([]map[string]any{{
+		"id":           "gpt-5.5",
+		"display_name": "Configured Codex Name",
+	}})
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", resp["models"])
+	}
+	if got := stringModelValue(models[0], "display_name"); got != "Configured Codex Name" {
+		t.Fatalf("display_name = %q, want Configured Codex Name", got)
+	}
+}
+
 func TestCodexClientModelsResponse_GPT56UltraReasoningMetadata(t *testing.T) {
 	resp := CodexClientModelsResponse([]map[string]any{
-		{"id": "gpt-5.6-sol"},
+		{"id": "gpt-5.6-sol", "display_name": "Configured Sol"},
 		{"id": "gpt-5.6-terra"},
 		{"id": "gpt-5.6-luna"},
 	})
@@ -153,6 +167,9 @@ func TestCodexClientModelsResponse_GPT56UltraReasoningMetadata(t *testing.T) {
 		if got := codexClientReasoningLevelDescription(model, "ultra"); got != "Maximum reasoning with automatic task delegation" {
 			t.Fatalf("%s ultra description = %q, want automatic task delegation description", slug, got)
 		}
+	}
+	if got := stringModelValue(bySlug["gpt-5.6-sol"], "display_name"); got != "Configured Sol" {
+		t.Fatalf("gpt-5.6-sol display_name = %q, want Configured Sol", got)
 	}
 
 	luna := bySlug["gpt-5.6-luna"]

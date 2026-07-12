@@ -5305,6 +5305,66 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	return authCopy, executor, nil
 }
 
+// SelectAuth selects one credential through the configured scheduling strategy.
+// It does not execute or alter the selected credential's result state.
+func (m *Manager) SelectAuth(ctx context.Context, provider, model string, opts cliproxyexecutor.Options) (*Auth, error) {
+	selected, _, errPick := m.pickNext(ctx, provider, model, opts, nil)
+	if errPick != nil {
+		return nil, errPick
+	}
+	return selected, nil
+}
+
+// SelectAuthForRequest selects one credential and starts any request-scoped
+// continuity tracking required by the selected auth. Callers must pass the
+// returned context to ConfirmSelectedAuthDispatch immediately before the
+// upstream dispatch, then to MarkResult exactly once when an upstream outcome
+// exists. If no upstream outcome exists, callers must abandon the attempt; it
+// is safe to defer AbandonSelectedAuthRequest because MarkResult consumes an
+// observed attempt first.
+func (m *Manager) SelectAuthForRequest(ctx context.Context, provider, model string, opts cliproxyexecutor.Options) (*Auth, context.Context, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
+	tried := make(map[string]struct{})
+	for {
+		selected, _, errPick := m.pickNext(ctx, provider, model, opts, tried)
+		if errPick != nil {
+			return nil, ctx, errPick
+		}
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, selected, provider, model, opts)
+		if allowed {
+			return selected, attemptCtx, nil
+		}
+		tried[selected.ID] = struct{}{}
+	}
+}
+
+// ConfirmSelectedAuthDispatch rechecks request-scoped continuity immediately
+// before an upstream dispatch. It rejects attempts invalidated by a confirmed
+// cooldown or lifecycle reset and releases their in-flight continuity state.
+func (m *Manager) ConfirmSelectedAuthDispatch(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		m.abandonCodexRateLimitContinuityAttempt(ctx)
+		return err
+	}
+	if allowed, confirmed := m.codexRateLimitContinuityDispatchDisposition(ctx); !allowed {
+		m.abandonCodexRateLimitContinuityAttempt(ctx)
+		return codexRateLimitObservationPendingError{confirmed: confirmed}
+	}
+	return nil
+}
+
+// AbandonSelectedAuthRequest releases request-scoped continuity state when a
+// selected credential never produces an upstream outcome for MarkResult.
+func (m *Manager) AbandonSelectedAuthRequest(ctx context.Context) {
+	m.abandonCodexRateLimitContinuityAttempt(ctx)
+}
+
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)

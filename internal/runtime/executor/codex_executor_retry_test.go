@@ -104,6 +104,71 @@ func TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback(t *t
 	}
 }
 
+func TestClassifyCodexUpstreamErrorRequestSemantics(t *testing.T) {
+	tests := []struct {
+		name                   string
+		statusCode             int
+		body                   []byte
+		wantRequestInvalid     bool
+		wantRecordWithoutModel bool
+	}{
+		{
+			name:                   "invalid request",
+			statusCode:             http.StatusBadRequest,
+			body:                   []byte(`{"error":{"type":"invalid_request_error","message":"invalid query"}}`),
+			wantRequestInvalid:     true,
+			wantRecordWithoutModel: false,
+		},
+		{
+			name:                   "unprocessable request",
+			statusCode:             http.StatusUnprocessableEntity,
+			body:                   []byte(`{"error":{"type":"invalid_request_error","message":"query must be a string"}}`),
+			wantRequestInvalid:     true,
+			wantRecordWithoutModel: false,
+		},
+		{
+			name:                   "request scoped model not found",
+			statusCode:             http.StatusNotFound,
+			body:                   []byte(`{"error":{"type":"invalid_request_error","param":"model","message":"Model not found gpt-5"}}`),
+			wantRequestInvalid:     true,
+			wantRecordWithoutModel: false,
+		},
+		{
+			name:                   "model support error needs model scope",
+			statusCode:             http.StatusBadRequest,
+			body:                   []byte(`{"error":{"type":"invalid_request_error","message":"The requested model is not supported."}}`),
+			wantRequestInvalid:     false,
+			wantRecordWithoutModel: false,
+		},
+		{
+			name:                   "invalid grant is credential attributable",
+			statusCode:             http.StatusBadRequest,
+			body:                   []byte(`{"error":{"type":"invalid_grant","code":"invalid_grant","message":"invalid_grant"}}`),
+			wantRequestInvalid:     false,
+			wantRecordWithoutModel: true,
+		},
+		{
+			name:                   "unauthorized is credential attributable",
+			statusCode:             http.StatusUnauthorized,
+			body:                   []byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`),
+			wantRequestInvalid:     false,
+			wantRecordWithoutModel: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			classification := ClassifyCodexUpstreamError(tc.statusCode, tc.body, time.Now())
+			if classification.RequestInvalid != tc.wantRequestInvalid {
+				t.Fatalf("RequestInvalid = %t, want %t", classification.RequestInvalid, tc.wantRequestInvalid)
+			}
+			if classification.RecordWithoutModel != tc.wantRecordWithoutModel {
+				t.Fatalf("RecordWithoutModel = %t, want %t", classification.RecordWithoutModel, tc.wantRecordWithoutModel)
+			}
+		})
+	}
+}
+
 func TestIsCodexUsageLimitError(t *testing.T) {
 	tests := []struct {
 		name string
