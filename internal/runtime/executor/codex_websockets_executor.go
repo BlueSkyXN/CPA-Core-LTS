@@ -333,11 +333,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	var replayScope codexReasoningReplayScope
 	defer func() {
 		if !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)
 		}
 	}()
+	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -382,6 +384,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errPromptCache != nil {
 		return resp, errPromptCache
 	}
+	replayScope = codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
 	if err != nil {
 		return resp, err
@@ -426,18 +429,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	connectionKey := newCodexWebsocketConnectionKey(authID, wsURL, baseModel, modelHeaderProfile.digest)
 	connection, respHS, errDial := e.ensureUpstreamConn(ctx, auth, sess, connectionKey, wsHeaders)
 	if errDial != nil {
-		bodyErr := websocketHandshakeBody(respHS)
-		if respHS != nil {
-			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
-		}
-		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
+		status, handshakeErr := codexWebsocketHandshakeFailure(ctx, e.cfg, wsReqLog, respHS, errDial, "dial")
+		if status == http.StatusUpgradeRequired {
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
 		}
-		if respHS != nil && respHS.StatusCode > 0 {
-			return resp, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
-		}
-		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
-		return resp, errDial
+		return resp, handshakeErr
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
@@ -504,9 +500,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 					return resp, errSendRetry
 				}
 			} else {
-				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
-				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
-				return resp, errDialRetry
+				status, handshakeErr := codexWebsocketHandshakeFailure(ctx, e.cfg, wsReqLog, respHSRetry, errDialRetry, "dial_retry")
+				if status == http.StatusUpgradeRequired {
+					return e.CodexExecutor.Execute(ctx, auth, req, opts)
+				}
+				return resp, handshakeErr
 			}
 		} else {
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
@@ -584,11 +582,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	var replayScope codexReasoningReplayScope
 	defer func() {
 		if !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)
 		}
 	}()
+	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -629,6 +629,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if errPromptCache != nil {
 		return nil, errPromptCache
 	}
+	replayScope = codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
 	if err != nil {
 		return nil, err
@@ -676,27 +677,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		upstreamHeaders = respHS.Header.Clone()
 	}
 	if errDial != nil {
-		bodyErr := websocketHandshakeBody(respHS)
-		if respHS != nil {
-			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
-		}
-		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
-			if sess != nil {
-				sess.reqMu.Unlock()
-			}
-			return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
-		}
-		if respHS != nil && respHS.StatusCode > 0 {
-			if sess != nil {
-				sess.reqMu.Unlock()
-			}
-			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
-		}
-		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
+		status, handshakeErr := codexWebsocketHandshakeFailure(ctx, e.cfg, wsReqLog, respHS, errDial, "dial")
 		if sess != nil {
 			sess.reqMu.Unlock()
 		}
-		return nil, errDial
+		if status == http.StatusUpgradeRequired {
+			return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
+		}
+		return nil, handshakeErr
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
@@ -725,11 +713,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			// Retry once with a new websocket connection for the same execution session.
 			connectionRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, connectionKey, wsHeaders)
 			if errDialRetry != nil || connectionRetry.conn == nil {
-				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
-				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
+				status, handshakeErr := codexWebsocketHandshakeFailure(ctx, e.cfg, wsReqLog, respHSRetry, errDialRetry, "dial_retry")
 				sess.clearActiveConnection(connection, readCh)
 				sess.reqMu.Unlock()
-				return nil, errDialRetry
+				if status == http.StatusUpgradeRequired {
+					return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
+				}
+				return nil, handshakeErr
 			}
 			wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
@@ -789,6 +779,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}()
 
 		send := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if chunk.Err != nil {
+				chunk.Err = withCodexReasoningReplayScope(chunk.Err, replayScope)
+			}
 			if ctx == nil {
 				out <- chunk
 				return true
@@ -1391,6 +1384,14 @@ type statusErrWithHeaders struct {
 	headers http.Header
 }
 
+// Websocket upgrade failures are still upstream Codex status responses. Keep
+// both the typed classification (usage_limit/capacity can therefore enter the
+// pre-payload fallback path) and retry headers for downstream error shaping.
+func newCodexWebsocketHandshakeStatusErr(status int, body []byte, headers http.Header) error {
+	classified := newCodexStatusErr(status, body)
+	return statusErrWithHeaders{statusErr: classified, headers: headers.Clone()}
+}
+
 func (e statusErrWithHeaders) Headers() http.Header {
 	if e.headers == nil {
 		return nil
@@ -1548,6 +1549,23 @@ func websocketHandshakeBody(resp *http.Response) []byte {
 		return nil
 	}
 	return body
+}
+
+// codexWebsocketHandshakeFailure keeps initial and reconnect upgrade failures
+// on the same classification path. In particular, a typed Codex quota or
+// capacity response before any payload remains eligible for model fallback,
+// while a 426 can still downgrade to the HTTP executor at the caller.
+func codexWebsocketHandshakeFailure(ctx context.Context, cfg *config.Config, requestLog helps.UpstreamRequestLog, resp *http.Response, dialErr error, stage string) (int, error) {
+	body := websocketHandshakeBody(resp)
+	if resp != nil && resp.StatusCode > 0 {
+		helps.RecordAPIWebsocketUpgradeRejection(ctx, cfg, websocketUpgradeRequestLog(requestLog), resp.StatusCode, resp.Header.Clone(), body)
+		return resp.StatusCode, newCodexWebsocketHandshakeStatusErr(resp.StatusCode, body, resp.Header)
+	}
+	if dialErr == nil {
+		dialErr = fmt.Errorf("codex websockets executor: websocket %s failed without a connection or handshake response", stage)
+	}
+	helps.RecordAPIWebsocketError(ctx, cfg, stage, dialErr)
+	return 0, dialErr
 }
 
 func closeHTTPResponseBody(resp *http.Response, logPrefix string) {

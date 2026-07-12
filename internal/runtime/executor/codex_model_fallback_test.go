@@ -7,23 +7,29 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
 func codexFallbackTestOptions(sourceModel, mode string) cliproxyexecutor.Options {
-	return cliproxyexecutor.Options{
+	opts := cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("claude"),
 		Metadata: map[string]any{
 			cliproxyexecutor.CodexModelFallbackSourceModelMetadataKey:         sourceModel,
 			cliproxyexecutor.CodexModelFallbackReasoningContinuityMetadataKey: mode,
 		},
 	}
+	if mode == config.CodexModelFallbackReasoningContinuityContextReset {
+		opts.Metadata[cliproxyexecutor.CodexModelFallbackContextResetReplayMetadataKey] = true
+	}
+	return opts
 }
 
 func newCodexFallbackExecutorTestServer(t *testing.T, bodies *[][]byte, calls *atomic.Int32) *httptest.Server {
@@ -63,6 +69,28 @@ func TestCodexExecutorModelFallbackSameModelOnlyBlocksClientReasoning(t *testing
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
+func TestCodexExecutorModelFallbackBlockedStreamDoesNotPublishFailureUsage(t *testing.T) {
+	recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+	usage.RegisterNamedPlugin("codex-model-fallback-blocked-stream-usage", recorder)
+	t.Cleanup(func() { usage.RegisterNamedPlugin("codex-model-fallback-blocked-stream-usage", noopUsagePlugin{}) })
+
+	executor := NewCodexExecutor(&config.Config{})
+	signature := validCodexReasoningEncryptedContentForTestSeed(34)
+	_, err := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{ID: "auth-fallback-stream-block"}, cliproxyexecutor.Request{
+		Model:   "gpt-target",
+		Payload: []byte(`{"model":"gpt-source","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"private","signature":"` + signature + `"}]}]}`),
+	}, codexFallbackTestOptions("gpt-source", config.CodexModelFallbackReasoningContinuitySameModelOnly))
+	if err == nil || !isCodexModelFallbackBlockedError(err) {
+		t.Fatalf("ExecuteStream() error = %v, want fallback continuity block", err)
+	}
+	// A blocked fallback has no upstream dispatch. Give the async default usage
+	// sink a scheduling opportunity, then prove no failed record was emitted.
+	time.Sleep(100 * time.Millisecond)
+	if got := recorder.recordCount(); got != 0 {
+		t.Fatalf("usage records = %d, want zero for blocked stream fallback", got)
 	}
 }
 
@@ -141,6 +169,31 @@ func TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair(t 
 	}
 	if got := gjson.GetBytes(bodies[0], "input.1.type").String(); got != "function_call_output" {
 		t.Fatalf("input.1.type = %q, want function_call_output; body=%s", got, bodies[0])
+	}
+}
+
+func TestPrepareCodexModelFallbackContextResetDropsPreviousResponseID(t *testing.T) {
+	opts := codexFallbackTestOptions("gpt-source", config.CodexModelFallbackReasoningContinuityContextReset)
+	body := []byte(`{"model":"gpt-target","previous_response_id":"resp-source","input":[{"type":"message","role":"user","content":"replay the visible transcript"}]}`)
+	updated, _, skipReplay, err := prepareCodexModelFallbackBody(context.Background(), sdktranslator.FromString("openai"), cliproxyexecutor.Request{
+		Model:   "gpt-target",
+		Payload: body,
+	}, opts, body)
+	if err != nil || !skipReplay {
+		t.Fatalf("prepare error/skip = %v/%v, want safe reset", err, skipReplay)
+	}
+	if gjson.GetBytes(updated, "previous_response_id").Exists() {
+		t.Fatalf("context-reset retained previous_response_id: %s", updated)
+	}
+}
+
+func TestPrepareCodexModelFallbackContextResetRejectsUnattestedPreviousResponseID(t *testing.T) {
+	opts := codexFallbackTestOptions("gpt-source", config.CodexModelFallbackReasoningContinuityContextReset)
+	delete(opts.Metadata, cliproxyexecutor.CodexModelFallbackContextResetReplayMetadataKey)
+	body := []byte(`{"model":"gpt-target","previous_response_id":"resp-source","input":[{"type":"message","role":"user","content":"incremental"}]}`)
+	_, _, _, err := prepareCodexModelFallbackBody(context.Background(), sdktranslator.FromString("openai"), cliproxyexecutor.Request{Model: "gpt-target", Payload: body}, opts, body)
+	if err == nil || !isCodexModelFallbackBlockedError(err) {
+		t.Fatalf("prepare error = %v, want continuity block", err)
 	}
 }
 

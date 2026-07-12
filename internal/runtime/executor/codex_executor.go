@@ -378,47 +378,16 @@ func sourceFormatEqual(from, want sdktranslator.Format) bool {
 	return strings.EqualFold(strings.TrimSpace(from.String()), want.String())
 }
 
-func codexClaudeCodeReplaySessionKey(ctx context.Context, payload []byte, headers http.Header) string {
-	sessionID := helps.ExtractClaudeCodeSessionID(ctx, payload, headers)
-	if sessionID == "" {
-		return ""
-	}
-	return "claude:" + sessionID
-}
-
 func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if value := metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
-		return "execution:" + value
-	}
-	if value := metadataString(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
-		return "execution:" + value
-	}
-	if value := codexReasoningReplaySessionKeyFromPayload(body); value != "" {
-		return value
-	}
-	if value := codexReasoningReplaySessionKeyFromPayload(req.Payload); value != "" {
-		return value
-	}
-	if value := codexReasoningReplaySessionKeyFromHeaders(opts.Headers); value != "" {
-		return value
-	}
-	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-		if value := codexReasoningReplaySessionKeyFromHeaders(ginCtx.Request.Header); value != "" {
-			return value
-		}
-	}
-	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		return codexClaudeCodeReplaySessionKey(ctx, req.Payload, opts.Headers)
-	}
-	if sourceFormatEqual(from, sdktranslator.FormatOpenAI) {
-		if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
-			return "prompt-cache:" + uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
-		}
-	}
-	return ""
+	return internalcache.ResolveCodexReasoningReplaySessionKey(internalcache.CodexReasoningReplaySessionInput{
+		Context:                 ctx,
+		SourceFormat:            from.String(),
+		TranslatedPayload:       body,
+		RequestPayload:          req.Payload,
+		Headers:                 opts.Headers,
+		OptionExecutionSession:  metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey),
+		RequestExecutionSession: metadataString(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey),
+	})
 }
 
 func metadataString(metadata map[string]any, key string) string {
@@ -440,52 +409,15 @@ func metadataString(metadata map[string]any, key string) string {
 }
 
 func codexReasoningReplaySessionKeyFromPayload(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); promptCacheKey != "" {
-		return "prompt-cache:" + promptCacheKey
-	}
-	if windowID := strings.TrimSpace(gjson.GetBytes(payload, "client_metadata.x-codex-window-id").String()); windowID != "" {
-		return "window:" + windowID
-	}
-	if turnMetadata := strings.TrimSpace(gjson.GetBytes(payload, "client_metadata.x-codex-turn-metadata").String()); turnMetadata != "" {
-		return codexReasoningReplaySessionKeyFromTurnMetadata(turnMetadata)
-	}
-	return ""
+	return internalcache.CodexReasoningReplaySessionKeyFromPayload(payload)
 }
 
 func codexReasoningReplaySessionKeyFromHeaders(headers http.Header) string {
-	if headers == nil {
-		return ""
-	}
-	if turnMetadata := strings.TrimSpace(headers.Get("X-Codex-Turn-Metadata")); turnMetadata != "" {
-		if key := codexReasoningReplaySessionKeyFromTurnMetadata(turnMetadata); key != "" {
-			return key
-		}
-	}
-	if windowID := strings.TrimSpace(headerValueCaseInsensitive(headers, "X-Codex-Window-Id")); windowID != "" {
-		return "window:" + windowID
-	}
-	for _, headerName := range []string{"Session_id", "session_id", "Session-Id"} {
-		if value := strings.TrimSpace(headerValueCaseInsensitive(headers, headerName)); value != "" {
-			return "session-id:" + value
-		}
-	}
-	if conversationID := strings.TrimSpace(headerValueCaseInsensitive(headers, "Conversation_id")); conversationID != "" {
-		return "conversation_id:" + conversationID
-	}
-	return ""
+	return internalcache.CodexReasoningReplaySessionKeyFromHeaders(headers)
 }
 
 func codexReasoningReplaySessionKeyFromTurnMetadata(turnMetadata string) string {
-	if promptCacheKey := strings.TrimSpace(gjson.Get(turnMetadata, "prompt_cache_key").String()); promptCacheKey != "" {
-		return "prompt-cache:" + promptCacheKey
-	}
-	if windowID := strings.TrimSpace(gjson.Get(turnMetadata, "window_id").String()); windowID != "" {
-		return "window:" + windowID
-	}
-	return ""
+	return internalcache.CodexReasoningReplaySessionKeyFromTurnMetadata(turnMetadata)
 }
 
 func codexInputHasValidReasoningEncryptedContent(body []byte) bool {
@@ -840,11 +772,13 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	var replayScope codexReasoningReplayScope
 	defer func() {
 		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)
 		}
 	}()
+	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -878,9 +812,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
-	body, replayScope, skipReplay, errFallback := prepareCodexModelFallbackBody(ctx, from, req, opts, body)
-	if errFallback != nil {
-		return resp, errFallback
+	var skipReplay bool
+	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
+	if err != nil {
+		return resp, err
 	}
 	if !skipReplay {
 		var errReplay error
@@ -1166,11 +1101,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	var replayScope codexReasoningReplayScope
 	defer func() {
-		if !isRetryWithoutPenaltyError(err) {
+		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)
 		}
 	}()
+	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -1203,9 +1140,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body = normalizeCodexParallelToolCallsForTools(body)
-	body, replayScope, skipReplay, errFallback := prepareCodexModelFallbackBody(ctx, from, req, opts, body)
-	if errFallback != nil {
-		return nil, errFallback
+	var skipReplay bool
+	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
+	if err != nil {
+		return nil, err
 	}
 	if !skipReplay {
 		var errReplay error
@@ -1345,7 +1283,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		emitError := func(err error) {
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: err}:
+			case out <- cliproxyexecutor.StreamChunk{Err: withCodexReasoningReplayScope(err, replayScope)}:
 			case <-ctx.Done():
 			}
 		}

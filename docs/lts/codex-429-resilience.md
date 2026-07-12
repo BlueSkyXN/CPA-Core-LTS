@@ -54,16 +54,35 @@ a GPT reasoning signature, but it cannot prove that a different model can
 decrypt or accept it.
 
 The default `reasoning-continuity: same-model-only` policy therefore blocks a
-cross-model fallback when either of these is present:
+cross-model fallback before target auth selection when any source-scoped state
+is present:
 
 - the translated request already contains a reasoning item; or
 - the source model/session has cached Codex reasoning replay state.
+- `previous_response_id` or an incremental WebSocket request;
+- a pinned auth or an execution session.
 
 This still permits normal same-model auth failover, whose replay cache is scoped
 by model and session rather than auth ID.
 
-`reasoning-continuity: context-reset` is an explicit lossy mode. Before the
-fallback request is sent, Core removes all reasoning items. If source replay
+`reasoning-continuity: context-reset` is an explicit lossy mode. It is allowed
+for stateful Responses WebSocket turns only when the CPA handler has constructed
+a complete transcript, verified all function/custom-tool call and output pairs,
+and added its internal replay marker before any payload from that turn is sent
+to the client. End-to-end WebSocket passthrough, bare incremental input, an
+unpaired tool transcript, any request retaining `previous_response_id`, and an
+already-delivered stream are blocked rather than guessed.
+
+The source replay-cache preflight uses the same resolver as the Codex executor.
+The executor attaches the final source model/session scope after request
+interception, translation, payload shaping, and header resolution to the typed
+source error. Fallback checks that exact scope before target auth selection, so
+lowercase/Gin-only headers or an after-auth payload rewrite cannot bypass the
+continuity gate.
+
+For an approved reset Core removes all reasoning items and
+`previous_response_id`, releases the source auth pin, closes the source
+execution session, and reselects auth using the target model. If source replay
 state contains function/custom-tool calls needed by tool outputs in the current
 request, those replayable call items may be retained so the tool pair remains
 valid. No reasoning signature is copied to the target model, and normal target
@@ -76,13 +95,28 @@ reasoning continuity.
 ## Retry, usage, and auth state
 
 - Same-model auth selection and ordinary retry run before model fallback.
-- Model fallback is not a `RetryWithoutPenalty` lane and does not consume or
-  extend the abnormal-reasoning hedge budget.
+- Source and fallback targets share one request-level abnormal-reasoning retry
+  counter, hedge state, and `UsageAccumulator`; fallback cannot reset or extend
+  the configured retry/hedge budget. A target gets one auth-selection wave,
+  while that wave still follows `max-retry-credentials`.
+- With `client-usage-aggregation: sum`, all dispatched source and target
+  attempts participate in the client-visible aggregate. The default
+  delivered-only policy continues to expose only the delivered result.
 - Each dispatched attempt keeps normal attempt-level usage/failure attribution
   to its actual auth and model.
 - A fallback blocked locally by the reasoning gate is a zero-dispatch outcome:
   it does not cool down the target model and does not create a synthetic upstream
   failure usage record.
+- `auth_not_found`, target model cooldown, and continuity-observation-pending
+  are zero-dispatch target outcomes and continue ordered target selection. A
+  typed target usage-limit/capacity also continues to the next target. A local
+  continuity block returns the original source error; a real dispatched
+  request-invalid, auth, transient, or other non-fallback target error stops
+  selection and is returned unchanged. If every target is zero-dispatch, Core
+  returns the original source typed 429.
+- Selected-auth callbacks are withheld for skipped and locally blocked targets;
+  only an auth that reaches the executor dispatch boundary and becomes the final
+  outcome is published to the external WebSocket pinning path.
 - A failed source model and a successful target model retain independent model
   availability state.
 

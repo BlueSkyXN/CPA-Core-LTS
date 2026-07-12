@@ -3241,3 +3241,51 @@ func TestNormalizeSubsequentRequestAssistantInputTriggersTranscriptReplacement(t
 		t.Fatalf("input[0].id = %q, want %q", input[0].Get("id").String(), "msg-3")
 	}
 }
+
+func TestResponsesWebsocketContextResetMarkerRequiresCompleteToolPairs(t *testing.T) {
+	complete := []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`)
+	if !responsesWebsocketCanAttestContextReset(complete) {
+		t.Fatal("paired transcript should be eligible for context-reset marker")
+	}
+	incomplete := []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"}]}`)
+	if responsesWebsocketHasCompleteToolPairs(incomplete) {
+		t.Fatal("unpaired tool call must not be eligible for context-reset marker")
+	}
+	orphan := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`)
+	if responsesWebsocketHasCompleteToolPairs(orphan) {
+		t.Fatal("orphan tool output must not be eligible for context-reset marker")
+	}
+}
+
+func TestResponsesWebsocketFirstIncrementalCreateCannotAttestContextReset(t *testing.T) {
+	raw := []byte(`{"type":"response.create","model":"gpt-source","previous_response_id":"resp-source","input":[{"type":"message","role":"user","content":"continue"}]}`)
+	normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, nil, nil, true, true)
+	if errMsg != nil {
+		t.Fatalf("normalize first response.create: %v", errMsg.Error)
+	}
+	if got := gjson.GetBytes(normalized, "previous_response_id").String(); got != "resp-source" {
+		t.Fatalf("previous_response_id = %q, want preserved incremental source id", got)
+	}
+	if responsesWebsocketCanAttestContextReset(normalized) {
+		t.Fatalf("incremental first frame received unsafe context-reset attestation: %s", normalized)
+	}
+}
+
+func TestResponsesWebsocketRepairCannotRetroactivelyAttestIncompleteTranscript(t *testing.T) {
+	// The repair cache can insert the missing call for a client tool output.
+	// That makes the forwarded transcript valid, but it must not turn an
+	// originally incomplete client transcript into a context-reset attestation.
+	preRepair := []byte(`{"input":[{"type":"function_call_output","call_id":"call-repair","output":"ok"}]}`)
+	if responsesWebsocketHasCompleteToolPairs(preRepair) {
+		t.Fatal("orphan pre-repair output unexpectedly attested")
+	}
+	callCache := newWebsocketToolOutputCache(0, 8)
+	callCache.record("marker-repair", "call-repair", []byte(`{"type":"function_call","call_id":"call-repair","name":"tool","arguments":"{}"}`))
+	repaired := repairResponsesWebsocketToolCallsWithCaches(newWebsocketToolOutputCache(0, 8), callCache, "marker-repair", preRepair)
+	if !responsesWebsocketHasCompleteToolPairs(repaired) {
+		t.Fatalf("repair should create a valid forwarded pair: %s", repaired)
+	}
+	if responsesWebsocketHasCompleteToolPairs(preRepair) {
+		t.Fatal("pre-repair safety must remain false after repair")
+	}
+}

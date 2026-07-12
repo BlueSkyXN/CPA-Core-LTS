@@ -9,22 +9,31 @@ patches:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
       - docs/lts/core-feature-contracts.yaml
+      - docs/lts/downstream-patches.yaml
       - docs/lts/protected-deltas.yaml
+      - internal/cache/codex_reasoning_replay_scope.go
       - internal/config/config.go
       - internal/config/codex_model_fallback_test.go
+      - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_executor_retry_test.go
       - internal/runtime/executor/codex_model_fallback.go
       - internal/runtime/executor/codex_model_fallback_test.go
       - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/helps/claude_code_session.go
       - internal/runtime/executor/openai_compat_executor.go
       - internal/watcher/diff/config_diff.go
       - internal/watcher/diff/config_diff_test.go
       - scripts/check-lts-contract.sh
+      - sdk/api/handlers/handlers.go
+      - sdk/api/handlers/handlers_metadata_test.go
       - sdk/cliproxy/auth/codex_model_fallback.go
       - sdk/cliproxy/auth/codex_model_fallback_test.go
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/executor/types.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+      - sdk/api/handlers/openai/openai_responses_websocket_test.go
     regression_tests:
       - TestLoadConfigOptionalCodexModelFallback
       - TestCodexModelFallbackEffectiveDefaultsAndNormalizesMappings
@@ -35,6 +44,20 @@ patches:
       - TestManagerExecuteCodexModelFallbackSelectsCredentialForTargetModel
       - TestManagerExecuteStreamCodexModelFallbackBeforeFirstPayload
       - TestManagerExecuteStreamCodexModelFallbackDoesNotReplayAfterPayload
+      - TestManagerExecuteCodexModelFallbackBlocksCachedClaudeReplayBeforeTargetSelection
+      - TestManagerExecuteCodexModelFallbackReplayPreflightUsesExecutorKeyPriority
+      - TestManagerExecuteCodexModelFallbackReplayPreflightUsesSharedHeaderResolver
+      - TestCodexExecutorModelFallbackPreflightUsesAfterAuthRewrittenReplayScope
+      - TestCodexExecutorModelFallbackPreservesSourceAbnormalPolicyAndUsageAggregation
+      - TestCodexModelFallbackTargetSharesRequestRetryHedgeAndUsageBudget
+      - TestManagerExecuteCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWinner
+      - TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWinner
+      - TestManagerExecuteCodexModelFallbackContinuesPastRealTargetCooldown
+      - TestManagerCodexModelFallbackTargetExhaustionPreservesBehavior
+      - TestCodexWebsocketHandshakeStatusClassifiesFallbackAndPreservesHeaders
+      - TestCodexWebsocketReconnectHandshakePreservesTypedQuotaError
+      - TestResponsesWebsocketFirstIncrementalCreateCannotAttestContextReset
+      - TestResponsesWebsocketRepairCannotRetroactivelyAttestIncompleteTranscript
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream provides typed usage-limit and capacity-only model fallback after same-model auth exhaustion, reselects credentials for each target model, blocks or explicitly resets cross-model reasoning state without copying encrypted_content, preserves pre-delivery stream replay safety, and all listed regressions pass after removing the downstream implementation.

@@ -132,6 +132,10 @@ require_grep "BlueSkyXN/CPA-Panel-LTS" internal/managementasset/updater.go inter
 require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "codex.model-fallback" docs/lts/core-feature-contracts.yaml docs/lts/codex-429-resilience.md
 require_grep "CodexModelFallbackSourceModelMetadataKey" sdk/cliproxy/executor/types.go sdk/cliproxy/auth/codex_model_fallback.go
+require_grep "CodexModelFallbackContextResetReplayMetadataKey" sdk/cliproxy/executor/types.go sdk/api/handlers/openai/openai_responses_websocket.go
+require_grep "ResolveCodexReasoningReplaySessionKey" internal/cache/codex_reasoning_replay_scope.go internal/runtime/executor/codex_executor.go sdk/cliproxy/auth/codex_model_fallback.go
+require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/openai_responses_websocket.go sdk/api/handlers/openai/openai_responses_websocket_test.go
+require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep 'json:"service_tier,omitempty"' internal/usage

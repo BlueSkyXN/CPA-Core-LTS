@@ -397,6 +397,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		previousLastResponseID := lastResponseID
 		previousLastResponsePendingToolCallIDs := append([]string(nil), lastResponsePendingToolCallIDs...)
 		forcedTranscriptReplay := forceTranscriptReplayNextRequest
+		preRepairContextResetSafe := !useUpstreamWebsocketPassthrough && responsesWebsocketCanAttestContextReset(requestJSON)
 		if useUpstreamWebsocketPassthrough {
 			if modelName := strings.TrimSpace(gjson.GetBytes(requestJSON, "model").String()); modelName != "" {
 				passthroughModelName = modelName
@@ -418,24 +419,33 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
+		// Only CPA-mediated websocket turns have a reconstructed complete
+		// transcript. Passthrough and incremental turns deliberately cannot
+		// opt into cross-model context reset.
+		if !useUpstreamWebsocketPassthrough && preRepairContextResetSafe && responsesWebsocketCanAttestContextReset(requestJSON) {
+			cliCtx = handlers.WithCodexModelFallbackContextResetReplay(cliCtx)
+		}
 		if pinnedAuthID != "" {
 			cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
-		} else {
-			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
-				authID = strings.TrimSpace(authID)
-				if authID == "" || h == nil || h.AuthManager == nil {
-					return
-				}
-				lastAttemptedAuthID = authID
-				selectedAuth, ok := sessionAuthByID(authID)
-				if !ok || selectedAuth == nil {
-					return
-				}
-				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
-					pinnedAuthID = authID
-				}
-			})
 		}
+		// Keep the callback even when the current turn starts pinned. A safe
+		// model-fallback context reset intentionally drops that source pin; the
+		// delayed callback then installs the actually dispatched target auth for
+		// subsequent websocket turns.
+		cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+			authID = strings.TrimSpace(authID)
+			if authID == "" || h == nil || h.AuthManager == nil {
+				return
+			}
+			lastAttemptedAuthID = authID
+			selectedAuth, ok := sessionAuthByID(authID)
+			if !ok || selectedAuth == nil {
+				return
+			}
+			if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
+				pinnedAuthID = authID
+			}
+		})
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
 		completedOutput, completedResponseID, completedPendingToolCallIDs, forwardErrMsg, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, wsTimelineLog, passthroughSessionID)
@@ -732,6 +742,52 @@ func inputSatisfiesPendingToolCalls(input gjson.Result, pendingCallIDs []string)
 		}
 	}
 	return true
+}
+
+// responsesWebsocketHasCompleteToolPairs is a final marker preflight. The
+// repair path normally removes/inserts orphaned items, but cross-model replay
+// must be stricter: an incomplete call/output pair cannot be safely recreated
+// after model-private reasoning and source execution state are discarded.
+func responsesWebsocketHasCompleteToolPairs(payload []byte) bool {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return false
+	}
+	calls := make(map[string]struct{})
+	outputs := make(map[string]struct{})
+	for _, item := range input.Array() {
+		callID := strings.TrimSpace(item.Get("call_id").String())
+		switch strings.TrimSpace(item.Get("type").String()) {
+		case "function_call", "custom_tool_call":
+			if callID == "" {
+				return false
+			}
+			calls[callID] = struct{}{}
+		case "function_call_output", "custom_tool_call_output":
+			if callID == "" {
+				return false
+			}
+			outputs[callID] = struct{}{}
+		}
+	}
+	for callID := range calls {
+		if _, ok := outputs[callID]; !ok {
+			return false
+		}
+	}
+	for callID := range outputs {
+		if _, ok := calls[callID]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func responsesWebsocketCanAttestContextReset(payload []byte) bool {
+	if strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
+		return false
+	}
+	return responsesWebsocketHasCompleteToolPairs(payload)
 }
 
 func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) []byte {

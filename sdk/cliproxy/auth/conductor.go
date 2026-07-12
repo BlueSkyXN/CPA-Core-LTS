@@ -1888,6 +1888,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		execOpts := opts
 		execReq, execOpts = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+		publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+		if errCtx := ctx.Err(); errCtx != nil {
+			return nil, errCtx
+		}
+		markCodexModelFallbackDispatch(execOpts, auth.ID)
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		if errStream != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
@@ -1902,6 +1907,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized); okRefresh {
 				auth = refreshed
 				didRefreshOnUnauthorized = true
+				markCodexModelFallbackDispatch(execOpts, auth.ID)
 				streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
 				if errStream != nil {
 					if errCtx := ctx.Err(); errCtx != nil {
@@ -1945,6 +1951,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				discardStreamChunks(streamResult.Chunks)
 				auth = refreshed
 				didRefreshOnUnauthorized = true
+				markCodexModelFallbackDispatch(execOpts, auth.ID)
 				retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 				if retryErr != nil {
 					if errCtx := ctx.Err(); errCtx != nil {
@@ -2381,11 +2388,75 @@ func (m *Manager) Load(ctx context.Context) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if m.codexModelFallbackEnabled(providers) {
+		opts = ensureRequestedModelMetadata(opts, req.Model)
+		opts = withCodexModelFallbackRequestBudget(opts, false)
+	}
 	resp, err := m.executeWithoutModelFallback(ctx, providers, req, opts)
 	if err == nil {
 		return resp, nil
 	}
 	return m.executeCodexModelFallback(ctx, providers, req, opts, err)
+}
+
+const (
+	codexModelFallbackBudgetMetadataKey     = "__cliproxy_codex_model_fallback_budget"
+	codexModelFallbackTargetWaveMetadataKey = "__cliproxy_codex_model_fallback_target_wave"
+	codexModelFallbackDispatchMetadataKey   = "__cliproxy_codex_model_fallback_dispatch"
+)
+
+// codexModelFallbackRequestBudget is request-local metadata shared by the
+// source and every target. Keeping it out of Config avoids a new public knob
+// while ensuring abnormal-reasoning counters, hedge state, and discarded usage
+// cannot be reset just because the model changes.
+type codexModelFallbackRequestBudget struct {
+	retryCounts map[string]int
+	usage       *cliproxyexecutor.UsageAccumulator
+	hedge       *retryWithoutPenaltyHedgeRequestState
+}
+
+func (m *Manager) codexModelFallbackEnabled(providers []string) bool {
+	if m == nil || !codexOnlyProviders(providers) {
+		return false
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	return cfg != nil && cfg.Codex.ModelFallback.Effective().Enabled
+}
+
+func withCodexModelFallbackRequestBudget(opts cliproxyexecutor.Options, stream bool) cliproxyexecutor.Options {
+	metadata := cloneSchedulerAnyMap(opts.Metadata)
+	if metadata == nil {
+		metadata = make(map[string]any, 1)
+	}
+	metadata[codexModelFallbackBudgetMetadataKey] = &codexModelFallbackRequestBudget{
+		retryCounts: make(map[string]int),
+		usage:       cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{}),
+		hedge:       &retryWithoutPenaltyHedgeRequestState{},
+	}
+	opts.Metadata = metadata
+	return opts
+}
+
+func codexModelFallbackBudget(opts cliproxyexecutor.Options, stream bool) *codexModelFallbackRequestBudget {
+	if budget, ok := opts.Metadata[codexModelFallbackBudgetMetadataKey].(*codexModelFallbackRequestBudget); ok && budget != nil {
+		return budget
+	}
+	return &codexModelFallbackRequestBudget{
+		retryCounts: make(map[string]int),
+		usage:       cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{}),
+		hedge:       &retryWithoutPenaltyHedgeRequestState{},
+	}
+}
+
+func codexModelFallbackTargetWave(opts cliproxyexecutor.Options) bool {
+	target, _ := opts.Metadata[codexModelFallbackTargetWaveMetadataKey].(bool)
+	return target
+}
+
+func markCodexModelFallbackDispatch(opts cliproxyexecutor.Options, authID string) {
+	if callback, ok := opts.Metadata[codexModelFallbackDispatchMetadataKey].(func(string)); ok && callback != nil {
+		callback(authID)
+	}
 }
 
 func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -2398,9 +2469,10 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	retryWithoutPenaltyCounts := make(map[string]int)
-	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
-	retryWithoutPenaltyHedgeState := &retryWithoutPenaltyHedgeRequestState{}
+	budget := codexModelFallbackBudget(opts, false)
+	retryWithoutPenaltyCounts := budget.retryCounts
+	retryWithoutPenaltyUsage := budget.usage
+	retryWithoutPenaltyHedgeState := budget.hedge
 	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(false)
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
@@ -2443,6 +2515,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 						retryWithoutPenaltyUsage.Add(detail)
 					}
 				}
+				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
+					break
+				}
 				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
 				if terminalErr != nil {
 					if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
@@ -2459,6 +2534,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				attempt++
 				continue
 			}
+		}
+		if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(errExec) {
+			break
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
@@ -2534,6 +2612,10 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	if m.codexModelFallbackEnabled(providers) {
+		opts = ensureRequestedModelMetadata(opts, req.Model)
+		opts = withCodexModelFallbackRequestBudget(opts, true)
+	}
 	result, err := m.executeStreamWithoutModelFallback(ctx, providers, req, opts)
 	if err == nil {
 		return result, nil
@@ -2559,9 +2641,10 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	retryWithoutPenaltyCounts := make(map[string]int)
-	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
-	retryWithoutPenaltyHedgeState := &retryWithoutPenaltyHedgeRequestState{}
+	budget := codexModelFallbackBudget(opts, true)
+	retryWithoutPenaltyCounts := budget.retryCounts
+	retryWithoutPenaltyUsage := budget.usage
+	retryWithoutPenaltyHedgeState := budget.hedge
 	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(true)
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
@@ -2604,6 +2687,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 						retryWithoutPenaltyUsage.Add(detail)
 					}
 				}
+				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
+					break
+				}
 				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
 				if terminalErr != nil {
 					if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
@@ -2620,6 +2706,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				attempt++
 				continue
 			}
+		}
+		if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(errStream) {
+			break
 		}
 		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errStream, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
@@ -2773,7 +2862,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 		if errCtx := ctx.Err(); errCtx != nil {
 			return cliproxyexecutor.Response{}, errCtx
 		}
@@ -2813,6 +2901,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execOpts := opts
 			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
+			if errCtx := execCtx.Err(); errCtx != nil {
+				return cliproxyexecutor.Response{}, errCtx
+			}
+			markCodexModelFallbackDispatch(execOpts, auth.ID)
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -2827,6 +2920,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
 					didRefreshOnUnauthorized = true
+					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
 					if errExec != nil {
 						if errCtx := execCtx.Err(); errCtx != nil {
@@ -3035,7 +3129,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}
