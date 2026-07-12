@@ -138,6 +138,16 @@ lts_owned_features:
       - redis-usage-queue-contract-tests
     conflict_policy: preserve_queue_without_replacing_full_usage
 
+  - id: commercial-neutral-documentation
+    registry_feature: commercial-neutral-documentation
+    maintenance_policy: long-term-maintained
+    markers:
+      - commercial-neutral
+      - forbid_grep_ci
+    validation:
+      - scripts/check-lts-contract.sh
+    conflict_policy: preserve_commercial_neutral_docs_and_assets
+
 shared_review_seams:
   - id: provider-runtime-usage-seams
     registry_seam: provider-runtime-usage-seams

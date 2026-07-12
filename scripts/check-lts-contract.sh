@@ -55,9 +55,11 @@ for promotional_asset in \
   assets/bmoplus.png \
   assets/catapi.png \
   assets/claudeapi.png \
-  assets/code0.png \
-  assets/cyberpay.jpg \
-  assets/fennoai.png \
+	assets/code0.png \
+	assets/cubence.png \
+	assets/cyberpay.jpg \
+	assets/fastaitoken.png \
+	assets/fennoai.png \
   assets/lingtrue.png \
   assets/packycode-cn.png \
   assets/packycode-en.png \

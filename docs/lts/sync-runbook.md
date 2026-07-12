@@ -38,6 +38,8 @@ Panel 的实践证明，单靠“这几个文件不能删”的文字规则不�
 - `validation_profiles`：只表达运行态交付证据，不伪装成长期维护能力。
 - `relationships`：表达 coexist 等能力关系；Redis queue 与 built-in full usage 的关系不再挤进支持级别。
 
+`redis-compatible-usage-queue` 的 optional 只表示部署时可以不启用该外部集成；其 route、代码和 wire contract 仍属于必须保留的 LTS 维护面。`commercial-neutral-documentation` 则记录 README 和仓库展示资产不接受自动恢复的赞助、返佣或付费推荐内容。
+
 和 Panel 不同，Core 的正确模式仍然是 protected full-sync，不是 selective-port。原因是 Core 的受保护 delta 主要集中在 usage、Management API、panel asset source、auth/config attribution 等明确接口上；普通 provider/runtime/security upstream 变更默认吸收，只在 registry 标出的 protected-adjacent seam 上做保留或适配。
 
 保持这套方案轻量的规则：
@@ -64,12 +66,14 @@ Panel 的实践证明，单靠“这几个文件不能删”的文字规则不�
 ```bash
 cd /Users/sky/Github/CPA-Core-LTS
 git status --short --branch
-git fetch origin --prune
-git fetch upstream --prune
+git fetch origin --prune --tags
+git fetch upstream --prune --tags
 git rev-parse origin/main
 git rev-parse upstream/main
 git merge-base origin/main upstream/main
 git rev-list --count origin/main..upstream/main
+git tag --points-at "$(git merge-base origin/main upstream/main)"
+git describe --tags --always upstream/main
 git worktree list --porcelain
 git branch --list 'codex/*'
 git for-each-ref refs/remotes/origin/codex --format='%(refname:short)'
@@ -183,6 +187,7 @@ Validator 会把当前 ledger 与 `--base-ref`（CI 使用 PR base branch）比�
 - Management usage response shape：保持 CPA-Panel-LTS 兼容。
 - config schema：接收 upstream 新项，同时保留旧配置兼容。
 - panel release source：保持 `BlueSkyXN/CPA-Panel-LTS`，除非用户明确改变策略。
+- README 与展示资产：保留 upstream commit ancestry，但默认不恢复 sponsor、affiliate、注册返利、充值优惠、付费推荐文案或配套商业图片；只有维护者明确批准时才改变 commercial-neutral 策略，并在 PR body 记录决策。
 - 如果 upstream 转向外置 usage service，可以适配新架构，但不能降级本仓库内置完整统计。
 
 ## Validation gate
@@ -195,10 +200,13 @@ go run ./scripts/ltsregistry --root .
 go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
 go build -o test-output ./cmd/server && rm -f test-output
 go test ./...
+go list ./... | rg -v '/tmp$' | xargs go test -count=1
 git diff --check
 ```
 
-`scripts/check-lts-contract.sh` 必须调用结构化 validator，覆盖 registry、protected deltas 和 patch ledger；如果 guard 只证明文件存在或 marker 只存在于 registry 自身，不能视为 contract review 完成。
+`scripts/check-lts-contract.sh` 必须调用结构化 validator，覆盖 registry、protected deltas 和 patch ledger；如果 guard 只证明文件存在或 marker 只存在于 registry 自身，不能视为 contract review 完成。原始 `go test ./...` 的结果仍要记录；若仅根目录 `tmp/` scratch package 造成污染，过滤 `/tmp` 的 repo-wide 命令作为产品代码信号，并在 PR body 如实区分两者。
+
+当同步触碰 `internal/translator/openai/openai/responses/` 时，必须额外运行不带 restrictive `-run` 的 `go test ./internal/translator/openai/openai/responses`，确保 custom tool、namespace 和 event sequencing 测试不会因测试名不含 `Translation` 而被跳过。
 
 如果 `go test ./...` 因环境、网络或已知非本次改动原因无法完成，PR body 必须写明实际命令、失败位置和剩余风险。不能把未运行的检查写成通过。
 

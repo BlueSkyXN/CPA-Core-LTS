@@ -20,6 +20,8 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -1573,6 +1575,51 @@ func TestXAIExecutorReasoningReplayCacheReplaysFunctionCallForClaudeToolResult(t
 	}
 }
 
+func TestXAIBaseURLSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{name: "default api", baseURL: xaiauth.DefaultAPIBaseURL, want: "DefaultAPIBaseURL"},
+		{name: "default api trailing slash", baseURL: xaiauth.DefaultAPIBaseURL + "/", want: "DefaultAPIBaseURL"},
+		{name: "cli chat proxy", baseURL: xaiauth.CLIChatProxyBaseURL, want: "CLIChatProxyBaseURL"},
+		{name: "cli chat proxy trailing slash", baseURL: xaiauth.CLIChatProxyBaseURL + "/", want: "CLIChatProxyBaseURL"},
+		{name: "custom", baseURL: "https://gateway.example.com/v1", want: "custom"},
+		{name: "empty treated as custom", baseURL: "", want: "custom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := xaiBaseURLSource(tt.baseURL); got != tt.want {
+				t.Fatalf("xaiBaseURLSource(%q) = %q, want %q", tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	customURL := "https://internal.example.test/private/v1"
+	logXAIResolvedBaseURL(context.Background(), customURL)
+
+	for _, entry := range hook.AllEntries() {
+		if !strings.Contains(entry.Message, "xai: resolved base URL") {
+			continue
+		}
+		if strings.Contains(entry.Message, customURL) {
+			t.Fatalf("xAI resolution log leaked custom URL: %q", entry.Message)
+		}
+		if !strings.Contains(entry.Message, "source=custom") {
+			t.Fatalf("xAI resolution log = %q, want custom source classification", entry.Message)
+		}
+		return
+	}
+
+	t.Fatal("xAI resolution log entry not found")
+}
+
 func TestXAIChatBaseURL(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1733,6 +1780,9 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != "" {
 			t.Fatalf("%s = %q, want empty for official API", xaiClientVersionHeader, got)
 		}
+		if got := req.Header.Get("User-Agent"); got != "" {
+			t.Fatalf("User-Agent = %q, want empty for official API", got)
+		}
 	})
 
 	t.Run("OAuth defaults to cli chat proxy headers", func(t *testing.T) {
@@ -1757,6 +1807,9 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
 			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
 		}
+		if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+xaiClientVersionValue {
+			t.Fatalf("User-Agent = %q, want xai-grok-workspace/%s", got, xaiClientVersionValue)
+		}
 	})
 
 	t.Run("no cli headers on custom gateway with using_api false", func(t *testing.T) {
@@ -1774,6 +1827,9 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		}
 		if got := req.Header.Get(xaiClientVersionHeader); got != "" {
 			t.Fatalf("%s = %q, want empty for custom gateway", xaiClientVersionHeader, got)
+		}
+		if got := req.Header.Get("User-Agent"); got != "" {
+			t.Fatalf("User-Agent = %q, want empty for custom gateway", got)
 		}
 	})
 
