@@ -19,8 +19,11 @@ type openAICompatPoolExecutor struct {
 
 	mu                sync.Mutex
 	executeModels     []string
+	executeSelected   []string
 	countModels       []string
+	countSelected     []string
 	streamModels      []string
+	streamSelected    []string
 	executePayloads   map[string][]byte
 	executeErrors     map[string]error
 	countErrors       map[string]error
@@ -33,9 +36,10 @@ func (e *openAICompatPoolExecutor) Identifier() string { return e.id }
 func (e *openAICompatPoolExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	_ = ctx
 	_ = auth
-	_ = opts
 	e.mu.Lock()
 	e.executeModels = append(e.executeModels, req.Model)
+	selected, _ := opts.Metadata[cliproxyexecutor.SelectedAuthMetadataKey].(string)
+	e.executeSelected = append(e.executeSelected, selected)
 	payload := append([]byte(nil), e.executePayloads[req.Model]...)
 	err := e.executeErrors[req.Model]
 	e.mu.Unlock()
@@ -51,9 +55,10 @@ func (e *openAICompatPoolExecutor) Execute(ctx context.Context, auth *Auth, req 
 func (e *openAICompatPoolExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	_ = ctx
 	_ = auth
-	_ = opts
 	e.mu.Lock()
 	e.streamModels = append(e.streamModels, req.Model)
+	selected, _ := opts.Metadata[cliproxyexecutor.SelectedAuthMetadataKey].(string)
+	e.streamSelected = append(e.streamSelected, selected)
 	err := e.streamFirstErrors[req.Model]
 	payloadChunks, hasCustomChunks := e.streamPayloads[req.Model]
 	chunks := append([]cliproxyexecutor.StreamChunk(nil), payloadChunks...)
@@ -82,9 +87,10 @@ func (e *openAICompatPoolExecutor) Refresh(_ context.Context, auth *Auth) (*Auth
 func (e *openAICompatPoolExecutor) CountTokens(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	_ = ctx
 	_ = auth
-	_ = opts
 	e.mu.Lock()
 	e.countModels = append(e.countModels, req.Model)
+	selected, _ := opts.Metadata[cliproxyexecutor.SelectedAuthMetadataKey].(string)
+	e.countSelected = append(e.countSelected, selected)
 	err := e.countErrors[req.Model]
 	e.mu.Unlock()
 	if err != nil {
@@ -116,12 +122,30 @@ func (e *openAICompatPoolExecutor) CountModels() []string {
 	return out
 }
 
+func (e *openAICompatPoolExecutor) ExecuteSelectedAuths() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.executeSelected...)
+}
+
+func (e *openAICompatPoolExecutor) CountSelectedAuths() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.countSelected...)
+}
+
 func (e *openAICompatPoolExecutor) StreamModels() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]string, len(e.streamModels))
 	copy(out, e.streamModels)
 	return out
+}
+
+func (e *openAICompatPoolExecutor) StreamSelectedAuths() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.streamSelected...)
 }
 
 type authScopedOpenAICompatPoolExecutor struct {
@@ -453,6 +477,51 @@ func TestManagerExecute_OpenAICompatAliasPoolFallsBackWithinSameAuth(t *testing.
 	}
 }
 
+func TestManagerExecute_OpenAICompatAliasPoolPublishesSelectedAuthOnceAcrossModels(t *testing.T) {
+	alias := "claude-opus-4.66"
+	modelSupportErr := &Error{
+		HTTPStatus: http.StatusBadRequest,
+		Message:    "invalid_request_error: The requested model is unsupported.",
+	}
+	executor := &openAICompatPoolExecutor{
+		id:            openAICompatPoolProviderKey,
+		executeErrors: map[string]error{"deepseek-v3.1": modelSupportErr},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "deepseek-v3.1", Alias: alias},
+		{Name: "glm-5", Alias: alias},
+	}, executor)
+
+	metadata := map[string]any{}
+	var callbacks []string
+	metadata[cliproxyexecutor.SelectedAuthCallbackMetadataKey] = func(authID string) {
+		callbacks = append(callbacks, authID)
+	}
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{Metadata: metadata})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(resp.Payload) != "glm-5" {
+		t.Fatalf("payload = %q, want glm-5", resp.Payload)
+	}
+	if len(callbacks) != 1 || callbacks[0] == "" {
+		t.Fatalf("selected-auth callbacks = %#v, want exactly one", callbacks)
+	}
+	got := executor.ExecuteModels()
+	want := []string{"deepseek-v3.1", "glm-5"}
+	if len(got) != len(want) {
+		t.Fatalf("execute calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("execute call %d model = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if selected := executor.ExecuteSelectedAuths(); len(selected) != 2 || selected[0] != callbacks[0] || selected[1] != callbacks[0] {
+		t.Fatalf("executor selected auth metadata = %#v, want callback auth on both model attempts", selected)
+	}
+}
+
 func TestManagerExecuteStream_OpenAICompatAliasPoolRetriesOnEmptyBootstrap(t *testing.T) {
 	alias := "claude-opus-4.66"
 	executor := &openAICompatPoolExecutor{
@@ -523,6 +592,51 @@ func TestManagerExecuteStream_OpenAICompatAliasPoolFallsBackBeforeFirstByte(t *t
 	}
 	if gotHeader := streamResult.Headers.Get("X-Model"); gotHeader != "glm-5" {
 		t.Fatalf("header X-Model = %q, want %q", gotHeader, "glm-5")
+	}
+}
+
+func TestManagerExecuteStream_OpenAICompatAliasPoolPublishesSelectedAuthOnceAcrossModels(t *testing.T) {
+	alias := "claude-opus-4.66"
+	modelSupportErr := &Error{
+		HTTPStatus: http.StatusBadRequest,
+		Message:    "invalid_request_error: The requested model is unsupported.",
+	}
+	executor := &openAICompatPoolExecutor{
+		id:                openAICompatPoolProviderKey,
+		streamFirstErrors: map[string]error{"deepseek-v3.1": modelSupportErr},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "deepseek-v3.1", Alias: alias},
+		{Name: "glm-5", Alias: alias},
+	}, executor)
+
+	metadata := map[string]any{}
+	var callbacks []string
+	metadata[cliproxyexecutor.SelectedAuthCallbackMetadataKey] = func(authID string) {
+		callbacks = append(callbacks, authID)
+	}
+	streamResult, err := m.ExecuteStream(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{Metadata: metadata})
+	if err != nil {
+		t.Fatalf("execute stream: %v", err)
+	}
+	if payload := readOpenAICompatStreamPayload(t, streamResult); payload != "glm-5" {
+		t.Fatalf("payload = %q, want glm-5", payload)
+	}
+	if len(callbacks) != 1 || callbacks[0] == "" {
+		t.Fatalf("selected-auth callbacks = %#v, want exactly one", callbacks)
+	}
+	got := executor.StreamModels()
+	want := []string{"deepseek-v3.1", "glm-5"}
+	if len(got) != len(want) {
+		t.Fatalf("stream calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("stream call %d model = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if selected := executor.StreamSelectedAuths(); len(selected) != 2 || selected[0] != callbacks[0] || selected[1] != callbacks[0] {
+		t.Fatalf("stream selected auth metadata = %#v, want callback auth on both model attempts", selected)
 	}
 }
 
@@ -649,6 +763,51 @@ func TestManagerExecuteCount_OpenAICompatAliasPoolRotatesWithinAuth(t *testing.T
 		if got[i] != want[i] {
 			t.Fatalf("count call %d model = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestManagerExecuteCount_OpenAICompatAliasPoolPublishesSelectedAuthOnce(t *testing.T) {
+	alias := "claude-opus-4.66"
+	modelSupportErr := &Error{
+		HTTPStatus: http.StatusBadRequest,
+		Message:    "invalid_request_error: The requested model is unsupported.",
+	}
+	executor := &openAICompatPoolExecutor{
+		id:          openAICompatPoolProviderKey,
+		countErrors: map[string]error{"deepseek-v3.1": modelSupportErr},
+	}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "deepseek-v3.1", Alias: alias},
+		{Name: "glm-5", Alias: alias},
+	}, executor)
+
+	metadata := map[string]any{}
+	var callbacks []string
+	metadata[cliproxyexecutor.SelectedAuthCallbackMetadataKey] = func(authID string) {
+		callbacks = append(callbacks, authID)
+	}
+	resp, err := m.ExecuteCount(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{Metadata: metadata})
+	if err != nil {
+		t.Fatalf("execute count: %v", err)
+	}
+	if string(resp.Payload) != "glm-5" {
+		t.Fatalf("payload = %q, want glm-5", resp.Payload)
+	}
+	if len(callbacks) != 1 || callbacks[0] == "" {
+		t.Fatalf("selected-auth callbacks = %#v, want exactly one", callbacks)
+	}
+	got := executor.CountModels()
+	want := []string{"deepseek-v3.1", "glm-5"}
+	if len(got) != len(want) {
+		t.Fatalf("count calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("count call %d model = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if selected := executor.CountSelectedAuths(); len(selected) != 2 || selected[0] != callbacks[0] || selected[1] != callbacks[0] {
+		t.Fatalf("count selected auth metadata = %#v, want callback auth on both model attempts", selected)
 	}
 }
 

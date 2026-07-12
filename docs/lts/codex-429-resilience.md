@@ -68,33 +68,78 @@ codex:
 The state is scoped by Codex auth ID and the auth-selection model. Successful
 sessions receive process-local leases. A selector cache binding alone does not
 make a session established: the request must complete successfully on that
-auth/model first. Operators should normally align
-`established-session-ttl-seconds` with `routing.session-affinity-ttl`.
+auth/model first. The effective lease TTL is the minimum of
+`established-session-ttl-seconds`, the configured
+`routing.session-affinity-ttl`, and the actual `SessionAffinitySelector` cache
+TTL. Replacing the selector invalidates old absolute lease deadlines.
 
-When a fresh session receives the first typed usage-limit 429:
+The process-local phase is explicit:
 
-1. Core records the failure for request/error accounting but does not write the
-   normal `ModelState` quota cooldown or suspend the registry model.
-2. The auth/model enters `suspect`. Other fresh sessions exclude that candidate
-   and can continue through another auth or the configured model fallback.
-3. Previously successful sessions remain eligible for the same auth/model and
-   act as passive observations. Their streams are not cancelled.
-4. One fresh-session canary becomes eligible after
-   `observation-window-seconds`, or earlier after
-   `established-success-threshold` successful established-session completions.
-5. A successful canary returns the auth/model to healthy. A typed usage-limit
-   failure from an established session or the reserved canary confirms the
-   quota and enters the existing persisted cooldown path exactly once.
+- `Healthy`
+- `FreshBlocked`
+- `ConfirmedCooldown`
 
-Canary reservation uses an in-memory token that is released on terminal result,
-local abandonment, or stream cancellation, so concurrent fresh requests cannot
-dispatch a canary stampede. Non-quota canary errors are inconclusive: another
-canary waits for a new observation window, and the ordinary error policy still
-applies to that failure. A state generation prevents results from requests that
-started before confirmation from clearing the newly confirmed cooldown or
-incrementing its backoff again.
+While `Healthy`, an admitted execution attempt is registered as incumbent
+in-flight before executor dispatch. If another request reports a typed
+`usage_limit_reached` before that attempt completes, its later result is still
+classified as incumbent rather than as a new canary.
 
-This feature intentionally does not persist session leases or suspect/canary
+The first typed usage-limit from a fresh session always moves the auth/model to
+`FreshBlocked`, even when no established or in-flight incumbent currently
+exists. Core records normal request/error accounting but does not write the
+formal `ModelState` quota cooldown or suspend the registry model. Other fresh
+sessions exclude that candidate and can continue through another auth or the
+configured model fallback. Established leases and incumbent in-flight sessions
+remain eligible for the same auth/model; their streams are not cancelled.
+
+`FreshBlocked` transitions are:
+
+- An established or incumbent success renews or creates its lease and keeps the
+  phase `FreshBlocked`. A success from an attempt that began before the first
+  fresh 429 does not silently restore `Healthy`.
+- One fresh-session canary becomes eligible after
+  `observation-window-seconds`, or earlier after
+  `established-success-threshold` successful established/incumbent
+  completions.
+- A successful canary returns the auth/model to `Healthy`.
+- A canary typed usage-limit while any established lease or incumbent request
+  remains preserves those leases, stays `FreshBlocked`, and starts a new
+  observation window. Repeated fresh canary failures alone cannot globally
+  interrupt established work.
+- A canary typed usage-limit with no remaining incumbent evidence moves to
+  `ConfirmedCooldown`.
+- A typed usage-limit from an established or incumbent request confirms the
+  shared auth/model limit immediately and moves to `ConfirmedCooldown`.
+
+`ConfirmedCooldown` rejects admission in `begin()` as well as at the final
+pre-dispatch recheck. The existing persisted cooldown remains the source of the
+recovery deadline. When that cooldown expires, a generation-checked transition
+returns to canary-eligible `FreshBlocked`; it does not open the auth/model to a
+fresh-session stampede.
+
+Canary reservation and every live attempt use bounded in-memory tokens that are
+released on terminal result, local abandonment, cancellation, lifecycle reset,
+or confirmation. Continuity observation and `ModelState` mutation run in one
+`Manager.MarkResult` critical section with a fixed manager-to-continuity lock
+order. Stale success and stale typed usage-limit results are record-only, so
+they cannot clear or double-increment a newer cooldown. Stale non-quota results
+such as `401`, `403`, `invalid_grant`, and model-not-supported still update the
+normal auth/model availability state.
+
+Non-quota canary errors are inconclusive: another canary waits for a new
+observation window, and the ordinary error policy still applies to that
+failure. Post-bootstrap stream failures copy the provider `RetryAfter` into the
+formal cooldown. Config changes affecting the observation window, success
+threshold, lease TTL, Home mode, affinity enablement/TTL, or selector clear
+process-local continuity state. `Load` and selector replacement are global
+snapshot boundaries. A single `CloseExecutionSession` or auth removal is scoped
+to that execution session or auth, so unrelated sessions/auths and requests for
+which continuity is inactive remain dispatchable. A context-reset fallback
+closes the source execution session while preserving the already-admitted
+target auth/model attempt; later ordered targets therefore remain eligible if
+the first dispatched target returns another typed fallback error.
+
+This feature intentionally does not persist session leases or FreshBlocked/canary
 state to the cooldown store. Process restart starts from normal routing state.
 Requests without a stable session ID retain the existing immediate cooldown
 behavior. Transient `rate_limit_error`, model capacity, and bare HTTP 429 do not

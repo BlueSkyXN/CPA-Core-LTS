@@ -96,6 +96,10 @@ lts_owned_features:
     markers:
       - rate-limit-continuity
       - codexRateLimitContinuityStore
+      - codexRateLimitContinuityFreshBlocked
+      - codexRateLimitContinuityConfirmedCooldown
+      - nextLeaseExpiry
+      - removeSessionPreservingKey
       - established-success-threshold
     validation:
       - codex-rate-limit-continuity-regression-tests
