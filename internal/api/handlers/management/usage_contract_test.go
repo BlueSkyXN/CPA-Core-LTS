@@ -26,8 +26,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	h := &Handler{}
 	h.SetUsageStatistics(stats)
 
-	getPayload := readUsageStatisticsResponse(t, h)
+	getPayload, getJSON := readUsageStatisticsResponse(t, h)
 	requirePanelUsageShape(t, getPayload.Usage)
+	requireCanonicalReasoningEffortJSON(t, getJSON, "GET usage response")
 	if getPayload.FailedRequests != 0 {
 		t.Fatalf("failed_requests = %d, want 0", getPayload.FailedRequests)
 	}
@@ -53,6 +54,7 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"response_service_tier":"standard"`)) {
 		t.Fatalf("exported usage missing response_service_tier: %s", exportedJSON)
 	}
+	requireCanonicalReasoningEffortJSON(t, exportedJSON, "exported usage")
 	var legacyDecoded struct {
 		Version int `json:"version"`
 		Usage   struct {
@@ -85,7 +87,13 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if importResult.TotalRequests != 1 || importResult.FailedRequests != 0 {
 		t.Fatalf("import totals = %+v, want total_requests=1 failed_requests=0", importResult)
 	}
-	requirePanelUsageShape(t, importStats.Snapshot())
+	reimported := exportUsageStatistics(t, importHandler)
+	requirePanelUsageShape(t, reimported.Usage)
+	reimportedJSON, err := json.Marshal(reimported)
+	if err != nil {
+		t.Fatalf("marshal re-exported usage: %v", err)
+	}
+	requireCanonicalReasoningEffortJSON(t, reimportedJSON, "usage re-exported after import")
 }
 
 func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
@@ -117,7 +125,7 @@ func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
 
 	h := &Handler{}
 	h.SetUsageStatistics(stats)
-	payload := readUsageStatisticsResponse(t, h)
+	payload, _ := readUsageStatisticsResponse(t, h)
 	if payload.FailedRequests != 1 {
 		t.Fatalf("failed_requests = %d, want 1", payload.FailedRequests)
 	}
@@ -350,10 +358,10 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 	})
 }
 
-func readUsageStatisticsResponse(t *testing.T, h *Handler) struct {
+func readUsageStatisticsResponse(t *testing.T, h *Handler) (struct {
 	Usage          usage.StatisticsSnapshot `json:"usage"`
 	FailedRequests int64                    `json:"failed_requests"`
-} {
+}, []byte) {
 	t.Helper()
 
 	rec := httptest.NewRecorder()
@@ -372,7 +380,7 @@ func readUsageStatisticsResponse(t *testing.T, h *Handler) struct {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal usage response: %v body=%s", err, rec.Body.String())
 	}
-	return payload
+	return payload, rec.Body.Bytes()
 }
 
 func exportUsageStatistics(t *testing.T, h *Handler) usageExportPayload {
@@ -506,5 +514,16 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 		detail.Tokens.CachedTokens != 2 ||
 		detail.Tokens.TotalTokens != 17 {
 		t.Fatalf("detail.tokens = %+v, want panel-compatible token breakdown", detail.Tokens)
+	}
+}
+
+func requireCanonicalReasoningEffortJSON(t *testing.T, payload []byte, surface string) {
+	t.Helper()
+
+	if !bytes.Contains(payload, []byte(`"reasoning_effort":"medium"`)) {
+		t.Fatalf("%s missing canonical reasoning_effort: %s", surface, payload)
+	}
+	if bytes.Contains(payload, []byte(`"thinking"`)) {
+		t.Fatalf("%s contains non-canonical thinking field: %s", surface, payload)
 	}
 }

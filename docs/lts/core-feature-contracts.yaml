@@ -37,6 +37,7 @@ features:
       - RequestDetail
       - auth_index
       - latency_ms
+      - reasoning_effort
       - service_tier
       - request_service_tier
       - response_service_tier
@@ -78,6 +79,7 @@ features:
       - apis
       - models
       - details
+      - reasoning_effort
       - service_tier
       - request_service_tier
       - response_service_tier
