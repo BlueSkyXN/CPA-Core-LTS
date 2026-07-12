@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,6 +411,126 @@ func TestCodexWebsocketHandshakeFailureReleasesExecutionSession(t *testing.T) {
 				t.Fatal("websocket handshake failure left the execution session locked")
 			}
 			exec.CloseExecutionSession(sessionID)
+		})
+	}
+}
+
+func TestCodexWebsocketReconnectHandshakePreservesTypedQuotaError(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream bool
+	}{
+		{name: "non-stream"},
+		{name: "stream", stream: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var upgradeAttempts atomic.Int32
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Path; got != "/responses" {
+					t.Errorf("request path = %q, want /responses", got)
+				}
+				if upgradeAttempts.Add(1) == 1 {
+					conn, err := upgrader.Upgrade(w, r, nil)
+					if err != nil {
+						t.Errorf("upgrade stale websocket: %v", err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					for {
+						if _, _, errRead := conn.ReadMessage(); errRead != nil {
+							return
+						}
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "9")
+				w.Header().Set("X-Request-ID", "req-reconnect-quota")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached","message":"quota","resets_in_seconds":7}}`))
+			}))
+			defer server.Close()
+
+			wsURL, err := buildCodexResponsesWebsocketURL(strings.TrimSuffix(server.URL, "/") + "/responses")
+			if err != nil {
+				t.Fatalf("build websocket URL: %v", err)
+			}
+			staleConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			if err != nil {
+				t.Fatalf("dial stale websocket: %v", err)
+			}
+			if errClose := staleConn.Close(); errClose != nil {
+				t.Fatalf("close stale websocket: %v", errClose)
+			}
+
+			exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+			exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+			auth := &cliproxyauth.Auth{
+				ID:         "auth-reconnect-quota-" + tt.name,
+				Provider:   "codex",
+				Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL},
+			}
+			const model = "gpt-5.4"
+			sessionID := "session-reconnect-quota-" + tt.name
+			sess := exec.getOrCreateSession(sessionID)
+			connectionKey := newCodexWebsocketConnectionKey(auth.ID, wsURL, model, resolveCodexModelHeaderProfile(model).digest)
+			sess.connMu.Lock()
+			sess.conn = staleConn
+			sess.connGen = 1
+			sess.connKey = connectionKey
+			sess.wsURL = wsURL
+			sess.authID = auth.ID
+			sess.readerConn = staleConn
+			sess.readerGen = 1
+			sess.connMu.Unlock()
+			defer exec.CloseExecutionSession(sessionID)
+
+			req := cliproxyexecutor.Request{
+				Model:   model,
+				Payload: []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":"hello"}]}`),
+			}
+			opts := cliproxyexecutor.Options{
+				SourceFormat:   sdktranslator.FromString("openai-response"),
+				ResponseFormat: sdktranslator.FromString("openai-response"),
+				Metadata: map[string]any{
+					cliproxyexecutor.ExecutionSessionMetadataKey: sessionID,
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var executeErr error
+			if tt.stream {
+				result, errStream := exec.ExecuteStream(ctx, auth, req, opts)
+				if result != nil {
+					t.Fatalf("ExecuteStream() result = %#v, want nil on reconnect handshake rejection", result)
+				}
+				executeErr = errStream
+			} else {
+				_, executeErr = exec.Execute(ctx, auth, req, opts)
+			}
+			if executeErr == nil {
+				t.Fatal("reconnect handshake error = nil, want typed usage-limit error")
+			}
+			classified, ok := executeErr.(interface{ ModelFallbackReason() string })
+			if !ok || classified.ModelFallbackReason() != config.CodexModelFallbackTriggerUsageLimit {
+				t.Fatalf("fallback reason = %T %v, want %q", executeErr, executeErr, config.CodexModelFallbackTriggerUsageLimit)
+			}
+			retryable, ok := executeErr.(interface{ RetryAfter() *time.Duration })
+			if !ok || retryable.RetryAfter() == nil || *retryable.RetryAfter() != 7*time.Second {
+				t.Fatalf("RetryAfter = %v, want 7s", retryable.RetryAfter())
+			}
+			withHeaders, ok := executeErr.(interface{ Headers() http.Header })
+			if !ok {
+				t.Fatalf("reconnect error type %T does not expose headers", executeErr)
+			}
+			if got := withHeaders.Headers().Get("X-Request-ID"); got != "req-reconnect-quota" {
+				t.Fatalf("X-Request-ID = %q, want req-reconnect-quota", got)
+			}
+			if got := upgradeAttempts.Load(); got != 2 {
+				t.Fatalf("upgrade attempts = %d, want stale connection plus one reconnect", got)
+			}
 		})
 	}
 }
@@ -1504,6 +1625,29 @@ func TestParseCodexWebsocketErrorUsesUsageLimitRetryMetadata(t *testing.T) {
 	}
 	if got := *retryable.RetryAfter(); got != 7*time.Second {
 		t.Fatalf("retryAfter = %v, want 7s", got)
+	}
+}
+
+func TestCodexWebsocketHandshakeStatusClassifiesFallbackAndPreservesHeaders(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("Retry-After", "9")
+	headers.Set("X-Request-ID", "req-handshake")
+	err := newCodexWebsocketHandshakeStatusErr(http.StatusTooManyRequests, []byte(`{"error":{"type":"usage_limit_reached","message":"quota","resets_in_seconds":7}}`), headers)
+	classified, ok := err.(interface{ ModelFallbackReason() string })
+	if !ok || classified.ModelFallbackReason() != config.CodexModelFallbackTriggerUsageLimit {
+		t.Fatalf("fallback reason = %#v, want usage-limit", err)
+	}
+	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
+	if !ok || retryable.RetryAfter() == nil || *retryable.RetryAfter() != 7*time.Second {
+		t.Fatalf("RetryAfter = %#v, want resets_in_seconds", err)
+	}
+	withHeaders, ok := err.(interface{ Headers() http.Header })
+	if !ok || withHeaders.Headers().Get("X-Request-ID") != "req-handshake" {
+		t.Fatalf("headers = %#v, want preserved upgrade headers", err)
+	}
+	transient := newCodexWebsocketHandshakeStatusErr(http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_error","message":"transient"}}`), nil)
+	if got := transient.(interface{ ModelFallbackReason() string }).ModelFallbackReason(); got != "" {
+		t.Fatalf("bare/transient 429 fallback reason = %q, want empty", got)
 	}
 }
 

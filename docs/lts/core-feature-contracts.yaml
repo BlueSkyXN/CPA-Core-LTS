@@ -265,9 +265,14 @@ features:
       - codex.model-fallback.mappings
     core_files:
       - internal/config/config.go
+      - internal/cache/codex_reasoning_replay_scope.go
       - internal/runtime/executor/codex_model_fallback.go
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/helps/claude_code_session.go
+      - sdk/api/handlers/handlers.go
+      - sdk/api/handlers/handlers_metadata_test.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
       - sdk/cliproxy/auth/codex_model_fallback.go
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/executor/types.go
@@ -282,6 +287,12 @@ features:
       - ModelFallbackBlocked
       - CodexModelFallbackSourceModelMetadataKey
       - CodexModelFallbackReasoningContinuityMetadataKey
+      - CodexModelFallbackContextResetReplayMetadataKey
+      - ResolveCodexReasoningReplaySessionKey
+      - responsesWebsocketCanAttestContextReset
+      - ModelFallbackZeroDispatch
+      - CodexModelFallbackContextResetReplayMetadataKey
+      - ModelFallbackZeroDispatch
     validation:
       - go test ./internal/config ./internal/watcher/diff
       - go test ./internal/runtime/executor -run 'Codex.*ModelFallback|Codex.*Retry|Codex.*Signature'

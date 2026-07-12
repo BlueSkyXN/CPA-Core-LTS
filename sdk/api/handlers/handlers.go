@@ -65,6 +65,7 @@ type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 type disallowFreeAuthContextKey struct{}
+type codexModelFallbackContextResetReplayContextKey struct{}
 
 // PluginInterceptorHost applies plugin interceptors around handler execution.
 type PluginInterceptorHost interface {
@@ -151,6 +152,17 @@ func WithExecutionSessionID(ctx context.Context, sessionID string) context.Conte
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
+}
+
+// WithCodexModelFallbackContextResetReplay marks a CPA-mediated Responses
+// websocket turn as a complete transcript that can be replayed with an
+// explicit context reset. The marker is deliberately internal-only: callers
+// cannot supply it through the wire protocol.
+func WithCodexModelFallbackContextResetReplay(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexModelFallbackContextResetReplayContextKey{}, true)
 }
 
 // WithDisallowFreeAuth returns a child context that requests skipping known free-tier credentials.
@@ -285,6 +297,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
+	}
+	if allowed, _ := ctx.Value(codexModelFallbackContextResetReplayContextKey{}).(bool); allowed {
+		meta[coreexecutor.CodexModelFallbackContextResetReplayMetadataKey] = true
 	}
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true

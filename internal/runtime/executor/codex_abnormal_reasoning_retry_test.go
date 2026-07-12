@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
@@ -20,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestCodexExecutorAbnormalReasoningRetry_NonStreaming(t *testing.T) {
@@ -601,6 +604,144 @@ func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumSumsFields
 	}
 	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorModelFallbackPreservesSourceAbnormalPolicyAndUsageAggregation(t *testing.T) {
+	var sourceCalls, targetCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Errorf("read request body: %v", errRead)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+		switch model {
+		case "gpt-source":
+			sourceCalls++
+			if sourceCalls == 1 {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-source", 516, 1, 2, 3)))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached","message":"source quota","resets_in_seconds":60}}`))
+		case "gpt-target":
+			targetCalls++
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-target", 128, 5, 7, 12)))
+		default:
+			t.Errorf("unexpected upstream model %q; body=%s", model, body)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	maxRetries := 1
+	cfg := codexAbnormalReasoningRetryTestConfigWithAggregation(config.CodexAbnormalReasoningRetryClientUsageAggregationSum)
+	cfg.Codex.AbnormalReasoningRetry.MaxRetries = &maxRetries
+	cfg.Codex.AbnormalReasoningRetry.ModelContains = []string{"gpt-source"}
+	cfg.Codex.ModelFallback = config.CodexModelFallbackConfig{
+		Enabled:  true,
+		Mappings: []config.CodexModelFallbackMapping{{From: "gpt-source", To: []string{"gpt-target"}}},
+	}
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	manager.RegisterExecutor(NewCodexExecutor(cfg))
+	manager.SetRetryConfig(0, 0, 0)
+
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-model-fallback-shared-policy"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-source"}, {ID: "gpt-target"}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	resp, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-source",
+		Payload: []byte(`{"model":"gpt-source","input":"hello"}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse})
+	if errExecute != nil {
+		t.Fatalf("Execute error = %v, want target success", errExecute)
+	}
+	if sourceCalls != 2 || targetCalls != 1 {
+		t.Fatalf("upstream calls = source:%d target:%d, want source:2 target:1", sourceCalls, targetCalls)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+		t.Fatalf("client response usage.total_tokens = %d, want shared source+target total 15; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+		t.Fatalf("client response usage.input_tokens = %d, want shared input 6; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+		t.Fatalf("client response usage.output_tokens = %d, want shared output 9; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+		t.Fatalf("client response usage.reasoning_tokens = %d, want shared reasoning 644; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestCodexExecutorModelFallbackPreflightUsesAfterAuthRewrittenReplayScope(t *testing.T) {
+	internalcache.ClearCodexReasoningReplayCache()
+	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
+	if !internalcache.CacheCodexReasoningReplayItem("gpt-source", "prompt-cache:after-auth-rewritten", []byte(`{"type":"function_call","call_id":"call-after-auth","name":"tool","arguments":"{}"}`)) {
+		t.Fatal("failed to cache replay test item")
+	}
+	var upstreamCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached","message":"source quota","resets_in_seconds":60}}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{Codex: config.CodexConfig{ModelFallback: config.CodexModelFallbackConfig{
+		Enabled:  true,
+		Mappings: []config.CodexModelFallbackMapping{{From: "gpt-source", To: []string{"gpt-target"}}},
+	}}}
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.RegisterExecutor(NewCodexExecutor(cfg))
+	auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+	auth.ID = "codex-oauth-after-auth-replay"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt-source"}, {ID: "gpt-target"}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	var interceptedModels []string
+	_, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-source",
+		Payload: []byte(`{"model":"gpt-source","messages":[{"role":"user","content":"continue"}],"max_tokens":32}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		RequestAfterAuthInterceptor: func(_ context.Context, request cliproxyexecutor.RequestAfterAuthInterceptRequest) cliproxyexecutor.RequestAfterAuthInterceptResponse {
+			interceptedModels = append(interceptedModels, request.Model)
+			body := request.Body
+			if request.Model == "gpt-source" {
+				body, _ = sjson.SetBytes(body, "prompt_cache_key", "after-auth-rewritten")
+			}
+			return cliproxyexecutor.RequestAfterAuthInterceptResponse{Body: body}
+		},
+	})
+	var classified interface{ ModelFallbackReason() string }
+	if !errors.As(errExecute, &classified) || classified == nil || classified.ModelFallbackReason() != config.CodexModelFallbackTriggerUsageLimit {
+		t.Fatalf("Execute error = %v, want original typed usage-limit", errExecute)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want source only", upstreamCalls)
+	}
+	if len(interceptedModels) != 1 || interceptedModels[0] != "gpt-source" {
+		t.Fatalf("after-auth interceptor models = %#v, want source only before fallback preflight", interceptedModels)
 	}
 }
 
@@ -1671,6 +1812,12 @@ func (r *codexAbnormalReasoningRetryUsageRecorder) HandleUsage(_ context.Context
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.records = append(r.records, record)
+}
+
+func (r *codexAbnormalReasoningRetryUsageRecorder) recordCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.records)
 }
 
 func (r *codexAbnormalReasoningRetryUsageRecorder) waitForRecord(t *testing.T, match func(usage.Record) bool) usage.Record {

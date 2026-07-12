@@ -39,6 +39,45 @@ func (e *codexModelFallbackContinuityError) Unwrap() error {
 
 func (e *codexModelFallbackContinuityError) ModelFallbackBlocked() bool { return true }
 
+type codexReasoningReplayScopeError struct {
+	cause error
+	scope codexReasoningReplayScope
+}
+
+func (e *codexReasoningReplayScopeError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *codexReasoningReplayScopeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *codexReasoningReplayScopeError) CodexReasoningReplayScope() (modelName, sessionKey string) {
+	if e == nil {
+		return "", ""
+	}
+	return e.scope.modelName, e.scope.sessionKey
+}
+
+func withCodexReasoningReplayScope(err error, scope codexReasoningReplayScope) error {
+	if err == nil || !scope.valid() {
+		return err
+	}
+	var existing interface {
+		CodexReasoningReplayScope() (modelName, sessionKey string)
+	}
+	if errors.As(err, &existing) && existing != nil {
+		return err
+	}
+	return &codexReasoningReplayScopeError{cause: err, scope: scope}
+}
+
 func isCodexModelFallbackBlockedError(err error) bool {
 	if err == nil {
 		return false
@@ -96,18 +135,38 @@ func prepareCodexModelFallbackBody(ctx context.Context, from sdktranslator.Forma
 	}
 
 	hasContinuity := codexInputHasReasoningItem(body) || len(sourceItems) > 0
-	if reasoningContinuity != config.CodexModelFallbackReasoningContinuityContextReset && hasContinuity {
+	hasPreviousResponse := strings.TrimSpace(gjson.GetBytes(req.Payload, "previous_response_id").String()) != ""
+	hasPinnedAuth := metadataString(opts.Metadata, cliproxyexecutor.PinnedAuthMetadataKey) != ""
+	hasExecutionSession := metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey) != ""
+	hasStatefulContinuity := hasContinuity || hasPreviousResponse || hasPinnedAuth || hasExecutionSession
+	if reasoningContinuity != config.CodexModelFallbackReasoningContinuityContextReset && hasStatefulContinuity {
 		return body, codexReasoningReplayScope{}, true, &codexModelFallbackContinuityError{
 			sourceModel: sourceBase,
 			targetModel: targetBase,
-			reason:      "reasoning continuity is scoped to the source model",
+			reason:      "session and reasoning continuity are scoped to the source model",
 		}
 	}
 
 	updated := body
 	if reasoningContinuity == config.CodexModelFallbackReasoningContinuityContextReset {
+		// The handler marker is intentionally required only when there is state
+		// to reset. A stateless HTTP request remains a safe fallback candidate;
+		// a previous_response_id/pin/session without a complete transcript is
+		// not. In particular this rejects end-to-end websocket passthrough and
+		// incremental websocket turns before any target request is dispatched.
+		resetAllowed, _ := opts.Metadata[cliproxyexecutor.CodexModelFallbackContextResetReplayMetadataKey].(bool)
+		if hasStatefulContinuity && !resetAllowed {
+			return body, codexReasoningReplayScope{}, true, &codexModelFallbackContinuityError{
+				sourceModel: sourceBase,
+				targetModel: targetBase,
+				reason:      "context reset requires a complete handler-owned websocket transcript",
+			}
+		}
 		var errReset error
 		updated, errReset = dropCodexReasoningInputItems(updated)
+		if errReset == nil {
+			updated, errReset = sjson.DeleteBytes(updated, "previous_response_id")
+		}
 		if errReset != nil || codexInputHasReasoningItem(updated) {
 			return body, codexReasoningReplayScope{}, true, &codexModelFallbackContinuityError{
 				sourceModel: sourceBase,
