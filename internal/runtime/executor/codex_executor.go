@@ -1856,21 +1856,132 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
-	errCode := statusCode
-	fallbackReason := ""
-	if isCodexModelCapacityError(body) {
-		errCode = http.StatusTooManyRequests
-		fallbackReason = config.CodexModelFallbackTriggerCapacity
-	} else if isCodexUsageLimitError(body) {
-		errCode = http.StatusTooManyRequests
-		fallbackReason = config.CodexModelFallbackTriggerUsageLimit
-	}
-	body = classifyCodexStatusError(errCode, body)
-	err := statusErr{code: errCode, msg: string(body), modelFallbackReason: fallbackReason}
-	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
-		err.retryAfter = retryAfter
+	classification := ClassifyCodexUpstreamError(statusCode, body, time.Now())
+	body = classifyCodexStatusError(classification.HTTPStatus, body)
+	err := statusErr{
+		code:                classification.HTTPStatus,
+		msg:                 string(body),
+		modelFallbackReason: classification.ModelFallbackReason,
+		retryAfter:          classification.RetryAfter,
 	}
 	return err
+}
+
+// CodexUpstreamErrorClassification captures the shared Codex error semantics
+// used by translated responses and standalone Codex endpoints.
+type CodexUpstreamErrorClassification struct {
+	HTTPStatus          int
+	ModelFallbackReason string
+	RetryAfter          *time.Duration
+	RequestInvalid      bool
+	RecordWithoutModel  bool
+}
+
+// ClassifyCodexUpstreamError normalizes Codex quota and capacity responses.
+// Codex can report these conditions with HTTP 400 even though routing and
+// cooldown behavior must treat them as HTTP 429.
+func ClassifyCodexUpstreamError(statusCode int, body []byte, now time.Time) CodexUpstreamErrorClassification {
+	classification := CodexUpstreamErrorClassification{HTTPStatus: statusCode}
+	if isCodexModelCapacityError(body) {
+		classification.HTTPStatus = http.StatusTooManyRequests
+		classification.ModelFallbackReason = config.CodexModelFallbackTriggerCapacity
+	} else if isCodexUsageLimitError(body) {
+		classification.HTTPStatus = http.StatusTooManyRequests
+		classification.ModelFallbackReason = config.CodexModelFallbackTriggerUsageLimit
+	}
+	classification.RetryAfter = parseCodexRetryAfter(classification.HTTPStatus, body, now)
+	classification.RequestInvalid = isCodexRequestInvalidError(classification.HTTPStatus, body)
+	classification.RecordWithoutModel = codexErrorRecordableWithoutModel(classification, body)
+	return classification
+}
+
+func isCodexRequestInvalidError(statusCode int, body []byte) bool {
+	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) || isCodexCredentialError(body) || isCodexModelSupportError(body) {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(string(body)))
+	switch statusCode {
+	case http.StatusBadRequest:
+		return true
+	case http.StatusNotFound:
+		return isCodexRequestScopedNotFound(body)
+	case http.StatusUnprocessableEntity:
+		return true
+	case http.StatusInternalServerError:
+		return strings.Contains(lower, `"status":"unknown"`) || strings.Contains(lower, `"status": "unknown"`)
+	default:
+		return false
+	}
+}
+
+func codexErrorRecordableWithoutModel(classification CodexUpstreamErrorClassification, body []byte) bool {
+	if classification.RequestInvalid {
+		return false
+	}
+	if classification.ModelFallbackReason != "" || isCodexCredentialError(body) {
+		return true
+	}
+	switch classification.HTTPStatus {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	default:
+		return classification.HTTPStatus >= http.StatusInternalServerError
+	}
+}
+
+func isCodexCredentialError(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	candidates := []string{
+		gjson.GetBytes(body, "error.type").String(),
+		gjson.GetBytes(body, "error.code").String(),
+		gjson.GetBytes(body, "type").String(),
+		gjson.GetBytes(body, "code").String(),
+	}
+	for _, candidate := range candidates {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "authentication_error", "invalid_api_key", "invalid_grant", "auth_unavailable":
+			return true
+		}
+	}
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "invalid_grant") || strings.Contains(lower, "invalid or expired token")
+}
+
+func isCodexModelSupportError(body []byte) bool {
+	lower := strings.ToLower(strings.TrimSpace(string(body)))
+	for _, pattern := range []string{
+		"model_not_supported",
+		"requested model is not supported",
+		"requested model is unsupported",
+		"requested model is unavailable",
+		"model is not supported",
+		"model not supported",
+		"unsupported model",
+		"model unavailable",
+		"not available for your plan",
+		"not available for your account",
+	} {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexRequestScopedNotFound(body []byte) bool {
+	lower := strings.ToLower(strings.TrimSpace(string(body)))
+	if strings.Contains(lower, "item with id") &&
+		strings.Contains(lower, "not found") &&
+		strings.Contains(lower, "items are not persisted when `store` is set to false") {
+		return true
+	}
+	if !strings.Contains(lower, "model not found") ||
+		!strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()), "invalid_request_error") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.param").String()), "model")
 }
 
 func classifyCodexStatusError(statusCode int, body []byte) []byte {

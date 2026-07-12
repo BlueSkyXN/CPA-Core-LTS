@@ -5,12 +5,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -37,6 +39,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -47,7 +51,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
 )
@@ -557,6 +563,7 @@ func (s *Server) setupRoutes() {
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
+		v1.POST("/alpha/search", s.codexAlphaSearch)
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
@@ -644,6 +651,241 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+}
+
+// codexAlphaSearch forwards the standalone search endpoint used by current
+// Codex clients. Unlike /responses, this payload is already in Codex search
+// format and must not pass through a protocol translator.
+func (s *Server) codexAlphaSearch(c *gin.Context) {
+	if s == nil || s.handlers == nil || s.handlers.AuthManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex auth manager unavailable"})
+		return
+	}
+
+	body, tooLarge, err := readCodexAlphaSearchBody(c.Request.Body, codexAlphaSearchRequestMaxBytes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read search request"})
+		return
+	}
+	if tooLarge {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Codex search request exceeds 16 MiB"})
+		return
+	}
+
+	var routing struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+	}
+	trimmedBody := bytes.TrimSpace(body)
+	if len(trimmedBody) == 0 || trimmedBody[0] != '{' {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Codex search request JSON"})
+		return
+	}
+	if err = json.Unmarshal(trimmedBody, &routing); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Codex search request JSON"})
+		return
+	}
+
+	selectionHeaders := c.Request.Header.Clone()
+	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {
+		selectionHeaders.Set("X-Session-ID", sessionID)
+	}
+	routeModel := strings.TrimSpace(routing.Model)
+	selectionCtx := context.WithValue(c.Request.Context(), "gin", c)
+	selected, resultCtx, err := s.handlers.AuthManager.SelectAuthForRequest(selectionCtx, "codex", routeModel, coreexecutor.Options{
+		Headers:         selectionHeaders,
+		OriginalRequest: body,
+	})
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if statusError, ok := err.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
+			status = statusError.StatusCode()
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	defer s.handlers.AuthManager.AbandonSelectedAuthRequest(resultCtx)
+
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Accept", "application/json")
+	headers.Set("Originator", "codex_cli_rs")
+	for _, name := range []string{"Version", "User-Agent", "Session_id", "X-Client-Request-Id"} {
+		if value := strings.TrimSpace(c.GetHeader(name)); value != "" {
+			headers.Set(name, value)
+		}
+	}
+	if accountID, ok := selected.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
+		headers.Set("Chatgpt-Account-Id", accountID)
+	}
+
+	ctx := resultCtx
+	const upstreamURL = "https://chatgpt.com/backend-api/codex/alpha/search"
+	req, err := s.handlers.AuthManager.NewHttpRequest(
+		ctx, selected, http.MethodPost, upstreamURL, body, headers,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	var authID, authLabel, authType, authValue string
+	if selected != nil {
+		authID = selected.ID
+		authLabel = selected.Label
+		authType, authValue = selected.AccountInfo()
+	}
+	if err = s.handlers.AuthManager.ConfirmSelectedAuthDispatch(resultCtx); err != nil {
+		status := http.StatusServiceUnavailable
+		if statusError, ok := err.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
+			status = statusError.StatusCode()
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	helpHeaders := req.Header.Clone()
+	helps.RecordAPIRequest(ctx, s.cfg, helps.UpstreamRequestLog{
+		URL:       upstreamURL,
+		Method:    http.MethodPost,
+		Headers:   helpHeaders,
+		Body:      nil,
+		Provider:  "codex",
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	resp, err := s.handlers.AuthManager.HttpRequest(ctx, selected, req)
+	if err != nil {
+		if codexAlphaSearchShouldMarkTransportFailure(ctx, err) {
+			markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, routeModel, http.StatusBadGateway, nil, nil, err)
+		}
+		helps.RecordAPIResponseError(ctx, s.cfg, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("codex alpha search: close response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
+	upstreamBody, responseTooLarge, err := readCodexAlphaSearchBody(resp.Body, codexAlphaSearchResponseMaxBytes)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, s.cfg, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read Codex search response"})
+		return
+	}
+	if responseTooLarge {
+		errResponseTooLarge := errors.New("Codex search response exceeds 32 MiB")
+		helps.RecordAPIResponseError(ctx, s.cfg, errResponseTooLarge)
+		c.JSON(http.StatusBadGateway, gin.H{"error": errResponseTooLarge.Error()})
+		return
+	}
+	responseStatus := markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, routeModel, resp.StatusCode, resp.Header, upstreamBody, nil)
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		c.Header("Content-Type", contentType)
+	}
+	c.Status(responseStatus)
+	_, _ = c.Writer.Write(upstreamBody)
+}
+
+const (
+	codexAlphaSearchRequestMaxBytes  int64 = 16 << 20
+	codexAlphaSearchResponseMaxBytes int64 = 32 << 20
+)
+
+func readCodexAlphaSearchBody(reader io.Reader, maxBytes int64) ([]byte, bool, error) {
+	if reader == nil {
+		return nil, false, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, true, nil
+	}
+	return body, false, nil
+}
+
+func codexAlphaSearchShouldMarkTransportFailure(ctx context.Context, requestErr error) bool {
+	if requestErr == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	return !errors.Is(requestErr, context.Canceled) && !errors.Is(requestErr, context.DeadlineExceeded)
+}
+
+func markCodexAlphaSearchResult(manager *auth.Manager, ctx context.Context, selected *auth.Auth, model string, status int, headers http.Header, body []byte, requestErr error) int {
+	statusCode := status
+	if statusError, ok := requestErr.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
+		statusCode = statusError.StatusCode()
+	}
+	classification := runtimeexecutor.ClassifyCodexUpstreamError(statusCode, body, time.Now())
+	statusCode = classification.HTTPStatus
+	if manager == nil || selected == nil {
+		return statusCode
+	}
+	result := auth.Result{
+		AuthID:   selected.ID,
+		Provider: "codex",
+		Model:    strings.TrimSpace(model),
+		Success:  requestErr == nil && statusCode >= http.StatusOK && statusCode < http.StatusBadRequest,
+	}
+	if !result.Success && (classification.RequestInvalid || (result.Model == "" && !classification.RecordWithoutModel)) {
+		return statusCode
+	}
+	if !result.Success {
+		message := strings.TrimSpace(gjson.GetBytes(body, "error.message").String())
+		if message == "" {
+			message = strings.TrimSpace(gjson.GetBytes(body, "message").String())
+		}
+		if message == "" {
+			message = http.StatusText(statusCode)
+		}
+		if message == "" {
+			message = "Codex search request failed"
+		}
+		if requestErr != nil {
+			message = requestErr.Error()
+		}
+		code := codexAlphaSearchErrorCode(body)
+		result.Error = &auth.Error{Code: code, Message: message, HTTPStatus: statusCode}
+		result.RetryAfter = codexAlphaSearchHeaderRetryAfter(headers, time.Now())
+		if result.RetryAfter == nil {
+			result.RetryAfter = classification.RetryAfter
+		}
+		result.ModelFallbackReason = classification.ModelFallbackReason
+	}
+	manager.MarkResult(ctx, result)
+	return statusCode
+}
+
+func codexAlphaSearchErrorCode(body []byte) string {
+	for _, path := range []string{"error.code", "error.type", "code", "type"} {
+		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func codexAlphaSearchHeaderRetryAfter(headers http.Header, now time.Time) *time.Duration {
+	if headers != nil {
+		raw := strings.TrimSpace(headers.Get("Retry-After"))
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds > 0 {
+			duration := time.Duration(seconds) * time.Second
+			return &duration
+		}
+		if retryAt, err := http.ParseTime(raw); err == nil && retryAt.After(now) {
+			duration := retryAt.Sub(now)
+			return &duration
+		}
+	}
+	return nil
 }
 
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.
