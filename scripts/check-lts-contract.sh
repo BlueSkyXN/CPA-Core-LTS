@@ -138,9 +138,16 @@ require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/o
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
+require_grep 'json:"reasoning_effort,omitempty"' internal/usage
 require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
+if git grep -n 'json:"thinking' -- internal/usage; then
+  echo "non-canonical usage JSON field thinking found; use reasoning_effort" >&2
+  exit 1
+fi
+require_grep "reasoning_effort" internal/api/handlers/management/usage_contract_test.go
+require_grep '"thinking"' internal/api/handlers/management/usage_contract_test.go
 require_grep "request_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "response_service_tier" internal/api/handlers/management/usage_contract_test.go
 
