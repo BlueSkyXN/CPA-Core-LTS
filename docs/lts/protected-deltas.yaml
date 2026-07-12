@@ -78,6 +78,18 @@ retained_capabilities:
     conflict_policy: preserve_config_compatibility
 
 lts_owned_features:
+  - id: codex-model-fallback
+    registry_feature: codex-model-fallback
+    maintenance_policy: long-term-maintained
+    markers:
+      - model-fallback
+      - ModelFallbackReason
+      - reasoning-continuity
+    validation:
+      - codex-model-fallback-regression-tests
+      - codex-model-fallback-race-tests
+    conflict_policy: adapt_lts_feature_to_upstream_auth_and_codex_runtime
+
   - id: codex-abnormal-reasoning-retry
     registry_feature: codex-abnormal-reasoning-retry
     maintenance_policy: long-term-maintained

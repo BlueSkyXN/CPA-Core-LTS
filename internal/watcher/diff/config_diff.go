@@ -105,6 +105,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	changes = appendCodexModelFallbackChanges(changes, oldCfg.Codex.ModelFallback.Effective(), newCfg.Codex.ModelFallback.Effective())
 	changes = appendCodexAbnormalReasoningRetryChanges(changes, oldCfg.Codex.AbnormalReasoningRetry.Effective(), newCfg.Codex.AbnormalReasoningRetry.Effective())
 
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
@@ -474,6 +475,25 @@ func appendCodexAbnormalReasoningRetryChanges(changes []string, oldCfg, newCfg c
 	}
 	if !reflect.DeepEqual(oldCfg.AuthIDs, newCfg.AuthIDs) {
 		changes = append(changes, fmt.Sprintf("codex.abnormal-reasoning-retry.auth-ids: updated (%d -> %d entries)", len(oldCfg.AuthIDs), len(newCfg.AuthIDs)))
+	}
+	return changes
+}
+
+func appendCodexModelFallbackChanges(changes []string, oldCfg, newCfg config.EffectiveCodexModelFallbackConfig) []string {
+	if reflect.DeepEqual(oldCfg, newCfg) {
+		return changes
+	}
+	if oldCfg.Enabled != newCfg.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.model-fallback.enabled: %t -> %t", oldCfg.Enabled, newCfg.Enabled))
+	}
+	if oldCfg.ReasoningContinuity != newCfg.ReasoningContinuity {
+		changes = append(changes, fmt.Sprintf("codex.model-fallback.reasoning-continuity: %s -> %s", oldCfg.ReasoningContinuity, newCfg.ReasoningContinuity))
+	}
+	if !reflect.DeepEqual(oldCfg.Triggers, newCfg.Triggers) {
+		changes = append(changes, fmt.Sprintf("codex.model-fallback.triggers: updated (%d -> %d entries)", len(oldCfg.Triggers), len(newCfg.Triggers)))
+	}
+	if !reflect.DeepEqual(oldCfg.Mappings, newCfg.Mappings) {
+		changes = append(changes, fmt.Sprintf("codex.model-fallback.mappings: updated (%d -> %d entries)", len(oldCfg.Mappings), len(newCfg.Mappings)))
 	}
 	return changes
 }

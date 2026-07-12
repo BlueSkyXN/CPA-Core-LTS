@@ -19,6 +19,13 @@ func TestRequestExecutionMetadataIncludesExecutionSessionWithoutIdempotencyKey(t
 	}
 }
 
+func TestRequestExecutionMetadataIncludesInternalCodexContextResetReplayMarker(t *testing.T) {
+	meta := requestExecutionMetadata(WithCodexModelFallbackContextResetReplay(context.Background()))
+	if got, ok := meta[coreexecutor.CodexModelFallbackContextResetReplayMetadataKey].(bool); !ok || !got {
+		t.Fatalf("context reset replay marker = %#v, want true", meta[coreexecutor.CodexModelFallbackContextResetReplayMetadataKey])
+	}
+}
+
 func TestSetReasoningEffortMetadataUsesSuffixOverBody(t *testing.T) {
 	meta := make(map[string]any)
 
