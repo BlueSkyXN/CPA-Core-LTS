@@ -359,6 +359,24 @@ features:
     validation:
       - go test ./internal/redisqueue ./internal/api -run 'Redis|redis|Usage|usage'
 
+  - id: commercial-neutral-documentation
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: divergent
+    reason: CPA-Core-LTS keeps maintainer-facing documentation and repository assets free of paid placement, referral incentives, and sponsor promotions that upstream may add during full-sync.
+    core_files:
+      - README.md
+      - README_CN.md
+      - README_JA.md
+      - docs/lts/sync-runbook.md
+      - scripts/check-lts-contract.sh
+    required_markers:
+      - commercial-neutral
+      - promotional_asset
+    validation:
+      - scripts/check-lts-contract.sh
+
 review_seams:
   - id: provider-runtime-usage-seams
     support: upstream-shared
