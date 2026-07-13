@@ -29,6 +29,7 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	getPayload, getJSON := readUsageStatisticsResponse(t, h)
 	requirePanelUsageShape(t, getPayload.Usage)
 	requireCanonicalReasoningEffortJSON(t, getJSON, "GET usage response")
+	requireKnownZeroUncachedInputTokensJSON(t, getJSON, "GET usage response")
 	if getPayload.FailedRequests != 0 {
 		t.Fatalf("failed_requests = %d, want 0", getPayload.FailedRequests)
 	}
@@ -55,6 +56,7 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("exported usage missing response_service_tier: %s", exportedJSON)
 	}
 	requireCanonicalReasoningEffortJSON(t, exportedJSON, "exported usage")
+	requireKnownZeroUncachedInputTokensJSON(t, exportedJSON, "exported usage")
 	var legacyDecoded struct {
 		Version int `json:"version"`
 		Usage   struct {
@@ -94,6 +96,7 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("marshal re-exported usage: %v", err)
 	}
 	requireCanonicalReasoningEffortJSON(t, reimportedJSON, "usage re-exported after import")
+	requireKnownZeroUncachedInputTokensJSON(t, reimportedJSON, "usage re-exported after import")
 }
 
 func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
@@ -224,6 +227,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" {
 		t.Fatalf("legacy detail service tiers = request:%q response:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier)
 	}
+	if details[0].Tokens.UncachedInputTokens != nil {
+		t.Fatalf("legacy detail uncached_input_tokens = %v, want nil/unknown", details[0].Tokens.UncachedInputTokens)
+	}
 	if snapshot.TotalRequests != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 || snapshot.TotalTokens != 9 {
 		t.Fatalf("legacy snapshot totals = %+v, want requests=1 success=1 failure=0 tokens=9", snapshot)
 	}
@@ -245,6 +251,54 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated explicit service-tier fields: %s", reexportedJSON)
 	}
+	if bytes.Contains(reexportedJSON, []byte(`"uncached_input_tokens"`)) {
+		t.Fatalf("legacy re-export fabricated uncached_input_tokens: %s", reexportedJSON)
+	}
+}
+
+func TestUsageManagementImportOmitsInvalidUncachedInputTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       int64
+		wantPresent bool
+	}{
+		{name: "negative", value: -1},
+		{name: "greater than input", value: 6},
+		{name: "known zero", value: 0, wantPresent: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			uncachedInputTokens := tt.value
+			snapshot := usageCacheCreationSnapshot(time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC), usage.TokenStats{
+				InputTokens:         5,
+				UncachedInputTokens: &uncachedInputTokens,
+				OutputTokens:        2,
+				TotalTokens:         7,
+			})
+
+			stats := usage.NewRequestStatistics()
+			h := &Handler{}
+			h.SetUsageStatistics(stats)
+			result := importUsageStatistics(t, h, snapshot)
+			if result.Added != 1 || result.Skipped != 0 {
+				t.Fatalf("import result = %+v, want added=1 skipped=0", result)
+			}
+
+			exported := exportUsageStatistics(t, h)
+			detail := exported.Usage.APIs["cache-key"].Models["gpt-5.6-sol"].Details[0]
+			if gotPresent := detail.Tokens.UncachedInputTokens != nil; gotPresent != tt.wantPresent {
+				t.Fatalf("uncached_input_tokens present = %v, want %v; tokens=%+v", gotPresent, tt.wantPresent, detail.Tokens)
+			}
+			exportedJSON, err := json.Marshal(exported)
+			if err != nil {
+				t.Fatalf("marshal exported usage: %v", err)
+			}
+			if gotPresent := bytes.Contains(exportedJSON, []byte(`"uncached_input_tokens"`)); gotPresent != tt.wantPresent {
+				t.Fatalf("uncached_input_tokens JSON present = %v, want %v; payload=%s", gotPresent, tt.wantPresent, exportedJSON)
+			}
+		})
+	}
 }
 
 func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
@@ -257,8 +311,10 @@ func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *tes
 		CacheCreationTokens: 1024,
 		TotalTokens:         1210,
 	})
+	uncachedInputTokens := int64(176)
 	canonical := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
 		InputTokens:         1200,
+		UncachedInputTokens: &uncachedInputTokens,
 		OutputTokens:        10,
 		CacheCreationTokens: 1024,
 		TotalTokens:         2234,
@@ -349,11 +405,13 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		RequestedAt:         time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:             2 * time.Second,
 		Detail: coreusage.Detail{
-			InputTokens:     5,
-			OutputTokens:    7,
-			ReasoningTokens: 3,
-			CachedTokens:    2,
-			TotalTokens:     17,
+			InputTokens:              5,
+			UncachedInputTokens:      0,
+			UncachedInputTokensKnown: true,
+			OutputTokens:             7,
+			ReasoningTokens:          3,
+			CachedTokens:             2,
+			TotalTokens:              17,
 		},
 	})
 }
@@ -515,6 +573,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 		detail.Tokens.TotalTokens != 17 {
 		t.Fatalf("detail.tokens = %+v, want panel-compatible token breakdown", detail.Tokens)
 	}
+	if detail.Tokens.UncachedInputTokens == nil || *detail.Tokens.UncachedInputTokens != 0 {
+		t.Fatalf("detail.tokens.uncached_input_tokens = %v, want pointer to 0", detail.Tokens.UncachedInputTokens)
+	}
 }
 
 func requireCanonicalReasoningEffortJSON(t *testing.T, payload []byte, surface string) {
@@ -525,5 +586,12 @@ func requireCanonicalReasoningEffortJSON(t *testing.T, payload []byte, surface s
 	}
 	if bytes.Contains(payload, []byte(`"thinking"`)) {
 		t.Fatalf("%s contains non-canonical thinking field: %s", surface, payload)
+	}
+}
+
+func requireKnownZeroUncachedInputTokensJSON(t *testing.T, payload []byte, surface string) {
+	t.Helper()
+	if !bytes.Contains(payload, []byte(`"uncached_input_tokens":0`)) {
+		t.Fatalf("%s missing known-zero uncached_input_tokens: %s", surface, payload)
 	}
 }

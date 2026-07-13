@@ -2453,6 +2453,41 @@ func TestUsageAdapterUsesCurrentSnapshotCapability(t *testing.T) {
 	}
 }
 
+func TestUsageAdapterPreservesKnownUncachedInputTokens(t *testing.T) {
+	var got pluginapi.UsageRecord
+	host := newHostWithRecords(capabilityRecord{
+		id: "usage-uncached-input",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			UsagePlugin: usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
+				got = record
+			}),
+		}},
+	})
+	adapter := &usageAdapter{host: host, pluginID: "usage-uncached-input"}
+
+	adapter.HandleUsage(context.Background(), coreusage.Record{Detail: coreusage.Detail{
+		InputTokens:              10,
+		CacheReadTokens:          10,
+		TotalTokens:              10,
+		UncachedInputTokens:      0,
+		UncachedInputTokensKnown: true,
+	}})
+
+	if !got.Detail.UncachedInputTokensKnown || got.Detail.UncachedInputTokens != 0 {
+		t.Fatalf("plugin usage detail = %+v, want known uncached input 0", got.Detail)
+	}
+
+	adapter.HandleUsage(context.Background(), coreusage.Record{Detail: coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      11,
+		UncachedInputTokensKnown: true,
+	}})
+	if got.Detail.UncachedInputTokensKnown || got.Detail.UncachedInputTokens != 0 {
+		t.Fatalf("plugin usage detail = %+v, want invalid uncached input downgraded to unknown zero", got.Detail)
+	}
+}
+
 func TestRegisterUsagePluginsStaleAdapterSkipsRemovedCapability(t *testing.T) {
 	calls := 0
 	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {

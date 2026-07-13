@@ -11,9 +11,70 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 type retryWithoutPenaltyTestError struct{}
+
+func TestRetryWithoutPenaltyUsageMathPreservesUncachedInputKnowledge(t *testing.T) {
+	first := coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      0,
+		UncachedInputTokensKnown: true,
+	}
+	second := coreusage.Detail{
+		InputTokens:              5,
+		TotalTokens:              5,
+		UncachedInputTokens:      5,
+		UncachedInputTokensKnown: true,
+	}
+
+	total := addRetryWithoutPenaltyUsageDetail(first, second)
+	if !total.UncachedInputTokensKnown || total.UncachedInputTokens != 5 {
+		t.Fatalf("added detail = %+v, want known uncached input 5", total)
+	}
+
+	remainder := subtractRetryWithoutPenaltyUsageDetail(total, second)
+	if !remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
+		t.Fatalf("subtracted detail = %+v, want known uncached input 0", remainder)
+	}
+
+	mixed := addRetryWithoutPenaltyUsageDetail(first, coreusage.Detail{InputTokens: 1, TotalTokens: 1})
+	if mixed.UncachedInputTokensKnown {
+		t.Fatalf("mixed detail = %+v, want uncached input unknown", mixed)
+	}
+}
+
+func TestRetryWithoutPenaltyUsageMathRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
+	invalid := coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      11,
+		UncachedInputTokensKnown: true,
+	}
+	valid := coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      9,
+		UncachedInputTokensKnown: true,
+	}
+
+	total := addRetryWithoutPenaltyUsageDetail(invalid, valid)
+	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
+		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
+	}
+
+	remainder := subtractRetryWithoutPenaltyUsageDetail(coreusage.Detail{
+		InputTokens:              20,
+		TotalTokens:              20,
+		UncachedInputTokens:      20,
+		UncachedInputTokensKnown: true,
+	}, invalid)
+	if remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
+		t.Fatalf("subtracted detail = %+v, want cleared unknown uncached input", remainder)
+	}
+}
 
 func (retryWithoutPenaltyTestError) Error() string {
 	return "retry without penalty"

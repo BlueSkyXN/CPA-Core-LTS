@@ -1841,6 +1841,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			a.host.fusePlugin(a.pluginID, "UsagePlugin.HandleUsage", recovered)
 		}
 	}()
+	uncachedInputTokens, uncachedInputTokensKnown := normalizePluginUsageUncachedInputTokens(record.Detail)
 	plugin.HandleUsage(ctx, pluginapi.UsageRecord{
 		Provider:        record.Provider,
 		ExecutorType:    record.ExecutorType,
@@ -1862,16 +1863,25 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			Body:       record.Fail.Body,
 		},
 		Detail: pluginapi.UsageDetail{
-			InputTokens:         record.Detail.InputTokens,
-			OutputTokens:        record.Detail.OutputTokens,
-			ReasoningTokens:     record.Detail.ReasoningTokens,
-			CachedTokens:        record.Detail.CachedTokens,
-			CacheReadTokens:     record.Detail.CacheReadTokens,
-			CacheCreationTokens: record.Detail.CacheCreationTokens,
-			TotalTokens:         record.Detail.TotalTokens,
+			InputTokens:              record.Detail.InputTokens,
+			UncachedInputTokens:      uncachedInputTokens,
+			UncachedInputTokensKnown: uncachedInputTokensKnown,
+			OutputTokens:             record.Detail.OutputTokens,
+			ReasoningTokens:          record.Detail.ReasoningTokens,
+			CachedTokens:             record.Detail.CachedTokens,
+			CacheReadTokens:          record.Detail.CacheReadTokens,
+			CacheCreationTokens:      record.Detail.CacheCreationTokens,
+			TotalTokens:              record.Detail.TotalTokens,
 		},
 		ResponseHeaders: cloneHeader(record.ResponseHeaders),
 	})
+}
+
+func normalizePluginUsageUncachedInputTokens(detail coreusage.Detail) (int64, bool) {
+	if !detail.UncachedInputTokensKnown || detail.InputTokens < 0 || detail.UncachedInputTokens < 0 || detail.UncachedInputTokens > detail.InputTokens {
+		return 0, false
+	}
+	return detail.UncachedInputTokens, true
 }
 
 func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (out []byte, err error) {

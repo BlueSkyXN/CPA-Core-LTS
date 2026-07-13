@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -603,8 +604,9 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if !outputNode.Exists() {
 		outputNode = usageNode.Get("output_tokens")
 	}
+	inputTokens, inputTokensValid := parseStrictUsageTokenCount(inputNode)
 	detail := usage.Detail{
-		InputTokens:  inputNode.Int(),
+		InputTokens:  inputTokens,
 		OutputTokens: outputNode.Int(),
 		TotalTokens:  usageNode.Get("total_tokens").Int(),
 	}
@@ -612,10 +614,9 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if !cached.Exists() {
 		cached = usageNode.Get("input_tokens_details.cached_tokens")
 	}
-	if cached.Exists() {
-		detail.CachedTokens = cached.Int()
-		detail.CacheReadTokens = cached.Int()
-	}
+	cachedTokens, cachedTokensValid := parseOptionalStrictUsageTokenCount(cached)
+	detail.CachedTokens = cachedTokens
+	detail.CacheReadTokens = cachedTokens
 	cacheCreation := firstExistingUsageNode(
 		usageNode,
 		"input_tokens_details.cache_creation_tokens",
@@ -623,15 +624,17 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 		"prompt_tokens_details.cache_creation_tokens",
 		"prompt_tokens_details.cache_write_tokens",
 	)
-	if cacheCreation.Exists() {
-		detail.CacheCreationTokens = cacheCreation.Int()
-	}
+	cacheCreationTokens, cacheCreationTokensValid := parseOptionalStrictUsageTokenCount(cacheCreation)
+	detail.CacheCreationTokens = cacheCreationTokens
 	reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens")
 	if !reasoning.Exists() {
 		reasoning = usageNode.Get("output_tokens_details.reasoning_tokens")
 	}
 	if reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
+	}
+	if inputTokensValid && cachedTokensValid && cacheCreationTokensValid {
+		setKnownUncachedInputTokens(&detail, detail.InputTokens-detail.CacheReadTokens-detail.CacheCreationTokens)
 	}
 	return detail
 }
@@ -675,23 +678,30 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 }
 
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
-	cacheReadTokens := usageNode.Get("cache_read_input_tokens").Int()
-	cacheCreationTokens := usageNode.Get("cache_creation_input_tokens").Int()
+	inputTokens := usageNode.Get("input_tokens")
+	inputTokenCount, inputTokensValid := parseStrictUsageTokenCount(inputTokens)
+	cacheReadTokens, cacheReadTokensValid := parseOptionalStrictUsageTokenCount(usageNode.Get("cache_read_input_tokens"))
+	cacheCreationTokens, cacheCreationTokensValid := parseOptionalStrictUsageTokenCount(usageNode.Get("cache_creation_input_tokens"))
 	detail := usage.Detail{
-		InputTokens:         usageNode.Get("input_tokens").Int(),
+		InputTokens:         inputTokenCount,
 		OutputTokens:        usageNode.Get("output_tokens").Int(),
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
+	if inputTokensValid && cacheReadTokensValid && cacheCreationTokensValid {
+		setKnownUncachedInputTokens(&detail, detail.InputTokens)
+	}
 	return detail
 }
 
 func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
-	cachedTokens := node.Get("cachedContentTokenCount").Int()
+	inputTokens := node.Get("promptTokenCount")
+	inputTokenCount, inputTokensValid := parseStrictUsageTokenCount(inputTokens)
+	cachedTokens, cachedTokensValid := parseOptionalStrictUsageTokenCount(node.Get("cachedContentTokenCount"))
 	detail := usage.Detail{
-		InputTokens:     node.Get("promptTokenCount").Int(),
+		InputTokens:     inputTokenCount,
 		OutputTokens:    node.Get("candidatesTokenCount").Int(),
 		ReasoningTokens: node.Get("thoughtsTokenCount").Int(),
 		TotalTokens:     node.Get("totalTokenCount").Int(),
@@ -701,19 +711,29 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	if detail.TotalTokens == 0 {
 		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 	}
+	if inputTokensValid && cachedTokensValid {
+		setKnownUncachedInputTokens(&detail, detail.InputTokens-detail.CacheReadTokens)
+	}
 	return detail
 }
 
 func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
+	inputTokens := firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens")
 	cacheRead := firstExistingUsageNode(node, "cache_read_tokens", "cacheReadTokens")
+	cachedTokens := firstExistingUsageNode(node, "cached_tokens", "cachedContentTokenCount", "total_cached_tokens")
+	cacheCreation := firstExistingUsageNode(node, "cache_creation_tokens", "cacheCreationTokens", "cache_write_tokens", "cacheWriteTokens")
+	inputTokenCount, inputTokensValid := parseStrictUsageTokenCount(inputTokens)
+	cacheReadTokenCount, cacheReadTokensValid := parseOptionalStrictUsageTokenCount(cacheRead)
+	cachedTokenCount, cachedTokensValid := parseOptionalStrictUsageTokenCount(cachedTokens)
+	cacheCreationTokenCount, cacheCreationTokensValid := parseOptionalStrictUsageTokenCount(cacheCreation)
 	detail := usage.Detail{
-		InputTokens:         firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens").Int(),
+		InputTokens:         inputTokenCount,
 		OutputTokens:        firstExistingUsageNode(node, "output_tokens", "completion_tokens", "total_output_tokens").Int(),
 		ReasoningTokens:     firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens").Int(),
 		TotalTokens:         firstExistingUsageNode(node, "total_tokens", "totalTokenCount").Int(),
-		CachedTokens:        firstExistingUsageNode(node, "cached_tokens", "cachedContentTokenCount", "total_cached_tokens").Int(),
-		CacheReadTokens:     cacheRead.Int(),
-		CacheCreationTokens: firstExistingUsageNode(node, "cache_creation_tokens", "cacheCreationTokens", "cache_write_tokens", "cacheWriteTokens").Int(),
+		CachedTokens:        cachedTokenCount,
+		CacheReadTokens:     cacheReadTokenCount,
+		CacheCreationTokens: cacheCreationTokenCount,
 	}
 	if !cacheRead.Exists() && detail.CachedTokens > 0 {
 		detail.CacheReadTokens = detail.CachedTokens
@@ -724,7 +744,45 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 			detail.TotalTokens += detail.CacheReadTokens
 		}
 	}
+	if inputTokensValid && cacheReadTokensValid && cachedTokensValid && cacheCreationTokensValid {
+		uncachedInputTokens := detail.InputTokens
+		if !cacheRead.Exists() && cachedTokens.Exists() {
+			uncachedInputTokens -= detail.CacheReadTokens
+		}
+		setKnownUncachedInputTokens(&detail, uncachedInputTokens)
+	}
 	return detail
+}
+
+func parseStrictUsageTokenCount(node gjson.Result) (int64, bool) {
+	if !node.Exists() || node.Type != gjson.Number {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(node.Raw), 10, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func parseOptionalStrictUsageTokenCount(node gjson.Result) (int64, bool) {
+	if !node.Exists() {
+		return 0, true
+	}
+	return parseStrictUsageTokenCount(node)
+}
+
+func setKnownUncachedInputTokens(detail *usage.Detail, value int64) {
+	if detail == nil {
+		return
+	}
+	detail.UncachedInputTokens = 0
+	detail.UncachedInputTokensKnown = false
+	if detail.InputTokens < 0 || value < 0 || value > detail.InputTokens {
+		return
+	}
+	detail.UncachedInputTokens = value
+	detail.UncachedInputTokensKnown = true
 }
 
 func hasUsageDetail(detail usage.Detail) bool {

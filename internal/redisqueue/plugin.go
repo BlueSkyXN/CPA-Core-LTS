@@ -75,6 +75,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		CacheCreationTokens: record.Detail.CacheCreationTokens,
 		TotalTokens:         record.Detail.TotalTokens,
 	}
+	if record.Detail.UncachedInputTokensKnown && validUncachedInputTokens(record.Detail.UncachedInputTokens, record.Detail.InputTokens) {
+		uncachedInputTokens := record.Detail.UncachedInputTokens
+		tokens.UncachedInputTokens = &uncachedInputTokens
+	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CacheReadTokens + tokens.CacheCreationTokens
 	}
@@ -152,13 +156,18 @@ type requestDetail struct {
 }
 
 type tokenStats struct {
-	InputTokens         int64 `json:"input_tokens"`
-	OutputTokens        int64 `json:"output_tokens"`
-	ReasoningTokens     int64 `json:"reasoning_tokens"`
-	CachedTokens        int64 `json:"cached_tokens"`
-	CacheReadTokens     int64 `json:"cache_read_tokens"`
-	CacheCreationTokens int64 `json:"cache_creation_tokens"`
-	TotalTokens         int64 `json:"total_tokens"`
+	InputTokens         int64  `json:"input_tokens"`
+	UncachedInputTokens *int64 `json:"uncached_input_tokens,omitempty"`
+	OutputTokens        int64  `json:"output_tokens"`
+	ReasoningTokens     int64  `json:"reasoning_tokens"`
+	CachedTokens        int64  `json:"cached_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	TotalTokens         int64  `json:"total_tokens"`
+}
+
+func validUncachedInputTokens(uncachedInputTokens, inputTokens int64) bool {
+	return inputTokens >= 0 && uncachedInputTokens >= 0 && uncachedInputTokens <= inputTokens
 }
 
 type failDetail struct {

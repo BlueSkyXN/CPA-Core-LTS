@@ -51,14 +51,29 @@ type Failure struct {
 
 // Detail holds the token usage breakdown.
 type Detail struct {
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
-	TotalTokens         int64
-	ResponseServiceTier string
+	InputTokens              int64
+	OutputTokens             int64
+	ReasoningTokens          int64
+	CachedTokens             int64
+	CacheReadTokens          int64
+	CacheCreationTokens      int64
+	UncachedInputTokens      int64
+	UncachedInputTokensKnown bool
+	TotalTokens              int64
+	ResponseServiceTier      string
+}
+
+// NormalizeUncachedInputTokens clears uncached input data that is unknown or
+// inconsistent with the contribution's input token count.
+func NormalizeUncachedInputTokens(detail Detail) Detail {
+	if !detail.UncachedInputTokensKnown ||
+		detail.InputTokens < 0 ||
+		detail.UncachedInputTokens < 0 ||
+		detail.UncachedInputTokens > detail.InputTokens {
+		detail.UncachedInputTokens = 0
+		detail.UncachedInputTokensKnown = false
+	}
+	return detail
 }
 
 type requestedModelAliasContextKey struct{}

@@ -123,10 +123,13 @@ func NewUsageAccumulator(initial coreusage.Detail) *UsageAccumulator {
 
 // Add merges detail into the accumulator.
 func (a *UsageAccumulator) Add(detail coreusage.Detail) {
-	if a == nil || !hasUsageAccumulatorDetail(detail) {
+	if a == nil {
 		return
 	}
 	detail = normalizeUsageAccumulatorDetail(detail)
+	if !hasUsageAccumulatorDetail(detail) {
+		return
+	}
 	foldedOutputTokens := foldedUsageAccumulatorOutputTokens(detail)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -161,14 +164,29 @@ func (a *UsageAccumulator) RetryWithoutPenaltySnapshot() RetryWithoutPenaltyUsag
 func addUsageAccumulatorDetail(a, b coreusage.Detail) coreusage.Detail {
 	a = normalizeUsageAccumulatorDetail(a)
 	b = normalizeUsageAccumulatorDetail(b)
-	return coreusage.Detail{
-		InputTokens:         a.InputTokens + b.InputTokens,
-		OutputTokens:        a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:        a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
-		TotalTokens:         a.TotalTokens + b.TotalTokens,
+	aHasUsage := hasUsageAccumulatorDetail(a)
+	bHasUsage := hasUsageAccumulatorDetail(b)
+	return coreusage.NormalizeUncachedInputTokens(coreusage.Detail{
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
+		CachedTokens:             a.CachedTokens + b.CachedTokens,
+		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens:      a.CacheCreationTokens + b.CacheCreationTokens,
+		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
+		UncachedInputTokensKnown: mergedUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
+		TotalTokens:              a.TotalTokens + b.TotalTokens,
+	})
+}
+
+func mergedUncachedInputTokensKnown(a, b coreusage.Detail, aHasUsage, bHasUsage bool) bool {
+	switch {
+	case !aHasUsage:
+		return b.UncachedInputTokensKnown
+	case !bHasUsage:
+		return a.UncachedInputTokensKnown
+	default:
+		return a.UncachedInputTokensKnown && b.UncachedInputTokensKnown
 	}
 }
 
@@ -180,6 +198,7 @@ func foldedUsageAccumulatorOutputTokens(detail coreusage.Detail) int64 {
 }
 
 func normalizeUsageAccumulatorDetail(detail coreusage.Detail) coreusage.Detail {
+	detail = coreusage.NormalizeUncachedInputTokens(detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 		if total > 0 {
