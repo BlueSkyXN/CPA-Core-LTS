@@ -52,3 +52,23 @@ func TestUsageAccumulatorOnlyKeepsKnownUncachedInputWhenAllContributionsAreKnown
 		t.Fatalf("mixed-known accumulator snapshot = %+v, want uncached input unknown", snapshot)
 	}
 }
+
+func TestUsageAccumulatorRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
+	accumulator := NewUsageAccumulator(coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      11,
+		UncachedInputTokensKnown: true,
+	})
+	accumulator.Add(coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      9,
+		UncachedInputTokensKnown: true,
+	})
+
+	snapshot := accumulator.Snapshot()
+	if snapshot.UncachedInputTokensKnown || snapshot.UncachedInputTokens != 0 {
+		t.Fatalf("accumulator snapshot = %+v, want cleared unknown uncached input", snapshot)
+	}
+}

@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -25,6 +26,149 @@ func requireUnknownUncachedInputTokens(t *testing.T, detail usage.Detail) {
 	t.Helper()
 	if detail.UncachedInputTokensKnown {
 		t.Fatalf("uncached input tokens = %d known=true, want unknown; detail=%+v", detail.UncachedInputTokens, detail)
+	}
+	if detail.UncachedInputTokens != 0 {
+		t.Fatalf("uncached input tokens = %d known=false, want cleared zero; detail=%+v", detail.UncachedInputTokens, detail)
+	}
+}
+
+func TestUsageParsersRejectInvalidUncachedInputTokenInputs(t *testing.T) {
+	invalidLiterals := []struct {
+		name    string
+		literal string
+	}{
+		{name: "null", literal: "null"},
+		{name: "boolean", literal: "true"},
+		{name: "string", literal: `"5"`},
+		{name: "fractional", literal: "1.5"},
+		{name: "negative", literal: "-1"},
+		{name: "int64 overflow", literal: "9223372036854775808"},
+	}
+
+	parseCodex := func(data []byte) usage.Detail {
+		detail, _ := ParseCodexUsage(data)
+		return detail
+	}
+	cases := []struct {
+		name    string
+		payload func(string) []byte
+		parse   func([]byte) usage.Detail
+	}{
+		{
+			name: "openai input_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":%s,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}`, literal))
+			},
+			parse: ParseOpenAIUsage,
+		},
+		{
+			name: "openai cached_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":%s,"cache_write_tokens":0}}}`, literal))
+			},
+			parse: ParseOpenAIUsage,
+		},
+		{
+			name: "openai cache_write_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":%s}}}`, literal))
+			},
+			parse: ParseOpenAIUsage,
+		},
+		{
+			name: "codex input_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"response":{"usage":{"input_tokens":%s,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}}`, literal))
+			},
+			parse: parseCodex,
+		},
+		{
+			name: "codex cached_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":%s,"cache_write_tokens":0}}}}`, literal))
+			},
+			parse: parseCodex,
+		},
+		{
+			name: "codex cache_write_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":%s}}}}`, literal))
+			},
+			parse: parseCodex,
+		},
+		{
+			name: "claude input_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":%s,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`, literal))
+			},
+			parse: ParseClaudeUsage,
+		},
+		{
+			name: "claude cache_read_input_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cache_read_input_tokens":%s,"cache_creation_input_tokens":0}}`, literal))
+			},
+			parse: ParseClaudeUsage,
+		},
+		{
+			name: "claude cache_creation_input_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":%s}}`, literal))
+			},
+			parse: ParseClaudeUsage,
+		},
+		{
+			name: "gemini promptTokenCount",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usageMetadata":{"promptTokenCount":%s,"cachedContentTokenCount":0}}`, literal))
+			},
+			parse: ParseGeminiUsage,
+		},
+		{
+			name: "gemini cachedContentTokenCount",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":%s}}`, literal))
+			},
+			parse: ParseGeminiUsage,
+		},
+		{
+			name: "interactions input_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":%s,"cached_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}}`, literal))
+			},
+			parse: ParseInteractionsUsage,
+		},
+		{
+			name: "interactions cached_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cached_tokens":%s,"cache_write_tokens":0}}`, literal))
+			},
+			parse: ParseInteractionsUsage,
+		},
+		{
+			name: "interactions cache_read_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cached_tokens":0,"cache_read_tokens":%s,"cache_write_tokens":0}}`, literal))
+			},
+			parse: ParseInteractionsUsage,
+		},
+		{
+			name: "interactions cache_write_tokens",
+			payload: func(literal string) []byte {
+				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cached_tokens":0,"cache_write_tokens":%s}}`, literal))
+			},
+			parse: ParseInteractionsUsage,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, invalid := range invalidLiterals {
+				t.Run(invalid.name, func(t *testing.T) {
+					requireUnknownUncachedInputTokens(t, tc.parse(tc.payload(invalid.literal)))
+				})
+			}
+		})
 	}
 }
 

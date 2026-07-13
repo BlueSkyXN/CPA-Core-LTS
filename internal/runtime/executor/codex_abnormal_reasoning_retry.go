@@ -579,11 +579,11 @@ func codexAbnormalReasoningRetryAggregateClientUsage(previous cliproxyexecutor.R
 }
 
 func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
-	aHasUsage := hasCodexUsageDetail(a)
-	bHasUsage := hasCodexUsageDetail(b)
 	a = normalizeCodexUsageDetail(a)
 	b = normalizeCodexUsageDetail(b)
-	return usage.Detail{
+	aHasUsage := hasCodexUsageDetail(a)
+	bHasUsage := hasCodexUsageDetail(b)
+	return usage.NormalizeUncachedInputTokens(usage.Detail{
 		InputTokens:              a.InputTokens + b.InputTokens,
 		OutputTokens:             a.OutputTokens + b.OutputTokens,
 		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
@@ -593,7 +593,7 @@ func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
 		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
 		UncachedInputTokensKnown: mergedCodexUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
 		TotalTokens:              a.TotalTokens + b.TotalTokens,
-	}
+	})
 }
 
 func mergedCodexUncachedInputTokensKnown(a, b usage.Detail, aHasUsage, bHasUsage bool) bool {
@@ -780,6 +780,7 @@ func patchCodexAbnormalReasoningStreamPayload(payload []byte, previous cliproxye
 }
 
 func normalizeCodexUsageDetail(detail usage.Detail) usage.Detail {
+	detail = usage.NormalizeUncachedInputTokens(detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens
 		if total > 0 {

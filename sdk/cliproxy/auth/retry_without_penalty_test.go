@@ -46,6 +46,36 @@ func TestRetryWithoutPenaltyUsageMathPreservesUncachedInputKnowledge(t *testing.
 	}
 }
 
+func TestRetryWithoutPenaltyUsageMathRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
+	invalid := coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      11,
+		UncachedInputTokensKnown: true,
+	}
+	valid := coreusage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      9,
+		UncachedInputTokensKnown: true,
+	}
+
+	total := addRetryWithoutPenaltyUsageDetail(invalid, valid)
+	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
+		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
+	}
+
+	remainder := subtractRetryWithoutPenaltyUsageDetail(coreusage.Detail{
+		InputTokens:              20,
+		TotalTokens:              20,
+		UncachedInputTokens:      20,
+		UncachedInputTokensKnown: true,
+	}, invalid)
+	if remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
+		t.Fatalf("subtracted detail = %+v, want cleared unknown uncached input", remainder)
+	}
+}
+
 func (retryWithoutPenaltyTestError) Error() string {
 	return "retry without penalty"
 }

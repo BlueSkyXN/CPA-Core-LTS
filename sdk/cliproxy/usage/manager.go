@@ -63,6 +63,19 @@ type Detail struct {
 	ResponseServiceTier      string
 }
 
+// NormalizeUncachedInputTokens clears uncached input data that is unknown or
+// inconsistent with the contribution's input token count.
+func NormalizeUncachedInputTokens(detail Detail) Detail {
+	if !detail.UncachedInputTokensKnown ||
+		detail.InputTokens < 0 ||
+		detail.UncachedInputTokens < 0 ||
+		detail.UncachedInputTokens > detail.InputTokens {
+		detail.UncachedInputTokens = 0
+		detail.UncachedInputTokensKnown = false
+	}
+	return detail
+}
+
 type requestedModelAliasContextKey struct{}
 type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}

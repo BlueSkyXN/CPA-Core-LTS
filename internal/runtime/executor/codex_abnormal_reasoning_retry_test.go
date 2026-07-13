@@ -790,6 +790,26 @@ func TestAddCodexUsageDetailPreservesUncachedInputKnowledge(t *testing.T) {
 	}
 }
 
+func TestAddCodexUsageDetailRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
+	invalid := usage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      11,
+		UncachedInputTokensKnown: true,
+	}
+	valid := usage.Detail{
+		InputTokens:              10,
+		TotalTokens:              10,
+		UncachedInputTokens:      9,
+		UncachedInputTokensKnown: true,
+	}
+
+	total := addCodexUsageDetail(invalid, valid)
+	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
+		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumUsesCodexFallbackWhenPreviousTotalMissing(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

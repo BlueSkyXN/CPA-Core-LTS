@@ -208,7 +208,7 @@ func (c *retryWithoutPenaltyFallbackCandidate) PreviousUsageSnapshot(accumulator
 func subtractRetryWithoutPenaltyUsageDetail(total, selected coreusage.Detail) coreusage.Detail {
 	total = normalizeRetryWithoutPenaltyUsageDetail(total)
 	selected = normalizeRetryWithoutPenaltyUsageDetail(selected)
-	return coreusage.Detail{
+	return coreusage.NormalizeUncachedInputTokens(coreusage.Detail{
 		InputTokens:              subtractRetryWithoutPenaltyInt64(total.InputTokens, selected.InputTokens),
 		OutputTokens:             subtractRetryWithoutPenaltyInt64(total.OutputTokens, selected.OutputTokens),
 		ReasoningTokens:          subtractRetryWithoutPenaltyInt64(total.ReasoningTokens, selected.ReasoningTokens),
@@ -218,7 +218,7 @@ func subtractRetryWithoutPenaltyUsageDetail(total, selected coreusage.Detail) co
 		UncachedInputTokens:      subtractRetryWithoutPenaltyInt64(total.UncachedInputTokens, selected.UncachedInputTokens),
 		UncachedInputTokensKnown: total.UncachedInputTokensKnown && selected.UncachedInputTokensKnown,
 		TotalTokens:              subtractRetryWithoutPenaltyInt64(total.TotalTokens, selected.TotalTokens),
-	}
+	})
 }
 
 func subtractRetryWithoutPenaltyInt64(total, selected int64) int64 {
@@ -659,11 +659,11 @@ func cloneRetryWithoutPenaltyHeader(headers http.Header) http.Header {
 }
 
 func addRetryWithoutPenaltyUsageDetail(a, b coreusage.Detail) coreusage.Detail {
-	aHasUsage := hasRetryWithoutPenaltyUsageDetail(a)
-	bHasUsage := hasRetryWithoutPenaltyUsageDetail(b)
 	a = normalizeRetryWithoutPenaltyUsageDetail(a)
 	b = normalizeRetryWithoutPenaltyUsageDetail(b)
-	return coreusage.Detail{
+	aHasUsage := hasRetryWithoutPenaltyUsageDetail(a)
+	bHasUsage := hasRetryWithoutPenaltyUsageDetail(b)
+	return coreusage.NormalizeUncachedInputTokens(coreusage.Detail{
 		InputTokens:              a.InputTokens + b.InputTokens,
 		OutputTokens:             a.OutputTokens + b.OutputTokens,
 		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
@@ -673,7 +673,7 @@ func addRetryWithoutPenaltyUsageDetail(a, b coreusage.Detail) coreusage.Detail {
 		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
 		UncachedInputTokensKnown: mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
 		TotalTokens:              a.TotalTokens + b.TotalTokens,
-	}
+	})
 }
 
 func mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b coreusage.Detail, aHasUsage, bHasUsage bool) bool {
@@ -688,6 +688,7 @@ func mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b coreusage.Detail, aH
 }
 
 func normalizeRetryWithoutPenaltyUsageDetail(detail coreusage.Detail) coreusage.Detail {
+	detail = coreusage.NormalizeUncachedInputTokens(detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 		if total > 0 {
