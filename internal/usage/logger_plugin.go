@@ -106,13 +106,14 @@ type RequestDetail struct {
 
 // TokenStats captures the token usage breakdown for a request.
 type TokenStats struct {
-	InputTokens         int64 `json:"input_tokens"`
-	OutputTokens        int64 `json:"output_tokens"`
-	ReasoningTokens     int64 `json:"reasoning_tokens"`
-	CachedTokens        int64 `json:"cached_tokens"`
-	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
-	TotalTokens         int64 `json:"total_tokens"`
+	InputTokens         int64  `json:"input_tokens"`
+	UncachedInputTokens *int64 `json:"uncached_input_tokens,omitempty"`
+	OutputTokens        int64  `json:"output_tokens"`
+	ReasoningTokens     int64  `json:"reasoning_tokens"`
+	CachedTokens        int64  `json:"cached_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens,omitempty"`
+	TotalTokens         int64  `json:"total_tokens"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -274,7 +275,9 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 		}
 		for modelName, modelStatsValue := range stats.Models {
 			requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
-			copy(requestDetails, modelStatsValue.Details)
+			for i := range modelStatsValue.Details {
+				requestDetails[i] = cloneRequestDetail(modelStatsValue.Details[i])
+			}
 			apiSnapshot.Models[modelName] = ModelSnapshot{
 				TotalRequests: modelStatsValue.TotalRequests,
 				TotalTokens:   modelStatsValue.TotalTokens,
@@ -535,6 +538,10 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 		CacheCreationTokens: detail.CacheCreationTokens,
 		TotalTokens:         detail.TotalTokens,
 	}
+	if detail.UncachedInputTokensKnown && validUncachedInputTokens(detail.UncachedInputTokens, detail.InputTokens) {
+		uncachedInputTokens := detail.UncachedInputTokens
+		tokens.UncachedInputTokens = &uncachedInputTokens
+	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CacheReadTokens + detail.CacheCreationTokens
 	}
@@ -547,6 +554,14 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 }
 
 func normaliseTokenStats(tokens TokenStats) TokenStats {
+	if tokens.UncachedInputTokens != nil {
+		uncachedInputTokens := *tokens.UncachedInputTokens
+		if validUncachedInputTokens(uncachedInputTokens, tokens.InputTokens) {
+			tokens.UncachedInputTokens = &uncachedInputTokens
+		} else {
+			tokens.UncachedInputTokens = nil
+		}
+	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CacheReadTokens + tokens.CacheCreationTokens
 	}
@@ -554,6 +569,23 @@ func normaliseTokenStats(tokens TokenStats) TokenStats {
 		if tokens.CacheReadTokens != 0 {
 			tokens.CachedTokens = tokens.CacheReadTokens
 		}
+	}
+	return tokens
+}
+
+func validUncachedInputTokens(uncachedInputTokens, inputTokens int64) bool {
+	return inputTokens >= 0 && uncachedInputTokens >= 0 && uncachedInputTokens <= inputTokens
+}
+
+func cloneRequestDetail(detail RequestDetail) RequestDetail {
+	detail.Tokens = cloneTokenStats(detail.Tokens)
+	return detail
+}
+
+func cloneTokenStats(tokens TokenStats) TokenStats {
+	if tokens.UncachedInputTokens != nil {
+		uncachedInputTokens := *tokens.UncachedInputTokens
+		tokens.UncachedInputTokens = &uncachedInputTokens
 	}
 	return tokens
 }

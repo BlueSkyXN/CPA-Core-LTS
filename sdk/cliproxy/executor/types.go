@@ -159,16 +159,31 @@ func (a *UsageAccumulator) RetryWithoutPenaltySnapshot() RetryWithoutPenaltyUsag
 }
 
 func addUsageAccumulatorDetail(a, b coreusage.Detail) coreusage.Detail {
+	aHasUsage := hasUsageAccumulatorDetail(a)
+	bHasUsage := hasUsageAccumulatorDetail(b)
 	a = normalizeUsageAccumulatorDetail(a)
 	b = normalizeUsageAccumulatorDetail(b)
 	return coreusage.Detail{
-		InputTokens:         a.InputTokens + b.InputTokens,
-		OutputTokens:        a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:        a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
-		TotalTokens:         a.TotalTokens + b.TotalTokens,
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
+		CachedTokens:             a.CachedTokens + b.CachedTokens,
+		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens:      a.CacheCreationTokens + b.CacheCreationTokens,
+		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
+		UncachedInputTokensKnown: mergedUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
+		TotalTokens:              a.TotalTokens + b.TotalTokens,
+	}
+}
+
+func mergedUncachedInputTokensKnown(a, b coreusage.Detail, aHasUsage, bHasUsage bool) bool {
+	switch {
+	case !aHasUsage:
+		return b.UncachedInputTokensKnown
+	case !bHasUsage:
+		return a.UncachedInputTokensKnown
+	default:
+		return a.UncachedInputTokensKnown && b.UncachedInputTokensKnown
 	}
 }
 

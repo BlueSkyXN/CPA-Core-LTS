@@ -633,6 +633,9 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
 	}
+	if inputNode.Exists() {
+		setKnownUncachedInputTokens(&detail, detail.InputTokens-detail.CacheReadTokens-detail.CacheCreationTokens)
+	}
 	return detail
 }
 
@@ -675,23 +678,28 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 }
 
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
+	inputTokens := usageNode.Get("input_tokens")
 	cacheReadTokens := usageNode.Get("cache_read_input_tokens").Int()
 	cacheCreationTokens := usageNode.Get("cache_creation_input_tokens").Int()
 	detail := usage.Detail{
-		InputTokens:         usageNode.Get("input_tokens").Int(),
+		InputTokens:         inputTokens.Int(),
 		OutputTokens:        usageNode.Get("output_tokens").Int(),
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
+	if inputTokens.Exists() {
+		setKnownUncachedInputTokens(&detail, detail.InputTokens)
+	}
 	return detail
 }
 
 func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
+	inputTokens := node.Get("promptTokenCount")
 	cachedTokens := node.Get("cachedContentTokenCount").Int()
 	detail := usage.Detail{
-		InputTokens:     node.Get("promptTokenCount").Int(),
+		InputTokens:     inputTokens.Int(),
 		OutputTokens:    node.Get("candidatesTokenCount").Int(),
 		ReasoningTokens: node.Get("thoughtsTokenCount").Int(),
 		TotalTokens:     node.Get("totalTokenCount").Int(),
@@ -701,17 +709,22 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	if detail.TotalTokens == 0 {
 		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 	}
+	if inputTokens.Exists() {
+		setKnownUncachedInputTokens(&detail, detail.InputTokens-detail.CacheReadTokens)
+	}
 	return detail
 }
 
 func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
+	inputTokens := firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens")
 	cacheRead := firstExistingUsageNode(node, "cache_read_tokens", "cacheReadTokens")
+	cachedTokens := firstExistingUsageNode(node, "cached_tokens", "cachedContentTokenCount", "total_cached_tokens")
 	detail := usage.Detail{
-		InputTokens:         firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens").Int(),
+		InputTokens:         inputTokens.Int(),
 		OutputTokens:        firstExistingUsageNode(node, "output_tokens", "completion_tokens", "total_output_tokens").Int(),
 		ReasoningTokens:     firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens").Int(),
 		TotalTokens:         firstExistingUsageNode(node, "total_tokens", "totalTokenCount").Int(),
-		CachedTokens:        firstExistingUsageNode(node, "cached_tokens", "cachedContentTokenCount", "total_cached_tokens").Int(),
+		CachedTokens:        cachedTokens.Int(),
 		CacheReadTokens:     cacheRead.Int(),
 		CacheCreationTokens: firstExistingUsageNode(node, "cache_creation_tokens", "cacheCreationTokens", "cache_write_tokens", "cacheWriteTokens").Int(),
 	}
@@ -724,7 +737,27 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 			detail.TotalTokens += detail.CacheReadTokens
 		}
 	}
+	if inputTokens.Exists() {
+		uncachedInputTokens := detail.InputTokens
+		if !cacheRead.Exists() && cachedTokens.Exists() {
+			uncachedInputTokens -= detail.CacheReadTokens
+		}
+		setKnownUncachedInputTokens(&detail, uncachedInputTokens)
+	}
 	return detail
+}
+
+func setKnownUncachedInputTokens(detail *usage.Detail, value int64) {
+	if detail == nil {
+		return
+	}
+	detail.UncachedInputTokens = 0
+	detail.UncachedInputTokensKnown = false
+	if detail.InputTokens < 0 || value < 0 || value > detail.InputTokens {
+		return
+	}
+	detail.UncachedInputTokens = value
+	detail.UncachedInputTokensKnown = true
 }
 
 func hasUsageDetail(detail usage.Detail) bool {

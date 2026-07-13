@@ -1329,6 +1329,10 @@ type UsageFailure struct {
 type UsageDetail struct {
 	// InputTokens is the prompt or input token count.
 	InputTokens int64
+	// UncachedInputTokens is the input token count billed at the regular prompt/input rate.
+	UncachedInputTokens int64
+	// UncachedInputTokensKnown reports whether UncachedInputTokens is authoritative, including when it is zero.
+	UncachedInputTokensKnown bool
 	// OutputTokens is the completion or output token count.
 	OutputTokens int64
 	// ReasoningTokens is the reasoning token count.

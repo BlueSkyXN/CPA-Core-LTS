@@ -579,16 +579,31 @@ func codexAbnormalReasoningRetryAggregateClientUsage(previous cliproxyexecutor.R
 }
 
 func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
+	aHasUsage := hasCodexUsageDetail(a)
+	bHasUsage := hasCodexUsageDetail(b)
 	a = normalizeCodexUsageDetail(a)
 	b = normalizeCodexUsageDetail(b)
 	return usage.Detail{
-		InputTokens:         a.InputTokens + b.InputTokens,
-		OutputTokens:        a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:        a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
-		TotalTokens:         a.TotalTokens + b.TotalTokens,
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
+		CachedTokens:             a.CachedTokens + b.CachedTokens,
+		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens:      a.CacheCreationTokens + b.CacheCreationTokens,
+		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
+		UncachedInputTokensKnown: mergedCodexUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
+		TotalTokens:              a.TotalTokens + b.TotalTokens,
+	}
+}
+
+func mergedCodexUncachedInputTokensKnown(a, b usage.Detail, aHasUsage, bHasUsage bool) bool {
+	switch {
+	case !aHasUsage:
+		return b.UncachedInputTokensKnown
+	case !bHasUsage:
+		return a.UncachedInputTokensKnown
+	default:
+		return a.UncachedInputTokensKnown && b.UncachedInputTokensKnown
 	}
 }
 

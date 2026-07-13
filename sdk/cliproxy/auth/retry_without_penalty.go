@@ -209,13 +209,15 @@ func subtractRetryWithoutPenaltyUsageDetail(total, selected coreusage.Detail) co
 	total = normalizeRetryWithoutPenaltyUsageDetail(total)
 	selected = normalizeRetryWithoutPenaltyUsageDetail(selected)
 	return coreusage.Detail{
-		InputTokens:         subtractRetryWithoutPenaltyInt64(total.InputTokens, selected.InputTokens),
-		OutputTokens:        subtractRetryWithoutPenaltyInt64(total.OutputTokens, selected.OutputTokens),
-		ReasoningTokens:     subtractRetryWithoutPenaltyInt64(total.ReasoningTokens, selected.ReasoningTokens),
-		CachedTokens:        subtractRetryWithoutPenaltyInt64(total.CachedTokens, selected.CachedTokens),
-		CacheReadTokens:     subtractRetryWithoutPenaltyInt64(total.CacheReadTokens, selected.CacheReadTokens),
-		CacheCreationTokens: subtractRetryWithoutPenaltyInt64(total.CacheCreationTokens, selected.CacheCreationTokens),
-		TotalTokens:         subtractRetryWithoutPenaltyInt64(total.TotalTokens, selected.TotalTokens),
+		InputTokens:              subtractRetryWithoutPenaltyInt64(total.InputTokens, selected.InputTokens),
+		OutputTokens:             subtractRetryWithoutPenaltyInt64(total.OutputTokens, selected.OutputTokens),
+		ReasoningTokens:          subtractRetryWithoutPenaltyInt64(total.ReasoningTokens, selected.ReasoningTokens),
+		CachedTokens:             subtractRetryWithoutPenaltyInt64(total.CachedTokens, selected.CachedTokens),
+		CacheReadTokens:          subtractRetryWithoutPenaltyInt64(total.CacheReadTokens, selected.CacheReadTokens),
+		CacheCreationTokens:      subtractRetryWithoutPenaltyInt64(total.CacheCreationTokens, selected.CacheCreationTokens),
+		UncachedInputTokens:      subtractRetryWithoutPenaltyInt64(total.UncachedInputTokens, selected.UncachedInputTokens),
+		UncachedInputTokensKnown: total.UncachedInputTokensKnown && selected.UncachedInputTokensKnown,
+		TotalTokens:              subtractRetryWithoutPenaltyInt64(total.TotalTokens, selected.TotalTokens),
 	}
 }
 
@@ -657,16 +659,31 @@ func cloneRetryWithoutPenaltyHeader(headers http.Header) http.Header {
 }
 
 func addRetryWithoutPenaltyUsageDetail(a, b coreusage.Detail) coreusage.Detail {
+	aHasUsage := hasRetryWithoutPenaltyUsageDetail(a)
+	bHasUsage := hasRetryWithoutPenaltyUsageDetail(b)
 	a = normalizeRetryWithoutPenaltyUsageDetail(a)
 	b = normalizeRetryWithoutPenaltyUsageDetail(b)
 	return coreusage.Detail{
-		InputTokens:         a.InputTokens + b.InputTokens,
-		OutputTokens:        a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:        a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
-		TotalTokens:         a.TotalTokens + b.TotalTokens,
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
+		CachedTokens:             a.CachedTokens + b.CachedTokens,
+		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens:      a.CacheCreationTokens + b.CacheCreationTokens,
+		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
+		UncachedInputTokensKnown: mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
+		TotalTokens:              a.TotalTokens + b.TotalTokens,
+	}
+}
+
+func mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b coreusage.Detail, aHasUsage, bHasUsage bool) bool {
+	switch {
+	case !aHasUsage:
+		return b.UncachedInputTokensKnown
+	case !bHasUsage:
+		return a.UncachedInputTokensKnown
+	default:
+		return a.UncachedInputTokensKnown && b.UncachedInputTokensKnown
 	}
 }
 

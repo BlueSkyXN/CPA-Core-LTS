@@ -44,11 +44,13 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 		ResponseServiceTier: " standard ",
 		RequestedAt:         time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
 		Detail: coreusage.Detail{
-			InputTokens:         10,
-			OutputTokens:        20,
-			CacheReadTokens:     7,
-			CacheCreationTokens: 3,
-			TotalTokens:         30,
+			InputTokens:              10,
+			OutputTokens:             20,
+			CacheReadTokens:          7,
+			CacheCreationTokens:      3,
+			TotalTokens:              30,
+			UncachedInputTokens:      0,
+			UncachedInputTokensKnown: true,
 		},
 	})
 
@@ -81,6 +83,67 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.Tokens.CachedTokens != 7 {
 		t.Fatalf("cached_tokens = %d, want 7", detail.Tokens.CachedTokens)
+	}
+	if detail.Tokens.UncachedInputTokens == nil || *detail.Tokens.UncachedInputTokens != 0 {
+		t.Fatalf("uncached_input_tokens = %v, want pointer to 0", detail.Tokens.UncachedInputTokens)
+	}
+}
+
+func TestRequestStatisticsSnapshotDoesNotExposeMutableUncachedInputPointer(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey: "test-key",
+		Model:  "gpt-5.4",
+		Detail: coreusage.Detail{
+			InputTokens:              10,
+			TotalTokens:              10,
+			UncachedInputTokens:      0,
+			UncachedInputTokensKnown: true,
+		},
+	})
+
+	first := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0]
+	if first.Tokens.UncachedInputTokens == nil {
+		t.Fatal("first snapshot missing uncached_input_tokens")
+	}
+	*first.Tokens.UncachedInputTokens = 99
+
+	second := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0]
+	if second.Tokens.UncachedInputTokens == nil || *second.Tokens.UncachedInputTokens != 0 {
+		t.Fatalf("second snapshot uncached_input_tokens = %v, want pointer to 0", second.Tokens.UncachedInputTokens)
+	}
+}
+
+func TestRequestStatisticsRecordOmitsInvalidUncachedInputTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       int64
+		wantPresent bool
+	}{
+		{name: "negative", value: -1},
+		{name: "greater than input", value: 11},
+		{name: "known zero", value: 0, wantPresent: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := NewRequestStatistics()
+			stats.Record(context.Background(), coreusage.Record{
+				APIKey: "test-key",
+				Model:  "gpt-5.4",
+				Detail: coreusage.Detail{
+					InputTokens:              10,
+					TotalTokens:              10,
+					UncachedInputTokens:      tt.value,
+					UncachedInputTokensKnown: true,
+				},
+			})
+
+			detail := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0]
+			if gotPresent := detail.Tokens.UncachedInputTokens != nil; gotPresent != tt.wantPresent {
+				t.Fatalf("uncached_input_tokens present = %v, want %v; tokens=%+v", gotPresent, tt.wantPresent, detail.Tokens)
+			}
+		})
 	}
 }
 
@@ -398,6 +461,7 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 
 func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
 	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
+	uncachedInputTokens := int64(176)
 	legacy := cacheCreationSnapshot(timestamp, TokenStats{
 		InputTokens:         1200,
 		OutputTokens:        10,
@@ -407,6 +471,7 @@ func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreati
 	})
 	canonical := cacheCreationSnapshot(timestamp, TokenStats{
 		InputTokens:         1200,
+		UncachedInputTokens: &uncachedInputTokens,
 		OutputTokens:        10,
 		CacheCreationTokens: 1024,
 		TotalTokens:         2234,
