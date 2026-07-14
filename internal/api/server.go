@@ -1364,6 +1364,8 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 	}
 }
 
+// handleHomeCodexClientModels builds the Codex client catalog from Home model IDs.
+// Template metadata still comes from the local/remote codex_client_models catalog.
 func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {

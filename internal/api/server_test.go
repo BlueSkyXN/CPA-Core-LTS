@@ -1571,7 +1571,6 @@ func codexClientTestPriority(raw any) int {
 
 func codexClientTestMaxTemplatePriority(t *testing.T) int {
 	t.Helper()
-
 	var catalog struct {
 		Models []map[string]any `json:"models"`
 	}
