@@ -169,14 +169,22 @@ patches:
     retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
 
   - id: codex-gpt56-ultra-level
-    reason: Temporary downstream compatibility patch after upstream added partial GPT-5.6 Ultra client metadata and then removed Ultra from models.json. The official models catalog refreshed by PR and release builds remains max-only, so CPA-Core-LTS applies a stable non-generated Codex capability overlay for logical Sol/Terra Ultra while keeping Luna max-only, then canonicalizes supported Ultra requests to reasoning.effort=max on the final HTTP/WebSocket wire.
+    reason: Upstream now publishes and remotely refreshes Codex client metadata with logical Sol/Terra Ultra and Luna max-only, but it still does not provide the CPA-Core-LTS server-side capability overlay, custom-model policy, payload-override-safe wire canonicalization, usage/retry alignment, or HTTP/WebSocket enforcement. CPA-Core-LTS therefore validates the refreshed client catalog as an LTS prerequisite while retaining the downstream runtime patch.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: LTS baseline through f4a8aee69500038289064bf5aba5ffc11cabd603 (v7.2.69); upstream added partial client metadata at 20e61f281f4b88e150c5cdfa81c3315d9fcfeabe and removed Ultra from models.json at f084eefae6a9aa67c273a697e4c3fdfc15102032, while router-for-me/models.git main at 9e658ffbc94b0d46392019c59d47d7dc7e5a2b96 still exposes Sol/Terra/Luna only through max; neither source provides the stable provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final wire canonicalization, usage/retry alignment, or HTTP/WebSocket regression coverage
+    affected_upstream_range: Through 4fe2c60c5152f45e1180346a5186743cfac58363; upstream PR #4276 and router-for-me/models.git main at a837d9dba1c2d755eaa1ec4f535511c202cb3906 provide a revisioned, remotely refreshed Codex client catalog with Sol/Terra Ultra and Luna max-only. This is client-metadata equivalence only and does not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket regressions.
     files:
+      - .github/scripts/refresh-model-catalogs.sh
+      - .github/workflows/docker-image.yml
       - .github/workflows/pr-test-build.yml
       - .github/workflows/release.yaml
+      - cmd/server/main.go
+      - cmd/server/main_test.go
+      - cmd/validate_codex_models/main.go
       - config.example.yaml
       - docs/lts/codex-client-context-degradation-defense.md
+      - internal/registry/codex_client_models.go
+      - internal/registry/codex_client_models_test.go
+      - internal/registry/codex_client_models_updater.go
       - internal/registry/codex_compatibility.go
       - internal/registry/codex_gpt56_compatibility_test.go
       - internal/registry/model_definitions.go
@@ -222,9 +230,13 @@ patches:
       - TestCodexExecutorAbnormalReasoningRetry_PayloadOverrideUltraUsesFinalMaxUsage
       - TestCodexClientModelsResponse_GPT56UltraReasoningMetadata
       - TestCodexClientReasoningDescriptionUltra
-    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4160 (partial client-metadata equivalent only)
+      - TestValidateCodexClientModelsLTSCompatibility
+      - TestFetchCodexClientModelsFallsBackToNextURL
+      - TestLoadCodexClientModelsRejectsInvalidWithoutReplacing
+      - TestModelCatalogUpdaterPlan
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4160 and router-for-me/CLIProxyAPI#4276 (client-metadata equivalent only)
     state: required
-    retire_when: Upstream publishes a complete and authoritative Ultra server-side solution covering parser/suffix semantics, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, and HTTP/WebSocket paths while preserving the client-side proactive multi-agent boundary; all listed Max/Ultra regressions must pass after removing this downstream implementation.
+    retire_when: Upstream publishes a complete and authoritative Ultra server-side solution covering parser/suffix semantics, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, and HTTP/WebSocket paths while preserving the client-side proactive multi-agent boundary; the refreshed client catalog continues to satisfy the LTS compatibility validator and all listed regressions pass after removing the downstream runtime implementation.
 
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.

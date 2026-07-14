@@ -27,15 +27,12 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
-      - name: Refresh models catalog
-        run: |
-          set -euo pipefail
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Refresh models catalog
+        run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Validate GPT-5.6 Ultra compatibility
         run: |
           go test ./internal/registry ./internal/thinking \
@@ -45,7 +42,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: validated-models-catalog
-          path: internal/registry/models/models.json
+          path: |
+            internal/registry/models/models.json
+            internal/registry/models/codex_client_models.json
           if-no-files-found: error
           retention-days: 1
 
@@ -180,13 +179,13 @@ jobs:
         with:
           name: validated-models-catalog
           path: internal/registry/models
-      - name: Fetch tags
-        shell: bash
-        run: git fetch --force --tags
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Fetch tags
+        shell: bash
+        run: git fetch --force --tags
       - uses: actions/cache@v4
         with:
           path: |
@@ -459,13 +458,13 @@ jobs:
         with:
           name: validated-models-catalog
           path: internal/registry/models
-      - name: Fetch tags
-        shell: bash
-        run: git fetch --force --tags
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Fetch tags
+        shell: bash
+        run: git fetch --force --tags
       - uses: actions/cache@v4
         with:
           path: |
@@ -605,12 +604,12 @@ jobs:
         with:
           name: validated-models-catalog
           path: internal/registry/models
-      - name: Fetch tags
-        run: git fetch --force --tags
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Fetch tags
+        run: git fetch --force --tags
       - uses: actions/cache@v4
         with:
           path: |

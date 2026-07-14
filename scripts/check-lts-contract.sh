@@ -114,11 +114,13 @@ grep -R "/v0/management/usage/import" -n \
 require_path internal/api/handlers/management/usage.go
 require_path internal/api/handlers/management/usage_contract_test.go
 require_path internal/runtime/executor/helps/usage_helpers.go
+require_path internal/registry/models/codex_client_models.json
 require_path internal/managementasset/updater.go
 require_path internal/config/config.go
 require_path internal/redisqueue
 require_path config.example.yaml
 require_path docs/lts/codex-429-resilience.md
+require_path .github/scripts/refresh-model-catalogs.sh
 
 require_grep "mgmt.GET(\"/usage\"" internal/api/server.go
 require_grep "mgmt.GET(\"/usage/export\"" internal/api/server.go
@@ -144,6 +146,9 @@ require_grep "codexRateLimitContinuityLifecycleContextKey" sdk/cliproxy/auth/cod
 require_grep "removeSessionPreservingKey" sdk/cliproxy/auth/codex_rate_limit_continuity.go sdk/cliproxy/auth/conductor.go docs/lts/core-feature-contracts.yaml
 require_grep "CodexModelFallbackContextResetReplayMetadataKey" sdk/cliproxy/executor/types.go sdk/api/handlers/openai/openai_responses_websocket.go
 require_grep "ResolveCodexReasoningReplaySessionKey" internal/cache/codex_reasoning_replay_scope.go internal/runtime/executor/codex_executor.go sdk/cliproxy/auth/codex_model_fallback.go
+require_grep "ValidateCodexClientModelsLTSCompatibility" internal/registry/codex_client_models.go internal/registry/codex_client_models_test.go cmd/validate_codex_models/main.go
+require_grep "refresh-model-catalogs.sh" .github/workflows/pr-test-build.yml .github/workflows/release.yaml .github/workflows/docker-image.yml
+require_grep "codex_client_models.json" .github/scripts/refresh-model-catalogs.sh
 require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/openai_responses_websocket.go sdk/api/handlers/openai/openai_responses_websocket_test.go
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
