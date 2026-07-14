@@ -33,6 +33,12 @@ func ResolveCodexReasoningReplaySessionKey(input CodexReasoningReplaySessionInpu
 	if !strings.EqualFold(strings.TrimSpace(input.SourceFormat), "claude") {
 		return ""
 	}
+	return ResolveReasoningReplaySessionKey(input)
+}
+
+// ResolveReasoningReplaySessionKey resolves the common replay identity surfaces
+// used by Codex and xAI without widening the Codex-only source-format gate.
+func ResolveReasoningReplaySessionKey(input CodexReasoningReplaySessionInput) string {
 	if value := strings.TrimSpace(input.OptionExecutionSession); value != "" {
 		return "execution:" + value
 	}
@@ -53,8 +59,10 @@ func ResolveCodexReasoningReplaySessionKey(input CodexReasoningReplaySessionInpu
 			return value
 		}
 	}
-	if sessionID := ExtractClaudeCodeSessionID(input.Context, input.RequestPayload, input.Headers); sessionID != "" {
-		return "claude:" + sessionID
+	if strings.EqualFold(strings.TrimSpace(input.SourceFormat), "claude") {
+		if sessionID := ExtractClaudeCodeSessionID(input.Context, input.RequestPayload, input.Headers); sessionID != "" {
+			return "claude:" + sessionID
+		}
 	}
 	return ""
 }
