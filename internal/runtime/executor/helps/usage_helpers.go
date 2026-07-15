@@ -34,6 +34,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	generate     bool
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
 	ttft         time.Duration
@@ -72,6 +73,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		authType:    resolveUsageAuthType(auth),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
+		generate:    usage.GenerateFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -108,7 +110,6 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
-	r.serviceTier = extractServiceTierFromPayload(payload)
 }
 
 func (r *UsageReporter) ReasoningEffort() string {
@@ -262,14 +263,14 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures .
 		fail = failures[0]
 	}
 	if r == nil {
-		return usage.Record{Detail: detail, Failed: failed, Fail: fail}
+		return usage.Record{Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	return r.buildRecordForModel(r.model, detail, failed, fail)
 }
 
 func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, failed bool, fail usage.Failure) usage.Record {
 	if r == nil {
-		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail}
+		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	return usage.Record{
 		Provider:            r.provider,
@@ -285,6 +286,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ServiceTier:         r.serviceTier,
 		RequestServiceTier:  r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
+		Generate:            usage.GenerateFlag(r.generate),
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
@@ -292,19 +294,6 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Fail:                fail,
 		Detail:              detail,
 	}
-}
-
-func extractServiceTierFromPayload(payload []byte) string {
-	if len(payload) == 0 {
-		return usage.DefaultServiceTier
-	}
-	for _, path := range []string{"service_tier", "request.service_tier", "response.service_tier"} {
-		serviceTier := strings.TrimSpace(gjson.GetBytes(payload, path).String())
-		if serviceTier != "" {
-			return serviceTier
-		}
-	}
-	return usage.DefaultServiceTier
 }
 
 func failFromErrors(errs ...error) usage.Failure {

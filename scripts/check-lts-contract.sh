@@ -160,6 +160,8 @@ require_grep 'json:"reasoning_effort,omitempty"' internal/usage
 require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
+require_grep 'json:"generate"' internal/usage internal/redisqueue
+require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
 if git grep -n 'json:"thinking' -- internal/usage; then
   echo "non-canonical usage JSON field thinking found; use reasoning_effort" >&2
   exit 1
@@ -168,6 +170,7 @@ require_grep "reasoning_effort" internal/api/handlers/management/usage_contract_
 require_grep '"thinking"' internal/api/handlers/management/usage_contract_test.go
 require_grep "request_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "response_service_tier" internal/api/handlers/management/usage_contract_test.go
+require_grep '"generate"' internal/api/handlers/management/usage_contract_test.go
 
 go test ./scripts/ltsregistry -count=1
 

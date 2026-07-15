@@ -581,6 +581,7 @@ func (s *Server) setupRoutes() {
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
+		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
 	}
 
 	// Gemini compatible API routes
@@ -653,6 +654,30 @@ func (s *Server) setupRoutes() {
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
 
+func sanitizeCodexAlphaSearchBody(body []byte) []byte {
+	var payload map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil || payload == nil {
+		return body
+	}
+
+	removed := false
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention"} {
+		if _, exists := payload[field]; exists {
+			delete(payload, field)
+			removed = true
+		}
+	}
+	if !removed {
+		return body
+	}
+
+	sanitizedBody, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return body
+	}
+	return sanitizedBody
+}
+
 // codexAlphaSearch forwards the standalone search endpoint used by current
 // Codex clients. Unlike /responses, this payload is already in Codex search
 // format and must not pass through a protocol translator.
@@ -685,6 +710,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Codex search request JSON"})
 		return
 	}
+	upstreamRequestBody := sanitizeCodexAlphaSearchBody(body)
 
 	selectionHeaders := c.Request.Header.Clone()
 	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {
@@ -692,7 +718,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	routeModel := strings.TrimSpace(routing.Model)
 	selectionCtx := context.WithValue(c.Request.Context(), "gin", c)
-	selected, resultCtx, err := s.handlers.AuthManager.SelectAuthForRequest(selectionCtx, "codex", routeModel, coreexecutor.Options{
+	selected, resultCtx, err := s.handlers.AuthManager.SelectAuthForRequestByKind(selectionCtx, "codex", routeModel, auth.AuthKindOAuth, coreexecutor.Options{
 		Headers:         selectionHeaders,
 		OriginalRequest: body,
 	})
@@ -722,7 +748,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	ctx := resultCtx
 	const upstreamURL = "https://chatgpt.com/backend-api/codex/alpha/search"
 	req, err := s.handlers.AuthManager.NewHttpRequest(
-		ctx, selected, http.MethodPost, upstreamURL, body, headers,
+		ctx, selected, http.MethodPost, upstreamURL, upstreamRequestBody, headers,
 	)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -1070,6 +1096,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
+
+		mgmt.GET("/xai-api-key", s.mgmt.GetXAIKeys)
+		mgmt.PUT("/xai-api-key", s.mgmt.PutXAIKeys)
+		mgmt.PATCH("/xai-api-key", s.mgmt.PatchXAIKey)
+		mgmt.DELETE("/xai-api-key", s.mgmt.DeleteXAIKey)
 
 		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
@@ -2120,6 +2151,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	interactionsAPIKeyCount := len(cfg.InteractionsKey)
 	claudeAPIKeyCount := len(cfg.ClaudeKey)
 	codexAPIKeyCount := len(cfg.CodexKey)
+	xaiAPIKeyCount := len(cfg.XAIKey)
 	vertexAICompatCount := len(cfg.VertexCompatAPIKey)
 	openAICompatCount := 0
 	for i := range cfg.OpenAICompatibility {
@@ -2130,14 +2162,15 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		openAICompatCount += len(entry.APIKeyEntries)
 	}
 
-	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + vertexAICompatCount + openAICompatCount
-	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d Vertex-compat + %d OpenAI-compat)\n",
+	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + vertexAICompatCount + openAICompatCount
+	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Vertex-compat + %d OpenAI-compat)\n",
 		total,
 		authEntries,
 		geminiAPIKeyCount,
 		interactionsAPIKeyCount,
 		claudeAPIKeyCount,
 		codexAPIKeyCount,
+		xaiAPIKeyCount,
 		vertexAICompatCount,
 		openAICompatCount,
 	)

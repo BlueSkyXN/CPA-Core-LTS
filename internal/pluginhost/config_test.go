@@ -88,7 +88,10 @@ func TestRuntimeConfigFromConfigDefaultsConfiguredPluginEnabled(t *testing.T) {
 		},
 	}
 
-	got := runtimeConfigFromConfig(cfg)
+	got, errRuntimeConfig := runtimeConfigFromConfig(cfg)
+	if errRuntimeConfig != nil {
+		t.Fatalf("runtimeConfigFromConfig() error = %v", errRuntimeConfig)
+	}
 	item, ok := got.Items["alpha"]
 	if !ok {
 		t.Fatal("runtimeConfigFromConfig() missing alpha item")
@@ -119,7 +122,10 @@ func TestRuntimeConfigFromConfigExtractsStoreVersion(t *testing.T) {
 		},
 	}
 
-	got := runtimeConfigFromConfig(cfg)
+	got, errRuntimeConfig := runtimeConfigFromConfig(cfg)
+	if errRuntimeConfig != nil {
+		t.Fatalf("runtimeConfigFromConfig() error = %v", errRuntimeConfig)
+	}
 	if got.Items["alpha"].Version != "1.0.3" {
 		t.Fatalf("runtimeConfigFromConfig() version = %q, want 1.0.3", got.Items["alpha"].Version)
 	}
@@ -143,7 +149,10 @@ func TestRuntimeConfigFromConfigDerivesStoreVersionFromReleaseTag(t *testing.T) 
 		},
 	}
 
-	got := runtimeConfigFromConfig(cfg)
+	got, errRuntimeConfig := runtimeConfigFromConfig(cfg)
+	if errRuntimeConfig != nil {
+		t.Fatalf("runtimeConfigFromConfig() error = %v", errRuntimeConfig)
+	}
 	if got.Items["alpha"].Version != "1.0.3" {
 		t.Fatalf("runtimeConfigFromConfig() version = %q, want 1.0.3", got.Items["alpha"].Version)
 	}

@@ -55,6 +55,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"response_service_tier":"standard"`)) {
 		t.Fatalf("exported usage missing response_service_tier: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"generate":false`)) {
+		t.Fatalf("exported usage missing explicit generate=false: %s", exportedJSON)
+	}
 	requireCanonicalReasoningEffortJSON(t, exportedJSON, "exported usage")
 	requireKnownZeroUncachedInputTokensJSON(t, exportedJSON, "exported usage")
 	var legacyDecoded struct {
@@ -230,6 +233,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].Tokens.UncachedInputTokens != nil {
 		t.Fatalf("legacy detail uncached_input_tokens = %v, want nil/unknown", details[0].Tokens.UncachedInputTokens)
 	}
+	if !details[0].Generate {
+		t.Fatalf("legacy detail.generate = false, want backward-compatible true")
+	}
 	if snapshot.TotalRequests != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 || snapshot.TotalTokens != 9 {
 		t.Fatalf("legacy snapshot totals = %+v, want requests=1 success=1 failure=0 tokens=9", snapshot)
 	}
@@ -247,6 +253,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 	if bytes.Contains(reexportedJSON, []byte(`"service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated service_tier: %s", reexportedJSON)
+	}
+	if !bytes.Contains(reexportedJSON, []byte(`"generate":true`)) {
+		t.Fatalf("legacy re-export missing normalized generate=true: %s", reexportedJSON)
 	}
 	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated explicit service-tier fields: %s", reexportedJSON)
@@ -402,6 +411,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		ServiceTier:         "priority",
 		RequestServiceTier:  "priority",
 		ResponseServiceTier: "standard",
+		Generate:            coreusage.GenerateFlag(false),
 		RequestedAt:         time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:             2 * time.Second,
 		Detail: coreusage.Detail{
@@ -559,6 +569,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.ResponseServiceTier != "standard" {
 		t.Fatalf("detail.response_service_tier = %q, want standard", detail.ResponseServiceTier)
+	}
+	if detail.Generate {
+		t.Fatalf("detail.generate = true, want false")
 	}
 	if detail.LatencyMs != 2000 {
 		t.Fatalf("detail.latency_ms = %d, want 2000", detail.LatencyMs)

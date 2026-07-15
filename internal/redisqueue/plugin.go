@@ -57,23 +57,28 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
 	}
+	serviceTier := strings.TrimSpace(record.ServiceTier)
 	requestServiceTier := strings.TrimSpace(record.RequestServiceTier)
-	if requestServiceTier == "" {
-		requestServiceTier = strings.TrimSpace(record.ServiceTier)
+	if serviceTier == "" {
+		serviceTier = requestServiceTier
+	}
+	if serviceTier == "" {
+		serviceTier = coreusage.ServiceTierFromContext(ctx)
 	}
 	if requestServiceTier == "" {
-		requestServiceTier = coreusage.ServiceTierFromContext(ctx)
+		requestServiceTier = serviceTier
 	}
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 
 	tokens := tokenStats{
-		InputTokens:         record.Detail.InputTokens,
-		OutputTokens:        record.Detail.OutputTokens,
-		ReasoningTokens:     record.Detail.ReasoningTokens,
-		CachedTokens:        record.Detail.CachedTokens,
-		CacheReadTokens:     record.Detail.CacheReadTokens,
-		CacheCreationTokens: record.Detail.CacheCreationTokens,
-		TotalTokens:         record.Detail.TotalTokens,
+		InputTokens:            record.Detail.InputTokens,
+		OutputTokens:           record.Detail.OutputTokens,
+		ReasoningTokens:        record.Detail.ReasoningTokens,
+		CachedTokens:           record.Detail.CachedTokens,
+		CacheReadTokens:        record.Detail.CacheReadTokens,
+		CacheReadTokensPresent: true,
+		CacheCreationTokens:    record.Detail.CacheCreationTokens,
+		TotalTokens:            record.Detail.TotalTokens,
 	}
 	if record.Detail.UncachedInputTokensKnown && validUncachedInputTokens(record.Detail.UncachedInputTokens, record.Detail.InputTokens) {
 		uncachedInputTokens := record.Detail.UncachedInputTokens
@@ -102,6 +107,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		AuthIndex:       record.AuthIndex,
 		Tokens:          tokens,
 		Failed:          failed,
+		Generate:        coreusage.GenerateEnabled(record.Generate),
 		Fail:            fail,
 		ResponseHeaders: usageResponseHeaders(record.ResponseHeaders),
 	}
@@ -117,7 +123,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		APIKey:              apiKey,
 		RequestID:           requestID,
 		ReasoningEffort:     reasoningEffort,
-		ServiceTier:         requestServiceTier,
+		ServiceTier:         serviceTier,
 		RequestServiceTier:  requestServiceTier,
 		ResponseServiceTier: responseServiceTier,
 	})
@@ -151,19 +157,21 @@ type requestDetail struct {
 	AuthIndex       string      `json:"auth_index"`
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`
+	Generate        bool        `json:"generate"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
 }
 
 type tokenStats struct {
-	InputTokens         int64  `json:"input_tokens"`
-	UncachedInputTokens *int64 `json:"uncached_input_tokens,omitempty"`
-	OutputTokens        int64  `json:"output_tokens"`
-	ReasoningTokens     int64  `json:"reasoning_tokens"`
-	CachedTokens        int64  `json:"cached_tokens"`
-	CacheReadTokens     int64  `json:"cache_read_tokens"`
-	CacheCreationTokens int64  `json:"cache_creation_tokens"`
-	TotalTokens         int64  `json:"total_tokens"`
+	InputTokens            int64  `json:"input_tokens"`
+	UncachedInputTokens    *int64 `json:"uncached_input_tokens,omitempty"`
+	OutputTokens           int64  `json:"output_tokens"`
+	ReasoningTokens        int64  `json:"reasoning_tokens"`
+	CachedTokens           int64  `json:"cached_tokens"`
+	CacheReadTokens        int64  `json:"cache_read_tokens"`
+	CacheReadTokensPresent bool   `json:"cache_read_tokens_present"`
+	CacheCreationTokens    int64  `json:"cache_creation_tokens"`
+	TotalTokens            int64  `json:"total_tokens"`
 }
 
 func validUncachedInputTokens(uncachedInputTokens, inputTokens int64) bool {

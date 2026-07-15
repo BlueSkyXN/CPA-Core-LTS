@@ -42,6 +42,7 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 		ServiceTier:         "legacy-default",
 		RequestServiceTier:  " priority ",
 		ResponseServiceTier: " standard ",
+		Generate:            coreusage.GenerateFlag(false),
 		RequestedAt:         time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
 		Detail: coreusage.Detail{
 			InputTokens:              10,
@@ -75,6 +76,9 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	if detail.ResponseServiceTier != "standard" {
 		t.Fatalf("response_service_tier = %q, want %q", detail.ResponseServiceTier, "standard")
 	}
+	if detail.Generate {
+		t.Fatalf("generate = true, want false")
+	}
 	if detail.Tokens.CacheReadTokens != 7 {
 		t.Fatalf("cache_read_tokens = %d, want 7", detail.Tokens.CacheReadTokens)
 	}
@@ -86,6 +90,20 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.Tokens.UncachedInputTokens == nil || *detail.Tokens.UncachedInputTokens != 0 {
 		t.Fatalf("uncached_input_tokens = %v, want pointer to 0", detail.Tokens.UncachedInputTokens)
+	}
+}
+
+func TestRequestStatisticsRecordDefaultsOmittedGenerateTrue(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey: "test-key",
+		Model:  "gpt-5.4",
+		Detail: coreusage.Detail{TotalTokens: 1},
+	})
+
+	detail := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0]
+	if !detail.Generate {
+		t.Fatalf("generate = false, want true for omitted legacy record field")
 	}
 }
 
