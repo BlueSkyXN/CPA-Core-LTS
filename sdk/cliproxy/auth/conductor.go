@@ -3516,6 +3516,9 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 	if serviceTier != "" {
 		ctx = coreusage.WithServiceTier(ctx, serviceTier)
 	}
+	if generate, ok := generateFromOptions(opts); ok {
+		ctx = coreusage.WithGenerate(ctx, generate)
+	}
 	return ctx
 }
 
@@ -3564,6 +3567,22 @@ func reasoningEffortFromOptions(opts cliproxyexecutor.Options) string {
 
 func serviceTierFromOptions(opts cliproxyexecutor.Options) string {
 	return stringMetadataValue(opts.Metadata, cliproxyexecutor.ServiceTierMetadataKey)
+}
+
+func generateFromOptions(opts cliproxyexecutor.Options) (bool, bool) {
+	if len(opts.Metadata) == 0 {
+		return false, false
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.GenerateMetadataKey]
+	if !ok || raw == nil {
+		return false, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	default:
+		return false, false
+	}
 }
 
 func stringMetadataValue(metadata map[string]any, key string) string {

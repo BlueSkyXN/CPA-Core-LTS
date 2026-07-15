@@ -4,7 +4,7 @@ patches:
   - id: codex-model-fallback
     reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
     introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); the new home force-mapping and auth-kind selection paths do not provide typed, configurable cross-model fallback with a conservative reasoning-continuity gate, target-model auth reselection, and pre-delivery streaming boundary.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); the home force-mapping, auth-kind selection, plugin-path normalization, and usage generate metadata paths do not provide typed, configurable cross-model fallback with a conservative reasoning-continuity gate, target-model auth reselection, and pre-delivery streaming boundary.
     files:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
@@ -65,7 +65,7 @@ patches:
   - id: codex-rate-limit-continuity
     reason: A fresh Codex session can receive usage_limit_reached while previously successful sessions on the same auth/model are still allowed to finish, so Core needs a bounded observation state instead of immediately suspending the auth/model for every session.
     introduced_in: 6ee281422e460ac7d5db8d69ef3fe6b49560e96a
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); upstream adds auth-kind filtering for Codex Alpha Search but still immediately writes model quota cooldown for every 429 and has no explicit Healthy/FreshBlocked/ConfirmedCooldown phases, established lease plus incumbent in-flight evidence, single-canary confirmation, lifecycle invalidation, or generation guard integrated with session affinity.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); upstream adds auth-kind filtering for Codex Alpha Search and request generate metadata, but still immediately writes model quota cooldown for every 429 and has no explicit Healthy/FreshBlocked/ConfirmedCooldown phases, established lease plus incumbent in-flight evidence, single-canary confirmation, lifecycle invalidation, or continuity generation guard integrated with session affinity.
     files:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
@@ -123,7 +123,7 @@ patches:
   - id: codex-interactions-service-tier-response
     reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
     introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); router-for-me/CLIProxyAPI#4189 remains closed as completed, but 03d58c4402689abaff1e81b05bf4ff45c7198651 only collapses runtime usage-record metadata and still does not change the Interactions response translator, which hardcodes streaming service_tier to standard and omits it from non-streaming interactions.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); router-for-me/CLIProxyAPI#4189 remains closed as completed, but 03d58c4402689abaff1e81b05bf4ff45c7198651 only collapses runtime usage-record metadata and the later generate metadata change still does not change the Interactions response translator, which hardcodes streaming service_tier to standard and omits it from non-streaming interactions.
     files:
       - internal/translator/codex/interactions/interactions_codex_response.go
       - internal/translator/codex/interactions/interactions_codex_test.go
@@ -154,7 +154,7 @@ patches:
   - id: plugin-configured-enable-default
     reason: A configured plugin without an explicit enabled field must inherit the enabled plugin subsystem default instead of being silently disabled during YAML parsing or runtime config synthesis.
     introduced_in: f3ff2f889026c6a28dc2d14f602c4fef108a0347
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); the xAI config/watcher expansion does not add an equivalent configured-plugin enable default.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); 35a5f06612144bae03e838c9df33cf7026a691a1 normalizes plugin directory paths but does not add an equivalent configured-plugin enable default through YAML parsing and runtime host synthesis.
     files:
       - internal/config/config.go
       - internal/config/plugin_config_test.go
@@ -171,7 +171,7 @@ patches:
   - id: codex-gpt56-ultra-level
     reason: Upstream now publishes and remotely refreshes Codex client metadata with logical Sol/Terra Ultra and Luna max-only, but it still does not provide the CPA-Core-LTS server-side capability overlay, custom-model policy, payload-override-safe wire canonicalization, usage/retry alignment, or HTTP/WebSocket enforcement. CPA-Core-LTS therefore validates the refreshed client catalog as an LTS prerequisite while retaining the downstream runtime patch.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); upstream PR #4276 provides the revisioned Codex client catalog and 7efe8b394ae57d42fbe4231f19464e02811d5c80 only tightens search-tool capability metadata. This remains client-metadata equivalence and does not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket regressions.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); upstream PR #4276 provides the revisioned Codex client catalog and 7efe8b394ae57d42fbe4231f19464e02811d5c80 only tightens search-tool capability metadata. The later plugin-path and usage generate changes are unrelated. This remains client-metadata equivalence and does not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket regressions.
     files:
       - .github/scripts/refresh-model-catalogs.sh
       - .github/workflows/docker-image.yml
@@ -241,7 +241,7 @@ patches:
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); the new reasoning-signature sanitization changes do not add a provider-owned immutable model-header snapshot equivalent.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); the reasoning-signature sanitization, plugin-path normalization, and usage generate changes do not add a provider-owned immutable model-header snapshot equivalent.
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_openai_images.go
@@ -261,7 +261,7 @@ patches:
   - id: codex-oauth-client-identity-finalization
     reason: Codex OAuth requests must finalize the official Originator, User-Agent, optional Version floor, and macOS Session_id after model-specific header overrides; otherwise the backend can reject a valid model route with a misleading 404 Model not found response.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); the synced upstream baseline still has no equivalent final identity pass shared by HTTP, compact, streaming, WebSocket, and image paths.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); the synced upstream baseline still has no equivalent final identity pass shared by HTTP, compact, streaming, WebSocket, and image paths; the plugin-path and usage generate changes are unrelated.
     files:
       - config.example.yaml
       - internal/runtime/executor/codex_client_identity.go
@@ -281,7 +281,7 @@ patches:
   - id: codex-model-not-found-request-scope
     reason: An OpenAI-style 404 with error.type invalid_request_error and error.param model is a request/model routing failure, not evidence of unhealthy Codex credentials; retrying every auth or applying the generic 12-hour model cooldown can suspend the entire model pool.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); the synced upstream baseline still applies generic 404 retry and cooldown handling without this typed request-scope boundary.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); the synced upstream baseline still applies generic 404 retry and cooldown handling without this typed request-scope boundary; the plugin-path and usage generate changes are unrelated.
     files:
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/conductor_overrides_test.go
@@ -297,7 +297,7 @@ patches:
   - id: codex-websocket-reader-generation
     reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); the new executor and translator fixes do not add executor-side connection generation ownership or an equivalent stale-reader generation guard.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); the executor, translator, plugin-path, and usage generate changes do not add executor-side connection generation ownership or an equivalent stale-reader generation guard.
     files:
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
@@ -315,7 +315,7 @@ patches:
   - id: codex-spark-reasoning-summary-compat
     reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
     introduced_in: 37e306f939e8ef363254a49cdc7f924a6ceceff5
-    affected_upstream_range: through c8803713c972af0076f55933fdeed4db81d72d24 (v7.2.77); upstream still forwards reasoning.summary for gpt-5.3-codex-spark and has no equivalent post-override HTTP/WebSocket sanitization; the new Gemini/Antigravity reasoning-content work is unrelated.
+    affected_upstream_range: through 768b4c49fd44e1c6e21981d96dfcb8dd31490bf0 (v7.2.78); upstream still forwards reasoning.summary for gpt-5.3-codex-spark and has no equivalent post-override HTTP/WebSocket sanitization; the Gemini/Antigravity reasoning-content, plugin-path, and usage generate work is unrelated.
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_websockets_executor.go

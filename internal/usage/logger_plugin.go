@@ -5,6 +5,7 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -100,8 +101,34 @@ type RequestDetail struct {
 	ResponseServiceTier string     `json:"response_service_tier,omitempty"`
 	Tokens              TokenStats `json:"tokens"`
 	Failed              bool       `json:"failed"`
+	Generate            bool       `json:"generate"`
 	FailureReason       string     `json:"failure_reason,omitempty"`
 	FailureStatus       int        `json:"failure_status,omitempty"`
+}
+
+// UnmarshalJSON keeps legacy usage exports compatible with the generate field.
+// Missing or null values mean generation was enabled; only an explicit false disables it.
+func (d *RequestDetail) UnmarshalJSON(data []byte) error {
+	type requestDetailAlias RequestDetail
+	var decoded requestDetailAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	generate := true
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if rawGenerate, ok := fields["generate"]; ok && strings.TrimSpace(string(rawGenerate)) != "null" {
+		if err := json.Unmarshal(rawGenerate, &generate); err != nil {
+			return err
+		}
+	}
+
+	*d = RequestDetail(decoded)
+	d.Generate = generate
+	return nil
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -228,6 +255,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		ResponseServiceTier: responseServiceTier,
 		Tokens:              detail,
 		Failed:              failed,
+		Generate:            coreusage.GenerateEnabled(record.Generate),
 		FailureReason:       failureReason,
 		FailureStatus:       failureStatus,
 	})
