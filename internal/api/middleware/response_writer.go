@@ -405,8 +405,16 @@ func (w *ResponseWriterWrapper) extractDeferredAPIRequest(c *gin.Context) []byte
 	if !exists {
 		return nil
 	}
-	requests, ok := value.([]logging.DeferredAPIRequest)
-	if !ok || len(requests) == 0 {
+	var requests []logging.DeferredAPIRequest
+	switch source := value.(type) {
+	case logging.DeferredAPIRequestSource:
+		requests = source.SnapshotDeferredAPIRequests()
+	case []logging.DeferredAPIRequest:
+		requests = source
+	default:
+		return nil
+	}
+	if len(requests) == 0 {
 		return nil
 	}
 	var body bytes.Buffer
