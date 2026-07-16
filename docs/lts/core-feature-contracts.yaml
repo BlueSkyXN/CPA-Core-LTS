@@ -187,10 +187,14 @@ features:
       - codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms
       - codex.abnormal-reasoning-retry.hedged-retry.require-distinct-auth
     core_files:
+      - internal/api/middleware/response_writer.go
       - internal/config/config.go
+      - internal/logging/request_logger.go
       - internal/runtime/executor/codex_abnormal_reasoning_retry.go
       - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
       - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/helps/logging_helpers.go
+      - internal/runtime/executor/helps/logging_helpers_test.go
       - internal/runtime/executor/helps/usage_helpers.go
       - internal/usage/logger_plugin.go
       - sdk/cliproxy/auth/conductor.go
@@ -229,6 +233,7 @@ features:
     validation:
       - go test ./internal/config
       - go test ./internal/runtime/executor -run 'Codex.*AbnormalReasoning'
+      - go test -race ./internal/runtime/executor/helps -run 'RecordAPIRequestConcurrentDeferredRequests'
       - go test ./sdk/cliproxy/auth -run 'HedgedRetry|RetryWithoutPenalty'
       - go test ./internal/watcher/diff
 

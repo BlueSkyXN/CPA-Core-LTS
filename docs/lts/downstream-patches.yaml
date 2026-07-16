@@ -335,3 +335,29 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream removes reasoning.summary for gpt-5.3-codex-spark after all request overrides while preserving reasoning.effort and the listed regressions pass without the downstream implementation.
+
+  - id: xai-explicit-tool-choice-none
+    reason: xAI request preparation injects native x_search after removing tool_choice fields for an empty client tool list, so an explicit tool_choice none can be lost and the model may invoke search despite the client prohibition.
+    introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
+    affected_upstream_range: through 09da52ad509e2c18e7b9540db3b98c2214c280aa (v7.2.78-6-g09da52ad); b6ce0beecd31dff389d3190f7db6d7a1d4ce0e7e simplifies xAI tool schemas but still normalizes tool_choice before injecting x_search.
+    files:
+      - internal/runtime/executor/xai_executor.go
+      - internal/runtime/executor/xai_executor_test.go
+    regression_tests:
+      - TestXAIExecutorPreparePreservesExplicitToolChoiceNoneAfterXSearchInject
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream injects the native x_search tool before the no-tools tool_choice cleanup, preserves explicit tool_choice none and parallel_tool_calls false on the shared HTTP/WebSocket preparation path, and the listed regression passes without the downstream ordering patch.
+
+  - id: request-body-panic-tempfile-cleanup
+    reason: Error-only request logging spools large request bodies into temporary files, but a handler panic unwinds past RequestLoggingMiddleware before ResponseWriterWrapper.Finalize runs, leaving sensitive request content on disk after both recovered panics and http.ErrAbortHandler.
+    introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
+    affected_upstream_range: through 09da52ad509e2c18e7b9540db3b98c2214c280aa (v7.2.78-6-g09da52ad); the deferred body capture introduced at e5741673e29dd87552ad1c017025af22b20f2895 still performs cleanup only from the response finalizer.
+    files:
+      - internal/api/middleware/request_logging.go
+      - internal/api/middleware/request_logging_test.go
+    regression_tests:
+      - TestRequestLoggingMiddlewareCleansDeferredBodyCaptureOnPanic
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream gives the middleware-owned deferred capture an idempotent unwind cleanup that runs for normal completion, recovered panics, and http.ErrAbortHandler, and the listed regression passes after removing the downstream defer.
