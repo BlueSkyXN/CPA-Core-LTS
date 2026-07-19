@@ -249,7 +249,10 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	if buffer < 0 {
+		buffer = 0
+	}
+	m := &Manager{queue: make([]queueItem, 0, buffer)}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -347,11 +350,24 @@ func (m *Manager) run(ctx context.Context) {
 			m.mu.Unlock()
 			return
 		}
-		item := m.queue[0]
-		m.queue = m.queue[1:]
+		item := m.dequeueLocked()
 		m.mu.Unlock()
 		m.dispatch(item)
 	}
+}
+
+func (m *Manager) dequeueLocked() queueItem {
+	if m == nil || len(m.queue) == 0 {
+		return queueItem{}
+	}
+	item := m.queue[0]
+	m.queue[0] = queueItem{}
+	if len(m.queue) == 1 {
+		m.queue = nil
+	} else {
+		m.queue = m.queue[1:]
+	}
+	return item
 }
 
 func (m *Manager) dispatch(item queueItem) {

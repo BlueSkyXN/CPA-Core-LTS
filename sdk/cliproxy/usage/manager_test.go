@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"net/http"
 	"testing"
 )
 
@@ -125,3 +126,31 @@ func TestRecordOmittedGenerateIsEnabled(t *testing.T) {
 		t.Fatalf("GenerateEnabled(omitted) = false, want true")
 	}
 }
+
+func TestManagerDequeueClearsConsumedContextAndBackingArray(t *testing.T) {
+	m := NewManager(2)
+	ctx := context.WithValue(context.Background(), struct{}{}, bytesMarker(1))
+	m.queue = append(m.queue,
+		queueItem{ctx: ctx, record: Record{ResponseHeaders: http.Header{"X-Test": {"first"}}}},
+		queueItem{ctx: context.Background(), record: Record{Provider: "second"}},
+	)
+	backing := m.queue
+
+	item := m.dequeueLocked()
+	if item.ctx != ctx {
+		t.Fatal("dequeueLocked returned the wrong queue item")
+	}
+	if backing[0].ctx != nil || backing[0].record.ResponseHeaders != nil {
+		t.Fatal("dequeueLocked retained consumed context or record references in the backing array")
+	}
+	if len(m.queue) != 1 || m.queue[0].record.Provider != "second" {
+		t.Fatalf("remaining queue = %+v, want second item", m.queue)
+	}
+
+	_ = m.dequeueLocked()
+	if m.queue != nil {
+		t.Fatalf("queue after final dequeue = %#v, want nil", m.queue)
+	}
+}
+
+type bytesMarker byte
