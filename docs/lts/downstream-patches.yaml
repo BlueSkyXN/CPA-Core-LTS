@@ -286,6 +286,63 @@ patches:
     state: required
     retire_when: Upstream finalizes one coherent official Codex OAuth identity after every model/header override across HTTP, compact, streaming, WebSocket, and image transports; preserves API-key requests and omitted Version headers; and all listed regressions pass after removing the downstream implementation.
 
+  - id: codex-client-metadata-privacy
+    reason: Current Codex clients transport one canonical x-codex-turn-metadata snapshot plus flat body and direct header compatibility projections. Core must keep those projections coherent after credential selection, avoid the legacy identity-confuse partial rewrite on canonical requests, offer explicit workspace passthrough/redact/drop privacy policies, strip Git remote credentials even in passthrough mode, and prevent workspace enrichment from entering downstream, upstream, deferred-error, or WebSocket request logs.
+    introduced_in: dcb424d4a5d666322c641151a3e37fd3b0dcc864
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream still applies the older prompt-cache and installation identity-confuse rewrite without canonical request detection, has no selectable workspace privacy policy, and records Codex turn metadata without an equivalent workspace-aware log sanitizer across HTTP, deferred-error, and WebSocket paths.
+    files:
+      - config.example.yaml
+      - internal/api/middleware/request_logging.go
+      - internal/api/middleware/request_logging_test.go
+      - internal/api/middleware/response_writer.go
+      - internal/codexmetadata/log.go
+      - internal/codexmetadata/log_test.go
+      - internal/codexmetadata/request.go
+      - internal/codexmetadata/request_test.go
+      - internal/config/config.go
+      - internal/config/codex_client_metadata_test.go
+      - internal/runtime/executor/codex_client_metadata.go
+      - internal/runtime/executor/codex_client_metadata_test.go
+      - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_executor_cache_test.go
+      - internal/runtime/executor/codex_openai_images.go
+      - internal/runtime/executor/codex_openai_images_test.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/helps/logging_helpers.go
+      - internal/runtime/executor/helps/logging_helpers_test.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+      - sdk/api/handlers/openai/openai_responses_websocket_test.go
+    regression_tests:
+      - TestNormalizeRequestRepairSanitizesWorkspaceAndRegeneratesProjections
+      - TestNormalizeRequestUsesDirectCanonicalHeaderAsLegacyFallback
+      - TestNormalizeRequestPreservesFlatIdentityWhenCanonicalOmitsConditionalFields
+      - TestNormalizeRequestWorkspaceRedactAndDrop
+      - TestNormalizeRequestStrictRejectsConflictAndMalformedCanonical
+      - TestNormalizeRequestOffSkipsMutationButMarksCanonical
+      - TestNormalizeRequestCollapsesDuplicateClientMetadataCarriers
+      - TestRedactRequestBodyForLogRemovesWorkspacesWithoutMutatingInput
+      - TestRedactRequestBodyForLogFailsClosedForMalformedCanonical
+      - TestRedactRequestBodyForLogCollapsesDuplicateClientMetadataCarriers
+      - TestCodexClientMetadataEffectiveDefaults
+      - TestLoadConfigOptionalCodexClientMetadata
+      - TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse
+      - TestCodexExecutorCacheHelperStrictMetadataReturnsSafeBadRequest
+      - TestCodexExecutorDirectOpenAIImageRepairsCanonicalMetadata
+      - TestPrepareCodexOpenAIImageBodyPreservesClientMetadata
+      - TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfuse
+      - TestCaptureRequestInfoRedactsCodexMetadataWithoutChangingHandlerBody
+      - TestExtractDeferredRequestBodyRedactsTruncatedCodexMetadata
+      - TestRecordAPIRequestRedactsCodexWorkspaceMetadataFromDeferredLog
+      - TestRecordAPIWebsocketRequestRedactsCodexWorkspaceMetadata
+      - TestWebsocketTimelineLogRedactsCodexWorkspaceMetadata
+      - TestBuildConfigChangeDetailsCodexClientMetadata
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream treats canonical Codex turn metadata as the only authoritative snapshot, safely regenerates every compatibility projection after final request shaping, avoids mixed legacy identity rewrites, provides equivalent selectable workspace privacy with unconditional Git credential stripping, removes workspace enrichment from every request-log path without mutating live traffic, and all listed regressions pass after the downstream implementation is removed.
+
   - id: codex-model-not-found-request-scope
     reason: An OpenAI-style 404 with error.type invalid_request_error and error.param model is a request/model routing failure, not evidence of unhealthy Codex credentials; retrying every auth or applying the generic 12-hour model cooldown can suspend the entire model pool.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
