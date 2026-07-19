@@ -85,8 +85,7 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
+		return e.ClaudeExecutor.Execute(ctx, kimiClaudeAuth(auth), req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 
@@ -195,8 +194,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
+		return e.ClaudeExecutor.ExecuteStream(ctx, kimiClaudeAuth(auth), req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 
@@ -335,8 +333,19 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-	return e.ClaudeExecutor.CountTokens(ctx, auth, req, opts)
+	return e.ClaudeExecutor.CountTokens(ctx, kimiClaudeAuth(auth), req, opts)
+}
+
+func kimiClaudeAuth(auth *cliproxyauth.Auth) *cliproxyauth.Auth {
+	if auth == nil {
+		return nil
+	}
+	delegated := auth.Clone()
+	if delegated.Attributes == nil {
+		delegated.Attributes = make(map[string]string)
+	}
+	delegated.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+	return delegated
 }
 
 func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {

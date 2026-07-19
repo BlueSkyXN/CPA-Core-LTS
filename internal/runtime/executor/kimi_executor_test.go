@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -70,6 +71,43 @@ func TestKimiExecutorClaudeRequestPreservesInternalModelSemantics(t *testing.T) 
 	}
 	if got := gjson.GetBytes(response.Payload, "model").String(); got != model {
 		t.Fatalf("response model = %q, want %q", got, model)
+	}
+}
+
+func TestKimiClaudeAuthUsesRequestLocalBaseURL(t *testing.T) {
+	original := &cliproxyauth.Auth{
+		ID:         "kimi-auth",
+		Attributes: map[string]string{"base_url": "https://example.invalid", "custom": "value"},
+		Metadata:   map[string]any{"access_token": "test-token"},
+	}
+
+	delegated := kimiClaudeAuth(original)
+	if delegated == nil || delegated == original {
+		t.Fatalf("kimiClaudeAuth() = %#v, want an independent clone", delegated)
+	}
+	if got := delegated.Attributes["base_url"]; got != kimiauth.KimiAPIBaseURL {
+		t.Fatalf("delegated base_url = %q, want %q", got, kimiauth.KimiAPIBaseURL)
+	}
+	if got := delegated.Attributes["custom"]; got != "value" {
+		t.Fatalf("delegated custom attribute = %q, want value", got)
+	}
+	if got := original.Attributes["base_url"]; got != "https://example.invalid" {
+		t.Fatalf("original base_url mutated to %q", got)
+	}
+	if got := delegated.Metadata["access_token"]; got != "test-token" {
+		t.Fatalf("delegated access token = %#v, want test-token", got)
+	}
+
+	withoutAttributes := &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "test-token"}}
+	delegated = kimiClaudeAuth(withoutAttributes)
+	if delegated == nil || delegated.Attributes["base_url"] != kimiauth.KimiAPIBaseURL {
+		t.Fatalf("nil-attributes delegation = %#v, want Kimi base URL", delegated)
+	}
+	if withoutAttributes.Attributes != nil {
+		t.Fatalf("source nil attributes were mutated: %#v", withoutAttributes.Attributes)
+	}
+	if kimiClaudeAuth(nil) != nil {
+		t.Fatal("nil auth should remain nil")
 	}
 }
 
