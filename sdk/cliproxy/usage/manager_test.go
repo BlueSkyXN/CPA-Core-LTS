@@ -127,6 +127,31 @@ func TestRecordOmittedGenerateIsEnabled(t *testing.T) {
 	}
 }
 
+func TestResolveEffectiveServiceTier(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		outbound string
+		want     string
+	}{
+		{name: "recognized response wins", response: " fast ", outbound: "standard", want: "priority"},
+		{name: "recognized standard response wins", response: "default", outbound: "priority", want: "standard"},
+		{name: "unknown response blocks fallback", response: "flex", outbound: "priority", want: ""},
+		{name: "missing response uses explicit outbound priority", outbound: "fast", want: "priority"},
+		{name: "missing response uses explicit outbound standard", outbound: "default", want: "standard"},
+		{name: "missing values stay unknown", want: ""},
+		{name: "unknown outbound stays unknown", outbound: "auto", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveEffectiveServiceTier(tt.response, tt.outbound); got != tt.want {
+				t.Fatalf("ResolveEffectiveServiceTier(%q, %q) = %q, want %q", tt.response, tt.outbound, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestManagerDequeueClearsConsumedContextAndBackingArray(t *testing.T) {
 	m := NewManager(2)
 	ctx := context.WithValue(context.Background(), struct{}{}, bytesMarker(1))

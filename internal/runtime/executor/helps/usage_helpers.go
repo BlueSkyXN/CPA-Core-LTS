@@ -34,6 +34,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	outboundTier string
 	generate     bool
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
@@ -110,6 +111,16 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+}
+
+// SetOutboundServiceTier records the only request-side fallback allowed for
+// effective usage tier: an explicit recognized value in the final outbound
+// payload. The payload itself is not retained with usage metadata.
+func (r *UsageReporter) SetOutboundServiceTier(payload []byte) {
+	if r == nil {
+		return
+	}
+	r.outboundTier = explicitOutboundServiceTier(payload)
 }
 
 func (r *UsageReporter) ReasoningEffort() string {
@@ -286,14 +297,29 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ServiceTier:         r.serviceTier,
 		RequestServiceTier:  r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
-		Generate:            usage.GenerateFlag(r.generate),
-		RequestedAt:         r.requestedAt,
-		Latency:             r.latency(),
-		TTFT:                r.ttftDuration(),
-		Failed:              failed,
-		Fail:                fail,
-		Detail:              detail,
+		EffectiveServiceTier: usage.ResolveEffectiveServiceTier(
+			detail.ResponseServiceTier,
+			r.outboundTier,
+		),
+		Generate:    usage.GenerateFlag(r.generate),
+		RequestedAt: r.requestedAt,
+		Latency:     r.latency(),
+		TTFT:        r.ttftDuration(),
+		Failed:      failed,
+		Fail:        fail,
+		Detail:      detail,
 	}
+}
+
+func explicitOutboundServiceTier(payload []byte) string {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	tier := gjson.GetBytes(payload, "service_tier")
+	if !tier.Exists() || tier.Type != gjson.String {
+		return ""
+	}
+	return usage.CanonicalEffectiveServiceTier(tier.String())
 }
 
 func failFromErrors(errs ...error) usage.Failure {

@@ -90,20 +90,21 @@ type modelStats struct {
 
 // RequestDetail stores request-level metadata and token usage for a single request.
 type RequestDetail struct {
-	Timestamp           time.Time  `json:"timestamp"`
-	LatencyMs           int64      `json:"latency_ms"`
-	Source              string     `json:"source"`
-	AuthIndex           string     `json:"auth_index"`
-	Alias               string     `json:"alias,omitempty"`
-	ReasoningEffort     string     `json:"reasoning_effort,omitempty"`
-	ServiceTier         string     `json:"service_tier,omitempty"`
-	RequestServiceTier  string     `json:"request_service_tier,omitempty"`
-	ResponseServiceTier string     `json:"response_service_tier,omitempty"`
-	Tokens              TokenStats `json:"tokens"`
-	Failed              bool       `json:"failed"`
-	Generate            bool       `json:"generate"`
-	FailureReason       string     `json:"failure_reason,omitempty"`
-	FailureStatus       int        `json:"failure_status,omitempty"`
+	Timestamp            time.Time  `json:"timestamp"`
+	LatencyMs            int64      `json:"latency_ms"`
+	Source               string     `json:"source"`
+	AuthIndex            string     `json:"auth_index"`
+	Alias                string     `json:"alias,omitempty"`
+	ReasoningEffort      string     `json:"reasoning_effort,omitempty"`
+	ServiceTier          string     `json:"service_tier,omitempty"`
+	RequestServiceTier   string     `json:"request_service_tier,omitempty"`
+	ResponseServiceTier  string     `json:"response_service_tier,omitempty"`
+	EffectiveServiceTier string     `json:"effective_service_tier,omitempty"`
+	Tokens               TokenStats `json:"tokens"`
+	Failed               bool       `json:"failed"`
+	Generate             bool       `json:"generate"`
+	FailureReason        string     `json:"failure_reason,omitempty"`
+	FailureStatus        int        `json:"failure_status,omitempty"`
 }
 
 // UnmarshalJSON keeps legacy usage exports compatible with the generate field.
@@ -224,6 +225,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if responseServiceTier == "" {
 		responseServiceTier = strings.TrimSpace(record.Detail.ResponseServiceTier)
 	}
+	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
 	dayKey := timestamp.Format("2006-01-02")
 	hourKey := timestamp.Hour()
 
@@ -244,20 +246,21 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.apis[statsKey] = stats
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:           timestamp,
-		LatencyMs:           normaliseLatency(record.Latency),
-		Source:              record.Source,
-		AuthIndex:           record.AuthIndex,
-		Alias:               strings.TrimSpace(record.Alias),
-		ReasoningEffort:     strings.TrimSpace(record.ReasoningEffort),
-		ServiceTier:         requestServiceTier,
-		RequestServiceTier:  requestServiceTier,
-		ResponseServiceTier: responseServiceTier,
-		Tokens:              detail,
-		Failed:              failed,
-		Generate:            coreusage.GenerateEnabled(record.Generate),
-		FailureReason:       failureReason,
-		FailureStatus:       failureStatus,
+		Timestamp:            timestamp,
+		LatencyMs:            normaliseLatency(record.Latency),
+		Source:               record.Source,
+		AuthIndex:            record.AuthIndex,
+		Alias:                strings.TrimSpace(record.Alias),
+		ReasoningEffort:      strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:          requestServiceTier,
+		RequestServiceTier:   requestServiceTier,
+		ResponseServiceTier:  responseServiceTier,
+		EffectiveServiceTier: effectiveServiceTier,
+		Tokens:               detail,
+		Failed:               failed,
+		Generate:             coreusage.GenerateEnabled(record.Generate),
+		FailureReason:        failureReason,
+		FailureStatus:        failureStatus,
 	})
 
 	s.requestsByDay[dayKey]++
@@ -419,6 +422,7 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 	if strings.TrimSpace(detail.ServiceTier) == "" && strings.TrimSpace(detail.RequestServiceTier) != "" {
 		detail.ServiceTier = detail.RequestServiceTier
 	}
+	detail.EffectiveServiceTier = coreusage.CanonicalEffectiveServiceTier(detail.EffectiveServiceTier)
 	return detail
 }
 

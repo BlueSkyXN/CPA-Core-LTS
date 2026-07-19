@@ -55,6 +55,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"response_service_tier":"standard"`)) {
 		t.Fatalf("exported usage missing response_service_tier: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"effective_service_tier":"standard"`)) {
+		t.Fatalf("exported usage missing effective_service_tier: %s", exportedJSON)
+	}
 	if !bytes.Contains(exportedJSON, []byte(`"generate":false`)) {
 		t.Fatalf("exported usage missing explicit generate=false: %s", exportedJSON)
 	}
@@ -227,8 +230,8 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].ServiceTier != "" {
 		t.Fatalf("legacy detail.service_tier = %q, want empty/unknown", details[0].ServiceTier)
 	}
-	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" {
-		t.Fatalf("legacy detail service tiers = request:%q response:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier)
+	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
+		t.Fatalf("legacy detail service tiers = request:%q response:%q effective:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
 	}
 	if details[0].Tokens.UncachedInputTokens != nil {
 		t.Fatalf("legacy detail uncached_input_tokens = %v, want nil/unknown", details[0].Tokens.UncachedInputTokens)
@@ -257,7 +260,7 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if !bytes.Contains(reexportedJSON, []byte(`"generate":true`)) {
 		t.Fatalf("legacy re-export missing normalized generate=true: %s", reexportedJSON)
 	}
-	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) {
+	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"effective_service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated explicit service-tier fields: %s", reexportedJSON)
 	}
 	if bytes.Contains(reexportedJSON, []byte(`"uncached_input_tokens"`)) {
@@ -401,19 +404,20 @@ func usageCacheCreationSnapshot(timestamp time.Time, tokens usage.TokenStats) us
 
 func recordPanelContractUsage(stats *usage.RequestStatistics) {
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey:              "panel-client-key",
-		Provider:            "openai",
-		Model:               "gpt-5.4",
-		Alias:               "panel-visible-model",
-		Source:              "auths/openai.json",
-		AuthIndex:           "1",
-		ReasoningEffort:     "medium",
-		ServiceTier:         "priority",
-		RequestServiceTier:  "priority",
-		ResponseServiceTier: "standard",
-		Generate:            coreusage.GenerateFlag(false),
-		RequestedAt:         time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
-		Latency:             2 * time.Second,
+		APIKey:               "panel-client-key",
+		Provider:             "openai",
+		Model:                "gpt-5.4",
+		Alias:                "panel-visible-model",
+		Source:               "auths/openai.json",
+		AuthIndex:            "1",
+		ReasoningEffort:      "medium",
+		ServiceTier:          "priority",
+		RequestServiceTier:   "priority",
+		ResponseServiceTier:  "standard",
+		EffectiveServiceTier: "standard",
+		Generate:             coreusage.GenerateFlag(false),
+		RequestedAt:          time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
+		Latency:              2 * time.Second,
 		Detail: coreusage.Detail{
 			InputTokens:              5,
 			UncachedInputTokens:      0,
@@ -569,6 +573,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.ResponseServiceTier != "standard" {
 		t.Fatalf("detail.response_service_tier = %q, want standard", detail.ResponseServiceTier)
+	}
+	if detail.EffectiveServiceTier != "standard" {
+		t.Fatalf("detail.effective_service_tier = %q, want standard", detail.EffectiveServiceTier)
 	}
 	if detail.Generate {
 		t.Fatalf("detail.generate = true, want false")
