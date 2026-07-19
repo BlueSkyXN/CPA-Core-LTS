@@ -4,7 +4,7 @@ patches:
   - id: codex-model-fallback
     reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
     introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream adds agent-scoped Claude replay turns, Responses Lite parallel-tool normalization, input-ID shortening, and selected-auth trace metadata, but it still does not provide typed configurable cross-model fallback, conservative source/target reasoning-continuity gates, target-model auth reselection, pre-delivery stream safety, or migration that preserves legacy flat replay entries.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream adds agent-scoped Claude replay turns, Responses Lite parallel-tool normalization, input-ID shortening, and selected-auth trace metadata, but it still does not provide typed configurable cross-model fallback, conservative source/target reasoning-continuity gates, target-model auth reselection, pre-delivery stream safety, or migration that preserves legacy flat replay entries.
     files:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
@@ -72,7 +72,7 @@ patches:
   - id: codex-rate-limit-continuity
     reason: A fresh Codex session can receive usage_limit_reached while previously successful sessions on the same auth/model are still allowed to finish, so Core needs a bounded observation state instead of immediately suspending the auth/model for every session.
     introduced_in: 6ee281422e460ac7d5db8d69ef3fe6b49560e96a
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream now publishes stable selected-auth indexes for CPA trace, but still immediately writes model quota cooldown for every 429 and has no Healthy/FreshBlocked/ConfirmedCooldown phases, established lease plus incumbent evidence, single-canary confirmation, lifecycle invalidation, or continuity generation guard. LTS therefore keeps delayed final-auth publication so fallback and hedge losers cannot become the selected trace or session pin.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream now publishes stable selected-auth indexes for CPA trace, but still immediately writes model quota cooldown for every 429 and has no Healthy/FreshBlocked/ConfirmedCooldown phases, established lease plus incumbent evidence, single-canary confirmation, lifecycle invalidation, or continuity generation guard. LTS therefore keeps delayed final-auth publication so fallback and hedge losers cannot become the selected trace or session pin.
     files:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
@@ -131,7 +131,7 @@ patches:
   - id: codex-interactions-service-tier-response
     reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
     introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); da087d7f maps Claude Code speed fast to priority requests, but the separate Codex Interactions response translator still does not report the effective service_tier for streaming, non-streaming, and DONE-fallback responses, so router-for-me/CLIProxyAPI#4189 remains only partially relevant.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); da087d7f maps Claude Code speed fast to priority requests, but the separate Codex Interactions response translator still does not report the effective service_tier for streaming, non-streaming, and DONE-fallback responses, so router-for-me/CLIProxyAPI#4189 remains only partially relevant.
     files:
       - internal/translator/codex/interactions/interactions_codex_response.go
       - internal/translator/codex/interactions/interactions_codex_test.go
@@ -162,7 +162,7 @@ patches:
   - id: plugin-configured-enable-default
     reason: A configured plugin without an explicit enabled field must inherit the enabled plugin subsystem default instead of being silently disabled during YAML parsing or runtime config synthesis.
     introduced_in: f3ff2f889026c6a28dc2d14f602c4fef108a0347
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); the new Home plugin synchronization and sync-revision plumbing do not replace the configured-plugin enable default through YAML parsing and runtime host synthesis; an omitted per-plugin enabled field must still inherit true while the subsystem-level switch remains authoritative.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); the new Home plugin synchronization and auth-revision plumbing do not replace the configured-plugin enable default through YAML parsing and runtime host synthesis; an omitted per-plugin enabled field must still inherit true while the subsystem-level switch remains authoritative.
     files:
       - internal/config/config.go
       - internal/config/plugin_config_test.go
@@ -179,7 +179,7 @@ patches:
   - id: codex-gpt56-ultra-level
     reason: Upstream now publishes and remotely refreshes Codex client metadata with logical Sol/Terra Ultra and Luna max-only, but it still does not provide the CPA-Core-LTS server-side capability overlay, custom-model policy, payload-override-safe wire canonicalization, usage/retry alignment, or HTTP/WebSocket enforcement. CPA-Core-LTS therefore validates the refreshed client catalog as an LTS prerequisite while retaining the downstream runtime patch.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream PR #4276 provides the revisioned Codex client catalog, while the newer replay, input-ID, Responses Lite, trace, and WebSocket changes do not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket enforcement.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream PR #4276 provides the revisioned Codex client catalog, while the newer replay, input-ID, Responses Lite, trace, and WebSocket changes do not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket enforcement.
     files:
       - .github/scripts/refresh-model-catalogs.sh
       - .github/workflows/docker-image.yml
@@ -249,7 +249,7 @@ patches:
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream adds raw connection target tracking, but still does not resolve a provider-owned immutable model-header snapshot or include its digest and resolved model in reusable WebSocket connection identity.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream adds raw connection target tracking, but still does not resolve a provider-owned immutable model-header snapshot or include its digest and resolved model in reusable WebSocket connection identity.
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_openai_images.go
@@ -269,7 +269,7 @@ patches:
   - id: codex-oauth-client-identity-finalization
     reason: Codex OAuth requests must finalize the official Originator, User-Agent, optional Version floor, and macOS Session_id after model-specific header overrides; otherwise the backend can reject a valid model route with a misleading 404 Model not found response.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); input-ID shortening, Responses Lite normalization, replay isolation, and WebSocket target tracking still do not add an equivalent final OAuth client-identity pass shared by HTTP, compact, streaming, WebSocket, and image paths.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); input-ID shortening, Responses Lite normalization, replay isolation, and WebSocket target tracking still do not add an equivalent final OAuth client-identity pass shared by HTTP, compact, streaming, WebSocket, and image paths.
     files:
       - config.example.yaml
       - internal/runtime/executor/codex_client_identity.go
@@ -289,7 +289,7 @@ patches:
   - id: codex-model-not-found-request-scope
     reason: An OpenAI-style 404 with error.type invalid_request_error and error.param model is a request/model routing failure, not evidence of unhealthy Codex credentials; retrying every auth or applying the generic 12-hour model cooldown can suspend the entire model pool.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream retains the generic RequestScopedError contract and new trace metadata, but still does not recognize the OpenAI-style invalid_request_error model 404, so the downstream classifier and cooldown guard remain required.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream retains the generic RequestScopedError contract and new trace metadata, but still does not recognize the OpenAI-style invalid_request_error model 404, so the downstream classifier and cooldown guard remain required.
     files:
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/conductor_overrides_test.go
@@ -305,7 +305,7 @@ patches:
   - id: codex-websocket-reader-generation
     reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); fbe11607 tracks an active raw connection and target changes, but still lacks executor-side connection generations, atomic reader/request ownership, request-owned cancellation signals, and stale-reader protection across retry, session close, and model-header profile changes.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); fbe11607 tracks an active raw connection and target changes, but still lacks executor-side connection generations, atomic reader/request ownership, request-owned cancellation signals, and stale-reader protection across retry, session close, and model-header profile changes.
     files:
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
@@ -328,7 +328,7 @@ patches:
   - id: codex-spark-reasoning-summary-compat
     reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
     introduced_in: 37e306f939e8ef363254a49cdc7f924a6ceceff5
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream adds Responses Lite parallel-tool normalization and replay/input-ID changes, but still forwards reasoning.summary for gpt-5.3-codex-spark and has no equivalent post-override HTTP/WebSocket sanitization.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream adds Responses Lite parallel-tool normalization and replay/input-ID changes, but still forwards reasoning.summary for gpt-5.3-codex-spark and has no equivalent post-override HTTP/WebSocket sanitization.
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_websockets_executor.go
@@ -352,7 +352,7 @@ patches:
   - id: xai-explicit-tool-choice-none
     reason: xAI request preparation injects native x_search after removing tool_choice fields for an empty client tool list, so an explicit tool_choice none can be lost and the model may invoke search despite the client prohibition.
     introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); the new xAI image-ref, compact-route, transcript, and WebSocket target changes do not fix the shared request-preparation ordering, which still normalizes tool_choice before injecting x_search.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); the new xAI image-ref, compact-route, transcript, and WebSocket target changes do not fix the shared request-preparation ordering, which still normalizes tool_choice before injecting x_search.
     files:
       - internal/runtime/executor/xai_executor.go
       - internal/runtime/executor/xai_executor_test.go
@@ -362,10 +362,23 @@ patches:
     state: required
     retire_when: Upstream injects the native x_search tool before the no-tools tool_choice cleanup, preserves explicit tool_choice none and parallel_tool_calls false on the shared HTTP/WebSocket preparation path, and the listed regression passes without the downstream ordering patch.
 
+  - id: kimi-claude-delegated-auth-immutability
+    reason: Kimi delegates Claude-format requests to the Claude executor, but the selected Auth attributes are shared immutable credential configuration and must not be mutated per request to install the Kimi messages base URL.
+    introduced_in: 772915acb699d8c6b6f6d8f9c51c1b4f3a61cf34
+    affected_upstream_range: introduced by 70c4bd78b2bc347bf988f74f2d2d7da85de5aa13 and still required through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream writes auth.Attributes["base_url"] directly in Execute, ExecuteStream, and CountTokens, which can panic for a nil map, race across concurrent requests, and persist a request-local route into shared auth state.
+    files:
+      - internal/runtime/executor/kimi_executor.go
+      - internal/runtime/executor/kimi_executor_test.go
+    regression_tests:
+      - TestKimiClaudeAuthUsesRequestLocalBaseURL
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream delegates Kimi Claude-format requests with a request-local credential view or an explicit base URL parameter, never mutates shared Auth attributes, handles nil auth/maps safely, and the listed regression passes without the downstream clone helper.
+
   - id: request-body-panic-tempfile-cleanup
     reason: This historical patch originally closed a panic-path temporary-file leak in error-only request logging. CPA-Core-LTS now removes that request-body tempfile spool entirely, keeps only bounded in-memory request/response/upstream previews, and still requires middleware-owned unwind cleanup so panic and http.ErrAbortHandler paths close the original body and release retained buffers.
     introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); the plugin, replay, trace, translator, and provider changes do not alter request logging; upstream still spools large error-only bodies to temporary files, retains larger deferred upstream bodies, and performs cleanup only from the response finalizer.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); the plugin, replay, trace, translator, and provider changes do not alter request logging; upstream still spools large error-only bodies to temporary files, retains larger deferred upstream bodies, and performs cleanup only from the response finalizer.
     files:
       - internal/api/middleware/request_logging.go
       - internal/api/middleware/request_logging_test.go
@@ -387,7 +400,7 @@ patches:
   - id: api-request-body-size-limit
     reason: Public Claude, Gemini, OpenAI, Responses, image, and video JSON handlers previously used unbounded body reads and unbounded zstd expansion, so a small number of concurrent oversized requests could consume container memory before provider routing or normal validation ran.
     introduced_in: b2b593fad3f18bfe700fe5f11d4e88e10bbc7f16
-    affected_upstream_range: through 81d70f5d9f3fdb39a6290ed9c917ff0c6f27ca30 (v7.2.78-27-g81d70f5d); upstream handlers still use unbounded GetRawData/io.ReadAll behavior and do not enforce the same limit on every decoded Content-Encoding layer; the new Claude handler and header-filter changes are unrelated to body-size enforcement.
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.78-37-g93d74a89); upstream handlers still use unbounded GetRawData/io.ReadAll behavior and do not enforce the same limit on every decoded Content-Encoding layer; the new Claude handler and header-filter changes are unrelated to body-size enforcement.
     files:
       - sdk/api/handlers/request_body.go
       - sdk/api/handlers/request_body_test.go
