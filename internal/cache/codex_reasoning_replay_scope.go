@@ -10,7 +10,11 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
+const (
+	ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
+	ClaudeCodeAgentHeader   = "X-Claude-Code-Agent-Id"
+	ClaudeCodeMainAgentID   = "main"
+)
 
 var claudeCodeSessionSuffixPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
@@ -32,6 +36,9 @@ type CodexReasoningReplaySessionInput struct {
 func ResolveCodexReasoningReplaySessionKey(input CodexReasoningReplaySessionInput) string {
 	if !strings.EqualFold(strings.TrimSpace(input.SourceFormat), "claude") {
 		return ""
+	}
+	if scope, ok := ClaudeCodeExecutionScope(input.Context, input.RequestPayload, input.Headers); ok {
+		return scope
 	}
 	return ResolveReasoningReplaySessionKey(input)
 }
@@ -60,8 +67,8 @@ func ResolveReasoningReplaySessionKey(input CodexReasoningReplaySessionInput) st
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(input.SourceFormat), "claude") {
-		if sessionID := ExtractClaudeCodeSessionID(input.Context, input.RequestPayload, input.Headers); sessionID != "" {
-			return "claude:" + sessionID
+		if scope, ok := ClaudeCodeExecutionScope(input.Context, input.RequestPayload, input.Headers); ok {
+			return scope
 		}
 	}
 	return ""
@@ -136,6 +143,30 @@ func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers htt
 		return strings.TrimSpace(gjson.Get(userID, "session_id").String())
 	}
 	return ""
+}
+
+// ExtractClaudeCodeAgentID resolves the Claude Code agent ID and uses a stable
+// sentinel for the root agent when the header is absent.
+func ExtractClaudeCodeAgentID(ctx context.Context, headers http.Header) string {
+	if agentID := strings.TrimSpace(headerValueCaseInsensitive(headers, ClaudeCodeAgentHeader)); agentID != "" {
+		return agentID
+	}
+	if ginHeaders := headersFromGinContext(ctx); ginHeaders != nil {
+		if agentID := strings.TrimSpace(headerValueCaseInsensitive(ginHeaders, ClaudeCodeAgentHeader)); agentID != "" {
+			return agentID
+		}
+	}
+	return ClaudeCodeMainAgentID
+}
+
+// ClaudeCodeExecutionScope returns the stable root-session and agent identity
+// used by Codex execution state.
+func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.Header) (string, bool) {
+	sessionID := ExtractClaudeCodeSessionID(ctx, payload, headers)
+	if sessionID == "" {
+		return "", false
+	}
+	return "claude:" + sessionID + ":agent:" + ExtractClaudeCodeAgentID(ctx, headers), true
 }
 
 func headersFromGinContext(ctx context.Context) http.Header {

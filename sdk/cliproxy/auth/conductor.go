@@ -1961,12 +1961,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			m.abandonCodexRateLimitContinuityAttempt(ctx)
 			return nil, codexRateLimitObservationPendingError{confirmed: confirmed}
 		}
-		if !selectedPublished {
-			publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
-			selectedPublished = true
-		}
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
+		}
+		if !selectedPublished {
+			publishSelectedAuthMetadata(execOpts.Metadata, auth)
+			selectedPublished = true
 		}
 		markCodexModelFallbackDispatch(execOpts, auth.ID)
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
@@ -3002,12 +3002,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				m.abandonCodexRateLimitContinuityAttempt(execCtx)
 				return cliproxyexecutor.Response{}, codexRateLimitObservationPendingError{confirmed: confirmed}
 			}
-			if !selectedPublished {
-				publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
-				selectedPublished = true
-			}
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
+			}
+			if !selectedPublished {
+				publishSelectedAuthMetadata(execOpts.Metadata, auth)
+				selectedPublished = true
 			}
 			markCodexModelFallbackDispatch(execOpts, auth.ID)
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
@@ -3140,12 +3140,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			execOpts := opts
 			execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
-			if !selectedPublished {
-				publishSelectedAuthMetadata(execOpts.Metadata, auth.ID)
-				selectedPublished = true
-			}
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
+			}
+			if !selectedPublished {
+				publishSelectedAuthMetadata(execOpts.Metadata, auth)
+				selectedPublished = true
 			}
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
@@ -3664,17 +3664,21 @@ func isFreeCodexAuth(auth *Auth) bool {
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
 }
 
-func publishSelectedAuthMetadata(meta map[string]any, authID string) {
-	if len(meta) == 0 {
+func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
+	if len(meta) == 0 || auth == nil {
 		return
 	}
-	authID = strings.TrimSpace(authID)
-	if authID == "" {
-		return
+	if authID := strings.TrimSpace(auth.ID); authID != "" {
+		meta[cliproxyexecutor.SelectedAuthMetadataKey] = authID
+		if callback, ok := meta[cliproxyexecutor.SelectedAuthCallbackMetadataKey].(func(string)); ok && callback != nil {
+			callback(authID)
+		}
 	}
-	meta[cliproxyexecutor.SelectedAuthMetadataKey] = authID
-	if callback, ok := meta[cliproxyexecutor.SelectedAuthCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(authID)
+	if authIndex := strings.TrimSpace(auth.EnsureIndex()); authIndex != "" {
+		meta[cliproxyexecutor.SelectedAuthIndexMetadataKey] = authIndex
+		if callback, ok := meta[cliproxyexecutor.SelectedAuthIndexCallbackMetadataKey].(func(string)); ok && callback != nil {
+			callback(authIndex)
+		}
 	}
 }
 
@@ -6294,7 +6298,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			continue
 		}
 		c.auth = preparedAuth
-		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
@@ -6342,7 +6346,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 			continue
 		}
 		c.auth = preparedAuth
-		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue

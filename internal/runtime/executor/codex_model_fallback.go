@@ -118,6 +118,9 @@ func prepareCodexModelFallbackBody(ctx context.Context, from sdktranslator.Forma
 	sourceReq := req
 	sourceReq.Model = sourceModel
 	sourceScope := codexReasoningReplayScopeFromRequest(ctx, from, sourceReq, opts, body)
+	// body already carries the resolved target model at this point. Source
+	// continuity must still be looked up under the model that produced it.
+	sourceScope.modelName = sourceBase
 	var sourceItems [][]byte
 	if sourceScope.valid() {
 		items, found, errReplay := internalcache.GetCodexReasoningReplayItemsRequired(ctx, sourceScope.modelName, sourceScope.sessionKey)
