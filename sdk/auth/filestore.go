@@ -181,7 +181,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 		}
 		auths, errReadAuths := s.readAuthFiles(path, dir)
 		if errReadAuths != nil {
-			return nil
+			return fmt.Errorf("auth filestore: read auth file %q: %w", path, errReadAuths)
 		}
 		if len(auths) > 0 {
 			entries = append(entries, auths...)
@@ -249,7 +249,10 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			FileName: s.idFor(path, baseDir),
 			RawJSON:  data,
 		})
-		if errParse == nil && handled {
+		if errParse != nil {
+			return nil, fmt.Errorf("parse plugin auth: %w", errParse)
+		}
+		if handled {
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
 				return nil, nil
@@ -338,7 +341,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
 	}
-	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
+	cliproxyauth.HydrateAuthFromMetadata(auth)
 	return []*cliproxyauth.Auth{auth}, nil
 }
 

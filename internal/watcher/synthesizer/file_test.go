@@ -3,6 +3,7 @@ package synthesizer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -322,6 +323,22 @@ func TestFileSynthesizer_Synthesize_SkipsInvalidFiles(t *testing.T) {
 	}
 	if auths[0].Label != "valid@example.com" {
 		t.Errorf("expected label valid@example.com, got %s", auths[0].Label)
+	}
+}
+
+func TestSynthesizeAuthFilePluginParserErrorDoesNotFallback(t *testing.T) {
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     t.TempDir(),
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+			return nil, true, errors.New("plugin parse failed")
+		}),
+	}
+	auths := SynthesizeAuthFile(ctx, filepath.Join(ctx.AuthDir, "plugin.json"), []byte(`{"type":"plugin-provider"}`))
+	if len(auths) != 0 {
+		t.Fatalf("SynthesizeAuthFile() = %#v, want no generic fallback", auths)
 	}
 }
 

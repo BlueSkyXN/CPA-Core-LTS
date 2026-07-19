@@ -484,6 +484,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		"source":         "memory",
 		"size":           int64(0),
 	}
+	if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
+		entry["prefix"] = prefix
+	}
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
@@ -1217,7 +1220,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			auth.Runtime = existing.Runtime
 		}
 	}
-	coreauth.ApplyCustomHeadersFromMetadata(auth)
+	coreauth.HydrateAuthFromMetadata(auth)
 	return auth, nil
 }
 
@@ -1497,6 +1500,23 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
+		if rootAuthFileField(fieldPath) == "prefix" {
+			if fieldPath != "prefix" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "prefix does not support nested field paths"})
+				return
+			}
+			rawPrefix, okString := value.(string)
+			if !okString {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "prefix must be a string"})
+				return
+			}
+			normalizedPrefix := coreauth.NormalizeAuthPrefix(rawPrefix)
+			if strings.Trim(strings.TrimSpace(rawPrefix), "/") != "" && normalizedPrefix == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "prefix must be a single path segment"})
+				return
+			}
+			value = normalizedPrefix
+		}
 
 		if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)
@@ -1641,7 +1661,7 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	}
 	if _, ok := touchedRoots["prefix"]; ok {
 		if prefix, okString := auth.Metadata["prefix"].(string); okString {
-			auth.Prefix = strings.TrimSpace(prefix)
+			auth.Prefix = coreauth.NormalizeAuthPrefix(prefix)
 		}
 	}
 	if _, ok := touchedRoots["proxy_url"]; ok {

@@ -39,10 +39,10 @@ func TestApplyDisabledMetadataMarksAuthDisabled(t *testing.T) {
 	}
 }
 
-func TestGitTokenStoreReadAuthFileUsesDisabledMetadata(t *testing.T) {
+func TestGitTokenStoreReadAuthFileHydratesMetadata(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "disabled.json")
-	if err := os.WriteFile(path, []byte(`{"type":"test","email":"u@example.com","disabled":true}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"type":"test","email":"u@example.com","prefix":" /team/ ","disabled":true}`), 0o600); err != nil {
 		t.Fatalf("write auth file: %v", err)
 	}
 
@@ -52,12 +52,15 @@ func TestGitTokenStoreReadAuthFileUsesDisabledMetadata(t *testing.T) {
 		t.Fatalf("readAuthFile() error: %v", err)
 	}
 	assertDisabledAuth(t, auth)
+	if auth.Prefix != "team" {
+		t.Fatalf("Prefix=%q, want team", auth.Prefix)
+	}
 }
 
-func TestObjectTokenStoreReadAuthFileUsesDisabledMetadata(t *testing.T) {
+func TestObjectTokenStoreReadAuthFileHydratesMetadata(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "disabled.json")
-	if err := os.WriteFile(path, []byte(`{"type":"test","email":"u@example.com","disabled":true}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"type":"test","email":"u@example.com","prefix":" /team/ ","disabled":true}`), 0o600); err != nil {
 		t.Fatalf("write auth file: %v", err)
 	}
 
@@ -67,6 +70,9 @@ func TestObjectTokenStoreReadAuthFileUsesDisabledMetadata(t *testing.T) {
 		t.Fatalf("readAuthFile() error: %v", err)
 	}
 	assertDisabledAuth(t, auth)
+	if auth.Prefix != "team" {
+		t.Fatalf("Prefix=%q, want team", auth.Prefix)
+	}
 }
 
 func assertDisabledAuth(t *testing.T, auth *cliproxyauth.Auth) {

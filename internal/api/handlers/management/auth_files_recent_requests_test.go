@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,7 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 	record := &coreauth.Auth{
 		ID:       "runtime-only-auth-1",
 		Provider: "codex",
+		Prefix:   "team",
 		Attributes: map[string]string{
 			"runtime_only": "true",
 		},
@@ -67,6 +69,9 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 	if _, ok := fileEntry["failed"].(float64); !ok {
 		t.Fatalf("expected failed number, got %#v", fileEntry["failed"])
 	}
+	if got, _ := fileEntry["prefix"].(string); got != "team" {
+		t.Fatalf("prefix = %q, want team", got)
+	}
 
 	recentRaw, ok := fileEntry["recent_requests"].([]any)
 	if !ok {
@@ -89,5 +94,18 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 		if _, ok := bucket["failed"].(float64); !ok {
 			t.Fatalf("expected bucket failed number at %d, got %#v", idx, bucket["failed"])
 		}
+	}
+}
+
+func TestBuildAuthFromFileDataHydratesPrefix(t *testing.T) {
+	dir := t.TempDir()
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: dir}, nil)
+	path := filepath.Join(dir, "prefix.json")
+	auth, err := h.buildAuthFromFileData(path, []byte(`{"type":"claude","prefix":" /team/ "}`))
+	if err != nil {
+		t.Fatalf("buildAuthFromFileData: %v", err)
+	}
+	if auth == nil || auth.Prefix != "team" {
+		t.Fatalf("auth = %#v, want hydrated prefix team", auth)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 // FileSynthesizer generates Auth entries from OAuth JSON files.
@@ -87,7 +88,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			FileName: filepath.Base(fullPath),
 			RawJSON:  data,
 		})
-		if errParse == nil && handled {
+		if errParse != nil {
+			log.WithField("file", filepath.Base(fullPath)).Warn("plugin auth parser failed; retaining no synthesized fallback")
+			return nil
+		}
+		if handled {
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
 				return nil

@@ -373,7 +373,7 @@ func (s *GitTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
 		}
 		auth, err := s.readAuthFile(path, dir)
 		if err != nil {
-			return nil
+			return fmt.Errorf("auth gitstore: read auth file %q: %w", path, err)
 		}
 		if auth != nil {
 			entries = append(entries, auth)
@@ -505,11 +505,7 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
 	}
-	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-	if disabled, ok := metadata["disabled"].(bool); ok && disabled {
-		auth.Disabled = true
-		auth.Status = cliproxyauth.StatusDisabled
-	}
+	cliproxyauth.HydrateAuthFromMetadata(auth)
 	return auth, nil
 }
 
