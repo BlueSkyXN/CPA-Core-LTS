@@ -161,6 +161,10 @@ require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"EffectiveServiceTier,omitempty"' sdk/pluginapi/types.go
+require_grep "TestUsageAdapterPreservesEffectiveServiceTier" internal/pluginhost/adapters_test.go
+require_grep "TestRPCUsageIncludesEffectiveServiceTier" internal/pluginhost/host_test.go
+require_grep "TestPublishCodexImageToolUsagePreservesResponseTierPrecedence" internal/runtime/executor/codex_openai_images_test.go
 require_grep 'json:"generate"' internal/usage internal/redisqueue
 require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
 if git grep -n 'json:"thinking' -- internal/usage; then

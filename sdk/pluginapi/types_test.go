@@ -46,6 +46,55 @@ func TestRequestInterceptorCapabilityAcceptsLegacyAndStagedImplementations(t *te
 	}
 }
 
+func TestUsageRecordEffectiveServiceTierJSONCompatibility(t *testing.T) {
+	raw, errMarshal := json.Marshal(UsageRecord{
+		Provider:             "codex",
+		ServiceTier:          "priority",
+		EffectiveServiceTier: "standard",
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal UsageRecord: %v", errMarshal)
+	}
+
+	var fields map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(raw, &fields); errUnmarshal != nil {
+		t.Fatalf("decode UsageRecord fields: %v", errUnmarshal)
+	}
+	if _, ok := fields["EffectiveServiceTier"]; !ok {
+		t.Fatalf("UsageRecord JSON missing EffectiveServiceTier: %s", raw)
+	}
+	emptyRaw, errMarshal := json.Marshal(UsageRecord{Provider: "codex"})
+	if errMarshal != nil {
+		t.Fatalf("marshal empty-tier UsageRecord: %v", errMarshal)
+	}
+	var emptyFields map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(emptyRaw, &emptyFields); errUnmarshal != nil {
+		t.Fatalf("decode empty-tier UsageRecord fields: %v", errUnmarshal)
+	}
+	if _, ok := emptyFields["EffectiveServiceTier"]; ok {
+		t.Fatalf("empty UsageRecord JSON unexpectedly includes EffectiveServiceTier: %s", emptyRaw)
+	}
+
+	var legacy struct {
+		Provider    string
+		ServiceTier string
+	}
+	if errUnmarshal := json.Unmarshal(raw, &legacy); errUnmarshal != nil {
+		t.Fatalf("legacy decoder rejected additive UsageRecord field: %v", errUnmarshal)
+	}
+	if legacy.Provider != "codex" || legacy.ServiceTier != "priority" {
+		t.Fatalf("legacy UsageRecord = %+v, want provider codex and priority tier", legacy)
+	}
+
+	var current UsageRecord
+	if errUnmarshal := json.Unmarshal([]byte(`{"Provider":"codex","ServiceTier":"priority"}`), &current); errUnmarshal != nil {
+		t.Fatalf("decode legacy UsageRecord: %v", errUnmarshal)
+	}
+	if current.EffectiveServiceTier != "" {
+		t.Fatalf("legacy EffectiveServiceTier = %q, want empty", current.EffectiveServiceTier)
+	}
+}
+
 func TestMetadataConfigFieldsExposePluginSchema(t *testing.T) {
 	meta := Metadata{
 		Name:             "example",
