@@ -1240,32 +1240,54 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				log.Errorf("codex executor: close response body error: %v", errClose)
 			}
 		}()
+		buffering := abnormalRetry.StreamBuffer()
+		bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
+		scannerMaxTokenBytes := int64(52_428_800) // 50 MiB compatibility ceiling.
+		if bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
+			scannerMaxTokenBytes = bufferMaxBytes + 1
+			if scannerMaxTokenBytes < 64<<10 {
+				scannerMaxTokenBytes = 64 << 10
+			}
+		}
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
+		scanner.Buffer(nil, int(scannerMaxTokenBytes))
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
-		buffering := abnormalRetry.StreamBuffer()
-		bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
+		var outputItemsBytes int64
 		var bufferedBytes int64
 		var bufferedChunks []cliproxyexecutor.StreamChunk
+		var bufferLimitErr error
+		bufferLimitExceeded := false
 		var flushBuffered func() bool
+		exceedBufferLimit := func() {
+			if bufferLimitExceeded {
+				return
+			}
+			bufferLimitErr = statusErr{
+				code: http.StatusBadGateway,
+				msg:  fmt.Sprintf("codex abnormal reasoning retry stream buffer limit exceeded: %d bytes", bufferMaxBytes),
+			}
+			log.WithField("stream_buffer_max_bytes", bufferMaxBytes).Warn("codex abnormal reasoning retry stream buffer exceeded; failing closed for current stream")
+			bufferLimitExceeded = true
+			bufferedChunks = nil
+			bufferedBytes = 0
+			outputItemsByIndex = nil
+			outputItemsFallback = nil
+			outputItemsBytes = 0
+			qualityRecorder.drop()
+		}
 		emitChunk := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if buffering {
+				if bufferLimitExceeded {
+					return true
+				}
 				if len(chunk.Payload) > 0 {
 					chunk.Payload = bytes.Clone(chunk.Payload)
 				}
-				if bufferMaxBytes > 0 && bufferedBytes+int64(len(chunk.Payload)) > bufferMaxBytes {
-					log.WithField("stream_buffer_max_bytes", bufferMaxBytes).Warn("codex abnormal reasoning retry stream buffer exceeded; disabling guard for current stream")
-					if !flushBuffered() {
-						return false
-					}
-					select {
-					case out <- chunk:
-						return true
-					case <-ctx.Done():
-						return false
-					}
+				if bufferMaxBytes > 0 && bufferedBytes+outputItemsBytes+int64(len(chunk.Payload)) > bufferMaxBytes {
+					exceedBufferLimit()
+					return true
 				}
 				bufferedChunks = append(bufferedChunks, chunk)
 				bufferedBytes += int64(len(chunk.Payload))
@@ -1279,6 +1301,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		flushBuffered = func() bool {
+			if bufferLimitExceeded {
+				return true
+			}
 			buffering = false
 			for i := range bufferedChunks {
 				select {
@@ -1323,7 +1348,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				switch gjson.GetBytes(data, "type").String() {
 				case "response.output_item.done":
-					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+					if !bufferLimitExceeded {
+						if bufferMaxBytes > 0 && bufferedBytes+outputItemsBytes+int64(len(data)) > bufferMaxBytes {
+							exceedBufferLimit()
+						} else {
+							collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+							outputItemsBytes += int64(len(data))
+						}
+					}
 				case "response.completed":
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						usageDetail = detail
@@ -1335,6 +1367,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						}
 					}
 					completedData = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					outputItemsByIndex = nil
+					outputItemsFallback = nil
+					outputItemsBytes = 0
 					data = patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
@@ -1349,9 +1384,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param)
 			if retryErr != nil {
-				fallbackChunks := cloneCodexAbnormalReasoningRetryStreamChunks(bufferedChunks)
-				for i := range chunks {
-					fallbackChunks = append(fallbackChunks, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[i])})
+				var fallbackChunks []cliproxyexecutor.StreamChunk
+				if !bufferLimitExceeded {
+					fallbackChunks = cloneCodexAbnormalReasoningRetryStreamChunks(bufferedChunks)
+					for i := range chunks {
+						fallbackChunks = append(fallbackChunks, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunks[i])})
+					}
 				}
 				if usageDetailOK {
 					if errWithFallback := abnormalRetry.RetryErrorWithFallbackStreamChunksAndFinalizer(usageDetail, reporter.ReasoningEffort(), httpResp.Header.Clone(), fallbackChunks, streamFinalizer); errWithFallback != nil {
@@ -1368,11 +1406,20 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				streamUsage.HedgeScore = usageDetail.OutputTokens
 				streamUsage.CandidatePolicy = codexAbnormalReasoningRetryCandidatePolicy(usageDetail, abnormalRetry.deliveryPolicy, abnormalRetry.fallbackPolicy, cliproxyexecutor.RetryWithoutPenaltyCandidateKindNonSpecial)
 				streamUsage.OK = true
-				reporter.Publish(ctx, usageDetail)
+				if bufferLimitExceeded {
+					reporter.PublishFailureWithDetail(ctx, usageDetail, bufferLimitErr)
+				} else {
+					reporter.Publish(ctx, usageDetail)
+				}
 			}
 			if len(completedData) > 0 {
 				publishCodexImageToolUsage(ctx, reporter, body, completedData)
 				cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
+			}
+			if bufferLimitExceeded && len(completedData) > 0 {
+				helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
+				emitError(bufferLimitErr)
+				return
 			}
 			for i := range chunks {
 				if ok := emitChunk(cliproxyexecutor.StreamChunk{Payload: chunks[i]}); !ok {
@@ -1389,6 +1436,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			emitError(errScan)
+			return
+		}
+		if bufferLimitExceeded {
+			helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
+			reporter.PublishFailure(ctx, bufferLimitErr)
+			emitError(bufferLimitErr)
 			return
 		}
 		if buffering {

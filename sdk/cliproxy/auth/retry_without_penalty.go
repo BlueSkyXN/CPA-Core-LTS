@@ -126,13 +126,14 @@ func retryWithoutPenaltyExhaustedBehavior(err error) string {
 }
 
 type retryWithoutPenaltyHedgePolicy struct {
-	enabled             bool
-	mode                string
-	deliveryPolicy      string
-	fallbackPolicy      string
-	hedgeDelay          time.Duration
-	requireDistinctAuth bool
-	triggerAuthID       string
+	enabled              bool
+	mode                 string
+	deliveryPolicy       string
+	fallbackPolicy       string
+	hedgeDelay           time.Duration
+	requireDistinctAuth  bool
+	triggerAuthID        string
+	streamBufferMaxBytes int64
 }
 
 type retryWithoutPenaltyFallbackCandidate struct {
@@ -275,6 +276,14 @@ func retryWithoutPenaltyHedgePolicyFromError(err error) (retryWithoutPenaltyHedg
 	}
 	if errors.As(err, &withAuthID) {
 		policy.triggerAuthID = strings.TrimSpace(withAuthID.RetryWithoutPenaltyAuthID())
+	}
+	var withStreamBufferLimit interface {
+		RetryWithoutPenaltyStreamBufferMaxBytes() int64
+	}
+	if errors.As(err, &withStreamBufferLimit) {
+		if maxBytes := withStreamBufferLimit.RetryWithoutPenaltyStreamBufferMaxBytes(); maxBytes > 0 {
+			policy.streamBufferMaxBytes = maxBytes
+		}
 	}
 	return policy, true
 }

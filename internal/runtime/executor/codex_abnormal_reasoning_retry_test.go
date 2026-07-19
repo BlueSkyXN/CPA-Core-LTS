@@ -1704,7 +1704,7 @@ func TestCodexExecutorAbnormalReasoningRetry_ObserveOnlyStreamingDoesNotBufferUn
 	}
 }
 
-func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesFlushesAndDisablesRetry(t *testing.T) {
+func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesAbnormalStillRetriesWithoutFallback(t *testing.T) {
 	streamBufferMaxBytes := int64(1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1728,14 +1728,74 @@ func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesFlushesAndDi
 	}
 
 	var payload []byte
+	var streamErr error
 	for chunk := range result.Chunks {
 		if chunk.Err != nil {
-			t.Fatalf("stream chunk error = %v, want nil because buffer cap disables retry guard", chunk.Err)
+			streamErr = chunk.Err
+			continue
 		}
 		payload = append(payload, chunk.Payload...)
 	}
-	if !bytes.Contains(payload, []byte("visible")) {
-		t.Fatalf("stream payload missing flushed visible delta: %s", payload)
+	if streamErr == nil {
+		t.Fatal("stream error = nil, want retry-without-penalty error")
+	}
+	if len(payload) != 0 {
+		t.Fatalf("stream payload = %s, want no fail-open payload", payload)
+	}
+	var retryErr interface {
+		RetryWithoutPenalty() bool
+	}
+	if !errors.As(streamErr, &retryErr) || !retryErr.RetryWithoutPenalty() {
+		t.Fatalf("stream error = %v, want retry-without-penalty error", streamErr)
+	}
+	var fallbackErr interface {
+		RetryWithoutPenaltyFallbackStreamChunks() (http.Header, []cliproxyexecutor.StreamChunk, bool)
+	}
+	if errors.As(streamErr, &fallbackErr) {
+		_, chunks, ok := fallbackErr.RetryWithoutPenaltyFallbackStreamChunks()
+		if ok || len(chunks) != 0 {
+			t.Fatalf("fallback chunks = %d, ok=%t; want no oversized fallback payload", len(chunks), ok)
+		}
+	}
+}
+
+func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesNormalFailsClosed(t *testing.T) {
+	streamBufferMaxBytes := int64(1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"visible"}` + "\n\n"))
+		_, _ = w.Write([]byte(codexCompletedSSE("gpt-5.5", 100)))
+	}))
+	defer server.Close()
+
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.StreamBufferMaxBytes = &streamBufferMaxBytes
+	executor := NewCodexExecutor(cfg)
+	result, err := executor.ExecuteStream(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v", err)
+	}
+
+	var payload []byte
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "stream buffer limit") {
+		t.Fatalf("stream error = %v, want stream buffer limit error", streamErr)
+	}
+	if len(payload) != 0 {
+		t.Fatalf("stream payload = %s, want no partial payload", payload)
 	}
 }
 

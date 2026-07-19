@@ -90,8 +90,8 @@ func TestLoadConfigOptional_CodexAbnormalReasoningRetryDefaults(t *testing.T) {
 	if !effective.StreamBuffer {
 		t.Fatal("StreamBuffer = false, want true")
 	}
-	if effective.StreamBufferMaxBytes != 0 {
-		t.Fatalf("StreamBufferMaxBytes = %d, want 0", effective.StreamBufferMaxBytes)
+	if effective.StreamBufferMaxBytes != 16<<20 {
+		t.Fatalf("StreamBufferMaxBytes = %d, want %d", effective.StreamBufferMaxBytes, 16<<20)
 	}
 	if effective.MaxRetries != 2 {
 		t.Fatalf("MaxRetries = %d, want 2", effective.MaxRetries)
@@ -252,8 +252,8 @@ codex:
 	if effective.MaxRetries != 0 {
 		t.Fatalf("MaxRetries = %d, want 0", effective.MaxRetries)
 	}
-	if effective.StreamBufferMaxBytes != 0 {
-		t.Fatalf("StreamBufferMaxBytes = %d, want 0", effective.StreamBufferMaxBytes)
+	if effective.StreamBufferMaxBytes != 16<<20 {
+		t.Fatalf("StreamBufferMaxBytes = %d, want %d", effective.StreamBufferMaxBytes, 16<<20)
 	}
 	if effective.HedgedRetry.HedgeDelayMS != 0 {
 		t.Fatalf("HedgedRetry.HedgeDelayMS = %d, want 0", effective.HedgedRetry.HedgeDelayMS)

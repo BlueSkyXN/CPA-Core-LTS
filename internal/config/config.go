@@ -338,30 +338,31 @@ type CodexConfig struct {
 }
 
 const (
-	CodexModelFallbackTriggerUsageLimit                                    = "usage-limit"
-	CodexModelFallbackTriggerCapacity                                      = "capacity"
-	CodexModelFallbackReasoningContinuitySameModelOnly                     = "same-model-only"
-	CodexModelFallbackReasoningContinuityContextReset                      = "context-reset"
-	CodexRateLimitContinuityDefaultObservationWindowSeconds                = 30
-	CodexRateLimitContinuityDefaultEstablishedSuccessThreshold             = 2
-	CodexRateLimitContinuityDefaultEstablishedSessionTTLSeconds            = 3600
-	CodexAbnormalReasoningRetryActionRetry                                 = "retry"
-	CodexAbnormalReasoningRetryActionObserveOnly                           = "observe-only"
-	CodexAbnormalReasoningRetryActionDisabled                              = "disabled"
-	CodexAbnormalReasoningRetryExhaustedBehaviorError                      = "error"
-	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough                = "pass-through"
-	CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly         = "delivered-only"
-	CodexAbnormalReasoningRetryClientUsageAggregationSum                   = "sum"
-	CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal = "sum-with-delivered-total"
-	CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial                = "best-non-special"
-	CodexAbnormalReasoningRetryDeliveryPolicyFirstNonSpecial               = "first-non-special"
-	CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput                     = "max-output"
-	CodexAbnormalReasoningRetryDeliveryPolicyLatest                        = "latest"
-	CodexAbnormalReasoningRetryFallbackPolicyBestSpecial                   = "best-special"
-	CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial              = "max-output-special"
-	CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial                 = "latest-special"
-	CodexAbnormalReasoningHedgedRetryModeSpeed                             = "speed"
-	CodexAbnormalReasoningHedgedRetryModeQuality                           = "quality"
+	CodexModelFallbackTriggerUsageLimit                                          = "usage-limit"
+	CodexModelFallbackTriggerCapacity                                            = "capacity"
+	CodexModelFallbackReasoningContinuitySameModelOnly                           = "same-model-only"
+	CodexModelFallbackReasoningContinuityContextReset                            = "context-reset"
+	CodexRateLimitContinuityDefaultObservationWindowSeconds                      = 30
+	CodexRateLimitContinuityDefaultEstablishedSuccessThreshold                   = 2
+	CodexRateLimitContinuityDefaultEstablishedSessionTTLSeconds                  = 3600
+	CodexAbnormalReasoningRetryActionRetry                                       = "retry"
+	CodexAbnormalReasoningRetryActionObserveOnly                                 = "observe-only"
+	CodexAbnormalReasoningRetryActionDisabled                                    = "disabled"
+	CodexAbnormalReasoningRetryExhaustedBehaviorError                            = "error"
+	CodexAbnormalReasoningRetryExhaustedBehaviorPassThrough                      = "pass-through"
+	CodexAbnormalReasoningRetryClientUsageAggregationDeliveredOnly               = "delivered-only"
+	CodexAbnormalReasoningRetryClientUsageAggregationSum                         = "sum"
+	CodexAbnormalReasoningRetryClientUsageAggregationSumWithDeliveredTotal       = "sum-with-delivered-total"
+	CodexAbnormalReasoningRetryDeliveryPolicyBestNonSpecial                      = "best-non-special"
+	CodexAbnormalReasoningRetryDeliveryPolicyFirstNonSpecial                     = "first-non-special"
+	CodexAbnormalReasoningRetryDeliveryPolicyMaxOutput                           = "max-output"
+	CodexAbnormalReasoningRetryDeliveryPolicyLatest                              = "latest"
+	CodexAbnormalReasoningRetryFallbackPolicyBestSpecial                         = "best-special"
+	CodexAbnormalReasoningRetryFallbackPolicyMaxOutputSpecial                    = "max-output-special"
+	CodexAbnormalReasoningRetryFallbackPolicyLatestSpecial                       = "latest-special"
+	CodexAbnormalReasoningHedgedRetryModeSpeed                                   = "speed"
+	CodexAbnormalReasoningHedgedRetryModeQuality                                 = "quality"
+	CodexAbnormalReasoningRetryDefaultStreamBufferMaxBytes                 int64 = 16 << 20
 )
 
 // CodexModelFallbackConfig controls ordered, opt-in fallback between Codex
@@ -580,12 +581,9 @@ func (c CodexAbnormalReasoningRetryConfig) Effective() EffectiveCodexAbnormalRea
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
-	streamBufferMaxBytes := int64(0)
-	if c.StreamBufferMaxBytes != nil {
+	streamBufferMaxBytes := CodexAbnormalReasoningRetryDefaultStreamBufferMaxBytes
+	if c.StreamBufferMaxBytes != nil && *c.StreamBufferMaxBytes > 0 {
 		streamBufferMaxBytes = *c.StreamBufferMaxBytes
-	}
-	if streamBufferMaxBytes < 0 {
-		streamBufferMaxBytes = 0
 	}
 	hedgeDelayMS := 1000
 	if c.HedgedRetry.HedgeDelayMS != nil {
