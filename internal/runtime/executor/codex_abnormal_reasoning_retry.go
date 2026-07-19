@@ -53,6 +53,7 @@ type codexAbnormalReasoningRetryError struct {
 	hedgeMode               string
 	hedgeDelay              time.Duration
 	requireDistinctAuth     bool
+	streamBufferMaxBytes    int64
 	authID                  string
 	fallbackResponse        *cliproxyexecutor.Response
 	fallbackStreamHeaders   http.Header
@@ -109,6 +110,13 @@ func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyHedgeMode() string
 		return config.CodexAbnormalReasoningHedgedRetryModeQuality
 	}
 	return e.hedgeMode
+}
+
+func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyStreamBufferMaxBytes() int64 {
+	if e == nil || e.streamBufferMaxBytes <= 0 {
+		return config.CodexAbnormalReasoningRetryDefaultStreamBufferMaxBytes
+	}
+	return e.streamBufferMaxBytes
 }
 
 func (e *codexAbnormalReasoningRetryError) RetryWithoutPenaltyDeliveryPolicy() string {
@@ -310,6 +318,7 @@ func (p codexAbnormalReasoningRetryPolicy) retryError(detail usage.Detail, reaso
 		hedgeMode:              p.hedgeMode,
 		hedgeDelay:             p.hedgeDelay,
 		requireDistinctAuth:    p.requireDistinct,
+		streamBufferMaxBytes:   p.streamBufferMax,
 		authID:                 p.authID,
 	}
 	if fallbackResponse != nil {
@@ -700,6 +709,17 @@ func (r *codexAbnormalReasoningRetryStreamRecorder) reserve(size int64) bool {
 	}
 	r.recordedBytes += size
 	return true
+}
+
+func (r *codexAbnormalReasoningRetryStreamRecorder) drop() {
+	if r == nil {
+		return
+	}
+	r.dropped = true
+	r.lines = nil
+	r.completedData = nil
+	r.completedIndex = -1
+	r.recordedBytes = 0
 }
 
 func (r *codexAbnormalReasoningRetryStreamRecorder) ready() bool {

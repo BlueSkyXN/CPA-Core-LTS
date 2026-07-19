@@ -26,7 +26,7 @@ const (
 	apiResponseKey                 = "API_RESPONSE"
 	apiWebsocketTimelineKey        = "API_WEBSOCKET_TIMELINE"
 	creditsUsedKey                 = "__antigravity_credits_used__"
-	maxDeferredAPIRequestBodyBytes = 32 << 20 // 32 MiB
+	maxDeferredAPIRequestBodyBytes = 1 << 20 // 1 MiB preview across all upstream attempts
 )
 
 var deferredAPIRequestStateInitMu sync.Mutex

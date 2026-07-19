@@ -187,8 +187,10 @@ features:
       - codex.abnormal-reasoning-retry.hedged-retry.hedge-delay-ms
       - codex.abnormal-reasoning-retry.hedged-retry.require-distinct-auth
     core_files:
+      - docs/lts/codex-client-context-degradation-defense.md
       - internal/api/middleware/response_writer.go
       - internal/config/config.go
+      - internal/config/codex_websocket_header_defaults_test.go
       - internal/logging/request_logger.go
       - internal/runtime/executor/codex_abnormal_reasoning_retry.go
       - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
@@ -219,6 +221,8 @@ features:
       - hedge-delay-ms
       - require-distinct-auth
       - stream-buffer-max-bytes
+      - CodexAbnormalReasoningRetryDefaultStreamBufferMaxBytes
+      - TestCodexExecutorAbnormalReasoningRetry_StreamingSingleEventOverScannerLimitFailsClosed
       - max-retries
       - exhausted-behavior
       - reasoning-efforts

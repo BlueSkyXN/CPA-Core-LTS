@@ -248,8 +248,9 @@ codex:
       - "oauth"
     auth-ids: []
     stream-buffer: true
-    # 0 means unlimited buffering while stream-buffer is enabled. Positive values flush buffered chunks and disable this guard for the current stream once exceeded.
-    stream-buffer-max-bytes: 0
+    # Safe default: 16 MiB. 0 or negative values also use this default; positive values set an explicit cap.
+    # Exceeding the cap fails the current stream closed with 502 and never releases partial or oversized fallback output.
+    stream-buffer-max-bytes: 16777216
     # Maximum extra retries caused by abnormal reasoning detection. Default: 2.
     # This limit is independent of the global request-retry setting.
     # Set to 0 to record the abnormal attempt as failed usage and apply exhausted-behavior immediately.

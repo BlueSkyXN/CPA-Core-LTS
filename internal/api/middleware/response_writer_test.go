@@ -85,6 +85,19 @@ func TestExtractResponseBodySupportsStringOverride(t *testing.T) {
 	}
 }
 
+func TestCaptureResponseBodyBoundsLogPreview(t *testing.T) {
+	wrapper := &ResponseWriterWrapper{body: &bytes.Buffer{}}
+	wrapper.captureResponseBody(bytes.Repeat([]byte("x"), maxCapturedResponseBodyBytes+1))
+
+	if wrapper.body.Len() != maxCapturedResponseBodyBytes {
+		t.Fatalf("captured response body length = %d, want %d", wrapper.body.Len(), maxCapturedResponseBodyBytes)
+	}
+	body := wrapper.extractResponseBody(nil)
+	if !bytes.Contains(body, []byte("RESPONSE BODY TRUNCATED IN LOG")) {
+		t.Fatalf("response body = %q, want truncation marker", body[len(body)-64:])
+	}
+}
+
 func TestExtractBodyOverrideClonesBytes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

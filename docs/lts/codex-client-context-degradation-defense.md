@@ -42,7 +42,7 @@ CPA-Core-LTS 提供三层防御：
 
 注意区分两件事：
 
-- **代码默认**：Core 出于安全默认不启用。未显式配置时 `action` 从 `enabled: false` 归一到 `disabled`，`exhausted-behavior` 默认 `error`，`client-usage-aggregation` 默认 `delivered-only`，hedged retry 默认关闭。
+- **代码默认**：Core 出于安全默认不启用。未显式配置时 `action` 从 `enabled: false` 归一到 `disabled`，`exhausted-behavior` 默认 `error`，`client-usage-aggregation` 默认 `delivered-only`，stream buffer 上限默认 16 MiB，hedged retry 默认关闭。
 - **部署推荐**：HFS / Codex 生产入口建议显式启用 `retry`，配合 `pass-through + best-non-special + best-special + sum-with-delivered-total`。
 
 ### 推荐组合
@@ -71,7 +71,7 @@ codex:
     auth-kinds:
       - oauth
     stream-buffer: true
-    stream-buffer-max-bytes: 0
+    stream-buffer-max-bytes: 16777216
     max-retries: 2
     exhausted-behavior: pass-through
     delivery-policy: best-non-special
@@ -197,9 +197,9 @@ all-special 指 retry 耗尽后所有候选都是 special。只有 `exhausted-be
 | 字段 | 推荐值 | 可选值 | 注意 |
 | --- | --- | --- | --- |
 | `stream-buffer` | `true` | `true` / `false` | retry 防线必须打开；`observe-only` 不做完整缓冲。 |
-| `stream-buffer-max-bytes` | `0` | `0` 或正整数 | `0` 不限；超限自动 flush 并禁用本次检测。 |
+| `stream-buffer-max-bytes` | `16777216` | `0` 或正整数 | 默认 16 MiB；`0` 也归一到安全默认，正整数设置显式上限。超限返回 request-scoped 502，不 flush、不透传 partial output，也不保留 oversized fallback chunks。 |
 
-需要保留 streaming 体验同时观察命中时，用 `action: observe-only`，不要靠 `stream-buffer: false` 达成。
+不存在“不限缓冲”模式。需要保留 streaming 体验同时观察命中时，用 `action: observe-only`，不要靠 `stream-buffer: false` 达成；后者会关闭 retry 所需的交付前缓冲边界。
 
 ### 字段详解：Hedged Retry
 

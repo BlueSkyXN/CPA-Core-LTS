@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -38,6 +39,22 @@ type retryWithoutPenaltyHedgeLaneResult struct {
 	err            error
 	dispatched     bool
 	usageAccounted bool
+}
+
+type retryWithoutPenaltyStreamBufferLimitError struct {
+	limit int64
+}
+
+func (e retryWithoutPenaltyStreamBufferLimitError) Error() string {
+	return fmt.Sprintf("retry without penalty quality stream buffer limit exceeded: %d bytes", e.limit)
+}
+
+func (retryWithoutPenaltyStreamBufferLimitError) StatusCode() int {
+	return http.StatusBadGateway
+}
+
+func (retryWithoutPenaltyStreamBufferLimitError) IsRequestScoped() bool {
+	return true
 }
 
 type retryWithoutPenaltyHedgeLaneHandle struct {
@@ -705,7 +722,7 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Cont
 			if err == nil && stream != nil {
 				headers = cloneHTTPHeader(stream.Headers)
 				metadata = cloneSchedulerAnyMap(stream.Metadata)
-				chunks, err = collectRetryWithoutPenaltyStreamChunks(laneCtx, stream.Chunks)
+				chunks, err = collectRetryWithoutPenaltyStreamChunks(laneCtx, stream.Chunks, policy.streamBufferMaxBytes)
 			}
 			dispatched := tracker.dispatched()
 			accounted := false
@@ -932,8 +949,9 @@ func drainRetryWithoutPenaltyStreamHedgeResults(resultCh <-chan retryWithoutPena
 	}()
 }
 
-func collectRetryWithoutPenaltyStreamChunks(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk) ([]cliproxyexecutor.StreamChunk, error) {
+func collectRetryWithoutPenaltyStreamChunks(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk, maxBytes int64) ([]cliproxyexecutor.StreamChunk, error) {
 	var chunks []cliproxyexecutor.StreamChunk
+	var bufferedBytes int64
 	for {
 		var (
 			chunk cliproxyexecutor.StreamChunk
@@ -956,10 +974,15 @@ func collectRetryWithoutPenaltyStreamChunks(ctx context.Context, ch <-chan clipr
 			discardStreamChunks(ch)
 			return nil, chunk.Err
 		}
+		if maxBytes > 0 && bufferedBytes+int64(len(chunk.Payload)) > maxBytes {
+			discardStreamChunks(ch)
+			return nil, retryWithoutPenaltyStreamBufferLimitError{limit: maxBytes}
+		}
 		if len(chunk.Payload) > 0 {
 			chunk.Payload = bytes.Clone(chunk.Payload)
 		}
 		chunks = append(chunks, chunk)
+		bufferedBytes += int64(len(chunk.Payload))
 	}
 }
 

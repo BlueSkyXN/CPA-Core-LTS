@@ -1676,6 +1676,25 @@ func TestManagerExecuteStream_HedgedRetryContinuesAbnormalWavesInsideHelper(t *t
 	}
 }
 
+func TestCollectRetryWithoutPenaltyStreamChunksEnforcesByteLimit(t *testing.T) {
+	stream := make(chan cliproxyexecutor.StreamChunk, 2)
+	stream <- cliproxyexecutor.StreamChunk{Payload: []byte("1234")}
+	stream <- cliproxyexecutor.StreamChunk{Payload: []byte("5")}
+	close(stream)
+
+	chunks, err := collectRetryWithoutPenaltyStreamChunks(context.Background(), stream, 4)
+	if err == nil {
+		t.Fatal("collect stream error = nil, want byte limit error")
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("collected chunks = %d, want none after limit overflow", len(chunks))
+	}
+	requestScoped, ok := err.(interface{ IsRequestScoped() bool })
+	if !ok || !requestScoped.IsRequestScoped() {
+		t.Fatalf("collect stream error = %T %v, want request-scoped error", err, err)
+	}
+}
+
 func waitForAuthSuccess(t *testing.T, manager *Manager, authID string, want int64) {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)
