@@ -18,6 +18,18 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 )
 
+type trackedRequestBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackedRequestBody) Close() error {
+	if b != nil {
+		b.closed = true
+	}
+	return nil
+}
+
 func TestShouldSkipMethodForRequestLogging(t *testing.T) {
 	tests := []struct {
 		name string
@@ -300,9 +312,9 @@ func TestRequestLoggingMiddlewareCleansDeferredBodyCaptureOnPanic(t *testing.T) 
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			logsDir := t.TempDir()
-			logger := logging.NewFileRequestLogger(false, logsDir, "", 10)
+			logger := logging.NewFileRequestLogger(false, t.TempDir(), "", 10)
 			payload := bytes.Repeat([]byte("s"), int(maxErrorOnlyCapturedRequestBodyBytes)+1)
+			requestBody := &trackedRequestBody{Reader: bytes.NewReader(payload)}
 
 			router := gin.New()
 			router.Use(logging.GinLogrusRecovery())
@@ -314,7 +326,9 @@ func TestRequestLoggingMiddlewareCleansDeferredBodyCaptureOnPanic(t *testing.T) 
 				panic(test.panicValue)
 			})
 
-			request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(payload))
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			request.Body = requestBody
+			request.ContentLength = int64(len(payload))
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			recovered := func() (recovered any) {
@@ -327,15 +341,8 @@ func TestRequestLoggingMiddlewareCleansDeferredBodyCaptureOnPanic(t *testing.T) 
 			if recovered != test.wantRecovered {
 				t.Fatalf("recovered panic = %v, want %v", recovered, test.wantRecovered)
 			}
-
-			entries, errReadDir := os.ReadDir(logsDir)
-			if errReadDir != nil {
-				t.Fatalf("read logs dir: %v", errReadDir)
-			}
-			for _, entry := range entries {
-				if strings.HasPrefix(entry.Name(), "request-log-parts-request-body-") {
-					t.Fatalf("deferred request body capture leaked after panic: %s", entry.Name())
-				}
+			if !requestBody.closed {
+				t.Fatal("deferred request body capture did not close the original request body after panic")
 			}
 		})
 	}

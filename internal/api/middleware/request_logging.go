@@ -180,8 +180,12 @@ func (c *deferredRequestBodyCapture) Cleanup() {
 	if c == nil {
 		return
 	}
+	body := c.body
 	c.buffer = bytes.Buffer{}
 	c.body = nil
+	if body != nil {
+		_ = body.Close()
+	}
 }
 
 func requestHasBody(req *http.Request) bool {

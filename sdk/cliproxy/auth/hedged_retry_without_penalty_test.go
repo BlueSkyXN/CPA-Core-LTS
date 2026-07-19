@@ -1689,6 +1689,10 @@ func TestCollectRetryWithoutPenaltyStreamChunksEnforcesByteLimit(t *testing.T) {
 	if len(chunks) != 0 {
 		t.Fatalf("collected chunks = %d, want none after limit overflow", len(chunks))
 	}
+	requestScoped, ok := err.(interface{ IsRequestScoped() bool })
+	if !ok || !requestScoped.IsRequestScoped() {
+		t.Fatalf("collect stream error = %T %v, want request-scoped error", err, err)
+	}
 }
 
 func waitForAuthSuccess(t *testing.T, manager *Manager, authID string, want int64) {

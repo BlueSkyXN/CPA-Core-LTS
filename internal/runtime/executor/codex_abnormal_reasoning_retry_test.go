@@ -1799,6 +1799,56 @@ func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesNormalFailsC
 	}
 }
 
+func TestCodexExecutorAbnormalReasoningRetry_StreamingSingleEventOverScannerLimitFailsClosed(t *testing.T) {
+	streamBufferMaxBytes := int64(1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		line := []byte(`data: {"type":"response.output_text.delta","delta":"`)
+		line = append(line, bytes.Repeat([]byte("x"), 70<<10)...)
+		line = append(line, []byte(`"}`+"\n\n")...)
+		_, _ = w.Write(line)
+	}))
+	defer server.Close()
+
+	cfg := codexAbnormalReasoningRetryTestConfig(nil, nil)
+	cfg.Codex.AbnormalReasoningRetry.StreamBufferMaxBytes = &streamBufferMaxBytes
+	executor := NewCodexExecutor(cfg)
+	result, err := executor.ExecuteStream(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error = %v", err)
+	}
+
+	var payload []byte
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "stream buffer limit") {
+		t.Fatalf("stream error = %v, want stream buffer limit error", streamErr)
+	}
+	statusProvider, ok := streamErr.(interface{ StatusCode() int })
+	if !ok || statusProvider.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("stream error = %T %v, want status %d", streamErr, streamErr, http.StatusBadGateway)
+	}
+	requestScoped, ok := streamErr.(interface{ IsRequestScoped() bool })
+	if !ok || !requestScoped.IsRequestScoped() {
+		t.Fatalf("stream error = %T %v, want request-scoped error", streamErr, streamErr)
+	}
+	if len(payload) != 0 {
+		t.Fatalf("stream payload length = %d, want no partial payload", len(payload))
+	}
+}
+
 func codexAbnormalReasoningRetryTestConfig(authIDs []string, streamBuffer *bool) *config.Config {
 	return &config.Config{
 		Codex: config.CodexConfig{

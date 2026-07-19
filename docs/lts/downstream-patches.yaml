@@ -350,14 +350,45 @@ patches:
     retire_when: Upstream injects the native x_search tool before the no-tools tool_choice cleanup, preserves explicit tool_choice none and parallel_tool_calls false on the shared HTTP/WebSocket preparation path, and the listed regression passes without the downstream ordering patch.
 
   - id: request-body-panic-tempfile-cleanup
-    reason: Error-only request logging spools large request bodies into temporary files, but a handler panic unwinds past RequestLoggingMiddleware before ResponseWriterWrapper.Finalize runs, leaving sensitive request content on disk after both recovered panics and http.ErrAbortHandler.
+    reason: This historical patch originally closed a panic-path temporary-file leak in error-only request logging. CPA-Core-LTS now removes that request-body tempfile spool entirely, keeps only bounded in-memory request/response/upstream previews, and still requires middleware-owned unwind cleanup so panic and http.ErrAbortHandler paths close the original body and release retained buffers.
     introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
-    affected_upstream_range: through 09da52ad509e2c18e7b9540db3b98c2214c280aa (v7.2.78-6-g09da52ad); the deferred body capture introduced at e5741673e29dd87552ad1c017025af22b20f2895 still performs cleanup only from the response finalizer.
+    affected_upstream_range: through 09da52ad509e2c18e7b9540db3b98c2214c280aa (v7.2.78-6-g09da52ad); upstream still spools large error-only request bodies to temporary files, retains substantially larger deferred upstream request bodies, and performs request-body cleanup only from the response finalizer.
     files:
       - internal/api/middleware/request_logging.go
       - internal/api/middleware/request_logging_test.go
+      - internal/api/middleware/response_writer.go
+      - internal/api/middleware/response_writer_test.go
+      - internal/runtime/executor/helps/logging_helpers.go
+      - internal/runtime/executor/helps/logging_helpers_test.go
     regression_tests:
+      - TestShouldCaptureRequestBody
+      - TestDeferredRequestBodyCaptureDoesNotDrainUnreadBody
+      - TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest
       - TestRequestLoggingMiddlewareCleansDeferredBodyCaptureOnPanic
+      - TestCaptureResponseBodyBoundsLogPreview
+      - TestRecordAPIRequestBoundsDeferredBodyWhenRequestLogDisabled
     upstream_issue_or_pr: not-filed
     state: required
-    retire_when: Upstream gives the middleware-owned deferred capture an idempotent unwind cleanup that runs for normal completion, recovered panics, and http.ErrAbortHandler, and the listed regression passes after removing the downstream defer.
+    retire_when: Upstream removes unbounded or tempfile-backed request logging from the hot path, bounds request/response/deferred upstream previews, provides idempotent middleware-owned unwind cleanup for normal completion and all panic paths, and all listed regressions pass after removing the downstream implementation.
+
+  - id: api-request-body-size-limit
+    reason: Public Claude, Gemini, OpenAI, Responses, image, and video JSON handlers previously used unbounded body reads and unbounded zstd expansion, so a small number of concurrent oversized requests could consume container memory before provider routing or normal validation ran.
+    introduced_in: b2b593fad3f18bfe700fe5f11d4e88e10bbc7f16
+    affected_upstream_range: through 09da52ad509e2c18e7b9540db3b98c2214c280aa (v7.2.78-6-g09da52ad); upstream handlers still use unbounded GetRawData/io.ReadAll behavior and do not enforce the same limit on every decoded Content-Encoding layer.
+    files:
+      - sdk/api/handlers/request_body.go
+      - sdk/api/handlers/request_body_test.go
+      - sdk/api/handlers/claude/code_handlers.go
+      - sdk/api/handlers/gemini/gemini_handlers.go
+      - sdk/api/handlers/gemini/interactions_handlers.go
+      - sdk/api/handlers/openai/openai_handlers.go
+      - sdk/api/handlers/openai/openai_images_handlers.go
+      - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_videos_handlers.go
+    regression_tests:
+      - TestReadRequestBodyRejectsIdentityBodyOverLimit
+      - TestDecodeZstdRequestBodyRejectsDecodedBodyOverLimit
+      - TestReadRequestBodyKeepsValidJSONFallbackForBadEncoding
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream bounds encoded public API request bodies and every decoded Content-Encoding layer, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.

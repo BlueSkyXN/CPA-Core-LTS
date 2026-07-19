@@ -53,6 +53,10 @@ func (retryWithoutPenaltyStreamBufferLimitError) StatusCode() int {
 	return http.StatusBadGateway
 }
 
+func (retryWithoutPenaltyStreamBufferLimitError) IsRequestScoped() bool {
+	return true
+}
+
 type retryWithoutPenaltyHedgeLaneHandle struct {
 	name   string
 	cancel context.CancelFunc

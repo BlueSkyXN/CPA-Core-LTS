@@ -125,6 +125,21 @@ func (codexIncompleteStreamError) IsRequestScoped() bool {
 	return true
 }
 
+type codexStreamBufferLimitError struct {
+	statusErr
+}
+
+func newCodexStreamBufferLimitError(limit int64) codexStreamBufferLimitError {
+	return codexStreamBufferLimitError{statusErr: statusErr{
+		code: http.StatusBadGateway,
+		msg:  fmt.Sprintf("codex abnormal reasoning retry stream buffer limit exceeded: %d bytes", limit),
+	}}
+}
+
+func (codexStreamBufferLimitError) IsRequestScoped() bool {
+	return true
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
@@ -1328,10 +1343,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if bufferLimitExceeded {
 				return
 			}
-			bufferLimitErr = statusErr{
-				code: http.StatusBadGateway,
-				msg:  fmt.Sprintf("codex abnormal reasoning retry stream buffer limit exceeded: %d bytes", bufferMaxBytes),
-			}
+			bufferLimitErr = newCodexStreamBufferLimitError(bufferMaxBytes)
 			log.WithField("stream_buffer_max_bytes", bufferMaxBytes).Warn("codex abnormal reasoning retry stream buffer exceeded; failing closed for current stream")
 			bufferLimitExceeded = true
 			bufferedChunks = nil
