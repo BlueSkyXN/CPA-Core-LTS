@@ -2111,6 +2111,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
 	}
+	if turnMetadata := rawHeaderValueCaseInsensitive(headers, "X-Codex-Turn-Metadata"); turnMetadata != "" {
+		httpReq.Header["X-Codex-Turn-Metadata"] = []string{turnMetadata}
+	}
 	if cache.ID != "" {
 		httpReq.Header.Set("Session_id", cache.ID)
 	}

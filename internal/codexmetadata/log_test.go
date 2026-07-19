@@ -57,6 +57,32 @@ func TestRedactHeadersForLogClonesAndSanitizesCanonicalHeader(t *testing.T) {
 	}
 }
 
+func TestRedactHeadersForLogMasksDerivedIdentityHeaders(t *testing.T) {
+	headers := map[string][]string{
+		"Session_id":               {"sensitive-session"},
+		"X-Codex-Window-Id":        {"sensitive-window"},
+		"X-Codex-Parent-Thread-Id": {"sensitive-parent"},
+		"X-OpenAI-Subagent":        {"sensitive-subagent"},
+		"X-Unrelated":              {"keep"},
+	}
+
+	redacted := RedactHeadersForLog(headers)
+	for _, key := range []string{"Session_id", "X-Codex-Window-Id", "X-Codex-Parent-Thread-Id", "X-OpenAI-Subagent"} {
+		if got := redacted[key]; len(got) != 1 || got[0] != redactedIdentityHeader {
+			t.Fatalf("%s = %#v, want fixed marker", key, got)
+		}
+		if strings.Contains(strings.Join(redacted[key], ""), "sensitive") {
+			t.Fatalf("%s leaked sensitive value: %#v", key, redacted[key])
+		}
+	}
+	if got := redacted["X-Unrelated"]; len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("X-Unrelated = %#v, want keep", got)
+	}
+	if headers["Session_id"][0] != "sensitive-session" {
+		t.Fatalf("live headers mutated: %#v", headers)
+	}
+}
+
 func TestRedactRequestBodyForLogRedactsEscapedCanonicalKey(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6","clie\u006et_metadata":{"x-codex-turn-metad\u0061ta":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:credential-sentinel@example.com/repo.git\"}}}}"}}`)
 	redacted := RedactRequestBodyForLog(body)

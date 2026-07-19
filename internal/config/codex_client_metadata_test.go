@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,10 +37,10 @@ func TestCodexClientMetadataEffectiveNormalizesInvalidValues(t *testing.T) {
 			wantPolicy: CodexClientMetadataWorkspacePolicyDrop,
 		},
 		{
-			name:       "invalid uses safe defaults",
+			name:       "invalid fails closed",
 			config:     CodexClientMetadataConfig{Mode: "unexpected", WorkspacePolicy: "unexpected"},
-			wantMode:   CodexClientMetadataModeRepair,
-			wantPolicy: CodexClientMetadataWorkspacePolicyPassthrough,
+			wantMode:   CodexClientMetadataModeStrict,
+			wantPolicy: CodexClientMetadataWorkspacePolicyDrop,
 		},
 	}
 	for _, test := range tests {
@@ -70,5 +71,69 @@ codex:
 	effective := cfg.Codex.ClientMetadata.Effective()
 	if effective.Mode != CodexClientMetadataModeStrict || effective.WorkspacePolicy != CodexClientMetadataWorkspacePolicyDrop {
 		t.Fatalf("client metadata = %+v", effective)
+	}
+}
+
+func TestCodexClientMetadataValidateRejectsUnknownNonEmptyValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		config CodexClientMetadataConfig
+	}{
+		{name: "mode", config: CodexClientMetadataConfig{Mode: "repiar"}},
+		{name: "workspace policy", config: CodexClientMetadataConfig{WorkspacePolicy: "pass-through"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if err == nil {
+				t.Fatal("Validate() accepted unknown non-empty value")
+			}
+			if strings.Contains(err.Error(), "repiar") || strings.Contains(err.Error(), "pass-through") {
+				t.Fatalf("Validate() echoed untrusted value: %v", err)
+			}
+		})
+	}
+
+	for _, valid := range []CodexClientMetadataConfig{
+		{},
+		{Mode: " disabled ", WorkspacePolicy: " remove "},
+		{Mode: "STRICT", WorkspacePolicy: "REDACT"},
+	} {
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("Validate(%+v) error = %v", valid, err)
+		}
+	}
+}
+
+func TestLoadConfigOptionalRejectsInvalidCodexClientMetadataBeforePersistingSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	original := "remote-management:\n  secret-key: plaintext-secret\ncodex:\n  client-metadata:\n    mode: repiar\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadConfigOptional(path, false); err == nil {
+		t.Fatal("LoadConfigOptional() accepted invalid client metadata mode")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original || !strings.Contains(string(data), "plaintext-secret") {
+		t.Fatalf("invalid config triggered persistence side effect: %s", data)
+	}
+	if _, err := LoadConfigOptional(path, true); err == nil {
+		t.Fatal("LoadConfigOptional(optional=true) accepted explicit invalid client metadata mode")
+	}
+}
+
+func TestParseConfigBytesRejectsInvalidCodexClientMetadata(t *testing.T) {
+	for _, payload := range []string{
+		"codex:\n  client-metadata:\n    mode: repiar\n",
+		"codex:\n  client-metadata:\n    workspace-policy: pass-through\n",
+	} {
+		if _, err := ParseConfigBytes([]byte(payload)); err == nil {
+			t.Fatalf("ParseConfigBytes() accepted invalid payload: %s", payload)
+		}
 	}
 }

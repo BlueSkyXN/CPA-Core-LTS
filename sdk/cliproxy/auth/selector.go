@@ -404,14 +404,15 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 // Pick selects an auth with session affinity when possible.
 // Priority for session ID extraction:
 //  1. explicit execution_session_id metadata
-//  2. metadata.user_id (Claude Code format with _session_{uuid})
-//  3. X-Session-ID header
-//  4. Session_id header (Codex)
-//  5. X-Amp-Thread-Id header (Amp CLI thread ID)
-//  6. X-Client-Request-Id header (PI)
-//  7. metadata.user_id (non-Claude Code format)
-//  8. conversation_id field in request body
-//  9. Stable hash from first few messages content (fallback)
+//  2. pre-auth canonical Codex session metadata
+//  3. metadata.user_id (Claude Code format with _session_{uuid})
+//  4. X-Session-ID header
+//  5. Session_id header (Codex)
+//  6. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  7. X-Client-Request-Id header (PI)
+//  8. metadata.user_id (non-Claude Code format)
+//  9. conversation_id field in request body
+//  10. Stable hash from first few messages content (fallback)
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
@@ -507,14 +508,15 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 // ExtractSessionID extracts session identifier from multiple sources.
 // Priority order:
 //  1. explicit execution_session_id metadata
-//  2. metadata.user_id (Claude Code format with _session_{uuid})
-//  3. X-Session-ID header
-//  4. Session_id header (Codex)
-//  5. X-Amp-Thread-Id header (Amp CLI thread ID)
-//  6. X-Client-Request-Id header (PI)
-//  7. metadata.user_id (non-Claude Code format)
-//  8. conversation_id field in request body
-//  9. Stable hash from first few messages content (fallback)
+//  2. pre-auth canonical Codex session metadata
+//  3. metadata.user_id (Claude Code format with _session_{uuid})
+//  4. X-Session-ID header
+//  5. Session_id header (Codex)
+//  6. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  7. X-Client-Request-Id header (PI)
+//  8. metadata.user_id (non-Claude Code format)
+//  9. conversation_id field in request body
+//  10. Stable hash from first few messages content (fallback)
 func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
 	primary, _ := extractSessionIDs(headers, payload, metadata)
 	return primary
@@ -528,8 +530,11 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 	if sessionID := contextStringValue(metadata[cliproxyexecutor.ExecutionSessionMetadataKey]); sessionID != "" {
 		return "execution:" + sessionID, ""
 	}
+	if sessionID := contextStringValue(metadata[codexCanonicalSessionMetadataKey]); sessionID != "" {
+		return "codex:" + sessionID, ""
+	}
 
-	// 2. metadata.user_id with Claude Code session format.
+	// 3. metadata.user_id with Claude Code session format.
 	if len(payload) > 0 {
 		userID := gjson.GetBytes(payload, "metadata.user_id").String()
 		if userID != "" {
@@ -548,14 +553,14 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 		}
 	}
 
-	// 3. X-Session-ID header
+	// 4. X-Session-ID header
 	if headers != nil {
 		if sid := headers.Get("X-Session-ID"); sid != "" {
 			return "header:" + sid, ""
 		}
 	}
 
-	// 4. Session_id header (Codex)
+	// 5. Session_id header (Codex)
 	if headers != nil {
 		if sid := headers.Get("Session-Id"); sid != "" {
 			return "codex:" + sid, ""
@@ -565,14 +570,14 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 		}
 	}
 
-	// 5. X-Amp-Thread-Id header (Amp CLI thread ID)
+	// 6. X-Amp-Thread-Id header (Amp CLI thread ID)
 	if headers != nil {
 		if tid := headers.Get("X-Amp-Thread-Id"); tid != "" {
 			return "amp:" + tid, ""
 		}
 	}
 
-	// 6. X-Client-Request-Id header (PI)
+	// 7. X-Client-Request-Id header (PI)
 	if headers != nil {
 		if rid := headers.Get("X-Client-Request-Id"); rid != "" {
 			return "clientreq:" + rid, ""
@@ -583,18 +588,18 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 		return "", ""
 	}
 
-	// 7. metadata.user_id (non-Claude Code format)
+	// 8. metadata.user_id (non-Claude Code format)
 	userID := gjson.GetBytes(payload, "metadata.user_id").String()
 	if userID != "" {
 		return "user:" + userID, ""
 	}
 
-	// 8. conversation_id field
+	// 9. conversation_id field
 	if convID := gjson.GetBytes(payload, "conversation_id").String(); convID != "" {
 		return "conv:" + convID, ""
 	}
 
-	// 9. Hash-based fallback from message content
+	// 10. Hash-based fallback from message content
 	return extractMessageHashIDs(payload)
 }
 
