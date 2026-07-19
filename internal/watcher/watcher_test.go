@@ -228,6 +228,80 @@ func TestReloadConfigIfChanged_TriggersOnChangeAndSkipsUnchanged(t *testing.T) {
 	}
 }
 
+func TestReloadConfigIfChangedRetainsLastGoodConfigAfterInvalidCodexMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	validConfig := []byte("port: 8080\nauth-dir: " + authDir + "\ncodex:\n  client-metadata:\n    mode: repair\n    workspace-policy: redact\n")
+	if err := os.WriteFile(configPath, validConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCfg := &config.Config{Port: 8080, AuthDir: authDir, Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode:            config.CodexClientMetadataModeRepair,
+		WorkspacePolicy: config.CodexClientMetadataWorkspacePolicyRedact,
+	}}}
+	reloads := 0
+	w := &Watcher{
+		configPath: configPath,
+		authDir:    authDir,
+		reloadCallback: func(*config.Config) {
+			reloads++
+		},
+	}
+	w.SetConfig(oldCfg)
+	oldYAML := append([]byte(nil), w.oldConfigYaml...)
+	baselineSum := sha256.Sum256(validConfig)
+	w.lastConfigHash = fmt.Sprintf("%x", baselineSum[:])
+	baselineHash := w.lastConfigHash
+
+	invalidConfig := []byte("port: 9090\nauth-dir: " + authDir + "\ncodex:\n  client-metadata:\n    workspace-policy: pass-through\n")
+	if err := os.WriteFile(configPath, invalidConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.reloadConfigIfChanged()
+
+	w.clientsMutex.RLock()
+	if w.config == nil || w.config.Port != 8080 || w.config.Codex.ClientMetadata.WorkspacePolicy != config.CodexClientMetadataWorkspacePolicyRedact {
+		w.clientsMutex.RUnlock()
+		t.Fatalf("invalid reload replaced last good config: %+v", w.config)
+	}
+	if string(w.oldConfigYaml) != string(oldYAML) {
+		w.clientsMutex.RUnlock()
+		t.Fatalf("invalid reload replaced oldConfigYaml: got %s want %s", w.oldConfigYaml, oldYAML)
+	}
+	if w.lastConfigHash != baselineHash {
+		w.clientsMutex.RUnlock()
+		t.Fatalf("invalid reload advanced hash = %q, want %q", w.lastConfigHash, baselineHash)
+	}
+	w.clientsMutex.RUnlock()
+	if reloads != 0 {
+		t.Fatalf("invalid reload callback count = %d, want 0", reloads)
+	}
+
+	correctedConfig := []byte("port: 9090\nauth-dir: " + authDir + "\ncodex:\n  client-metadata:\n    mode: strict\n    workspace-policy: drop\n")
+	if err := os.WriteFile(configPath, correctedConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.reloadConfigIfChanged()
+
+	w.clientsMutex.RLock()
+	defer w.clientsMutex.RUnlock()
+	if w.config == nil || w.config.Port != 9090 || w.config.Codex.ClientMetadata.Mode != config.CodexClientMetadataModeStrict {
+		t.Fatalf("corrected reload did not apply: %+v", w.config)
+	}
+	correctedSum := sha256.Sum256(correctedConfig)
+	if want := fmt.Sprintf("%x", correctedSum[:]); w.lastConfigHash != want {
+		t.Fatalf("corrected reload hash = %q, want %q", w.lastConfigHash, want)
+	}
+	if reloads != 1 {
+		t.Fatalf("corrected reload callback count = %d, want 1", reloads)
+	}
+}
+
 func TestStartAndStopSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")

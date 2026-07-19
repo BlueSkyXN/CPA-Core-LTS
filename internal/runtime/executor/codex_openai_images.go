@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -82,6 +84,9 @@ func (e *CodexExecutor) resolveGPTImage2BaseModel() string {
 }
 
 func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if errValidate := e.validateCodexOpenAIImageClientMetadata(ctx, auth, req, opts); errValidate != nil {
+		return resp, errValidate
+	}
 	if directEndpoint := codexDirectOpenAIImageEndpoint(req, opts); directEndpoint != "" {
 		return e.executeDirectOpenAIImage(ctx, auth, req, opts, directEndpoint)
 	}
@@ -109,7 +114,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
-	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body)
+	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body, opts.Headers)
 	if errCache != nil {
 		return resp, errCache
 	}
@@ -181,6 +186,9 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 }
 
 func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if errValidate := e.validateCodexOpenAIImageClientMetadata(ctx, auth, req, opts); errValidate != nil {
+		return nil, errValidate
+	}
 	if directEndpoint := codexDirectOpenAIImageEndpoint(req, opts); directEndpoint != "" {
 		return e.executeDirectOpenAIImageStream(ctx, auth, req, opts, directEndpoint)
 	}
@@ -208,7 +216,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
-	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body)
+	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body, opts.Headers)
 	if errCache != nil {
 		return nil, errCache
 	}
@@ -337,7 +345,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	var identityState codexIdentityConfuseState
-	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body)
+	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body, opts.Headers)
 	if errCache != nil {
 		return resp, errCache
 	}
@@ -400,7 +408,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	var identityState codexIdentityConfuseState
-	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body)
+	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, body, opts.Headers)
 	if errCache != nil {
 		return nil, errCache
 	}
@@ -653,6 +661,46 @@ func codexIsDirectOpenAIImageModel(model string) bool {
 	}
 }
 
+func (e *CodexExecutor) validateCodexOpenAIImageClientMetadata(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
+	effective := (config.CodexClientMetadataConfig{}).Effective()
+	if e != nil && e.cfg != nil {
+		effective = e.cfg.Codex.ClientMetadata.Effective()
+	}
+	body := req.Payload
+	if !json.Valid(body) {
+		body = []byte(`{}`)
+	}
+	directTurnMetadata := codexIncomingTurnMetadata(ctx, opts.Headers)
+	mode := effective.Mode
+	if mode == config.CodexClientMetadataModeOff {
+		// Image JSON is transformed before dispatch. Reject only carrier
+		// ambiguity that would otherwise be silently collapsed by that transform;
+		// keep every other off-mode validation behavior unchanged.
+		_, _, err := codexmetadata.NormalizeRequest(body, directTurnMetadata, codexmetadata.Policy{
+			Mode:            config.CodexClientMetadataModeRepair,
+			WorkspacePolicy: effective.WorkspacePolicy,
+			Scope:           codexClientMetadataCredentialScope(auth),
+		})
+		var validationErr *codexmetadata.ValidationError
+		if errors.As(err, &validationErr) && validationErr != nil {
+			switch validationErr.Code {
+			case "duplicate client metadata carriers", "client metadata contains duplicate keys":
+				return codexmetadata.InvalidRequestError()
+			}
+		}
+		return nil
+	}
+	_, _, err := codexmetadata.NormalizeRequest(body, directTurnMetadata, codexmetadata.Policy{
+		Mode:            mode,
+		WorkspacePolicy: effective.WorkspacePolicy,
+		Scope:           codexClientMetadataCredentialScope(auth),
+	})
+	if err != nil {
+		return codexmetadata.InvalidRequestError()
+	}
+	return nil
+}
+
 func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, mainModel string) ([]byte, error) {
 	out := body
 	mainModel = strings.TrimSpace(mainModel)
@@ -667,8 +715,9 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	out = helps.ApplyPayloadConfigWithRequest(e.cfg, mainModel, "codex", codexOpenAIImageSourceFormat, "", out, body, requestedModel, requestPath, opts.Headers)
 	out = preserveCodexImageClientMetadata(out, req.Payload)
+	payloadRuleSource := bytes.Clone(out)
+	out = helps.ApplyPayloadConfigWithRequest(e.cfg, mainModel, "codex", codexOpenAIImageSourceFormat, "", out, payloadRuleSource, requestedModel, requestPath, opts.Headers)
 	out, _ = sjson.SetBytes(out, "model", mainModel)
 	out, _ = sjson.SetBytes(out, "stream", true)
 	out, _ = sjson.DeleteBytes(out, "previous_response_id")
@@ -679,11 +728,38 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 }
 
 func preserveCodexImageClientMetadata(body, sourcePayload []byte) []byte {
-	clientMetadata := gjson.GetBytes(sourcePayload, "client_metadata")
-	if !clientMetadata.IsObject() || strings.TrimSpace(clientMetadata.Raw) == "" {
+	var sourceEnvelope map[string]json.RawMessage
+	if err := json.Unmarshal(sourcePayload, &sourceEnvelope); err != nil || sourceEnvelope == nil {
 		return body
 	}
-	updated, err := sjson.SetRawBytes(body, "client_metadata", []byte(clientMetadata.Raw))
+	rawSourceMetadata, exists := sourceEnvelope["client_metadata"]
+	if !exists {
+		return body
+	}
+	var sourceMetadata map[string]json.RawMessage
+	if err := json.Unmarshal(rawSourceMetadata, &sourceMetadata); err != nil || sourceMetadata == nil {
+		return body
+	}
+
+	var bodyEnvelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &bodyEnvelope); err != nil || bodyEnvelope == nil {
+		return body
+	}
+	bodyMetadata := make(map[string]json.RawMessage)
+	if rawBodyMetadata, ok := bodyEnvelope["client_metadata"]; ok {
+		_ = json.Unmarshal(rawBodyMetadata, &bodyMetadata)
+		if bodyMetadata == nil {
+			bodyMetadata = make(map[string]json.RawMessage)
+		}
+	}
+	for key, value := range sourceMetadata {
+		bodyMetadata[key] = bytes.Clone(value)
+	}
+	merged, err := json.Marshal(bodyMetadata)
+	if err != nil {
+		return body
+	}
+	updated, err := sjson.SetRawBytes(body, "client_metadata", merged)
 	if err != nil {
 		return body
 	}

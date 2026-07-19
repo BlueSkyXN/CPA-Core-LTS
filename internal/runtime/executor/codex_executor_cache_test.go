@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -335,15 +336,94 @@ func TestCodexExecutorCacheHelperStrictMetadataReturnsSafeBadRequest(t *testing.
 	if err == nil {
 		t.Fatal("strict metadata conflict was accepted")
 	}
-	status, ok := err.(statusErr)
-	if !ok || status.code != http.StatusBadRequest {
-		t.Fatalf("error = %#v, want statusErr 400", err)
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("error = %#v, want status 400", err)
 	}
-	if !strings.Contains(status.msg, `"code":"invalid_client_metadata"`) {
-		t.Fatalf("error body missing stable code: %s", status.msg)
+	if !strings.Contains(err.Error(), `"code":"invalid_client_metadata"`) {
+		t.Fatalf("error body missing stable code: %s", err)
 	}
-	if strings.Contains(status.msg, "thread-private") || strings.Contains(status.msg, "conflicting-private") {
-		t.Fatalf("error body leaked client metadata: %s", status.msg)
+	if strings.Contains(err.Error(), "thread-private") || strings.Contains(err.Error(), "conflicting-private") {
+		t.Fatalf("error body leaked client metadata: %s", err)
+	}
+	requestErr, ok := err.(interface{ IsRequestScoped() bool })
+	if !ok || !requestErr.IsRequestScoped() {
+		t.Fatalf("error = %T, want request-scoped", err)
+	}
+}
+
+func TestCodexExecutorCacheHelperOffModeProjectsCanonicalSessionWithoutMutatingBody(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode: config.CodexClientMetadataModeOff,
+	}}}}
+	rawJSON := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"off-http-session\",\"thread_id\":\"off-http-session\"}","thread_id":"legacy-conflict"}}`)
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: rawJSON}
+
+	httpReq, body, state, err := executor.cacheHelper(context.Background(), sdktranslator.FromString("openai-response"), "https://example.com/responses", &cliproxyauth.Auth{ID: "auth-off"}, req, req.Payload, rawJSON)
+	if err != nil {
+		t.Fatalf("cacheHelper() error = %v", err)
+	}
+	if !bytes.Equal(body, rawJSON) {
+		t.Fatalf("off mode mutated body: got %s want %s", body, rawJSON)
+	}
+	applyModelHeaderOverrides(httpReq.Header, codexModelHeaderProfile{overrides: map[string]string{"User-Agent": "Codex Desktop (Mac OS)"}})
+	if fallback := codexSessionHeaderValue(httpReq.Header); fallback == "" || fallback == "off-http-session" {
+		t.Fatalf("expected pre-projection random fallback, got %q", fallback)
+	}
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &state)
+	if got := codexSessionHeaderValue(httpReq.Header); got != "off-http-session" {
+		t.Fatalf("Session_id = %q, want off-http-session", got)
+	}
+	if got := httpReq.Header.Get("X-Codex-Turn-Metadata"); got != "" {
+		t.Fatalf("off mode rebuilt X-Codex-Turn-Metadata = %q", got)
+	}
+}
+
+func TestCodexExecutorCacheHelperOffModePreservesSDKHeaderOnlyCanonical(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode: config.CodexClientMetadataModeOff,
+	}}}}
+	rawJSON := []byte(`{"model":"gpt-5-codex","input":"hello"}`)
+	canonical := "  " + `{"request_kind":"turn","session_id":"off-sdk-header-session","thread_id":"off-sdk-header-session"}` + "\t"
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: rawJSON}
+
+	httpReq, body, state, err := executor.cacheHelper(context.Background(), sdktranslator.FromString("openai-response"), "https://example.com/responses", &cliproxyauth.Auth{ID: "auth-off-sdk"}, req, req.Payload, rawJSON, http.Header{"X-Codex-Turn-Metadata": {canonical}})
+	if err != nil {
+		t.Fatalf("cacheHelper() error = %v", err)
+	}
+	if !bytes.Equal(body, rawJSON) || gjson.GetBytes(body, "client_metadata").Exists() {
+		t.Fatalf("off mode rebuilt body canonical metadata: got %s want %s", body, rawJSON)
+	}
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &state)
+	if got := httpReq.Header.Get("X-Codex-Turn-Metadata"); got != canonical {
+		t.Fatalf("X-Codex-Turn-Metadata = %q, want original %q", got, canonical)
+	}
+	if got := codexSessionHeaderValue(httpReq.Header); got != "off-sdk-header-session" {
+		t.Fatalf("Session_id = %q, want off-sdk-header-session", got)
+	}
+}
+
+func TestCodexExecutorCacheHelperOffModeBodyCanonicalSuppressesConflictingDirectHeader(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode: config.CodexClientMetadataModeOff,
+	}}}}
+	rawJSON := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"off-body-session\"}"}}`)
+	direct := `{"request_kind":"turn","session_id":"off-header-session"}`
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: rawJSON}
+
+	httpReq, body, state, err := executor.cacheHelper(context.Background(), sdktranslator.FromString("openai-response"), "https://example.com/responses", &cliproxyauth.Auth{ID: "auth-off-conflict"}, req, req.Payload, rawJSON, http.Header{"X-Codex-Turn-Metadata": {direct}})
+	if err != nil {
+		t.Fatalf("cacheHelper() error = %v", err)
+	}
+	if !bytes.Equal(body, rawJSON) {
+		t.Fatalf("off mode mutated body: got %s want %s", body, rawJSON)
+	}
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &state)
+	if got := httpReq.Header.Get("X-Codex-Turn-Metadata"); got != "" {
+		t.Fatalf("conflicting direct canonical header survived body precedence: %q", got)
+	}
+	if got := codexSessionHeaderValue(httpReq.Header); got != "off-body-session" {
+		t.Fatalf("Session_id = %q, want off-body-session", got)
 	}
 }
 

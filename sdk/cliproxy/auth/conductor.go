@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexmetadata"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -2472,6 +2473,11 @@ func (m *Manager) Load(ctx context.Context) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	var errPreflight error
+	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
+	if errPreflight != nil {
+		return cliproxyexecutor.Response{}, errPreflight
+	}
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)
@@ -2488,7 +2494,69 @@ const (
 	codexModelFallbackBudgetMetadataKey     = "__cliproxy_codex_model_fallback_budget"
 	codexModelFallbackTargetWaveMetadataKey = "__cliproxy_codex_model_fallback_target_wave"
 	codexModelFallbackDispatchMetadataKey   = "__cliproxy_codex_model_fallback_dispatch"
+	codexCanonicalSessionMetadataKey        = "__cliproxy_codex_canonical_session_id"
 )
+
+func (m *Manager) preflightCodexClientMetadata(providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Options, error) {
+	if !codexOnlyProviders(providers) {
+		return opts, nil
+	}
+
+	effective := (internalconfig.CodexClientMetadataConfig{}).Effective()
+	if m != nil {
+		if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
+			effective = cfg.Codex.ClientMetadata.Effective()
+		}
+	}
+	directTurnMetadata := codexTurnMetadataHeaderValue(opts.Headers)
+	body := req.Payload
+	if len(body) == 0 {
+		body = opts.OriginalRequest
+	}
+	trimmedBody := bytes.TrimSpace(body)
+	if len(trimmedBody) == 0 || trimmedBody[0] != '{' {
+		if strings.TrimSpace(directTurnMetadata) == "" {
+			return opts, nil
+		}
+		body = []byte(`{}`)
+	}
+
+	_, state, err := codexmetadata.NormalizeRequest(body, directTurnMetadata, codexmetadata.Policy{
+		Mode:            effective.Mode,
+		WorkspacePolicy: effective.WorkspacePolicy,
+		Scope:           "codex:preauth",
+	})
+	if err != nil {
+		return opts, codexmetadata.InvalidRequestError()
+	}
+	if !state.HasSessionID {
+		return opts, nil
+	}
+	metadata := cloneSchedulerAnyMap(opts.Metadata)
+	if metadata == nil {
+		metadata = make(map[string]any, 1)
+	}
+	metadata[codexCanonicalSessionMetadataKey] = state.SessionID
+	opts.Metadata = metadata
+	return opts, nil
+}
+
+func codexTurnMetadataHeaderValue(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	for key, values := range headers {
+		if !strings.EqualFold(key, "X-Codex-Turn-Metadata") {
+			continue
+		}
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
 
 // codexModelFallbackRequestBudget is request-local metadata shared by the
 // source and every target. Keeping it out of Config avoids a new public knob
@@ -2653,6 +2721,11 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	var errPreflight error
+	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
+	if errPreflight != nil {
+		return cliproxyexecutor.Response{}, errPreflight
+	}
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -2697,6 +2770,11 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	var errPreflight error
+	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
+	if errPreflight != nil {
+		return nil, errPreflight
+	}
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)

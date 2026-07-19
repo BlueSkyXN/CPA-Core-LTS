@@ -286,6 +286,106 @@ func TestNormalizeRequestOffMarksCanonicalAcrossDuplicateClientMetadataCarriers(
 	if !state.CanonicalPresent || !bytes.Equal(updated, body) {
 		t.Fatalf("off mode lost duplicate-carrier canonical detection: state=%+v body=%s", state, updated)
 	}
+	if state.HasSessionID || state.SessionID != "" {
+		t.Fatalf("off mode selected a session from ambiguous duplicate carriers: %+v", state)
+	}
+}
+
+func TestNormalizeRequestOffDerivesCanonicalSessionWithoutMutatingBody(t *testing.T) {
+	body := requestBodyWithMetadata(t, `{"request_kind":"turn","session_id":"session-off-1","thread_id":"thread-off-1"}`, nil)
+	original := bytes.Clone(body)
+
+	updated, state, err := NormalizeRequest(body, "", Policy{Mode: ModeOff})
+	if err != nil {
+		t.Fatalf("NormalizeRequest() error = %v", err)
+	}
+	if !bytes.Equal(updated, original) {
+		t.Fatalf("off mode mutated body: got %s want %s", updated, original)
+	}
+	if !state.CanonicalPresent || state.Normalized {
+		t.Fatalf("state = %+v, want canonical present without normalization", state)
+	}
+	if !state.HasSessionID || state.SessionID != "session-off-1" {
+		t.Fatalf("session state = %+v, want session-off-1", state)
+	}
+}
+
+func TestNormalizeRequestOffDerivesDirectHeaderSessionWithoutRebuildingHeaders(t *testing.T) {
+	direct := `{"request_kind":"turn","thread_id":"thread-off-header"}`
+	body := []byte(`{"model":"gpt-5.6"}`)
+
+	updated, state, err := NormalizeRequest(body, direct, Policy{Mode: ModeOff})
+	if err != nil {
+		t.Fatalf("NormalizeRequest() error = %v", err)
+	}
+	if !bytes.Equal(updated, body) {
+		t.Fatalf("off mode mutated body: got %s want %s", updated, body)
+	}
+	if !state.HasSessionID || state.SessionID != "thread-off-header" {
+		t.Fatalf("session state = %+v, want thread-off-header", state)
+	}
+	headers := http.Header{"X-Codex-Turn-Metadata": {direct}}
+	state.ApplyHeaders(headers)
+	if got := headers.Get("X-Codex-Turn-Metadata"); got != direct {
+		t.Fatalf("X-Codex-Turn-Metadata = %q, want unchanged direct header %q", got, direct)
+	}
+}
+
+func TestNormalizeRequestOffPrefersUniqueBodyCanonicalOverDirectHeader(t *testing.T) {
+	body := []byte(`{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"body-session\"}"}}`)
+	direct := `{"request_kind":"turn","session_id":"header-session"}`
+
+	_, state, err := NormalizeRequest(body, direct, Policy{Mode: ModeOff})
+	if err != nil {
+		t.Fatalf("NormalizeRequest() error = %v", err)
+	}
+	if !state.CanonicalPresent {
+		t.Fatal("expected canonical metadata to be detected")
+	}
+	if !state.HasSessionID || state.SessionID != "body-session" {
+		t.Fatalf("body canonical did not win source precedence: %+v", state)
+	}
+	if !state.SuppressDirectTurnMetadata() {
+		t.Fatal("body canonical did not request suppression of the conflicting direct header")
+	}
+}
+
+func TestNormalizeRequestRejectsUnsafeHeaderProjectionValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		canonical string
+		extra     map[string]any
+	}{
+		{name: "leading whitespace", canonical: `{"request_kind":"turn","session_id":" session-1"}`},
+		{name: "control character", canonical: `{"request_kind":"turn","window_id":"window\u0009id"}`},
+		{name: "newline", canonical: `{"request_kind":"turn","parent_thread_id":"parent\nchild"}`},
+		{name: "oversized", canonical: `{"request_kind":"turn","turn_id":"` + strings.Repeat("x", maxProjectionHeaderValueBytes+1) + `"}`},
+		{name: "subagent control character", canonical: `{"request_kind":"turn","thread_id":"thread-1"}`, extra: map[string]any{"x-openai-subagent": "spawn\rchild"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := requestBodyWithMetadata(t, tt.canonical, tt.extra)
+			if _, _, err := NormalizeRequest(body, "", Policy{Mode: ModeRepair}); err == nil {
+				t.Fatal("NormalizeRequest() accepted unsafe header projection")
+			}
+		})
+	}
+}
+
+func TestInvalidRequestErrorIsSafeRequestScopedBadRequest(t *testing.T) {
+	err := InvalidRequestError()
+	if err == nil {
+		t.Fatal("InvalidRequestError() returned nil")
+	}
+	statusErr, ok := err.(interface{ StatusCode() int })
+	if !ok || statusErr.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("error = %T, want StatusCode() == %d", err, http.StatusBadRequest)
+	}
+	requestErr, ok := err.(interface{ IsRequestScoped() bool })
+	if !ok || !requestErr.IsRequestScoped() {
+		t.Fatalf("error = %T, want request-scoped", err)
+	}
 }
 
 func requestBodyWithMetadata(t *testing.T, canonical string, extra map[string]any) []byte {

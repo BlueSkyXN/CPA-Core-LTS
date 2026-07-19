@@ -11,8 +11,11 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
@@ -24,11 +27,12 @@ const (
 	WorkspacePolicyRedact      = "redact"
 	WorkspacePolicyDrop        = "drop"
 
-	maxTurnMetadataBytes      = 128 << 10
-	maxTurnMetadataDepth      = 32
-	maxWorkspaceCount         = 32
-	maxWorkspaceRemoteCount   = 32
-	redactedWorkspaceHashSize = 16
+	maxTurnMetadataBytes          = 128 << 10
+	maxTurnMetadataDepth          = 32
+	maxWorkspaceCount             = 32
+	maxWorkspaceRemoteCount       = 32
+	redactedWorkspaceHashSize     = 16
+	maxProjectionHeaderValueBytes = 8 << 10
 )
 
 var projectionFields = []struct {
@@ -64,6 +68,8 @@ type State struct {
 	HasParentThread  bool
 	Subagent         string
 	HasSubagent      bool
+
+	suppressDirectTurnMetadata bool
 }
 
 type jsonObjectMember struct {
@@ -90,10 +96,10 @@ func (e *ValidationError) Error() string {
 // State.ApplyHeaders after all provider/model header overrides have run.
 func NormalizeRequest(body []byte, directTurnMetadata string, policy Policy) ([]byte, State, error) {
 	mode := normalizeMode(policy.Mode)
-	directTurnMetadata = strings.TrimSpace(directTurnMetadata)
 	if mode == ModeOff {
-		return body, State{CanonicalPresent: detectCanonicalRequest(body, directTurnMetadata)}, nil
+		return body, detectCanonicalState(body, directTurnMetadata), nil
 	}
+	directTurnMetadata = strings.TrimSpace(directTurnMetadata)
 
 	clientMetadata, clientMetadataExists, err := clientMetadataObject(body)
 	if err != nil {
@@ -130,6 +136,10 @@ func NormalizeRequest(body []byte, directTurnMetadata string, policy Policy) ([]
 	}
 	state := State{CanonicalPresent: true}
 	if err = validateCanonicalProjectionTypes(canonical); err != nil {
+		return nil, state, err
+	}
+	subagent, hasSubagent, err := headerProjectionJSONString(clientMetadata, "x-openai-subagent")
+	if err != nil {
 		return nil, state, err
 	}
 	if mode == ModeStrict {
@@ -180,34 +190,91 @@ func NormalizeRequest(body []byte, directTurnMetadata string, policy Policy) ([]
 	state.SessionID, state.HasSessionID = canonicalSessionID(canonical)
 	state.WindowID, state.HasWindowID = canonicalString(canonical, "window_id")
 	state.ParentThreadID, state.HasParentThread = canonicalString(canonical, "parent_thread_id")
-	state.Subagent, state.HasSubagent = rawJSONString(clientMetadata, "x-openai-subagent")
+	state.Subagent, state.HasSubagent = subagent, hasSubagent
 	return updatedBody, state, nil
 }
 
-func detectCanonicalRequest(body []byte, directTurnMetadata string) bool {
+func detectCanonicalState(body []byte, directTurnMetadata string) State {
+	state, bodyCanonical, bodyUnique := detectBodyCanonicalState(body)
+	if state.CanonicalPresent {
+		if bodyUnique {
+			populateOffModeSessionState(&state, bodyCanonical)
+		}
+		return state
+	}
+
+	directCanonical, _, err := decodeCanonicalObject(strings.TrimSpace(directTurnMetadata))
+	if err != nil {
+		return state
+	}
+	requestKind, exists := canonicalString(directCanonical, "request_kind")
+	if !exists || strings.TrimSpace(requestKind) == "" {
+		return state
+	}
+	state.CanonicalPresent = true
+	populateOffModeSessionState(&state, directCanonical)
+	return state
+}
+
+func detectBodyCanonicalState(body []byte) (State, map[string]json.RawMessage, bool) {
+	var state State
 	carriers, _ := clientMetadataCarriers(body)
+	ambiguous := len(carriers) > 1
+	canonicalCount := 0
+	var unique map[string]json.RawMessage
 	for _, carrier := range carriers {
-		members, _ := decodeJSONObjectMembers(carrier)
+		members, err := decodeJSONObjectMembers(carrier)
+		if err != nil {
+			continue
+		}
+		seen := make(map[string]struct{}, len(members))
+		carrierDuplicate := false
 		for _, member := range members {
+			if _, duplicate := seen[member.key]; duplicate {
+				carrierDuplicate = true
+			}
+			seen[member.key] = struct{}{}
 			if member.key != "x-codex-turn-metadata" {
 				continue
 			}
 			var canonicalText string
-			if json.Unmarshal(member.value, &canonicalText) == nil && canonicalHasRequestKind(canonicalText) {
-				return true
+			if json.Unmarshal(member.value, &canonicalText) != nil {
+				continue
 			}
+			canonical, _, errCanonical := decodeCanonicalObject(strings.TrimSpace(canonicalText))
+			if errCanonical != nil {
+				continue
+			}
+			requestKind, exists := canonicalString(canonical, "request_kind")
+			if !exists || strings.TrimSpace(requestKind) == "" {
+				continue
+			}
+			state.CanonicalPresent = true
+			canonicalCount++
+			unique = canonical
+		}
+		if carrierDuplicate {
+			ambiguous = true
 		}
 	}
-	return canonicalHasRequestKind(directTurnMetadata)
+	state.suppressDirectTurnMetadata = state.CanonicalPresent
+	return state, unique, state.CanonicalPresent && !ambiguous && canonicalCount == 1
 }
 
-func canonicalHasRequestKind(raw string) bool {
-	canonical, _, err := decodeCanonicalObject(strings.TrimSpace(raw))
-	if err != nil {
-		return false
+func populateOffModeSessionState(state *State, canonical map[string]json.RawMessage) {
+	if state == nil || canonical == nil {
+		return
 	}
-	requestKind, exists := canonicalString(canonical, "request_kind")
-	return exists && strings.TrimSpace(requestKind) != ""
+	if validateCanonicalProjectionTypes(canonical) != nil {
+		return
+	}
+	state.SessionID, state.HasSessionID = canonicalSessionID(canonical)
+}
+
+// SuppressDirectTurnMetadata reports whether an off-mode body canonical source
+// must take precedence over a separately supplied direct canonical header.
+func (s State) SuppressDirectTurnMetadata() bool {
+	return s.suppressDirectTurnMetadata
 }
 
 // ApplyHeaders regenerates direct compatibility headers from the normalized
@@ -467,6 +534,32 @@ func validateCanonicalProjectionTypes(canonical map[string]json.RawMessage) erro
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return &ValidationError{Code: "canonical " + field.canonical + " must be a string"}
 		}
+		if err := validateHeaderProjectionValue(field.canonical, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHeaderProjectionValue(name, value string) error {
+	if len(value) > maxProjectionHeaderValueBytes {
+		return &ValidationError{Code: "canonical " + name + " exceeds header projection limit"}
+	}
+	if strings.TrimSpace(value) != value {
+		return &ValidationError{Code: "canonical " + name + " contains surrounding whitespace"}
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] == 0x7f {
+			return &ValidationError{Code: "canonical " + name + " contains control characters"}
+		}
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return &ValidationError{Code: "canonical " + name + " contains control characters"}
+		}
+	}
+	if !httpguts.ValidHeaderFieldValue(value) {
+		return &ValidationError{Code: "canonical " + name + " is not a valid header value"}
 	}
 	return nil
 }
@@ -509,16 +602,22 @@ func canonicalSessionID(canonical map[string]json.RawMessage) (string, bool) {
 	return "", false
 }
 
-func rawJSONString(object map[string]json.RawMessage, key string) (string, bool) {
+func headerProjectionJSONString(object map[string]json.RawMessage, key string) (string, bool, error) {
 	raw, exists := object[key]
 	if !exists {
-		return "", false
+		return "", false, nil
 	}
 	var value string
-	if err := json.Unmarshal(raw, &value); err != nil || strings.TrimSpace(value) == "" {
-		return "", false
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false, &ValidationError{Code: key + " must be a string"}
 	}
-	return value, true
+	if value == "" {
+		return "", false, nil
+	}
+	if err := validateHeaderProjectionValue(key, value); err != nil {
+		return "", false, err
+	}
+	return value, true, nil
 }
 
 func applyWorkspacePolicy(canonical map[string]json.RawMessage, policy, scope string) error {

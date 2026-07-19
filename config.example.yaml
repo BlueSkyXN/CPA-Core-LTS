@@ -175,7 +175,8 @@ quota-exceeded:
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
   # Enable universal session-sticky routing for all clients.
-  # Session IDs are extracted from: metadata.user_id (Claude Code session format),
+  # Session IDs are extracted from: explicit execution session metadata, canonical
+  # Codex client_metadata, metadata.user_id (Claude Code session format),
   # X-Session-ID, Session_id (Codex), X-Amp-Thread-Id (Amp CLI),
   # X-Client-Request-Id (PI), conversation_id, or first few messages hash.
   # Automatic failover is always enabled when bound auth becomes unavailable.
@@ -198,12 +199,17 @@ codex:
   # fields and direct compatibility headers are regenerated from it.
   client-metadata:
     # repair (default): repair conflicting flat/header projections.
-    # strict: reject conflicting projections. off: preserve canonical payloads unchanged.
+    # strict: reject conflicting projections. off: preserve canonical payloads unchanged
+    # while still deriving the stable canonical session for routing/Session_id; a canonical
+    # body remains authoritative and suppresses a conflicting direct canonical header.
+    # Transformed image requests reject duplicate client_metadata carriers because JSON
+    # conversion cannot preserve their byte-level ambiguity. Unknown non-empty values fail
+    # config validation.
     mode: "repair"
     # passthrough (default): preserve workspace metadata but always remove Git remote
     # credentials, query strings, and fragments. redact: replace workspace paths with
     # stable per-client-installation/per-credential pseudonyms and retain only
-    # has_changes. drop: remove workspaces.
+    # has_changes. drop: remove workspaces. Unknown non-empty values fail config validation.
     workspace-policy: "passthrough"
   # CPA-Core-LTS extra feature. After all same-model credentials fail with a
   # precisely classified Codex usage-limit or model-capacity response, try the

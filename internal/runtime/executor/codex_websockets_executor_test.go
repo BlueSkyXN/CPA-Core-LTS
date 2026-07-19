@@ -1782,6 +1782,64 @@ func TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfus
 	}
 }
 
+func TestApplyCodexWebsocketHeadersOffModeProjectsCanonicalSessionWithoutMutatingBody(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode: config.CodexClientMetadataModeOff,
+	}}}
+	auth := &cliproxyauth.Auth{ID: "auth-ws-off", Provider: "codex"}
+	rawBody := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"off-ws-session\",\"thread_id\":\"off-ws-session\"}","thread_id":"legacy-conflict"}}`)
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: rawBody}
+	body, headers := applyCodexPromptCacheHeaders("openai-response", req, rawBody)
+	headers.Set("User-Agent", "Codex Desktop (Mac OS)")
+
+	upstreamBody, state, err := prepareCodexOutboundMetadata(context.Background(), cfg, auth, req.Payload, body, nil)
+	if err != nil {
+		t.Fatalf("prepareCodexOutboundMetadata() error = %v", err)
+	}
+	if !bytes.Equal(upstreamBody, rawBody) {
+		t.Fatalf("off mode mutated websocket body: got %s want %s", upstreamBody, rawBody)
+	}
+	headers = applyCodexWebsocketHeaders(context.Background(), headers, auth, "oauth-token", cfg)
+	if fallback := codexSessionHeaderValue(headers); fallback == "" || fallback == "off-ws-session" {
+		t.Fatalf("expected pre-projection random fallback, got %q", fallback)
+	}
+	applyCodexOutboundMetadataHeaders(headers, &state)
+	if got := codexSessionHeaderValue(headers); got != "off-ws-session" {
+		t.Fatalf("session_id = %q, want off-ws-session", got)
+	}
+	if got := headers.Get("X-Codex-Turn-Metadata"); got != "" {
+		t.Fatalf("off mode rebuilt X-Codex-Turn-Metadata = %q", got)
+	}
+}
+
+func TestApplyCodexWebsocketHeadersOffModeBodyCanonicalSuppressesConflictingDirectHeader(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode: config.CodexClientMetadataModeOff,
+	}}}
+	auth := &cliproxyauth.Auth{ID: "auth-ws-off-conflict", Provider: "codex"}
+	rawBody := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"off-ws-body-session\"}"}}`)
+	direct := `{"request_kind":"turn","session_id":"off-ws-header-session"}`
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: rawBody}
+	body, headers := applyCodexPromptCacheHeaders("openai-response", req, rawBody)
+	ctx := contextWithGinHeaders(map[string]string{"X-Codex-Turn-Metadata": direct})
+
+	upstreamBody, state, err := prepareCodexOutboundMetadata(ctx, cfg, auth, req.Payload, body, nil)
+	if err != nil {
+		t.Fatalf("prepareCodexOutboundMetadata() error = %v", err)
+	}
+	if !bytes.Equal(upstreamBody, rawBody) {
+		t.Fatalf("off mode mutated websocket body: got %s want %s", upstreamBody, rawBody)
+	}
+	headers = applyCodexWebsocketHeaders(ctx, headers, auth, "oauth-token", cfg)
+	applyCodexOutboundMetadataHeaders(headers, &state)
+	if got := headers.Get("X-Codex-Turn-Metadata"); got != "" {
+		t.Fatalf("conflicting direct canonical header survived body precedence: %q", got)
+	}
+	if got := codexSessionHeaderValue(headers); got != "off-ws-body-session" {
+		t.Fatalf("session_id = %q, want off-ws-body-session", got)
+	}
+}
+
 func TestCodexIdentityConfuseResponsePayloadHidesUpstreamAndRestoresClient(t *testing.T) {
 	state := codexIdentityConfuseState{
 		enabled:                true,

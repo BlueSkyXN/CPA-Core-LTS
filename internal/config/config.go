@@ -393,6 +393,24 @@ type EffectiveCodexClientMetadataConfig struct {
 	WorkspacePolicy string
 }
 
+// Validate rejects unknown explicit values while preserving empty-value
+// defaults and supported compatibility aliases.
+func (c CodexClientMetadataConfig) Validate() error {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	switch mode {
+	case "", CodexClientMetadataModeOff, "disable", "disabled", CodexClientMetadataModeRepair, CodexClientMetadataModeStrict:
+	default:
+		return fmt.Errorf("invalid codex.client-metadata.mode")
+	}
+	workspacePolicy := strings.ToLower(strings.TrimSpace(c.WorkspacePolicy))
+	switch workspacePolicy {
+	case "", CodexClientMetadataWorkspacePolicyPassthrough, CodexClientMetadataWorkspacePolicyRedact, CodexClientMetadataWorkspacePolicyDrop, "remove":
+	default:
+		return fmt.Errorf("invalid codex.client-metadata.workspace-policy")
+	}
+	return nil
+}
+
 func (c CodexClientMetadataConfig) Effective() EffectiveCodexClientMetadataConfig {
 	return EffectiveCodexClientMetadataConfig{
 		Mode:            normalizeCodexClientMetadataMode(c.Mode),
@@ -402,23 +420,27 @@ func (c CodexClientMetadataConfig) Effective() EffectiveCodexClientMetadataConfi
 
 func normalizeCodexClientMetadataMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", CodexClientMetadataModeRepair:
+		return CodexClientMetadataModeRepair
 	case CodexClientMetadataModeOff, "disable", "disabled":
 		return CodexClientMetadataModeOff
 	case CodexClientMetadataModeStrict:
 		return CodexClientMetadataModeStrict
 	default:
-		return CodexClientMetadataModeRepair
+		return CodexClientMetadataModeStrict
 	}
 }
 
 func normalizeCodexClientMetadataWorkspacePolicy(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", CodexClientMetadataWorkspacePolicyPassthrough:
+		return CodexClientMetadataWorkspacePolicyPassthrough
 	case CodexClientMetadataWorkspacePolicyRedact:
 		return CodexClientMetadataWorkspacePolicyRedact
 	case CodexClientMetadataWorkspacePolicyDrop, "remove":
 		return CodexClientMetadataWorkspacePolicyDrop
 	default:
-		return CodexClientMetadataWorkspacePolicyPassthrough
+		return CodexClientMetadataWorkspacePolicyDrop
 	}
 }
 
@@ -1302,7 +1324,9 @@ func LoadConfig(configFile string) (*Config, error) {
 
 // LoadConfigOptional reads YAML from configFile.
 // If optional is true and the file is missing, it returns an empty Config.
-// If optional is true and the file is empty or invalid, it returns an empty Config.
+// If optional is true and the file is empty or syntactically invalid YAML, it
+// returns an empty Config. Explicitly invalid semantic values still return an
+// error so the last known-good runtime configuration can remain active.
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Read the entire configuration file into memory.
 	data, err := os.ReadFile(configFile)
@@ -1351,6 +1375,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	if err = cfg.Codex.ClientMetadata.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	// NOTE: Startup legacy key migration is intentionally disabled.

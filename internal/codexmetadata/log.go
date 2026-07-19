@@ -9,6 +9,7 @@ import (
 const (
 	redactedInvalidTurnMetadata = "[REDACTED INVALID CODEX TURN METADATA]"
 	redactedInvalidRequestBody  = "[REDACTED CODEX REQUEST BODY WITH INVALID TURN METADATA]"
+	redactedIdentityHeader      = "[REDACTED CODEX IDENTITY HEADER]"
 )
 
 type logMetadataInspection struct {
@@ -123,8 +124,8 @@ func inspectLogMetadataCarriers(body []byte) (logMetadataInspection, error) {
 	return inspection, nil
 }
 
-// RedactHeadersForLog clones a header map and removes workspace enrichment
-// from direct X-Codex-Turn-Metadata compatibility headers.
+// RedactHeadersForLog clones a header map, removes workspace enrichment from
+// direct canonical metadata, and masks derived identity projections.
 func RedactHeadersForLog(headers map[string][]string) map[string][]string {
 	if headers == nil {
 		return nil
@@ -132,14 +133,34 @@ func RedactHeadersForLog(headers map[string][]string) map[string][]string {
 	redacted := make(map[string][]string, len(headers))
 	for key, values := range headers {
 		cloned := append([]string(nil), values...)
-		if strings.EqualFold(key, "X-Codex-Turn-Metadata") {
+		switch {
+		case strings.EqualFold(key, "X-Codex-Turn-Metadata"):
 			for index := range cloned {
 				cloned[index] = redactTurnMetadataForLog(cloned[index])
+			}
+		case isDerivedIdentityHeader(key):
+			for index := range cloned {
+				cloned[index] = redactedIdentityHeader
 			}
 		}
 		redacted[key] = cloned
 	}
 	return redacted
+}
+
+func isDerivedIdentityHeader(key string) bool {
+	for _, candidate := range []string{
+		"Session_id",
+		"Session-Id",
+		"X-Codex-Window-Id",
+		"X-Codex-Parent-Thread-Id",
+		"X-OpenAI-Subagent",
+	} {
+		if strings.EqualFold(key, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func redactTurnMetadataForLog(raw string) string {

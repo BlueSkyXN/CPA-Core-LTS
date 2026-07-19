@@ -16,6 +16,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func newCodexOpenAIImageTestAuth(serverURL string) *cliproxyauth.Auth {
@@ -200,6 +201,201 @@ func TestPrepareCodexOpenAIImageBodyPreservesClientMetadata(t *testing.T) {
 	}
 	if got := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String(); got != canonical {
 		t.Fatalf("canonical client metadata = %q, want %q; body=%s", got, canonical, body)
+	}
+}
+
+func TestCodexExecutorOpenAIImageSDKHeaderOnlyCanonicalAcrossPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  string
+		stream bool
+		direct bool
+	}{
+		{name: "direct non-stream", model: "gpt-image-1.5", direct: true},
+		{name: "direct stream", model: "gpt-image-1.5", direct: true, stream: true},
+		{name: "translated non-stream", model: "gpt-image-legacy"},
+		{name: "translated stream", model: "gpt-image-legacy", stream: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotTurnMetadata string
+			var gotSessionID string
+			var gotBody []byte
+			readErr := make(chan error, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotTurnMetadata = r.Header.Get("X-Codex-Turn-Metadata")
+				gotSessionID = codexSessionHeaderValue(r.Header)
+				var errRead error
+				gotBody, errRead = io.ReadAll(r.Body)
+				readErr <- errRead
+				if tt.direct && !tt.stream {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"created":1713833628,"data":[{"b64_json":"AA=="}]}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"created_at\":111,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"AAA\",\"output_format\":\"png\"}]}}\n\n"))
+			}))
+			defer server.Close()
+
+			canonical := `{"request_kind":"turn","session_id":"image-sdk-session","thread_id":"image-sdk-session"}`
+			payload := []byte(`{"model":"` + tt.model + `","prompt":"image"}`)
+			opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, tt.stream)
+			opts.Headers = http.Header{"X-Codex-Turn-Metadata": {canonical}}
+			executor := NewCodexExecutor(&config.Config{})
+			req := cliproxyexecutor.Request{Model: tt.model, Payload: payload}
+			if tt.stream {
+				stream, err := executor.ExecuteStream(context.Background(), newCodexOpenAIImageTestAuth(server.URL), req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+				for chunk := range stream.Chunks {
+					if chunk.Err != nil {
+						t.Fatalf("stream chunk error = %v", chunk.Err)
+					}
+				}
+			} else if _, err := executor.Execute(context.Background(), newCodexOpenAIImageTestAuth(server.URL), req, opts); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if err := <-readErr; err != nil {
+				t.Fatalf("read upstream body: %v", err)
+			}
+			if got := gjson.Get(gotTurnMetadata, "session_id").String(); got != "image-sdk-session" {
+				t.Fatalf("X-Codex-Turn-Metadata session_id = %q; header=%s", got, gotTurnMetadata)
+			}
+			if gotSessionID != "image-sdk-session" {
+				t.Fatalf("Session_id = %q, want image-sdk-session", gotSessionID)
+			}
+			if bodyCanonical := gjson.GetBytes(gotBody, "client_metadata.x-codex-turn-metadata").String(); bodyCanonical != gotTurnMetadata {
+				t.Fatalf("body/header canonical mismatch: body=%s header=%s request=%s", bodyCanonical, gotTurnMetadata, gotBody)
+			}
+		})
+	}
+}
+
+func TestCodexExecutorOpenAIImageOffModePreservesSDKHeaderOnlyCanonical(t *testing.T) {
+	var gotTurnMetadata string
+	var gotSessionID string
+	var gotBody []byte
+	readErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTurnMetadata = r.Header.Get("X-Codex-Turn-Metadata")
+		gotSessionID = codexSessionHeaderValue(r.Header)
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		readErr <- errRead
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1713833628,"data":[{"b64_json":"AA=="}]}`))
+	}))
+	defer server.Close()
+
+	canonical := `{"request_kind":"turn","session_id":"image-off-sdk-session","thread_id":"image-off-sdk-session"}`
+	payload := []byte(`{"model":"gpt-image-1.5","prompt":"image"}`)
+	opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, false)
+	opts.Headers = http.Header{"X-Codex-Turn-Metadata": {canonical}}
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{Mode: config.CodexClientMetadataModeOff}}})
+	if _, err := executor.Execute(context.Background(), newCodexOpenAIImageTestAuth(server.URL), cliproxyexecutor.Request{Model: "gpt-image-1.5", Payload: payload}, opts); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if err := <-readErr; err != nil {
+		t.Fatalf("read upstream body: %v", err)
+	}
+	if gotTurnMetadata != canonical {
+		t.Fatalf("X-Codex-Turn-Metadata = %q, want original %q", gotTurnMetadata, canonical)
+	}
+	if gotSessionID != "image-off-sdk-session" {
+		t.Fatalf("Session_id = %q, want image-off-sdk-session", gotSessionID)
+	}
+	if gjson.GetBytes(gotBody, "client_metadata").Exists() {
+		t.Fatalf("off mode rebuilt body canonical metadata: %s", gotBody)
+	}
+}
+
+func TestPrepareCodexOpenAIImageBodyMergesMetadataBeforePayloadRules(t *testing.T) {
+	canonical := `{"request_kind":"turn","session_id":"image-merge-session"}`
+	encodedCanonical, errMarshal := json.Marshal(canonical)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	source := []byte(`{"model":"gpt-image-legacy","prompt":"image","client_metadata":{"x-codex-turn-metadata":` + string(encodedCanonical) + `,"client_field":"client"}}`)
+	translated := codexBuildImagesResponsesRequest("image", nil, nil)
+	translated, _ = sjson.SetBytes(translated, "client_metadata.transport_marker", true)
+	modelRule := []config.PayloadModelRule{{Name: "*", Protocol: "codex"}}
+
+	tests := []struct {
+		name      string
+		payload   config.PayloadConfig
+		wantValue string
+		wantField bool
+	}{
+		{name: "default preserves client", payload: config.PayloadConfig{Default: []config.PayloadRule{{Models: modelRule, Params: map[string]any{"client_metadata.client_field": "default"}}}}, wantValue: "client", wantField: true},
+		{name: "override wins", payload: config.PayloadConfig{Override: []config.PayloadRule{{Models: modelRule, Params: map[string]any{"client_metadata.client_field": "override"}}}}, wantValue: "override", wantField: true},
+		{name: "filter wins", payload: config.PayloadConfig{Filter: []config.PayloadFilterRule{{Models: modelRule, Params: []string{"client_metadata.client_field"}}}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := NewCodexExecutor(&config.Config{Payload: tt.payload})
+			body, err := executor.prepareCodexOpenAIImageBody(translated, cliproxyexecutor.Request{Model: "gpt-image-legacy", Payload: source}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false), codexOpenAIImagesMainModel)
+			if err != nil {
+				t.Fatalf("prepareCodexOpenAIImageBody() error = %v", err)
+			}
+			if !gjson.GetBytes(body, "client_metadata.transport_marker").Bool() {
+				t.Fatalf("translated metadata was replaced instead of merged: %s", body)
+			}
+			field := gjson.GetBytes(body, "client_metadata.client_field")
+			if field.Exists() != tt.wantField || (tt.wantField && field.String() != tt.wantValue) {
+				t.Fatalf("client_field = %s exists=%t, want %q exists=%t; body=%s", field.Raw, field.Exists(), tt.wantValue, tt.wantField, body)
+			}
+		})
+	}
+}
+
+func TestCodexExecutorOpenAIImageRejectsDuplicateMetadataBeforeTransformInOffMode(t *testing.T) {
+	upstreamCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{Mode: config.CodexClientMetadataModeOff}}})
+	body := []byte(`{"model":"gpt-image-legacy","prompt":"image","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"one\"}"},"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"two\"}"}}`)
+	_, err := executor.Execute(context.Background(), newCodexOpenAIImageTestAuth(server.URL), cliproxyexecutor.Request{Model: "gpt-image-legacy", Payload: body}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false))
+	if err == nil {
+		t.Fatal("Execute() accepted duplicate client_metadata before image transform")
+	}
+	statusErr, ok := err.(interface{ StatusCode() int })
+	if !ok || statusErr.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("error = %T %v, want 400", err, err)
+	}
+	requestErr, ok := err.(interface{ IsRequestScoped() bool })
+	if !ok || !requestErr.IsRequestScoped() {
+		t.Fatalf("error = %T %v, want request-scoped", err, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+	}
+}
+
+func TestCodexExecutorOpenAIImageOffModeDoesNotPrevalidateMalformedCanonical(t *testing.T) {
+	upstreamCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1713833628,"data":[{"b64_json":"AA=="}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{Mode: config.CodexClientMetadataModeOff}}})
+	body := []byte(`{"model":"gpt-image-1.5","prompt":"image","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\""}}`)
+	_, err := executor.Execute(context.Background(), newCodexOpenAIImageTestAuth(server.URL), cliproxyexecutor.Request{Model: "gpt-image-1.5", Payload: body}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false))
+	if err != nil {
+		t.Fatalf("Execute() off-mode malformed canonical error = %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", upstreamCalls)
 	}
 }
 

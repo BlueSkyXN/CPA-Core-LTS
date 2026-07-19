@@ -527,6 +527,9 @@ func codexRateLimitStableSessionID(opts cliproxyexecutor.Options) string {
 	if raw := contextStringValue(opts.Metadata[cliproxyexecutor.ExecutionSessionMetadataKey]); raw != "" {
 		return "execution:" + raw
 	}
+	if raw := contextStringValue(opts.Metadata[codexCanonicalSessionMetadataKey]); raw != "" {
+		return "codex:" + raw
+	}
 	// Claude is the next selector priority. Parse only its explicit stable form;
 	// generic user/request IDs can never hide the permitted sources below.
 	if primary, _ := extractSessionIDs(nil, opts.OriginalRequest, opts.Metadata); strings.HasPrefix(primary, "claude:") && len(primary) > len("claude:") {

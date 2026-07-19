@@ -22,7 +22,7 @@ func prepareCodexOutboundMetadata(ctx context.Context, cfg *config.Config, auth 
 		Scope:           codexClientMetadataCredentialScope(auth),
 	})
 	if err != nil {
-		return nil, codexIdentityConfuseState{}, invalidCodexClientMetadataError()
+		return nil, codexIdentityConfuseState{}, codexmetadata.InvalidRequestError()
 	}
 	state := codexIdentityConfuseState{clientMetadata: metadataState}
 	if metadataState.CanonicalPresent {
@@ -47,8 +47,35 @@ func codexIncomingTurnMetadata(ctx context.Context, provided http.Header) string
 	return ""
 }
 
+func rawHeaderValueCaseInsensitive(headers http.Header, key string) string {
+	if headers == nil || key == "" {
+		return ""
+	}
+	if values, exists := headers[key]; exists {
+		for _, value := range values {
+			if value != "" {
+				return value
+			}
+		}
+	}
+	for existingKey, values := range headers {
+		if !strings.EqualFold(existingKey, key) {
+			continue
+		}
+		for _, value := range values {
+			if value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
 func applyCodexOutboundMetadataHeaders(headers http.Header, state *codexIdentityConfuseState) {
 	if state != nil && state.clientMetadata.CanonicalPresent {
+		if state.clientMetadata.SuppressDirectTurnMetadata() {
+			deleteHeaderCaseInsensitive(headers, "X-Codex-Turn-Metadata")
+		}
 		state.clientMetadata.ApplyHeaders(headers)
 		if state.clientMetadata.HasSessionID {
 			setCodexSessionHeaderCasePreserved(headers, "Session_id", state.clientMetadata.SessionID)
@@ -78,11 +105,4 @@ func codexClientMetadataCredentialScope(auth *cliproxyauth.Auth) string {
 		}
 	}
 	return "codex:anonymous"
-}
-
-func invalidCodexClientMetadataError() statusErr {
-	return statusErr{
-		code: http.StatusBadRequest,
-		msg:  `{"error":{"message":"invalid Codex client_metadata","type":"invalid_request_error","code":"invalid_client_metadata"}}`,
-	}
 }
