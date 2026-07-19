@@ -535,7 +535,12 @@ patches:
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
     affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.88); Claude, Codex, Kimi, Vertex, and xAI token writers still use os.Create, which follows umask for new files and preserves wider permissions on existing files.
     files:
+      - .github/workflows/pr-test-build.yml
       - internal/misc/credential_file.go
+      - internal/misc/credential_file_posix.go
+      - internal/misc/credential_file_posix_test.go
+      - internal/misc/credential_file_windows.go
+      - internal/misc/credential_file_windows_test.go
       - internal/auth/claude/token.go
       - internal/auth/claude/token_permissions_test.go
       - internal/auth/codex/token.go
@@ -548,6 +553,7 @@ patches:
       - internal/auth/xai/token_permissions_test.go
     regression_tests:
       - TestSaveTokenToFileUsesPrivatePermissions
+      - TestOpenCredentialFileRestrictsAccessToCurrentUser
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream opens every current credential writer with owner-only permissions, tightens existing files before truncation, propagates write and close errors, and the provider-local permission regressions pass without the downstream helper.
@@ -561,9 +567,13 @@ patches:
       - internal/store/gitstore_test.go
       - sdk/auth/filestore.go
       - sdk/auth/filestore_test.go
+      - internal/watcher/synthesizer/file.go
+      - internal/watcher/synthesizer/file_test.go
     regression_tests:
       - TestGitTokenStoreListReturnsAuthFileErrors
       - TestFileTokenStoreListReturnsAuthFileErrors
+      - TestFileTokenStoreListReturnsPluginParserErrors
+      - TestSynthesizeAuthFilePluginParserErrorDoesNotFallback
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream returns contextual File and Git auth-list errors to Manager.Load, preserves plugin multi-auth behavior, and both listed regressions pass without the downstream implementation.
@@ -577,11 +587,13 @@ patches:
       - sdk/cliproxy/auth/metadata_hydrate_test.go
       - sdk/auth/filestore.go
       - sdk/auth/filestore_disabled_test.go
+      - sdk/auth/filestore_test.go
       - internal/store/gitstore.go
       - internal/store/objectstore.go
       - internal/store/postgresstore.go
       - internal/store/auth_metadata_test.go
       - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/auth_files_patch_fields_test.go
       - internal/api/handlers/management/auth_files_recent_requests_test.go
     regression_tests:
       - TestNormalizeAuthPrefix
@@ -590,6 +602,10 @@ patches:
       - TestGitTokenStoreReadAuthFileHydratesMetadata
       - TestObjectTokenStoreReadAuthFileHydratesMetadata
       - TestListAuthFiles_IncludesRecentRequestsBuckets
+      - TestFileTokenStorePluginAuthOwnsPrefix
+      - TestPatchAuthFileFieldsNormalizesPrefixBeforePersisting
+      - TestPatchAuthFileFieldsRejectsInvalidPrefix
+      - TestBuildAuthFromFileDataHydratesPrefix
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream hydrates normalized single-segment prefixes and shared auth metadata consistently across all initial stores, watcher reload, Management upload/edit, and auth-file listing; prefixed routing remains stable from process start; and all listed regressions pass without the downstream helper.

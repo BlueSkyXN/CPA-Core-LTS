@@ -1500,6 +1500,23 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
+		if rootAuthFileField(fieldPath) == "prefix" {
+			if fieldPath != "prefix" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "prefix does not support nested field paths"})
+				return
+			}
+			rawPrefix, okString := value.(string)
+			if !okString {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "prefix must be a string"})
+				return
+			}
+			normalizedPrefix := coreauth.NormalizeAuthPrefix(rawPrefix)
+			if strings.Trim(strings.TrimSpace(rawPrefix), "/") != "" && normalizedPrefix == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "prefix must be a single path segment"})
+				return
+			}
+			value = normalizedPrefix
+		}
 
 		if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)

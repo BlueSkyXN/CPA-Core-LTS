@@ -2,14 +2,14 @@ package misc
 
 import "os"
 
-// OpenCredentialFile opens a credential file for replacement and enforces
-// owner-only permissions on both new and pre-existing files.
+// OpenCredentialFile opens a credential file for replacement and restricts it
+// to the current OS user before truncating any pre-existing contents.
 func OpenCredentialFile(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+	file, err := openCredentialFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if err = file.Chmod(0o600); err != nil {
+	if err = restrictCredentialFile(file); err != nil {
 		_ = file.Close()
 		return nil, err
 	}

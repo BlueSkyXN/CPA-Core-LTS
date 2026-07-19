@@ -110,6 +110,67 @@ func TestPatchAuthFileFields_MergeHeadersAndDeleteEmptyValues(t *testing.T) {
 	}
 }
 
+func TestPatchAuthFileFieldsNormalizesPrefixBeforePersisting(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	record := &coreauth.Auth{
+		ID:         "prefix.json",
+		FileName:   "prefix.json",
+		Provider:   "claude",
+		Attributes: map[string]string{"path": "/tmp/prefix.json"},
+		Metadata:   map[string]any{"type": "claude"},
+	}
+	if _, err := manager.Register(context.Background(), record); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"prefix.json","prefix":" /team/ "}`))
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("prefix.json")
+	if !ok || updated == nil {
+		t.Fatal("updated auth missing")
+	}
+	if updated.Prefix != "team" || updated.Metadata["prefix"] != "team" {
+		t.Fatalf("prefix/runtime metadata = %q/%#v, want team/team", updated.Prefix, updated.Metadata["prefix"])
+	}
+}
+
+func TestPatchAuthFileFieldsRejectsInvalidPrefix(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	record := &coreauth.Auth{
+		ID:         "prefix.json",
+		FileName:   "prefix.json",
+		Provider:   "claude",
+		Prefix:     "stable",
+		Attributes: map[string]string{"path": "/tmp/prefix.json"},
+		Metadata:   map[string]any{"type": "claude", "prefix": "stable"},
+	}
+	if _, err := manager.Register(context.Background(), record); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"prefix.json","prefix":"team/child"}`))
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("prefix.json")
+	if !ok || updated == nil {
+		t.Fatal("auth missing after rejected patch")
+	}
+	if updated.Prefix != "stable" || updated.Metadata["prefix"] != "stable" {
+		t.Fatalf("rejected patch changed prefix to %q/%#v", updated.Prefix, updated.Metadata["prefix"])
+	}
+}
+
 func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

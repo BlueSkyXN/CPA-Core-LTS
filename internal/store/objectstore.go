@@ -599,6 +599,9 @@ func (s *ObjectTokenStore) authRelativePath(path string) (string, error) {
 }
 
 func ensureResolvedPathWithin(baseDir, path string) error {
+	// authDir is created with 0700 permissions. This rejects pre-existing
+	// symlink escapes; descriptor-relative no-follow I/O would be required to
+	// defend against a malicious same-user process swapping entries afterward.
 	resolvedBase, err := filepath.EvalSymlinks(baseDir)
 	if err != nil {
 		return fmt.Errorf("resolve auth directory: %w", err)

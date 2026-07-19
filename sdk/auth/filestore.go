@@ -249,7 +249,10 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			FileName: s.idFor(path, baseDir),
 			RawJSON:  data,
 		})
-		if errParse == nil && handled {
+		if errParse != nil {
+			return nil, fmt.Errorf("parse plugin auth: %w", errParse)
+		}
+		if handled {
 			auths = compactPluginAuths(auths)
 			if len(auths) == 0 {
 				return nil, nil
