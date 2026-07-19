@@ -1212,6 +1212,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err != nil {
 		return resp, err
 	}
+	reporter.SetOutboundServiceTier(upstreamBody)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
@@ -1410,6 +1411,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	reporter.SetOutboundServiceTier(upstreamBody)
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
@@ -1546,6 +1548,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
+	reporter.SetOutboundServiceTier(upstreamBody)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)

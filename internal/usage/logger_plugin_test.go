@@ -35,15 +35,16 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	stats := NewRequestStatistics()
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey:              "test-key",
-		Model:               "gpt-5.4",
-		Alias:               "client-gpt",
-		ReasoningEffort:     "medium",
-		ServiceTier:         "legacy-default",
-		RequestServiceTier:  " priority ",
-		ResponseServiceTier: " standard ",
-		Generate:            coreusage.GenerateFlag(false),
-		RequestedAt:         time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
+		APIKey:               "test-key",
+		Model:                "gpt-5.4",
+		Alias:                "client-gpt",
+		ReasoningEffort:      "medium",
+		ServiceTier:          "legacy-default",
+		RequestServiceTier:   " priority ",
+		ResponseServiceTier:  " standard ",
+		EffectiveServiceTier: " fast ",
+		Generate:             coreusage.GenerateFlag(false),
+		RequestedAt:          time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
 		Detail: coreusage.Detail{
 			InputTokens:              10,
 			OutputTokens:             20,
@@ -75,6 +76,9 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.ResponseServiceTier != "standard" {
 		t.Fatalf("response_service_tier = %q, want %q", detail.ResponseServiceTier, "standard")
+	}
+	if detail.EffectiveServiceTier != "priority" {
+		t.Fatalf("effective_service_tier = %q, want priority", detail.EffectiveServiceTier)
 	}
 	if detail.Generate {
 		t.Fatalf("generate = true, want false")
@@ -388,13 +392,14 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTiers(t *tes
 				Models: map[string]ModelSnapshot{
 					"gpt-5.4": {
 						Details: []RequestDetail{{
-							Timestamp:           timestamp,
-							LatencyMs:           2500,
-							Source:              "user@example.com",
-							AuthIndex:           "0",
-							ServiceTier:         "priority",
-							RequestServiceTier:  "priority",
-							ResponseServiceTier: "standard",
+							Timestamp:            timestamp,
+							LatencyMs:            2500,
+							Source:               "user@example.com",
+							AuthIndex:            "0",
+							ServiceTier:          "priority",
+							RequestServiceTier:   "priority",
+							ResponseServiceTier:  "standard",
+							EffectiveServiceTier: "priority",
 							Tokens: TokenStats{
 								InputTokens:  10,
 								OutputTokens: 20,
@@ -425,8 +430,8 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTiers(t *tes
 	if details[0].ServiceTier != "" {
 		t.Fatalf("service_tier = %q, want legacy unknown to remain empty", details[0].ServiceTier)
 	}
-	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" {
-		t.Fatalf("service tier metadata = request:%q response:%q, want legacy unknown to remain empty", details[0].RequestServiceTier, details[0].ResponseServiceTier)
+	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
+		t.Fatalf("service tier metadata = request:%q response:%q effective:%q, want legacy unknown to remain empty", details[0].RequestServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
 	}
 }
 
@@ -439,15 +444,17 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 		{
 			name: "legacy alias populates request tier",
 			detail: RequestDetail{
-				ServiceTier:         " priority ",
-				ResponseServiceTier: " standard ",
+				ServiceTier:          " priority ",
+				ResponseServiceTier:  " standard ",
+				EffectiveServiceTier: " fast ",
 			},
 		},
 		{
 			name: "request tier populates legacy alias",
 			detail: RequestDetail{
-				RequestServiceTier:  " priority ",
-				ResponseServiceTier: " standard ",
+				RequestServiceTier:   " priority ",
+				ResponseServiceTier:  " standard ",
+				EffectiveServiceTier: " fast ",
 			},
 		},
 	}
@@ -472,6 +479,9 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 			}
 			if got.ResponseServiceTier != " standard " {
 				t.Fatalf("response_service_tier = %q, want preserved raw import value", got.ResponseServiceTier)
+			}
+			if got.EffectiveServiceTier != "priority" {
+				t.Fatalf("effective_service_tier = %q, want canonical priority", got.EffectiveServiceTier)
 			}
 		})
 	}

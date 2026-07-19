@@ -680,6 +680,36 @@ func TestUsageReporterBuildRecordIncludesServiceTier(t *testing.T) {
 	if record.ResponseServiceTier != "default" {
 		t.Fatalf("response service tier = %q, want default", record.ResponseServiceTier)
 	}
+	if record.EffectiveServiceTier != "standard" {
+		t.Fatalf("effective service tier = %q, want standard", record.EffectiveServiceTier)
+	}
+}
+
+func TestUsageReporterResolvesEffectiveServiceTierFromFinalOutboundPayload(t *testing.T) {
+	tests := []struct {
+		name     string
+		outbound string
+		response string
+		want     string
+	}{
+		{name: "non stream response wins", outbound: `{"service_tier":"priority"}`, response: "standard", want: "standard"},
+		{name: "stream response wins", outbound: `{"service_tier":"standard"}`, response: "fast", want: "priority"},
+		{name: "missing response uses priority outbound", outbound: `{"service_tier":"fast"}`, want: "priority"},
+		{name: "missing response uses standard outbound", outbound: `{"service_tier":"default"}`, want: "standard"},
+		{name: "unknown response cannot fall back", outbound: `{"service_tier":"priority"}`, response: "flex", want: ""},
+		{name: "outbound omits tier", outbound: `{"model":"gpt-5.6"}`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", nil)
+			reporter.SetOutboundServiceTier([]byte(tt.outbound))
+			record := reporter.buildRecord(usage.Detail{TotalTokens: 1, ResponseServiceTier: tt.response}, false)
+			if record.EffectiveServiceTier != tt.want {
+				t.Fatalf("effective service tier = %q, want %q", record.EffectiveServiceTier, tt.want)
+			}
+		})
+	}
 }
 
 func TestUsageReporterBuildRecordDefaultsGenerateTrue(t *testing.T) {

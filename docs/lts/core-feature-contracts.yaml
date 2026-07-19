@@ -42,6 +42,7 @@ features:
       - service_tier
       - request_service_tier
       - response_service_tier
+      - effective_service_tier
       - generate
       - success_count
       - failure_count
@@ -86,6 +87,7 @@ features:
       - service_tier
       - request_service_tier
       - response_service_tier
+      - effective_service_tier
       - generate
     validation:
       - go test ./internal/api/handlers/management -run 'Usage|usage'
@@ -370,6 +372,7 @@ features:
       - latency_ms
       - auth_index
       - uncached_input_tokens
+      - effective_service_tier
       - generate
     validation:
       - go test ./internal/redisqueue ./internal/api -run 'Redis|redis|Usage|usage'

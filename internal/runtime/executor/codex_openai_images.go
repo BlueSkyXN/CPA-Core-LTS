@@ -113,6 +113,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	if errCache != nil {
 		return resp, errCache
 	}
+	reporter.SetOutboundServiceTier(body)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
@@ -211,6 +212,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	if errCache != nil {
 		return nil, errCache
 	}
+	reporter.SetOutboundServiceTier(body)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
@@ -339,6 +341,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	if errCache != nil {
 		return resp, errCache
 	}
+	reporter.SetOutboundServiceTier(body)
 	applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	if contentType != "" {
@@ -401,6 +404,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	if errCache != nil {
 		return nil, errCache
 	}
+	reporter.SetOutboundServiceTier(body)
 	applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	if contentType != "" {

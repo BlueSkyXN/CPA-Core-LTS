@@ -39,6 +39,11 @@ type Record struct {
 	RequestServiceTier string
 	// ResponseServiceTier stores the final tier reported by the upstream response.
 	ResponseServiceTier string
+	// EffectiveServiceTier stores the canonical tier actually selected for the
+	// request. It is empty when the upstream response does not report a
+	// recognized tier and the final outbound payload did not explicitly request
+	// one.
+	EffectiveServiceTier string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -71,6 +76,30 @@ type Detail struct {
 	UncachedInputTokensKnown bool
 	TotalTokens              int64
 	ResponseServiceTier      string
+}
+
+// CanonicalEffectiveServiceTier returns the stable usage representation for a
+// recognized service tier. It deliberately does not infer a value for unknown
+// or omitted tiers.
+func CanonicalEffectiveServiceTier(tier string) string {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "priority", "fast":
+		return "priority"
+	case "standard", "default":
+		return "standard"
+	default:
+		return ""
+	}
+}
+
+// ResolveEffectiveServiceTier resolves the canonical tier used by a request.
+// A non-empty response value is authoritative: if it is unrecognized, the
+// result remains unknown rather than falling back to the request value.
+func ResolveEffectiveServiceTier(responseServiceTier, outboundServiceTier string) string {
+	if strings.TrimSpace(responseServiceTier) != "" {
+		return CanonicalEffectiveServiceTier(responseServiceTier)
+	}
+	return CanonicalEffectiveServiceTier(outboundServiceTier)
 }
 
 // NormalizeUncachedInputTokens clears uncached input data that is unknown or
