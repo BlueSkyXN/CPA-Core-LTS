@@ -47,6 +47,41 @@ var (
 	sfGroup             singleflight.Group
 )
 
+func isHTTPSGitHubURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host == "github.com" || host == "api.github.com"
+}
+
+func isGitHubRepositoryReference(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(strings.ToLower(raw), "git@github.com:") {
+		return true
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host == "github.com" || host == "api.github.com"
+}
+
+func panelAuthorizationHeader(releaseURL string) string {
+	if !isHTTPSGitHubURL(releaseURL) {
+		return ""
+	}
+	if token := strings.TrimSpace(os.Getenv("CLIPROXYAPI_PANEL_GITHUB_TOKEN")); token != "" {
+		return "Bearer " + token
+	}
+	if token := strings.TrimSpace(os.Getenv("GITSTORE_GIT_TOKEN")); token != "" && isGitHubRepositoryReference(os.Getenv("GITSTORE_GIT_URL")) {
+		return "Bearer " + token
+	}
+	return ""
+}
+
 // SetCurrentConfig stores the latest configuration snapshot for management asset decisions.
 func SetCurrentConfig(cfg *config.Config) {
 	if cfg == nil {
@@ -350,9 +385,8 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 		"Accept":     "application/vnd.github+json",
 		"User-Agent": httpUserAgent,
 	}
-	gitURL := strings.ToLower(strings.TrimSpace(os.Getenv("GITSTORE_GIT_URL")))
-	if tok := strings.TrimSpace(os.Getenv("GITSTORE_GIT_TOKEN")); tok != "" && strings.Contains(gitURL, "github.com") {
-		headers["Authorization"] = "Bearer " + tok
+	if authorization := panelAuthorizationHeader(releaseURL); authorization != "" {
+		headers["Authorization"] = authorization
 	}
 
 	data, err := httpfetch.GetBytes(ctx, client, releaseURL, headers, 0)

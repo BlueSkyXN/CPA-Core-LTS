@@ -53,19 +53,21 @@ func (ts *CodexTokenStorage) SetMetadata(meta map[string]any) {
 //
 // Returns:
 //   - error: An error if the operation fails, nil otherwise
-func (ts *CodexTokenStorage) SaveTokenToFile(authFilePath string) error {
+func (ts *CodexTokenStorage) SaveTokenToFile(authFilePath string) (err error) {
 	misc.LogSavingCredentials(authFilePath)
 	ts.Type = "codex"
 	if err := os.MkdirAll(filepath.Dir(authFilePath), 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	f, err := os.Create(authFilePath)
+	f, err := misc.OpenCredentialFile(authFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
 	}
 	defer func() {
-		_ = f.Close()
+		if errClose := f.Close(); errClose != nil && err == nil {
+			err = fmt.Errorf("failed to close token file: %w", errClose)
+		}
 	}()
 
 	// Merge metadata using helper

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -84,6 +85,30 @@ func TestExtractAccessToken(t *testing.T) {
 				t.Errorf("extractAccessToken() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFileTokenStoreListReturnsAuthFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "valid.json"), []byte(`{"type":"custom"}`), 0o600); err != nil {
+		t.Fatalf("write valid auth: %v", err)
+	}
+	brokenPath := filepath.Join(dir, "broken.json")
+	if err := os.WriteFile(brokenPath, []byte(`{"type":`), 0o600); err != nil {
+		t.Fatalf("write broken auth: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	entries, err := store.List(context.Background())
+	if err == nil {
+		t.Fatal("List succeeded, want error for broken auth file")
+	}
+	if entries != nil {
+		t.Fatalf("entries = %#v, want nil on error", entries)
+	}
+	if !strings.Contains(err.Error(), brokenPath) {
+		t.Fatalf("error = %q, want broken file path", err.Error())
 	}
 }
 

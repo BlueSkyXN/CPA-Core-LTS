@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	log "github.com/sirupsen/logrus"
 )
 
 // VertexCredentialStorage stores the service account JSON for Vertex AI access.
@@ -38,7 +37,7 @@ type VertexCredentialStorage struct {
 
 // SaveTokenToFile writes the credential payload to the given file path in JSON format.
 // It ensures the parent directory exists and logs the operation for transparency.
-func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) error {
+func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) (err error) {
 	misc.LogSavingCredentials(authFilePath)
 	if s == nil {
 		return fmt.Errorf("vertex credential: storage is nil")
@@ -52,13 +51,13 @@ func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) error {
 	if err := os.MkdirAll(filepath.Dir(authFilePath), 0o700); err != nil {
 		return fmt.Errorf("vertex credential: create directory failed: %w", err)
 	}
-	f, err := os.Create(authFilePath)
+	f, err := misc.OpenCredentialFile(authFilePath)
 	if err != nil {
 		return fmt.Errorf("vertex credential: create file failed: %w", err)
 	}
 	defer func() {
-		if errClose := f.Close(); errClose != nil {
-			log.Errorf("vertex credential: failed to close file: %v", errClose)
+		if errClose := f.Close(); errClose != nil && err == nil {
+			err = fmt.Errorf("vertex credential: close file failed: %w", errClose)
 		}
 	}()
 	enc := json.NewEncoder(f)
