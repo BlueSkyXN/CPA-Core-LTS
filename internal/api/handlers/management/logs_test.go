@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -179,27 +180,136 @@ func TestGetLogsTailLimitDoesNotScanOlderFilesForLineCount(t *testing.T) {
 	}
 }
 
-func TestGetLogsNoLimitKeepsFullScanBehavior(t *testing.T) {
+func TestGetLogsNoLimitUsesBoundedDefault(t *testing.T) {
 	dir := t.TempDir()
-	writeMainLog(t, dir, "complete\npartial")
+	lines := make([]string, defaultLogLimit+2)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%04d", i)
+	}
+	writeMainLog(t, dir, strings.Join(lines, "\n")+"\n")
 
 	resp := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs")
-	wantLines := []string{"complete", "partial"}
+	wantLines := lines[len(lines)-defaultLogLimit:]
 	if !reflect.DeepEqual(resp.Lines, wantLines) {
-		t.Fatalf("lines = %#v, want %#v", resp.Lines, wantLines)
+		t.Fatalf("returned %d lines, want bounded default %d", len(resp.Lines), defaultLogLimit)
 	}
-	if resp.LineCount != 2 {
-		t.Fatalf("line-count = %d, want full scan count 2", resp.LineCount)
+	if resp.LineCount != defaultLogLimit {
+		t.Fatalf("line-count = %d, want returned line count %d", resp.LineCount, defaultLogLimit)
 	}
 	if resp.NextCursor == "" {
 		t.Fatal("next-cursor is empty")
 	}
-	cursor, errCursor := decodeLogCursor(resp.NextCursor)
-	if errCursor != nil {
-		t.Fatalf("decode next-cursor: %v", errCursor)
+}
+
+func TestParseLimitClampsToPanelCompatibleMaximum(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want int
+	}{
+		{raw: "", want: defaultLogLimit},
+		{raw: "200", want: 200},
+		{raw: "10000", want: maxLogLimit},
+		{raw: "1000000", want: maxLogLimit},
 	}
-	if cursor.Offset != int64(len("complete\n")) {
-		t.Fatalf("cursor offset = %d, want complete-line boundary", cursor.Offset)
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			got, err := parseLimit(tt.raw)
+			if err != nil {
+				t.Fatalf("parseLimit(%q): %v", tt.raw, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseLimit(%q) = %d, want %d", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetLogsOversizedLimitClampsResponse(t *testing.T) {
+	dir := t.TempDir()
+	lines := make([]string, maxLogLimit+2)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%05d", i)
+	}
+	writeMainLog(t, dir, strings.Join(lines, "\n")+"\n")
+
+	resp := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs?limit=1000000")
+	wantLines := lines[len(lines)-maxLogLimit:]
+	if !reflect.DeepEqual(resp.Lines, wantLines) {
+		t.Fatalf("returned %d lines, want clamped maximum %d", len(resp.Lines), maxLogLimit)
+	}
+	if resp.LineCount != maxLogLimit {
+		t.Fatalf("line-count = %d, want %d", resp.LineCount, maxLogLimit)
+	}
+}
+
+func TestGetLogsAfterPagesBoundedDefaultWithoutLoss(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
+	lines := make([]string, defaultLogLimit+2)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("[%s] line-%04d", base.Add(time.Duration(i)*time.Second).Format("2006-01-02 15:04:05"), i)
+	}
+	writeMainLog(t, dir, strings.Join(lines, "\n")+"\n")
+
+	cutoff := base.Add(-time.Second).Unix()
+	resp := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs?after="+strconv.FormatInt(cutoff, 10))
+	wantLines := lines[:defaultLogLimit]
+	if !reflect.DeepEqual(resp.Lines, wantLines) {
+		t.Fatalf("first page = %#v, want first %d lines", resp.Lines, defaultLogLimit)
+	}
+	if resp.LineCount != len(lines) {
+		t.Fatalf("line-count = %d, want legacy scanned count %d", resp.LineCount, len(lines))
+	}
+	if resp.NextCursor == "" {
+		t.Fatal("next-cursor is empty")
+	}
+	wantLatest := base.Add(time.Duration(defaultLogLimit-1) * time.Second).Unix()
+	if resp.LatestTimestamp != wantLatest {
+		t.Fatalf("latest-timestamp = %d, want last returned timestamp %d", resp.LatestTimestamp, wantLatest)
+	}
+
+	next := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs?cursor="+url.QueryEscape(resp.NextCursor))
+	if !reflect.DeepEqual(next.Lines, lines[defaultLogLimit:]) {
+		t.Fatalf("second page = %#v, want %#v", next.Lines, lines[defaultLogLimit:])
+	}
+	all := append(append([]string{}, resp.Lines...), next.Lines...)
+	if !reflect.DeepEqual(all, lines) {
+		t.Fatalf("combined pages contain a gap or duplicate: got %d lines, want %d", len(all), len(lines))
+	}
+}
+
+func TestGetLogsCursorWithoutLimitUsesBoundedDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeMainLog(t, dir, "initial\n")
+	initial := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs?limit=1")
+	if initial.NextCursor == "" {
+		t.Fatal("initial next-cursor is empty")
+	}
+	lines := make([]string, defaultLogLimit+2)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("new-%04d", i)
+	}
+	file, err := os.OpenFile(filepath.Join(dir, defaultLogFileName), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open main log: %v", err)
+	}
+	if _, err = file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		_ = file.Close()
+		t.Fatalf("append main log: %v", err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatalf("close main log: %v", err)
+	}
+
+	resp := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs?cursor="+url.QueryEscape(initial.NextCursor))
+	if len(resp.Lines) != defaultLogLimit {
+		t.Fatalf("returned %d cursor lines, want bounded default %d", len(resp.Lines), defaultLogLimit)
+	}
+	if resp.Lines[0] != lines[0] || resp.Lines[len(resp.Lines)-1] != lines[defaultLogLimit-1] {
+		t.Fatalf("cursor lines boundary = %q/%q, want %q/%q", resp.Lines[0], resp.Lines[len(resp.Lines)-1], lines[0], lines[defaultLogLimit-1])
+	}
+	if resp.NextCursor == "" {
+		t.Fatal("next-cursor is empty")
 	}
 }
 

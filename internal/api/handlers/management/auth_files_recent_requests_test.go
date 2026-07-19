@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -107,5 +108,117 @@ func TestBuildAuthFromFileDataHydratesPrefix(t *testing.T) {
 	}
 	if auth == nil || auth.Prefix != "team" {
 		t.Fatalf("auth = %#v, want hydrated prefix team", auth)
+	}
+}
+
+func TestListAuthFilesPrunesOnlyExplicitlyExpiredAvailability(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	now := time.Now()
+	past := now.Add(-time.Minute)
+	future := now.Add(time.Hour)
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID:             "expired-auth",
+			Provider:       "claude",
+			Status:         coreauth.StatusError,
+			StatusMessage:  "transient upstream error",
+			Unavailable:    true,
+			NextRetryAfter: past,
+			LastError:      &coreauth.Error{HTTPStatus: http.StatusBadGateway, Message: "EOF"},
+			Attributes:     map[string]string{"runtime_only": "true"},
+		},
+		{
+			ID:             "future-auth",
+			Provider:       "claude",
+			Status:         coreauth.StatusError,
+			StatusMessage:  "quota exhausted",
+			Unavailable:    true,
+			NextRetryAfter: future,
+			Quota:          coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: future},
+			LastError:      &coreauth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+			ModelStates: map[string]*coreauth.ModelState{
+				"expired-model": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: past, LastError: &coreauth.Error{HTTPStatus: http.StatusBadGateway, Message: "EOF"}},
+			},
+			Attributes: map[string]string{"runtime_only": "true"},
+		},
+		{
+			ID:            "zero-auth",
+			Provider:      "claude",
+			Status:        coreauth.StatusError,
+			StatusMessage: "quota exhausted without recovery time",
+			Unavailable:   true,
+			Quota:         coreauth.QuotaState{Exceeded: true, Reason: "quota"},
+			LastError:     &coreauth.Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+			ModelStates: map[string]*coreauth.ModelState{
+				"expired-model": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: past, LastError: &coreauth.Error{HTTPStatus: http.StatusBadGateway, Message: "EOF"}},
+			},
+			Attributes: map[string]string{"runtime_only": "true"},
+		},
+		{
+			ID:             "cloudflare-auth",
+			Provider:       "claude",
+			Status:         coreauth.StatusError,
+			StatusMessage:  "cloudflare challenge",
+			Unavailable:    true,
+			NextRetryAfter: past,
+			Quota:          coreauth.QuotaState{Exceeded: true, Reason: "cloudflare challenge", NextRecoverAt: past},
+			LastError:      &coreauth.Error{HTTPStatus: http.StatusForbidden, Message: "cloudflare challenge"},
+			ModelStates: map[string]*coreauth.ModelState{
+				"expired-model": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: past, LastError: &coreauth.Error{HTTPStatus: http.StatusBadGateway, Message: "EOF"}},
+			},
+			Attributes: map[string]string{"runtime_only": "true"},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	h.tokenStore = &memoryAuthStore{}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+	h.ListAuthFiles(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var payload struct {
+		Files []map[string]any `json:"files"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byID := make(map[string]map[string]any, len(payload.Files))
+	for _, entry := range payload.Files {
+		id, _ := entry["id"].(string)
+		byID[id] = entry
+	}
+	expired := byID["expired-auth"]
+	if expired["status"] != string(coreauth.StatusActive) || expired["unavailable"] != false || expired["status_message"] != "" {
+		t.Fatalf("expired entry = %#v, want active without warning", expired)
+	}
+	if _, ok := expired["next_retry_after"]; ok {
+		t.Fatalf("expired entry retained next_retry_after: %#v", expired)
+	}
+	futureEntry := byID["future-auth"]
+	if futureEntry["status"] != string(coreauth.StatusError) || futureEntry["unavailable"] != true {
+		t.Fatalf("future entry = %#v, want preserved error", futureEntry)
+	}
+	if _, ok := futureEntry["next_retry_after"]; !ok {
+		t.Fatalf("future entry lost next_retry_after: %#v", futureEntry)
+	}
+	zero := byID["zero-auth"]
+	if zero["status"] != string(coreauth.StatusError) || zero["unavailable"] != true || zero["status_message"] != "quota exhausted without recovery time" {
+		t.Fatalf("zero-deadline entry = %#v, want preserved warning", zero)
+	}
+	if _, ok := zero["next_retry_after"]; ok {
+		t.Fatalf("zero-deadline entry unexpectedly gained next_retry_after: %#v", zero)
+	}
+	cloudflare := byID["cloudflare-auth"]
+	if cloudflare["status"] != string(coreauth.StatusError) || cloudflare["unavailable"] != true || cloudflare["status_message"] != "cloudflare challenge" {
+		t.Fatalf("cloudflare entry = %#v, want preserved challenge", cloudflare)
 	}
 }

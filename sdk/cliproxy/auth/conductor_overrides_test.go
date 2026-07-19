@@ -2,7 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +19,28 @@ import (
 const requestScopedNotFoundMessage = "Item with id 'rs_0b5f3eb6f51f175c0169ca74e4a85881998539920821603a74' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
 
 const codexModelNotFoundMessage = `{"error":{"message":"Model not found gpt-5.6-luna","type":"invalid_request_error","param":"model"}}`
+
+type resultCaptureHook struct {
+	mu      sync.Mutex
+	results []Result
+}
+
+func (*resultCaptureHook) OnAuthRegistered(context.Context, *Auth) {}
+func (*resultCaptureHook) OnAuthUpdated(context.Context, *Auth)    {}
+
+func (h *resultCaptureHook) OnResult(_ context.Context, result Result) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.results = append(h.results, result)
+}
+
+func (h *resultCaptureHook) Results() []Result {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Result, len(h.results))
+	copy(out, h.results)
+	return out
+}
 
 func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testing.T) {
 	m := NewManager(nil, nil, nil)
@@ -171,11 +196,15 @@ func (e *credentialRetryLimitExecutor) Calls() int {
 type authFallbackExecutor struct {
 	id string
 
-	mu                sync.Mutex
-	executeCalls      []string
-	streamCalls       []string
-	executeErrors     map[string]error
-	streamFirstErrors map[string]error
+	mu                 sync.Mutex
+	executeCalls       []string
+	streamCalls        []string
+	executeErrors      map[string]error
+	streamReturnErrors map[string]error
+	streamFirstErrors  map[string]error
+	streamChunkErrors  map[string]error
+	countCalls         []string
+	countErrors        map[string]error
 }
 
 func (e *authFallbackExecutor) Identifier() string {
@@ -196,16 +225,24 @@ func (e *authFallbackExecutor) Execute(_ context.Context, auth *Auth, _ cliproxy
 func (e *authFallbackExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	e.mu.Lock()
 	e.streamCalls = append(e.streamCalls, auth.ID)
-	err := e.streamFirstErrors[auth.ID]
+	returnErr := e.streamReturnErrors[auth.ID]
+	firstErr := e.streamFirstErrors[auth.ID]
+	chunkErr := e.streamChunkErrors[auth.ID]
 	e.mu.Unlock()
+	if returnErr != nil {
+		return nil, returnErr
+	}
 
-	ch := make(chan cliproxyexecutor.StreamChunk, 1)
-	if err != nil {
-		ch <- cliproxyexecutor.StreamChunk{Err: err}
+	ch := make(chan cliproxyexecutor.StreamChunk, 2)
+	if firstErr != nil {
+		ch <- cliproxyexecutor.StreamChunk{Err: firstErr}
 		close(ch)
 		return &cliproxyexecutor.StreamResult{Headers: http.Header{"X-Auth": {auth.ID}}, Chunks: ch}, nil
 	}
 	ch <- cliproxyexecutor.StreamChunk{Payload: []byte(auth.ID)}
+	if chunkErr != nil {
+		ch <- cliproxyexecutor.StreamChunk{Err: chunkErr}
+	}
 	close(ch)
 	return &cliproxyexecutor.StreamResult{Headers: http.Header{"X-Auth": {auth.ID}}, Chunks: ch}, nil
 }
@@ -214,8 +251,15 @@ func (e *authFallbackExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, er
 	return auth, nil
 }
 
-func (e *authFallbackExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, &Error{HTTPStatus: 500, Message: "not implemented"}
+func (e *authFallbackExecutor) CountTokens(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.mu.Lock()
+	e.countCalls = append(e.countCalls, auth.ID)
+	err := e.countErrors[auth.ID]
+	e.mu.Unlock()
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
+	return cliproxyexecutor.Response{Payload: []byte(auth.ID)}, nil
 }
 
 func (e *authFallbackExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
@@ -235,6 +279,14 @@ func (e *authFallbackExecutor) StreamCalls() []string {
 	defer e.mu.Unlock()
 	out := make([]string, len(e.streamCalls))
 	copy(out, e.streamCalls)
+	return out
+}
+
+func (e *authFallbackExecutor) CountCalls() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.countCalls))
+	copy(out, e.countCalls)
 	return out
 }
 
@@ -1581,4 +1633,328 @@ func TestManager_MarkResult_GenericNotFoundStillCooldownsModel(t *testing.T) {
 	if state.NextRetryAfter.Before(before.Add(11 * time.Hour)) {
 		t.Fatalf("generic 404 retry time = %v, want roughly 12 hours", state.NextRetryAfter)
 	}
+}
+
+func TestManager_CountTokensGenericNotFoundRecordsFailureWithoutCooldown(t *testing.T) {
+	hook := &resultCaptureHook{}
+	m := NewManager(nil, nil, hook)
+	m.SetRetryConfig(0, 0, 1)
+	auth := &Auth{ID: "count-404-auth", Provider: "codex"}
+	model := "gpt-5.6-luna"
+	executor := &authFallbackExecutor{
+		id: "codex",
+		countErrors: map[string]error{
+			auth.ID: &Error{HTTPStatus: http.StatusNotFound, Message: "count_tokens endpoint not found"},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	_, errCount := m.ExecuteCount(context.Background(), []string{auth.Provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if statusCodeFromError(errCount) != http.StatusNotFound {
+		t.Fatalf("count error = %v status=%d, want 404", errCount, statusCodeFromError(errCount))
+	}
+	if got := executor.CountCalls(); len(got) != 1 || got[0] != auth.ID {
+		t.Fatalf("count calls = %v, want [%s]", got, auth.ID)
+	}
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("auth missing after count failure")
+	}
+	if updated.Failed != 1 || updated.Unavailable || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("auth failed/unavailable/retry = %d/%v/%v, want 1/false/zero", updated.Failed, updated.Unavailable, updated.NextRetryAfter)
+	}
+	if state := updated.ModelStates[model]; state != nil {
+		t.Fatalf("count_tokens 404 created cooldown state: %#v", state)
+	}
+	var recentFailed int64
+	for _, bucket := range updated.RecentRequestsSnapshot(time.Now()) {
+		recentFailed += bucket.Failed
+	}
+	if recentFailed != 1 {
+		t.Fatalf("recent failed = %d, want 1", recentFailed)
+	}
+	results := hook.Results()
+	if len(results) != 1 || results[0].Error == nil || !results[0].Error.IsRequestScoped() {
+		t.Fatalf("hook results = %#v, want request-scoped count failure", results)
+	}
+
+	response, errExecute := m.Execute(context.Background(), []string{auth.Provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("normal execute after count 404: %v", errExecute)
+	}
+	if string(response.Payload) != auth.ID {
+		t.Fatalf("normal execute payload = %q, want %q", string(response.Payload), auth.ID)
+	}
+}
+
+func TestManager_CountTokensNonNotFoundFailuresKeepCooldownPolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		wantQuota  bool
+		wantStatus string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, wantStatus: "unauthorized"},
+		{name: "quota", status: http.StatusTooManyRequests, wantQuota: true, wantStatus: "quota"},
+		{name: "transient", status: http.StatusInternalServerError, wantStatus: "transient"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			m.SetRetryConfig(0, 0, 1)
+			auth := &Auth{ID: "count-policy-" + tt.name, Provider: "claude"}
+			model := "count-policy-model-" + tt.name
+			executor := &authFallbackExecutor{
+				id: "claude",
+				countErrors: map[string]error{
+					auth.ID: &Error{HTTPStatus: tt.status, Message: tt.name + " failure"},
+				},
+			}
+			m.RegisterExecutor(executor)
+			reg := registry.GetGlobalRegistry()
+			reg.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+			t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+			if _, err := m.Register(context.Background(), auth); err != nil {
+				t.Fatalf("register auth: %v", err)
+			}
+
+			_, _ = m.ExecuteCount(context.Background(), []string{auth.Provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+			updated, ok := m.GetByID(auth.ID)
+			if !ok || updated == nil {
+				t.Fatal("auth missing after count failure")
+			}
+			state := updated.ModelStates[model]
+			if state == nil || !state.Unavailable || state.NextRetryAfter.IsZero() {
+				t.Fatalf("model state = %#v, want cooldown", state)
+			}
+			if state.Quota.Exceeded != tt.wantQuota {
+				t.Fatalf("quota exceeded = %v, want %v", state.Quota.Exceeded, tt.wantQuota)
+			}
+			if !strings.Contains(strings.ToLower(state.StatusMessage), tt.wantStatus) {
+				t.Fatalf("status message = %q, want %q", state.StatusMessage, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestManager_CountTokensNotFoundContinuesCredentialFallback(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(0, 0, 2)
+	model := "count-fallback-model"
+	badAuth := &Auth{ID: "aa-count-404", Provider: "claude"}
+	goodAuth := &Auth{ID: "bb-count-good", Provider: "claude"}
+	executor := &authFallbackExecutor{
+		id: "claude",
+		countErrors: map[string]error{
+			badAuth.ID: &Error{HTTPStatus: http.StatusNotFound, Message: "count endpoint not found"},
+		},
+	}
+	m.RegisterExecutor(executor)
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(badAuth.ID, badAuth.Provider, []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(goodAuth.ID, goodAuth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(badAuth.ID)
+		reg.UnregisterClient(goodAuth.ID)
+	})
+	for _, auth := range []*Auth{badAuth, goodAuth} {
+		if _, err := m.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+
+	response, err := m.ExecuteCount(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteCount: %v", err)
+	}
+	if string(response.Payload) != goodAuth.ID {
+		t.Fatalf("response payload = %q, want %q", string(response.Payload), goodAuth.ID)
+	}
+	if got := executor.CountCalls(); !equalStrings(got, []string{badAuth.ID, goodAuth.ID}) {
+		t.Fatalf("count calls = %v, want bad then good", got)
+	}
+	updatedBad, ok := m.GetByID(badAuth.ID)
+	if !ok || updatedBad == nil {
+		t.Fatal("bad auth missing")
+	}
+	if updatedBad.Unavailable || !updatedBad.NextRetryAfter.IsZero() || updatedBad.ModelStates[model] != nil {
+		t.Fatalf("bad auth was cooled down: %#v", updatedBad)
+	}
+}
+
+func TestCountTokensResultErrorScopesOnlyNotFound(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		resultErr := countTokensResultErrorFromError(&Error{HTTPStatus: status, Message: "failure"})
+		if resultErr.IsRequestScoped() {
+			t.Fatalf("status %d unexpectedly request-scoped", status)
+		}
+	}
+	resultErr := countTokensResultErrorFromError(&Error{HTTPStatus: http.StatusNotFound, Message: "missing count endpoint"})
+	if !resultErr.IsRequestScoped() {
+		t.Fatalf("404 error = %#v, want request-scoped", resultErr)
+	}
+}
+
+func TestResultErrorFromErrorClassifiesEOFAsTransient(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{name: "EOF", err: io.EOF, wantStatus: http.StatusBadGateway},
+		{name: "wrapped unexpected EOF", err: errors.Join(errors.New("transport"), io.ErrUnexpectedEOF), wantStatus: http.StatusBadGateway},
+		{name: "exact EOF message", err: errors.New("EOF"), wantStatus: http.StatusBadGateway},
+		{name: "exact unexpected EOF message", err: errors.New("unexpected EOF"), wantStatus: http.StatusBadGateway},
+		{name: "prefixed unexpected EOF", err: errors.New("transport: unexpected EOF"), wantStatus: http.StatusBadGateway},
+		{name: "wsrelay unexpected EOF", err: errors.New("wsrelay: unexpected EOF (status=0)"), wantStatus: http.StatusBadGateway},
+		{name: "non-terminal EOF text", err: errors.New("unexpected EOF recovery guidance"), wantStatus: 0},
+		{name: "context canceled", err: context.Canceled},
+		{name: "deadline exceeded", err: context.DeadlineExceeded},
+		{name: "explicit status wins", err: &requestScopedStatusError{status: http.StatusConflict, message: "unexpected EOF"}, wantStatus: http.StatusConflict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resultErrorFromError(tt.err).HTTPStatus; got != tt.wantStatus {
+				t.Fatalf("HTTPStatus = %d, want %d", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestManager_EOFTransientCooldownSkipsFailedAuthOnNextRequest(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(0, 0, 2)
+	model := "gpt-5.6-luna"
+	badAuth := &Auth{ID: "aa-eof-auth", Provider: "codex"}
+	goodAuth := &Auth{ID: "bb-good-auth", Provider: "codex"}
+	executor := &authFallbackExecutor{
+		id:            "codex",
+		executeErrors: map[string]error{badAuth.ID: io.EOF},
+	}
+	m.RegisterExecutor(executor)
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(badAuth.ID, badAuth.Provider, []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(goodAuth.ID, goodAuth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(badAuth.ID)
+		reg.UnregisterClient(goodAuth.ID)
+	})
+	for _, auth := range []*Auth{badAuth, goodAuth} {
+		if _, err := m.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+
+	if _, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); err != nil {
+		t.Fatalf("first execute: %v", err)
+	}
+	updatedBad, ok := m.GetByID(badAuth.ID)
+	if !ok || updatedBad == nil {
+		t.Fatal("bad auth missing")
+	}
+	state := updatedBad.ModelStates[model]
+	if state == nil || !state.Unavailable || state.NextRetryAfter.IsZero() || state.LastError == nil || state.LastError.HTTPStatus != http.StatusBadGateway {
+		t.Fatalf("EOF model state = %#v, want transient 502 cooldown", state)
+	}
+	if _, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); err != nil {
+		t.Fatalf("second execute: %v", err)
+	}
+	if got := executor.ExecuteCalls(); len(got) != 3 || got[0] != badAuth.ID || got[1] != goodAuth.ID || got[2] != goodAuth.ID {
+		t.Fatalf("execute calls = %v, want bad/good then good", got)
+	}
+}
+
+func TestManager_StreamEOFTransientCooldownCoversBootstrapAndChunk(t *testing.T) {
+	tests := []struct {
+		name              string
+		returnErrors      map[string]error
+		firstErrors       map[string]error
+		chunkErrors       map[string]error
+		wantFirstCallList []string
+		wantChunkError    bool
+	}{
+		{name: "direct EOF falls back", returnErrors: map[string]error{"aa-eof-auth": io.EOF}, wantFirstCallList: []string{"aa-eof-auth", "bb-good-auth"}},
+		{name: "bootstrap EOF falls back", firstErrors: map[string]error{"aa-eof-auth": io.EOF}, wantFirstCallList: []string{"aa-eof-auth", "bb-good-auth"}},
+		{name: "chunk unexpected EOF cools after delivery", chunkErrors: map[string]error{"aa-eof-auth": io.ErrUnexpectedEOF}, wantFirstCallList: []string{"aa-eof-auth"}, wantChunkError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			m.SetRetryConfig(0, 0, 2)
+			model := "gpt-5.6-luna"
+			badAuth := &Auth{ID: "aa-eof-auth", Provider: "codex"}
+			goodAuth := &Auth{ID: "bb-good-auth", Provider: "codex"}
+			executor := &authFallbackExecutor{id: "codex", streamReturnErrors: tt.returnErrors, streamFirstErrors: tt.firstErrors, streamChunkErrors: tt.chunkErrors}
+			m.RegisterExecutor(executor)
+
+			reg := registry.GetGlobalRegistry()
+			reg.RegisterClient(badAuth.ID, badAuth.Provider, []*registry.ModelInfo{{ID: model}})
+			reg.RegisterClient(goodAuth.ID, goodAuth.Provider, []*registry.ModelInfo{{ID: model}})
+			t.Cleanup(func() {
+				reg.UnregisterClient(badAuth.ID)
+				reg.UnregisterClient(goodAuth.ID)
+			})
+			for _, auth := range []*Auth{badAuth, goodAuth} {
+				if _, err := m.Register(context.Background(), auth); err != nil {
+					t.Fatalf("register %s: %v", auth.ID, err)
+				}
+			}
+
+			stream, err := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{Stream: true})
+			if err != nil {
+				t.Fatalf("first stream: %v", err)
+			}
+			sawChunkError := false
+			for chunk := range stream.Chunks {
+				if errors.Is(chunk.Err, io.ErrUnexpectedEOF) {
+					sawChunkError = true
+				}
+			}
+			if sawChunkError != tt.wantChunkError {
+				t.Fatalf("saw unexpected EOF chunk = %v, want %v", sawChunkError, tt.wantChunkError)
+			}
+			if got := executor.StreamCalls(); !equalStrings(got, tt.wantFirstCallList) {
+				t.Fatalf("first stream calls = %v, want %v", got, tt.wantFirstCallList)
+			}
+			updatedBad, ok := m.GetByID(badAuth.ID)
+			if !ok || updatedBad == nil {
+				t.Fatal("bad auth missing")
+			}
+			state := updatedBad.ModelStates[model]
+			if state == nil || state.LastError == nil || state.LastError.HTTPStatus != http.StatusBadGateway || state.NextRetryAfter.IsZero() {
+				t.Fatalf("stream EOF state = %#v, want transient 502 cooldown", state)
+			}
+
+			stream, err = m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{Stream: true})
+			if err != nil {
+				t.Fatalf("second stream: %v", err)
+			}
+			for range stream.Chunks {
+			}
+			calls := executor.StreamCalls()
+			if len(calls) != len(tt.wantFirstCallList)+1 || calls[len(calls)-1] != goodAuth.ID {
+				t.Fatalf("stream calls after retry = %v, want final good auth", calls)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

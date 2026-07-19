@@ -151,6 +151,17 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 	}
 
 	method := action[1]
+	switch method {
+	case "generateContent", "streamGenerateContent", "countTokens":
+	default:
+		c.JSON(http.StatusNotFound, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("%s not found.", c.Request.URL.Path),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
 	rawJSON, errRead := handlers.ReadRequestBody(c)
 	if errRead != nil {
 		c.JSON(handlers.RequestBodyStatusCode(errRead), handlers.ErrorResponse{
