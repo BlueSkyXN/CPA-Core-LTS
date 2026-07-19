@@ -334,12 +334,19 @@ type CodexHeaderDefaults struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
+	ClientMetadata         CodexClientMetadataConfig         `yaml:"client-metadata" json:"client-metadata"`
 	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
 	RateLimitContinuity    CodexRateLimitContinuityConfig    `yaml:"rate-limit-continuity" json:"rate-limit-continuity"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
 }
 
 const (
+	CodexClientMetadataModeOff                                                   = "off"
+	CodexClientMetadataModeRepair                                                = "repair"
+	CodexClientMetadataModeStrict                                                = "strict"
+	CodexClientMetadataWorkspacePolicyPassthrough                                = "passthrough"
+	CodexClientMetadataWorkspacePolicyRedact                                     = "redact"
+	CodexClientMetadataWorkspacePolicyDrop                                       = "drop"
 	CodexModelFallbackTriggerUsageLimit                                          = "usage-limit"
 	CodexModelFallbackTriggerCapacity                                            = "capacity"
 	CodexModelFallbackReasoningContinuitySameModelOnly                           = "same-model-only"
@@ -366,6 +373,54 @@ const (
 	CodexAbnormalReasoningHedgedRetryModeQuality                                 = "quality"
 	CodexAbnormalReasoningRetryDefaultStreamBufferMaxBytes                 int64 = 16 << 20
 )
+
+// CodexClientMetadataConfig controls canonical Codex turn metadata handling.
+// Mode off preserves canonical requests unchanged, repair rebuilds compatibility
+// projections from the body canonical object, and strict additionally rejects
+// conflicting projections. WorkspacePolicy controls workspace privacy while
+// passthrough still strips credentials, query strings, and fragments from Git
+// remotes. Redact uses stable client-installation/credential-scoped workspace
+// pseudonyms and retains only has_changes.
+type CodexClientMetadataConfig struct {
+	Mode            string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	WorkspacePolicy string `yaml:"workspace-policy,omitempty" json:"workspace-policy,omitempty"`
+}
+
+// EffectiveCodexClientMetadataConfig is the normalized runtime view. Defaults
+// are derived in memory so existing config files are not rewritten.
+type EffectiveCodexClientMetadataConfig struct {
+	Mode            string
+	WorkspacePolicy string
+}
+
+func (c CodexClientMetadataConfig) Effective() EffectiveCodexClientMetadataConfig {
+	return EffectiveCodexClientMetadataConfig{
+		Mode:            normalizeCodexClientMetadataMode(c.Mode),
+		WorkspacePolicy: normalizeCodexClientMetadataWorkspacePolicy(c.WorkspacePolicy),
+	}
+}
+
+func normalizeCodexClientMetadataMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexClientMetadataModeOff, "disable", "disabled":
+		return CodexClientMetadataModeOff
+	case CodexClientMetadataModeStrict:
+		return CodexClientMetadataModeStrict
+	default:
+		return CodexClientMetadataModeRepair
+	}
+}
+
+func normalizeCodexClientMetadataWorkspacePolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexClientMetadataWorkspacePolicyRedact:
+		return CodexClientMetadataWorkspacePolicyRedact
+	case CodexClientMetadataWorkspacePolicyDrop, "remove":
+		return CodexClientMetadataWorkspacePolicyDrop
+	default:
+		return CodexClientMetadataWorkspacePolicyPassthrough
+	}
+}
 
 // CodexModelFallbackConfig controls ordered, opt-in fallback between Codex
 // models after a precisely classified quota or capacity failure.

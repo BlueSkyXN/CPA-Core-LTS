@@ -187,9 +187,24 @@ routing:
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,
   # remap Codex prompt_cache_key and installation identity per selected auth.
-  # Some superstitious users believe request tracking identifiers can be used
-  # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
+  # Legacy behavior is skipped for requests that carry the canonical
+  # client_metadata.x-codex-turn-metadata object to avoid mixed identities.
+  # This legacy option is not a complete privacy boundary and does not hide
+  # account, network, or request-behavior signals from the upstream service.
   identity-confuse: false
+
+  # Canonical Codex client metadata handling. The body
+  # client_metadata.x-codex-turn-metadata value is the source of truth; flat body
+  # fields and direct compatibility headers are regenerated from it.
+  client-metadata:
+    # repair (default): repair conflicting flat/header projections.
+    # strict: reject conflicting projections. off: preserve canonical payloads unchanged.
+    mode: "repair"
+    # passthrough (default): preserve workspace metadata but always remove Git remote
+    # credentials, query strings, and fragments. redact: replace workspace paths with
+    # stable per-client-installation/per-credential pseudonyms and retain only
+    # has_changes. drop: remove workspaces.
+    workspace-policy: "passthrough"
   # CPA-Core-LTS extra feature. After all same-model credentials fail with a
   # precisely classified Codex usage-limit or model-capacity response, try the
   # configured target models in order. Disabled by default.

@@ -15,6 +15,7 @@ import (
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -1215,7 +1216,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	reporter.SetOutboundServiceTier(upstreamBody)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -1414,7 +1415,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.SetOutboundServiceTier(upstreamBody)
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -1551,7 +1552,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetOutboundServiceTier(upstreamBody)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -2054,6 +2055,7 @@ type codexIdentityConfuseState struct {
 	originalPromptCacheKey string
 	promptCacheKey         string
 	turnIDs                []codexIdentityReplacement
+	clientMetadata         codexmetadata.State
 }
 
 type codexIdentityReplacement struct {
@@ -2097,7 +2099,11 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
 	var identityState codexIdentityConfuseState
-	rawJSON, identityState = applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, rawJSON)
+	var errMetadata error
+	rawJSON, identityState, errMetadata = prepareCodexOutboundMetadata(ctx, e.cfg, auth, userPayload, rawJSON, headers)
+	if errMetadata != nil {
+		return nil, nil, codexIdentityConfuseState{}, errMetadata
+	}
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}

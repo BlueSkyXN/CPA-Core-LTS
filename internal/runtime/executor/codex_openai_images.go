@@ -116,7 +116,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	reporter.SetOutboundServiceTier(body)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -215,7 +215,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	reporter.SetOutboundServiceTier(body)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -347,7 +347,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -410,7 +410,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
-	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -668,6 +668,7 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	out = helps.ApplyPayloadConfigWithRequest(e.cfg, mainModel, "codex", codexOpenAIImageSourceFormat, "", out, body, requestedModel, requestPath, opts.Headers)
+	out = preserveCodexImageClientMetadata(out, req.Payload)
 	out, _ = sjson.SetBytes(out, "model", mainModel)
 	out, _ = sjson.SetBytes(out, "stream", true)
 	out, _ = sjson.DeleteBytes(out, "previous_response_id")
@@ -675,6 +676,18 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 	out, _ = sjson.DeleteBytes(out, "safety_identifier")
 	out, _ = sjson.DeleteBytes(out, "stream_options")
 	return normalizeCodexInstructions(out), nil
+}
+
+func preserveCodexImageClientMetadata(body, sourcePayload []byte) []byte {
+	clientMetadata := gjson.GetBytes(sourcePayload, "client_metadata")
+	if !clientMetadata.IsObject() || strings.TrimSpace(clientMetadata.Raw) == "" {
+		return body
+	}
+	updated, err := sjson.SetRawBytes(body, "client_metadata", []byte(clientMetadata.Raw))
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func recordCodexOpenAIImageRequest(ctx context.Context, cfg *config.Config, provider string, auth *cliproxyauth.Auth, url string, headers http.Header, body []byte) {

@@ -1728,6 +1728,60 @@ func TestApplyCodexWebsocketHeadersIdentityConfuseRemapsPromptCacheKey(t *testin
 	}
 }
 
+func TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfuse(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{SessionAffinity: true},
+		Codex: config.CodexConfig{
+			IdentityConfuse: true,
+			ClientMetadata: config.CodexClientMetadataConfig{
+				Mode:            config.CodexClientMetadataModeRepair,
+				WorkspacePolicy: config.CodexClientMetadataWorkspacePolicyDrop,
+			},
+		},
+	}
+	auth := &cliproxyauth.Auth{ID: "auth-ws-1", Provider: "codex", Metadata: map[string]any{"account_id": "acct-ws-1"}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"input":"hello"}`),
+	}
+	rawBody := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"installation_id\":\"install-ws-1\",\"session_id\":\"thread-ws-1\",\"thread_id\":\"thread-ws-1\",\"turn_id\":\"turn-ws-1\",\"window_id\":\"thread-ws-1:2\",\"request_kind\":\"turn\",\"workspaces\":{\"/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://token@example.com/org/repo.git\"}}}}","thread_id":"wrong-thread","x-codex-window-id":"wrong:0"}}`)
+	body, headers := applyCodexPromptCacheHeaders("openai-response", req, rawBody)
+	ctx := contextWithGinHeaders(map[string]string{
+		"X-Codex-Turn-Metadata": `{"thread_id":"header-conflict"}`,
+		"X-Client-Request-Id":   "client-request-1",
+	})
+
+	upstreamBody, state, err := prepareCodexOutboundMetadata(ctx, cfg, auth, req.Payload, body, nil)
+	if err != nil {
+		t.Fatalf("prepareCodexOutboundMetadata() error = %v", err)
+	}
+	headers = applyCodexWebsocketHeaders(ctx, headers, auth, "oauth-token", cfg)
+	applyCodexOutboundMetadataHeaders(headers, &state)
+
+	if state.enabled || !state.clientMetadata.CanonicalPresent {
+		t.Fatalf("canonical websocket state unexpectedly used legacy identity mapping: %+v", state)
+	}
+	metadata := gjson.GetBytes(upstreamBody, "client_metadata.x-codex-turn-metadata").String()
+	if strings.Contains(metadata, `"workspaces"`) || strings.Contains(metadata, "token@example.com") {
+		t.Fatalf("drop policy did not remove websocket workspace metadata: %s", metadata)
+	}
+	if got := gjson.GetBytes(upstreamBody, "client_metadata.thread_id").String(); got != "thread-ws-1" {
+		t.Fatalf("flat thread_id = %q", got)
+	}
+	if got := gjson.GetBytes(upstreamBody, "client_metadata.x-codex-window-id").String(); got != "thread-ws-1:2" {
+		t.Fatalf("flat window_id = %q", got)
+	}
+	if got := headers.Get("X-Codex-Window-Id"); got != "thread-ws-1:2" {
+		t.Fatalf("X-Codex-Window-Id = %q", got)
+	}
+	if got := codexSessionHeaderValue(headers); got != "thread-ws-1" {
+		t.Fatalf("session_id = %q, want canonical session", got)
+	}
+	if got := headers.Get("X-Codex-Turn-Metadata"); got != state.clientMetadata.TurnMetadata {
+		t.Fatal("websocket canonical header does not match normalized body metadata")
+	}
+}
+
 func TestCodexIdentityConfuseResponsePayloadHidesUpstreamAndRestoresClient(t *testing.T) {
 	state := codexIdentityConfuseState{
 		enabled:                true,

@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -59,6 +60,90 @@ func TestRecordAPIRequestClonesDeferredBodyWhenRequestLogDisabled(t *testing.T) 
 	if !strings.Contains(captured, `{"model":"original"}`) {
 		t.Fatalf("captured API request = %q, want original body", captured)
 	}
+}
+
+func TestRecordAPIRequestRedactsCodexWorkspaceMetadataFromDeferredLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	body, headerMetadata := codexLoggingMetadataFixture(t)
+	headers := http.Header{"X-Codex-Turn-Metadata": {headerMetadata}}
+	originalBody := bytes.Clone(body)
+	originalHeader := headers.Get("X-Codex-Turn-Metadata")
+
+	RecordAPIRequest(ctx, &config.Config{}, UpstreamRequestLog{
+		URL:      "https://chatgpt.com/backend-api/codex/responses",
+		Method:   http.MethodPost,
+		Body:     body,
+		Headers:  headers,
+		Provider: "codex",
+	})
+
+	value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey)
+	if !exists {
+		t.Fatal("deferred API request was not captured")
+	}
+	requests := snapshotDeferredAPIRequests(t, value)
+	captured := string(requests[0]())
+	if strings.Contains(captured, "credential-sentinel") || strings.Contains(captured, "/Users/private/project") || strings.Contains(captured, `"workspaces"`) {
+		t.Fatalf("deferred Codex request log leaked workspace metadata: %s", captured)
+	}
+	if !bytes.Equal(body, originalBody) || headers.Get("X-Codex-Turn-Metadata") != originalHeader {
+		t.Fatal("Codex log redaction mutated the outbound request")
+	}
+}
+
+func TestRecordAPIWebsocketRequestRedactsCodexWorkspaceMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	body, headerMetadata := codexLoggingMetadataFixture(t)
+	body, err := json.Marshal(map[string]any{
+		"type": "response.create",
+		"client_metadata": map[string]any{
+			"x-codex-turn-metadata": headerMetadata,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	RecordAPIWebsocketRequest(ctx, &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}, UpstreamRequestLog{
+		URL:      "wss://chatgpt.com/backend-api/codex/responses",
+		Method:   "WEBSOCKET",
+		Body:     body,
+		Headers:  http.Header{"X-Codex-Turn-Metadata": {headerMetadata}},
+		Provider: "codex",
+	})
+
+	value, exists := ginCtx.Get("API_WEBSOCKET_TIMELINE")
+	if !exists {
+		t.Fatal("websocket timeline was not captured")
+	}
+	timeline, ok := value.([]byte)
+	if !ok {
+		t.Fatalf("websocket timeline type = %T", value)
+	}
+	if strings.Contains(string(timeline), "credential-sentinel") || strings.Contains(string(timeline), "/Users/private/project") || strings.Contains(string(timeline), `"workspaces"`) {
+		t.Fatalf("Codex websocket log leaked workspace metadata: %s", timeline)
+	}
+}
+
+func codexLoggingMetadataFixture(t *testing.T) ([]byte, string) {
+	t.Helper()
+	metadata := `{"thread_id":"thread-1","workspaces":{"/Users/private/project":{"associated_remote_urls":{"origin":"https://user:credential-sentinel@example.com/org/repo.git?token=credential-sentinel"},"latest_git_commit_hash":"abcdef","has_changes":false}}}`
+	body, err := json.Marshal(map[string]any{
+		"model": "gpt-5.6",
+		"client_metadata": map[string]any{
+			"x-codex-turn-metadata": metadata,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body, metadata
 }
 
 func TestRecordAPIRequestBoundsDeferredBodyWhenRequestLogDisabled(t *testing.T) {
