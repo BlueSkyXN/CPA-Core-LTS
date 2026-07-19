@@ -91,14 +91,34 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 		want          bool
 	}{
 		{
-			name:          "logger enabled always captures",
+			name:          "logger enabled skips unknown size",
 			loggerEnabled: true,
 			req: &http.Request{
 				Body:          io.NopCloser(strings.NewReader("{}")),
 				ContentLength: -1,
 				Header:        http.Header{"Content-Type": []string{"application/json"}},
 			},
+			want: false,
+		},
+		{
+			name:          "logger enabled captures small known size",
+			loggerEnabled: true,
+			req: &http.Request{
+				Body:          io.NopCloser(strings.NewReader("{}")),
+				ContentLength: 2,
+				Header:        http.Header{"Content-Type": []string{"application/json"}},
+			},
 			want: true,
+		},
+		{
+			name:          "logger enabled skips large known size",
+			loggerEnabled: true,
+			req: &http.Request{
+				Body:          io.NopCloser(strings.NewReader("x")),
+				ContentLength: maxErrorOnlyCapturedRequestBodyBytes + 1,
+				Header:        http.Header{"Content-Type": []string{"application/json"}},
+			},
+			want: false,
 		},
 		{
 			name:          "nil request",
@@ -159,12 +179,11 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 func TestDeferredRequestBodyCaptureDoesNotDrainUnreadBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	logger := logging.NewFileRequestLogger(false, t.TempDir(), "", 10)
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("remaining-body"))
 	request.ContentLength = -1
 	request.Header.Set("Content-Type", "application/json")
 	requestInfo := &RequestInfo{Headers: map[string][]string{"Content-Type": {"application/json"}}}
-	capture := attachDeferredRequestBodyCapture(request, logger, requestInfo, false, false)
+	capture := attachDeferredRequestBodyCapture(request, requestInfo, false)
 	if capture == nil {
 		t.Fatal("deferred request body capture was not attached")
 	}
@@ -250,8 +269,14 @@ func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(
 	if errReadLog != nil {
 		t.Fatalf("read error log: %v", errReadLog)
 	}
-	if !bytes.Contains(content, payload) {
-		t.Fatal("error log does not contain the complete large request body")
+	if !bytes.Contains(content, []byte(`{"marker":"large-error-body"`)) {
+		t.Fatal("error log does not contain the bounded request body preview")
+	}
+	if !bytes.Contains(content, []byte("REQUEST BODY TRUNCATED")) {
+		t.Fatal("error log does not mark the large request body as truncated")
+	}
+	if bytes.Contains(content, payload) {
+		t.Fatal("error log unexpectedly retained the complete oversized request body")
 	}
 	if !bytes.Contains(content, []byte("=== API REQUEST 1 ===")) {
 		t.Fatal("error log does not contain the deferred API request section")

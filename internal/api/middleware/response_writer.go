@@ -19,6 +19,8 @@ const requestBodyOverrideContextKey = "REQUEST_BODY_OVERRIDE"
 const responseBodyOverrideContextKey = "RESPONSE_BODY_OVERRIDE"
 const websocketTimelineOverrideContextKey = "WEBSOCKET_TIMELINE_OVERRIDE"
 
+const maxCapturedResponseBodyBytes = 1 << 20 // 1 MiB preview
+
 // RequestInfo holds essential details of an incoming HTTP request for logging purposes.
 type RequestInfo struct {
 	URL                 string                      // URL is the request URL.
@@ -27,7 +29,7 @@ type RequestInfo struct {
 	Body                []byte                      // Body is the raw request body.
 	RequestID           string                      // RequestID is the unique identifier for the request.
 	Timestamp           time.Time                   // Timestamp is when the request was received.
-	deferredBodyCapture *deferredRequestBodyCapture // deferredBodyCapture spools large error-only request bodies.
+	deferredBodyCapture *deferredRequestBodyCapture // deferredBodyCapture retains a bounded preview while handlers consume the body.
 }
 
 // ResponseWriterWrapper wraps the standard gin.ResponseWriter to intercept and log response data.
@@ -35,6 +37,7 @@ type RequestInfo struct {
 type ResponseWriterWrapper struct {
 	gin.ResponseWriter
 	body                *bytes.Buffer              // body is a buffer to store the response body for non-streaming responses.
+	bodyTruncated       bool                       // bodyTruncated reports that the response log preview reached its limit.
 	isStreaming         bool                       // isStreaming indicates whether the response is a streaming type (e.g., text/event-stream).
 	streamWriter        logging.StreamingLogWriter // streamWriter is a writer for handling streaming log entries.
 	chunkChannel        chan []byte                // chunkChannel is a channel for asynchronously passing response chunks to the logger.
@@ -95,7 +98,7 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.Write(data)
+		w.captureResponseBody(data)
 	}
 
 	return n, err
@@ -142,7 +145,7 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.WriteString(data)
+		w.captureResponseBody([]byte(data))
 	}
 	return n, err
 }
@@ -162,11 +165,15 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 
 	// If streaming, initialize streaming log writer
 	if w.isStreaming && w.logger.IsEnabled() {
+		requestBody := w.requestInfo.Body
+		if len(requestBody) == 0 && w.requestInfo.deferredBodyCapture != nil {
+			requestBody = w.extractRequestBody(nil)
+		}
 		streamWriter, err := w.logger.LogStreamingRequest(
 			w.requestInfo.URL,
 			w.requestInfo.Method,
 			w.requestInfo.Headers,
-			w.requestInfo.Body,
+			requestBody,
 			w.requestInfo.RequestID,
 		)
 		if err == nil {
@@ -185,6 +192,23 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 
 	// Call original WriteHeader
 	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *ResponseWriterWrapper) captureResponseBody(data []byte) {
+	if w == nil || w.body == nil || len(data) == 0 || w.bodyTruncated {
+		return
+	}
+	remaining := maxCapturedResponseBodyBytes - w.body.Len()
+	if remaining <= 0 {
+		w.bodyTruncated = true
+		return
+	}
+	if len(data) > remaining {
+		_, _ = w.body.Write(data[:remaining])
+		w.bodyTruncated = true
+		return
+	}
+	_, _ = w.body.Write(data)
 }
 
 // ensureHeadersCaptured is a helper function to make sure response headers are captured.
@@ -505,10 +529,17 @@ func (w *ResponseWriterWrapper) extractResponseBody(c *gin.Context) []byte {
 	if body := extractBodyOverride(c, responseBodyOverrideContextKey); len(body) > 0 {
 		return body
 	}
-	if w.body == nil || w.body.Len() == 0 {
+	if w.body == nil || (w.body.Len() == 0 && !w.bodyTruncated) {
 		return nil
 	}
-	return bytes.Clone(w.body.Bytes())
+	body := bytes.Clone(w.body.Bytes())
+	if !w.bodyTruncated {
+		return body
+	}
+	if len(body) > 0 && !bytes.HasSuffix(body, []byte("\n")) {
+		body = append(body, '\n')
+	}
+	return append(body, "[RESPONSE BODY TRUNCATED IN LOG]"...)
 }
 
 func (w *ResponseWriterWrapper) extractWebsocketTimeline(c *gin.Context) []byte {

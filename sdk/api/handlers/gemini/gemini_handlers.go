@@ -151,7 +151,16 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 	}
 
 	method := action[1]
-	rawJSON, _ := c.GetRawData()
+	rawJSON, errRead := handlers.ReadRequestBody(c)
+	if errRead != nil {
+		c.JSON(handlers.RequestBodyStatusCode(errRead), handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", errRead),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
 
 	switch method {
 	case "generateContent":

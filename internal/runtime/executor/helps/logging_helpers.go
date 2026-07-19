@@ -26,7 +26,7 @@ const (
 	apiWebsocketTimelineKey        = "API_WEBSOCKET_TIMELINE"
 	deferredAPIRequestBytesKey     = "DEFERRED_API_REQUEST_BYTES"
 	creditsUsedKey                 = "__antigravity_credits_used__"
-	maxDeferredAPIRequestBodyBytes = 32 << 20 // 32 MiB
+	maxDeferredAPIRequestBodyBytes = 1 << 20 // 1 MiB preview across all upstream attempts
 )
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
