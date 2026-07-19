@@ -577,7 +577,9 @@ func ParseCodexImageToolUsage(data []byte) (usage.Detail, bool) {
 	if !hasOpenAIStyleUsageTokenFields(usageNode) {
 		return usage.Detail{}, false
 	}
-	return parseOpenAIStyleUsageNode(usageNode), true
+	detail := parseOpenAIStyleUsageNode(usageNode)
+	detail.ResponseServiceTier = extractResponseServiceTier(data)
+	return detail, true
 }
 
 func ParseOpenAIUsage(data []byte) usage.Detail {
