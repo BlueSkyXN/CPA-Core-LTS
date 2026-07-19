@@ -626,3 +626,87 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream offers a dedicated panel release credential, attaches authorization only to exact HTTPS github.com or api.github.com release requests, preserves a safe migration path for existing GitStore deployments, and all listed regressions pass without the downstream implementation.
+
+  - id: gemini-unknown-method-not-found
+    reason: Gemini-compatible routes must reject unknown RPC method suffixes with a stable 404 invalid_request_error before reading the request body, instead of consuming the body and falling through to generateContent behavior.
+    introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
+    affected_upstream_range: through fde40c5a0a2f8f6808bcde498bc6079f32c355ef (v7.2.90-1-gfde40c5a); upstream still dispatches every non-stream and non-count suffix through generateContent and has no method allowlist before body decoding.
+    files:
+      - sdk/api/handlers/gemini/gemini_handlers.go
+      - sdk/api/handlers/gemini/gemini_handlers_test.go
+    regression_tests:
+      - TestGeminiHandlerUnknownMethodReturnsNotFound
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream validates the Gemini RPC method suffix before reading the body, returns the compatible 404 error shape for unknown methods, preserves generateContent, streamGenerateContent, and countTokens behavior, and the listed regression passes without the downstream implementation.
+
+  - id: count-tokens-not-found-no-cooldown
+    reason: A provider-specific count_tokens endpoint can be absent even when normal generation works, so its 404 must still record the failed request and publish hooks while remaining request-scoped and allowing another credential to serve the count request.
+    introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
+    affected_upstream_range: through fde40c5a0a2f8f6808bcde498bc6079f32c355ef (v7.2.90-1-gfde40c5a); upstream commit 36ed0ca5ce4130efcd7532d86c1386ee11ed0e2d / issue #4410 adds related generic endpoint-404 handling through a separate availability-neutral result path, but it does not preserve the CPA-Core-LTS request-scoped 404 classification and fallback contract through the existing MarkResult, recent-request, hook, and error-event flow.
+    files:
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_overrides_test.go
+    regression_tests:
+      - TestManager_CountTokensGenericNotFoundRecordsFailureWithoutCooldown
+      - TestManager_CountTokensNonNotFoundFailuresKeepCooldownPolicy
+      - TestManager_CountTokensNotFoundContinuesCredentialFallback
+      - TestCountTokensResultErrorScopesOnlyNotFound
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4410
+    state: required
+    retire_when: Upstream records count_tokens endpoint 404 failures in counters, recent-request history, hooks, and error events without auth or model cooldown; continues credential fallback; preserves normal 401, 429, and 5xx penalties; composes with the LTS request-scoped model-routing policy; and all listed regressions pass without the downstream implementation.
+
+  - id: management-logs-bounded-response
+    reason: Management log reads need a bounded default and maximum response size without breaking Panel and TUI limits or silently skipping legacy after deltas that exceed one page.
+    introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
+    affected_upstream_range: through fde40c5a0a2f8f6808bcde498bc6079f32c355ef (v7.2.90-1-gfde40c5a); upstream leaves an omitted limit unbounded and does not clamp oversized limits or provide lossless bounded pagination for legacy after reads.
+    files:
+      - internal/api/handlers/management/logs.go
+      - internal/api/handlers/management/logs_test.go
+    regression_tests:
+      - TestGetLogsNoLimitUsesBoundedDefault
+      - TestParseLimitClampsToPanelCompatibleMaximum
+      - TestGetLogsOversizedLimitClampsResponse
+      - TestGetLogsAfterPagesBoundedDefaultWithoutLoss
+      - TestGetLogsCursorWithoutLimitUsesBoundedDefault
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream bounds omitted and oversized Management log reads, keeps explicit Panel limit 10000 and TUI limit 200 compatible, and paginates legacy after deltas without gaps or duplicates while all listed regressions pass without the downstream implementation.
+
+  - id: transient-eof-cooldown
+    reason: Transport EOF and unexpected EOF failures before successful completion indicate a transient upstream path failure and need a bounded 502 cooldown, including stream bootstrap, post-payload accounting, and wsrelay errors that have lost the standard-library sentinel identity.
+    introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
+    affected_upstream_range: through fde40c5a0a2f8f6808bcde498bc6079f32c355ef (v7.2.90-1-gfde40c5a); upstream leaves status-less EOF errors at status 0, and AI Studio wraps wsrelay stream errors without preserving error identity, so failed credentials can be selected again immediately.
+    files:
+      - internal/runtime/executor/aistudio_executor.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_overrides_test.go
+    regression_tests:
+      - TestResultErrorFromErrorClassifiesEOFAsTransient
+      - TestManager_EOFTransientCooldownSkipsFailedAuthOnNextRequest
+      - TestManager_StreamEOFTransientCooldownCoversBootstrapAndChunk
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream preserves EOF sentinel identity where possible, classifies status-less terminal EOF and unexpected EOF errors as transient without overriding explicit HTTP status or context cancellation, prevents pre-delivery credential reselection loops, avoids replay after payload delivery, and all listed regressions pass without the downstream implementation.
+
+  - id: expired-availability-pruning
+    reason: Expired auth and model cooldown state must be pruned before Management availability is displayed so runtime routing, registry state, scheduler state, and persisted cooldown snapshots converge, while future, zero-deadline, disabled, Cloudflare, and independent auth-level warnings remain intact.
+    introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
+    affected_upstream_range: through fde40c5a0a2f8f6808bcde498bc6079f32c355ef (v7.2.90-1-gfde40c5a); upstream has no Management-triggered expired availability pruning and does not reconcile manager, model registry, scheduler, and cooldown-store state while separating independent auth-level warnings from model aggregates.
+    files:
+      - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/auth_files_recent_requests_test.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_availability_test.go
+    regression_tests:
+      - TestModelAvailabilityExpiredRequiresPastResettableDeadline
+      - TestAuthAvailabilityExpiredRequiresPastResettableDeadline
+      - TestManagerPruneExpiredAvailabilityKeepsFutureModelState
+      - TestManagerPruneExpiredAvailabilityFullyRecoversAuth
+      - TestManagerPruneExpiredAvailabilityClearsExpiredModelAggregate
+      - TestManagerPruneExpiredAvailabilityPreservesIndependentAuthState
+      - TestManagerPruneExpiredAvailabilityPreservesDisabledModel
+      - TestListAuthFilesPrunesOnlyExplicitlyExpiredAvailability
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream prunes only explicitly expired resettable auth and model availability, preserves future, zero-deadline, disabled, Cloudflare, and independent auth-level state, reconciles registry, scheduler, and persisted cooldown snapshots without stale races, and all listed regressions pass without the downstream implementation.
