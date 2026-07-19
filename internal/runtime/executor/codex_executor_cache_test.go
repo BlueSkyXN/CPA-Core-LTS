@@ -269,10 +269,10 @@ func TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse(
 		},
 	}}
 	auth := &cliproxyauth.Auth{ID: "auth-1", Provider: "codex", Metadata: map[string]any{"account_id": "acct-1"}}
-	rawJSON := []byte(`{"model":"gpt-5-codex","stream":true,"prompt_cache_key":"thread-1","client_metadata":{"x-codex-turn-metadata":"{\"installation_id\":\"install-1\",\"session_id\":\"thread-1\",\"thread_id\":\"thread-1\",\"turn_id\":\"turn-1\",\"window_id\":\"thread-1:1\",\"request_kind\":\"turn\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:secret@example.com/org/repo.git?token=leak#fragment\"},\"has_changes\":false}}}","x-codex-installation-id":"wrong-install","session_id":"wrong-session","thread_id":"wrong-thread","turn_id":"wrong-turn","x-codex-window-id":"wrong-window:0"}}`)
+	rawJSON := []byte(`{"model":"gpt-5-codex","stream":true,"client_metadata":{"x-codex-turn-metadata":"{\"installation_id\":\"install-1\",\"session_id\":\"thread-1\",\"thread_id\":\"thread-1\",\"turn_id\":\"turn-1\",\"window_id\":\"thread-1:1\",\"request_kind\":\"turn\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:secret@example.com/org/repo.git?token=leak#fragment\"},\"has_changes\":false}}}","x-codex-installation-id":"wrong-install","session_id":"wrong-session","thread_id":"wrong-thread","turn_id":"wrong-turn","x-codex-window-id":"wrong-window:0"}}`)
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5-codex",
-		Payload: []byte(`{"model":"gpt-5-codex","prompt_cache_key":"thread-1","client_metadata":{"x-codex-installation-id":"install-1"}}`),
+		Payload: []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-installation-id":"install-1"}}`),
 	}
 
 	httpReq, body, state, err := executor.cacheHelper(ctx, sdktranslator.FromString("openai-response"), "https://example.com/responses", auth, req, req.Payload, rawJSON)
@@ -311,6 +311,9 @@ func TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse(
 	}
 	if got := httpReq.Header.Get("X-Codex-Window-Id"); got != "thread-1:1" {
 		t.Fatalf("X-Codex-Window-Id = %q", got)
+	}
+	if got := codexSessionHeaderValue(httpReq.Header); got != "thread-1" {
+		t.Fatalf("Session_id = %q, want canonical session", got)
 	}
 	if got := httpReq.Header.Get("X-Codex-Turn-Metadata"); got != state.clientMetadata.TurnMetadata {
 		t.Fatalf("X-Codex-Turn-Metadata does not match normalized canonical metadata")

@@ -1,7 +1,6 @@
 package codexmetadata
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -58,13 +57,24 @@ func TestRedactHeadersForLogClonesAndSanitizesCanonicalHeader(t *testing.T) {
 	}
 }
 
-func TestRedactRequestBodyForLogCollapsesDuplicateClientMetadataCarriers(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.6","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"safe\"}"},"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:credential-sentinel@example.com/repo.git\"}}}}"}}`)
+func TestRedactRequestBodyForLogRedactsEscapedCanonicalKey(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","clie\u006et_metadata":{"x-codex-turn-metad\u0061ta":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:credential-sentinel@example.com/repo.git\"}}}}"}}`)
 	redacted := RedactRequestBodyForLog(body)
-	if bytes.Count(redacted, []byte(`"client_metadata"`)) != 1 {
-		t.Fatalf("duplicate client metadata remained in log body: %s", redacted)
-	}
 	if strings.Contains(string(redacted), "credential-sentinel") || strings.Contains(string(redacted), `"workspaces"`) {
+		t.Fatalf("escaped canonical key leaked workspace details: %s", redacted)
+	}
+	if !strings.Contains(string(redacted), "thread-1") {
+		t.Fatalf("escaped canonical key did not preserve safe metadata: %s", redacted)
+	}
+}
+
+func TestRedactRequestBodyForLogFailsClosedForDuplicateClientMetadataCarriers(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:credential-sentinel@example.com/repo.git\"}}}}"},"client_metadata":{"transport_marker":"last"}}`)
+	redacted := RedactRequestBodyForLog(body)
+	if strings.Contains(string(redacted), "credential-sentinel") || strings.Contains(string(redacted), "/Users/private/project") {
 		t.Fatalf("duplicate client metadata leaked workspace details: %s", redacted)
+	}
+	if !strings.Contains(string(redacted), "[REDACTED CODEX REQUEST BODY WITH INVALID TURN METADATA]") {
+		t.Fatalf("duplicate client metadata did not fail closed: %s", redacted)
 	}
 }

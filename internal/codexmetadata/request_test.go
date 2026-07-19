@@ -31,6 +31,9 @@ func TestNormalizeRequestRepairSanitizesWorkspaceAndRegeneratesProjections(t *te
 	if !state.CanonicalPresent || !state.Normalized {
 		t.Fatalf("state = %+v, want canonical normalized", state)
 	}
+	if !state.HasSessionID || state.SessionID != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("canonical session state = %+v", state)
+	}
 	if !isASCII([]byte(state.TurnMetadata)) {
 		t.Fatalf("turn metadata is not ASCII-safe: %q", state.TurnMetadata)
 	}
@@ -97,6 +100,17 @@ func TestNormalizeRequestUsesDirectCanonicalHeaderAsLegacyFallback(t *testing.T)
 	assertJSONString(t, clientMetadata, "thread_id", "22222222-2222-4222-8222-222222222222")
 	if strings.Contains(state.TurnMetadata, `"workspaces"`) {
 		t.Fatalf("workspace drop was not applied to header fallback: %s", state.TurnMetadata)
+	}
+}
+
+func TestNormalizeRequestUsesThreadIDAsSessionFallback(t *testing.T) {
+	body := requestBodyWithMetadata(t, `{"request_kind":"turn","thread_id":"thread-only"}`, nil)
+	_, state, err := NormalizeRequest(body, "", Policy{Mode: ModeRepair})
+	if err != nil {
+		t.Fatalf("NormalizeRequest() error = %v", err)
+	}
+	if !state.HasSessionID || state.SessionID != "thread-only" {
+		t.Fatalf("canonical session fallback = %+v", state)
 	}
 }
 
@@ -256,17 +270,21 @@ func TestNormalizeRequestIgnoresUnrelatedNonObjectClientMetadata(t *testing.T) {
 	}
 }
 
-func TestNormalizeRequestCollapsesDuplicateClientMetadataCarriers(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.6","client_metadata":{"transport_marker":"first"},"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\"}","thread_id":"wrong"}}`)
-	updated, state, err := NormalizeRequest(body, "", Policy{Mode: ModeRepair})
+func TestNormalizeRequestRejectsDuplicateClientMetadataCarriers(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\"}"},"client_metadata":{"transport_marker":"last"}}`)
+	if _, _, err := NormalizeRequest(body, "", Policy{Mode: ModeRepair}); err == nil {
+		t.Fatal("repair mode accepted ambiguous duplicate client_metadata carriers")
+	}
+}
+
+func TestNormalizeRequestOffMarksCanonicalAcrossDuplicateClientMetadataCarriers(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\"}"},"client_metadata":{"transport_marker":"last"}}`)
+	updated, state, err := NormalizeRequest(body, "", Policy{Mode: ModeOff})
 	if err != nil {
-		t.Fatalf("NormalizeRequest() error = %v", err)
+		t.Fatalf("NormalizeRequest(off) error = %v", err)
 	}
-	if !state.CanonicalPresent || bytes.Count(updated, []byte(`"client_metadata"`)) != 1 {
-		t.Fatalf("duplicate client_metadata carrier was not collapsed: state=%+v body=%s", state, updated)
-	}
-	if got := decodeClientMetadata(t, updated); string(got["thread_id"]) != `"thread-1"` {
-		t.Fatalf("canonical projection was not repaired: %s", updated)
+	if !state.CanonicalPresent || !bytes.Equal(updated, body) {
+		t.Fatalf("off mode lost duplicate-carrier canonical detection: state=%+v body=%s", state, updated)
 	}
 }
 

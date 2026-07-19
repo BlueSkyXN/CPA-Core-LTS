@@ -318,14 +318,17 @@ patches:
     regression_tests:
       - TestNormalizeRequestRepairSanitizesWorkspaceAndRegeneratesProjections
       - TestNormalizeRequestUsesDirectCanonicalHeaderAsLegacyFallback
+      - TestNormalizeRequestUsesThreadIDAsSessionFallback
       - TestNormalizeRequestPreservesFlatIdentityWhenCanonicalOmitsConditionalFields
       - TestNormalizeRequestWorkspaceRedactAndDrop
       - TestNormalizeRequestStrictRejectsConflictAndMalformedCanonical
       - TestNormalizeRequestOffSkipsMutationButMarksCanonical
-      - TestNormalizeRequestCollapsesDuplicateClientMetadataCarriers
+      - TestNormalizeRequestRejectsDuplicateClientMetadataCarriers
+      - TestNormalizeRequestOffMarksCanonicalAcrossDuplicateClientMetadataCarriers
       - TestRedactRequestBodyForLogRemovesWorkspacesWithoutMutatingInput
       - TestRedactRequestBodyForLogFailsClosedForMalformedCanonical
-      - TestRedactRequestBodyForLogCollapsesDuplicateClientMetadataCarriers
+      - TestRedactRequestBodyForLogRedactsEscapedCanonicalKey
+      - TestRedactRequestBodyForLogFailsClosedForDuplicateClientMetadataCarriers
       - TestCodexClientMetadataEffectiveDefaults
       - TestLoadConfigOptionalCodexClientMetadata
       - TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse

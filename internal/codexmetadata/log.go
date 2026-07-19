@@ -6,29 +6,54 @@ import (
 	"strings"
 )
 
-const redactedInvalidTurnMetadata = "[REDACTED INVALID CODEX TURN METADATA]"
+const (
+	redactedInvalidTurnMetadata = "[REDACTED INVALID CODEX TURN METADATA]"
+	redactedInvalidRequestBody  = "[REDACTED CODEX REQUEST BODY WITH INVALID TURN METADATA]"
+)
+
+type logMetadataInspection struct {
+	sawClientMetadata bool
+	hasCanonical      bool
+	ambiguous         bool
+}
 
 // RedactRequestBodyForLog removes workspace enrichment from the canonical
 // metadata copy written to logs. The original request body is never modified.
 func RedactRequestBodyForLog(body []byte) []byte {
-	if len(body) == 0 || !bytes.Contains(body, []byte("x-codex-turn-metadata")) {
+	if len(body) == 0 {
 		return body
+	}
+	if !bytes.Contains(body, []byte("x-codex-turn-metadata")) && !bytes.Contains(body, []byte(`\u`)) {
+		return body
+	}
+	inspection, err := inspectLogMetadataCarriers(body)
+	if err != nil {
+		if inspection.sawClientMetadata || bytes.Contains(body, []byte("x-codex-turn-metadata")) {
+			return []byte(redactedInvalidRequestBody)
+		}
+		return body
+	}
+	if !inspection.hasCanonical {
+		return body
+	}
+	if inspection.ambiguous {
+		return []byte(redactedInvalidRequestBody)
 	}
 	envelope, err := requestEnvelope(body)
 	if err != nil {
-		return []byte("[REDACTED CODEX REQUEST BODY WITH INVALID TURN METADATA]")
+		return []byte(redactedInvalidRequestBody)
 	}
 	rawClientMetadata, hasClientMetadata := envelope["client_metadata"]
 	if !hasClientMetadata {
-		return body
+		return []byte(redactedInvalidRequestBody)
 	}
 	var clientMetadata map[string]json.RawMessage
 	if err = json.Unmarshal(rawClientMetadata, &clientMetadata); err != nil || clientMetadata == nil {
-		return []byte("[REDACTED CODEX REQUEST BODY WITH INVALID TURN METADATA]")
+		return []byte(redactedInvalidRequestBody)
 	}
 	rawCanonical, exists := clientMetadata["x-codex-turn-metadata"]
 	if !exists {
-		return body
+		return []byte(redactedInvalidRequestBody)
 	}
 	var canonicalText string
 	if err := json.Unmarshal(rawCanonical, &canonicalText); err != nil {
@@ -51,6 +76,51 @@ func RedactRequestBodyForLog(body []byte) []byte {
 		return []byte("[REDACTED CODEX REQUEST BODY]")
 	}
 	return redacted
+}
+
+func inspectLogMetadataCarriers(body []byte) (logMetadataInspection, error) {
+	var inspection logMetadataInspection
+	members, err := decodeJSONObjectMembers(body)
+	clientMetadataCount := 0
+	canonicalCount := 0
+	for _, member := range members {
+		if member.key != "client_metadata" {
+			continue
+		}
+		inspection.sawClientMetadata = true
+		clientMetadataCount++
+		if bytes.Equal(bytes.TrimSpace(member.value), []byte("null")) {
+			continue
+		}
+		clientMembers, clientErr := decodeJSONObjectMembers(member.value)
+		if clientErr != nil {
+			return inspection, clientErr
+		}
+		seen := make(map[string]struct{}, len(clientMembers))
+		carrierHasCanonical := false
+		carrierHasDuplicate := false
+		for _, clientMember := range clientMembers {
+			if _, duplicate := seen[clientMember.key]; duplicate {
+				carrierHasDuplicate = true
+			}
+			seen[clientMember.key] = struct{}{}
+			if clientMember.key == "x-codex-turn-metadata" {
+				carrierHasCanonical = true
+				canonicalCount++
+			}
+		}
+		if carrierHasCanonical && carrierHasDuplicate {
+			inspection.ambiguous = true
+		}
+	}
+	inspection.hasCanonical = canonicalCount > 0
+	if inspection.hasCanonical && (clientMetadataCount != 1 || canonicalCount != 1) {
+		inspection.ambiguous = true
+	}
+	if err != nil {
+		return inspection, err
+	}
+	return inspection, nil
 }
 
 // RedactHeadersForLog clones a header map and removes workspace enrichment

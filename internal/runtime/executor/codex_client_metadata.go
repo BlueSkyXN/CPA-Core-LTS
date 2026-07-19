@@ -50,6 +50,9 @@ func codexIncomingTurnMetadata(ctx context.Context, provided http.Header) string
 func applyCodexOutboundMetadataHeaders(headers http.Header, state *codexIdentityConfuseState) {
 	if state != nil && state.clientMetadata.CanonicalPresent {
 		state.clientMetadata.ApplyHeaders(headers)
+		if state.clientMetadata.HasSessionID {
+			setCodexSessionHeaderCasePreserved(headers, "Session_id", state.clientMetadata.SessionID)
+		}
 		return
 	}
 	applyCodexIdentityConfuseHeaders(headers, state)

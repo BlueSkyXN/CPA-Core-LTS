@@ -56,12 +56,19 @@ type State struct {
 	CanonicalPresent bool
 	Normalized       bool
 	TurnMetadata     string
+	SessionID        string
+	HasSessionID     bool
 	WindowID         string
 	HasWindowID      bool
 	ParentThreadID   string
 	HasParentThread  bool
 	Subagent         string
 	HasSubagent      bool
+}
+
+type jsonObjectMember struct {
+	key   string
+	value json.RawMessage
 }
 
 // ValidationError is returned for malformed or conflicting canonical metadata.
@@ -170,6 +177,7 @@ func NormalizeRequest(body []byte, directTurnMetadata string, policy Policy) ([]
 
 	state.Normalized = true
 	state.TurnMetadata = canonicalText
+	state.SessionID, state.HasSessionID = canonicalSessionID(canonical)
 	state.WindowID, state.HasWindowID = canonicalString(canonical, "window_id")
 	state.ParentThreadID, state.HasParentThread = canonicalString(canonical, "parent_thread_id")
 	state.Subagent, state.HasSubagent = rawJSONString(clientMetadata, "x-openai-subagent")
@@ -177,10 +185,15 @@ func NormalizeRequest(body []byte, directTurnMetadata string, policy Policy) ([]
 }
 
 func detectCanonicalRequest(body []byte, directTurnMetadata string) bool {
-	if clientMetadata, _, err := clientMetadataObject(body); err == nil {
-		if rawCanonical, exists := clientMetadata["x-codex-turn-metadata"]; exists {
+	carriers, _ := clientMetadataCarriers(body)
+	for _, carrier := range carriers {
+		members, _ := decodeJSONObjectMembers(carrier)
+		for _, member := range members {
+			if member.key != "x-codex-turn-metadata" {
+				continue
+			}
 			var canonicalText string
-			if json.Unmarshal(rawCanonical, &canonicalText) == nil && canonicalHasRequestKind(canonicalText) {
+			if json.Unmarshal(member.value, &canonicalText) == nil && canonicalHasRequestKind(canonicalText) {
 				return true
 			}
 		}
@@ -220,19 +233,50 @@ func (s State) ApplyHeaders(headers http.Header) {
 }
 
 func clientMetadataObject(body []byte) (map[string]json.RawMessage, bool, error) {
-	envelope, err := requestEnvelope(body)
+	carriers, err := clientMetadataCarriers(body)
 	if err != nil {
-		return nil, false, err
+		return nil, false, &ValidationError{Code: "request body is malformed"}
 	}
-	raw, ok := envelope["client_metadata"]
-	if !ok || len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+	if len(carriers) == 0 {
 		return nil, false, nil
+	}
+	if len(carriers) != 1 {
+		return nil, true, &ValidationError{Code: "duplicate client metadata carriers"}
+	}
+	raw := carriers[0]
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, false, nil
+	}
+	members, err := decodeJSONObjectMembers(raw)
+	if err != nil {
+		return nil, true, &ValidationError{Code: "client metadata must be an object"}
+	}
+	seen := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		if _, duplicate := seen[member.key]; duplicate {
+			return nil, true, &ValidationError{Code: "client metadata contains duplicate keys"}
+		}
+		seen[member.key] = struct{}{}
 	}
 	var clientMetadata map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &clientMetadata); err != nil || clientMetadata == nil {
 		return nil, true, &ValidationError{Code: "client metadata must be an object"}
 	}
 	return clientMetadata, true, nil
+}
+
+func clientMetadataCarriers(body []byte) ([]json.RawMessage, error) {
+	if len(body) == 0 {
+		return nil, nil
+	}
+	members, err := decodeJSONObjectMembers(body)
+	carriers := make([]json.RawMessage, 0, 1)
+	for _, member := range members {
+		if member.key == "client_metadata" {
+			carriers = append(carriers, member.value)
+		}
+	}
+	return carriers, err
 }
 
 func requestEnvelope(body []byte) (map[string]json.RawMessage, error) {
@@ -244,6 +288,47 @@ func requestEnvelope(body []byte) (map[string]json.RawMessage, error) {
 		return nil, &ValidationError{Code: "request body is malformed"}
 	}
 	return envelope, nil
+}
+
+func decodeJSONObjectMembers(raw []byte) ([]jsonObjectMember, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if start != json.Delim('{') {
+		return nil, fmt.Errorf("JSON value is not an object")
+	}
+	members := make([]jsonObjectMember, 0, 8)
+	for decoder.More() {
+		keyToken, errKey := decoder.Token()
+		if errKey != nil {
+			return members, errKey
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return members, fmt.Errorf("JSON object key is not a string")
+		}
+		members = append(members, jsonObjectMember{key: key})
+		if err = decoder.Decode(&members[len(members)-1].value); err != nil {
+			return members, err
+		}
+	}
+	end, err := decoder.Token()
+	if err != nil {
+		return members, err
+	}
+	if end != json.Delim('}') {
+		return members, fmt.Errorf("JSON object is not terminated")
+	}
+	if _, err = decoder.Token(); err != io.EOF {
+		if err == nil {
+			return members, fmt.Errorf("JSON object has trailing data")
+		}
+		return members, err
+	}
+	return members, nil
 }
 
 func replaceClientMetadata(body, clientMetadataJSON []byte) ([]byte, error) {
@@ -412,6 +497,16 @@ func canonicalString(object map[string]json.RawMessage, key string) (string, boo
 		return "", false
 	}
 	return value, true
+}
+
+func canonicalSessionID(canonical map[string]json.RawMessage) (string, bool) {
+	for _, key := range []string{"session_id", "thread_id"} {
+		value, exists := canonicalString(canonical, key)
+		if value = strings.TrimSpace(value); exists && value != "" {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func rawJSONString(object map[string]json.RawMessage, key string) (string, bool) {

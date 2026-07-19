@@ -1742,7 +1742,7 @@ func TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfus
 	auth := &cliproxyauth.Auth{ID: "auth-ws-1", Provider: "codex", Metadata: map[string]any{"account_id": "acct-ws-1"}}
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5-codex",
-		Payload: []byte(`{"prompt_cache_key":"thread-ws-1"}`),
+		Payload: []byte(`{"input":"hello"}`),
 	}
 	rawBody := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"installation_id\":\"install-ws-1\",\"session_id\":\"thread-ws-1\",\"thread_id\":\"thread-ws-1\",\"turn_id\":\"turn-ws-1\",\"window_id\":\"thread-ws-1:2\",\"request_kind\":\"turn\",\"workspaces\":{\"/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://token@example.com/org/repo.git\"}}}}","thread_id":"wrong-thread","x-codex-window-id":"wrong:0"}}`)
 	body, headers := applyCodexPromptCacheHeaders("openai-response", req, rawBody)
@@ -1773,6 +1773,9 @@ func TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfus
 	}
 	if got := headers.Get("X-Codex-Window-Id"); got != "thread-ws-1:2" {
 		t.Fatalf("X-Codex-Window-Id = %q", got)
+	}
+	if got := codexSessionHeaderValue(headers); got != "thread-ws-1" {
+		t.Fatalf("session_id = %q, want canonical session", got)
 	}
 	if got := headers.Get("X-Codex-Turn-Metadata"); got != state.clientMetadata.TurnMetadata {
 		t.Fatal("websocket canonical header does not match normalized body metadata")
