@@ -266,8 +266,9 @@ func TestManagerPruneExpiredAvailabilityPreservesIndependentAuthState(t *testing
 	past := now.Add(-time.Minute)
 	future := now.Add(time.Hour)
 	tests := []struct {
-		name string
-		auth *Auth
+		name         string
+		auth         *Auth
+		expiredState *ModelState
 	}{
 		{
 			name: "future cooldown",
@@ -288,6 +289,7 @@ func TestManagerPruneExpiredAvailabilityPreservesIndependentAuthState(t *testing
 				Unavailable:   true,
 				LastError:     &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"},
 			},
+			expiredState: &ModelState{Status: StatusError, StatusMessage: "unauthorized", Unavailable: true, NextRetryAfter: past, LastError: &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}},
 		},
 		{
 			name: "cloudflare challenge",
@@ -311,9 +313,11 @@ func TestManagerPruneExpiredAvailabilityPreservesIndependentAuthState(t *testing
 			model := fmt.Sprintf("prune-independent-model-%d", index)
 			tt.auth.ID = authID
 			tt.auth.Provider = "claude"
-			tt.auth.ModelStates = map[string]*ModelState{
-				model: {Status: StatusError, StatusMessage: "EOF", Unavailable: true, NextRetryAfter: past, LastError: &Error{HTTPStatus: http.StatusBadGateway, Message: "EOF"}},
+			expiredState := tt.expiredState
+			if expiredState == nil {
+				expiredState = &ModelState{Status: StatusError, StatusMessage: "EOF", Unavailable: true, NextRetryAfter: past, LastError: &Error{HTTPStatus: http.StatusBadGateway, Message: "EOF"}}
 			}
+			tt.auth.ModelStates = map[string]*ModelState{model: expiredState}
 
 			reg := registry.GetGlobalRegistry()
 			reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})

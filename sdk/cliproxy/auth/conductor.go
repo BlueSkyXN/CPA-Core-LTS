@@ -4676,7 +4676,10 @@ func authAvailabilityMatchesModelState(auth *Auth, state *ModelState) bool {
 	if auth.Unavailable && !state.Unavailable {
 		return false
 	}
-	if !auth.NextRetryAfter.IsZero() && !auth.NextRetryAfter.Equal(state.NextRetryAfter) {
+	if auth.Unavailable && !auth.NextRetryAfter.Equal(state.NextRetryAfter) {
+		return false
+	}
+	if !auth.Unavailable && !auth.NextRetryAfter.IsZero() && !auth.NextRetryAfter.Equal(state.NextRetryAfter) {
 		return false
 	}
 	return availabilityQuotaMatchesModel(auth.Quota, state.Quota)
