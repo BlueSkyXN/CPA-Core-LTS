@@ -510,7 +510,7 @@ func TestManagerExecuteCodexModelFallbackBlocksCachedClaudeReplayBeforeTargetSel
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 	const sessionID = "123e4567-e89b-12d3-a456-426614174000"
-	if !internalcache.CacheCodexReasoningReplayItem("gpt-source", "claude:"+sessionID, []byte(`{"type":"function_call","call_id":"call-preflight","name":"tool","arguments":"{}"}`)) {
+	if !internalcache.CacheCodexReasoningReplayItem("gpt-source", "claude:"+sessionID+":agent:main", []byte(`{"type":"function_call","call_id":"call-preflight","name":"tool","arguments":"{}"}`)) {
 		t.Fatal("failed to cache replay test item")
 	}
 	initial := &codexFallbackTestError{message: "usage limit", reason: internalconfig.CodexModelFallbackTriggerUsageLimit}
@@ -529,26 +529,26 @@ func TestManagerExecuteCodexModelFallbackBlocksCachedClaudeReplayBeforeTargetSel
 	}
 }
 
-func TestManagerExecuteCodexModelFallbackReplayPreflightUsesExecutorKeyPriority(t *testing.T) {
+func TestManagerExecuteCodexModelFallbackReplayPreflightUsesAgentScopedExecutorKeyPriority(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 	const sessionID = "123e4567-e89b-12d3-a456-426614174010"
-	if !internalcache.CacheCodexReasoningReplayItem("gpt-source", "claude:"+sessionID, []byte(`{"type":"function_call","call_id":"call-lower-priority","name":"tool","arguments":"{}"}`)) {
+	if !internalcache.CacheCodexReasoningReplayItem("gpt-source", "claude:"+sessionID+":agent:main", []byte(`{"type":"function_call","call_id":"call-agent-scope","name":"tool","arguments":"{}"}`)) {
 		t.Fatal("failed to cache replay test item")
 	}
 	initial := &codexFallbackTestError{message: "usage limit", reason: internalconfig.CodexModelFallbackTriggerUsageLimit}
 	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": initial}}
 	manager, _ := newCodexModelFallbackTestManager(t, executor, internalconfig.CodexModelFallbackReasoningContinuitySameModelOnly)
-	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
 		Model:   "gpt-source",
 		Payload: []byte(`{"prompt_cache_key":"higher-priority-key-without-replay","metadata":{"user_id":"{\"session_id\":\"` + sessionID + `\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"continue"}]}]}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
-	if err != nil || string(resp.Payload) != "gpt-target" {
-		t.Fatalf("Execute() = payload %q, err %v; want target success", resp.Payload, err)
+	if err != initial {
+		t.Fatalf("Execute() error = %v, want source error", err)
 	}
 	calls, _ := executor.snapshot()
-	if len(calls) != 2 || calls[0] != "gpt-source" || calls[1] != "gpt-target" {
-		t.Fatalf("calls = %#v, want source then target", calls)
+	if len(calls) != 1 || calls[0] != "gpt-source" {
+		t.Fatalf("calls = %#v, want target zero-dispatch", calls)
 	}
 }
 

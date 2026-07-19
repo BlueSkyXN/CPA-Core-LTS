@@ -3,32 +3,48 @@ package helps
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 )
 
-const ClaudeCodeSessionHeader = internalcache.ClaudeCodeSessionHeader
+const (
+	ClaudeCodeSessionHeader = internalcache.ClaudeCodeSessionHeader
+	ClaudeCodeAgentHeader   = internalcache.ClaudeCodeAgentHeader
+	ClaudeCodeMainAgentID   = internalcache.ClaudeCodeMainAgentID
+)
 
 // ExtractClaudeCodeSessionID resolves a Claude Code session ID, preferring X-Claude-Code-Session-Id over payload metadata.
 func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers http.Header) string {
 	return internalcache.ExtractClaudeCodeSessionID(ctx, payload, headers)
 }
 
-// ClaudeCodePromptCache maps a Claude Code session to a stable upstream prompt_cache_key.
+// ExtractClaudeCodeAgentID resolves the Claude Code agent ID and uses a stable sentinel for the root agent.
+func ExtractClaudeCodeAgentID(ctx context.Context, headers http.Header) string {
+	return internalcache.ExtractClaudeCodeAgentID(ctx, headers)
+}
+
+// ClaudeCodeExecutionScope returns the stable root-session and agent identity used by Codex execution state.
+func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.Header) (string, bool) {
+	return internalcache.ClaudeCodeExecutionScope(ctx, payload, headers)
+}
+
+// ClaudeCodePromptCache maps one Claude Code agent execution scope to a stable upstream prompt_cache_key.
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
-	sessionID := ExtractClaudeCodeSessionID(ctx, payload, headers)
-	if sessionID == "" {
+	modelName = strings.TrimSpace(modelName)
+	executionScope, ok := ClaudeCodeExecutionScope(ctx, payload, headers)
+	if modelName == "" || !ok {
 		return CodexCache{}, false, nil
 	}
-	key := CodexPromptCacheKey(modelName, "claude:"+sessionID)
-	if cache, ok, errCache := GetCodexCacheRequired(ctx, key); errCache != nil || ok {
-		return cache, ok, errCache
+	key := CodexPromptCacheKey(modelName, executionScope)
+	if cache, found, errCache := GetCodexCacheRequired(ctx, key); errCache != nil || found {
+		return cache, found, errCache
 	}
 	cache := CodexCache{
 		ID:     uuid.New().String(),
-		Expire: time.Now().Add(1 * time.Hour),
+		Expire: time.Now().Add(time.Hour),
 	}
 	if errSet := SetCodexCacheRequired(ctx, key, cache); errSet != nil {
 		return CodexCache{}, false, errSet

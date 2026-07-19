@@ -98,7 +98,7 @@ func TestCodexExecutorModelFallbackSameModelOnlyBlocksSourceReplayCache(t *testi
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 	signature := validCodexReasoningEncryptedContentForTestSeed(32)
-	internalcache.CacheCodexReasoningReplayItem("gpt-source", "claude:session-fallback-source", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+signature+`"}`))
+	internalcache.CacheCodexReasoningReplayItem("gpt-source", "claude:session-fallback-source:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+signature+`"}`))
 
 	var calls atomic.Int32
 	var bodies [][]byte
@@ -128,7 +128,7 @@ func TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair(t 
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 	signature := validCodexReasoningEncryptedContentForTestSeed(33)
-	internalcache.CacheCodexReasoningReplayItems("gpt-source", "claude:session-fallback-reset", [][]byte{
+	internalcache.CacheCodexReasoningReplayItems("gpt-source", "claude:session-fallback-reset:agent:main", [][]byte{
 		[]byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"` + signature + `"}`),
 		[]byte(`{"type":"function_call","call_id":"call_reset","name":"lookup","arguments":"{\"q\":\"x\"}"}`),
 	})
