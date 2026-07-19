@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,10 +25,11 @@ const (
 	apiRequestKey                  = "API_REQUEST"
 	apiResponseKey                 = "API_RESPONSE"
 	apiWebsocketTimelineKey        = "API_WEBSOCKET_TIMELINE"
-	deferredAPIRequestBytesKey     = "DEFERRED_API_REQUEST_BYTES"
 	creditsUsedKey                 = "__antigravity_credits_used__"
 	maxDeferredAPIRequestBodyBytes = 32 << 20 // 32 MiB
 )
+
+var deferredAPIRequestStateInitMu sync.Mutex
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
 type UpstreamRequestLog struct {
@@ -40,6 +42,43 @@ type UpstreamRequestLog struct {
 	AuthLabel string
 	AuthType  string
 	AuthValue string
+}
+
+type deferredAPIRequestState struct {
+	mu        sync.Mutex
+	requests  []logging.DeferredAPIRequest
+	bytesUsed int
+}
+
+func (s *deferredAPIRequestState) SnapshotDeferredAPIRequests() []logging.DeferredAPIRequest {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]logging.DeferredAPIRequest(nil), s.requests...)
+}
+
+func deferredAPIRequestStateFor(ginCtx *gin.Context) *deferredAPIRequestState {
+	if ginCtx == nil {
+		return nil
+	}
+	if value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
+		if state, ok := value.(*deferredAPIRequestState); ok {
+			return state
+		}
+	}
+
+	deferredAPIRequestStateInitMu.Lock()
+	defer deferredAPIRequestStateInitMu.Unlock()
+	if value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
+		if state, ok := value.(*deferredAPIRequestState); ok {
+			return state
+		}
+	}
+	state := &deferredAPIRequestState{}
+	ginCtx.Set(logging.DeferredAPIRequestContextKey, state)
+	return state
 }
 
 type upstreamAttempt struct {
@@ -128,16 +167,17 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 	if ginCtx == nil {
 		return
 	}
-	var requests []logging.DeferredAPIRequest
-	if value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
-		requests, _ = value.([]logging.DeferredAPIRequest)
+	state := deferredAPIRequestStateFor(ginCtx)
+	if state == nil {
+		return
 	}
-	index := len(requests) + 1
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	index := len(state.requests) + 1
 	capturedInfo := info
 	capturedAt := time.Now()
-	capturedBytes, _ := ginCtx.Get(deferredAPIRequestBytesKey)
-	bytesUsed, _ := capturedBytes.(int)
-	remaining := maxDeferredAPIRequestBodyBytes - bytesUsed
+	remaining := maxDeferredAPIRequestBodyBytes - state.bytesUsed
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -148,8 +188,8 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 	capturedInfo.Body = bytes.Clone(info.Body[:captureLength])
 	bodyEmpty := len(info.Body) == 0
 	bodyTruncated := captureLength < len(info.Body)
-	ginCtx.Set(deferredAPIRequestBytesKey, bytesUsed+captureLength)
-	requests = append(requests, func() []byte {
+	state.bytesUsed += captureLength
+	state.requests = append(state.requests, func() []byte {
 		builder := newAPIRequestLogBuilder(index, capturedInfo, capturedAt)
 		if bodyEmpty {
 			builder.WriteString("<empty>")
@@ -162,7 +202,6 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 		builder.WriteString("\n\n")
 		return []byte(builder.String())
 	})
-	ginCtx.Set(logging.DeferredAPIRequestContextKey, requests)
 }
 
 func newAPIRequestLogBuilder(index int, info UpstreamRequestLog, timestamp time.Time) *strings.Builder {

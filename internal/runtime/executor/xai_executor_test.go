@@ -709,6 +709,38 @@ func TestXAIExecutorPrepareAllowedToolsSyncsInjectedXSearch(t *testing.T) {
 	}
 }
 
+func TestXAIExecutorPreparePreservesExplicitToolChoiceNoneAfterXSearchInject(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model: "grok-4.5",
+		Payload: []byte(`{
+			"model":"grok-4.5",
+			"input":"answer without tools",
+			"tool_choice":"none",
+			"parallel_tool_calls":false
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatCodex,
+		Stream:       false,
+	}, false)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+
+	if got := gjson.GetBytes(prepared.body, "tools.0.type").String(); got != "x_search" {
+		t.Fatalf("tools.0.type = %q, want x_search; body=%s", got, prepared.body)
+	}
+	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+		t.Fatalf("tool_choice = %q, want none; body=%s", got, prepared.body)
+	}
+	parallelToolCalls := gjson.GetBytes(prepared.body, "parallel_tool_calls")
+	if !parallelToolCalls.Exists() || parallelToolCalls.Bool() {
+		t.Fatalf("parallel_tool_calls = %s, want explicit false; body=%s", parallelToolCalls.Raw, prepared.body)
+	}
+}
+
 func TestXAIInternalXSearchResponseFilterRequiresNativeTool(t *testing.T) {
 	if xaiRequestHasNativeXSearch([]byte(`{"tools":[{"type":"web_search"}]}`)) {
 		t.Fatal("web_search must not enable internal X search filtering")

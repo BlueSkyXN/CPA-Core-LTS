@@ -45,6 +45,11 @@ const (
 // DeferredAPIRequest builds an upstream request log only when an error log needs it.
 type DeferredAPIRequest func() []byte
 
+// DeferredAPIRequestSource provides a concurrency-safe snapshot of deferred upstream requests.
+type DeferredAPIRequestSource interface {
+	SnapshotDeferredAPIRequests() []DeferredAPIRequest
+}
+
 type homeRequestLogClient interface {
 	HeartbeatOK() bool
 	RPushRequestLog(ctx context.Context, payload []byte) error
