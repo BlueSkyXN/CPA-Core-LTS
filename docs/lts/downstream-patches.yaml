@@ -514,3 +514,99 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream bounds encoded public API request bodies and every decoded Content-Encoding layer, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.
+
+  - id: object-store-auth-path-containment
+    reason: Object-store auth persistence must never create, overwrite, upload, or delete files outside its managed auth mirror, including traversal, sibling-prefix, absolute-path, and symlink escapes.
+    introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.88); upstream accepts caller-provided absolute auth paths and computes object keys from unchecked filepath.Rel results, so paths outside the mirror can reach local file and remote object operations.
+    files:
+      - internal/store/objectstore.go
+      - internal/store/objectstore_path_test.go
+    regression_tests:
+      - TestObjectTokenStoreRejectsAuthPathsOutsideAuthDir
+      - TestObjectTokenStoreAcceptsNestedAuthPathInsideAuthDir
+      - TestObjectTokenStoreRejectsSiblingPrefixAndSymlinkEscapes
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream validates every object-store auth save, delete, upload, and watcher persistence path against both lexical and resolved filesystem containment, rejects symlink escapes, preserves nested auth files, and all listed regressions pass without the downstream implementation.
+
+  - id: auth-token-private-file-permissions
+    reason: OAuth tokens and service-account credentials must be created with owner-only permissions and must tighten pre-existing wider files before replacing their contents.
+    introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.88); Claude, Codex, Kimi, Vertex, and xAI token writers still use os.Create, which follows umask for new files and preserves wider permissions on existing files.
+    files:
+      - internal/misc/credential_file.go
+      - internal/auth/claude/token.go
+      - internal/auth/claude/token_permissions_test.go
+      - internal/auth/codex/token.go
+      - internal/auth/codex/token_permissions_test.go
+      - internal/auth/kimi/token.go
+      - internal/auth/kimi/token_permissions_test.go
+      - internal/auth/vertex/vertex_credentials.go
+      - internal/auth/vertex/vertex_credentials_permissions_test.go
+      - internal/auth/xai/token.go
+      - internal/auth/xai/token_permissions_test.go
+    regression_tests:
+      - TestSaveTokenToFileUsesPrivatePermissions
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream opens every current credential writer with owner-only permissions, tightens existing files before truncation, propagates write and close errors, and the provider-local permission regressions pass without the downstream helper.
+
+  - id: auth-store-list-error-propagation
+    reason: A damaged or unreadable auth JSON file must fail Store.List instead of silently removing that credential from routing, fallback, and usage attribution while startup reports success.
+    introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.88); the File and Git token stores still discard read, JSON decode, and stat errors inside filepath.WalkDir callbacks.
+    files:
+      - internal/store/gitstore.go
+      - internal/store/gitstore_test.go
+      - sdk/auth/filestore.go
+      - sdk/auth/filestore_test.go
+    regression_tests:
+      - TestGitTokenStoreListReturnsAuthFileErrors
+      - TestFileTokenStoreListReturnsAuthFileErrors
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream returns contextual File and Git auth-list errors to Manager.Load, preserves plugin multi-auth behavior, and both listed regressions pass without the downstream implementation.
+
+  - id: auth-store-metadata-hydration
+    reason: Initial File, Git, Object, and Postgres store loading must hydrate the same normalized auth prefix, custom headers, and disabled state as watcher synthesis so prefixed model routing and Management auth-file output do not change after a reload event.
+    introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.88); watcher synthesis reads normalized prefix metadata, but initial Store.List paths only apply partial metadata and the Management auth-file response omits Auth.Prefix.
+    files:
+      - sdk/cliproxy/auth/metadata_hydrate.go
+      - sdk/cliproxy/auth/metadata_hydrate_test.go
+      - sdk/auth/filestore.go
+      - sdk/auth/filestore_disabled_test.go
+      - internal/store/gitstore.go
+      - internal/store/objectstore.go
+      - internal/store/postgresstore.go
+      - internal/store/auth_metadata_test.go
+      - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/auth_files_recent_requests_test.go
+    regression_tests:
+      - TestNormalizeAuthPrefix
+      - TestHydrateAuthFromMetadata
+      - TestFileTokenStoreListHydratesMetadataFields
+      - TestGitTokenStoreReadAuthFileHydratesMetadata
+      - TestObjectTokenStoreReadAuthFileHydratesMetadata
+      - TestListAuthFiles_IncludesRecentRequestsBuckets
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream hydrates normalized single-segment prefixes and shared auth metadata consistently across all initial stores, watcher reload, Management upload/edit, and auth-file listing; prefixed routing remains stable from process start; and all listed regressions pass without the downstream helper.
+
+  - id: panel-release-token-isolation
+    reason: Management panel release lookups must authorize only exact HTTPS GitHub release URLs and should use a dedicated panel token while retaining a guarded legacy GitStore fallback.
+    introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
+    affected_upstream_range: through 93d74a890a44802f656d7f39a573916b2611896e (v7.2.88); upstream decides whether to attach GITSTORE_GIT_TOKEN from the GitStore URL rather than the actual release URL and has no dedicated panel release token.
+    files:
+      - .env.example
+      - internal/managementasset/updater.go
+      - internal/managementasset/updater_test.go
+    regression_tests:
+      - TestFetchLatestAssetUsesDedicatedPanelToken
+      - TestFetchLatestAssetUsesLegacyGitStoreTokenOnlyForGitHub
+      - TestPanelAuthorizationHeaderKeepsLegacySSHGitHubCompatibility
+      - TestFetchLatestAssetDoesNotSendTokensToNonGitHubHosts
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream offers a dedicated panel release credential, attaches authorization only to exact HTTPS github.com or api.github.com release requests, preserves a safe migration path for existing GitStore deployments, and all listed regressions pass without the downstream implementation.
