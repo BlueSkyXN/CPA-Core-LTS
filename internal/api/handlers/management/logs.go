@@ -28,15 +28,17 @@ const (
 	logScannerMaxBuffer     = 8 * 1024 * 1024
 	logCursorVersion        = 1
 	logCursorFingerprintMax = 4 * 1024
+	defaultLogLimit         = 1000
+	maxLogLimit             = 10000
 )
 
 // GetLogs returns log lines with optional incremental loading.
 //
 // The legacy timestamp path keeps line-count as the total scanned line count for
 // compatibility. Cursor and tail reads avoid scanning older files, so line-count
-// is the number of returned lines there. A cursor emitted by the legacy path
-// points at the latest complete log boundary; combining after with limit is
-// therefore tail semantics and does not replay lines trimmed by limit.
+// is the number of returned lines there. When a legacy after read exceeds its
+// limit, it returns the earliest page and emits a cursor at the last returned
+// line so the remaining delta can be read without gaps.
 func (h *Handler) GetLogs(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
@@ -123,7 +125,13 @@ func (h *Handler) GetLogs(c *gin.Context) {
 	if latest == 0 || latest < cutoff {
 		latest = cutoff
 	}
-	nextCursor, errCursor := cursorForLatestLogFile(files, latest)
+	var nextCursor string
+	var errCursor error
+	if acc.truncated && acc.cursorPath != "" {
+		nextCursor, errCursor = newLogCursor(acc.cursorPath, acc.cursorOffset, latest)
+	} else {
+		nextCursor, errCursor = cursorForLatestLogFile(files, latest)
+	}
 	if errCursor != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to prepare log cursor: %v", errCursor)})
 		return
@@ -445,12 +453,15 @@ func (h *Handler) collectLogFiles(dir string) ([]string, error) {
 }
 
 type logAccumulator struct {
-	cutoff  int64
-	limit   int
-	lines   []string
-	total   int
-	latest  int64
-	include bool
+	cutoff       int64
+	limit        int
+	lines        []string
+	total        int
+	latest       int64
+	include      bool
+	truncated    bool
+	cursorPath   string
+	cursorOffset int64
 }
 
 func newLogAccumulator(cutoff int64, limit int) *logAccumulator {
@@ -480,8 +491,18 @@ func (acc *logAccumulator) consumeFile(path string) error {
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 0, logScannerInitialBuffer)
 	scanner.Buffer(buf, logScannerMaxBuffer)
+	offset := int64(0)
+	advance := 0
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		nextAdvance, token, errSplit := bufio.ScanLines(data, atEOF)
+		if token != nil {
+			advance = nextAdvance
+		}
+		return nextAdvance, token, errSplit
+	})
 	for scanner.Scan() {
-		acc.addLine(scanner.Text())
+		offset += int64(advance)
+		acc.addLine(scanner.Text(), path, offset)
 	}
 	if errScan := scanner.Err(); errScan != nil {
 		return errScan
@@ -489,29 +510,32 @@ func (acc *logAccumulator) consumeFile(path string) error {
 	return nil
 }
 
-func (acc *logAccumulator) addLine(raw string) {
+func (acc *logAccumulator) addLine(raw, path string, endOffset int64) {
 	line := strings.TrimRight(raw, "\r")
 	acc.total++
 	ts := parseTimestamp(line)
-	if ts > acc.latest {
-		acc.latest = ts
-	}
 	if ts > 0 {
 		acc.include = acc.cutoff == 0 || ts > acc.cutoff
 		if acc.cutoff == 0 || acc.include {
-			acc.append(line)
+			acc.append(line, path, endOffset, ts)
 		}
 		return
 	}
 	if acc.cutoff == 0 || acc.include {
-		acc.append(line)
+		acc.append(line, path, endOffset, 0)
 	}
 }
 
-func (acc *logAccumulator) append(line string) {
+func (acc *logAccumulator) append(line, path string, endOffset, timestamp int64) {
+	if acc.limit > 0 && len(acc.lines) >= acc.limit {
+		acc.truncated = true
+		return
+	}
 	acc.lines = append(acc.lines, line)
-	if acc.limit > 0 && len(acc.lines) > acc.limit {
-		acc.lines = acc.lines[len(acc.lines)-acc.limit:]
+	acc.cursorPath = path
+	acc.cursorOffset = endOffset
+	if timestamp > acc.latest {
+		acc.latest = timestamp
 	}
 }
 
@@ -1217,7 +1241,7 @@ func parseCutoff(raw string) int64 {
 func parseLimit(raw string) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return 0, nil
+		return defaultLogLimit, nil
 	}
 	limit, err := strconv.Atoi(value)
 	if err != nil {
@@ -1225,6 +1249,9 @@ func parseLimit(raw string) (int, error) {
 	}
 	if limit <= 0 {
 		return 0, fmt.Errorf("must be greater than zero")
+	}
+	if limit > maxLogLimit {
+		return maxLogLimit, nil
 	}
 	return limit, nil
 }

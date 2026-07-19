@@ -483,6 +483,76 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	}
 }
 
+// PruneExpiredAvailability clears availability state only when an explicit
+// cooldown deadline has elapsed. This keeps Management status aligned with
+// scheduler routing without treating zero-deadline or non-resettable failures
+// as recovered.
+func (m *Manager) PruneExpiredAvailability(ctx context.Context, now time.Time) int {
+	if m == nil {
+		return 0
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	changedAuthCount := 0
+	persistCooldownState := false
+	reg := registry.GetGlobalRegistry()
+
+	m.mu.Lock()
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		authExpired := authAvailabilityExpired(auth, now)
+		preserveAuthAvailability := !authExpired && authAvailabilityStatePresent(auth) && !authAvailabilityMirrorsExpiredModel(auth, now)
+		prunedModels := make([]string, 0)
+		for model, state := range auth.ModelStates {
+			if !modelAvailabilityExpired(state, now) {
+				continue
+			}
+			resetModelState(state, now)
+			model = strings.TrimSpace(model)
+			if model != "" {
+				prunedModels = append(prunedModels, model)
+				reg.ClearModelQuotaExceeded(auth.ID, model)
+				reg.ResumeClientModel(auth.ID, model)
+			}
+		}
+		if !authExpired && len(prunedModels) == 0 {
+			continue
+		}
+
+		if allModelStatesClean(auth) && (authExpired || !preserveAuthAvailability) {
+			clearAuthStateOnSuccess(auth, now)
+			reg.ClearClientQuotaState(auth.ID)
+		} else if authExpired || !preserveAuthAvailability {
+			recomputeAggregatedAvailability(auth, now)
+			reconcileAuthErrorFromModelStates(auth, now)
+		}
+		auth.UpdatedAt = now
+		if errPersist := m.persist(ctx, auth); errPersist != nil {
+			logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during expired availability pruning: %v", errPersist)
+		}
+		if m.scheduler != nil {
+			// Keep scheduler update in the same manager critical section so a
+			// fresh MarkResult cannot be overwritten by a stale prune snapshot.
+			m.scheduler.upsertAuth(auth)
+		}
+		changedAuthCount++
+		persistCooldownState = persistCooldownState || m.cooldownStore != nil
+	}
+	m.mu.Unlock()
+
+	if persistCooldownState {
+		m.persistCooldownStates(ctx)
+	}
+	return changedAuthCount
+}
+
 // ClearQuotaState clears quota-related auth and registry state for one auth.
 func (m *Manager) ClearQuotaState(ctx context.Context, authID string) bool {
 	if m == nil {
@@ -3249,7 +3319,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
-				result.Error = resultErrorFromError(errExec)
+				result.Error = countTokensResultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
 				}
@@ -4535,6 +4605,225 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.UpdatedAt = now
 }
 
+func availabilityDeadlinesExpired(nextRetryAfter, nextRecoverAt, now time.Time) bool {
+	hasDeadline := false
+	for _, deadline := range []time.Time{nextRetryAfter, nextRecoverAt} {
+		if deadline.IsZero() {
+			continue
+		}
+		hasDeadline = true
+		if deadline.After(now) {
+			return false
+		}
+	}
+	return hasDeadline
+}
+
+func availabilityStateIsNonResettable(quota QuotaState, lastErr *Error, statusMessage string) bool {
+	if quotaReasonIsNonResettable(quota.Reason) || quotaReasonIsNonResettable(statusMessage) {
+		return true
+	}
+	if lastErr == nil {
+		return false
+	}
+	return isCloudflareChallengeErrorMessage(strings.TrimSpace(lastErr.Code + " " + lastErr.Message))
+}
+
+func authAvailabilityExpired(auth *Auth, now time.Time) bool {
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		return false
+	}
+	if availabilityStateIsNonResettable(auth.Quota, auth.LastError, auth.StatusMessage) {
+		return false
+	}
+	if !availabilityDeadlinesExpired(auth.NextRetryAfter, auth.Quota.NextRecoverAt, now) {
+		return false
+	}
+	return auth.Status != StatusActive || auth.Unavailable || auth.StatusMessage != "" || auth.LastError != nil || !quotaStateIsEmpty(auth.Quota) || !auth.NextRetryAfter.IsZero()
+}
+
+func authAvailabilityStatePresent(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	return auth.Status != StatusActive || auth.Unavailable || auth.StatusMessage != "" || auth.LastError != nil || !quotaStateIsEmpty(auth.Quota) || !auth.NextRetryAfter.IsZero()
+}
+
+func authAvailabilityMirrorsExpiredModel(auth *Auth, now time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	for _, state := range auth.ModelStates {
+		if modelAvailabilityExpired(state, now) && authAvailabilityMatchesModelState(auth, state) {
+			return true
+		}
+	}
+	return false
+}
+
+func authAvailabilityMatchesModelState(auth *Auth, state *ModelState) bool {
+	if auth == nil || state == nil || auth.Status != state.Status {
+		return false
+	}
+	authMessage := strings.TrimSpace(auth.StatusMessage)
+	stateMessage := strings.TrimSpace(state.StatusMessage)
+	if authMessage != stateMessage || !availabilityErrorsEqual(auth.LastError, state.LastError) {
+		return false
+	}
+	if authMessage == "" && auth.LastError == nil {
+		return false
+	}
+	if auth.Unavailable && !state.Unavailable {
+		return false
+	}
+	if auth.Unavailable && !auth.NextRetryAfter.Equal(state.NextRetryAfter) {
+		return false
+	}
+	if !auth.Unavailable && !auth.NextRetryAfter.IsZero() && !auth.NextRetryAfter.Equal(state.NextRetryAfter) {
+		return false
+	}
+	return availabilityQuotaMatchesModel(auth.Quota, state.Quota)
+}
+
+func availabilityErrorsEqual(left, right *Error) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Code == right.Code && left.Message == right.Message && left.Retryable == right.Retryable && left.HTTPStatus == right.HTTPStatus
+}
+
+func availabilityQuotaMatchesModel(authQuota, modelQuota QuotaState) bool {
+	if quotaStateIsEmpty(authQuota) || quotaStateIsEmpty(modelQuota) {
+		return quotaStateIsEmpty(authQuota) && quotaStateIsEmpty(modelQuota)
+	}
+	if authQuota.Exceeded != modelQuota.Exceeded || authQuota.BackoffLevel != modelQuota.BackoffLevel || !authQuota.NextRecoverAt.Equal(modelQuota.NextRecoverAt) {
+		return false
+	}
+	authReason := strings.ToLower(strings.TrimSpace(authQuota.Reason))
+	modelReason := strings.ToLower(strings.TrimSpace(modelQuota.Reason))
+	return authReason == modelReason || (authReason == "quota" && quotaMessageIsResettable(modelReason))
+}
+
+func modelAvailabilityExpired(state *ModelState, now time.Time) bool {
+	if state == nil || state.Status == StatusDisabled || modelStateIsClean(state) {
+		return false
+	}
+	if availabilityStateIsNonResettable(state.Quota, state.LastError, state.StatusMessage) {
+		return false
+	}
+	return availabilityDeadlinesExpired(state.NextRetryAfter, state.Quota.NextRecoverAt, now)
+}
+
+func allModelStatesClean(auth *Auth) bool {
+	if auth == nil {
+		return true
+	}
+	for _, state := range auth.ModelStates {
+		if !modelStateIsClean(state) {
+			return false
+		}
+	}
+	return true
+}
+
+// recomputeAggregatedAvailability updates only auth-level fields. Unlike
+// updateAggregatedAvailability, it never mutates model state while preserving
+// non-resettable or zero-deadline warnings.
+func recomputeAggregatedAvailability(auth *Auth, now time.Time) {
+	if auth == nil {
+		return
+	}
+	if len(auth.ModelStates) == 0 {
+		clearAggregatedAvailability(auth)
+		return
+	}
+	allUnavailable := true
+	hasState := false
+	earliestRetry := time.Time{}
+	quotaExceeded := false
+	quotaReason := ""
+	quotaRecover := time.Time{}
+	maxBackoffLevel := 0
+	for _, state := range auth.ModelStates {
+		if state == nil {
+			continue
+		}
+		hasState = true
+		stateUnavailable := state.Status == StatusDisabled || (state.Unavailable && !state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now))
+		if !stateUnavailable {
+			allUnavailable = false
+		} else if !state.NextRetryAfter.IsZero() && (earliestRetry.IsZero() || state.NextRetryAfter.Before(earliestRetry)) {
+			earliestRetry = state.NextRetryAfter
+		}
+		if state.Quota.Exceeded {
+			quotaExceeded = true
+			if quotaReason == "" && strings.TrimSpace(state.Quota.Reason) != "" {
+				quotaReason = state.Quota.Reason
+			}
+			if quotaRecover.IsZero() || (!state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.Before(quotaRecover)) {
+				quotaRecover = state.Quota.NextRecoverAt
+			}
+			if state.Quota.BackoffLevel > maxBackoffLevel {
+				maxBackoffLevel = state.Quota.BackoffLevel
+			}
+		}
+	}
+	if !hasState {
+		clearAggregatedAvailability(auth)
+		return
+	}
+	auth.Unavailable = allUnavailable
+	if allUnavailable {
+		auth.NextRetryAfter = earliestRetry
+	} else {
+		auth.NextRetryAfter = time.Time{}
+	}
+	if quotaExceeded {
+		if quotaReason == "" {
+			quotaReason = "quota"
+		}
+		auth.Quota = QuotaState{Exceeded: true, Reason: quotaReason, NextRecoverAt: quotaRecover, BackoffLevel: maxBackoffLevel}
+	} else {
+		auth.Quota = QuotaState{}
+	}
+}
+
+func reconcileAuthErrorFromModelStates(auth *Auth, now time.Time) {
+	if auth == nil || allModelStatesClean(auth) {
+		return
+	}
+	keys := make([]string, 0, len(auth.ModelStates))
+	for model := range auth.ModelStates {
+		keys = append(keys, model)
+	}
+	sort.Strings(keys)
+	var representative *ModelState
+	for _, model := range keys {
+		state := auth.ModelStates[model]
+		if modelStateIsClean(state) {
+			continue
+		}
+		if representative == nil {
+			representative = state
+		}
+		if state != nil && (state.LastError != nil || strings.TrimSpace(state.StatusMessage) != "") {
+			representative = state
+			break
+		}
+	}
+	auth.Status = StatusError
+	auth.StatusMessage = ""
+	auth.LastError = nil
+	if representative != nil {
+		auth.StatusMessage = representative.StatusMessage
+		auth.LastError = cloneError(representative.LastError)
+		if auth.StatusMessage == "" && auth.LastError != nil {
+			auth.StatusMessage = auth.LastError.Message
+		}
+	}
+	auth.UpdatedAt = now
+}
+
 func modelStateIsClean(state *ModelState) bool {
 	if state == nil {
 		return true
@@ -4833,14 +5122,43 @@ func resultErrorFromError(err error) *Error {
 	if err == nil {
 		return nil
 	}
+	status := statusCodeFromError(err)
+	if status == 0 && isTransientEOFError(err) {
+		status = http.StatusBadGateway
+	}
 	resultErr := &Error{
 		Message:    err.Error(),
-		HTTPStatus: statusCodeFromError(err),
+		HTTPStatus: status,
 	}
 	if isRequestScopedError(err) || isRequestInvalidError(err) {
 		resultErr.Code = requestScopedErrorCode
 	}
 	return resultErr
+}
+
+func countTokensResultErrorFromError(err error) *Error {
+	resultErr := resultErrorFromError(err)
+	if statusCodeFromResult(resultErr) == http.StatusNotFound {
+		resultErr.Code = requestScopedErrorCode
+	}
+	return resultErr
+}
+
+func isTransientEOFError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	message = strings.TrimSpace(strings.TrimSuffix(message, " (status=0)"))
+	switch message {
+	case "eof", "unexpected eof":
+		return true
+	default:
+		return strings.HasSuffix(message, ": eof") || strings.HasSuffix(message, ": unexpected eof")
+	}
 }
 
 func isUnauthorizedError(err error) bool {
