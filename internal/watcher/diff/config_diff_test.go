@@ -222,7 +222,7 @@ func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	expectContains(t, details, "codex.abnormal-reasoning-retry.enabled: false -> true")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.action: disabled -> retry")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer: true -> false")
-	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer-max-bytes: 0 -> 4096")
+	expectContains(t, details, "codex.abnormal-reasoning-retry.stream-buffer-max-bytes: 16777216 -> 4096")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.max-retries: 2 -> 0")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.exhausted-behavior: error -> pass-through")
 	expectContains(t, details, "codex.abnormal-reasoning-retry.delivery-policy: best-non-special -> max-output")
