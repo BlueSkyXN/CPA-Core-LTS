@@ -108,6 +108,23 @@ func resolveCodexModelHeaderProfile(modelName string) codexModelHeaderProfile {
 	}
 }
 
+const codexIncompleteStreamMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
+
+type codexIncompleteStreamError struct {
+	statusErr
+}
+
+func newCodexIncompleteStreamError() codexIncompleteStreamError {
+	return codexIncompleteStreamError{statusErr: statusErr{
+		code: http.StatusRequestTimeout,
+		msg:  codexIncompleteStreamMessage,
+	}}
+}
+
+func (codexIncompleteStreamError) IsRequestScoped() bool {
+	return true
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
@@ -180,6 +197,50 @@ func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
 }
 
 func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
+	body, ok := codexTerminalFailureBody(eventData)
+	if !ok || !codexTerminalStreamErrShouldHandle(body) {
+		return statusErr{}, nil, false
+	}
+	return newCodexStatusErr(http.StatusBadRequest, body), body, true
+}
+
+func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
+	if streamErr, body, ok := codexTerminalStreamErr(eventData); ok {
+		return streamErr, body, true
+	}
+	body, ok := codexTerminalFailureBody(eventData)
+	if !ok {
+		return statusErr{}, nil, false
+	}
+	return newCodexStatusErr(codexTerminalFailureStatus(body), body), body, true
+}
+
+func codexTerminalFailureStatus(body []byte) int {
+	for _, path := range []string{"error.status_code", "error.status"} {
+		if status := int(gjson.GetBytes(body, path).Int()); status >= 400 && status <= 599 {
+			return status
+		}
+	}
+
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	switch {
+	case errorType == "invalid_request_error", errorType == "bad_request_error":
+		return http.StatusBadRequest
+	case errorType == "authentication_error", errorCode == "invalid_api_key", errorCode == "unauthorized":
+		return http.StatusUnauthorized
+	case errorType == "permission_error", errorCode == "forbidden", errorCode == "permission_denied":
+		return http.StatusForbidden
+	case errorType == "not_found_error", errorCode == "not_found", errorCode == "model_not_found":
+		return http.StatusNotFound
+	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded":
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+func codexTerminalFailureBody(eventData []byte) ([]byte, bool) {
 	eventType := gjson.GetBytes(eventData, "type").String()
 	var body []byte
 	switch eventType {
@@ -194,15 +255,12 @@ func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
 			body = codexTerminalErrorBody(eventData, "error")
 		}
 	default:
-		return statusErr{}, nil, false
+		return nil, false
 	}
 	if len(body) == 0 {
-		return statusErr{}, nil, false
+		body = []byte(`{"error":{"message":"upstream stream failed without error details"}}`)
 	}
-	if !codexTerminalStreamErrShouldHandle(body) {
-		return statusErr{}, nil, false
-	}
-	return newCodexStatusErr(http.StatusBadRequest, body), body, true
+	return body, true
 }
 
 func codexTerminalStreamErrShouldHandle(body []byte) bool {
@@ -890,11 +948,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		err = newCodexStatusErr(httpResp.StatusCode, b)
 		return resp, err
 	}
-	data, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
-	}
+	data, errRead := io.ReadAll(httpResp.Body)
 	upstreamData := applyCodexIdentityConfuseResponsePayload(data, identityState)
 	helps.AppendAPIResponseChunk(ctx, e.cfg, upstreamData)
 
@@ -909,7 +963,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		eventData := bytes.TrimSpace(line[5:])
 		eventType := gjson.GetBytes(eventData, "type").String()
 
-		if streamErr, terminalBody, ok := codexTerminalStreamErr(eventData); ok {
+		if streamErr, terminalBody, ok := codexTerminalFailureErr(eventData); ok {
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
 			}
@@ -931,7 +985,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
-		if eventType != "response.completed" {
+		if eventType != "response.completed" && eventType != "response.incomplete" {
 			continue
 		}
 
@@ -970,7 +1024,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 
-		cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
+		if eventType == "response.completed" {
+			cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
+		}
 
 		var param any
 		clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
@@ -982,7 +1038,15 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 		return resp, nil
 	}
-	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+	if errRead != nil {
+		if errCtx := ctx.Err(); errCtx != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errCtx)
+			err = errCtx
+			return resp, err
+		}
+		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+	}
+	err = newCodexIncompleteStreamError()
 	return resp, err
 }
 
@@ -1331,10 +1395,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			var usageDetail usage.Detail
 			var usageDetailOK bool
 			var retryErr error
+			terminalSuccess := false
+			cacheReasoningReplay := false
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
-				if streamErr, terminalBody, ok := codexTerminalStreamErr(data); ok {
+				eventType := gjson.GetBytes(data, "type").String()
+				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
 						reporter.PublishFailure(ctx, errClearReplay)
@@ -1346,7 +1413,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					emitError(streamErr)
 					return
 				}
-				switch gjson.GetBytes(data, "type").String() {
+				switch eventType {
 				case "response.output_item.done":
 					if !bufferLimitExceeded {
 						if bufferMaxBytes > 0 && bufferedBytes+outputItemsBytes+int64(len(data)) > bufferMaxBytes {
@@ -1356,7 +1423,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 							outputItemsBytes += int64(len(data))
 						}
 					}
-				case "response.completed":
+				case "response.completed", "response.incomplete":
+					terminalSuccess = true
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						usageDetail = detail
 						usageDetailOK = true
@@ -1371,6 +1439,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					outputItemsFallback = nil
 					outputItemsBytes = 0
 					data = patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
+					cacheReasoningReplay = eventType == "response.completed"
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
 				}
@@ -1414,7 +1483,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			if len(completedData) > 0 {
 				publishCodexImageToolUsage(ctx, reporter, body, completedData)
-				cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
+				if cacheReasoningReplay {
+					cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
+				}
 			}
 			if bufferLimitExceeded && len(completedData) > 0 {
 				helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
@@ -1431,12 +1502,22 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					return
 				}
 			}
+			if terminalSuccess {
+				return
+			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if bufferMaxBytes > 0 && strings.Contains(errScan.Error(), "token too long") {
+				exceedBufferLimit()
+				helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
+				reporter.PublishFailure(ctx, bufferLimitErr)
+				emitError(bufferLimitErr)
+				return
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
-			emitError(errScan)
-			return
 		}
 		if bufferLimitExceeded {
 			helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
@@ -1444,9 +1525,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			emitError(bufferLimitErr)
 			return
 		}
-		if buffering {
-			_ = flushBuffered()
-		}
+		streamErr := newCodexIncompleteStreamError()
+		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+		reporter.PublishFailure(ctx, streamErr)
+		emitError(streamErr)
 	}()
 	return &cliproxyexecutor.StreamResult{
 		Headers:  httpResp.Header.Clone(),

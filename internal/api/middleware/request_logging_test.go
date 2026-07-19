@@ -286,6 +286,61 @@ func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(
 	}
 }
 
+func TestRequestLoggingMiddlewareCleansDeferredBodyCaptureOnPanic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name          string
+		panicValue    any
+		wantRecovered any
+	}{
+		{name: "regular panic", panicValue: "boom"},
+		{name: "abort handler panic", panicValue: http.ErrAbortHandler, wantRecovered: http.ErrAbortHandler},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logsDir := t.TempDir()
+			logger := logging.NewFileRequestLogger(false, logsDir, "", 10)
+			payload := bytes.Repeat([]byte("s"), int(maxErrorOnlyCapturedRequestBodyBytes)+1)
+
+			router := gin.New()
+			router.Use(logging.GinLogrusRecovery())
+			router.Use(RequestLoggingMiddleware(logger))
+			router.POST("/v1/responses", func(c *gin.Context) {
+				if _, errRead := io.ReadAll(c.Request.Body); errRead != nil {
+					t.Fatalf("read request body: %v", errRead)
+				}
+				panic(test.panicValue)
+			})
+
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			recovered := func() (recovered any) {
+				defer func() {
+					recovered = recover()
+				}()
+				router.ServeHTTP(response, request)
+				return nil
+			}()
+			if recovered != test.wantRecovered {
+				t.Fatalf("recovered panic = %v, want %v", recovered, test.wantRecovered)
+			}
+
+			entries, errReadDir := os.ReadDir(logsDir)
+			if errReadDir != nil {
+				t.Fatalf("read logs dir: %v", errReadDir)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "request-log-parts-request-body-") {
+					t.Fatalf("deferred request body capture leaked after panic: %s", entry.Name())
+				}
+			}
+		})
+	}
+}
+
 func TestAttachRequestLogSourcesUsesLoggerLogsDir(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

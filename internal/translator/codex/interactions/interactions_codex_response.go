@@ -68,7 +68,7 @@ func ConvertCodexResponseToInteractions(ctx context.Context, modelName string, o
 		return codexFunctionArgumentsDeltaToInteractions(st, root)
 	case "response.output_item.done":
 		return codexOutputItemDoneToInteractions(st, root.Get("item"))
-	case "response.completed":
+	case "response.completed", "response.incomplete":
 		out := appendCodexInteractionsCreated(nil, st, root.Get("response"))
 		out = appendCodexInteractionsStepStop(out, st)
 		out = appendCodexInteractionsCompleted(out, st, root.Get("response"))
@@ -86,6 +86,9 @@ func ConvertCodexResponseToInteractionsNonStream(ctx context.Context, modelName 
 		response = root
 	}
 	out := []byte(`{"id":"","object":"interaction","status":"completed","model":"","steps":[]}`)
+	if status := response.Get("status").String(); status != "" {
+		out, _ = sjson.SetBytes(out, "status", status)
+	}
 	id := response.Get("id").String()
 	if id == "" {
 		id = fmt.Sprintf("interaction_%d", time.Now().UnixNano())
@@ -170,6 +173,9 @@ func appendCodexInteractionsCompleted(out [][]byte, st *codexToInteractionsStrea
 	completed, _ = sjson.SetBytes(completed, "interaction.updated", time.Now().UTC().Format(time.RFC3339))
 	completed, _ = sjson.SetBytes(completed, "interaction.model", st.Model)
 	completed, _ = sjson.SetBytes(completed, "interaction.service_tier", st.ServiceTier)
+	if status := response.Get("status").String(); status != "" {
+		completed, _ = sjson.SetBytes(completed, "interaction.status", status)
+	}
 	completed = setCodexInteractionsUsage(completed, "interaction.usage", response.Get("usage"), true)
 	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
 	st.Completed = true

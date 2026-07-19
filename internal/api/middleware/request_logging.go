@@ -64,7 +64,9 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		c.Writer = wrapper
 		attachRequestLogSources(c, logger, loggerEnabled)
 		capture := attachDeferredRequestBodyCapture(c.Request, requestInfo, captureBody)
-		if !captureBody && capture == nil && requestHasBody(c.Request) {
+		if capture != nil {
+			defer capture.Cleanup()
+		} else if !captureBody && requestHasBody(c.Request) {
 			requestInfo.Body = []byte(requestBodyOmittedMarker(c.Request))
 		}
 
