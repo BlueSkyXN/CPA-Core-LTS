@@ -506,6 +506,31 @@ func TestRPCInterceptorsIncludeHostCallbackID(t *testing.T) {
 	}
 }
 
+func TestRPCUsageIncludesEffectiveServiceTier(t *testing.T) {
+	client := &capturePluginClient{}
+	adapter := &rpcPluginAdapter{
+		host:   New(),
+		client: client,
+	}
+
+	adapter.HandleUsage(context.Background(), pluginapi.UsageRecord{
+		Provider:             "codex",
+		ServiceTier:          "priority",
+		EffectiveServiceTier: "standard",
+	})
+
+	var record pluginapi.UsageRecord
+	if errDecode := json.Unmarshal(client.requests[pluginabi.MethodUsageHandle], &record); errDecode != nil {
+		t.Fatalf("decode usage request: %v", errDecode)
+	}
+	if record.ServiceTier != "priority" {
+		t.Fatalf("RPC ServiceTier = %q, want priority", record.ServiceTier)
+	}
+	if record.EffectiveServiceTier != "standard" {
+		t.Fatalf("RPC EffectiveServiceTier = %q, want standard", record.EffectiveServiceTier)
+	}
+}
+
 func TestOptionalRPCMethodUnsupportedDetectionIsNarrow(t *testing.T) {
 	method := pluginabi.MethodRequestInterceptAfter
 	positive := []string{

@@ -2223,6 +2223,36 @@ func TestUsageAdapterPreservesExplicitGenerateFalse(t *testing.T) {
 	}
 }
 
+func TestUsageAdapterPreservesEffectiveServiceTier(t *testing.T) {
+	var got pluginapi.UsageRecord
+	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
+		got = record
+	})
+	host := newHostWithRecords(capabilityRecord{
+		id: "usage-effective-service-tier",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			UsagePlugin: plugin,
+		}},
+	})
+	adapter := &usageAdapter{
+		host:     host,
+		pluginID: "usage-effective-service-tier",
+	}
+
+	adapter.HandleUsage(context.Background(), coreusage.Record{
+		Provider:             "codex",
+		ServiceTier:          "priority",
+		EffectiveServiceTier: "standard",
+	})
+
+	if got.ServiceTier != "priority" {
+		t.Fatalf("plugin ServiceTier = %q, want priority", got.ServiceTier)
+	}
+	if got.EffectiveServiceTier != "standard" {
+		t.Fatalf("plugin EffectiveServiceTier = %q, want standard", got.EffectiveServiceTier)
+	}
+}
+
 func TestUsageManagerRegisterNamedReplacesWithoutDuplicateDispatch(t *testing.T) {
 	manager := coreusage.NewManager(0)
 	defer manager.Stop()

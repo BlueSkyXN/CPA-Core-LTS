@@ -12,8 +12,10 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -35,6 +37,54 @@ func codexOpenAIImageTestOptions(path string, stream bool) cliproxyexecutor.Opti
 		Metadata: map[string]any{
 			cliproxyexecutor.RequestPathMetadataKey: path,
 		},
+	}
+}
+
+func TestPublishCodexImageToolUsagePreservesResponseTierPrecedence(t *testing.T) {
+	tests := []struct {
+		name              string
+		responseTier      string
+		wantEffectiveTier string
+	}{
+		{name: "recognized response overrides outbound", responseTier: "default", wantEffectiveTier: "standard"},
+		{name: "unknown response blocks outbound fallback", responseTier: "flex", wantEffectiveTier: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pluginName := "codex-image-effective-tier-" + strings.ReplaceAll(tt.name, " ", "-")
+			recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+			usage.RegisterNamedPlugin(pluginName, recorder)
+			t.Cleanup(func() { usage.RegisterNamedPlugin(pluginName, noopUsagePlugin{}) })
+
+			parentModel := "gpt-effective-parent-" + strings.ReplaceAll(tt.name, " ", "-")
+			imageModel := "gpt-effective-image-" + strings.ReplaceAll(tt.name, " ", "-")
+			body := []byte(`{"service_tier":"priority","tools":[{"type":"image_generation","model":"` + imageModel + `"}]}`)
+			completed := []byte(`{"type":"response.completed","response":{"service_tier":"` + tt.responseTier + `","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"tool_usage":{"image_gen":{"input_tokens":4,"output_tokens":5,"total_tokens":9}}}}`)
+
+			reporter := helps.NewUsageReporter(context.Background(), "codex", parentModel, nil)
+			reporter.SetOutboundServiceTier(body)
+			parentDetail, ok := helps.ParseCodexUsage(completed)
+			if !ok {
+				t.Fatalf("ParseCodexUsage() ok = false; payload=%s", completed)
+			}
+			reporter.Publish(context.Background(), parentDetail)
+			publishCodexImageToolUsage(context.Background(), reporter, body, completed)
+
+			parentRecord := recorder.waitForRecord(t, func(record usage.Record) bool { return record.Model == parentModel })
+			imageRecord := recorder.waitForRecord(t, func(record usage.Record) bool { return record.Model == imageModel })
+			for model, record := range map[string]usage.Record{
+				parentModel: parentRecord,
+				imageModel:  imageRecord,
+			} {
+				if record.ResponseServiceTier != tt.responseTier {
+					t.Errorf("record[%s].ResponseServiceTier = %q, want %q", model, record.ResponseServiceTier, tt.responseTier)
+				}
+				if record.EffectiveServiceTier != tt.wantEffectiveTier {
+					t.Errorf("record[%s].EffectiveServiceTier = %q, want %q", model, record.EffectiveServiceTier, tt.wantEffectiveTier)
+				}
+			}
+		})
 	}
 }
 
