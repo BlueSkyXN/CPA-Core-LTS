@@ -1044,6 +1044,25 @@ func TestWebsocketTimelineLogFallsBackToMemoryWithoutSource(t *testing.T) {
 	}
 }
 
+func TestWebsocketTimelineLogRedactsCodexWorkspaceMetadata(t *testing.T) {
+	payload := []byte(`{"type":"response.create","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-1\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:credential-sentinel@example.com/org/repo.git\"}}}}"}}`)
+	original := bytes.Clone(payload)
+	timelineLog := newInMemoryWebsocketTimelineLog()
+	timelineLog.BeginRequest()
+	timelineLog.Append("request", payload, time.Now())
+
+	got := timelineLog.String()
+	if strings.Contains(got, "credential-sentinel") || strings.Contains(got, "/Users/private/project") || strings.Contains(got, `"workspaces"`) {
+		t.Fatalf("downstream websocket timeline leaked Codex workspace metadata: %s", got)
+	}
+	if !strings.Contains(got, "thread-1") {
+		t.Fatalf("downstream websocket timeline dropped non-workspace metadata: %s", got)
+	}
+	if !bytes.Equal(payload, original) {
+		t.Fatal("websocket timeline redaction mutated the downstream request")
+	}
+}
+
 func TestRepairResponsesWebsocketToolCallsInsertsCachedOutput(t *testing.T) {
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"

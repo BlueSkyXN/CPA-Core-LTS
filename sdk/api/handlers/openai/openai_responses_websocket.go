@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	requestlogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -119,6 +120,9 @@ func (l *websocketTimelineLog) BeginRequest() {
 func (l *websocketTimelineLog) Append(eventType string, payload []byte, timestamp time.Time) {
 	if l == nil || !l.enabled {
 		return
+	}
+	if strings.EqualFold(strings.TrimSpace(eventType), "request") {
+		payload = codexmetadata.RedactRequestBodyForLog(payload)
 	}
 	data := formatWebsocketTimelineEvent(eventType, payload, timestamp)
 	if len(data) == 0 {

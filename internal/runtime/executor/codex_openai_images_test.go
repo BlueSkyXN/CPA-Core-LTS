@@ -125,6 +125,84 @@ func TestCodexExecutorDirectOpenAIImageGenerationUsesImagesEndpoint(t *testing.T
 	}
 }
 
+func TestCodexExecutorDirectOpenAIImageRepairsCanonicalMetadata(t *testing.T) {
+	var gotBody []byte
+	var gotTurnMetadata string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTurnMetadata = r.Header.Get("X-Codex-Turn-Metadata")
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read body: %v", errRead)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1713833628,"data":[{"b64_json":"AA=="}]}`))
+	}))
+	defer server.Close()
+
+	canonical := `{"installation_id":"install-image-1","session_id":"thread-image-1","thread_id":"thread-image-1","turn_id":"turn-image-1","window_id":"thread-image-1:1","request_kind":"turn","workspaces":{"/Users/private/image-project":{"associated_remote_urls":{"origin":"https://user:secret@example.com/org/repo.git"}}}}`
+	payload, errMarshal := json.Marshal(map[string]any{
+		"model":  "gpt-image-1.5",
+		"prompt": "A private workspace image",
+		"client_metadata": map[string]any{
+			"x-codex-turn-metadata": canonical,
+			"thread_id":             "wrong-thread",
+		},
+	})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	auth := newCodexOpenAIImageTestAuth(server.URL)
+	auth.ID = "image-auth-1"
+	executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode:            config.CodexClientMetadataModeRepair,
+		WorkspacePolicy: config.CodexClientMetadataWorkspacePolicyDrop,
+	}}})
+	_, errExecute := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-1.5",
+		Payload: payload,
+	}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false))
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+
+	metadata := gjson.GetBytes(gotBody, "client_metadata.x-codex-turn-metadata").String()
+	if strings.Contains(metadata, `"workspaces"`) || strings.Contains(metadata, "secret@example.com") {
+		t.Fatalf("direct image request retained workspace metadata: %s", metadata)
+	}
+	if got := gjson.GetBytes(gotBody, "client_metadata.thread_id").String(); got != "thread-image-1" {
+		t.Fatalf("client_metadata.thread_id = %q, want thread-image-1", got)
+	}
+	if gotTurnMetadata != metadata {
+		t.Fatalf("X-Codex-Turn-Metadata does not match canonical image metadata: header=%s body=%s", gotTurnMetadata, metadata)
+	}
+}
+
+func TestPrepareCodexOpenAIImageBodyPreservesClientMetadata(t *testing.T) {
+	canonical := `{"installation_id":"install-image-2","session_id":"thread-image-2","thread_id":"thread-image-2","window_id":"thread-image-2:1","request_kind":"turn"}`
+	payload, errMarshal := json.Marshal(map[string]any{
+		"model":  "gpt-image-legacy",
+		"prompt": "image",
+		"client_metadata": map[string]any{
+			"x-codex-turn-metadata": canonical,
+		},
+	})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	executor := NewCodexExecutor(&config.Config{})
+	body, err := executor.prepareCodexOpenAIImageBody(codexBuildImagesResponsesRequest("image", nil, nil), cliproxyexecutor.Request{
+		Model:   "gpt-image-legacy",
+		Payload: payload,
+	}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false), codexOpenAIImagesMainModel)
+	if err != nil {
+		t.Fatalf("prepareCodexOpenAIImageBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String(); got != canonical {
+		t.Fatalf("canonical client metadata = %q, want %q; body=%s", got, canonical, body)
+	}
+}
+
 func TestCodexExecutorDirectOpenAIImageGenerationStreamsImagesEndpoint(t *testing.T) {
 	var gotPath string
 	var gotAccept string

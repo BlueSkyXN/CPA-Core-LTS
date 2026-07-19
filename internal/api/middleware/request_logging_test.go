@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -186,6 +187,80 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 			t.Fatalf("%s: got %t, want %t", tests[i].name, got, tests[i].want)
 		}
 	}
+}
+
+func TestCaptureRequestInfoRedactsCodexMetadataWithoutChangingHandlerBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body, canonical := middlewareCodexMetadataFixture(t)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Codex-Turn-Metadata", canonical)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = request
+
+	info, err := captureRequestInfo(c, true)
+	if err != nil {
+		t.Fatalf("captureRequestInfo() error = %v", err)
+	}
+	if strings.Contains(string(info.Body), "credential-sentinel") || strings.Contains(string(info.Body), `"workspaces"`) {
+		t.Fatalf("captured downstream body leaked Codex workspace metadata: %s", info.Body)
+	}
+	if got := strings.Join(info.Headers["X-Codex-Turn-Metadata"], ","); strings.Contains(got, "credential-sentinel") || strings.Contains(got, `"workspaces"`) {
+		t.Fatalf("captured downstream headers leaked Codex workspace metadata: %s", got)
+	}
+	restored, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, body) {
+		t.Fatal("request logging sanitizer changed the body delivered to the handler")
+	}
+}
+
+func TestExtractDeferredRequestBodyRedactsTruncatedCodexMetadata(t *testing.T) {
+	body, _ := middlewareCodexMetadataFixture(t)
+	capture := &deferredRequestBodyCapture{body: io.NopCloser(bytes.NewReader(body)), contentLength: int64(len(body))}
+	buffer := make([]byte, len(body))
+	if _, err := io.ReadFull(capture, buffer); err != nil {
+		t.Fatalf("capture read error = %v", err)
+	}
+	wrapper := &ResponseWriterWrapper{requestInfo: &RequestInfo{
+		Headers:             map[string][]string{"Content-Type": {"application/json"}},
+		deferredBodyCapture: capture,
+	}}
+	redacted := wrapper.extractRequestBody(nil)
+	if strings.Contains(string(redacted), "credential-sentinel") || strings.Contains(string(redacted), `"workspaces"`) {
+		t.Fatalf("deferred request log leaked Codex workspace metadata: %s", redacted)
+	}
+}
+
+func TestRedactCapturedRequestBodyForLogFailsClosedForEncodedCodexBody(t *testing.T) {
+	rawCompressed := []byte("compressed-credential-sentinel")
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact", "/v1/images/generations", "/v1/images/edits", "/backend-api/codex/responses/compact"} {
+		redacted := redactCapturedRequestBodyForLog(path, "zstd", rawCompressed)
+		if bytes.Contains(redacted, []byte("credential-sentinel")) {
+			t.Fatalf("encoded Codex request body was retained in logs for %s: %q", path, redacted)
+		}
+		if !bytes.Contains(redacted, []byte("REDACTED ENCODED")) {
+			t.Fatalf("encoded Codex redaction marker missing for %s: %q", path, redacted)
+		}
+	}
+}
+
+func middlewareCodexMetadataFixture(t *testing.T) ([]byte, string) {
+	t.Helper()
+	canonical := `{"thread_id":"thread-1","workspaces":{"/Users/private/project":{"associated_remote_urls":{"origin":"https://user:credential-sentinel@example.com/org/repo.git?token=credential-sentinel"}}}}`
+	body, err := json.Marshal(map[string]any{
+		"model": "gpt-5.6",
+		"client_metadata": map[string]any{
+			"x-codex-turn-metadata": canonical,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body, canonical
 }
 
 func TestDeferredRequestBodyCaptureDoesNotDrainUnreadBody(t *testing.T) {

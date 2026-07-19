@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -108,6 +109,7 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	if ginCtx == nil {
 		return
 	}
+	info = redactCodexUpstreamRequestLog(info)
 	if !cfg.RequestLog {
 		deferAPIRequest(ginCtx, info)
 		return
@@ -332,6 +334,7 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
 	if ginCtx == nil {
 		return
 	}
+	info = redactCodexUpstreamRequestLog(info)
 
 	builder := &strings.Builder{}
 	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
@@ -353,6 +356,16 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
 	builder.WriteString("\n")
 
 	appendAPIWebsocketTimeline(ginCtx, []byte(builder.String()))
+}
+
+func redactCodexUpstreamRequestLog(info UpstreamRequestLog) UpstreamRequestLog {
+	if !strings.EqualFold(strings.TrimSpace(info.Provider), "codex") {
+		return info
+	}
+	redacted := info
+	redacted.Body = codexmetadata.RedactRequestBodyForLog(info.Body)
+	redacted.Headers = http.Header(codexmetadata.RedactHeadersForLog(info.Headers))
+	return redacted
 }
 
 // RecordAPIWebsocketHandshake stores the upstream websocket handshake response metadata.

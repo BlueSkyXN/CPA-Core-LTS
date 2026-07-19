@@ -524,6 +524,7 @@ func (w *ResponseWriterWrapper) extractRequestBody(c *gin.Context) []byte {
 		}
 	}
 	body = decodeCapturedRequestBodyForLogWithLimit(body, encoding, maxDeferredErrorRequestBodyBytes)
+	body = redactCapturedRequestBodyForLog(w.requestInfo.URL, encoding, body)
 	if statusMarker == "" {
 		return body
 	}

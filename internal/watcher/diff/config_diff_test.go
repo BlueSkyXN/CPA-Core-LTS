@@ -176,6 +176,18 @@ func TestBuildConfigChangeDetails_PayloadRules(t *testing.T) {
 	expectContains(t, details, "payload.filter: updated (1 -> 0 rules)")
 }
 
+func TestBuildConfigChangeDetailsCodexClientMetadata(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode:            config.CodexClientMetadataModeStrict,
+		WorkspacePolicy: config.CodexClientMetadataWorkspacePolicyDrop,
+	}}}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "codex.client-metadata.mode: repair -> strict")
+	expectContains(t, details, "codex.client-metadata.workspace-policy: passthrough -> drop")
+}
+
 func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	streamBuffer := false
 	streamBufferMaxBytes := int64(4096)

@@ -5,6 +5,7 @@ package middleware
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
@@ -276,8 +278,9 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	// Capture headers
 	headers := make(map[string][]string)
 	for key, values := range c.Request.Header {
-		headers[key] = values
+		headers[key] = append([]string(nil), values...)
 	}
+	headers = codexmetadata.RedactHeadersForLog(headers)
 
 	// Capture request body
 	var body []byte
@@ -300,6 +303,7 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxErrorOnlyCapturedRequestBodyBytes)
 		}
+		body = redactCapturedRequestBodyForLog(c.Request.URL.Path, c.Request.Header.Get("Content-Encoding"), body)
 	}
 
 	return &RequestInfo{
@@ -310,6 +314,27 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		RequestID: logging.GetGinRequestID(c),
 		Timestamp: time.Now(),
 	}, nil
+}
+
+func redactCapturedRequestBodyForLog(path, encoding string, body []byte) []byte {
+	encoding = strings.TrimSpace(encoding)
+	if isCodexResponsesRequestPath(path) && encoding != "" && !strings.EqualFold(encoding, "identity") && !json.Valid(body) {
+		return []byte("[REDACTED ENCODED OR TRUNCATED CODEX REQUEST BODY]")
+	}
+	return codexmetadata.RedactRequestBodyForLog(body)
+}
+
+func isCodexResponsesRequestPath(path string) bool {
+	path = strings.TrimSpace(path)
+	if index := strings.IndexByte(path, '?'); index >= 0 {
+		path = path[:index]
+	}
+	switch path {
+	case "/v1/responses", "/v1/responses/compact", "/v1/images/generations", "/v1/images/edits", "/backend-api/codex/responses", "/backend-api/codex/responses/compact":
+		return true
+	default:
+		return false
+	}
 }
 
 type restoredRequestBody struct {

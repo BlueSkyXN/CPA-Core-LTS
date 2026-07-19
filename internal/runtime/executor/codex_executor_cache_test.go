@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -248,6 +249,98 @@ func TestCodexExecutorCacheHelper_IdentityConfuseRemapsBodyAndHeaders(t *testing
 	}
 	if gotMetadataWindowID := gjson.Get(gotHeaderMetadata, "window_id").String(); gotMetadataWindowID != expectedPromptCacheKey+":0" {
 		t.Fatalf("X-Codex-Turn-Metadata.window_id = %q, want %q", gotMetadataWindowID, expectedPromptCacheKey+":0")
+	}
+}
+
+func TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ginCtx.Request.Header.Set("X-Codex-Turn-Metadata", `{"thread_id":"header-conflict"}`)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	executor := &CodexExecutor{cfg: &config.Config{
+		Routing: config.RoutingConfig{Strategy: "fill-first"},
+		Codex: config.CodexConfig{
+			IdentityConfuse: true,
+			ClientMetadata: config.CodexClientMetadataConfig{
+				Mode:            config.CodexClientMetadataModeRepair,
+				WorkspacePolicy: config.CodexClientMetadataWorkspacePolicyPassthrough,
+			},
+		},
+	}}
+	auth := &cliproxyauth.Auth{ID: "auth-1", Provider: "codex", Metadata: map[string]any{"account_id": "acct-1"}}
+	rawJSON := []byte(`{"model":"gpt-5-codex","stream":true,"prompt_cache_key":"thread-1","client_metadata":{"x-codex-turn-metadata":"{\"installation_id\":\"install-1\",\"session_id\":\"thread-1\",\"thread_id\":\"thread-1\",\"turn_id\":\"turn-1\",\"window_id\":\"thread-1:1\",\"request_kind\":\"turn\",\"workspaces\":{\"/Users/private/project\":{\"associated_remote_urls\":{\"origin\":\"https://user:secret@example.com/org/repo.git?token=leak#fragment\"},\"has_changes\":false}}}","x-codex-installation-id":"wrong-install","session_id":"wrong-session","thread_id":"wrong-thread","turn_id":"wrong-turn","x-codex-window-id":"wrong-window:0"}}`)
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","prompt_cache_key":"thread-1","client_metadata":{"x-codex-installation-id":"install-1"}}`),
+	}
+
+	httpReq, body, state, err := executor.cacheHelper(ctx, sdktranslator.FromString("openai-response"), "https://example.com/responses", auth, req, req.Payload, rawJSON)
+	if err != nil {
+		t.Fatalf("cacheHelper error: %v", err)
+	}
+	applyCodexHeaders(httpReq, auth, "oauth-token", true, executor.cfg)
+	applyCodexOutboundMetadataHeaders(httpReq.Header, &state)
+
+	if state.enabled || state.promptCacheKey != "" || !state.clientMetadata.CanonicalPresent {
+		t.Fatalf("canonical state unexpectedly enabled legacy identity mapping: %+v", state)
+	}
+	metadata := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
+	for key, want := range map[string]string{
+		"installation_id": "install-1",
+		"session_id":      "thread-1",
+		"thread_id":       "thread-1",
+		"turn_id":         "turn-1",
+		"window_id":       "thread-1:1",
+	} {
+		if got := gjson.Get(metadata, key).String(); got != want {
+			t.Fatalf("canonical %s = %q, want %q", key, got, want)
+		}
+	}
+	if strings.Contains(metadata, "secret") || strings.Contains(metadata, "token=leak") || strings.Contains(metadata, "#fragment") {
+		t.Fatalf("canonical workspace remote was not sanitized: %s", metadata)
+	}
+	if got := gjson.Get(metadata, "workspaces./Users/private/project.associated_remote_urls.origin").String(); got != "https://example.com/org/repo.git" {
+		t.Fatalf("sanitized remote = %q", got)
+	}
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != "install-1" {
+		t.Fatalf("flat installation = %q", got)
+	}
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-window-id").String(); got != "thread-1:1" {
+		t.Fatalf("flat window = %q", got)
+	}
+	if got := httpReq.Header.Get("X-Codex-Window-Id"); got != "thread-1:1" {
+		t.Fatalf("X-Codex-Window-Id = %q", got)
+	}
+	if got := httpReq.Header.Get("X-Codex-Turn-Metadata"); got != state.clientMetadata.TurnMetadata {
+		t.Fatalf("X-Codex-Turn-Metadata does not match normalized canonical metadata")
+	}
+	responseWithIdentityText := []byte(`{"output_text":"install-1 thread-1 turn-1"}`)
+	if got := string(applyCodexIdentityConfuseResponsePayload(responseWithIdentityText, state)); got != string(responseWithIdentityText) {
+		t.Fatalf("canonical response text was changed by legacy identity replacement: %s", got)
+	}
+}
+
+func TestCodexExecutorCacheHelperStrictMetadataReturnsSafeBadRequest(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{Codex: config.CodexConfig{ClientMetadata: config.CodexClientMetadataConfig{
+		Mode: config.CodexClientMetadataModeStrict,
+	}}}}
+	rawJSON := []byte(`{"model":"gpt-5-codex","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_id\":\"thread-private\"}","thread_id":"conflicting-private"}}`)
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: rawJSON}
+
+	_, _, _, err := executor.cacheHelper(context.Background(), sdktranslator.FromString("openai-response"), "https://example.com/responses", &cliproxyauth.Auth{ID: "auth-1"}, req, req.Payload, rawJSON)
+	if err == nil {
+		t.Fatal("strict metadata conflict was accepted")
+	}
+	status, ok := err.(statusErr)
+	if !ok || status.code != http.StatusBadRequest {
+		t.Fatalf("error = %#v, want statusErr 400", err)
+	}
+	if !strings.Contains(status.msg, `"code":"invalid_client_metadata"`) {
+		t.Fatalf("error body missing stable code: %s", status.msg)
+	}
+	if strings.Contains(status.msg, "thread-private") || strings.Contains(status.msg, "conflicting-private") {
+		t.Fatalf("error body leaked client metadata: %s", status.msg)
 	}
 }
 

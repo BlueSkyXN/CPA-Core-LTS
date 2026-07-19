@@ -105,6 +105,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	changes = appendCodexClientMetadataChanges(changes, oldCfg.Codex.ClientMetadata.Effective(), newCfg.Codex.ClientMetadata.Effective())
 	changes = appendCodexModelFallbackChanges(changes, oldCfg.Codex.ModelFallback.Effective(), newCfg.Codex.ModelFallback.Effective())
 	changes = appendCodexRateLimitContinuityChanges(changes, oldCfg.Codex.RateLimitContinuity.Effective(), newCfg.Codex.RateLimitContinuity.Effective())
 	changes = appendCodexAbnormalReasoningRetryChanges(changes, oldCfg.Codex.AbnormalReasoningRetry.Effective(), newCfg.Codex.AbnormalReasoningRetry.Effective())
@@ -429,6 +430,16 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+	return changes
+}
+
+func appendCodexClientMetadataChanges(changes []string, oldCfg, newCfg config.EffectiveCodexClientMetadataConfig) []string {
+	if oldCfg.Mode != newCfg.Mode {
+		changes = append(changes, fmt.Sprintf("codex.client-metadata.mode: %s -> %s", oldCfg.Mode, newCfg.Mode))
+	}
+	if oldCfg.WorkspacePolicy != newCfg.WorkspacePolicy {
+		changes = append(changes, fmt.Sprintf("codex.client-metadata.workspace-policy: %s -> %s", oldCfg.WorkspacePolicy, newCfg.WorkspacePolicy))
+	}
 	return changes
 }
 
