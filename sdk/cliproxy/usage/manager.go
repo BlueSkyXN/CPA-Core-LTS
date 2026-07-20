@@ -18,6 +18,16 @@ const DefaultServiceTier = "default"
 // historical direct-SDK default.
 const AutoServiceTier = "auto"
 
+const (
+	// BillingBasisAPITokenUSD identifies requests billed through an API token in USD.
+	BillingBasisAPITokenUSD = "api-token-usd"
+	// BillingBasisChatGPTCredits identifies requests billed against ChatGPT credits.
+	BillingBasisChatGPTCredits = "chatgpt-credits"
+	// BillingBasisUnknown is used when the provider and authentication type do not
+	// establish a supported billing basis.
+	BillingBasisUnknown = "unknown"
+)
+
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
 	Provider string
@@ -100,6 +110,28 @@ func ResolveEffectiveServiceTier(responseServiceTier, outboundServiceTier string
 		return CanonicalEffectiveServiceTier(responseServiceTier)
 	}
 	return CanonicalEffectiveServiceTier(outboundServiceTier)
+}
+
+// ResolveBillingBasis returns the stable billing basis implied by the usage
+// record's provider and authentication type. It intentionally uses only these
+// non-secret classification fields and leaves every unsupported combination as
+// unknown.
+func ResolveBillingBasis(provider, authType string) string {
+	authType = strings.ToLower(strings.TrimSpace(authType))
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex":
+		switch authType {
+		case "oauth":
+			return BillingBasisChatGPTCredits
+		case "api_key", "api-key", "apikey":
+			return BillingBasisAPITokenUSD
+		}
+	case "openai":
+		if authType == "api_key" || authType == "api-key" || authType == "apikey" {
+			return BillingBasisAPITokenUSD
+		}
+	}
+	return BillingBasisUnknown
 }
 
 // NormalizeUncachedInputTokens clears uncached input data that is unknown or

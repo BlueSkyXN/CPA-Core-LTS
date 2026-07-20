@@ -161,6 +161,9 @@ require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"billing_basis"' internal/usage
+require_grep "BillingBasisAPITokenUSD" sdk/cliproxy/usage internal/usage
+require_grep "BillingBasisChatGPTCredits" sdk/cliproxy/usage internal/usage
 require_grep 'json:"EffectiveServiceTier,omitempty"' sdk/pluginapi/types.go
 require_grep "TestUsageAdapterPreservesEffectiveServiceTier" internal/pluginhost/adapters_test.go
 require_grep "TestRPCUsageIncludesEffectiveServiceTier" internal/pluginhost/host_test.go
@@ -176,6 +179,7 @@ require_grep '"thinking"' internal/api/handlers/management/usage_contract_test.g
 require_grep "request_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "response_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "effective_service_tier" internal/api/handlers/management/usage_contract_test.go
+require_grep "billing_basis" internal/api/handlers/management/usage_contract_test.go
 require_grep '"generate"' internal/api/handlers/management/usage_contract_test.go
 
 go test ./scripts/ltsregistry -count=1

@@ -35,6 +35,9 @@ features:
       - usage-statistics-enabled
       - UsageReporter
       - RequestDetail
+      - billing_basis
+      - api-token-usd
+      - chatgpt-credits
       - auth_index
       - latency_ms
       - uncached_input_tokens
@@ -83,6 +86,7 @@ features:
       - apis
       - models
       - details
+      - billing_basis
       - reasoning_effort
       - service_tier
       - request_service_tier

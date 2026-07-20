@@ -97,6 +97,74 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestStatisticsRecordResolvesBillingBasis(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		authType string
+		want     string
+	}{
+		{name: "Codex OAuth", provider: "codex", authType: "oauth", want: coreusage.BillingBasisChatGPTCredits},
+		{name: "Codex API key", provider: "codex", authType: "api_key", want: coreusage.BillingBasisAPITokenUSD},
+		{name: "OpenAI API key", provider: "openai", authType: "api_key", want: coreusage.BillingBasisAPITokenUSD},
+		{name: "unknown", provider: "openai", authType: "oauth", want: coreusage.BillingBasisUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := NewRequestStatistics()
+			stats.Record(context.Background(), coreusage.Record{
+				APIKey:   "test-key",
+				Provider: tt.provider,
+				AuthType: tt.authType,
+				Model:    "gpt-5.4",
+				Detail:   coreusage.Detail{TotalTokens: 1},
+			})
+
+			got := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0].BillingBasis
+			if got != tt.want {
+				t.Fatalf("billing_basis = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestStatisticsMergeSnapshotNormalisesBillingBasis(t *testing.T) {
+	tests := []struct {
+		name  string
+		basis string
+		want  string
+	}{
+		{name: "API token USD", basis: " API-TOKEN-USD ", want: coreusage.BillingBasisAPITokenUSD},
+		{name: "ChatGPT credits", basis: "chatgpt-credits", want: coreusage.BillingBasisChatGPTCredits},
+		{name: "missing legacy value", want: coreusage.BillingBasisUnknown},
+		{name: "unsupported value", basis: "credits", want: coreusage.BillingBasisUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := NewRequestStatistics()
+			result := stats.MergeSnapshot(StatisticsSnapshot{APIs: map[string]APISnapshot{
+				"test-key": {Models: map[string]ModelSnapshot{
+					"gpt-5.4": {Details: []RequestDetail{{
+						Timestamp:    time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
+						BillingBasis: tt.basis,
+						Tokens:       TokenStats{TotalTokens: 1},
+					}}},
+				}},
+			}})
+			if result.Added != 1 || result.Skipped != 0 {
+				t.Fatalf("merge result = %+v, want added=1 skipped=0", result)
+			}
+
+			got := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0].BillingBasis
+			if got != tt.want {
+				t.Fatalf("billing_basis = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRequestStatisticsRecordDefaultsOmittedGenerateTrue(t *testing.T) {
 	stats := NewRequestStatistics()
 	stats.Record(context.Background(), coreusage.Record{

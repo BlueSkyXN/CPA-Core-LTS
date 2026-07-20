@@ -100,6 +100,7 @@ type RequestDetail struct {
 	RequestServiceTier   string     `json:"request_service_tier,omitempty"`
 	ResponseServiceTier  string     `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string     `json:"effective_service_tier,omitempty"`
+	BillingBasis         string     `json:"billing_basis"`
 	Tokens               TokenStats `json:"tokens"`
 	Failed               bool       `json:"failed"`
 	Generate             bool       `json:"generate"`
@@ -129,6 +130,7 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 
 	*d = RequestDetail(decoded)
 	d.Generate = generate
+	d.BillingBasis = normaliseBillingBasis(d.BillingBasis)
 	return nil
 }
 
@@ -256,6 +258,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		RequestServiceTier:   requestServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
+		BillingBasis:         coreusage.ResolveBillingBasis(record.Provider, record.AuthType),
 		Tokens:               detail,
 		Failed:               failed,
 		Generate:             coreusage.GenerateEnabled(record.Generate),
@@ -393,7 +396,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			}
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
-				detail = normaliseServiceTierAliases(detail)
+				detail = normaliseRequestDetail(detail)
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
 				}
@@ -415,7 +418,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	return result
 }
 
-func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
+func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 	if strings.TrimSpace(detail.RequestServiceTier) == "" && strings.TrimSpace(detail.ServiceTier) != "" {
 		detail.RequestServiceTier = detail.ServiceTier
 	}
@@ -423,7 +426,21 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 		detail.ServiceTier = detail.RequestServiceTier
 	}
 	detail.EffectiveServiceTier = coreusage.CanonicalEffectiveServiceTier(detail.EffectiveServiceTier)
+	detail.BillingBasis = normaliseBillingBasis(detail.BillingBasis)
 	return detail
+}
+
+func normaliseBillingBasis(billingBasis string) string {
+	switch strings.ToLower(strings.TrimSpace(billingBasis)) {
+	case coreusage.BillingBasisAPITokenUSD:
+		return coreusage.BillingBasisAPITokenUSD
+	case coreusage.BillingBasisChatGPTCredits:
+		return coreusage.BillingBasisChatGPTCredits
+	case coreusage.BillingBasisUnknown:
+		return coreusage.BillingBasisUnknown
+	default:
+		return coreusage.BillingBasisUnknown
+	}
 }
 
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
