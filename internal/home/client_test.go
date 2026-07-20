@@ -458,7 +458,11 @@ func TestGetPluginSyncExceedsBaseTimeoutAndKeepsBaseClientUsable(t *testing.T) {
 func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	var startOnce sync.Once
+	var startOnce, releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseServer()
 	client, commands := newRedisCommandTestClient(t, func(args []string) string {
 		if len(args) >= 2 && args[1] == redisKeyPluginSync {
 			startOnce.Do(func() { close(started) })
@@ -467,15 +471,30 @@ func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 		return "-ERR cancelled\r\n"
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-started
-		cancel()
-	}()
+	defer cancel()
+	result := make(chan error, 1)
 	startedAt := time.Now()
-	_, errSync := client.GetPluginSync(ctx, pluginstore.PluginSyncRequest{
-		SchemaVersion: pluginstore.PluginSyncSchemaVersion, GOOS: "linux", GOARCH: "amd64",
-	})
-	close(release)
+	go func() {
+		_, errSync := client.GetPluginSync(ctx, pluginstore.PluginSyncRequest{
+			SchemaVersion: pluginstore.PluginSyncSchemaVersion, GOOS: "linux", GOARCH: "amd64",
+		})
+		result <- errSync
+	}()
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("GetPluginSync() did not start its Redis command within one second")
+	}
+
+	var errSync error
+	select {
+	case errSync = <-result:
+	case <-time.After(time.Second):
+		releaseServer()
+		t.Fatal("GetPluginSync() did not return within one second of cancellation")
+	}
+	releaseServer()
 	if !errors.Is(errSync, context.Canceled) {
 		t.Fatalf("GetPluginSync() error = %v, want context.Canceled", errSync)
 	}
