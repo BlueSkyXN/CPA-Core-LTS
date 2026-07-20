@@ -473,7 +473,6 @@ func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	startedAt := time.Now()
 	go func() {
 		_, errSync := client.GetPluginSync(ctx, pluginstore.PluginSyncRequest{
 			SchemaVersion: pluginstore.PluginSyncSchemaVersion, GOOS: "linux", GOARCH: "amd64",
@@ -482,10 +481,11 @@ func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 	}()
 	select {
 	case <-started:
-		cancel()
 	case <-time.After(time.Second):
 		t.Fatal("GetPluginSync() did not start its Redis command within one second")
 	}
+	cancelledAt := time.Now()
+	cancel()
 
 	var errSync error
 	select {
@@ -498,7 +498,7 @@ func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 	if !errors.Is(errSync, context.Canceled) {
 		t.Fatalf("GetPluginSync() error = %v, want context.Canceled", errSync)
 	}
-	if elapsed := time.Since(startedAt); elapsed > time.Second {
+	if elapsed := time.Since(cancelledAt); elapsed > time.Second {
 		t.Fatalf("GetPluginSync() cancellation took %s", elapsed)
 	}
 	if count := commands.CountKey(redisKeyPluginSync); count != 1 {
