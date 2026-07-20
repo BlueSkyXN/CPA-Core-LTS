@@ -176,6 +176,21 @@ patches:
     state: required
     retire_when: Upstream preserves the configured plugin enable default through both YAML parsing and runtime host synthesis, and all listed tests pass without the downstream implementation.
 
+  - id: home-plugin-sync-cancellation
+    reason: Canceling a dedicated Home plugin-sync request must close its one-command Redis connection so a client-installed two-minute read deadline cannot overwrite an earlier cancellation deadline and stall shutdown or request cleanup.
+    introduced_in: 125cd6c244f1c723781680c23e61edaa88aac5ef
+    affected_upstream_range: introduced by b651a1a8fd8ea1a43d061a08b42cef8fa3160179 and still required through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); upstream sets an immediate deadline on cancellation but the Redis client can install its long read deadline afterward, which reproduced as a full two-minute stall on Linux CI.
+    files:
+      - internal/home/client.go
+      - internal/home/client_test.go
+    regression_tests:
+      - TestGetPluginSyncCancellationInterruptsRead
+      - TestPluginSyncCancelableConnCancellationClosesConnection
+      - TestProcessPluginSyncCommandCancellationInterruptsTLSHandshake
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream closes or otherwise irrevocably interrupts the dedicated plugin-sync connection when the request context is canceled, remains safe during TLS handshake and concurrent client close, and all listed regressions pass without the downstream implementation.
+
   - id: codex-gpt56-ultra-level
     reason: Upstream now publishes and remotely refreshes Codex client metadata with logical Sol/Terra Ultra and Luna max-only, but it still does not provide the CPA-Core-LTS server-side capability overlay, custom-model policy, payload-override-safe wire canonicalization, usage/retry alignment, or HTTP/WebSocket enforcement. CPA-Core-LTS therefore validates the refreshed client catalog as an LTS prerequisite while retaining the downstream runtime patch.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
