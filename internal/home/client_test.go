@@ -487,6 +487,25 @@ func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 	}
 }
 
+func TestPluginSyncCancelableConnCancellationClosesConnection(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	wrapped := newPluginSyncCancelableConn(ctx, clientConn)
+	t.Cleanup(func() {
+		_ = wrapped.Close()
+		_ = serverConn.Close()
+	})
+
+	cancel()
+	if errDeadline := serverConn.SetReadDeadline(time.Now().Add(time.Second)); errDeadline != nil {
+		t.Fatalf("SetReadDeadline() error = %v", errDeadline)
+	}
+	buffer := make([]byte, 1)
+	if _, errRead := serverConn.Read(buffer); !errors.Is(errRead, io.EOF) {
+		t.Fatalf("peer Read() error = %v, want EOF after cancellation closes the connection", errRead)
+	}
+}
+
 func TestProcessPluginSyncCommandCancellationInterruptsTLSHandshake(t *testing.T) {
 	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
