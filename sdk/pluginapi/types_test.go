@@ -95,6 +95,46 @@ func TestUsageRecordEffectiveServiceTierJSONCompatibility(t *testing.T) {
 	}
 }
 
+func TestUsageRecordBillingBasisJSONCompatibility(t *testing.T) {
+	raw, errMarshal := json.Marshal(UsageRecord{
+		Provider:     "codex",
+		BillingBasis: "chatgpt-credits",
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal UsageRecord: %v", errMarshal)
+	}
+
+	var fields map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(raw, &fields); errUnmarshal != nil {
+		t.Fatalf("decode UsageRecord fields: %v", errUnmarshal)
+	}
+	if _, ok := fields["BillingBasis"]; !ok {
+		t.Fatalf("UsageRecord JSON missing BillingBasis: %s", raw)
+	}
+
+	emptyRaw, errMarshal := json.Marshal(UsageRecord{Provider: "codex"})
+	if errMarshal != nil {
+		t.Fatalf("marshal empty-billing UsageRecord: %v", errMarshal)
+	}
+	var emptyFields map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(emptyRaw, &emptyFields); errUnmarshal != nil {
+		t.Fatalf("decode empty-billing UsageRecord fields: %v", errUnmarshal)
+	}
+	if _, ok := emptyFields["BillingBasis"]; ok {
+		t.Fatalf("empty UsageRecord JSON unexpectedly includes BillingBasis: %s", emptyRaw)
+	}
+
+	var legacy struct {
+		Provider string
+	}
+	if errUnmarshal := json.Unmarshal(raw, &legacy); errUnmarshal != nil {
+		t.Fatalf("legacy decoder rejected additive UsageRecord field: %v", errUnmarshal)
+	}
+	if legacy.Provider != "codex" {
+		t.Fatalf("legacy UsageRecord = %+v, want provider codex", legacy)
+	}
+}
+
 func TestMetadataConfigFieldsExposePluginSchema(t *testing.T) {
 	meta := Metadata{
 		Name:             "example",

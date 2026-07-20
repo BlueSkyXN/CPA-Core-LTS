@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -707,6 +708,56 @@ func TestUsageReporterResolvesEffectiveServiceTierFromFinalOutboundPayload(t *te
 			record := reporter.buildRecord(usage.Detail{TotalTokens: 1, ResponseServiceTier: tt.response}, false)
 			if record.EffectiveServiceTier != tt.want {
 				t.Fatalf("effective service tier = %q, want %q", record.EffectiveServiceTier, tt.want)
+			}
+		})
+	}
+}
+
+func TestUsageReporterResolvesBillingBasisFromAuthEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		auth     *cliproxyauth.Auth
+		want     string
+	}{
+		{
+			name:     "Codex OAuth uses credits",
+			provider: "codex",
+			auth: &cliproxyauth.Auth{
+				Provider:   "codex",
+				Attributes: map[string]string{"auth_kind": "oauth"},
+			},
+			want: usage.BillingBasisChatGPTCredits,
+		},
+		{
+			name:     "Codex API key without explicit endpoint uses USD",
+			provider: "codex",
+			auth: &cliproxyauth.Auth{
+				Provider:   "codex",
+				Attributes: map[string]string{"api_key": "test-key"},
+			},
+			want: usage.BillingBasisAPITokenUSD,
+		},
+		{
+			name:     "Codex API key custom endpoint fails closed",
+			provider: "codex",
+			auth: &cliproxyauth.Auth{
+				Provider: "codex",
+				Attributes: map[string]string{
+					"api_key":  "test-key",
+					"base_url": "https://proxy.example.com/codex",
+				},
+			},
+			want: usage.BillingBasisUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reporter := NewUsageReporter(context.Background(), tt.provider, "gpt-5.6", tt.auth)
+			record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+			if record.BillingBasis != tt.want {
+				t.Fatalf("billing basis = %q, want %q", record.BillingBasis, tt.want)
 			}
 		})
 	}

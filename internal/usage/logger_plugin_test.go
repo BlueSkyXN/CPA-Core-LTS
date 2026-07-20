@@ -99,13 +99,15 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 
 func TestRequestStatisticsRecordResolvesBillingBasis(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider string
-		authType string
-		want     string
+		name         string
+		provider     string
+		authType     string
+		billingBasis string
+		want         string
 	}{
 		{name: "Codex OAuth", provider: "codex", authType: "oauth", want: coreusage.BillingBasisChatGPTCredits},
 		{name: "Codex API key", provider: "codex", authType: "api_key", want: coreusage.BillingBasisAPITokenUSD},
+		{name: "Codex custom endpoint classification", provider: "codex", authType: "api_key", billingBasis: coreusage.BillingBasisUnknown, want: coreusage.BillingBasisUnknown},
 		{name: "OpenAI API key", provider: "openai", authType: "api_key", want: coreusage.BillingBasisAPITokenUSD},
 		{name: "unknown", provider: "openai", authType: "oauth", want: coreusage.BillingBasisUnknown},
 	}
@@ -114,11 +116,12 @@ func TestRequestStatisticsRecordResolvesBillingBasis(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stats := NewRequestStatistics()
 			stats.Record(context.Background(), coreusage.Record{
-				APIKey:   "test-key",
-				Provider: tt.provider,
-				AuthType: tt.authType,
-				Model:    "gpt-5.4",
-				Detail:   coreusage.Detail{TotalTokens: 1},
+				APIKey:       "test-key",
+				Provider:     tt.provider,
+				AuthType:     tt.authType,
+				BillingBasis: tt.billingBasis,
+				Model:        "gpt-5.4",
+				Detail:       coreusage.Detail{TotalTokens: 1},
 			})
 
 			got := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"].Details[0].BillingBasis

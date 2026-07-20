@@ -179,6 +179,29 @@ func TestResolveBillingBasis(t *testing.T) {
 	}
 }
 
+func TestResolveBillingBasisWithBaseURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		authType string
+		baseURL  string
+		want     string
+	}{
+		{name: "Codex OAuth", provider: "codex", authType: "oauth", want: BillingBasisChatGPTCredits},
+		{name: "Codex API key without explicit endpoint", provider: "codex", authType: "apikey", want: BillingBasisAPITokenUSD},
+		{name: "Codex API key custom endpoint", provider: "codex", authType: "apikey", baseURL: "https://proxy.example.com/codex", want: BillingBasisUnknown},
+		{name: "OpenAI API key custom endpoint remains provider classified", provider: "openai", authType: "apikey", baseURL: "https://api.openai.com/v1", want: BillingBasisAPITokenUSD},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveBillingBasisWithBaseURL(tt.provider, tt.authType, tt.baseURL); got != tt.want {
+				t.Fatalf("ResolveBillingBasisWithBaseURL(%q, %q, %q) = %q, want %q", tt.provider, tt.authType, tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestManagerDequeueClearsConsumedContextAndBackingArray(t *testing.T) {
 	m := NewManager(2)
 	ctx := context.WithValue(context.Background(), struct{}{}, bytesMarker(1))

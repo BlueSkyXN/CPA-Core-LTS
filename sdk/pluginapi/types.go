@@ -1304,6 +1304,9 @@ type UsageRecord struct {
 	// EffectiveServiceTier records the canonical tier selected for the request.
 	// It is empty when the effective tier cannot be determined safely.
 	EffectiveServiceTier string `json:"EffectiveServiceTier,omitempty"`
+	// BillingBasis records the stable, non-secret billing classification resolved
+	// by the host. It is omitted for legacy callers that do not provide one.
+	BillingBasis string `json:"BillingBasis,omitempty"`
 	// Generate reports whether the client requested actual generation.
 	// The host normalizes omitted usage.Record values to true before delivery.
 	Generate bool

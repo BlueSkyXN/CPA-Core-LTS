@@ -39,6 +39,10 @@ type Record struct {
 	AuthID       string
 	AuthIndex    string
 	AuthType     string
+	// BillingBasis stores the stable, non-secret classification resolved at the
+	// request boundary. Usage sinks should preserve this value rather than
+	// independently reclassifying credentials with less context.
+	BillingBasis string
 	Source       string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
@@ -132,6 +136,51 @@ func ResolveBillingBasis(provider, authType string) string {
 		}
 	}
 	return BillingBasisUnknown
+}
+
+// ResolveBillingBasisWithBaseURL resolves billing basis while accounting for
+// explicit endpoint provenance. A Codex API key routed through a configured
+// base URL may belong to a non-OpenAI billing domain, so it fails closed.
+func ResolveBillingBasisWithBaseURL(provider, authType, baseURL string) string {
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") &&
+		isAPIKeyAuthType(authType) && strings.TrimSpace(baseURL) != "" {
+		return BillingBasisUnknown
+	}
+	return ResolveBillingBasis(provider, authType)
+}
+
+// ResolveRecordBillingBasis returns the classification already resolved at the
+// request boundary. Records from older direct SDK callers fall back to the
+// provider/auth resolver for backward compatibility.
+func ResolveRecordBillingBasis(record Record) string {
+	if strings.TrimSpace(record.BillingBasis) != "" {
+		return CanonicalBillingBasis(record.BillingBasis)
+	}
+	return ResolveBillingBasis(record.Provider, record.AuthType)
+}
+
+// CanonicalBillingBasis normalizes supported billing values and fails closed
+// for empty or unrecognized input.
+func CanonicalBillingBasis(billingBasis string) string {
+	switch strings.ToLower(strings.TrimSpace(billingBasis)) {
+	case BillingBasisAPITokenUSD:
+		return BillingBasisAPITokenUSD
+	case BillingBasisChatGPTCredits:
+		return BillingBasisChatGPTCredits
+	case BillingBasisUnknown:
+		return BillingBasisUnknown
+	default:
+		return BillingBasisUnknown
+	}
+}
+
+func isAPIKeyAuthType(authType string) bool {
+	switch strings.ToLower(strings.TrimSpace(authType)) {
+	case "api_key", "api-key", "apikey":
+		return true
+	default:
+		return false
+	}
 }
 
 // NormalizeUncachedInputTokens clears uncached input data that is unknown or

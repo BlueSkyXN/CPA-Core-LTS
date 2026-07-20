@@ -258,7 +258,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		RequestServiceTier:   requestServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
-		BillingBasis:         coreusage.ResolveBillingBasis(record.Provider, record.AuthType),
+		BillingBasis:         coreusage.ResolveRecordBillingBasis(record),
 		Tokens:               detail,
 		Failed:               failed,
 		Generate:             coreusage.GenerateEnabled(record.Generate),
@@ -431,16 +431,7 @@ func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 }
 
 func normaliseBillingBasis(billingBasis string) string {
-	switch strings.ToLower(strings.TrimSpace(billingBasis)) {
-	case coreusage.BillingBasisAPITokenUSD:
-		return coreusage.BillingBasisAPITokenUSD
-	case coreusage.BillingBasisChatGPTCredits:
-		return coreusage.BillingBasisChatGPTCredits
-	case coreusage.BillingBasisUnknown:
-		return coreusage.BillingBasisUnknown
-	default:
-		return coreusage.BillingBasisUnknown
-	}
+	return coreusage.CanonicalBillingBasis(billingBasis)
 }
 
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
