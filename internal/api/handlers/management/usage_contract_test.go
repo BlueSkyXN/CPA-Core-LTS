@@ -58,6 +58,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"effective_service_tier":"standard"`)) {
 		t.Fatalf("exported usage missing effective_service_tier: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"billing_basis":"api-token-usd"`)) {
+		t.Fatalf("exported usage missing billing_basis: %s", exportedJSON)
+	}
 	if !bytes.Contains(exportedJSON, []byte(`"generate":false`)) {
 		t.Fatalf("exported usage missing explicit generate=false: %s", exportedJSON)
 	}
@@ -230,6 +233,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].ServiceTier != "" {
 		t.Fatalf("legacy detail.service_tier = %q, want empty/unknown", details[0].ServiceTier)
 	}
+	if details[0].BillingBasis != coreusage.BillingBasisUnknown {
+		t.Fatalf("legacy detail.billing_basis = %q, want unknown", details[0].BillingBasis)
+	}
 	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
 		t.Fatalf("legacy detail service tiers = request:%q response:%q effective:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
 	}
@@ -265,6 +271,9 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 	if bytes.Contains(reexportedJSON, []byte(`"uncached_input_tokens"`)) {
 		t.Fatalf("legacy re-export fabricated uncached_input_tokens: %s", reexportedJSON)
+	}
+	if !bytes.Contains(reexportedJSON, []byte(`"billing_basis":"unknown"`)) {
+		t.Fatalf("legacy re-export missing normalized unknown billing_basis: %s", reexportedJSON)
 	}
 }
 
@@ -406,6 +415,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 	stats.Record(context.Background(), coreusage.Record{
 		APIKey:               "panel-client-key",
 		Provider:             "openai",
+		AuthType:             "api_key",
 		Model:                "gpt-5.4",
 		Alias:                "panel-visible-model",
 		Source:               "auths/openai.json",
@@ -564,6 +574,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.ReasoningEffort != "medium" {
 		t.Fatalf("detail.reasoning_effort = %q, want medium", detail.ReasoningEffort)
+	}
+	if detail.BillingBasis != coreusage.BillingBasisAPITokenUSD {
+		t.Fatalf("detail.billing_basis = %q, want api-token-usd", detail.BillingBasis)
 	}
 	if detail.ServiceTier != "priority" {
 		t.Fatalf("detail.service_tier = %q, want priority", detail.ServiceTier)

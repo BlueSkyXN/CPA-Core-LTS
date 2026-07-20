@@ -30,6 +30,7 @@ type UsageReporter struct {
 	authID       string
 	authIndex    string
 	authType     string
+	billingBasis string
 	apiKey       string
 	source       string
 	reasoning    string
@@ -61,6 +62,7 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	apiKey := APIKeyFromContext(ctx)
 	alias := usage.RequestedModelAliasFromContext(ctx)
+	authType := resolveUsageAuthType(auth)
 	if alias == "" {
 		alias = model
 	}
@@ -71,7 +73,12 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		requestedAt: time.Now(),
 		apiKey:      apiKey,
 		source:      resolveUsageSource(auth, apiKey),
-		authType:    resolveUsageAuthType(auth),
+		authType:    authType,
+		billingBasis: usage.ResolveBillingBasisWithBaseURL(
+			provider,
+			authType,
+			resolveUsageBaseURL(auth),
+		),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
 		generate:    usage.GenerateFromContext(ctx),
@@ -293,6 +300,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
 		AuthType:            r.authType,
+		BillingBasis:        r.billingBasis,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
 		RequestServiceTier:  r.serviceTier,
@@ -474,6 +482,13 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 		return ""
 	}
 	return auth.AuthKind()
+}
+
+func resolveUsageBaseURL(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Attributes == nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.Attributes["base_url"])
 }
 
 // StreamUsageBuffer keeps the latest usage detail observed in a stream.

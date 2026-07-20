@@ -2253,6 +2253,33 @@ func TestUsageAdapterPreservesEffectiveServiceTier(t *testing.T) {
 	}
 }
 
+func TestUsageAdapterPreservesBillingBasis(t *testing.T) {
+	var got pluginapi.UsageRecord
+	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
+		got = record
+	})
+	host := newHostWithRecords(capabilityRecord{
+		id: "usage-billing-basis",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			UsagePlugin: plugin,
+		}},
+	})
+	adapter := &usageAdapter{
+		host:     host,
+		pluginID: "usage-billing-basis",
+	}
+
+	adapter.HandleUsage(context.Background(), coreusage.Record{
+		Provider:     "codex",
+		AuthType:     "oauth",
+		BillingBasis: coreusage.BillingBasisChatGPTCredits,
+	})
+
+	if got.BillingBasis != coreusage.BillingBasisChatGPTCredits {
+		t.Fatalf("plugin BillingBasis = %q, want %q", got.BillingBasis, coreusage.BillingBasisChatGPTCredits)
+	}
+}
+
 func TestUsageManagerRegisterNamedReplacesWithoutDuplicateDispatch(t *testing.T) {
 	manager := coreusage.NewManager(0)
 	defer manager.Stop()
