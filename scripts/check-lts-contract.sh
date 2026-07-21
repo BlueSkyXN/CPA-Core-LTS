@@ -153,9 +153,6 @@ require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/o
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
-require_grep 'json:"uncached_input_tokens,omitempty"' internal/usage internal/redisqueue
-require_grep "UncachedInputTokensKnown" sdk/cliproxy/usage internal/runtime/executor/helps internal/usage internal/redisqueue sdk/pluginapi internal/pluginhost
-require_grep "uncached_input_tokens" internal/api/handlers/management/usage_contract_test.go
 require_grep 'json:"reasoning_effort,omitempty"' internal/usage
 require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage

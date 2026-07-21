@@ -2,7 +2,6 @@ package helps
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -13,161 +12,20 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
-func requireKnownUncachedInputTokens(t *testing.T, detail usage.Detail, want int64) {
-	t.Helper()
-	if !detail.UncachedInputTokensKnown {
-		t.Fatalf("uncached input tokens known = false, want true; detail=%+v", detail)
-	}
-	if detail.UncachedInputTokens != want {
-		t.Fatalf("uncached input tokens = %d, want %d", detail.UncachedInputTokens, want)
-	}
-}
-
-func requireUnknownUncachedInputTokens(t *testing.T, detail usage.Detail) {
-	t.Helper()
-	if detail.UncachedInputTokensKnown {
-		t.Fatalf("uncached input tokens = %d known=true, want unknown; detail=%+v", detail.UncachedInputTokens, detail)
-	}
-	if detail.UncachedInputTokens != 0 {
-		t.Fatalf("uncached input tokens = %d known=false, want cleared zero; detail=%+v", detail.UncachedInputTokens, detail)
-	}
-}
-
-func TestUsageParsersRejectInvalidUncachedInputTokenInputs(t *testing.T) {
-	invalidLiterals := []struct {
-		name    string
-		literal string
+func TestUsageParsersRejectInvalidTokenInputs(t *testing.T) {
+	for _, parser := range []struct {
+		name  string
+		parse func([]byte) usage.Detail
+		data  []byte
 	}{
-		{name: "null", literal: "null"},
-		{name: "boolean", literal: "true"},
-		{name: "string", literal: `"5"`},
-		{name: "fractional", literal: "1.5"},
-		{name: "negative", literal: "-1"},
-		{name: "int64 overflow", literal: "9223372036854775808"},
-	}
-
-	parseCodex := func(data []byte) usage.Detail {
-		detail, _ := ParseCodexUsage(data)
-		return detail
-	}
-	cases := []struct {
-		name    string
-		payload func(string) []byte
-		parse   func([]byte) usage.Detail
-	}{
-		{
-			name: "openai input_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":%s,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}`, literal))
-			},
-			parse: ParseOpenAIUsage,
-		},
-		{
-			name: "openai cached_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":%s,"cache_write_tokens":0}}}`, literal))
-			},
-			parse: ParseOpenAIUsage,
-		},
-		{
-			name: "openai cache_write_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":%s}}}`, literal))
-			},
-			parse: ParseOpenAIUsage,
-		},
-		{
-			name: "codex input_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"response":{"usage":{"input_tokens":%s,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}}`, literal))
-			},
-			parse: parseCodex,
-		},
-		{
-			name: "codex cached_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":%s,"cache_write_tokens":0}}}}`, literal))
-			},
-			parse: parseCodex,
-		},
-		{
-			name: "codex cache_write_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":%s}}}}`, literal))
-			},
-			parse: parseCodex,
-		},
-		{
-			name: "claude input_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":%s,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`, literal))
-			},
-			parse: ParseClaudeUsage,
-		},
-		{
-			name: "claude cache_read_input_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cache_read_input_tokens":%s,"cache_creation_input_tokens":0}}`, literal))
-			},
-			parse: ParseClaudeUsage,
-		},
-		{
-			name: "claude cache_creation_input_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":%s}}`, literal))
-			},
-			parse: ParseClaudeUsage,
-		},
-		{
-			name: "gemini promptTokenCount",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usageMetadata":{"promptTokenCount":%s,"cachedContentTokenCount":0}}`, literal))
-			},
-			parse: ParseGeminiUsage,
-		},
-		{
-			name: "gemini cachedContentTokenCount",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":%s}}`, literal))
-			},
-			parse: ParseGeminiUsage,
-		},
-		{
-			name: "interactions input_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":%s,"cached_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}}`, literal))
-			},
-			parse: ParseInteractionsUsage,
-		},
-		{
-			name: "interactions cached_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cached_tokens":%s,"cache_write_tokens":0}}`, literal))
-			},
-			parse: ParseInteractionsUsage,
-		},
-		{
-			name: "interactions cache_read_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cached_tokens":0,"cache_read_tokens":%s,"cache_write_tokens":0}}`, literal))
-			},
-			parse: ParseInteractionsUsage,
-		},
-		{
-			name: "interactions cache_write_tokens",
-			payload: func(literal string) []byte {
-				return []byte(fmt.Sprintf(`{"usage":{"input_tokens":10,"cached_tokens":0,"cache_write_tokens":%s}}`, literal))
-			},
-			parse: ParseInteractionsUsage,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, invalid := range invalidLiterals {
-				t.Run(invalid.name, func(t *testing.T) {
-					requireUnknownUncachedInputTokens(t, tc.parse(tc.payload(invalid.literal)))
-				})
+		{"openai", ParseOpenAIUsage, []byte(`{"usage":{"input_tokens":"10"}}`)},
+		{"claude", ParseClaudeUsage, []byte(`{"usage":{"input_tokens":-1}}`)},
+		{"gemini", ParseGeminiUsage, []byte(`{"usageMetadata":{"promptTokenCount":1.5}}`)},
+		{"interactions", ParseInteractionsUsage, []byte(`{"usage":{"input_tokens":true}}`)},
+	} {
+		t.Run(parser.name, func(t *testing.T) {
+			if detail := parser.parse(parser.data); detail.InputTokens != 0 {
+				t.Fatalf("detail = %+v, want invalid input_tokens rejected", detail)
 			}
 		})
 	}
@@ -197,7 +55,6 @@ func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	if detail.ReasoningTokens != 5 {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 5)
 	}
-	requireKnownUncachedInputTokens(t, detail, 0)
 }
 
 func TestParseOpenAIUsageResponses(t *testing.T) {
@@ -224,7 +81,6 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 	if detail.ResponseServiceTier != "default" {
 		t.Fatalf("response service tier = %q, want default", detail.ResponseServiceTier)
 	}
-	requireKnownUncachedInputTokens(t, detail, 3)
 }
 
 func TestParseCodexUsageIncludesCacheWriteTokens(t *testing.T) {
@@ -254,7 +110,73 @@ func TestParseCodexUsageIncludesCacheWriteTokens(t *testing.T) {
 	if detail.ResponseServiceTier != "priority" {
 		t.Fatalf("response service tier = %q, want priority", detail.ResponseServiceTier)
 	}
-	requireKnownUncachedInputTokens(t, detail, 30)
+}
+
+func TestUsageParsersNormalizeInputTotalsAcrossProviderShapes(t *testing.T) {
+	parseCodex := func(data []byte) usage.Detail {
+		detail, ok := ParseCodexUsage(data)
+		if !ok {
+			t.Fatal("ParseCodexUsage() ok = false, want true")
+		}
+		return detail
+	}
+	tests := []struct {
+		name  string
+		parse func([]byte) usage.Detail
+		data  []byte
+	}{
+		{
+			name:  "openai input already includes cache categories",
+			parse: ParseOpenAIUsage,
+			data:  []byte(`{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":40}}}`),
+		},
+		{
+			name:  "codex input already includes cache categories",
+			parse: parseCodex,
+			data:  []byte(`{"response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":40}}}}`),
+		},
+		{
+			name:  "claude separates normal input and cache categories",
+			parse: ParseClaudeUsage,
+			data:  []byte(`{"usage":{"input_tokens":30,"cache_read_input_tokens":30,"cache_creation_input_tokens":40}}`),
+		},
+		{
+			name:  "interactions separates explicit cache categories",
+			parse: ParseInteractionsUsage,
+			data:  []byte(`{"usage":{"input_tokens":30,"cache_read_tokens":30,"cache_write_tokens":40}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			detail := tt.parse(tt.data)
+			if detail.InputTokens != 100 || detail.CacheReadTokens != 30 || detail.CacheCreationTokens != 40 {
+				t.Fatalf("detail = %+v, want input=100 cache_read=30 cache_creation=40", detail)
+			}
+		})
+	}
+
+	gemini := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":30}}`))
+	if gemini.InputTokens != 100 || gemini.CacheReadTokens != 30 || gemini.CacheCreationTokens != 0 {
+		t.Fatalf("gemini detail = %+v, want prompt input total with cached subset", gemini)
+	}
+	antigravity := ParseAntigravityUsage([]byte(`{"response":{"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":30}}}`))
+	if antigravity.InputTokens != 100 || antigravity.CacheReadTokens != 30 || antigravity.CacheCreationTokens != 0 {
+		t.Fatalf("antigravity detail = %+v, want prompt input total with cached subset", antigravity)
+	}
+}
+
+func TestUsageTotalFallbackDoesNotDoubleCountCacheCategories(t *testing.T) {
+	detail := normalizeUsageDetailTotal(usage.Detail{
+		InputTokens:         100,
+		OutputTokens:        20,
+		ReasoningTokens:     5,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+	})
+	if detail.TotalTokens != 125 {
+		t.Fatalf("total_tokens = %d, want 125 without double-counting input cache categories", detail.TotalTokens)
+	}
 }
 
 func TestParseOpenAIUsageNormalizesCacheCreationAlias(t *testing.T) {
@@ -263,15 +185,13 @@ func TestParseOpenAIUsageNormalizesCacheCreationAlias(t *testing.T) {
 	if detail.CacheCreationTokens != 4 {
 		t.Fatalf("cache creation tokens = %d, want 4", detail.CacheCreationTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 6)
 }
 
-func TestParseOpenAIUsageKeepsInconsistentOrMissingInputBreakdownUnknown(t *testing.T) {
+func TestParseOpenAIUsagePreservesInputWhenCacheBreakdownExceedsIt(t *testing.T) {
 	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":6}}}`))
-	requireUnknownUncachedInputTokens(t, detail)
-
-	detail = ParseOpenAIUsage([]byte(`{"usage":{"input_tokens_details":{"cached_tokens":4}}}`))
-	requireUnknownUncachedInputTokens(t, detail)
+	if detail.InputTokens != 5 || detail.CacheReadTokens != 4 || detail.CacheCreationTokens != 6 {
+		t.Fatalf("detail = %+v, want upstream categories preserved", detail)
+	}
 }
 
 func TestParseOpenAIUsageIgnoresNullUsage(t *testing.T) {
@@ -334,7 +254,6 @@ func TestParseOpenAIStreamUsageResponsesFields(t *testing.T) {
 	if detail.ResponseServiceTier != "flex" {
 		t.Fatalf("response service tier = %q, want flex", detail.ResponseServiceTier)
 	}
-	requireKnownUncachedInputTokens(t, detail, 5)
 }
 
 func TestStreamUsageBufferKeepsLastUsage(t *testing.T) {
@@ -443,8 +362,8 @@ func TestStreamUsageBufferPreservesOnlyZeroUsage(t *testing.T) {
 func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_read_input_tokens":7,"cache_creation_input_tokens":19514}}`)
 	detail := ParseClaudeUsage(data)
-	if detail.InputTokens != 3085 {
-		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 3085)
+	if detail.InputTokens != 22606 {
+		t.Fatalf("input tokens = %d, want 22606", detail.InputTokens)
 	}
 	if detail.OutputTokens != 253 {
 		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 253)
@@ -461,7 +380,6 @@ func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
 	if detail.TotalTokens != 22859 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22859)
 	}
-	requireKnownUncachedInputTokens(t, detail, 3085)
 }
 
 func TestParseClaudeUsageKeepsCacheCreationSeparateFromCachedTokens(t *testing.T) {
@@ -476,7 +394,9 @@ func TestParseClaudeUsageKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 	if detail.TotalTokens != 22852 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22852)
 	}
-	requireKnownUncachedInputTokens(t, detail, 3085)
+	if detail.InputTokens != 22599 {
+		t.Fatalf("input tokens = %d, want 22599", detail.InputTokens)
+	}
 }
 
 func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
@@ -487,17 +407,20 @@ func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	if detail.CacheReadTokens != 4 {
 		t.Fatalf("cache read tokens = %d, want 4", detail.CacheReadTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 6)
 }
 
-func TestParseGeminiUsageKeepsCacheGreaterThanInputUnknown(t *testing.T) {
+func TestParseGeminiUsageKeepsPromptInputSeparateFromCachedSubset(t *testing.T) {
 	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":5,"cachedContentTokenCount":6,"totalTokenCount":5}}`))
-	requireUnknownUncachedInputTokens(t, detail)
+	if detail.InputTokens != 5 || detail.CacheReadTokens != 6 {
+		t.Fatalf("detail = %+v, want upstream prompt and cache categories preserved", detail)
+	}
 }
 
-func TestParseAntigravityUsageComputesUncachedInputTokens(t *testing.T) {
+func TestParseAntigravityUsageKeepsPromptInputTotal(t *testing.T) {
 	detail := ParseAntigravityUsage([]byte(`{"response":{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":4,"totalTokenCount":12}}}`))
-	requireKnownUncachedInputTokens(t, detail, 6)
+	if detail.InputTokens != 10 || detail.CacheReadTokens != 4 || detail.TotalTokens != 12 {
+		t.Fatalf("detail = %+v, want prompt input total with cached subset", detail)
+	}
 }
 
 func TestParseInteractionsUsage(t *testing.T) {
@@ -520,7 +443,6 @@ func TestParseInteractionsUsage(t *testing.T) {
 	if detail.CacheReadTokens != 2 {
 		t.Fatalf("cache read tokens = %d, want 2", detail.CacheReadTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 1)
 }
 
 func TestParseInteractionsUsageNormalizesCacheWriteAlias(t *testing.T) {
@@ -528,7 +450,9 @@ func TestParseInteractionsUsageNormalizesCacheWriteAlias(t *testing.T) {
 	if detail.CacheCreationTokens != 2 {
 		t.Fatalf("cache creation tokens = %d, want 2", detail.CacheCreationTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 3)
+	if detail.InputTokens != 5 || detail.TotalTokens != 5 {
+		t.Fatalf("detail = %+v, want external cache write added to input total", detail)
+	}
 }
 
 func TestParseInteractionsUsageKeepsExplicitCacheReadSeparateFromInput(t *testing.T) {
@@ -536,12 +460,16 @@ func TestParseInteractionsUsageKeepsExplicitCacheReadSeparateFromInput(t *testin
 	if detail.CacheReadTokens != 2 {
 		t.Fatalf("cache read tokens = %d, want 2", detail.CacheReadTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 3)
+	if detail.InputTokens != 5 || detail.TotalTokens != 5 {
+		t.Fatalf("detail = %+v, want explicit cache read added to input total", detail)
+	}
 }
 
-func TestParseInteractionsUsageKeepsIncludedCacheGreaterThanInputUnknown(t *testing.T) {
+func TestParseInteractionsUsageKeepsCachedTokensWithinInput(t *testing.T) {
 	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"cached_tokens":4}}`))
-	requireUnknownUncachedInputTokens(t, detail)
+	if detail.InputTokens != 3 || detail.CacheReadTokens != 4 || detail.TotalTokens != 3 {
+		t.Fatalf("detail = %+v, want cached_tokens treated as an input subset", detail)
+	}
 }
 
 func TestParseInteractionsStreamUsage(t *testing.T) {
@@ -552,7 +480,6 @@ func TestParseInteractionsStreamUsage(t *testing.T) {
 	if detail.TotalTokens != 8 {
 		t.Fatalf("total tokens = %d, want 8", detail.TotalTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 2)
 }
 
 func TestParseInteractionsStreamUsageOfficialMetadata(t *testing.T) {
@@ -578,7 +505,6 @@ func TestParseInteractionsStreamUsageOfficialMetadata(t *testing.T) {
 	if detail.TotalTokens != 11 {
 		t.Fatalf("total tokens = %d, want 11", detail.TotalTokens)
 	}
-	requireKnownUncachedInputTokens(t, detail, 1)
 }
 
 func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {

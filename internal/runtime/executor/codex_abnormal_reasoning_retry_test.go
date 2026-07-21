@@ -765,48 +765,21 @@ func TestPatchCodexAbnormalReasoningClientUsageSumsCacheReadAndWrite(t *testing.
 	}
 }
 
-func TestAddCodexUsageDetailPreservesUncachedInputKnowledge(t *testing.T) {
+func TestAddCodexUsageDetailSumsNormalizedTokenCategories(t *testing.T) {
 	first := usage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      0,
-		UncachedInputTokensKnown: true,
+		InputTokens:         100,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+		TotalTokens:         100,
 	}
 	second := usage.Detail{
-		InputTokens:              5,
-		TotalTokens:              5,
-		UncachedInputTokens:      5,
-		UncachedInputTokensKnown: true,
+		InputTokens: 5,
+		TotalTokens: 5,
 	}
 
 	total := addCodexUsageDetail(first, second)
-	if !total.UncachedInputTokensKnown || total.UncachedInputTokens != 5 {
-		t.Fatalf("added detail = %+v, want known uncached input 5", total)
-	}
-
-	mixed := addCodexUsageDetail(first, usage.Detail{InputTokens: 1, TotalTokens: 1})
-	if mixed.UncachedInputTokensKnown {
-		t.Fatalf("mixed detail = %+v, want uncached input unknown", mixed)
-	}
-}
-
-func TestAddCodexUsageDetailRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
-	invalid := usage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      11,
-		UncachedInputTokensKnown: true,
-	}
-	valid := usage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      9,
-		UncachedInputTokensKnown: true,
-	}
-
-	total := addCodexUsageDetail(invalid, valid)
-	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
-		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
+	if total.InputTokens != 105 || total.CacheReadTokens != 30 || total.CacheCreationTokens != 40 || total.TotalTokens != 105 {
+		t.Fatalf("added detail = %+v, want summed normalized token categories", total)
 	}
 }
 

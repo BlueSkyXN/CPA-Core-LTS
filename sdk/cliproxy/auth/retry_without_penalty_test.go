@@ -16,63 +16,26 @@ import (
 
 type retryWithoutPenaltyTestError struct{}
 
-func TestRetryWithoutPenaltyUsageMathPreservesUncachedInputKnowledge(t *testing.T) {
+func TestRetryWithoutPenaltyUsageMathPreservesNormalizedTokenCategories(t *testing.T) {
 	first := coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      0,
-		UncachedInputTokensKnown: true,
+		InputTokens:         100,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+		TotalTokens:         100,
 	}
 	second := coreusage.Detail{
-		InputTokens:              5,
-		TotalTokens:              5,
-		UncachedInputTokens:      5,
-		UncachedInputTokensKnown: true,
+		InputTokens: 5,
+		TotalTokens: 5,
 	}
 
 	total := addRetryWithoutPenaltyUsageDetail(first, second)
-	if !total.UncachedInputTokensKnown || total.UncachedInputTokens != 5 {
-		t.Fatalf("added detail = %+v, want known uncached input 5", total)
+	if total.InputTokens != 105 || total.CacheReadTokens != 30 || total.CacheCreationTokens != 40 || total.TotalTokens != 105 {
+		t.Fatalf("added detail = %+v, want summed normalized categories", total)
 	}
 
 	remainder := subtractRetryWithoutPenaltyUsageDetail(total, second)
-	if !remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
-		t.Fatalf("subtracted detail = %+v, want known uncached input 0", remainder)
-	}
-
-	mixed := addRetryWithoutPenaltyUsageDetail(first, coreusage.Detail{InputTokens: 1, TotalTokens: 1})
-	if mixed.UncachedInputTokensKnown {
-		t.Fatalf("mixed detail = %+v, want uncached input unknown", mixed)
-	}
-}
-
-func TestRetryWithoutPenaltyUsageMathRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
-	invalid := coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      11,
-		UncachedInputTokensKnown: true,
-	}
-	valid := coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      9,
-		UncachedInputTokensKnown: true,
-	}
-
-	total := addRetryWithoutPenaltyUsageDetail(invalid, valid)
-	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
-		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
-	}
-
-	remainder := subtractRetryWithoutPenaltyUsageDetail(coreusage.Detail{
-		InputTokens:              20,
-		TotalTokens:              20,
-		UncachedInputTokens:      20,
-		UncachedInputTokensKnown: true,
-	}, invalid)
-	if remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
-		t.Fatalf("subtracted detail = %+v, want cleared unknown uncached input", remainder)
+	if remainder != first {
+		t.Fatalf("subtracted detail = %+v, want %+v", remainder, first)
 	}
 }
 

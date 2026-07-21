@@ -116,20 +116,17 @@ func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 			Provider: "codex",
 			Model:    "gpt-5.6-sol",
 			Detail: coreusage.Detail{
-				InputTokens:              1200,
-				OutputTokens:             10,
-				CacheCreationTokens:      1024,
-				UncachedInputTokens:      0,
-				UncachedInputTokensKnown: true,
+				InputTokens:         2224,
+				OutputTokens:        10,
+				CacheCreationTokens: 1024,
 			},
 		})
 
 		payload := popSinglePayload(t)
 		var tokens struct {
-			CachedTokens        int64  `json:"cached_tokens"`
-			CacheCreationTokens int64  `json:"cache_creation_tokens"`
-			UncachedInputTokens *int64 `json:"uncached_input_tokens"`
-			TotalTokens         int64  `json:"total_tokens"`
+			CachedTokens        int64 `json:"cached_tokens"`
+			CacheCreationTokens int64 `json:"cache_creation_tokens"`
+			TotalTokens         int64 `json:"total_tokens"`
 		}
 		if err := json.Unmarshal(payload["tokens"], &tokens); err != nil {
 			t.Fatalf("unmarshal tokens: %v", err)
@@ -139,9 +136,6 @@ func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 		}
 		if tokens.CacheCreationTokens != 1024 {
 			t.Fatalf("cache_creation_tokens = %d, want 1024", tokens.CacheCreationTokens)
-		}
-		if tokens.UncachedInputTokens == nil || *tokens.UncachedInputTokens != 0 {
-			t.Fatalf("uncached_input_tokens = %v, want pointer to 0", tokens.UncachedInputTokens)
 		}
 		if tokens.TotalTokens != 2234 {
 			t.Fatalf("total_tokens = %d, want 2234 with cache creation included", tokens.TotalTokens)
@@ -214,42 +208,6 @@ func TestUsageQueuePluginMarksCanonicalZeroCacheRead(t *testing.T) {
 			t.Fatalf("cache_read_tokens = %d, want 0", cacheReadTokens)
 		}
 	})
-}
-
-func TestUsageQueuePluginOmitsInvalidUncachedInputTokens(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		value int64
-	}{
-		{name: "negative", value: -1},
-		{name: "greater than input", value: 6},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			withEnabledQueue(t, func() {
-				ctx := internallogging.WithResponseStatusHolder(context.Background())
-				internallogging.SetResponseStatus(ctx, http.StatusOK)
-
-				plugin := &usageQueuePlugin{}
-				plugin.HandleUsage(ctx, coreusage.Record{Detail: coreusage.Detail{
-					InputTokens:              5,
-					TotalTokens:              5,
-					UncachedInputTokens:      tt.value,
-					UncachedInputTokensKnown: true,
-				}})
-
-				payload := popSinglePayload(t)
-				var tokens struct {
-					UncachedInputTokens *int64 `json:"uncached_input_tokens"`
-				}
-				if err := json.Unmarshal(payload["tokens"], &tokens); err != nil {
-					t.Fatalf("unmarshal tokens: %v", err)
-				}
-				if tokens.UncachedInputTokens != nil {
-					t.Fatalf("uncached_input_tokens = %v, want omitted", tokens.UncachedInputTokens)
-				}
-			})
-		})
-	}
 }
 
 func TestUsageQueuePluginEmitsSingleCanonicalAutoTier(t *testing.T) {
