@@ -73,40 +73,6 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	})
 }
 
-func TestUsageQueuePluginPayloadIncludesBillingBasis(t *testing.T) {
-	tests := []struct {
-		name         string
-		provider     string
-		authType     string
-		billingBasis string
-		want         string
-	}{
-		{name: "Codex OAuth", provider: "codex", authType: "oauth", billingBasis: coreusage.BillingBasisChatGPTCredits, want: coreusage.BillingBasisChatGPTCredits},
-		{name: "Codex API key", provider: "codex", authType: "apikey", billingBasis: coreusage.BillingBasisAPITokenUSD, want: coreusage.BillingBasisAPITokenUSD},
-		{name: "custom endpoint classification", provider: "codex", authType: "apikey", billingBasis: coreusage.BillingBasisUnknown, want: coreusage.BillingBasisUnknown},
-		{name: "legacy record fallback", provider: "openai", authType: "apikey", want: coreusage.BillingBasisAPITokenUSD},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withEnabledQueue(t, func() {
-				ctx := internallogging.WithResponseStatusHolder(context.Background())
-				internallogging.SetResponseStatus(ctx, http.StatusOK)
-
-				(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
-					Provider:     tt.provider,
-					AuthType:     tt.authType,
-					BillingBasis: tt.billingBasis,
-					Detail:       coreusage.Detail{TotalTokens: 1},
-				})
-
-				payload := popSinglePayload(t)
-				requireStringField(t, payload, "billing_basis", tt.want)
-			})
-		})
-	}
-}
-
 func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithResponseStatusHolder(context.Background())

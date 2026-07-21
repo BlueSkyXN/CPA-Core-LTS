@@ -24,7 +24,6 @@ retained_capabilities:
       - /v0/management/usage
       - /v0/management/usage/export
       - /v0/management/usage/import
-      - billing_basis
     validation:
       - scripts/check-lts-contract.sh
       - go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
@@ -38,7 +37,6 @@ retained_capabilities:
       - /v0/management/usage/export
       - /v0/management/usage/import
       - /v0/management/usage-statistics-enabled
-      - billing_basis
     validation:
       - management-usage-response-shape-test
       - export-import-roundtrip-test

@@ -18,16 +18,6 @@ const DefaultServiceTier = "default"
 // historical direct-SDK default.
 const AutoServiceTier = "auto"
 
-const (
-	// BillingBasisAPITokenUSD identifies requests billed through an API token in USD.
-	BillingBasisAPITokenUSD = "api-token-usd"
-	// BillingBasisChatGPTCredits identifies requests billed against ChatGPT credits.
-	BillingBasisChatGPTCredits = "chatgpt-credits"
-	// BillingBasisUnknown is used when the provider and authentication type do not
-	// establish a supported billing basis.
-	BillingBasisUnknown = "unknown"
-)
-
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
 	Provider string
@@ -39,10 +29,6 @@ type Record struct {
 	AuthID       string
 	AuthIndex    string
 	AuthType     string
-	// BillingBasis stores the stable, non-secret classification resolved at the
-	// request boundary. Usage sinks should preserve this value rather than
-	// independently reclassifying credentials with less context.
-	BillingBasis string
 	Source       string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
@@ -112,73 +98,6 @@ func ResolveEffectiveServiceTier(responseServiceTier, outboundServiceTier string
 		return CanonicalEffectiveServiceTier(responseServiceTier)
 	}
 	return CanonicalEffectiveServiceTier(outboundServiceTier)
-}
-
-// ResolveBillingBasis returns the stable billing basis implied by the usage
-// record's provider and authentication type. It intentionally uses only these
-// non-secret classification fields and leaves every unsupported combination as
-// unknown.
-func ResolveBillingBasis(provider, authType string) string {
-	authType = strings.ToLower(strings.TrimSpace(authType))
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "codex":
-		switch authType {
-		case "oauth":
-			return BillingBasisChatGPTCredits
-		case "api_key", "api-key", "apikey":
-			return BillingBasisAPITokenUSD
-		}
-	case "openai":
-		if authType == "api_key" || authType == "api-key" || authType == "apikey" {
-			return BillingBasisAPITokenUSD
-		}
-	}
-	return BillingBasisUnknown
-}
-
-// ResolveBillingBasisWithBaseURL resolves billing basis while accounting for
-// explicit endpoint provenance. A Codex API key routed through a configured
-// base URL may belong to a non-OpenAI billing domain, so it fails closed.
-func ResolveBillingBasisWithBaseURL(provider, authType, baseURL string) string {
-	if strings.EqualFold(strings.TrimSpace(provider), "codex") &&
-		isAPIKeyAuthType(authType) && strings.TrimSpace(baseURL) != "" {
-		return BillingBasisUnknown
-	}
-	return ResolveBillingBasis(provider, authType)
-}
-
-// ResolveRecordBillingBasis returns the classification already resolved at the
-// request boundary. Records from older direct SDK callers fall back to the
-// provider/auth resolver for backward compatibility.
-func ResolveRecordBillingBasis(record Record) string {
-	if strings.TrimSpace(record.BillingBasis) != "" {
-		return CanonicalBillingBasis(record.BillingBasis)
-	}
-	return ResolveBillingBasis(record.Provider, record.AuthType)
-}
-
-// CanonicalBillingBasis normalizes supported billing values and fails closed
-// for empty or unrecognized input.
-func CanonicalBillingBasis(billingBasis string) string {
-	switch strings.ToLower(strings.TrimSpace(billingBasis)) {
-	case BillingBasisAPITokenUSD:
-		return BillingBasisAPITokenUSD
-	case BillingBasisChatGPTCredits:
-		return BillingBasisChatGPTCredits
-	case BillingBasisUnknown:
-		return BillingBasisUnknown
-	default:
-		return BillingBasisUnknown
-	}
-}
-
-func isAPIKeyAuthType(authType string) bool {
-	switch strings.ToLower(strings.TrimSpace(authType)) {
-	case "api_key", "api-key", "apikey":
-		return true
-	default:
-		return false
-	}
 }
 
 type requestedModelAliasContextKey struct{}

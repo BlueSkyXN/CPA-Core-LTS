@@ -33,6 +33,15 @@ require_grep() {
   fi
 }
 
+forbid_grep() {
+  local pattern="$1"
+  shift
+  if git grep -n -I -E -- "$pattern" -- "$@"; then
+    echo "forbidden LTS contract marker '$pattern' found in: $*" >&2
+    exit 1
+  fi
+}
+
 forbid_grep_ci() {
   local pattern="$1"
   shift
@@ -158,15 +167,10 @@ require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue
-require_grep 'json:"billing_basis"' internal/usage internal/redisqueue
-require_grep "BillingBasisAPITokenUSD" sdk/cliproxy/usage internal/usage internal/redisqueue
-require_grep "BillingBasisChatGPTCredits" sdk/cliproxy/usage internal/usage internal/redisqueue
+forbid_grep 'BillingBasis|billing_basis' sdk/cliproxy/usage internal/runtime/executor/helps/usage_helpers.go internal/usage/logger_plugin.go internal/redisqueue/plugin.go internal/pluginhost sdk/pluginapi
 require_grep 'json:"EffectiveServiceTier,omitempty"' sdk/pluginapi/types.go
-require_grep 'json:"BillingBasis,omitempty"' sdk/pluginapi/types.go
 require_grep "TestUsageAdapterPreservesEffectiveServiceTier" internal/pluginhost/adapters_test.go
 require_grep "TestRPCUsageIncludesEffectiveServiceTier" internal/pluginhost/host_test.go
-require_grep "TestUsageAdapterPreservesBillingBasis" internal/pluginhost/adapters_test.go
-require_grep "TestRPCUsageIncludesBillingBasis" internal/pluginhost/host_test.go
 require_grep "TestPublishCodexImageToolUsagePreservesResponseTierPrecedence" internal/runtime/executor/codex_openai_images_test.go
 require_grep 'json:"generate"' internal/usage internal/redisqueue
 require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
@@ -179,7 +183,6 @@ require_grep '"thinking"' internal/api/handlers/management/usage_contract_test.g
 require_grep "request_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "response_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "effective_service_tier" internal/api/handlers/management/usage_contract_test.go
-require_grep "billing_basis" internal/api/handlers/management/usage_contract_test.go
 require_grep '"generate"' internal/api/handlers/management/usage_contract_test.go
 
 go test ./scripts/ltsregistry -count=1
