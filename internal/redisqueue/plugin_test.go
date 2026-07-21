@@ -3,6 +3,7 @@ package redisqueue
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -139,6 +140,33 @@ func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 		}
 		if tokens.TotalTokens != 2234 {
 			t.Fatalf("total_tokens = %d, want 2234 with cache creation included", tokens.TotalTokens)
+		}
+	})
+}
+
+func TestUsageQueuePluginFailsClosedOnRecordTotalOverflow(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "claude",
+			Model:    "claude-sonnet",
+			Detail: coreusage.Detail{
+				InputTokens:  math.MaxInt64,
+				OutputTokens: 1,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		var tokens struct {
+			TotalTokens int64 `json:"total_tokens"`
+		}
+		if err := json.Unmarshal(payload["tokens"], &tokens); err != nil {
+			t.Fatalf("unmarshal tokens: %v", err)
+		}
+		if tokens.TotalTokens != 0 {
+			t.Fatalf("total_tokens = %d, want 0 when the record total fallback is not representable", tokens.TotalTokens)
 		}
 	})
 }

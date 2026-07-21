@@ -90,10 +90,20 @@ func (u *claudeResponsesUsageTokens) Merge(usage gjson.Result) {
 }
 
 func (u claudeResponsesUsageTokens) OpenAIResponsesUsage() (inputTokens, outputTokens, totalTokens, cachedTokens int64) {
-	cachedTokens = u.CacheReadInputTokens
-	inputTokens = u.InputTokens + u.CacheCreationInputTokens + cachedTokens
-	outputTokens = u.OutputTokens
-	totalTokens = inputTokens + outputTokens
+	rawInputTokens := translatorcommon.NonNegativeTokenCount(u.InputTokens)
+	cacheCreationTokens := translatorcommon.NonNegativeTokenCount(u.CacheCreationInputTokens)
+	cachedTokens = translatorcommon.NonNegativeTokenCount(u.CacheReadInputTokens)
+	outputTokens = translatorcommon.NonNegativeTokenCount(u.OutputTokens)
+
+	var ok bool
+	inputTokens, ok = translatorcommon.SumNonNegativeTokenCounts(rawInputTokens, cacheCreationTokens, cachedTokens)
+	if !ok {
+		// Preserve Claude's raw prompt count, but clear the cache classification
+		// when the canonical total input cannot be represented.
+		inputTokens = rawInputTokens
+		cachedTokens = 0
+	}
+	totalTokens, _ = translatorcommon.SumNonNegativeTokenCounts(inputTokens, outputTokens)
 	return inputTokens, outputTokens, totalTokens, cachedTokens
 }
 

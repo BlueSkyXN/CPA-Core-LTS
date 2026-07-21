@@ -142,7 +142,7 @@ func (a *UsageAccumulator) Add(detail coreusage.Detail) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.detail = addUsageAccumulatorDetail(a.detail, detail)
-	a.foldedOutputTokens += foldedOutputTokens
+	a.foldedOutputTokens = addNonNegativeUsageAccumulatorTokens(a.foldedOutputTokens, foldedOutputTokens)
 }
 
 // Snapshot returns the current accumulated usage.
@@ -173,13 +173,13 @@ func addUsageAccumulatorDetail(a, b coreusage.Detail) coreusage.Detail {
 	a = normalizeUsageAccumulatorDetail(a)
 	b = normalizeUsageAccumulatorDetail(b)
 	return coreusage.Detail{
-		InputTokens:         a.InputTokens + b.InputTokens,
-		OutputTokens:        a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:     a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:        a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
-		TotalTokens:         a.TotalTokens + b.TotalTokens,
+		InputTokens:         addNonNegativeUsageAccumulatorTokens(a.InputTokens, b.InputTokens),
+		OutputTokens:        addNonNegativeUsageAccumulatorTokens(a.OutputTokens, b.OutputTokens),
+		ReasoningTokens:     addNonNegativeUsageAccumulatorTokens(a.ReasoningTokens, b.ReasoningTokens),
+		CachedTokens:        addNonNegativeUsageAccumulatorTokens(a.CachedTokens, b.CachedTokens),
+		CacheReadTokens:     addNonNegativeUsageAccumulatorTokens(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreationTokens: addNonNegativeUsageAccumulatorTokens(a.CacheCreationTokens, b.CacheCreationTokens),
+		TotalTokens:         addNonNegativeUsageAccumulatorTokens(a.TotalTokens, b.TotalTokens),
 	}
 }
 
@@ -191,13 +191,46 @@ func foldedUsageAccumulatorOutputTokens(detail coreusage.Detail) int64 {
 }
 
 func normalizeUsageAccumulatorDetail(detail coreusage.Detail) coreusage.Detail {
+	detail.InputTokens = nonNegativeUsageAccumulatorToken(detail.InputTokens)
+	detail.OutputTokens = nonNegativeUsageAccumulatorToken(detail.OutputTokens)
+	detail.ReasoningTokens = nonNegativeUsageAccumulatorToken(detail.ReasoningTokens)
+	detail.CachedTokens = nonNegativeUsageAccumulatorToken(detail.CachedTokens)
+	detail.CacheReadTokens = nonNegativeUsageAccumulatorToken(detail.CacheReadTokens)
+	detail.CacheCreationTokens = nonNegativeUsageAccumulatorToken(detail.CacheCreationTokens)
+	detail.TotalTokens = nonNegativeUsageAccumulatorToken(detail.TotalTokens)
 	if detail.TotalTokens == 0 {
-		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
-		if total > 0 {
+		if total, ok := sumNonNegativeUsageAccumulatorTokens(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens); ok && total > 0 {
 			detail.TotalTokens = total
 		}
 	}
 	return detail
+}
+
+func nonNegativeUsageAccumulatorToken(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func addNonNegativeUsageAccumulatorTokens(a, b int64) int64 {
+	const maxInt64 = int64(1<<63 - 1)
+	if a < 0 || b < 0 || a > maxInt64-b {
+		return 0
+	}
+	return a + b
+}
+
+func sumNonNegativeUsageAccumulatorTokens(tokens ...int64) (int64, bool) {
+	const maxInt64 = int64(1<<63 - 1)
+	var total int64
+	for _, tokens := range tokens {
+		if tokens < 0 || tokens > maxInt64-total {
+			return 0, false
+		}
+		total += tokens
+	}
+	return total, true
 }
 
 func hasUsageAccumulatorDetail(detail coreusage.Detail) bool {

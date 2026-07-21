@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,6 +25,35 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+func TestCodexAbnormalReasoningRetryUsageFailsClosedOnTokenOverflow(t *testing.T) {
+	first := usage.Detail{
+		InputTokens:         math.MaxInt64,
+		OutputTokens:        math.MaxInt64,
+		ReasoningTokens:     math.MaxInt64,
+		CachedTokens:        math.MaxInt64,
+		CacheReadTokens:     math.MaxInt64,
+		CacheCreationTokens: math.MaxInt64,
+		TotalTokens:         math.MaxInt64,
+	}
+	second := usage.Detail{
+		InputTokens:         1,
+		OutputTokens:        1,
+		ReasoningTokens:     1,
+		CachedTokens:        1,
+		CacheReadTokens:     1,
+		CacheCreationTokens: 1,
+		TotalTokens:         1,
+	}
+
+	total := addCodexUsageDetail(first, second)
+	if total.InputTokens != 0 || total.OutputTokens != 0 || total.ReasoningTokens != 0 || total.CachedTokens != 0 || total.CacheReadTokens != 0 || total.CacheCreationTokens != 0 || total.TotalTokens != 0 {
+		t.Fatalf("added detail = %+v, want overflowed token fields to fail closed", total)
+	}
+	if fallback := normalizeCodexUsageDetail(usage.Detail{InputTokens: math.MaxInt64, OutputTokens: 1}); fallback.TotalTokens != 0 {
+		t.Fatalf("fallback total_tokens = %d, want 0 when the fallback sum is not representable", fallback.TotalTokens)
+	}
+}
 
 func TestCodexExecutorAbnormalReasoningRetry_NonStreaming(t *testing.T) {
 	testCases := []struct {

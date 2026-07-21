@@ -3,6 +3,7 @@ package helps
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -176,6 +177,16 @@ func TestUsageTotalFallbackDoesNotDoubleCountCacheCategories(t *testing.T) {
 	})
 	if detail.TotalTokens != 125 {
 		t.Fatalf("total_tokens = %d, want 125 without double-counting input cache categories", detail.TotalTokens)
+	}
+}
+
+func TestUsageTotalFallbackFailsClosedOnOverflow(t *testing.T) {
+	detail := normalizeUsageDetailTotal(usage.Detail{
+		InputTokens:  math.MaxInt64,
+		OutputTokens: 1,
+	})
+	if detail.TotalTokens != 0 {
+		t.Fatalf("total_tokens = %d, want 0 when the fallback sum is not representable", detail.TotalTokens)
 	}
 }
 
@@ -399,6 +410,22 @@ func TestParseClaudeUsageKeepsCacheCreationSeparateFromCachedTokens(t *testing.T
 	}
 }
 
+func TestParseClaudeUsageFailsClosedWhenCanonicalInputOverflows(t *testing.T) {
+	detail := ParseClaudeUsage([]byte(`{"usage":{"input_tokens":9223372036854775807,"output_tokens":1,"cache_read_input_tokens":1}}`))
+	if detail.InputTokens != math.MaxInt64 {
+		t.Fatalf("input_tokens = %d, want original upstream input %d", detail.InputTokens, int64(math.MaxInt64))
+	}
+	if detail.CachedTokens != 0 || detail.CacheReadTokens != 0 || detail.CacheCreationTokens != 0 {
+		t.Fatalf("cache categories = %+v, want cleared when canonical input cannot be represented", detail)
+	}
+	if detail.TotalTokens != 0 {
+		t.Fatalf("total_tokens = %d, want 0 when the canonical total is not representable", detail.TotalTokens)
+	}
+	if normalized := normalizeUsageDetailTotal(detail); normalized.TotalTokens != 0 {
+		t.Fatalf("reporter fallback total_tokens = %d, want 0 rather than a wrapped value", normalized.TotalTokens)
+	}
+}
+
 func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":4,"totalTokenCount":12}}`))
 	if detail.CachedTokens != 4 {
@@ -469,6 +496,22 @@ func TestParseInteractionsUsageDropsCachedTokensThatExceedInput(t *testing.T) {
 	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"cached_tokens":4}}`))
 	if detail.InputTokens != 3 || detail.CachedTokens != 0 || detail.CacheReadTokens != 0 || detail.CacheCreationTokens != 0 || detail.TotalTokens != 3 {
 		t.Fatalf("detail = %+v, want input preserved and impossible cache breakdown dropped", detail)
+	}
+}
+
+func TestParseInteractionsUsageFailsClosedWhenCanonicalInputOverflows(t *testing.T) {
+	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":9223372036854775807,"output_tokens":1,"cache_write_tokens":1}}`))
+	if detail.InputTokens != math.MaxInt64 {
+		t.Fatalf("input_tokens = %d, want original upstream input %d", detail.InputTokens, int64(math.MaxInt64))
+	}
+	if detail.CachedTokens != 0 || detail.CacheReadTokens != 0 || detail.CacheCreationTokens != 0 {
+		t.Fatalf("cache categories = %+v, want cleared when canonical input cannot be represented", detail)
+	}
+	if detail.TotalTokens != 0 {
+		t.Fatalf("total_tokens = %d, want 0 when the canonical total is not representable", detail.TotalTokens)
+	}
+	if normalized := normalizeUsageDetailTotal(detail); normalized.TotalTokens != 0 {
+		t.Fatalf("reporter fallback total_tokens = %d, want 0 rather than a wrapped value", normalized.TotalTokens)
 	}
 }
 

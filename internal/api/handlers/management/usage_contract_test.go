@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -276,9 +277,17 @@ func TestUsageManagementImportRejectsLegacyUncachedInputTokens(t *testing.T) {
 			"apis": {
 				"legacy-client-key": {
 					"models": {
-						"claude-sonnet": {
-							"details": [{
-								"timestamp": "2026-07-21T12:00:00Z",
+					"claude-sonnet": {
+						"details": [{
+							"timestamp": "2026-07-21T11:59:00Z",
+							"tokens": {
+								"input_tokens": 10,
+								"output_tokens": 1,
+								"total_tokens": 11
+							},
+							"failed": false
+						}, {
+							"timestamp": "2026-07-21T12:00:00Z",
 								"tokens": {
 									"input_tokens": 3085,
 									"output_tokens": 253,
@@ -297,6 +306,13 @@ func TestUsageManagementImportRejectsLegacyUncachedInputTokens(t *testing.T) {
 	}`
 
 	stats := usage.NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "existing-client-key",
+		Model:       "existing-model",
+		RequestedAt: time.Date(2026, 7, 21, 11, 0, 0, 0, time.UTC),
+		Detail:      coreusage.Detail{InputTokens: 4, OutputTokens: 2, TotalTokens: 6},
+	})
+	wantSnapshot := stats.Snapshot()
 	h := &Handler{}
 	h.SetUsageStatistics(stats)
 
@@ -321,22 +337,22 @@ func TestUsageManagementImportRejectsLegacyUncachedInputTokens(t *testing.T) {
 	if response.Error != "unsupported legacy token contract: uncached_input_tokens" {
 		t.Fatalf("legacy token-contract error = %q", response.Error)
 	}
-	if snapshot := stats.Snapshot(); snapshot.TotalRequests != 0 || len(snapshot.APIs) != 0 {
-		t.Fatalf("rejected legacy import mutated statistics: %+v", snapshot)
+	if snapshot := stats.Snapshot(); !reflect.DeepEqual(snapshot, wantSnapshot) {
+		t.Fatalf("rejected legacy import mutated existing statistics: got=%+v want=%+v", snapshot, wantSnapshot)
 	}
 }
 
-func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
+func TestUsageManagementImportKeepsDifferentCacheCreationTokenShapes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
-	legacy := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
+	firstShape := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
 		InputTokens:         1200,
 		OutputTokens:        10,
 		CachedTokens:        1024,
 		CacheCreationTokens: 1024,
 		TotalTokens:         1210,
 	})
-	canonical := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
+	secondShape := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
 		InputTokens:         1200,
 		OutputTokens:        10,
 		CacheCreationTokens: 1024,
@@ -350,16 +366,16 @@ func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *tes
 		wantTotalTokens int64
 	}{
 		{
-			name:            "legacy then canonical",
-			first:           legacy,
-			second:          canonical,
-			wantTotalTokens: 1210,
+			name:            "first canonical token shape then second",
+			first:           firstShape,
+			second:          secondShape,
+			wantTotalTokens: 3444,
 		},
 		{
-			name:            "canonical then legacy",
-			first:           canonical,
-			second:          legacy,
-			wantTotalTokens: 2234,
+			name:            "second canonical token shape then first",
+			first:           secondShape,
+			second:          firstShape,
+			wantTotalTokens: 3444,
 		},
 	}
 
@@ -375,17 +391,17 @@ func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *tes
 			}
 
 			secondResult := importUsageStatistics(t, h, tt.second)
-			if secondResult.Added != 0 || secondResult.Skipped != 1 || secondResult.TotalRequests != 1 {
-				t.Fatalf("second import result = %+v, want added=0 skipped=1 total_requests=1", secondResult)
+			if secondResult.Added != 1 || secondResult.Skipped != 0 || secondResult.TotalRequests != 2 {
+				t.Fatalf("second import result = %+v, want added=1 skipped=0 total_requests=2", secondResult)
 			}
 
 			snapshot := stats.Snapshot()
 			model := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"]
-			if snapshot.TotalRequests != 1 || snapshot.TotalTokens != tt.wantTotalTokens || len(model.Details) != 1 {
-				t.Fatalf("snapshot after imports = requests:%d tokens:%d details:%d, want 1/%d/1", snapshot.TotalRequests, snapshot.TotalTokens, len(model.Details), tt.wantTotalTokens)
+			if snapshot.TotalRequests != 2 || snapshot.TotalTokens != tt.wantTotalTokens || len(model.Details) != 2 {
+				t.Fatalf("snapshot after imports = requests:%d tokens:%d details:%d, want 2/%d/2", snapshot.TotalRequests, snapshot.TotalTokens, len(model.Details), tt.wantTotalTokens)
 			}
-			if snapshot.RequestsByDay["2026-07-11"] != 1 || snapshot.RequestsByHour["09"] != 1 {
-				t.Fatalf("request buckets after imports = day:%v hour:%v, want one request", snapshot.RequestsByDay, snapshot.RequestsByHour)
+			if snapshot.RequestsByDay["2026-07-11"] != 2 || snapshot.RequestsByHour["09"] != 2 {
+				t.Fatalf("request buckets after imports = day:%v hour:%v, want two requests", snapshot.RequestsByDay, snapshot.RequestsByHour)
 			}
 			if snapshot.TokensByDay["2026-07-11"] != tt.wantTotalTokens || snapshot.TokensByHour["09"] != tt.wantTotalTokens {
 				t.Fatalf("token buckets after imports = day:%v hour:%v, want %d", snapshot.TokensByDay, snapshot.TokensByHour, tt.wantTotalTokens)

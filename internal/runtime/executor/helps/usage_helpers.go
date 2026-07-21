@@ -238,13 +238,29 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 }
 
 func normalizeUsageDetailTotal(detail usage.Detail) usage.Detail {
+	if detail.TotalTokens < 0 {
+		detail.TotalTokens = 0
+	}
 	if detail.TotalTokens == 0 {
-		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
-		if total > 0 {
+		if total, ok := sumNonNegativeUsageTokens(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens); ok && total > 0 {
 			detail.TotalTokens = total
 		}
 	}
 	return detail
+}
+
+// sumNonNegativeUsageTokens returns false instead of wrapping when the token
+// total cannot be represented as a non-negative int64.
+func sumNonNegativeUsageTokens(tokens ...int64) (int64, bool) {
+	const maxInt64 = int64(1<<63 - 1)
+	var total int64
+	for _, tokens := range tokens {
+		if tokens < 0 || tokens > maxInt64-total {
+			return 0, false
+		}
+		total += tokens
+	}
+	return total, true
 }
 
 func hasNonZeroTokenUsage(detail usage.Detail) bool {
@@ -637,10 +653,12 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 		outputNode = usageNode.Get("output_tokens")
 	}
 	inputTokens, _ := parseStrictUsageTokenCount(inputNode)
+	outputTokens, _ := parseOptionalStrictUsageTokenCount(outputNode)
+	totalTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("total_tokens"))
 	detail := usage.Detail{
 		InputTokens:  inputTokens,
-		OutputTokens: outputNode.Int(),
-		TotalTokens:  usageNode.Get("total_tokens").Int(),
+		OutputTokens: outputTokens,
+		TotalTokens:  totalTokens,
 	}
 	cached := usageNode.Get("prompt_tokens_details.cached_tokens")
 	if !cached.Exists() {
@@ -663,7 +681,7 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 		reasoning = usageNode.Get("output_tokens_details.reasoning_tokens")
 	}
 	if reasoning.Exists() {
-		detail.ReasoningTokens = reasoning.Int()
+		detail.ReasoningTokens, _ = parseOptionalStrictUsageTokenCount(reasoning)
 	}
 	return normalizeUsageInputTokenCategories(detail)
 }
@@ -711,14 +729,26 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	inputTokenCount, _ := parseStrictUsageTokenCount(inputTokens)
 	cacheReadTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("cache_read_input_tokens"))
 	cacheCreationTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("cache_creation_input_tokens"))
+	outputTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("output_tokens"))
 	detail := usage.Detail{
-		InputTokens:         inputTokenCount + cacheReadTokens + cacheCreationTokens,
-		OutputTokens:        usageNode.Get("output_tokens").Int(),
+		OutputTokens:        outputTokens,
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
 	}
-	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+	canonicalInput, ok := sumNonNegativeUsageTokens(inputTokenCount, cacheReadTokens, cacheCreationTokens)
+	if !ok {
+		// Claude reports cache categories separately. Keep the original input
+		// count when their canonical total would overflow, but clear categories
+		// and total because neither aggregate can be proven.
+		detail.InputTokens = inputTokenCount
+		detail.CachedTokens = 0
+		detail.CacheReadTokens = 0
+		detail.CacheCreationTokens = 0
+		return detail
+	}
+	detail.InputTokens = canonicalInput
+	detail.TotalTokens, _ = sumNonNegativeUsageTokens(detail.InputTokens, detail.OutputTokens)
 	return normalizeUsageInputTokenCategories(detail)
 }
 
@@ -726,16 +756,19 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	inputTokens := node.Get("promptTokenCount")
 	inputTokenCount, _ := parseStrictUsageTokenCount(inputTokens)
 	cachedTokens, _ := parseOptionalStrictUsageTokenCount(node.Get("cachedContentTokenCount"))
+	outputTokens, _ := parseOptionalStrictUsageTokenCount(node.Get("candidatesTokenCount"))
+	reasoningTokens, _ := parseOptionalStrictUsageTokenCount(node.Get("thoughtsTokenCount"))
+	totalTokens, _ := parseOptionalStrictUsageTokenCount(node.Get("totalTokenCount"))
 	detail := usage.Detail{
 		InputTokens:     inputTokenCount,
-		OutputTokens:    node.Get("candidatesTokenCount").Int(),
-		ReasoningTokens: node.Get("thoughtsTokenCount").Int(),
-		TotalTokens:     node.Get("totalTokenCount").Int(),
+		OutputTokens:    outputTokens,
+		ReasoningTokens: reasoningTokens,
+		TotalTokens:     totalTokens,
 		CachedTokens:    cachedTokens,
 		CacheReadTokens: cachedTokens,
 	}
 	if detail.TotalTokens == 0 {
-		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		detail.TotalTokens, _ = sumNonNegativeUsageTokens(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens)
 	}
 	return normalizeUsageInputTokenCategories(detail)
 }
@@ -749,11 +782,14 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 	cacheReadTokenCount, _ := parseOptionalStrictUsageTokenCount(cacheRead)
 	cachedTokenCount, _ := parseOptionalStrictUsageTokenCount(cachedTokens)
 	cacheCreationTokenCount, _ := parseOptionalStrictUsageTokenCount(cacheCreation)
+	outputTokenCount, _ := parseOptionalStrictUsageTokenCount(firstExistingUsageNode(node, "output_tokens", "completion_tokens", "total_output_tokens"))
+	reasoningTokenCount, _ := parseOptionalStrictUsageTokenCount(firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens"))
+	totalTokenCount, _ := parseOptionalStrictUsageTokenCount(firstExistingUsageNode(node, "total_tokens", "totalTokenCount"))
 	detail := usage.Detail{
 		InputTokens:         inputTokenCount,
-		OutputTokens:        firstExistingUsageNode(node, "output_tokens", "completion_tokens", "total_output_tokens").Int(),
-		ReasoningTokens:     firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens").Int(),
-		TotalTokens:         firstExistingUsageNode(node, "total_tokens", "totalTokenCount").Int(),
+		OutputTokens:        outputTokenCount,
+		ReasoningTokens:     reasoningTokenCount,
+		TotalTokens:         totalTokenCount,
 		CachedTokens:        cachedTokenCount,
 		CacheReadTokens:     cacheReadTokenCount,
 		CacheCreationTokens: cacheCreationTokenCount,
@@ -761,12 +797,29 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 	if !cacheRead.Exists() && detail.CachedTokens > 0 {
 		detail.CacheReadTokens = detail.CachedTokens
 	}
+	canonicalInput := inputTokenCount
+	var ok bool
 	if cacheRead.Exists() {
-		detail.InputTokens += detail.CacheReadTokens
+		canonicalInput, ok = sumNonNegativeUsageTokens(canonicalInput, detail.CacheReadTokens)
+	} else {
+		ok = true
 	}
-	detail.InputTokens += detail.CacheCreationTokens
+	if ok {
+		canonicalInput, ok = sumNonNegativeUsageTokens(canonicalInput, detail.CacheCreationTokens)
+	}
+	if !ok {
+		// Interactions may report cache categories outside input_tokens. Preserve
+		// that raw input but do not retain an unrepresentable classification.
+		detail.InputTokens = inputTokenCount
+		detail.CachedTokens = 0
+		detail.CacheReadTokens = 0
+		detail.CacheCreationTokens = 0
+		detail.TotalTokens = 0
+		return detail
+	}
+	detail.InputTokens = canonicalInput
 	if detail.TotalTokens == 0 {
-		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		detail.TotalTokens, _ = sumNonNegativeUsageTokens(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens)
 	}
 	return normalizeUsageInputTokenCategories(detail)
 }

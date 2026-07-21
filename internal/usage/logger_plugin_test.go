@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -495,16 +496,16 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 	}
 }
 
-func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
+func TestRequestStatisticsMergeSnapshotKeepsDifferentCacheCreationTokenShapes(t *testing.T) {
 	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
-	legacy := cacheCreationSnapshot(timestamp, TokenStats{
+	firstShape := cacheCreationSnapshot(timestamp, TokenStats{
 		InputTokens:         1200,
 		OutputTokens:        10,
 		CachedTokens:        1024,
 		CacheCreationTokens: 1024,
 		TotalTokens:         1210,
 	})
-	canonical := cacheCreationSnapshot(timestamp, TokenStats{
+	secondShape := cacheCreationSnapshot(timestamp, TokenStats{
 		InputTokens:         1200,
 		OutputTokens:        10,
 		CacheCreationTokens: 1024,
@@ -518,16 +519,16 @@ func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreati
 		wantTotalTokens int64
 	}{
 		{
-			name:            "legacy then canonical",
-			first:           legacy,
-			second:          canonical,
-			wantTotalTokens: 1210,
+			name:            "first canonical token shape then second",
+			first:           firstShape,
+			second:          secondShape,
+			wantTotalTokens: 3444,
 		},
 		{
-			name:            "canonical then legacy",
-			first:           canonical,
-			second:          legacy,
-			wantTotalTokens: 2234,
+			name:            "second canonical token shape then first",
+			first:           secondShape,
+			second:          firstShape,
+			wantTotalTokens: 3444,
 		},
 	}
 
@@ -541,23 +542,23 @@ func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreati
 			}
 
 			result = stats.MergeSnapshot(tt.second)
-			if result.Added != 0 || result.Skipped != 1 {
-				t.Fatalf("second merge = %+v, want added=0 skipped=1", result)
+			if result.Added != 1 || result.Skipped != 0 {
+				t.Fatalf("second merge = %+v, want added=1 skipped=0", result)
 			}
 
 			snapshot := stats.Snapshot()
 			model := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"]
-			if snapshot.TotalRequests != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 {
-				t.Fatalf("snapshot request totals = requests:%d success:%d failure:%d, want 1/1/0", snapshot.TotalRequests, snapshot.SuccessCount, snapshot.FailureCount)
+			if snapshot.TotalRequests != 2 || snapshot.SuccessCount != 2 || snapshot.FailureCount != 0 {
+				t.Fatalf("snapshot request totals = requests:%d success:%d failure:%d, want 2/2/0", snapshot.TotalRequests, snapshot.SuccessCount, snapshot.FailureCount)
 			}
 			if snapshot.TotalTokens != tt.wantTotalTokens || model.TotalTokens != tt.wantTotalTokens {
 				t.Fatalf("snapshot token totals = total:%d model:%d, want %d", snapshot.TotalTokens, model.TotalTokens, tt.wantTotalTokens)
 			}
-			if len(model.Details) != 1 {
-				t.Fatalf("details len = %d, want 1", len(model.Details))
+			if len(model.Details) != 2 {
+				t.Fatalf("details len = %d, want 2", len(model.Details))
 			}
-			if snapshot.RequestsByDay["2026-07-11"] != 1 || snapshot.RequestsByHour["09"] != 1 {
-				t.Fatalf("request buckets = day:%v hour:%v, want one request", snapshot.RequestsByDay, snapshot.RequestsByHour)
+			if snapshot.RequestsByDay["2026-07-11"] != 2 || snapshot.RequestsByHour["09"] != 2 {
+				t.Fatalf("request buckets = day:%v hour:%v, want two requests", snapshot.RequestsByDay, snapshot.RequestsByHour)
 			}
 			if snapshot.TokensByDay["2026-07-11"] != tt.wantTotalTokens || snapshot.TokensByHour["09"] != tt.wantTotalTokens {
 				t.Fatalf("token buckets = day:%v hour:%v, want %d", snapshot.TokensByDay, snapshot.TokensByHour, tt.wantTotalTokens)
@@ -566,7 +567,62 @@ func TestRequestStatisticsMergeSnapshotDeduplicatesLegacyAndCanonicalCacheCreati
 	}
 }
 
-func TestRequestStatisticsMergeSnapshotCacheCreationAliasDoesNotHideCacheReadAndWrite(t *testing.T) {
+func TestTokenTotalFallbackFailsClosedOnOverflow(t *testing.T) {
+	detail := normaliseDetail(coreusage.Detail{InputTokens: math.MaxInt64, OutputTokens: 1})
+	if detail.TotalTokens != 0 {
+		t.Fatalf("record total_tokens = %d, want 0 when fallback sum is not representable", detail.TotalTokens)
+	}
+	tokens := normaliseTokenStats(TokenStats{InputTokens: math.MaxInt64, OutputTokens: 1})
+	if tokens.TotalTokens != 0 {
+		t.Fatalf("import total_tokens = %d, want 0 when fallback sum is not representable", tokens.TotalTokens)
+	}
+}
+
+func TestRequestStatisticsAggregatesFailClosedOnTokenOverflow(t *testing.T) {
+	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
+	assertAggregates := func(t *testing.T, snapshot StatisticsSnapshot) {
+		t.Helper()
+		api := snapshot.APIs["cache-key"]
+		model := api.Models["gpt-5.6-sol"]
+		if snapshot.TotalTokens != 0 || api.TotalTokens != 0 || model.TotalTokens != 0 {
+			t.Fatalf(
+				"overflowed aggregate totals = global:%d api:%d model:%d, want all 0",
+				snapshot.TotalTokens,
+				api.TotalTokens,
+				model.TotalTokens,
+			)
+		}
+		if snapshot.TokensByDay["2026-07-11"] != 0 || snapshot.TokensByHour["09"] != 0 {
+			t.Fatalf("overflowed token buckets = day:%v hour:%v, want fail-closed zeros", snapshot.TokensByDay, snapshot.TokensByHour)
+		}
+	}
+
+	t.Run("record", func(t *testing.T) {
+		stats := NewRequestStatistics()
+		for offset, total := range []int64{math.MaxInt64, 1} {
+			stats.Record(context.Background(), coreusage.Record{
+				APIKey:      "cache-key",
+				Model:       "gpt-5.6-sol",
+				RequestedAt: timestamp.Add(time.Duration(offset) * time.Minute),
+				Detail:      coreusage.Detail{InputTokens: total, TotalTokens: total},
+			})
+		}
+		assertAggregates(t, stats.Snapshot())
+	})
+
+	t.Run("import", func(t *testing.T) {
+		stats := NewRequestStatistics()
+		if result := stats.MergeSnapshot(cacheCreationSnapshot(timestamp, TokenStats{InputTokens: math.MaxInt64, TotalTokens: math.MaxInt64})); result.Added != 1 {
+			t.Fatalf("first merge = %+v, want one added detail", result)
+		}
+		if result := stats.MergeSnapshot(cacheCreationSnapshot(timestamp.Add(time.Minute), TokenStats{InputTokens: 1, TotalTokens: 1})); result.Added != 1 {
+			t.Fatalf("second merge = %+v, want one added detail", result)
+		}
+		assertAggregates(t, stats.Snapshot())
+	})
+}
+
+func TestRequestStatisticsMergeSnapshotKeepsDistinctCacheReadAndCreationTokenShapes(t *testing.T) {
 	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
 	creationOnly := cacheCreationSnapshot(timestamp, TokenStats{
 		InputTokens:         1200,

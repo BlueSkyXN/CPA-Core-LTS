@@ -1336,7 +1336,7 @@ type UsageFailure struct {
 
 // UsageDetail contains token accounting counters.
 type UsageDetail struct {
-	// InputTokens is the prompt or input token count.
+	// InputTokens is the total input token count, including cache read and cache creation tokens.
 	InputTokens int64
 	// OutputTokens is the completion or output token count.
 	OutputTokens int64

@@ -81,9 +81,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		CacheCreationTokens:    record.Detail.CacheCreationTokens,
 		TotalTokens:            record.Detail.TotalTokens,
 	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
-	}
+	tokens = normalizeQueuedTokenStats(tokens)
 	if tokens.CachedTokens == 0 {
 		if tokens.CacheReadTokens != 0 {
 			tokens.CachedTokens = tokens.CacheReadTokens
@@ -172,6 +170,39 @@ type tokenStats struct {
 	CacheReadTokensPresent bool  `json:"cache_read_tokens_present"`
 	CacheCreationTokens    int64 `json:"cache_creation_tokens"`
 	TotalTokens            int64 `json:"total_tokens"`
+}
+
+func normalizeQueuedTokenStats(tokens tokenStats) tokenStats {
+	tokens.InputTokens = nonNegativeQueuedToken(tokens.InputTokens)
+	tokens.OutputTokens = nonNegativeQueuedToken(tokens.OutputTokens)
+	tokens.ReasoningTokens = nonNegativeQueuedToken(tokens.ReasoningTokens)
+	tokens.CachedTokens = nonNegativeQueuedToken(tokens.CachedTokens)
+	tokens.CacheReadTokens = nonNegativeQueuedToken(tokens.CacheReadTokens)
+	tokens.CacheCreationTokens = nonNegativeQueuedToken(tokens.CacheCreationTokens)
+	tokens.TotalTokens = nonNegativeQueuedToken(tokens.TotalTokens)
+	if tokens.TotalTokens == 0 {
+		tokens.TotalTokens, _ = sumNonNegativeQueuedTokens(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens)
+	}
+	return tokens
+}
+
+func nonNegativeQueuedToken(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func sumNonNegativeQueuedTokens(tokens ...int64) (int64, bool) {
+	const maxInt64 = int64(1<<63 - 1)
+	var total int64
+	for _, tokens := range tokens {
+		if tokens < 0 || tokens > maxInt64-total {
+			return 0, false
+		}
+		total += tokens
+	}
+	return total, true
 }
 
 type failDetail struct {

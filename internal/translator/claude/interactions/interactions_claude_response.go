@@ -395,11 +395,11 @@ func setInteractionsUsageFromClaude(out []byte, path string, usage gjson.Result)
 	if !usage.Exists() {
 		return out
 	}
-	inputTokens := usage.Get("input_tokens").Int()
-	outputTokens := usage.Get("output_tokens").Int()
-	cacheRead := usage.Get("cache_read_input_tokens").Int()
-	cacheCreation := usage.Get("cache_creation_input_tokens").Int()
-	thinkingTokens := usage.Get("thinking_tokens").Int()
+	inputTokens := translatorcommon.NonNegativeTokenCount(usage.Get("input_tokens").Int())
+	outputTokens := translatorcommon.NonNegativeTokenCount(usage.Get("output_tokens").Int())
+	cacheRead := translatorcommon.NonNegativeTokenCount(usage.Get("cache_read_input_tokens").Int())
+	cacheCreation := translatorcommon.NonNegativeTokenCount(usage.Get("cache_creation_input_tokens").Int())
+	thinkingTokens := translatorcommon.NonNegativeTokenCount(usage.Get("thinking_tokens").Int())
 	if usage.Get("input_tokens").Exists() {
 		out, _ = sjson.SetBytes(out, path+".input_tokens", inputTokens)
 		out, _ = sjson.SetBytes(out, path+".total_input_tokens", inputTokens)
@@ -408,13 +408,14 @@ func setInteractionsUsageFromClaude(out []byte, path string, usage gjson.Result)
 		out, _ = sjson.SetBytes(out, path+".output_tokens", outputTokens)
 		out, _ = sjson.SetBytes(out, path+".total_output_tokens", outputTokens)
 	}
-	total := inputTokens + outputTokens
+	total, _ := translatorcommon.SumNonNegativeTokenCounts(inputTokens, outputTokens)
 	if usage.Get("input_tokens").Exists() || usage.Get("output_tokens").Exists() {
 		out, _ = sjson.SetBytes(out, path+".total_tokens", total)
 	}
 	if cacheRead != 0 || cacheCreation != 0 {
-		out, _ = sjson.SetBytes(out, path+".cached_tokens", cacheRead+cacheCreation)
-		out, _ = sjson.SetBytes(out, path+".total_cached_tokens", cacheRead+cacheCreation)
+		cachedTokens, _ := translatorcommon.SumNonNegativeTokenCounts(cacheRead, cacheCreation)
+		out, _ = sjson.SetBytes(out, path+".cached_tokens", cachedTokens)
+		out, _ = sjson.SetBytes(out, path+".total_cached_tokens", cachedTokens)
 	}
 	if thinkingTokens != 0 {
 		out, _ = sjson.SetBytes(out, path+".reasoning_tokens", thinkingTokens)

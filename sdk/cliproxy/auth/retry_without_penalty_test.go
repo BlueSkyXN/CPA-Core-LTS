@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -36,6 +37,48 @@ func TestRetryWithoutPenaltyUsageMathPreservesNormalizedTokenCategories(t *testi
 	remainder := subtractRetryWithoutPenaltyUsageDetail(total, second)
 	if remainder != first {
 		t.Fatalf("subtracted detail = %+v, want %+v", remainder, first)
+	}
+}
+
+func TestRetryWithoutPenaltyUsageMathFailsClosedOnTokenOverflow(t *testing.T) {
+	first := coreusage.Detail{
+		InputTokens:         math.MaxInt64,
+		OutputTokens:        math.MaxInt64,
+		ReasoningTokens:     math.MaxInt64,
+		CachedTokens:        math.MaxInt64,
+		CacheReadTokens:     math.MaxInt64,
+		CacheCreationTokens: math.MaxInt64,
+		TotalTokens:         math.MaxInt64,
+	}
+	second := coreusage.Detail{
+		InputTokens:         1,
+		OutputTokens:        1,
+		ReasoningTokens:     1,
+		CachedTokens:        1,
+		CacheReadTokens:     1,
+		CacheCreationTokens: 1,
+		TotalTokens:         1,
+	}
+
+	total := addRetryWithoutPenaltyUsageDetail(first, second)
+	if total.InputTokens != 0 || total.OutputTokens != 0 || total.ReasoningTokens != 0 || total.CachedTokens != 0 || total.CacheReadTokens != 0 || total.CacheCreationTokens != 0 || total.TotalTokens != 0 {
+		t.Fatalf("added detail = %+v, want overflowed token fields to fail closed", total)
+	}
+	if fallback := normalizeRetryWithoutPenaltyUsageDetail(coreusage.Detail{InputTokens: math.MaxInt64, OutputTokens: 1}); fallback.TotalTokens != 0 {
+		t.Fatalf("fallback total_tokens = %d, want 0 when the fallback sum is not representable", fallback.TotalTokens)
+	}
+
+	accumulator := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{
+		OutputTokens: math.MaxInt64,
+		TotalTokens:  math.MaxInt64,
+	})
+	mixed := retryWithoutPenaltyMixedFallbackSnapshot(
+		newRetryWithoutPenaltyFallbackCandidate(false),
+		accumulator,
+		coreusage.Detail{OutputTokens: 1, TotalTokens: 1},
+	)
+	if mixed.FoldedOutputTokens != 0 {
+		t.Fatalf("mixed fallback folded_output_tokens = %d, want 0 when the aggregate is not representable", mixed.FoldedOutputTokens)
 	}
 }
 

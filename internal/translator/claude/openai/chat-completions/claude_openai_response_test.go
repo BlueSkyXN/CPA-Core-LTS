@@ -2,10 +2,31 @@ package chat_completions
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func TestClaudeUsageTokensOpenAIUsageFailsClosedOnOverflow(t *testing.T) {
+	prompt, completion, total, cached := (claudeUsageTokens{
+		InputTokens:              math.MaxInt64,
+		OutputTokens:             1,
+		CacheCreationInputTokens: 1,
+		CacheReadInputTokens:     1,
+	}).OpenAIUsage()
+
+	if prompt != math.MaxInt64 || completion != 1 || total != 0 || cached != 0 {
+		t.Fatalf(
+			"overflowed usage = prompt:%d completion:%d total:%d cached:%d, want %d/1/0/0",
+			prompt,
+			completion,
+			total,
+			cached,
+			int64(math.MaxInt64),
+		)
+	}
+}
 
 func TestConvertClaudeResponseToOpenAI_StreamUsageIncludesCachedTokens(t *testing.T) {
 	ctx := context.Background()
