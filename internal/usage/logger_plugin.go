@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,11 @@ import (
 )
 
 var statisticsEnabled atomic.Bool
+
+// ErrLegacyUncachedInputTokens rejects usage imports encoded with the retired
+// uncached-input token contract. Accepting the field would silently retain the
+// old InputTokens meaning and corrupt normalized cache accounting.
+var ErrLegacyUncachedInputTokens = errors.New("unsupported legacy token contract: uncached_input_tokens")
 
 func init() {
 	statisticsEnabled.Store(true)
@@ -143,6 +149,26 @@ type TokenStats struct {
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	TotalTokens         int64 `json:"total_tokens"`
+}
+
+// UnmarshalJSON rejects retired token payloads instead of silently treating
+// their old InputTokens semantics as the normalized total-input contract.
+func (tokens *TokenStats) UnmarshalJSON(data []byte) error {
+	type tokenStatsAlias TokenStats
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, exists := fields["uncached_input_tokens"]; exists {
+		return ErrLegacyUncachedInputTokens
+	}
+
+	var decoded tokenStatsAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*tokens = TokenStats(decoded)
+	return nil
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.

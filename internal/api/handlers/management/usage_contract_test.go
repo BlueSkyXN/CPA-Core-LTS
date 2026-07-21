@@ -268,6 +268,64 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 }
 
+func TestUsageManagementImportRejectsLegacyUncachedInputTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const legacyExport = `{
+		"version": 1,
+		"usage": {
+			"apis": {
+				"legacy-client-key": {
+					"models": {
+						"claude-sonnet": {
+							"details": [{
+								"timestamp": "2026-07-21T12:00:00Z",
+								"tokens": {
+									"input_tokens": 3085,
+									"output_tokens": 253,
+									"cache_read_tokens": 7,
+									"cache_creation_tokens": 19514,
+									"uncached_input_tokens": 3085,
+									"total_tokens": 22859
+								},
+								"failed": false
+							}]
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	stats := usage.NewRequestStatistics()
+	h := &Handler{}
+	h.SetUsageStatistics(stats)
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/usage/import",
+		bytes.NewBufferString(legacyExport),
+	)
+	h.ImportUsageStatistics(ginCtx)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy token-contract import status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var response struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal legacy token-contract rejection: %v body=%s", err, rec.Body.String())
+	}
+	if response.Error != "unsupported legacy token contract: uncached_input_tokens" {
+		t.Fatalf("legacy token-contract error = %q", response.Error)
+	}
+	if snapshot := stats.Snapshot(); snapshot.TotalRequests != 0 || len(snapshot.APIs) != 0 {
+		t.Fatalf("rejected legacy import mutated statistics: %+v", snapshot)
+	}
+}
+
 func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)

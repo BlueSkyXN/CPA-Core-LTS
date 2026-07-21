@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -60,6 +61,10 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 
 	var payload usageImportPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
+		if errors.Is(err, usage.ErrLegacyUncachedInputTokens) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": usage.ErrLegacyUncachedInputTokens.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
