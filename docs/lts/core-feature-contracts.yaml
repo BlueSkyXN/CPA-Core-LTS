@@ -27,20 +27,14 @@ features:
     core_files:
       - internal/usage/
       - internal/runtime/executor/helps/usage_helpers.go
-      - internal/redisqueue/plugin.go
-      - internal/pluginhost/adapters.go
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/usage_contract_test.go
       - internal/api/server.go
       - config.example.yaml
-      - sdk/pluginapi/types.go
     required_markers:
       - usage-statistics-enabled
       - UsageReporter
       - RequestDetail
-      - billing_basis
-      - api-token-usd
-      - chatgpt-credits
       - auth_index
       - latency_ms
       - reasoning_effort
@@ -87,7 +81,6 @@ features:
       - apis
       - models
       - details
-      - billing_basis
       - reasoning_effort
       - service_tier
       - request_service_tier

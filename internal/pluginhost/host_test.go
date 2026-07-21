@@ -531,27 +531,6 @@ func TestRPCUsageIncludesEffectiveServiceTier(t *testing.T) {
 	}
 }
 
-func TestRPCUsageIncludesBillingBasis(t *testing.T) {
-	client := &capturePluginClient{}
-	adapter := &rpcPluginAdapter{
-		host:   New(),
-		client: client,
-	}
-
-	adapter.HandleUsage(context.Background(), pluginapi.UsageRecord{
-		Provider:     "codex",
-		BillingBasis: "chatgpt-credits",
-	})
-
-	var record pluginapi.UsageRecord
-	if errDecode := json.Unmarshal(client.requests[pluginabi.MethodUsageHandle], &record); errDecode != nil {
-		t.Fatalf("decode usage request: %v", errDecode)
-	}
-	if record.BillingBasis != "chatgpt-credits" {
-		t.Fatalf("RPC BillingBasis = %q, want chatgpt-credits", record.BillingBasis)
-	}
-}
-
 func TestOptionalRPCMethodUnsupportedDetectionIsNarrow(t *testing.T) {
 	method := pluginabi.MethodRequestInterceptAfter
 	positive := []string{

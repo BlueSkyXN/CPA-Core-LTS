@@ -1854,7 +1854,6 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		ReasoningEffort:      record.ReasoningEffort,
 		ServiceTier:          record.ServiceTier,
 		EffectiveServiceTier: record.EffectiveServiceTier,
-		BillingBasis:         coreusage.ResolveRecordBillingBasis(record),
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		RequestedAt:          record.RequestedAt,
 		Latency:              record.Latency,

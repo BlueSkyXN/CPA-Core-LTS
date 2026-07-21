@@ -122,7 +122,6 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		RequestServiceTier:   requestServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
-		BillingBasis:         coreusage.ResolveRecordBillingBasis(record),
 	})
 	if err != nil {
 		return
@@ -145,7 +144,6 @@ type queuedUsageDetail struct {
 	RequestServiceTier   string `json:"request_service_tier"`
 	ResponseServiceTier  string `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string `json:"effective_service_tier,omitempty"`
-	BillingBasis         string `json:"billing_basis"`
 }
 
 type requestDetail struct {
