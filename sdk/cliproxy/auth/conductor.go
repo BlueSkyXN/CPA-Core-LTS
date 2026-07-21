@@ -408,10 +408,10 @@ func (m *Manager) RefreshSchedulerAll() {
 // ReconcileRegistryModelStates aligns per-model runtime state with the current
 // registry snapshot for one auth.
 //
-// Supported models are reset to a clean state because re-registration already
-// cleared the registry-side cooldown/suspension snapshot. ModelStates for
-// models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale.
+// Active cooldowns for supported models are preserved across re-registration
+// and restored into the registry. ModelStates for models that are no longer
+// present in the registry are pruned entirely so renamed/removed models cannot
+// keep auth-level status stale.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
@@ -430,13 +430,21 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		supported[modelKey] = struct{}{}
 	}
 
+	type registryCooldown struct {
+		model  string
+		reason string
+		quota  bool
+	}
+
 	var snapshot *Auth
+	var cooldowns []registryCooldown
 	now := time.Now()
 
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
 	if ok && auth != nil && len(auth.ModelStates) > 0 {
 		changed := false
+		preserved := false
 		for modelKey, state := range auth.ModelStates {
 			baseModel := canonicalModelKey(modelKey)
 			if baseModel == "" {
@@ -456,30 +464,100 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if modelStateIsClean(state) {
 				continue
 			}
+			if state.Unavailable && state.NextRetryAfter.After(now) {
+				preserved = true
+				if reason, quota, suspend := registrySuspensionForModelState(state); suspend {
+					cooldowns = append(cooldowns, registryCooldown{
+						model:  baseModel,
+						reason: reason,
+						quota:  quota,
+					})
+				}
+				continue
+			}
 			resetModelState(state, now)
 			changed = true
 		}
 		if len(auth.ModelStates) == 0 {
 			auth.ModelStates = nil
 		}
-		if changed {
-			updateAggregatedAvailability(auth, now)
-			if !hasModelError(auth, now) {
+		if changed || preserved {
+			previousUnavailable := auth.Unavailable
+			previousNextRetryAfter := auth.NextRetryAfter
+			previousQuota := auth.Quota
+			previousStatus := auth.Status
+			previousStatusMessage := auth.StatusMessage
+			previousLastError := cloneError(auth.LastError)
+			previousUpdatedAt := auth.UpdatedAt
+
+			recomputeAggregatedAvailability(auth, now)
+			if allModelStatesClean(auth) {
 				auth.LastError = nil
 				auth.StatusMessage = ""
 				auth.Status = StatusActive
+			} else {
+				reconcileAuthErrorFromModelStates(auth, now)
 			}
-			auth.UpdatedAt = now
-			if errPersist := m.persist(ctx, auth); errPersist != nil {
-				logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
+			aggregateChanged := previousUnavailable != auth.Unavailable ||
+				!previousNextRetryAfter.Equal(auth.NextRetryAfter) ||
+				!cooldownQuotaEqual(previousQuota, auth.Quota) ||
+				previousStatus != auth.Status ||
+				previousStatusMessage != auth.StatusMessage ||
+				!cooldownErrorEqual(previousLastError, auth.LastError)
+			if changed || aggregateChanged {
+				auth.UpdatedAt = now
+				if errPersist := m.persist(ctx, auth); errPersist != nil {
+					logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
+				}
+				snapshot = auth.Clone()
+			} else {
+				auth.UpdatedAt = previousUpdatedAt
 			}
-			snapshot = auth.Clone()
 		}
 	}
 	m.mu.Unlock()
 
+	reg := registry.GetGlobalRegistry()
+	for _, cooldown := range cooldowns {
+		if cooldown.quota {
+			reg.SetModelQuotaExceeded(authID, cooldown.model)
+		}
+		reg.SuspendClientModel(authID, cooldown.model, cooldown.reason)
+	}
+
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
+	}
+}
+
+func registrySuspensionForModelState(state *ModelState) (reason string, quota, suspend bool) {
+	if state == nil {
+		return "", false, false
+	}
+	if state.Quota.Exceeded && strings.EqualFold(strings.TrimSpace(state.Quota.Reason), "quota") {
+		return "quota", true, true
+	}
+	if isModelSupportResultError(state.LastError) {
+		return "model_not_supported", false, true
+	}
+	if isInvalidGrantResultError(state.LastError) {
+		return "invalid_grant", false, true
+	}
+	if isCloudflareChallengeResultError(state.LastError) {
+		return "", false, false
+	}
+	if state.LastError != nil && strings.EqualFold(strings.TrimSpace(state.LastError.Code), "unauthorized") {
+		return "unauthorized", false, true
+	}
+	switch statusCodeFromResult(state.LastError) {
+	case http.StatusUnauthorized:
+		return "unauthorized", false, true
+	case http.StatusPaymentRequired, http.StatusForbidden:
+		return "payment_required", false, true
+	case http.StatusNotFound:
+		return "not_found", false, true
+	default:
+		return "", false, false
 	}
 }
 
