@@ -665,7 +665,7 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
 	}
-	return detail
+	return normalizeUsageInputTokenCategories(detail)
 }
 
 func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
@@ -719,7 +719,7 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		CacheCreationTokens: cacheCreationTokens,
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
-	return detail
+	return normalizeUsageInputTokenCategories(detail)
 }
 
 func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
@@ -737,7 +737,7 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	if detail.TotalTokens == 0 {
 		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 	}
-	return detail
+	return normalizeUsageInputTokenCategories(detail)
 }
 
 func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
@@ -768,7 +768,7 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 	if detail.TotalTokens == 0 {
 		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 	}
-	return detail
+	return normalizeUsageInputTokenCategories(detail)
 }
 
 func parseStrictUsageTokenCount(node gjson.Result) (int64, bool) {
@@ -787,6 +787,23 @@ func parseOptionalStrictUsageTokenCount(node gjson.Result) (int64, bool) {
 		return 0, true
 	}
 	return parseStrictUsageTokenCount(node)
+}
+
+// normalizeUsageInputTokenCategories drops an impossible cache breakdown.
+// InputTokens is the canonical total input count, so cache read and creation
+// categories must fit within it. Keeping the reported input is safer than
+// inventing a larger total from malformed upstream category values.
+func normalizeUsageInputTokenCategories(detail usage.Detail) usage.Detail {
+	if detail.InputTokens < 0 ||
+		detail.CacheReadTokens < 0 ||
+		detail.CacheCreationTokens < 0 ||
+		detail.CacheReadTokens > detail.InputTokens ||
+		detail.CacheCreationTokens > detail.InputTokens-detail.CacheReadTokens {
+		detail.CachedTokens = 0
+		detail.CacheReadTokens = 0
+		detail.CacheCreationTokens = 0
+	}
+	return detail
 }
 
 func hasUsageDetail(detail usage.Detail) bool {

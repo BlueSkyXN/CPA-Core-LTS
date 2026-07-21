@@ -187,10 +187,10 @@ func TestParseOpenAIUsageNormalizesCacheCreationAlias(t *testing.T) {
 	}
 }
 
-func TestParseOpenAIUsagePreservesInputWhenCacheBreakdownExceedsIt(t *testing.T) {
+func TestParseOpenAIUsageDropsCacheBreakdownThatExceedsInput(t *testing.T) {
 	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":6}}}`))
-	if detail.InputTokens != 5 || detail.CacheReadTokens != 4 || detail.CacheCreationTokens != 6 {
-		t.Fatalf("detail = %+v, want upstream categories preserved", detail)
+	if detail.InputTokens != 5 || detail.CachedTokens != 0 || detail.CacheReadTokens != 0 || detail.CacheCreationTokens != 0 {
+		t.Fatalf("detail = %+v, want input preserved and impossible cache breakdown dropped", detail)
 	}
 }
 
@@ -409,10 +409,10 @@ func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	}
 }
 
-func TestParseGeminiUsageKeepsPromptInputSeparateFromCachedSubset(t *testing.T) {
+func TestParseGeminiUsageDropsCachedSubsetThatExceedsPromptInput(t *testing.T) {
 	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":5,"cachedContentTokenCount":6,"totalTokenCount":5}}`))
-	if detail.InputTokens != 5 || detail.CacheReadTokens != 6 {
-		t.Fatalf("detail = %+v, want upstream prompt and cache categories preserved", detail)
+	if detail.InputTokens != 5 || detail.CachedTokens != 0 || detail.CacheReadTokens != 0 || detail.CacheCreationTokens != 0 {
+		t.Fatalf("detail = %+v, want prompt input preserved and impossible cache breakdown dropped", detail)
 	}
 }
 
@@ -465,10 +465,10 @@ func TestParseInteractionsUsageKeepsExplicitCacheReadSeparateFromInput(t *testin
 	}
 }
 
-func TestParseInteractionsUsageKeepsCachedTokensWithinInput(t *testing.T) {
+func TestParseInteractionsUsageDropsCachedTokensThatExceedInput(t *testing.T) {
 	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"cached_tokens":4}}`))
-	if detail.InputTokens != 3 || detail.CacheReadTokens != 4 || detail.TotalTokens != 3 {
-		t.Fatalf("detail = %+v, want cached_tokens treated as an input subset", detail)
+	if detail.InputTokens != 3 || detail.CachedTokens != 0 || detail.CacheReadTokens != 0 || detail.CacheCreationTokens != 0 || detail.TotalTokens != 3 {
+		t.Fatalf("detail = %+v, want input preserved and impossible cache breakdown dropped", detail)
 	}
 }
 
