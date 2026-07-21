@@ -3,12 +3,33 @@ package responses
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func TestClaudeResponsesUsageFailsClosedOnOverflow(t *testing.T) {
+	input, output, total, cached := (claudeResponsesUsageTokens{
+		InputTokens:              math.MaxInt64,
+		OutputTokens:             1,
+		CacheCreationInputTokens: 1,
+		CacheReadInputTokens:     1,
+	}).OpenAIResponsesUsage()
+
+	if input != math.MaxInt64 || output != 1 || total != 0 || cached != 0 {
+		t.Fatalf(
+			"overflowed usage = input:%d output:%d total:%d cached:%d, want %d/1/0/0",
+			input,
+			output,
+			total,
+			cached,
+			int64(math.MaxInt64),
+		)
+	}
+}
 
 func parseClaudeResponsesSSEEvent(t *testing.T, chunk []byte) (string, gjson.Result) {
 	t.Helper()

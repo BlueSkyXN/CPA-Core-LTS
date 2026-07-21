@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,11 @@ import (
 )
 
 var statisticsEnabled atomic.Bool
+
+// ErrLegacyUncachedInputTokens rejects usage imports encoded with the retired
+// uncached-input token contract. Accepting the field would silently retain the
+// old InputTokens meaning and corrupt normalized cache accounting.
+var ErrLegacyUncachedInputTokens = errors.New("unsupported legacy token contract: uncached_input_tokens")
 
 func init() {
 	statisticsEnabled.Store(true)
@@ -136,14 +142,33 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 
 // TokenStats captures the token usage breakdown for a request.
 type TokenStats struct {
-	InputTokens         int64  `json:"input_tokens"`
-	UncachedInputTokens *int64 `json:"uncached_input_tokens,omitempty"`
-	OutputTokens        int64  `json:"output_tokens"`
-	ReasoningTokens     int64  `json:"reasoning_tokens"`
-	CachedTokens        int64  `json:"cached_tokens"`
-	CacheReadTokens     int64  `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int64  `json:"cache_creation_tokens,omitempty"`
-	TotalTokens         int64  `json:"total_tokens"`
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	ReasoningTokens     int64 `json:"reasoning_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	TotalTokens         int64 `json:"total_tokens"`
+}
+
+// UnmarshalJSON rejects retired token payloads instead of silently treating
+// their old InputTokens semantics as the normalized total-input contract.
+func (tokens *TokenStats) UnmarshalJSON(data []byte) error {
+	type tokenStatsAlias TokenStats
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, exists := fields["uncached_input_tokens"]; exists {
+		return ErrLegacyUncachedInputTokens
+	}
+
+	var decoded tokenStatsAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*tokens = TokenStats(decoded)
+	return nil
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -240,7 +265,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	} else {
 		s.failureCount++
 	}
-	s.totalTokens += totalTokens
+	s.totalTokens = addNonNegativeTokenCounts(s.totalTokens, totalTokens)
 
 	stats, ok := s.apis[statsKey]
 	if !ok {
@@ -268,20 +293,20 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 
 	s.requestsByDay[dayKey]++
 	s.requestsByHour[hourKey]++
-	s.tokensByDay[dayKey] += totalTokens
-	s.tokensByHour[hourKey] += totalTokens
+	s.tokensByDay[dayKey] = addNonNegativeTokenCounts(s.tokensByDay[dayKey], totalTokens)
+	s.tokensByHour[hourKey] = addNonNegativeTokenCounts(s.tokensByHour[hourKey], totalTokens)
 }
 
 func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
 	stats.TotalRequests++
-	stats.TotalTokens += detail.Tokens.TotalTokens
+	stats.TotalTokens = addNonNegativeTokenCounts(stats.TotalTokens, detail.Tokens.TotalTokens)
 	modelStatsValue, ok := stats.Models[model]
 	if !ok {
 		modelStatsValue = &modelStats{}
 		stats.Models[model] = modelStatsValue
 	}
 	modelStatsValue.TotalRequests++
-	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
+	modelStatsValue.TotalTokens = addNonNegativeTokenCounts(modelStatsValue.TotalTokens, detail.Tokens.TotalTokens)
 	modelStatsValue.Details = append(modelStatsValue.Details, detail)
 }
 
@@ -446,7 +471,7 @@ func (s *RequestStatistics) recordImported(apiName, modelName string, stats *api
 	} else {
 		s.successCount++
 	}
-	s.totalTokens += totalTokens
+	s.totalTokens = addNonNegativeTokenCounts(s.totalTokens, totalTokens)
 
 	s.updateAPIStats(stats, modelName, detail)
 
@@ -455,32 +480,16 @@ func (s *RequestStatistics) recordImported(apiName, modelName string, stats *api
 
 	s.requestsByDay[dayKey]++
 	s.requestsByHour[hourKey]++
-	s.tokensByDay[dayKey] += totalTokens
-	s.tokensByHour[hourKey] += totalTokens
+	s.tokensByDay[dayKey] = addNonNegativeTokenCounts(s.tokensByDay[dayKey], totalTokens)
+	s.tokensByHour[hourKey] = addNonNegativeTokenCounts(s.tokensByHour[hourKey], totalTokens)
 }
 
 func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
-	tokens := normaliseTokenStats(detail.Tokens)
-	cacheReadTokens := tokens.CacheReadTokens
-	legacyCacheCreationAlias := tokens.CacheCreationTokens > 0 &&
-		cacheReadTokens == 0 &&
-		tokens.CachedTokens == tokens.CacheCreationTokens
-	if cacheReadTokens == 0 && !legacyCacheCreationAlias {
-		cacheReadTokens = tokens.CachedTokens
-	}
-
-	totalTokensFallback := int64(0)
-	if tokens.InputTokens == 0 &&
-		tokens.OutputTokens == 0 &&
-		tokens.ReasoningTokens == 0 &&
-		cacheReadTokens == 0 &&
-		tokens.CacheCreationTokens == 0 {
-		totalTokensFallback = tokens.TotalTokens
-	}
+	tokens := detail.Tokens
 
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%s|%d|%d|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%t|%s|%d|%d|%d|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
@@ -492,9 +501,10 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 		tokens.InputTokens,
 		tokens.OutputTokens,
 		tokens.ReasoningTokens,
-		cacheReadTokens,
+		tokens.CachedTokens,
+		tokens.CacheReadTokens,
 		tokens.CacheCreationTokens,
-		totalTokensFallback,
+		tokens.TotalTokens,
 	)
 }
 
@@ -570,20 +580,16 @@ const httpStatusBadRequest = 400
 
 func normaliseDetail(detail coreusage.Detail) TokenStats {
 	tokens := TokenStats{
-		InputTokens:         detail.InputTokens,
-		OutputTokens:        detail.OutputTokens,
-		ReasoningTokens:     detail.ReasoningTokens,
-		CachedTokens:        detail.CachedTokens,
-		CacheReadTokens:     detail.CacheReadTokens,
-		CacheCreationTokens: detail.CacheCreationTokens,
-		TotalTokens:         detail.TotalTokens,
-	}
-	if detail.UncachedInputTokensKnown && validUncachedInputTokens(detail.UncachedInputTokens, detail.InputTokens) {
-		uncachedInputTokens := detail.UncachedInputTokens
-		tokens.UncachedInputTokens = &uncachedInputTokens
+		InputTokens:         nonNegativeTokenCount(detail.InputTokens),
+		OutputTokens:        nonNegativeTokenCount(detail.OutputTokens),
+		ReasoningTokens:     nonNegativeTokenCount(detail.ReasoningTokens),
+		CachedTokens:        nonNegativeTokenCount(detail.CachedTokens),
+		CacheReadTokens:     nonNegativeTokenCount(detail.CacheReadTokens),
+		CacheCreationTokens: nonNegativeTokenCount(detail.CacheCreationTokens),
+		TotalTokens:         nonNegativeTokenCount(detail.TotalTokens),
 	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CacheReadTokens + detail.CacheCreationTokens
+		tokens.TotalTokens, _ = sumNonNegativeTokenCounts(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens)
 	}
 	if tokens.CachedTokens == 0 {
 		if tokens.CacheReadTokens != 0 {
@@ -594,27 +600,43 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 }
 
 func normaliseTokenStats(tokens TokenStats) TokenStats {
-	if tokens.UncachedInputTokens != nil {
-		uncachedInputTokens := *tokens.UncachedInputTokens
-		if validUncachedInputTokens(uncachedInputTokens, tokens.InputTokens) {
-			tokens.UncachedInputTokens = &uncachedInputTokens
-		} else {
-			tokens.UncachedInputTokens = nil
-		}
-	}
+	tokens.InputTokens = nonNegativeTokenCount(tokens.InputTokens)
+	tokens.OutputTokens = nonNegativeTokenCount(tokens.OutputTokens)
+	tokens.ReasoningTokens = nonNegativeTokenCount(tokens.ReasoningTokens)
+	tokens.CachedTokens = nonNegativeTokenCount(tokens.CachedTokens)
+	tokens.CacheReadTokens = nonNegativeTokenCount(tokens.CacheReadTokens)
+	tokens.CacheCreationTokens = nonNegativeTokenCount(tokens.CacheCreationTokens)
+	tokens.TotalTokens = nonNegativeTokenCount(tokens.TotalTokens)
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CacheReadTokens + tokens.CacheCreationTokens
-	}
-	if tokens.CachedTokens == 0 {
-		if tokens.CacheReadTokens != 0 {
-			tokens.CachedTokens = tokens.CacheReadTokens
-		}
+		tokens.TotalTokens, _ = sumNonNegativeTokenCounts(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens)
 	}
 	return tokens
 }
 
-func validUncachedInputTokens(uncachedInputTokens, inputTokens int64) bool {
-	return inputTokens >= 0 && uncachedInputTokens >= 0 && uncachedInputTokens <= inputTokens
+func nonNegativeTokenCount(token int64) int64 {
+	if token < 0 {
+		return 0
+	}
+	return token
+}
+
+func addNonNegativeTokenCounts(a, b int64) int64 {
+	total, _ := sumNonNegativeTokenCounts(a, b)
+	return total
+}
+
+// sumNonNegativeTokenCounts returns false instead of wrapping when a usage
+// total cannot be represented as a non-negative int64.
+func sumNonNegativeTokenCounts(tokens ...int64) (int64, bool) {
+	const maxInt64 = int64(1<<63 - 1)
+	var total int64
+	for _, tokens := range tokens {
+		if tokens < 0 || tokens > maxInt64-total {
+			return 0, false
+		}
+		total += tokens
+	}
+	return total, true
 }
 
 func cloneRequestDetail(detail RequestDetail) RequestDetail {
@@ -623,10 +645,6 @@ func cloneRequestDetail(detail RequestDetail) RequestDetail {
 }
 
 func cloneTokenStats(tokens TokenStats) TokenStats {
-	if tokens.UncachedInputTokens != nil {
-		uncachedInputTokens := *tokens.UncachedInputTokens
-		tokens.UncachedInputTokens = &uncachedInputTokens
-	}
 	return tokens
 }
 

@@ -3,10 +3,32 @@ package interactions
 import (
 	"bytes"
 	"context"
+	"math"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func TestSetInteractionsUsageFromClaudeFailsClosedOnOverflow(t *testing.T) {
+	out := setInteractionsUsageFromClaude(
+		[]byte(`{"usage":{}}`),
+		"usage",
+		gjson.Parse(`{"input_tokens":9223372036854775807,"output_tokens":1,"cache_read_input_tokens":9223372036854775807,"cache_creation_input_tokens":1}`),
+	)
+
+	if got := gjson.GetBytes(out, "usage.input_tokens").Int(); got != math.MaxInt64 {
+		t.Fatalf("input_tokens = %d, want %d; output=%s", got, int64(math.MaxInt64), out)
+	}
+	if got := gjson.GetBytes(out, "usage.output_tokens").Int(); got != 1 {
+		t.Fatalf("output_tokens = %d, want 1; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "usage.total_tokens").Int(); got != 0 {
+		t.Fatalf("total_tokens = %d, want 0 when the sum is not representable; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "usage.total_cached_tokens").Int(); got != 0 {
+		t.Fatalf("total_cached_tokens = %d, want 0 when the sum is not representable; output=%s", got, out)
+	}
+}
 
 func TestConvertInteractionsRequestToClaudeWithToolMessagesDirect(t *testing.T) {
 	out := ConvertInteractionsRequestToClaude("claude-test", []byte(`{"model":"claude-test","system_instruction":"be brief","input":[{"type":"user_input","content":[{"type":"text","text":"hi"}]},{"type":"function_call","name":"lookup","call_id":"toolu_1","arguments":{"q":"x"}},{"type":"function_result","name":"lookup","call_id":"toolu_1","result":{"ok":true}}]}`), false)

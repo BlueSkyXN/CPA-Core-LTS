@@ -590,29 +590,14 @@ func codexAbnormalReasoningRetryAggregateClientUsage(previous cliproxyexecutor.R
 func addCodexUsageDetail(a, b usage.Detail) usage.Detail {
 	a = normalizeCodexUsageDetail(a)
 	b = normalizeCodexUsageDetail(b)
-	aHasUsage := hasCodexUsageDetail(a)
-	bHasUsage := hasCodexUsageDetail(b)
-	return usage.NormalizeUncachedInputTokens(usage.Detail{
-		InputTokens:              a.InputTokens + b.InputTokens,
-		OutputTokens:             a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:             a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens:      a.CacheCreationTokens + b.CacheCreationTokens,
-		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
-		UncachedInputTokensKnown: mergedCodexUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
-		TotalTokens:              a.TotalTokens + b.TotalTokens,
-	})
-}
-
-func mergedCodexUncachedInputTokensKnown(a, b usage.Detail, aHasUsage, bHasUsage bool) bool {
-	switch {
-	case !aHasUsage:
-		return b.UncachedInputTokensKnown
-	case !bHasUsage:
-		return a.UncachedInputTokensKnown
-	default:
-		return a.UncachedInputTokensKnown && b.UncachedInputTokensKnown
+	return usage.Detail{
+		InputTokens:         addNonNegativeCodexUsageTokens(a.InputTokens, b.InputTokens),
+		OutputTokens:        addNonNegativeCodexUsageTokens(a.OutputTokens, b.OutputTokens),
+		ReasoningTokens:     addNonNegativeCodexUsageTokens(a.ReasoningTokens, b.ReasoningTokens),
+		CachedTokens:        addNonNegativeCodexUsageTokens(a.CachedTokens, b.CachedTokens),
+		CacheReadTokens:     addNonNegativeCodexUsageTokens(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreationTokens: addNonNegativeCodexUsageTokens(a.CacheCreationTokens, b.CacheCreationTokens),
+		TotalTokens:         addNonNegativeCodexUsageTokens(a.TotalTokens, b.TotalTokens),
 	}
 }
 
@@ -800,14 +785,46 @@ func patchCodexAbnormalReasoningStreamPayload(payload []byte, previous cliproxye
 }
 
 func normalizeCodexUsageDetail(detail usage.Detail) usage.Detail {
-	detail = usage.NormalizeUncachedInputTokens(detail)
+	detail.InputTokens = nonNegativeCodexUsageToken(detail.InputTokens)
+	detail.OutputTokens = nonNegativeCodexUsageToken(detail.OutputTokens)
+	detail.ReasoningTokens = nonNegativeCodexUsageToken(detail.ReasoningTokens)
+	detail.CachedTokens = nonNegativeCodexUsageToken(detail.CachedTokens)
+	detail.CacheReadTokens = nonNegativeCodexUsageToken(detail.CacheReadTokens)
+	detail.CacheCreationTokens = nonNegativeCodexUsageToken(detail.CacheCreationTokens)
+	detail.TotalTokens = nonNegativeCodexUsageToken(detail.TotalTokens)
 	if detail.TotalTokens == 0 {
-		total := detail.InputTokens + detail.OutputTokens
-		if total > 0 {
+		if total, ok := sumNonNegativeCodexUsageTokens(detail.InputTokens, detail.OutputTokens); ok && total > 0 {
 			detail.TotalTokens = total
 		}
 	}
 	return detail
+}
+
+func nonNegativeCodexUsageToken(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func addNonNegativeCodexUsageTokens(a, b int64) int64 {
+	const maxInt64 = int64(1<<63 - 1)
+	if a < 0 || b < 0 || a > maxInt64-b {
+		return 0
+	}
+	return a + b
+}
+
+func sumNonNegativeCodexUsageTokens(tokens ...int64) (int64, bool) {
+	const maxInt64 = int64(1<<63 - 1)
+	var total int64
+	for _, tokens := range tokens {
+		if tokens < 0 || tokens > maxInt64-total {
+			return 0, false
+		}
+		total += tokens
+	}
+	return total, true
 }
 
 func hasCodexUsageDetail(detail usage.Detail) bool {

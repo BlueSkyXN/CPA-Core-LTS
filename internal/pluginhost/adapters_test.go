@@ -2559,7 +2559,7 @@ func TestUsageAdapterUsesCurrentSnapshotCapability(t *testing.T) {
 	}
 }
 
-func TestUsageAdapterPreservesKnownUncachedInputTokens(t *testing.T) {
+func TestUsageAdapterPreservesNormalizedTokenCategories(t *testing.T) {
 	var got pluginapi.UsageRecord
 	host := newHostWithRecords(capabilityRecord{
 		id: "usage-uncached-input",
@@ -2572,25 +2572,14 @@ func TestUsageAdapterPreservesKnownUncachedInputTokens(t *testing.T) {
 	adapter := &usageAdapter{host: host, pluginID: "usage-uncached-input"}
 
 	adapter.HandleUsage(context.Background(), coreusage.Record{Detail: coreusage.Detail{
-		InputTokens:              10,
-		CacheReadTokens:          10,
-		TotalTokens:              10,
-		UncachedInputTokens:      0,
-		UncachedInputTokensKnown: true,
+		InputTokens:         100,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+		TotalTokens:         100,
 	}})
 
-	if !got.Detail.UncachedInputTokensKnown || got.Detail.UncachedInputTokens != 0 {
-		t.Fatalf("plugin usage detail = %+v, want known uncached input 0", got.Detail)
-	}
-
-	adapter.HandleUsage(context.Background(), coreusage.Record{Detail: coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      11,
-		UncachedInputTokensKnown: true,
-	}})
-	if got.Detail.UncachedInputTokensKnown || got.Detail.UncachedInputTokens != 0 {
-		t.Fatalf("plugin usage detail = %+v, want invalid uncached input downgraded to unknown zero", got.Detail)
+	if got.Detail.InputTokens != 100 || got.Detail.CacheReadTokens != 30 || got.Detail.CacheCreationTokens != 40 || got.Detail.TotalTokens != 100 {
+		t.Fatalf("plugin usage detail = %+v, want normalized token categories", got.Detail)
 	}
 }
 

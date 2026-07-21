@@ -209,17 +209,15 @@ func (c *retryWithoutPenaltyFallbackCandidate) PreviousUsageSnapshot(accumulator
 func subtractRetryWithoutPenaltyUsageDetail(total, selected coreusage.Detail) coreusage.Detail {
 	total = normalizeRetryWithoutPenaltyUsageDetail(total)
 	selected = normalizeRetryWithoutPenaltyUsageDetail(selected)
-	return coreusage.NormalizeUncachedInputTokens(coreusage.Detail{
-		InputTokens:              subtractRetryWithoutPenaltyInt64(total.InputTokens, selected.InputTokens),
-		OutputTokens:             subtractRetryWithoutPenaltyInt64(total.OutputTokens, selected.OutputTokens),
-		ReasoningTokens:          subtractRetryWithoutPenaltyInt64(total.ReasoningTokens, selected.ReasoningTokens),
-		CachedTokens:             subtractRetryWithoutPenaltyInt64(total.CachedTokens, selected.CachedTokens),
-		CacheReadTokens:          subtractRetryWithoutPenaltyInt64(total.CacheReadTokens, selected.CacheReadTokens),
-		CacheCreationTokens:      subtractRetryWithoutPenaltyInt64(total.CacheCreationTokens, selected.CacheCreationTokens),
-		UncachedInputTokens:      subtractRetryWithoutPenaltyInt64(total.UncachedInputTokens, selected.UncachedInputTokens),
-		UncachedInputTokensKnown: total.UncachedInputTokensKnown && selected.UncachedInputTokensKnown,
-		TotalTokens:              subtractRetryWithoutPenaltyInt64(total.TotalTokens, selected.TotalTokens),
-	})
+	return coreusage.Detail{
+		InputTokens:         subtractRetryWithoutPenaltyInt64(total.InputTokens, selected.InputTokens),
+		OutputTokens:        subtractRetryWithoutPenaltyInt64(total.OutputTokens, selected.OutputTokens),
+		ReasoningTokens:     subtractRetryWithoutPenaltyInt64(total.ReasoningTokens, selected.ReasoningTokens),
+		CachedTokens:        subtractRetryWithoutPenaltyInt64(total.CachedTokens, selected.CachedTokens),
+		CacheReadTokens:     subtractRetryWithoutPenaltyInt64(total.CacheReadTokens, selected.CacheReadTokens),
+		CacheCreationTokens: subtractRetryWithoutPenaltyInt64(total.CacheCreationTokens, selected.CacheCreationTokens),
+		TotalTokens:         subtractRetryWithoutPenaltyInt64(total.TotalTokens, selected.TotalTokens),
+	}
 }
 
 func subtractRetryWithoutPenaltyInt64(total, selected int64) int64 {
@@ -642,7 +640,10 @@ func retryWithoutPenaltyMixedFallbackSnapshot(candidate *retryWithoutPenaltyFall
 	if hasRetryWithoutPenaltyUsageDetail(deliveredDetail) {
 		delivered := normalizeRetryWithoutPenaltyUsageDetail(deliveredDetail)
 		snapshot.Detail = addRetryWithoutPenaltyUsageDetail(snapshot.Detail, delivered)
-		snapshot.FoldedOutputTokens += foldedRetryWithoutPenaltyUsageOutputTokens(delivered)
+		snapshot.FoldedOutputTokens = addNonNegativeRetryWithoutPenaltyTokens(
+			snapshot.FoldedOutputTokens,
+			foldedRetryWithoutPenaltyUsageOutputTokens(delivered),
+		)
 	}
 	return snapshot
 }
@@ -670,41 +671,58 @@ func cloneRetryWithoutPenaltyHeader(headers http.Header) http.Header {
 func addRetryWithoutPenaltyUsageDetail(a, b coreusage.Detail) coreusage.Detail {
 	a = normalizeRetryWithoutPenaltyUsageDetail(a)
 	b = normalizeRetryWithoutPenaltyUsageDetail(b)
-	aHasUsage := hasRetryWithoutPenaltyUsageDetail(a)
-	bHasUsage := hasRetryWithoutPenaltyUsageDetail(b)
-	return coreusage.NormalizeUncachedInputTokens(coreusage.Detail{
-		InputTokens:              a.InputTokens + b.InputTokens,
-		OutputTokens:             a.OutputTokens + b.OutputTokens,
-		ReasoningTokens:          a.ReasoningTokens + b.ReasoningTokens,
-		CachedTokens:             a.CachedTokens + b.CachedTokens,
-		CacheReadTokens:          a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens:      a.CacheCreationTokens + b.CacheCreationTokens,
-		UncachedInputTokens:      a.UncachedInputTokens + b.UncachedInputTokens,
-		UncachedInputTokensKnown: mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b, aHasUsage, bHasUsage),
-		TotalTokens:              a.TotalTokens + b.TotalTokens,
-	})
-}
-
-func mergedRetryWithoutPenaltyUncachedInputTokensKnown(a, b coreusage.Detail, aHasUsage, bHasUsage bool) bool {
-	switch {
-	case !aHasUsage:
-		return b.UncachedInputTokensKnown
-	case !bHasUsage:
-		return a.UncachedInputTokensKnown
-	default:
-		return a.UncachedInputTokensKnown && b.UncachedInputTokensKnown
+	return coreusage.Detail{
+		InputTokens:         addNonNegativeRetryWithoutPenaltyTokens(a.InputTokens, b.InputTokens),
+		OutputTokens:        addNonNegativeRetryWithoutPenaltyTokens(a.OutputTokens, b.OutputTokens),
+		ReasoningTokens:     addNonNegativeRetryWithoutPenaltyTokens(a.ReasoningTokens, b.ReasoningTokens),
+		CachedTokens:        addNonNegativeRetryWithoutPenaltyTokens(a.CachedTokens, b.CachedTokens),
+		CacheReadTokens:     addNonNegativeRetryWithoutPenaltyTokens(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreationTokens: addNonNegativeRetryWithoutPenaltyTokens(a.CacheCreationTokens, b.CacheCreationTokens),
+		TotalTokens:         addNonNegativeRetryWithoutPenaltyTokens(a.TotalTokens, b.TotalTokens),
 	}
 }
 
 func normalizeRetryWithoutPenaltyUsageDetail(detail coreusage.Detail) coreusage.Detail {
-	detail = coreusage.NormalizeUncachedInputTokens(detail)
+	detail.InputTokens = nonNegativeRetryWithoutPenaltyToken(detail.InputTokens)
+	detail.OutputTokens = nonNegativeRetryWithoutPenaltyToken(detail.OutputTokens)
+	detail.ReasoningTokens = nonNegativeRetryWithoutPenaltyToken(detail.ReasoningTokens)
+	detail.CachedTokens = nonNegativeRetryWithoutPenaltyToken(detail.CachedTokens)
+	detail.CacheReadTokens = nonNegativeRetryWithoutPenaltyToken(detail.CacheReadTokens)
+	detail.CacheCreationTokens = nonNegativeRetryWithoutPenaltyToken(detail.CacheCreationTokens)
+	detail.TotalTokens = nonNegativeRetryWithoutPenaltyToken(detail.TotalTokens)
 	if detail.TotalTokens == 0 {
-		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
-		if total > 0 {
+		if total, ok := sumNonNegativeRetryWithoutPenaltyTokens(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens); ok && total > 0 {
 			detail.TotalTokens = total
 		}
 	}
 	return detail
+}
+
+func nonNegativeRetryWithoutPenaltyToken(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func addNonNegativeRetryWithoutPenaltyTokens(a, b int64) int64 {
+	const maxInt64 = int64(1<<63 - 1)
+	if a < 0 || b < 0 || a > maxInt64-b {
+		return 0
+	}
+	return a + b
+}
+
+func sumNonNegativeRetryWithoutPenaltyTokens(tokens ...int64) (int64, bool) {
+	const maxInt64 = int64(1<<63 - 1)
+	var total int64
+	for _, tokens := range tokens {
+		if tokens < 0 || tokens > maxInt64-total {
+			return 0, false
+		}
+		total += tokens
+	}
+	return total, true
 }
 
 func hasRetryWithoutPenaltyUsageDetail(detail coreusage.Detail) bool {

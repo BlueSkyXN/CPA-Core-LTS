@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -29,7 +30,6 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	getPayload, getJSON := readUsageStatisticsResponse(t, h)
 	requirePanelUsageShape(t, getPayload.Usage)
 	requireCanonicalReasoningEffortJSON(t, getJSON, "GET usage response")
-	requireKnownZeroUncachedInputTokensJSON(t, getJSON, "GET usage response")
 	if getPayload.FailedRequests != 0 {
 		t.Fatalf("failed_requests = %d, want 0", getPayload.FailedRequests)
 	}
@@ -65,7 +65,6 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("exported usage missing explicit generate=false: %s", exportedJSON)
 	}
 	requireCanonicalReasoningEffortJSON(t, exportedJSON, "exported usage")
-	requireKnownZeroUncachedInputTokensJSON(t, exportedJSON, "exported usage")
 	var legacyDecoded struct {
 		Version int `json:"version"`
 		Usage   struct {
@@ -105,7 +104,6 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("marshal re-exported usage: %v", err)
 	}
 	requireCanonicalReasoningEffortJSON(t, reimportedJSON, "usage re-exported after import")
-	requireKnownZeroUncachedInputTokensJSON(t, reimportedJSON, "usage re-exported after import")
 }
 
 func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
@@ -239,9 +237,6 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
 		t.Fatalf("legacy detail service tiers = request:%q response:%q effective:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
 	}
-	if details[0].Tokens.UncachedInputTokens != nil {
-		t.Fatalf("legacy detail uncached_input_tokens = %v, want nil/unknown", details[0].Tokens.UncachedInputTokens)
-	}
 	if !details[0].Generate {
 		t.Fatalf("legacy detail.generate = false, want backward-compatible true")
 	}
@@ -269,73 +264,96 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"effective_service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated explicit service-tier fields: %s", reexportedJSON)
 	}
-	if bytes.Contains(reexportedJSON, []byte(`"uncached_input_tokens"`)) {
-		t.Fatalf("legacy re-export fabricated uncached_input_tokens: %s", reexportedJSON)
-	}
 	if !bytes.Contains(reexportedJSON, []byte(`"billing_basis":"unknown"`)) {
 		t.Fatalf("legacy re-export missing normalized unknown billing_basis: %s", reexportedJSON)
 	}
 }
 
-func TestUsageManagementImportOmitsInvalidUncachedInputTokens(t *testing.T) {
-	tests := []struct {
-		name        string
-		value       int64
-		wantPresent bool
-	}{
-		{name: "negative", value: -1},
-		{name: "greater than input", value: 6},
-		{name: "known zero", value: 0, wantPresent: true},
+func TestUsageManagementImportRejectsLegacyUncachedInputTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const legacyExport = `{
+		"version": 1,
+		"usage": {
+			"apis": {
+				"legacy-client-key": {
+					"models": {
+					"claude-sonnet": {
+						"details": [{
+							"timestamp": "2026-07-21T11:59:00Z",
+							"tokens": {
+								"input_tokens": 10,
+								"output_tokens": 1,
+								"total_tokens": 11
+							},
+							"failed": false
+						}, {
+							"timestamp": "2026-07-21T12:00:00Z",
+								"tokens": {
+									"input_tokens": 3085,
+									"output_tokens": 253,
+									"cache_read_tokens": 7,
+									"cache_creation_tokens": 19514,
+									"uncached_input_tokens": 3085,
+									"total_tokens": 22859
+								},
+								"failed": false
+							}]
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	stats := usage.NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "existing-client-key",
+		Model:       "existing-model",
+		RequestedAt: time.Date(2026, 7, 21, 11, 0, 0, 0, time.UTC),
+		Detail:      coreusage.Detail{InputTokens: 4, OutputTokens: 2, TotalTokens: 6},
+	})
+	wantSnapshot := stats.Snapshot()
+	h := &Handler{}
+	h.SetUsageStatistics(stats)
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/usage/import",
+		bytes.NewBufferString(legacyExport),
+	)
+	h.ImportUsageStatistics(ginCtx)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy token-contract import status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			uncachedInputTokens := tt.value
-			snapshot := usageCacheCreationSnapshot(time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC), usage.TokenStats{
-				InputTokens:         5,
-				UncachedInputTokens: &uncachedInputTokens,
-				OutputTokens:        2,
-				TotalTokens:         7,
-			})
-
-			stats := usage.NewRequestStatistics()
-			h := &Handler{}
-			h.SetUsageStatistics(stats)
-			result := importUsageStatistics(t, h, snapshot)
-			if result.Added != 1 || result.Skipped != 0 {
-				t.Fatalf("import result = %+v, want added=1 skipped=0", result)
-			}
-
-			exported := exportUsageStatistics(t, h)
-			detail := exported.Usage.APIs["cache-key"].Models["gpt-5.6-sol"].Details[0]
-			if gotPresent := detail.Tokens.UncachedInputTokens != nil; gotPresent != tt.wantPresent {
-				t.Fatalf("uncached_input_tokens present = %v, want %v; tokens=%+v", gotPresent, tt.wantPresent, detail.Tokens)
-			}
-			exportedJSON, err := json.Marshal(exported)
-			if err != nil {
-				t.Fatalf("marshal exported usage: %v", err)
-			}
-			if gotPresent := bytes.Contains(exportedJSON, []byte(`"uncached_input_tokens"`)); gotPresent != tt.wantPresent {
-				t.Fatalf("uncached_input_tokens JSON present = %v, want %v; payload=%s", gotPresent, tt.wantPresent, exportedJSON)
-			}
-		})
+	var response struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal legacy token-contract rejection: %v body=%s", err, rec.Body.String())
+	}
+	if response.Error != "unsupported legacy token contract: uncached_input_tokens" {
+		t.Fatalf("legacy token-contract error = %q", response.Error)
+	}
+	if snapshot := stats.Snapshot(); !reflect.DeepEqual(snapshot, wantSnapshot) {
+		t.Fatalf("rejected legacy import mutated existing statistics: got=%+v want=%+v", snapshot, wantSnapshot)
 	}
 }
 
-func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *testing.T) {
+func TestUsageManagementImportKeepsDifferentCacheCreationTokenShapes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	timestamp := time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)
-	legacy := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
+	firstShape := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
 		InputTokens:         1200,
 		OutputTokens:        10,
 		CachedTokens:        1024,
 		CacheCreationTokens: 1024,
 		TotalTokens:         1210,
 	})
-	uncachedInputTokens := int64(176)
-	canonical := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
+	secondShape := usageCacheCreationSnapshot(timestamp, usage.TokenStats{
 		InputTokens:         1200,
-		UncachedInputTokens: &uncachedInputTokens,
 		OutputTokens:        10,
 		CacheCreationTokens: 1024,
 		TotalTokens:         2234,
@@ -348,16 +366,16 @@ func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *tes
 		wantTotalTokens int64
 	}{
 		{
-			name:            "legacy then canonical",
-			first:           legacy,
-			second:          canonical,
-			wantTotalTokens: 1210,
+			name:            "first canonical token shape then second",
+			first:           firstShape,
+			second:          secondShape,
+			wantTotalTokens: 3444,
 		},
 		{
-			name:            "canonical then legacy",
-			first:           canonical,
-			second:          legacy,
-			wantTotalTokens: 2234,
+			name:            "second canonical token shape then first",
+			first:           secondShape,
+			second:          firstShape,
+			wantTotalTokens: 3444,
 		},
 	}
 
@@ -373,17 +391,17 @@ func TestUsageManagementImportDeduplicatesLegacyAndCanonicalCacheCreation(t *tes
 			}
 
 			secondResult := importUsageStatistics(t, h, tt.second)
-			if secondResult.Added != 0 || secondResult.Skipped != 1 || secondResult.TotalRequests != 1 {
-				t.Fatalf("second import result = %+v, want added=0 skipped=1 total_requests=1", secondResult)
+			if secondResult.Added != 1 || secondResult.Skipped != 0 || secondResult.TotalRequests != 2 {
+				t.Fatalf("second import result = %+v, want added=1 skipped=0 total_requests=2", secondResult)
 			}
 
 			snapshot := stats.Snapshot()
 			model := snapshot.APIs["cache-key"].Models["gpt-5.6-sol"]
-			if snapshot.TotalRequests != 1 || snapshot.TotalTokens != tt.wantTotalTokens || len(model.Details) != 1 {
-				t.Fatalf("snapshot after imports = requests:%d tokens:%d details:%d, want 1/%d/1", snapshot.TotalRequests, snapshot.TotalTokens, len(model.Details), tt.wantTotalTokens)
+			if snapshot.TotalRequests != 2 || snapshot.TotalTokens != tt.wantTotalTokens || len(model.Details) != 2 {
+				t.Fatalf("snapshot after imports = requests:%d tokens:%d details:%d, want 2/%d/2", snapshot.TotalRequests, snapshot.TotalTokens, len(model.Details), tt.wantTotalTokens)
 			}
-			if snapshot.RequestsByDay["2026-07-11"] != 1 || snapshot.RequestsByHour["09"] != 1 {
-				t.Fatalf("request buckets after imports = day:%v hour:%v, want one request", snapshot.RequestsByDay, snapshot.RequestsByHour)
+			if snapshot.RequestsByDay["2026-07-11"] != 2 || snapshot.RequestsByHour["09"] != 2 {
+				t.Fatalf("request buckets after imports = day:%v hour:%v, want two requests", snapshot.RequestsByDay, snapshot.RequestsByHour)
 			}
 			if snapshot.TokensByDay["2026-07-11"] != tt.wantTotalTokens || snapshot.TokensByHour["09"] != tt.wantTotalTokens {
 				t.Fatalf("token buckets after imports = day:%v hour:%v, want %d", snapshot.TokensByDay, snapshot.TokensByHour, tt.wantTotalTokens)
@@ -429,13 +447,11 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		RequestedAt:          time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:              2 * time.Second,
 		Detail: coreusage.Detail{
-			InputTokens:              5,
-			UncachedInputTokens:      0,
-			UncachedInputTokensKnown: true,
-			OutputTokens:             7,
-			ReasoningTokens:          3,
-			CachedTokens:             2,
-			TotalTokens:              17,
+			InputTokens:     5,
+			OutputTokens:    7,
+			ReasoningTokens: 3,
+			CachedTokens:    2,
+			TotalTokens:     17,
 		},
 	})
 }
@@ -606,9 +622,6 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 		detail.Tokens.TotalTokens != 17 {
 		t.Fatalf("detail.tokens = %+v, want panel-compatible token breakdown", detail.Tokens)
 	}
-	if detail.Tokens.UncachedInputTokens == nil || *detail.Tokens.UncachedInputTokens != 0 {
-		t.Fatalf("detail.tokens.uncached_input_tokens = %v, want pointer to 0", detail.Tokens.UncachedInputTokens)
-	}
 }
 
 func requireCanonicalReasoningEffortJSON(t *testing.T, payload []byte, surface string) {
@@ -619,12 +632,5 @@ func requireCanonicalReasoningEffortJSON(t *testing.T, payload []byte, surface s
 	}
 	if bytes.Contains(payload, []byte(`"thinking"`)) {
 		t.Fatalf("%s contains non-canonical thinking field: %s", surface, payload)
-	}
-}
-
-func requireKnownZeroUncachedInputTokensJSON(t *testing.T, payload []byte, surface string) {
-	t.Helper()
-	if !bytes.Contains(payload, []byte(`"uncached_input_tokens":0`)) {
-		t.Fatalf("%s missing known-zero uncached_input_tokens: %s", surface, payload)
 	}
 }

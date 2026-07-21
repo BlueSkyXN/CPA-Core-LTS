@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,63 +17,68 @@ import (
 
 type retryWithoutPenaltyTestError struct{}
 
-func TestRetryWithoutPenaltyUsageMathPreservesUncachedInputKnowledge(t *testing.T) {
+func TestRetryWithoutPenaltyUsageMathPreservesNormalizedTokenCategories(t *testing.T) {
 	first := coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      0,
-		UncachedInputTokensKnown: true,
+		InputTokens:         100,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+		TotalTokens:         100,
 	}
 	second := coreusage.Detail{
-		InputTokens:              5,
-		TotalTokens:              5,
-		UncachedInputTokens:      5,
-		UncachedInputTokensKnown: true,
+		InputTokens: 5,
+		TotalTokens: 5,
 	}
 
 	total := addRetryWithoutPenaltyUsageDetail(first, second)
-	if !total.UncachedInputTokensKnown || total.UncachedInputTokens != 5 {
-		t.Fatalf("added detail = %+v, want known uncached input 5", total)
+	if total.InputTokens != 105 || total.CacheReadTokens != 30 || total.CacheCreationTokens != 40 || total.TotalTokens != 105 {
+		t.Fatalf("added detail = %+v, want summed normalized categories", total)
 	}
 
 	remainder := subtractRetryWithoutPenaltyUsageDetail(total, second)
-	if !remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
-		t.Fatalf("subtracted detail = %+v, want known uncached input 0", remainder)
-	}
-
-	mixed := addRetryWithoutPenaltyUsageDetail(first, coreusage.Detail{InputTokens: 1, TotalTokens: 1})
-	if mixed.UncachedInputTokensKnown {
-		t.Fatalf("mixed detail = %+v, want uncached input unknown", mixed)
+	if remainder != first {
+		t.Fatalf("subtracted detail = %+v, want %+v", remainder, first)
 	}
 }
 
-func TestRetryWithoutPenaltyUsageMathRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
-	invalid := coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      11,
-		UncachedInputTokensKnown: true,
+func TestRetryWithoutPenaltyUsageMathFailsClosedOnTokenOverflow(t *testing.T) {
+	first := coreusage.Detail{
+		InputTokens:         math.MaxInt64,
+		OutputTokens:        math.MaxInt64,
+		ReasoningTokens:     math.MaxInt64,
+		CachedTokens:        math.MaxInt64,
+		CacheReadTokens:     math.MaxInt64,
+		CacheCreationTokens: math.MaxInt64,
+		TotalTokens:         math.MaxInt64,
 	}
-	valid := coreusage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      9,
-		UncachedInputTokensKnown: true,
+	second := coreusage.Detail{
+		InputTokens:         1,
+		OutputTokens:        1,
+		ReasoningTokens:     1,
+		CachedTokens:        1,
+		CacheReadTokens:     1,
+		CacheCreationTokens: 1,
+		TotalTokens:         1,
 	}
 
-	total := addRetryWithoutPenaltyUsageDetail(invalid, valid)
-	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
-		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
+	total := addRetryWithoutPenaltyUsageDetail(first, second)
+	if total.InputTokens != 0 || total.OutputTokens != 0 || total.ReasoningTokens != 0 || total.CachedTokens != 0 || total.CacheReadTokens != 0 || total.CacheCreationTokens != 0 || total.TotalTokens != 0 {
+		t.Fatalf("added detail = %+v, want overflowed token fields to fail closed", total)
+	}
+	if fallback := normalizeRetryWithoutPenaltyUsageDetail(coreusage.Detail{InputTokens: math.MaxInt64, OutputTokens: 1}); fallback.TotalTokens != 0 {
+		t.Fatalf("fallback total_tokens = %d, want 0 when the fallback sum is not representable", fallback.TotalTokens)
 	}
 
-	remainder := subtractRetryWithoutPenaltyUsageDetail(coreusage.Detail{
-		InputTokens:              20,
-		TotalTokens:              20,
-		UncachedInputTokens:      20,
-		UncachedInputTokensKnown: true,
-	}, invalid)
-	if remainder.UncachedInputTokensKnown || remainder.UncachedInputTokens != 0 {
-		t.Fatalf("subtracted detail = %+v, want cleared unknown uncached input", remainder)
+	accumulator := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{
+		OutputTokens: math.MaxInt64,
+		TotalTokens:  math.MaxInt64,
+	})
+	mixed := retryWithoutPenaltyMixedFallbackSnapshot(
+		newRetryWithoutPenaltyFallbackCandidate(false),
+		accumulator,
+		coreusage.Detail{OutputTokens: 1, TotalTokens: 1},
+	)
+	if mixed.FoldedOutputTokens != 0 {
+		t.Fatalf("mixed fallback folded_output_tokens = %d, want 0 when the aggregate is not representable", mixed.FoldedOutputTokens)
 	}
 }
 

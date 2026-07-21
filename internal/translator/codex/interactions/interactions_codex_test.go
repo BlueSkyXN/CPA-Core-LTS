@@ -3,11 +3,41 @@ package interactions
 import (
 	"bytes"
 	"context"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func TestSetCodexInteractionsUsageFailsClosedOnOverflow(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream], func(t *testing.T) {
+			out := setCodexInteractionsUsage(
+				[]byte(`{"usage":{}}`),
+				"usage",
+				gjson.Parse(`{"input_tokens":9223372036854775807,"output_tokens":1}`),
+				stream,
+			)
+
+			inputPath := "usage.input_tokens"
+			outputPath := "usage.output_tokens"
+			if stream {
+				inputPath = "usage.total_input_tokens"
+				outputPath = "usage.total_output_tokens"
+			}
+			if got := gjson.GetBytes(out, inputPath).Int(); got != math.MaxInt64 {
+				t.Fatalf("%s = %d, want %d; output=%s", inputPath, got, int64(math.MaxInt64), out)
+			}
+			if got := gjson.GetBytes(out, outputPath).Int(); got != 1 {
+				t.Fatalf("%s = %d, want 1; output=%s", outputPath, got, out)
+			}
+			if got := gjson.GetBytes(out, "usage.total_tokens").Int(); got != 0 {
+				t.Fatalf("total_tokens = %d, want 0 when the sum is not representable; output=%s", got, out)
+			}
+		})
+	}
+}
 
 func TestConvertInteractionsRequestToCodexWithToolMessagesDirect(t *testing.T) {
 	out := ConvertInteractionsRequestToCodex("codex-test", []byte(`{"model":"codex-test","system_instruction":"be brief","input":[{"type":"user_input","content":[{"type":"text","text":"hi"}]},{"type":"thought","content":[{"type":"text","text":"thinking"}]},{"type":"function_call","name":"lookup","call_id":"call_1","arguments":{"q":"x"}},{"type":"function_result","name":"lookup","call_id":"call_1","result":{"ok":true}}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}`), false)

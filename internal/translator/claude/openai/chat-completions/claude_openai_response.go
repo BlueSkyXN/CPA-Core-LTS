@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -65,10 +66,20 @@ func (u *claudeUsageTokens) Merge(usage gjson.Result) {
 }
 
 func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalTokens, cachedTokens int64) {
-	cachedTokens = u.CacheReadInputTokens
-	promptTokens = u.InputTokens + u.CacheCreationInputTokens + cachedTokens
-	completionTokens = u.OutputTokens
-	totalTokens = promptTokens + completionTokens
+	inputTokens := translatorcommon.NonNegativeTokenCount(u.InputTokens)
+	cacheCreationTokens := translatorcommon.NonNegativeTokenCount(u.CacheCreationInputTokens)
+	cachedTokens = translatorcommon.NonNegativeTokenCount(u.CacheReadInputTokens)
+	completionTokens = translatorcommon.NonNegativeTokenCount(u.OutputTokens)
+
+	var ok bool
+	promptTokens, ok = translatorcommon.SumNonNegativeTokenCounts(inputTokens, cacheCreationTokens, cachedTokens)
+	if !ok {
+		// Preserve Claude's raw prompt count, but clear the cache classification
+		// when the canonical total input cannot be represented.
+		promptTokens = inputTokens
+		cachedTokens = 0
+	}
+	totalTokens, _ = translatorcommon.SumNonNegativeTokenCounts(promptTokens, completionTokens)
 	return promptTokens, completionTokens, totalTokens, cachedTokens
 }
 

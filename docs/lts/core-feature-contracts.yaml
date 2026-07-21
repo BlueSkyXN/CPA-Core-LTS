@@ -43,7 +43,6 @@ features:
       - chatgpt-credits
       - auth_index
       - latency_ms
-      - uncached_input_tokens
       - reasoning_effort
       - service_tier
       - request_service_tier
@@ -85,7 +84,6 @@ features:
       - success_count
       - failure_count
       - total_tokens
-      - uncached_input_tokens
       - apis
       - models
       - details
@@ -378,7 +376,6 @@ features:
       - redisqueue
       - latency_ms
       - auth_index
-      - uncached_input_tokens
       - effective_service_tier
       - generate
     validation:

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,6 +25,35 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+func TestCodexAbnormalReasoningRetryUsageFailsClosedOnTokenOverflow(t *testing.T) {
+	first := usage.Detail{
+		InputTokens:         math.MaxInt64,
+		OutputTokens:        math.MaxInt64,
+		ReasoningTokens:     math.MaxInt64,
+		CachedTokens:        math.MaxInt64,
+		CacheReadTokens:     math.MaxInt64,
+		CacheCreationTokens: math.MaxInt64,
+		TotalTokens:         math.MaxInt64,
+	}
+	second := usage.Detail{
+		InputTokens:         1,
+		OutputTokens:        1,
+		ReasoningTokens:     1,
+		CachedTokens:        1,
+		CacheReadTokens:     1,
+		CacheCreationTokens: 1,
+		TotalTokens:         1,
+	}
+
+	total := addCodexUsageDetail(first, second)
+	if total.InputTokens != 0 || total.OutputTokens != 0 || total.ReasoningTokens != 0 || total.CachedTokens != 0 || total.CacheReadTokens != 0 || total.CacheCreationTokens != 0 || total.TotalTokens != 0 {
+		t.Fatalf("added detail = %+v, want overflowed token fields to fail closed", total)
+	}
+	if fallback := normalizeCodexUsageDetail(usage.Detail{InputTokens: math.MaxInt64, OutputTokens: 1}); fallback.TotalTokens != 0 {
+		t.Fatalf("fallback total_tokens = %d, want 0 when the fallback sum is not representable", fallback.TotalTokens)
+	}
+}
 
 func TestCodexExecutorAbnormalReasoningRetry_NonStreaming(t *testing.T) {
 	testCases := []struct {
@@ -765,48 +795,21 @@ func TestPatchCodexAbnormalReasoningClientUsageSumsCacheReadAndWrite(t *testing.
 	}
 }
 
-func TestAddCodexUsageDetailPreservesUncachedInputKnowledge(t *testing.T) {
+func TestAddCodexUsageDetailSumsNormalizedTokenCategories(t *testing.T) {
 	first := usage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      0,
-		UncachedInputTokensKnown: true,
+		InputTokens:         100,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+		TotalTokens:         100,
 	}
 	second := usage.Detail{
-		InputTokens:              5,
-		TotalTokens:              5,
-		UncachedInputTokens:      5,
-		UncachedInputTokensKnown: true,
+		InputTokens: 5,
+		TotalTokens: 5,
 	}
 
 	total := addCodexUsageDetail(first, second)
-	if !total.UncachedInputTokensKnown || total.UncachedInputTokens != 5 {
-		t.Fatalf("added detail = %+v, want known uncached input 5", total)
-	}
-
-	mixed := addCodexUsageDetail(first, usage.Detail{InputTokens: 1, TotalTokens: 1})
-	if mixed.UncachedInputTokensKnown {
-		t.Fatalf("mixed detail = %+v, want uncached input unknown", mixed)
-	}
-}
-
-func TestAddCodexUsageDetailRejectsInvalidKnownUncachedInputContribution(t *testing.T) {
-	invalid := usage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      11,
-		UncachedInputTokensKnown: true,
-	}
-	valid := usage.Detail{
-		InputTokens:              10,
-		TotalTokens:              10,
-		UncachedInputTokens:      9,
-		UncachedInputTokensKnown: true,
-	}
-
-	total := addCodexUsageDetail(invalid, valid)
-	if total.UncachedInputTokensKnown || total.UncachedInputTokens != 0 {
-		t.Fatalf("added detail = %+v, want cleared unknown uncached input", total)
+	if total.InputTokens != 105 || total.CacheReadTokens != 30 || total.CacheCreationTokens != 40 || total.TotalTokens != 105 {
+		t.Fatalf("added detail = %+v, want summed normalized token categories", total)
 	}
 }
 

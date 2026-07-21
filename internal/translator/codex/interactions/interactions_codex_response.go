@@ -553,25 +553,25 @@ func setCodexInteractionsUsage(out []byte, path string, usage gjson.Result, stre
 	if !usage.Exists() {
 		return out
 	}
-	inputTokens := usage.Get("input_tokens").Int()
-	outputTokens := usage.Get("output_tokens").Int()
+	inputTokens := translatorcommon.NonNegativeTokenCount(usage.Get("input_tokens").Int())
+	outputTokens := translatorcommon.NonNegativeTokenCount(usage.Get("output_tokens").Int())
 	if inputTokens == 0 {
-		inputTokens = usage.Get("prompt_tokens").Int()
+		inputTokens = translatorcommon.NonNegativeTokenCount(usage.Get("prompt_tokens").Int())
 	}
 	if outputTokens == 0 {
-		outputTokens = usage.Get("completion_tokens").Int()
+		outputTokens = translatorcommon.NonNegativeTokenCount(usage.Get("completion_tokens").Int())
 	}
-	totalTokens := usage.Get("total_tokens").Int()
+	totalTokens := translatorcommon.NonNegativeTokenCount(usage.Get("total_tokens").Int())
 	if totalTokens == 0 {
-		totalTokens = inputTokens + outputTokens
+		totalTokens, _ = translatorcommon.SumNonNegativeTokenCounts(inputTokens, outputTokens)
 	}
-	reasoningTokens := usage.Get("output_tokens_details.reasoning_tokens").Int()
+	reasoningTokens := translatorcommon.NonNegativeTokenCount(usage.Get("output_tokens_details.reasoning_tokens").Int())
 	if reasoningTokens == 0 {
-		reasoningTokens = usage.Get("reasoning_tokens").Int()
+		reasoningTokens = translatorcommon.NonNegativeTokenCount(usage.Get("reasoning_tokens").Int())
 	}
-	cachedTokens := usage.Get("input_tokens_details.cached_tokens").Int()
+	cachedTokens := translatorcommon.NonNegativeTokenCount(usage.Get("input_tokens_details.cached_tokens").Int())
 	if cachedTokens == 0 {
-		cachedTokens = usage.Get("cached_tokens").Int()
+		cachedTokens = translatorcommon.NonNegativeTokenCount(usage.Get("cached_tokens").Int())
 	}
 	if stream {
 		out, _ = sjson.SetBytes(out, path+".total_tokens", totalTokens)
