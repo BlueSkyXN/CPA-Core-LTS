@@ -196,7 +196,7 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	if model == "" {
 		return usage.Record{}, false
 	}
-	detail = normalizeUsageDetailTotal(detail)
+	detail = normalizeUsageDetailTotal(r.provider, detail)
 	if !hasNonZeroTokenUsage(detail) {
 		return usage.Record{}, false
 	}
@@ -224,21 +224,58 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 	if r == nil {
 		return
 	}
-	detail = normalizeUsageDetailTotal(detail)
+	detail = normalizeUsageDetailTotal(r.provider, detail)
 	r.once.Do(func() {
 		r.publishRecord(ctx, r.buildRecord(detail, failed, fail))
 	})
 }
 
-func normalizeUsageDetailTotal(detail usage.Detail) usage.Detail {
+func normalizeUsageDetailTotal(provider string, detail usage.Detail) usage.Detail {
 	if detail.TotalTokens < 0 {
 		detail.TotalTokens = 0
 	}
-	if detail.TotalTokens == 0 {
-		if total, ok := sumNonNegativeUsageTokens(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens); ok && total > 0 {
-			detail.TotalTokens = total
+	minimumTotal, ok := sumNonNegativeUsageTokens(detail.InputTokens, detail.OutputTokens)
+	if !ok {
+		return clearUsageDetailTokens(detail)
+	}
+	if detail.TotalTokens > 0 {
+		if detail.TotalTokens < minimumTotal {
+			detail.TotalTokens = minimumTotal
+		}
+		return detail
+	}
+
+	fallbackTotal := minimumTotal
+	if !reasoningIsOutputSubset(provider) {
+		fallbackTotal, ok = sumNonNegativeUsageTokens(fallbackTotal, detail.ReasoningTokens)
+		if !ok {
+			return clearUsageDetailTokens(detail)
 		}
 	}
+	if fallbackTotal == 0 && detail.ReasoningTokens != 0 {
+		return clearUsageDetailTokens(detail)
+	}
+	detail.TotalTokens = fallbackTotal
+	return detail
+}
+
+func reasoningIsOutputSubset(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "codex":
+		return true
+	default:
+		return false
+	}
+}
+
+func clearUsageDetailTokens(detail usage.Detail) usage.Detail {
+	detail.InputTokens = 0
+	detail.OutputTokens = 0
+	detail.ReasoningTokens = 0
+	detail.CachedTokens = 0
+	detail.CacheReadTokens = 0
+	detail.CacheCreationTokens = 0
+	detail.TotalTokens = 0
 	return detail
 }
 
@@ -668,7 +705,7 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if reasoning.Exists() {
 		detail.ReasoningTokens, _ = parseOptionalStrictUsageTokenCount(reasoning)
 	}
-	return normalizeUsageInputTokenCategories(detail)
+	return normalizeUsageDetailTotal("openai", normalizeUsageInputTokenCategories(detail))
 }
 
 func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {

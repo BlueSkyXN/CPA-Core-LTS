@@ -123,6 +123,7 @@ grep -R "/v0/management/usage/import" -n \
 require_path internal/api/handlers/management/usage.go
 require_path internal/api/handlers/management/usage_contract_test.go
 require_path internal/runtime/executor/helps/usage_helpers.go
+require_path docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
 require_path internal/registry/models/codex_client_models.json
 require_path internal/managementasset/updater.go
 require_path internal/config/config.go
@@ -174,6 +175,38 @@ require_grep "TestRPCUsageIncludesEffectiveServiceTier" internal/pluginhost/host
 require_grep "TestPublishCodexImageToolUsagePreservesResponseTierPrecedence" internal/runtime/executor/codex_openai_images_test.go
 require_grep 'json:"generate"' internal/usage internal/redisqueue
 require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
+require_grep "CanonicalExportVersion" internal/usage/logger_plugin.go internal/api/handlers/management/usage.go docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml
+require_grep "uncached_input_tokens" internal/usage/logger_plugin.go internal/api/handlers/management/usage_contract_test.go docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml
+require_grep '"schema_version"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+require_grep '"migrated_from_version"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+require_grep "v1_uncached_input_tokens_to_v2" internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/core-feature-contracts.yaml docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+require_grep '"code"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+for approved_usage_code in \
+  usage_version_unsupported \
+  usage_shape_invalid \
+  usage_v1_token_contract_invalid \
+  usage_v1_cache_semantics_ambiguous \
+  usage_v2_token_contract_invalid \
+  usage_aggregate_overflow; do
+  require_grep "$approved_usage_code" \
+    internal/api/handlers/management/usage.go \
+    internal/api/handlers/management/usage_contract_test.go \
+    docs/lts/core-feature-contracts.yaml \
+    docs/lts/protected-deltas.yaml \
+    docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+done
+forbid_grep 'usage_''import_' \
+  internal/api/handlers/management/usage.go \
+  internal/api/handlers/management/usage_contract_test.go \
+  docs/lts/core-feature-contracts.yaml \
+  docs/lts/protected-deltas.yaml \
+  docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+forbid_grep 'error_''code' \
+  internal/api/handlers/management/usage.go \
+  internal/api/handlers/management/usage_contract_test.go \
+  docs/lts/core-feature-contracts.yaml \
+  docs/lts/protected-deltas.yaml \
+  docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
 if git grep -n 'json:"thinking' -- internal/usage; then
   echo "non-canonical usage JSON field thinking found; use reasoning_effort" >&2
   exit 1
