@@ -71,11 +71,6 @@ const (
 	xaiUsingAPIAttr = "using_api"
 )
 
-// Always inject native x_search when the client did not declare it so Grok can
-// run X Search server-side. Internal subtool traces are still filtered downstream
-// when this native tool is present (see filterInternalXSearch).
-var xaiXSearchToolJSON = []byte(`{"type":"x_search"}`)
-
 // XAIExecutor is a stateless executor for xAI Grok's Responses API.
 type XAIExecutor struct {
 	cfg *config.Config
@@ -916,12 +911,9 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	clientDeclaredTools := collectXAIClientDeclaredToolKeys(body)
 	body = normalizeXAITools(body)
 	body = promoteXAIAdditionalTools(body)
-	// Drop choices that point at tools removed by normalizeXAITools before we
-	// inject native x_search, so a surviving allowed_tools / forced choice is not
-	// left pointing at a deleted tool once only x_search remains.
+	// Drop choices that point at tools removed by normalizeXAITools.
 	body = normalizeXAINamespaceToolChoice(body)
 	body = pruneXAIOrphanedToolChoice(body)
-	body = ensureXAINativeXSearchTool(body)
 	body = normalizeXAIToolChoiceForTools(body)
 	var replayScope xaiReasoningReplayScope
 	body, replayScope, err = applyXAIReasoningReplayCacheRequired(ctx, from, req, opts, body)
@@ -1332,52 +1324,10 @@ func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 	return body
 }
 
-// ensureXAINativeXSearchTool appends {"type":"x_search"} when the final tools
-// list does not already include native X Search. When tool_choice restricts the
-// model to allowed_tools, x_search is also added there (without duplicates) so
-// Grok can select the injected tool. HTTP and websocket executors both prepare
-// payloads through prepareResponsesRequestTo, so this runs once before the body
-// is submitted upstream.
-func ensureXAINativeXSearchTool(body []byte) []byte {
-	if !gjson.ValidBytes(body) {
-		return body
-	}
-	if !xaiRequestHasNativeXSearch(body) {
-		tools := gjson.GetBytes(body, "tools")
-		if !tools.Exists() || !tools.IsArray() {
-			body, _ = sjson.SetRawBytes(body, "tools", []byte(`[{"type":"x_search"}]`))
-		} else {
-			body, _ = sjson.SetRawBytes(body, "tools.-1", xaiXSearchToolJSON)
-		}
-	}
-	return ensureXAINativeXSearchAllowedTools(body)
-}
-
-// ensureXAINativeXSearchAllowedTools appends x_search to tool_choice.tools when
-// the choice mode is allowed_tools and x_search is not already listed.
-func ensureXAINativeXSearchAllowedTools(body []byte) []byte {
-	choice := gjson.GetBytes(body, "tool_choice")
-	if !choice.IsObject() || choice.Get("type").String() != "allowed_tools" {
-		return body
-	}
-	allowed := choice.Get("tools")
-	if !allowed.Exists() || !allowed.IsArray() {
-		body, _ = sjson.SetRawBytes(body, "tool_choice.tools", []byte(`[{"type":"x_search"}]`))
-		return body
-	}
-	for _, tool := range allowed.Array() {
-		if strings.TrimSpace(tool.Get("type").String()) == xaiXSearchToolType {
-			return body
-		}
-	}
-	body, _ = sjson.SetRawBytes(body, "tool_choice.tools.-1", xaiXSearchToolJSON)
-	return body
-}
-
-// pruneXAIOrphanedToolChoice removes tool_choice entries that no longer match
-// any remaining tool after normalizeXAITools filtering. Forced choices that
-// reference a deleted tool are dropped entirely; allowed_tools lists keep only
-// choices that still resolve against the post-normalization tools set.
+// pruneXAIOrphanedToolChoice reconciles tool_choice entries with the tools that
+// survive normalizeXAITools filtering. A restriction that loses every target
+// becomes an explicit none choice instead of being deleted: deleting it would
+// restore xAI's default auto policy and broaden authority to unrelated tools.
 func pruneXAIOrphanedToolChoice(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -1405,18 +1355,24 @@ func pruneXAIOrphanedToolChoice(body []byte) []byte {
 		if xaiToolChoiceMatchesAvailable(choice, available) {
 			return body
 		}
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		return body
+		return failClosedXAIToolChoice(body)
 	}
+}
+
+func failClosedXAIToolChoice(body []byte) []byte {
+	body, _ = sjson.SetBytes(body, "tool_choice", "none")
+	return body
 }
 
 func pruneXAIAllowedToolsChoice(body []byte, available map[xaiToolChoiceKey]struct{}) []byte {
 	allowed := gjson.GetBytes(body, "tool_choice.tools")
 	if !allowed.Exists() || !allowed.IsArray() {
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		return body
+		return failClosedXAIToolChoice(body)
 	}
 	allowedItems := allowed.Array()
+	if len(allowedItems) == 0 {
+		return failClosedXAIToolChoice(body)
+	}
 	filtered := make([][]byte, 0, len(allowedItems))
 	changed := false
 	for _, tool := range allowedItems {
@@ -1430,8 +1386,7 @@ func pruneXAIAllowedToolsChoice(body []byte, available map[xaiToolChoiceKey]stru
 		return body
 	}
 	if len(filtered) == 0 {
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		return body
+		return failClosedXAIToolChoice(body)
 	}
 	body, _ = sjson.SetRawBytes(body, "tool_choice.tools", helps.JoinRawJSONArray(filtered))
 	return body
@@ -1632,10 +1587,12 @@ func normalizeXAIToolArray(tools gjson.Result) ([]byte, bool, bool) {
 	return helps.JoinRawJSONArray(filtered), true, true
 }
 
-// normalizeXAIToolChoiceForTools drops tool_choice and parallel_tool_calls
-// when tools are absent or empty (including after normalizeXAITools filtering).
-// xAI rejects payloads that include tool_choice without any tools defined.
-// Existence checks avoid unnecessary sjson parse/copy passes.
+// normalizeXAIToolChoiceForTools removes tool choices and parallel calls when
+// tools are absent or empty (including after normalizeXAITools filtering). An
+// explicit tool_choice:none is preserved because it narrows, rather than
+// grants, tool authority; parallel_tool_calls is always removed because it has
+// no meaning without tools. Existence checks avoid unnecessary sjson parse/copy
+// passes.
 func normalizeXAIToolChoiceForTools(body []byte) []byte {
 	tools := gjson.GetBytes(body, "tools")
 	hasTools := tools.Exists() && tools.IsArray() && len(tools.Array()) > 0
@@ -1657,7 +1614,8 @@ func normalizeXAIToolChoiceForTools(body []byte) []byte {
 	if tools.Exists() {
 		body, _ = sjson.DeleteBytes(body, "tools")
 	}
-	if gjson.GetBytes(body, "tool_choice").Exists() {
+	choice := gjson.GetBytes(body, "tool_choice")
+	if choice.Exists() && !(choice.Type == gjson.String && strings.EqualFold(strings.TrimSpace(choice.String()), "none")) {
 		body, _ = sjson.DeleteBytes(body, "tool_choice")
 	}
 	if gjson.GetBytes(body, "parallel_tool_calls").Exists() {
@@ -1676,7 +1634,20 @@ func normalizeXAINamespaceToolChoice(body []byte) []byte {
 	original := body
 	normalizeAtPath := func(path string) bool {
 		toolChoice := gjson.GetBytes(body, path)
-		if !toolChoice.IsObject() || toolChoice.Get("type").String() != xaiFunctionToolType {
+		if !toolChoice.IsObject() {
+			return true
+		}
+		toolType := strings.TrimSpace(toolChoice.Get("type").String())
+		if toolType == xaiCustomToolType {
+			updated, errSet := sjson.SetBytes(body, path+".type", xaiFunctionToolType)
+			if errSet != nil {
+				return false
+			}
+			body = updated
+			toolChoice = gjson.GetBytes(body, path)
+			toolType = xaiFunctionToolType
+		}
+		if toolType != xaiFunctionToolType {
 			return true
 		}
 		namespaceName := strings.TrimSpace(toolChoice.Get("namespace").String())
