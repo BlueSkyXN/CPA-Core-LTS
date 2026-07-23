@@ -461,17 +461,20 @@ patches:
     retire_when: Upstream removes reasoning.summary for gpt-5.3-codex-spark after all request overrides while preserving reasoning.effort and the listed regressions pass without the downstream implementation.
 
   - id: xai-explicit-tool-choice-none
-    reason: xAI request preparation injects native x_search after removing tool_choice fields for an empty client tool list, so an explicit tool_choice none can be lost and the model may invoke search despite the client prohibition.
+    reason: xAI request preparation must not grant native x_search when the client declared no tools or a restricted allowlist; explicit tool_choice none must remain intact while parallel_tool_calls is removed when no tools survive, and custom declarations and choices must be canonicalized together before orphan pruning.
     introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
-    affected_upstream_range: through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); upstream promotes additional_tools and adopts conditional payload mutations, but still normalizes tool_choice before injecting x_search. LTS keeps the explicit none/parallel false guard while absorbing the new tool promotion path.
+    affected_upstream_range: through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); upstream promotes additional_tools and adopts conditional payload mutations, but still injects x_search without explicit client authorization. LTS preserves only client-declared tools, keeps explicit none, removes parallel_tool_calls when no tools survive, and canonicalizes custom choices before pruning.
     files:
       - internal/runtime/executor/xai_executor.go
       - internal/runtime/executor/xai_executor_test.go
     regression_tests:
-      - TestXAIExecutorPreparePreservesExplicitToolChoiceNoneAfterXSearchInject
+      - TestXAIExecutorPrepareDoesNotInjectUnauthorizedXSearch
+      - TestXAIExecutorPrepareCanonicalizesCustomToolChoices
+      - TestXAIExecutorPrepareAllowedToolsDoesNotExpandWithXSearch
+      - TestXAIExecutorPrepareDropsParallelToolCallsWithoutToolsEvenForExplicitNone
     upstream_issue_or_pr: not-filed
     state: required
-    retire_when: Upstream injects the native x_search tool before the no-tools tool_choice cleanup, preserves explicit tool_choice none and parallel_tool_calls false on the shared HTTP/WebSocket preparation path, and the listed regression passes without the downstream ordering patch.
+    retire_when: Upstream requires explicit authorization for native x_search, does not expand restricted allowlists, preserves explicit tool_choice none while dropping parallel_tool_calls when no tools survive, canonicalizes custom choices before pruning on the shared HTTP/WebSocket preparation path, and all listed regressions pass without the downstream patch.
 
   - id: kimi-claude-delegated-auth-immutability
     reason: Kimi delegates Claude-format requests to the Claude executor, but the selected Auth attributes are shared immutable credential configuration and must not be mutated per request to install the Kimi messages base URL.
