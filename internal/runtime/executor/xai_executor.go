@@ -1370,6 +1370,9 @@ func pruneXAIAllowedToolsChoice(body []byte, available map[xaiToolChoiceKey]stru
 		return failClosedXAIToolChoice(body)
 	}
 	allowedItems := allowed.Array()
+	if len(allowedItems) == 0 {
+		return failClosedXAIToolChoice(body)
+	}
 	filtered := make([][]byte, 0, len(allowedItems))
 	changed := false
 	for _, tool := range allowedItems {

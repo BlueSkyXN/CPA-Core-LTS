@@ -625,6 +625,10 @@ func TestXAIExecutorPrepareFailsClosedWhenRestrictedChoiceIsOrphaned(t *testing.
 			toolChoice: `{"type":"allowed_tools","tools":[{"type":"image_generation"}]}`,
 		},
 		{
+			name:       "empty allowed tools",
+			toolChoice: `{"type":"allowed_tools","tools":[]}`,
+		},
+		{
 			name:       "forced tool",
 			toolChoice: `{"type":"image_generation"}`,
 		},
