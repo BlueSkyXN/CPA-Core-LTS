@@ -80,7 +80,7 @@ func prepareAuthRenderStaging(spoolRoot string) (string, secureAuthRootIdentity,
 // a file whose parent and leaf are held open without FILE_SHARE_DELETE. The
 // provider can open the same regular file for writing, but neither pathname can
 // be replaced by a junction or reparse point while credential bytes are written.
-func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error }, stagingDir string, stagingRoot secureAuthRootIdentity) ([]byte, bool, error) {
+func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error }, stagingDir string, stagingRoot secureAuthRootIdentity) (raw []byte, wrote bool, err error) {
 	if strings.TrimSpace(stagingDir) == "" || !stagingRoot.valid {
 		return nil, false, fmt.Errorf("object store: managed auth staging directory is not initialized")
 	}
@@ -100,9 +100,25 @@ func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error 
 		_ = windows.CloseHandle(fileHandle)
 		return nil, false, fmt.Errorf("object store: create auth staging file: invalid handle")
 	}
-	defer func() {
-		_ = deleteWindowsFileByHandle(fileHandle)
+	fileIdentity, err := secureAuthRootIdentityForHandle(fileHandle)
+	if err != nil {
 		_ = file.Close()
+		return nil, false, fmt.Errorf("object store: capture auth staging file identity: %w", err)
+	}
+	defer func() {
+		closeErr := file.Close()
+		removeErr := removeLockedWindowsRenderFileAt(directoryHandle, stagingName, fileIdentity)
+		if closeErr != nil {
+			closeErr = fmt.Errorf("object store: close auth staging file: %w", closeErr)
+		}
+		if removeErr != nil {
+			removeErr = fmt.Errorf("object store: remove auth staging file: %w", removeErr)
+		}
+		if cleanupErr := errors.Join(closeErr, removeErr); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+			raw = nil
+			wrote = false
+		}
 	}()
 
 	if err = storage.SaveTokenToFile(stagingPath); err != nil {
@@ -118,11 +134,27 @@ func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error 
 	if _, err = file.Seek(0, io.SeekStart); err != nil {
 		return nil, false, fmt.Errorf("object store: rewind rendered auth file: %w", err)
 	}
-	raw, err := io.ReadAll(file)
+	raw, err = io.ReadAll(file)
 	if err != nil {
 		return nil, false, fmt.Errorf("object store: read rendered auth file: %w", err)
 	}
 	return raw, true, nil
+}
+
+func removeLockedWindowsRenderFileAt(parent windows.Handle, name string, expected secureAuthRootIdentity) error {
+	handle, err := openSecureWindowsAuthFileAt(parent, name, windows.DELETE|windows.SYNCHRONIZE)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	actual, err := secureAuthRootIdentityForHandle(handle)
+	if err != nil {
+		return err
+	}
+	if !expected.valid || actual.volumeSerial != expected.volumeSerial || actual.fileIndex != expected.fileIndex {
+		return fmt.Errorf("auth staging file identity changed before cleanup")
+	}
+	return deleteWindowsFileByHandle(handle)
 }
 
 func openLockedWindowsRenderDirectory(path string, expectedRoot secureAuthRootIdentity) (windows.Handle, error) {
@@ -186,7 +218,7 @@ func createLockedWindowsRenderFileAt(parent windows.Handle) (string, windows.Han
 		var allocationSize int64
 		err = windows.NtCreateFile(
 			&handle,
-			windows.FILE_GENERIC_READ|windows.FILE_READ_ATTRIBUTES|windows.DELETE|windows.READ_CONTROL|windows.WRITE_DAC,
+			windows.FILE_GENERIC_READ|windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.WRITE_DAC,
 			attributes,
 			&status,
 			&allocationSize,
