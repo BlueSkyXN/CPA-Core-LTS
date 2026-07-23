@@ -35,6 +35,12 @@ type noOpTokenStorage struct{}
 
 func (*noOpTokenStorage) SaveTokenToFile(string) error { return nil }
 
+type successfulTokenStorage struct{}
+
+func (*successfulTokenStorage) SaveTokenToFile(path string) error {
+	return os.WriteFile(path, []byte(`{"type":"test"}`), 0o600)
+}
+
 type rawJSONTokenStorage struct {
 	called bool
 }
@@ -458,7 +464,7 @@ func TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight(t *testing.T) 
 		},
 	}
 
-	for _, replacement := range []string{"symlink", "directory"} {
+	for _, replacement := range []string{"symlink", "directory", "missing"} {
 		for _, operation := range operations {
 			t.Run(replacement+"/"+operation.name, func(t *testing.T) {
 				remotePutCalls := 0
@@ -487,12 +493,14 @@ func TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight(t *testing.T) 
 					if err := os.WriteFile(localPath, []byte(`{"type":"local"}`), 0o600); err != nil {
 						t.Fatalf("write original auth: %v", err)
 					}
-					outsidePath := filepath.Join(replacementFixtureAuthDir, "team", "token.json")
-					if err := os.MkdirAll(filepath.Dir(outsidePath), 0o700); err != nil {
-						t.Fatalf("create replacement auth directory: %v", err)
-					}
-					if err := os.WriteFile(outsidePath, []byte(`{"type":"external"}`), 0o600); err != nil {
-						t.Fatalf("write replacement auth: %v", err)
+					if replacement != "missing" {
+						outsidePath := filepath.Join(replacementFixtureAuthDir, "team", "token.json")
+						if err := os.MkdirAll(filepath.Dir(outsidePath), 0o700); err != nil {
+							t.Fatalf("create replacement auth directory: %v", err)
+						}
+						if err := os.WriteFile(outsidePath, []byte(`{"type":"external"}`), 0o600); err != nil {
+							t.Fatalf("write replacement auth: %v", err)
+						}
 					}
 				}
 
@@ -503,11 +511,14 @@ func TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight(t *testing.T) 
 				if replacement == "directory" && !errors.Is(err, errObjectStoreAuthRootChanged) {
 					t.Fatalf("auth operation error = %v, want root identity change", err)
 				}
+				if replacement == "missing" && !errors.Is(err, errObjectStoreAuthRootUnavailable) {
+					t.Fatalf("auth operation error = %v, want unavailable initialized root", err)
+				}
 
 				replacementPath := filepath.Join(replacementObservedAuthDir, "team", "token.json")
-				if operation.name == "write" {
+				if operation.name == "write" || replacement == "missing" {
 					if _, err := os.Stat(replacementPath); !errors.Is(err, fs.ErrNotExist) {
-						t.Fatalf("write reached replacement auth root: %v", err)
+						t.Fatalf("operation reached unavailable/replacement auth root: %v", err)
 					}
 				} else if got, err := os.ReadFile(replacementPath); err != nil || string(got) != `{"type":"external"}` {
 					t.Fatalf("replacement auth changed: data=%q err=%v", got, err)
@@ -526,6 +537,59 @@ func TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+func TestObjectTokenStoreSaveRejectsAuthRootRemovalBeforeUpload(t *testing.T) {
+	remotePutCalls := 0
+	remoteDeleteCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.RawQuery, "location") {
+			_, _ = w.Write([]byte(`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></LocationConstraint>`))
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			remotePutCalls++
+		case http.MethodDelete:
+			remoteDeleteCalls++
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	managedRoot := filepath.Join(t.TempDir(), "managed")
+	store, err := NewObjectTokenStore(ObjectStoreConfig{
+		Endpoint:  strings.TrimPrefix(server.URL, "http://"),
+		Bucket:    "test-bucket",
+		AccessKey: "access",
+		SecretKey: "secret",
+		LocalRoot: managedRoot,
+	})
+	if err != nil {
+		t.Fatalf("create object token store: %v", err)
+	}
+	movedRoot := managedRoot + "-moved"
+	store.beforeAuthReadHook = func() {
+		if err := os.Rename(managedRoot, movedRoot); err != nil {
+			t.Fatalf("move initialized object-store root before upload: %v", err)
+		}
+	}
+
+	_, err = store.Save(context.Background(), &cliproxyauth.Auth{
+		ID:       "root-removed-before-upload",
+		FileName: filepath.Join("team", "token.json"),
+		Storage:  &successfulTokenStorage{},
+	})
+	if !errors.Is(err, errObjectStoreAuthRootUnavailable) {
+		t.Fatalf("Save() error = %v, want unavailable initialized root", err)
+	}
+	if remotePutCalls != 0 || remoteDeleteCalls != 0 {
+		t.Fatalf("remote mutations after root removal: PUT=%d DELETE=%d", remotePutCalls, remoteDeleteCalls)
+	}
+	writtenPath := filepath.Join(movedRoot, "auths", "team", "token.json")
+	if got, err := os.ReadFile(writtenPath); err != nil || string(got) != `{"type":"test"}` {
+		t.Fatalf("credential written before root removal = %q, err=%v", got, err)
 	}
 }
 
@@ -576,6 +640,9 @@ func newAuthRootReplacementStore(t *testing.T, serverURL, replacement string) (*
 			if err = os.Symlink(replacementRoot, managedRoot); err != nil {
 				t.Fatalf("replace object-store root with symlink: %v", err)
 			}
+			return
+		}
+		if replacement == "missing" {
 			return
 		}
 		if err = os.Rename(replacementRoot, managedRoot); err != nil {
@@ -640,7 +707,9 @@ func mustCaptureSecureAuthRootIdentity(t *testing.T, authDir string) secureAuthR
 
 func mustPrepareAuthRenderStaging(t *testing.T) (string, secureAuthRootIdentity) {
 	t.Helper()
-	stagingDir, stagingRoot, err := prepareAuthRenderStaging(t.TempDir())
+	spoolRoot := t.TempDir()
+	spoolIdentity := mustCaptureSecureAuthRootIdentity(t, spoolRoot)
+	stagingDir, stagingRoot, err := prepareAuthRenderStaging(spoolRoot, spoolIdentity)
 	if err != nil {
 		t.Fatalf("prepare auth render staging: %v", err)
 	}

@@ -89,6 +89,24 @@ func TestSecureAuthFileWindowsMissingLeaf(t *testing.T) {
 	}
 }
 
+func TestSecureAuthFileWindowsMissingInitializedRoot(t *testing.T) {
+	parent := t.TempDir()
+	baseDir := filepath.Join(parent, "auths")
+	if err := os.Mkdir(baseDir, 0o700); err != nil {
+		t.Fatalf("create initialized auth root: %v", err)
+	}
+	root := mustCaptureSecureAuthRootIdentity(t, baseDir)
+	if err := os.Rename(baseDir, baseDir+"-moved"); err != nil {
+		t.Fatalf("move initialized auth root: %v", err)
+	}
+	if _, _, err := secureReadAuthFile(baseDir, root, "missing.json"); !errors.Is(err, errObjectStoreAuthRootUnavailable) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("read missing initialized root error = %v, want root unavailable only", err)
+	}
+	if err := secureRemoveAuthFile(baseDir, root, "missing.json"); !errors.Is(err, errObjectStoreAuthRootUnavailable) || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("remove missing initialized root error = %v, want root unavailable only", err)
+	}
+}
+
 func TestSecureAuthFileWindowsFinalDACL(t *testing.T) {
 	baseDir := t.TempDir()
 	root := mustCaptureSecureAuthRootIdentity(t, baseDir)

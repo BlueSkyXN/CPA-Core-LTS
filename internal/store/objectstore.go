@@ -30,7 +30,16 @@ const (
 var (
 	errObjectStoreAuthRootIdentityUnavailable = errors.New("object store: auth root identity is not initialized")
 	errObjectStoreAuthRootChanged             = errors.New("object store: auth root identity changed after initialization")
+	errObjectStoreAuthRootUnavailable         = errors.New("object store: initialized auth root is unavailable")
+	errObjectStoreSpoolRootChanged            = errors.New("object store: spool root identity changed during initialization")
 )
+
+func secureAuthRootOpenError(err error, expected secureAuthRootIdentity) error {
+	if err == nil || !expected.valid {
+		return err
+	}
+	return fmt.Errorf("%w: %v", errObjectStoreAuthRootUnavailable, err)
+}
 
 // ObjectStoreConfig captures configuration for the object storage-backed token store.
 type ObjectStoreConfig struct {
@@ -107,11 +116,15 @@ func NewObjectTokenStore(cfg ObjectStoreConfig) (*ObjectTokenStore, error) {
 	if err = os.MkdirAll(authDir, 0o700); err != nil {
 		return nil, fmt.Errorf("object store: create auth directory: %w", err)
 	}
+	spoolRootIdentity, err := captureSecureAuthRootIdentity(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("object store: pin spool directory identity: %w", err)
+	}
 	authRoot, err := captureSecureAuthRootIdentity(authDir)
 	if err != nil {
 		return nil, fmt.Errorf("object store: pin auth directory identity: %w", err)
 	}
-	renderDir, renderRoot, err := prepareAuthRenderStaging(absRoot)
+	renderDir, renderRoot, err := prepareAuthRenderStaging(absRoot, spoolRootIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("object store: prepare auth render staging: %w", err)
 	}

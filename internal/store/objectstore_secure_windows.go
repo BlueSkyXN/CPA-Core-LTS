@@ -81,7 +81,7 @@ func validateSecureAuthRootPath(baseDir string, expected secureAuthRootIdentity)
 	}
 	handle, err := openSecureWindowsRoot(absBase)
 	if err != nil {
-		return err
+		return secureAuthRootOpenError(err, expected)
 	}
 	defer func() { _ = windows.CloseHandle(handle) }()
 	return validateSecureAuthRootIdentity(handle, expected)
@@ -186,7 +186,7 @@ func openSecureWindowsAuthParent(baseDir string, expectedRoot secureAuthRootIden
 	}
 	dirHandle, err := openSecureWindowsRoot(absBase)
 	if err != nil {
-		return 0, "", err
+		return 0, "", secureAuthRootOpenError(err, expectedRoot)
 	}
 	if err = validateSecureAuthRootIdentity(dirHandle, expectedRoot); err != nil {
 		_ = windows.CloseHandle(dirHandle)

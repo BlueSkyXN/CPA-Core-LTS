@@ -565,6 +565,7 @@ patches:
       - TestObjectTokenStoreUploadMissingAuthDeletesRemoteObject
       - TestObjectTokenStoreListSkipsPathSwappedExternalAuth
       - TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight
+      - TestObjectTokenStoreSaveRejectsAuthRootRemovalBeforeUpload
       - TestRenderAuthStoragePrefersPathFreeRawJSON
       - TestRenderAuthStorageUsesAnonymousDescriptorPath
       - TestSecureAuthOperationsRejectAncestorSymlinkSwap

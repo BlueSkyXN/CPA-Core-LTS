@@ -23,23 +23,36 @@ const (
 	authRenderFileSuffix     = ".tmp"
 )
 
-func prepareAuthRenderStaging(spoolRoot string) (string, secureAuthRootIdentity, error) {
-	stagingDir := filepath.Join(spoolRoot, authRenderStagingDirName)
-	if err := os.Mkdir(stagingDir, 0o700); err != nil && !os.IsExist(err) {
-		return "", secureAuthRootIdentity{}, fmt.Errorf("create managed auth staging directory: %w", err)
+func prepareAuthRenderStaging(spoolRoot string, expectedSpoolRoot secureAuthRootIdentity) (string, secureAuthRootIdentity, error) {
+	if !expectedSpoolRoot.valid {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("managed spool root identity is not initialized")
 	}
-	info, err := os.Lstat(stagingDir)
+	absSpoolRoot, err := filepath.Abs(spoolRoot)
 	if err != nil {
-		return "", secureAuthRootIdentity{}, fmt.Errorf("inspect managed auth staging directory: %w", err)
+		return "", secureAuthRootIdentity{}, fmt.Errorf("resolve managed spool root: %w", err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", secureAuthRootIdentity{}, fmt.Errorf("managed auth staging path is not a regular directory")
+	spoolHandle, err := openSecureWindowsRoot(absSpoolRoot)
+	if err != nil {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("open managed spool root: %w", err)
 	}
-
-	directoryHandle, err := openLockedWindowsRenderDirectory(stagingDir, secureAuthRootIdentity{})
+	defer func() { _ = windows.CloseHandle(spoolHandle) }()
+	actualSpoolRoot, err := secureAuthRootIdentityForHandle(spoolHandle)
 	if err != nil {
 		return "", secureAuthRootIdentity{}, err
 	}
+	if actualSpoolRoot.volumeSerial != expectedSpoolRoot.volumeSerial || actualSpoolRoot.fileIndex != expectedSpoolRoot.fileIndex {
+		return "", secureAuthRootIdentity{}, errObjectStoreSpoolRootChanged
+	}
+
+	directoryHandle, err := openOrCreateSecureWindowsDirectoryAt(spoolHandle, authRenderStagingDirName)
+	if err != nil {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("open managed auth staging directory: %w", err)
+	}
+	if err = restrictWindowsRenderHandle(directoryHandle); err != nil {
+		_ = windows.CloseHandle(directoryHandle)
+		return "", secureAuthRootIdentity{}, err
+	}
+	stagingDir := filepath.Join(absSpoolRoot, authRenderStagingDirName)
 	directory := os.NewFile(uintptr(directoryHandle), stagingDir)
 	if directory == nil {
 		_ = windows.CloseHandle(directoryHandle)

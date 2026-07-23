@@ -55,7 +55,7 @@ func validateSecureAuthRootIdentity(dirFD int, expected secureAuthRootIdentity) 
 func validateSecureAuthRootPath(baseDir string, expected secureAuthRootIdentity) error {
 	dirFD, err := openSecureAuthRootWithHook(baseDir, nil)
 	if err != nil {
-		return err
+		return secureAuthRootOpenError(err, expected)
 	}
 	defer func() { _ = unix.Close(dirFD) }()
 	return validateSecureAuthRootIdentity(dirFD, expected)
@@ -180,7 +180,7 @@ func openSecureAuthParentWithRootHook(baseDir string, expectedRoot secureAuthRoo
 
 	dirFD, err := openSecureAuthRootWithHook(baseDir, afterRootSnapshot)
 	if err != nil {
-		return -1, "", err
+		return -1, "", secureAuthRootOpenError(err, expectedRoot)
 	}
 	if err = validateSecureAuthRootIdentity(dirFD, expectedRoot); err != nil {
 		_ = unix.Close(dirFD)

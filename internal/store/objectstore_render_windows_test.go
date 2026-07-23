@@ -5,11 +5,13 @@ package store
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"golang.org/x/sys/windows"
 )
 
 type lockedWindowsAuthStorage struct {
@@ -35,7 +37,9 @@ func (s *lockedWindowsAuthStorage) SaveTokenToFile(path string) error {
 }
 
 func TestRenderAuthStorageLocksWindowsStagingPaths(t *testing.T) {
-	stagingDir, stagingRoot, err := prepareAuthRenderStaging(t.TempDir())
+	spoolRoot := t.TempDir()
+	spoolIdentity := mustCaptureSecureAuthRootIdentity(t, spoolRoot)
+	stagingDir, stagingRoot, err := prepareAuthRenderStaging(spoolRoot, spoolIdentity)
 	if err != nil {
 		t.Fatalf("prepare managed Windows auth staging: %v", err)
 	}
@@ -71,7 +75,8 @@ func TestRenderAuthStorageLocksWindowsStagingPaths(t *testing.T) {
 
 func TestRenderAuthStorageLocksWindowsStagingCleanup(t *testing.T) {
 	spoolRoot := t.TempDir()
-	stagingDir, _, err := prepareAuthRenderStaging(spoolRoot)
+	spoolIdentity := mustCaptureSecureAuthRootIdentity(t, spoolRoot)
+	stagingDir, _, err := prepareAuthRenderStaging(spoolRoot, spoolIdentity)
 	if err != nil {
 		t.Fatalf("prepare initial managed Windows auth staging: %v", err)
 	}
@@ -79,7 +84,7 @@ func TestRenderAuthStorageLocksWindowsStagingCleanup(t *testing.T) {
 	if err = os.WriteFile(stalePath, []byte(`{"type":"stale"}`), 0o600); err != nil {
 		t.Fatalf("write simulated crash residue: %v", err)
 	}
-	stagingDir, stagingRoot, err := prepareAuthRenderStaging(spoolRoot)
+	stagingDir, stagingRoot, err := prepareAuthRenderStaging(spoolRoot, spoolIdentity)
 	if err != nil {
 		t.Fatalf("clean simulated crash residue: %v", err)
 	}
@@ -111,7 +116,8 @@ func TestRenderAuthStorageLocksWindowsStagingCleanup(t *testing.T) {
 
 func TestRenderAuthStorageLocksWindowsStagingRootReplacement(t *testing.T) {
 	spoolRoot := t.TempDir()
-	stagingDir, stagingRoot, err := prepareAuthRenderStaging(spoolRoot)
+	spoolIdentity := mustCaptureSecureAuthRootIdentity(t, spoolRoot)
+	stagingDir, stagingRoot, err := prepareAuthRenderStaging(spoolRoot, spoolIdentity)
 	if err != nil {
 		t.Fatalf("prepare managed Windows auth staging: %v", err)
 	}
@@ -136,5 +142,111 @@ func TestRenderAuthStorageLocksWindowsStagingRootReplacement(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("replacement auth staging directory received files: %v", entries)
+	}
+}
+
+func TestRenderAuthStorageLocksWindowsStagingInitializationRootReplacement(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T) (string, secureAuthRootIdentity, string)
+	}{
+		{
+			name: "ordinary spool directory",
+			setup: func(t *testing.T) (string, secureAuthRootIdentity, string) {
+				parent := t.TempDir()
+				spoolRoot := filepath.Join(parent, "spool")
+				if err := os.Mkdir(spoolRoot, 0o700); err != nil {
+					t.Fatalf("create initialized spool root: %v", err)
+				}
+				identity := mustCaptureSecureAuthRootIdentity(t, spoolRoot)
+				replacementRoot := filepath.Join(parent, "replacement")
+				residue := filepath.Join(replacementRoot, authRenderStagingDirName, authRenderFilePrefix+"outside"+authRenderFileSuffix)
+				if err := os.MkdirAll(filepath.Dir(residue), 0o700); err != nil {
+					t.Fatalf("create replacement staging root: %v", err)
+				}
+				if err := os.WriteFile(residue, []byte("outside"), 0o600); err != nil {
+					t.Fatalf("write replacement staging residue: %v", err)
+				}
+				setWindowsPathWideDACL(t, filepath.Dir(residue))
+				if err := os.Rename(spoolRoot, spoolRoot+"-original"); err != nil {
+					t.Fatalf("move initialized spool root: %v", err)
+				}
+				if err := os.Rename(replacementRoot, spoolRoot); err != nil {
+					t.Fatalf("install replacement spool root: %v", err)
+				}
+				return spoolRoot, identity, filepath.Join(spoolRoot, authRenderStagingDirName, filepath.Base(residue))
+			},
+		},
+		{
+			name: "ancestor junction",
+			setup: func(t *testing.T) (string, secureAuthRootIdentity, string) {
+				root := t.TempDir()
+				ancestor := filepath.Join(root, "managed")
+				spoolRoot := filepath.Join(ancestor, "spool")
+				if err := os.MkdirAll(spoolRoot, 0o700); err != nil {
+					t.Fatalf("create initialized spool root: %v", err)
+				}
+				identity := mustCaptureSecureAuthRootIdentity(t, spoolRoot)
+				outsideAncestor := filepath.Join(root, "outside")
+				residue := filepath.Join(outsideAncestor, "spool", authRenderStagingDirName, authRenderFilePrefix+"outside"+authRenderFileSuffix)
+				if err := os.MkdirAll(filepath.Dir(residue), 0o700); err != nil {
+					t.Fatalf("create outside staging root: %v", err)
+				}
+				if err := os.WriteFile(residue, []byte("outside"), 0o600); err != nil {
+					t.Fatalf("write outside staging residue: %v", err)
+				}
+				setWindowsPathWideDACL(t, filepath.Dir(residue))
+				if err := os.Rename(ancestor, ancestor+"-original"); err != nil {
+					t.Fatalf("move initialized spool ancestor: %v", err)
+				}
+				if output, err := exec.Command("cmd", "/c", "mklink", "/J", ancestor, outsideAncestor).CombinedOutput(); err != nil {
+					t.Skipf("mklink /J unavailable: %v (%s)", err, strings.TrimSpace(string(output)))
+				}
+				return spoolRoot, identity, residue
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spoolRoot, identity, outsideResidue := test.setup(t)
+			if _, _, err := prepareAuthRenderStaging(spoolRoot, identity); err == nil {
+				t.Fatal("managed staging initialization accepted a replaced spool root")
+			}
+			if got, err := os.ReadFile(outsideResidue); err != nil || string(got) != "outside" {
+				t.Fatalf("outside staging residue changed: data=%q err=%v", got, err)
+			}
+			assertWindowsPathDACLUnprotected(t, filepath.Dir(outsideResidue))
+		})
+	}
+}
+
+func setWindowsPathWideDACL(t *testing.T, path string) {
+	t.Helper()
+	descriptor, err := windows.SecurityDescriptorFromString("D:AI(A;;GA;;;WD)")
+	if err != nil {
+		t.Fatalf("build wide staging DACL: %v", err)
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		t.Fatalf("read wide staging DACL: %v", err)
+	}
+	if err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		t.Fatalf("apply wide staging DACL: %v", err)
+	}
+}
+
+func assertWindowsPathDACLUnprotected(t *testing.T, path string) {
+	t.Helper()
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatalf("read staging DACL: %v", err)
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		t.Fatalf("read staging DACL control: %v", err)
+	}
+	if control&windows.SE_DACL_PROTECTED != 0 {
+		t.Fatalf("outside staging DACL was unexpectedly protected: control=%#x", control)
 	}
 }

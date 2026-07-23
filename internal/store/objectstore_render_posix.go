@@ -12,7 +12,7 @@ import (
 // through an anonymous file descriptor. The provider sees only /dev/fd (or
 // /proc/self/fd), so another process cannot replace a staging pathname with a
 // symlink between validation and the credential write.
-func prepareAuthRenderStaging(string) (string, secureAuthRootIdentity, error) {
+func prepareAuthRenderStaging(string, secureAuthRootIdentity) (string, secureAuthRootIdentity, error) {
 	return "", secureAuthRootIdentity{}, nil
 }
 
