@@ -242,7 +242,10 @@ func ConvertAntigravityResponseToOpenAINonStream(ctx context.Context, modelName 
 	responseResult := gjson.GetBytes(rawJSON, "response")
 	if responseResult.Exists() {
 		responseJSON := restoreAntigravityOpenAIFunctionNames([]byte(responseResult.Raw), originalRequestRawJSON)
-		return ConvertGeminiResponseToOpenAINonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, responseJSON, param)
+		// Function names have already been restored with the collision-aware map.
+		// Do not pass the original request into the generic converter, whose legacy
+		// Claude-style map would otherwise restore mixed tool declarations twice.
+		return ConvertGeminiResponseToOpenAINonStream(ctx, modelName, nil, requestRawJSON, responseJSON, param)
 	}
 	return []byte{}
 }
