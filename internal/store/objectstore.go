@@ -49,6 +49,11 @@ type ObjectTokenStore struct {
 	configPath string
 	authDir    string
 	mu         sync.Mutex
+
+	// beforeAuthWriteHook is a test seam for validating path-swap resistance.
+	beforeAuthWriteHook  func()
+	beforeAuthReadHook   func()
+	beforeAuthDeleteHook func()
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.
@@ -170,18 +175,31 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 	}
 
 	if auth.Disabled {
-		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
+		rel, errRel := s.authRelativePath(path)
+		if errRel != nil {
+			return "", fmt.Errorf("object store: resolve disabled auth path: %w", errRel)
+		}
+		if s.beforeAuthReadHook != nil {
+			s.beforeAuthReadHook()
+		}
+		_, _, errRead := secureReadAuthFile(s.authDir, rel)
+		if errors.Is(errRead, fs.ErrNotExist) {
 			return "", nil
+		}
+		if errRead != nil {
+			return "", fmt.Errorf("object store: inspect disabled auth file: %w", errRead)
 		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", fmt.Errorf("object store: create auth directory: %w", err)
+	rel, err := s.authRelativePath(path)
+	if err != nil {
+		return "", fmt.Errorf("object store: resolve auth relative path: %w", err)
 	}
 
+	var raw []byte
+	writeLocal := true
 	switch {
 	case auth.Storage != nil:
 		if auth.Metadata == nil {
@@ -191,31 +209,34 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
+		raw, writeLocal, err = renderAuthStorage(auth.Storage)
+		if err != nil {
 			return "", err
 		}
 	case auth.Metadata != nil:
 		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
+		var errMarshal error
+		raw, errMarshal = json.Marshal(auth.Metadata)
 		if errMarshal != nil {
 			return "", fmt.Errorf("object store: marshal metadata: %w", errMarshal)
 		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
+		if existing, _, errRead := secureReadAuthFile(s.authDir, rel); errRead == nil {
 			if jsonEqual(existing, raw) {
 				return path, nil
 			}
-		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
+		} else if !errors.Is(errRead, fs.ErrNotExist) {
 			return "", fmt.Errorf("object store: read existing metadata: %w", errRead)
-		}
-		tmp := path + ".tmp"
-		if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("object store: write temp auth file: %w", errWrite)
-		}
-		if errRename := os.Rename(tmp, path); errRename != nil {
-			return "", fmt.Errorf("object store: rename auth file: %w", errRename)
 		}
 	default:
 		return "", fmt.Errorf("object store: nothing to persist for %s", auth.ID)
+	}
+	if writeLocal {
+		if s.beforeAuthWriteHook != nil {
+			s.beforeAuthWriteHook()
+		}
+		if err = secureWriteAuthFile(s.authDir, rel, raw); err != nil {
+			return "", fmt.Errorf("object store: write auth file: %w", err)
+		}
 	}
 
 	if auth.Attributes == nil {
@@ -281,10 +302,17 @@ func (s *ObjectTokenStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err = os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	rel, err := s.authRelativePath(path)
+	if err != nil {
+		return fmt.Errorf("object store: resolve auth relative path: %w", err)
+	}
+	if s.beforeAuthDeleteHook != nil {
+		s.beforeAuthDeleteHook()
+	}
+	if err = secureRemoveAuthFile(s.authDir, rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("object store: delete auth file: %w", err)
 	}
-	if err = s.deleteAuthObject(ctx, path); err != nil {
+	if err = s.deleteAuthObjectRelative(ctx, rel); err != nil {
 		return err
 	}
 	return nil
@@ -426,10 +454,6 @@ func (s *ObjectTokenStore) syncAuthFromBucket(ctx context.Context) error {
 			log.WithField("key", object.Key).Warn("object store: skip auth outside mirror")
 			continue
 		}
-		local := filepath.Join(s.authDir, cleanRel)
-		if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
-			return fmt.Errorf("object store: prepare auth subdir: %w", err)
-		}
 		reader, errGet := s.client.GetObject(ctx, s.cfg.Bucket, object.Key, minio.GetObjectOptions{})
 		if errGet != nil {
 			return fmt.Errorf("object store: download auth %s: %w", object.Key, errGet)
@@ -439,11 +463,46 @@ func (s *ObjectTokenStore) syncAuthFromBucket(ctx context.Context) error {
 		if errRead != nil {
 			return fmt.Errorf("object store: read auth %s: %w", object.Key, errRead)
 		}
-		if errWrite := os.WriteFile(local, data, 0o600); errWrite != nil {
-			return fmt.Errorf("object store: write auth %s: %w", local, errWrite)
+		_, errWrite := s.writeAuthMirrorFile(cleanRel, data)
+		if errWrite != nil {
+			return fmt.Errorf("object store: write auth %s: %w", cleanRel, errWrite)
 		}
 	}
 	return nil
+}
+
+func (s *ObjectTokenStore) writeAuthMirrorFile(relativePath string, data []byte) (string, error) {
+	local, err := s.authPath(relativePath)
+	if err != nil {
+		return "", err
+	}
+	if s.beforeAuthWriteHook != nil {
+		s.beforeAuthWriteHook()
+	}
+	if err = secureWriteAuthFile(s.authDir, relativePath, data); err != nil {
+		return "", err
+	}
+	return local, nil
+}
+
+func renderAuthStorage(storage interface{ SaveTokenToFile(string) error }) ([]byte, bool, error) {
+	stagingDir, err := os.MkdirTemp("", "cpa-object-auth-*")
+	if err != nil {
+		return nil, false, fmt.Errorf("object store: create auth staging directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stagingDir) }()
+	stagingPath := filepath.Join(stagingDir, "credential.json")
+	if err = storage.SaveTokenToFile(stagingPath); err != nil {
+		return nil, false, err
+	}
+	raw, _, err := secureReadAuthFile(stagingDir, filepath.Base(stagingPath))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("object store: read staged auth file: %w", err)
+	}
+	return raw, true, nil
 }
 
 func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
@@ -454,15 +513,18 @@ func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("object store: resolve auth relative path: %w", err)
 	}
-	data, err := os.ReadFile(path)
+	if s.beforeAuthReadHook != nil {
+		s.beforeAuthReadHook()
+	}
+	data, _, err := secureReadAuthFile(s.authDir, rel)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return s.deleteAuthObject(ctx, path)
+			return s.deleteAuthObjectRelative(ctx, rel)
 		}
 		return fmt.Errorf("object store: read auth file: %w", err)
 	}
 	if len(data) == 0 {
-		return s.deleteAuthObject(ctx, path)
+		return s.deleteAuthObjectRelative(ctx, rel)
 	}
 	key := objectStoreAuthPrefix + "/" + filepath.ToSlash(rel)
 	return s.putObject(ctx, key, data, "application/json")
@@ -476,6 +538,10 @@ func (s *ObjectTokenStore) deleteAuthObject(ctx context.Context, path string) er
 	if err != nil {
 		return fmt.Errorf("object store: resolve auth relative path: %w", err)
 	}
+	return s.deleteAuthObjectRelative(ctx, rel)
+}
+
+func (s *ObjectTokenStore) deleteAuthObjectRelative(ctx context.Context, rel string) error {
 	key := objectStoreAuthPrefix + "/" + filepath.ToSlash(rel)
 	return s.deleteObject(ctx, key)
 }
@@ -599,39 +665,56 @@ func (s *ObjectTokenStore) authRelativePath(path string) (string, error) {
 }
 
 func ensureResolvedPathWithin(baseDir, path string) error {
-	// authDir is created with 0700 permissions. This rejects pre-existing
-	// symlink escapes; descriptor-relative no-follow I/O would be required to
-	// defend against a malicious same-user process swapping entries afterward.
-	resolvedBase, err := filepath.EvalSymlinks(baseDir)
+	// This preflight rejects pre-existing symlink components, including dangling
+	// leaf symlinks. Auth-file writes additionally use descriptor- or
+	// handle-relative no-follow I/O to close the check/write race.
+	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		return fmt.Errorf("resolve auth directory: %w", err)
 	}
-	current := path
-	for {
-		resolvedCurrent, errResolve := filepath.EvalSymlinks(current)
-		if errResolve == nil {
-			rel, errRel := filepath.Rel(resolvedBase, resolvedCurrent)
-			if errRel != nil {
-				return errRel
-			}
-			if rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-				return fmt.Errorf("auth path %q resolves outside auth directory", path)
-			}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve auth path %q: %w", path, err)
+	}
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return err
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("auth path %q escapes auth directory", path)
+	}
+
+	current := absBase
+	for _, component := range strings.Split(rel, string(os.PathSeparator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, errLstat := os.Lstat(current)
+		if errors.Is(errLstat, fs.ErrNotExist) {
+			// Once a component is absent, no deeper pre-existing symlink can be
+			// traversed by the eventual create.
 			return nil
 		}
-		if !errors.Is(errResolve, fs.ErrNotExist) {
-			return fmt.Errorf("resolve auth path %q: %w", path, errResolve)
+		if errLstat != nil {
+			return fmt.Errorf("inspect auth path %q: %w", path, errLstat)
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return fmt.Errorf("resolve auth path %q: no existing parent", path)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("auth path %q contains symlink component %q", path, current)
 		}
-		current = parent
 	}
+	return nil
 }
 
 func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
-	data, err := os.ReadFile(path)
+	if s.beforeAuthReadHook != nil {
+		s.beforeAuthReadHook()
+	}
+	rel, err := filepath.Rel(baseDir, path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve auth relative path: %w", err)
+	}
+	data, info, err := secureReadAuthFile(baseDir, rel)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
@@ -646,17 +729,10 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	if provider == "" {
 		provider = "unknown"
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat auth file: %w", err)
-	}
-	rel, errRel := filepath.Rel(baseDir, path)
-	if errRel != nil {
-		rel = filepath.Base(path)
-	}
 	rel = normalizeAuthID(rel)
+	localPath := filepath.Join(baseDir, rel)
 	attr := map[string]string{
-		cliproxyauth.AttributePath:          path,
+		cliproxyauth.AttributePath:          localPath,
 		cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceObjectStore,
 	}
 	if email := strings.TrimSpace(valueAsString(metadata["email"])); email != "" {
