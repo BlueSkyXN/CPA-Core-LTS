@@ -253,7 +253,10 @@ func normalizeUsageDetailTotal(provider string, detail usage.Detail) usage.Detai
 		}
 	}
 	if fallbackTotal == 0 && detail.ReasoningTokens != 0 {
-		return clearUsageDetailTokens(detail)
+		if detail.ReasoningTokens < 0 {
+			return clearUsageDetailTokens(detail)
+		}
+		fallbackTotal = detail.ReasoningTokens
 	}
 	detail.TotalTokens = fallbackTotal
 	return detail

@@ -175,6 +175,10 @@ const tokenStatsRequiredExportFields = tokenStatsInputPresent |
 	tokenStatsCachedPresent |
 	tokenStatsTotalPresent
 
+const tokenStatsRequiredV1Fields = tokenStatsInputPresent |
+	tokenStatsOutputPresent |
+	tokenStatsTotalPresent
+
 var tokenStatsJSONFields = []struct {
 	name string
 	bit  tokenStatsFieldPresence
@@ -236,6 +240,10 @@ func (tokens TokenStats) hasRequiredExportFields() bool {
 	return tokens.fieldsPresent&tokenStatsRequiredExportFields == tokenStatsRequiredExportFields
 }
 
+func (tokens TokenStats) hasRequiredV1Fields() bool {
+	return tokens.fieldsPresent&tokenStatsRequiredV1Fields == tokenStatsRequiredV1Fields
+}
+
 // MigrateV1TokenStats converts released version 1 details into the canonical
 // version 2 total-input contract. Markerless details are safe only when all
 // cache categories are zero; cached markerless details remain ambiguous across
@@ -259,7 +267,7 @@ func (snapshot *StatisticsSnapshot) MigrateV1TokenStats() error {
 }
 
 func migrateV1TokenStats(tokens *TokenStats) error {
-	if tokens == nil || !tokens.hasRequiredExportFields() || !validLegacyV1TokenStats(*tokens) {
+	if tokens == nil || !tokens.hasRequiredV1Fields() || !validLegacyV1TokenStats(*tokens) {
 		return ErrInvalidLegacyTokenStats
 	}
 

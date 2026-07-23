@@ -713,7 +713,7 @@ func TestUsageManagementImportReturnsStableSchemaErrorCodesAtomically(t *testing
 			name: "missing released v1 required field",
 			payload: `{"version":1,"usage":{"apis":{"client":{"models":{"model":{"details":[{
 				"timestamp":"2026-07-21T12:00:00Z",
-				"tokens":{"input_tokens":3,"output_tokens":1,"cached_tokens":0,"total_tokens":4}
+				"tokens":{"input_tokens":3,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":4}
 			}]}}}}}}`,
 			wantCode: "usage_v1_token_contract_invalid",
 		},

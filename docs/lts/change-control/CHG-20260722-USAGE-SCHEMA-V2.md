@@ -26,6 +26,13 @@ Both releases used the same version number, so migration is based on explicit
 field evidence rather than release-name, model-name, source-path, or provider
 guesses.
 
+The released exporter wrote `reasoning_tokens` and `cached_tokens` even when
+they were zero. The version 1 importer also accepts those two fields when they
+are omitted and treats them as zero, because this is a lossless compatibility
+extension for older saved or re-serialized no-cache backups. `input_tokens`,
+`output_tokens`, and `total_tokens` remain required, and an explicitly present
+legacy token field must still be a non-null, non-negative integer.
+
 ## Version 1 migration matrix
 
 | Version 1 detail | Decision | Canonical result or error |
@@ -33,11 +40,18 @@ guesses.
 | `uncached_input_tokens` is present, integral, non-negative, and no greater than the released `input_tokens` | Migrate | `input_tokens = uncached + cache_read + cache_creation`; `cached_tokens` mirrors canonical `cache_read_tokens`. |
 | Marker is absent and `cached_tokens`, `cache_read_tokens`, and `cache_creation_tokens` are all zero | Migrate | Preserve `input_tokens`; all cache categories remain zero. This covers released `v1-tls-0.0.13` no-cache exports and markerless no-cache `v1-tls-0.0.15` exports. |
 | Marker is absent and any cache category is non-zero | Reject | `code: usage_v1_cache_semantics_ambiguous`. OpenAI-inclusive and Claude-uncached input semantics cannot be distinguished from the snapshot alone. |
-| Required released field is missing, marker is null/non-integral/negative, marker exceeds input, or another version 1 token rule is invalid | Reject | `code: usage_v1_token_contract_invalid`. |
+| `input_tokens`, `output_tokens`, or `total_tokens` is missing; an optional legacy zero field is explicitly null/mistyped; the marker is invalid; or another version 1 token rule is invalid | Reject | `code: usage_v1_token_contract_invalid`. |
 
 The legacy cache-creation alias (`cached_tokens == cache_creation_tokens`,
 `cache_read_tokens == 0`) is treated as creation-only only when the explicit
 uncached marker makes the conversion auditable.
+
+The reconstructed canonical input is intentionally not required to equal the
+legacy `input_tokens`. Released providers used different version 1 input
+semantics: for example, a Claude detail can carry legacy input `3085`, explicit
+uncached input `3085`, cache read `7`, and cache creation `19514`, which
+canonically reconstructs to input `22606`. Requiring equality would reject a
+released, auditable backup rather than detect corruption.
 
 ## Canonical version 2 contract
 
@@ -66,6 +80,8 @@ reject. OpenAI/Codex producer paths therefore use `input + output` when an
 upstream total is absent, while a producer that still has an exact non-OpenAI
 provider identity may retain its established separate-reasoning fallback.
 Explicit totals below `input + output` are raised to that checked minimum.
+If an OpenAI/Codex payload reports only a positive reasoning count, the producer
+uses that count as the fallback total instead of erasing the only usage signal.
 Unrepresentable token vectors are stored as an all-zero canonical vector, and
 a record that would overflow an aggregate is retried with that zero vector so
 request metadata can be retained without creating a non-roundtrippable export.
@@ -100,7 +116,7 @@ Errors preserve the existing `"error"` text and add one stable top-level
 |---|---|
 | `usage_version_unsupported` | The version is neither released v1 nor canonical v2. |
 | `usage_shape_invalid` | The JSON/root/nested typed shape is invalid, the usage store is unavailable, or the request body cannot be read. |
-| `usage_v1_token_contract_invalid` | A version 1 required token field or migration marker is missing, null, non-integral, negative, greater than released input, or otherwise invalid. |
+| `usage_v1_token_contract_invalid` | A version 1 required input/output/total field or migration marker is missing or invalid, an optional legacy token field is explicitly null/mistyped, or another version 1 invariant fails. |
 | `usage_v1_cache_semantics_ambiguous` | A markerless version 1 detail contains non-zero cache data whose input semantics cannot be reconstructed. |
 | `usage_v2_token_contract_invalid` | A version 2 mandatory field is omitted, null, mistyped, or violates canonical invariants, or the retired `uncached_input_tokens` marker is present. |
 | `usage_aggregate_overflow` | The complete candidate merge would overflow a request or token aggregate. |
