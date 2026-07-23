@@ -141,7 +141,7 @@ func (m *Manager) codexModelFallbackPlan(providers []string, req cliproxyexecuto
 }
 
 func (m *Manager) codexModelHasConfirmedUsageLimitCooldown(routeModel string, opts cliproxyexecutor.Options) bool {
-	if m == nil || strings.TrimSpace(routeModel) == "" {
+	if m == nil || strings.TrimSpace(routeModel) == "" || m.HomeEnabled() {
 		return false
 	}
 	now := time.Now()

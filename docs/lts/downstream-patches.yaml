@@ -51,6 +51,8 @@ patches:
       - TestManagerExecuteCodexModelFallbackSelectsCredentialForTargetModel
       - TestManagerExecuteCodexGlobalFallbackOnConfirmedUsageLimitCooldown
       - TestManagerExecuteCodexGlobalFallbackIgnoresOrdinary429
+      - TestManagerCodexGlobalFallbackRequiresEveryEligibleSourceCredentialCooldown
+      - TestManagerCodexGlobalFallbackFailsClosedInHomeMode
       - TestManagerExecuteCodexGlobalFallbackIgnoresDisabledSourceCandidates
       - TestManagerCodexRateLimitContinuityFreshBlockedDoesNotUseGlobalFallback
       - TestFileCooldownStateStore_SaveLoadAndCleanStale

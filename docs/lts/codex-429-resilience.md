@@ -53,6 +53,9 @@ The typed cooldown provenance is retained internally on `ModelState`; when
 `save-cooldown-status` is enabled it is persisted as the additive
 `model_fallback_reason` field in the `.cds` record. Older records without that
 field fail closed for global fallback until a new typed failure is observed.
+Home control-plane dispatch uses a separate credential candidate inventory, so
+`global-targets` also fail closed while Home mode is enabled rather than using
+unrelated local auth cooldown state as proof about remote candidates.
 
 Mapped targets keep their existing precedence. Zero-dispatch mapped targets and
 mapped targets that return another typed fallback signal allow selection to

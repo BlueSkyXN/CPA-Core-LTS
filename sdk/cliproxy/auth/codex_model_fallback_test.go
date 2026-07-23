@@ -513,6 +513,73 @@ func TestManagerExecuteCodexGlobalFallbackUsesExistingConfirmedCooldown(t *testi
 	}
 }
 
+func TestManagerCodexGlobalFallbackRequiresEveryEligibleSourceCredentialCooldown(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{}}
+	manager, firstAuthID := newCodexGlobalFallbackTestManager(t, executor, nil)
+	secondAuthID := "codex-global-fallback-active-auth"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(secondAuthID, "codex", []*registry.ModelInfo{{ID: "gpt-source"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(secondAuthID)
+	})
+	if _, err := manager.Register(context.Background(), &Auth{ID: secondAuthID, Provider: "codex", Status: StatusActive}); err != nil {
+		t.Fatalf("register second source auth: %v", err)
+	}
+
+	now := time.Now()
+	confirmedState := func() *ModelState {
+		return &ModelState{
+			Status:              StatusError,
+			Unavailable:         true,
+			NextRetryAfter:      now.Add(time.Minute),
+			Quota:               QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: now.Add(time.Minute)},
+			modelFallbackReason: internalconfig.CodexModelFallbackTriggerUsageLimit,
+		}
+	}
+	manager.mu.Lock()
+	manager.auths[firstAuthID].ModelStates = map[string]*ModelState{"gpt-source": confirmedState()}
+	manager.mu.Unlock()
+
+	if manager.codexModelHasConfirmedUsageLimitCooldown("gpt-source", cliproxyexecutor.Options{}) {
+		t.Fatal("confirmed cooldown = true while an eligible source credential remains active")
+	}
+
+	manager.mu.Lock()
+	manager.auths[secondAuthID].ModelStates = map[string]*ModelState{"gpt-source": confirmedState()}
+	manager.mu.Unlock()
+	if !manager.codexModelHasConfirmedUsageLimitCooldown("gpt-source", cliproxyexecutor.Options{}) {
+		t.Fatal("confirmed cooldown = false after every eligible source credential entered typed cooldown")
+	}
+}
+
+func TestManagerCodexGlobalFallbackFailsClosedInHomeMode(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{}}
+	manager, authID := newCodexGlobalFallbackTestManager(t, executor, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Home: internalconfig.HomeConfig{Enabled: true},
+		Codex: internalconfig.CodexConfig{ModelFallback: internalconfig.CodexModelFallbackConfig{
+			Enabled:       true,
+			GlobalTargets: []string{"gpt-global"},
+		}},
+	})
+	now := time.Now()
+	manager.mu.Lock()
+	manager.auths[authID].ModelStates = map[string]*ModelState{
+		"gpt-source": {
+			Status:              StatusError,
+			Unavailable:         true,
+			NextRetryAfter:      now.Add(time.Minute),
+			Quota:               QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: now.Add(time.Minute)},
+			modelFallbackReason: internalconfig.CodexModelFallbackTriggerUsageLimit,
+		},
+	}
+	manager.mu.Unlock()
+
+	if manager.codexModelHasConfirmedUsageLimitCooldown("gpt-source", cliproxyexecutor.Options{}) {
+		t.Fatal("confirmed cooldown = true in Home mode without authoritative control-plane candidate state")
+	}
+}
+
 func TestManagerExecuteCodexGlobalFallbackIgnoresDisabledSourceCandidates(t *testing.T) {
 	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": codexUsageLimitTestError()}}
 	manager, _ := newCodexGlobalFallbackTestManager(t, executor, nil)
