@@ -531,7 +531,7 @@ patches:
     retire_when: Upstream bounds encoded public API request bodies and every decoded Content-Encoding layer, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.
 
   - id: object-store-auth-path-containment
-    reason: Object-store auth persistence must never create, overwrite, upload, or delete files outside its managed auth mirror, including traversal, sibling-prefix, absolute-path, pre-existing or dangling symlinks, junctions, and check/write path-swap races.
+    reason: Object-store auth persistence must never create, overwrite, upload, delete, or render credential files outside its managed private roots, including traversal, sibling-prefix, absolute-path, pre-existing or dangling symlinks, junctions, initialized-root replacement, check/write path-swap races, and crash-persistent global-temp copies.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
     affected_upstream_range: through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); upstream accepts caller-provided absolute auth paths and computes object keys from unchecked filepath.Rel results, so paths outside the mirror can reach local file and remote object operations.
     files:
@@ -560,6 +560,7 @@ patches:
       - TestObjectTokenStoreUploadRejectsPathSwapWithoutExternalReadOrUpload
       - TestObjectTokenStoreUploadMissingAuthDeletesRemoteObject
       - TestObjectTokenStoreListSkipsPathSwappedExternalAuth
+      - TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight
       - TestRenderAuthStoragePrefersPathFreeRawJSON
       - TestRenderAuthStorageUsesAnonymousDescriptorPath
       - TestSecureAuthOperationsRejectAncestorSymlinkSwap
@@ -568,10 +569,11 @@ patches:
     # Windows-only regression functions are build-tagged and therefore cannot
     # be listed by the host-platform registry guard. The windows-latest job in
     # pr-test-build.yml runs both TestSecureAuthFileWindows* and the isolated
-    # renderer path-lock regression natively and exposes any junction skip.
+    # renderer path-lock, managed-staging cleanup/root-identity regressions
+    # natively and exposes any junction skip.
     upstream_issue_or_pr: not-filed
     state: required
-    retire_when: Upstream validates every object-store auth save, delete, upload, mirror, list, and watcher persistence path against lexical containment; performs actual reads, writes, and deletes with descriptor- or handle-relative no-follow traversal on POSIX and Windows; renders legacy path-based storage through a non-redirectable descriptor or locked handle while preferring path-free storage output; rejects ancestor swaps, symlinks, junctions, reparse points, and final-path replacement; preserves nested auth files; runs the Windows handle implementation natively in CI; and all listed regressions pass without the downstream patch.
+    retire_when: Upstream validates every object-store auth save, delete, upload, mirror, list, and watcher persistence path against lexical containment; pins the initialized auth-root filesystem identity and performs actual reads, writes, and deletes with descriptor- or handle-relative no-follow traversal on POSIX and Windows; renders legacy path-based storage through an anonymous descriptor or a locked, identity-pinned managed private staging root with startup crash-residue cleanup while preferring path-free storage output; rejects ancestor swaps, initialized-root replacement, symlinks, junctions, reparse points, and final-path replacement; preserves nested auth files; runs the Windows handle implementation natively in CI; and all listed regressions pass without the downstream patch.
 
   - id: auth-token-private-file-permissions
     reason: OAuth tokens and service-account credentials must be created with owner-only permissions and must tighten pre-existing wider files before replacing their contents.

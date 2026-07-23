@@ -27,6 +27,11 @@ const (
 	objectStoreAuthPrefix = "auths"
 )
 
+var (
+	errObjectStoreAuthRootIdentityUnavailable = errors.New("object store: auth root identity is not initialized")
+	errObjectStoreAuthRootChanged             = errors.New("object store: auth root identity changed after initialization")
+)
+
 // ObjectStoreConfig captures configuration for the object storage-backed token store.
 type ObjectStoreConfig struct {
 	Endpoint  string
@@ -48,6 +53,9 @@ type ObjectTokenStore struct {
 	spoolRoot  string
 	configPath string
 	authDir    string
+	authRoot   secureAuthRootIdentity
+	renderDir  string
+	renderRoot secureAuthRootIdentity
 	mu         sync.Mutex
 
 	// beforeAuthWriteHook is a test seam for validating path-swap resistance.
@@ -99,6 +107,14 @@ func NewObjectTokenStore(cfg ObjectStoreConfig) (*ObjectTokenStore, error) {
 	if err = os.MkdirAll(authDir, 0o700); err != nil {
 		return nil, fmt.Errorf("object store: create auth directory: %w", err)
 	}
+	authRoot, err := captureSecureAuthRootIdentity(authDir)
+	if err != nil {
+		return nil, fmt.Errorf("object store: pin auth directory identity: %w", err)
+	}
+	renderDir, renderRoot, err := prepareAuthRenderStaging(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("object store: prepare auth render staging: %w", err)
+	}
 
 	options := &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
@@ -120,6 +136,9 @@ func NewObjectTokenStore(cfg ObjectStoreConfig) (*ObjectTokenStore, error) {
 		spoolRoot:  absRoot,
 		configPath: filepath.Join(configDir, "config.yaml"),
 		authDir:    authDir,
+		authRoot:   authRoot,
+		renderDir:  renderDir,
+		renderRoot: renderRoot,
 	}, nil
 }
 
@@ -182,7 +201,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		if s.beforeAuthReadHook != nil {
 			s.beforeAuthReadHook()
 		}
-		_, _, errRead := secureReadAuthFile(s.authDir, rel)
+		_, _, errRead := secureReadAuthFile(s.authDir, s.authRoot, rel)
 		if errors.Is(errRead, fs.ErrNotExist) {
 			return "", nil
 		}
@@ -209,7 +228,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
-		raw, writeLocal, err = renderAuthStorage(auth.Storage)
+		raw, writeLocal, err = renderAuthStorage(auth.Storage, s.renderDir, s.renderRoot)
 		if err != nil {
 			return "", err
 		}
@@ -220,7 +239,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		if errMarshal != nil {
 			return "", fmt.Errorf("object store: marshal metadata: %w", errMarshal)
 		}
-		if existing, _, errRead := secureReadAuthFile(s.authDir, rel); errRead == nil {
+		if existing, _, errRead := secureReadAuthFile(s.authDir, s.authRoot, rel); errRead == nil {
 			if jsonEqual(existing, raw) {
 				return path, nil
 			}
@@ -234,7 +253,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		if s.beforeAuthWriteHook != nil {
 			s.beforeAuthWriteHook()
 		}
-		if err = secureWriteAuthFile(s.authDir, rel, raw); err != nil {
+		if err = secureWriteAuthFile(s.authDir, s.authRoot, rel, raw); err != nil {
 			return "", fmt.Errorf("object store: write auth file: %w", err)
 		}
 	}
@@ -261,6 +280,9 @@ func (s *ObjectTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error)
 	if dir == "" {
 		return nil, fmt.Errorf("object store: auth directory not configured")
 	}
+	if err := validateSecureAuthRootPath(dir, s.authRoot); err != nil {
+		return nil, fmt.Errorf("object store: validate auth directory: %w", err)
+	}
 	entries := make([]*cliproxyauth.Auth, 0, 32)
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -272,7 +294,7 @@ func (s *ObjectTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error)
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
 			return nil
 		}
-		auth, err := s.readAuthFile(path, dir)
+		auth, err := s.readAuthFile(path)
 		if err != nil {
 			log.WithError(err).Warnf("object store: skip auth %s", path)
 			return nil
@@ -309,7 +331,7 @@ func (s *ObjectTokenStore) Delete(ctx context.Context, id string) error {
 	if s.beforeAuthDeleteHook != nil {
 		s.beforeAuthDeleteHook()
 	}
-	if err = secureRemoveAuthFile(s.authDir, rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err = secureRemoveAuthFile(s.authDir, s.authRoot, rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("object store: delete auth file: %w", err)
 	}
 	if err = s.deleteAuthObjectRelative(ctx, rel); err != nil {
@@ -479,13 +501,13 @@ func (s *ObjectTokenStore) writeAuthMirrorFile(relativePath string, data []byte)
 	if s.beforeAuthWriteHook != nil {
 		s.beforeAuthWriteHook()
 	}
-	if err = secureWriteAuthFile(s.authDir, relativePath, data); err != nil {
+	if err = secureWriteAuthFile(s.authDir, s.authRoot, relativePath, data); err != nil {
 		return "", err
 	}
 	return local, nil
 }
 
-func renderAuthStorage(storage interface{ SaveTokenToFile(string) error }) ([]byte, bool, error) {
+func renderAuthStorage(storage interface{ SaveTokenToFile(string) error }, stagingDir string, stagingRoot secureAuthRootIdentity) ([]byte, bool, error) {
 	// Plugin-backed storage can already render its merged JSON without touching
 	// a pathname. Prefer that capability so atomic path writers do not need a
 	// compatibility staging path at all.
@@ -498,7 +520,7 @@ func renderAuthStorage(storage interface{ SaveTokenToFile(string) error }) ([]by
 	// Legacy TokenStorage exposes only SaveTokenToFile. The OS-specific renderer
 	// gives it a non-redirectable target: an unlinked descriptor alias on POSIX,
 	// or a pre-opened file beneath rename/delete-locked handles on Windows.
-	return renderAuthStorageIsolated(storage)
+	return renderAuthStorageIsolated(storage, stagingDir, stagingRoot)
 }
 
 func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
@@ -512,7 +534,7 @@ func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
 	if s.beforeAuthReadHook != nil {
 		s.beforeAuthReadHook()
 	}
-	data, _, err := secureReadAuthFile(s.authDir, rel)
+	data, _, err := secureReadAuthFile(s.authDir, s.authRoot, rel)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return s.deleteAuthObjectRelative(ctx, rel)
@@ -702,15 +724,15 @@ func ensureResolvedPathWithin(baseDir, path string) error {
 	return nil
 }
 
-func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
+func (s *ObjectTokenStore) readAuthFile(path string) (*cliproxyauth.Auth, error) {
 	if s.beforeAuthReadHook != nil {
 		s.beforeAuthReadHook()
 	}
-	rel, err := filepath.Rel(baseDir, path)
+	rel, err := filepath.Rel(s.authDir, path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve auth relative path: %w", err)
 	}
-	data, info, err := secureReadAuthFile(baseDir, rel)
+	data, info, err := secureReadAuthFile(s.authDir, s.authRoot, rel)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
@@ -726,7 +748,7 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 		provider = "unknown"
 	}
 	rel = normalizeAuthID(rel)
-	localPath := filepath.Join(baseDir, rel)
+	localPath := filepath.Join(s.authDir, rel)
 	attr := map[string]string{
 		cliproxyauth.AttributePath:          localPath,
 		cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceObjectStore,

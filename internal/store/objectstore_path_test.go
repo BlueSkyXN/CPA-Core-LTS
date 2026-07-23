@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,7 +47,8 @@ func (s *rawJSONTokenStorage) SaveTokenToFile(string) error {
 func (*rawJSONTokenStorage) RawJSON() []byte { return []byte(`{"type":"plugin"}`) }
 
 func TestRenderAuthStoragePreservesNoOpWriter(t *testing.T) {
-	raw, wrote, err := renderAuthStorage(&noOpTokenStorage{})
+	stagingDir, stagingRoot := mustPrepareAuthRenderStaging(t)
+	raw, wrote, err := renderAuthStorage(&noOpTokenStorage{}, stagingDir, stagingRoot)
 	if err != nil {
 		t.Fatalf("render no-op token storage: %v", err)
 	}
@@ -57,7 +59,8 @@ func TestRenderAuthStoragePreservesNoOpWriter(t *testing.T) {
 
 func TestRenderAuthStoragePrefersPathFreeRawJSON(t *testing.T) {
 	storage := &rawJSONTokenStorage{}
-	raw, wrote, err := renderAuthStorage(storage)
+	stagingDir, stagingRoot := mustPrepareAuthRenderStaging(t)
+	raw, wrote, err := renderAuthStorage(storage, stagingDir, stagingRoot)
 	if err != nil {
 		t.Fatalf("render raw JSON token storage: %v", err)
 	}
@@ -76,7 +79,7 @@ func TestObjectTokenStoreRejectsAuthPathsOutsideAuthDir(t *testing.T) {
 	if err := os.WriteFile(outsidePath, []byte(`{"type":"codex"}`), 0o600); err != nil {
 		t.Fatalf("write outside auth: %v", err)
 	}
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 
 	checks := []struct {
 		name string
@@ -122,7 +125,7 @@ func TestObjectTokenStoreRejectsAuthPathsOutsideAuthDir(t *testing.T) {
 
 func TestObjectTokenStoreAcceptsNestedAuthPathInsideAuthDir(t *testing.T) {
 	authDir := t.TempDir()
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 
 	got, err := store.resolveAuthPath(&cliproxyauth.Auth{ID: "nested", FileName: "team/token"})
 	if err != nil {
@@ -136,7 +139,7 @@ func TestObjectTokenStoreAcceptsNestedAuthPathInsideAuthDir(t *testing.T) {
 
 func TestObjectTokenStoreSecureWriterInstallsNestedAuthFile(t *testing.T) {
 	authDir := t.TempDir()
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 
 	path, err := store.writeAuthMirrorFile("team/token.json", []byte(`{"type":"codex"}`))
 	if err != nil {
@@ -165,7 +168,7 @@ func TestObjectTokenStoreSecureWriterInstallsNestedAuthFile(t *testing.T) {
 
 func TestObjectTokenStoreSecureWriterSupportsLongAuthFileName(t *testing.T) {
 	authDir := t.TempDir()
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 	fileName := strings.Repeat("a", 240) + ".json"
 
 	path, err := store.writeAuthMirrorFile(fileName, []byte(`{"type":"codex"}`))
@@ -183,7 +186,7 @@ func TestObjectTokenStoreRejectsSiblingPrefixAndSymlinkEscapes(t *testing.T) {
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("create auth dir: %v", err)
 	}
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 
 	siblingPath := filepath.Join(root, "auths-other", "token.json")
 	if _, err := store.resolveDeletePath(siblingPath); err == nil {
@@ -218,7 +221,7 @@ func TestObjectTokenStoreRejectsDanglingLeafSymlinkBeforeCredentialWrite(t *test
 	}
 
 	storage := &writeThenFailTokenStorage{}
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 	_, err := store.Save(context.Background(), &cliproxyauth.Auth{
 		ID:       "dangling",
 		FileName: "dangling.json",
@@ -246,7 +249,7 @@ func TestObjectTokenStoreRejectsDirectorySymlinkSwappedAfterValidation(t *testin
 		t.Fatalf("create outside dir: %v", err)
 	}
 
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 	store.beforeAuthWriteHook = func() {
 		if err := os.Symlink(outsideDir, filepath.Join(authDir, "team")); err != nil {
 			t.Fatalf("swap auth directory with symlink: %v", err)
@@ -277,7 +280,7 @@ func TestObjectTokenStoreMirrorWriteRejectsDirectorySymlinkSwappedAfterValidatio
 		t.Fatalf("create outside dir: %v", err)
 	}
 
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 	store.beforeAuthWriteHook = func() {
 		if err := os.Symlink(outsideDir, filepath.Join(authDir, "remote")); err != nil {
 			t.Fatalf("swap mirror directory with symlink: %v", err)
@@ -417,6 +420,171 @@ func TestObjectTokenStoreListSkipsPathSwappedExternalAuth(t *testing.T) {
 	}
 }
 
+func TestObjectTokenStoreRejectsAuthRootReplacementAfterPreflight(t *testing.T) {
+	type operation struct {
+		name string
+		run  func(context.Context, *ObjectTokenStore, string, func()) error
+	}
+	operations := []operation{
+		{
+			name: "write",
+			run: func(_ context.Context, store *ObjectTokenStore, _ string, hook func()) error {
+				store.beforeAuthWriteHook = hook
+				_, err := store.writeAuthMirrorFile("team/token.json", []byte(`{"type":"replacement"}`))
+				return err
+			},
+		},
+		{
+			name: "read",
+			run: func(ctx context.Context, store *ObjectTokenStore, authDir string, hook func()) error {
+				store.beforeAuthReadHook = hook
+				return store.uploadAuth(ctx, filepath.Join(authDir, "team", "token.json"))
+			},
+		},
+		{
+			name: "delete",
+			run: func(ctx context.Context, store *ObjectTokenStore, _ string, hook func()) error {
+				store.beforeAuthDeleteHook = hook
+				return store.Delete(ctx, "team/token.json")
+			},
+		},
+		{
+			name: "list",
+			run: func(ctx context.Context, store *ObjectTokenStore, _ string, hook func()) error {
+				hook()
+				_, err := store.List(ctx)
+				return err
+			},
+		},
+	}
+
+	for _, replacement := range []string{"symlink", "directory"} {
+		for _, operation := range operations {
+			t.Run(replacement+"/"+operation.name, func(t *testing.T) {
+				remotePutCalls := 0
+				remoteDeleteCalls := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && strings.HasPrefix(r.URL.RawQuery, "location") {
+						_, _ = w.Write([]byte(`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></LocationConstraint>`))
+						return
+					}
+					switch r.Method {
+					case http.MethodPut:
+						remotePutCalls++
+					case http.MethodDelete:
+						remoteDeleteCalls++
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				defer server.Close()
+
+				store, authDir, originalAuthDir, replacementFixtureAuthDir, replacementObservedAuthDir, hook := newAuthRootReplacementStore(t, server.URL, replacement)
+				localPath := filepath.Join(authDir, "team", "token.json")
+				if operation.name != "write" {
+					if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+						t.Fatalf("create original auth directory: %v", err)
+					}
+					if err := os.WriteFile(localPath, []byte(`{"type":"local"}`), 0o600); err != nil {
+						t.Fatalf("write original auth: %v", err)
+					}
+					outsidePath := filepath.Join(replacementFixtureAuthDir, "team", "token.json")
+					if err := os.MkdirAll(filepath.Dir(outsidePath), 0o700); err != nil {
+						t.Fatalf("create replacement auth directory: %v", err)
+					}
+					if err := os.WriteFile(outsidePath, []byte(`{"type":"external"}`), 0o600); err != nil {
+						t.Fatalf("write replacement auth: %v", err)
+					}
+				}
+
+				err := operation.run(context.Background(), store, authDir, hook)
+				if err == nil {
+					t.Fatal("auth operation accepted a replacement root after store initialization")
+				}
+				if replacement == "directory" && !errors.Is(err, errObjectStoreAuthRootChanged) {
+					t.Fatalf("auth operation error = %v, want root identity change", err)
+				}
+
+				replacementPath := filepath.Join(replacementObservedAuthDir, "team", "token.json")
+				if operation.name == "write" {
+					if _, err := os.Stat(replacementPath); !errors.Is(err, fs.ErrNotExist) {
+						t.Fatalf("write reached replacement auth root: %v", err)
+					}
+				} else if got, err := os.ReadFile(replacementPath); err != nil || string(got) != `{"type":"external"}` {
+					t.Fatalf("replacement auth changed: data=%q err=%v", got, err)
+				}
+
+				originalPath := filepath.Join(originalAuthDir, "team", "token.json")
+				if operation.name == "write" {
+					if _, err := os.Stat(originalPath); !errors.Is(err, fs.ErrNotExist) {
+						t.Fatalf("failed write changed original auth root: %v", err)
+					}
+				} else if got, err := os.ReadFile(originalPath); err != nil || string(got) != `{"type":"local"}` {
+					t.Fatalf("original auth changed: data=%q err=%v", got, err)
+				}
+				if remotePutCalls != 0 || remoteDeleteCalls != 0 {
+					t.Fatalf("remote mutations after root replacement: PUT=%d DELETE=%d", remotePutCalls, remoteDeleteCalls)
+				}
+			})
+		}
+	}
+}
+
+func newAuthRootReplacementStore(t *testing.T, serverURL, replacement string) (*ObjectTokenStore, string, string, string, string, func()) {
+	t.Helper()
+	container := t.TempDir()
+	managedRoot := filepath.Join(container, "managed")
+	store, err := NewObjectTokenStore(ObjectStoreConfig{
+		Endpoint:  strings.TrimPrefix(serverURL, "http://"),
+		Bucket:    "test-bucket",
+		AccessKey: "access",
+		SecretKey: "secret",
+		LocalRoot: managedRoot,
+	})
+	if err != nil {
+		t.Fatalf("create object token store: %v", err)
+	}
+
+	originalRoot := managedRoot + "-original"
+	replacementRoot := filepath.Join(t.TempDir(), "replacement")
+	replacementAuthDir := filepath.Join(replacementRoot, "auths")
+	replacementObservedAuthDir := replacementAuthDir
+	if err = os.MkdirAll(replacementAuthDir, 0o700); err != nil {
+		t.Fatalf("create replacement root: %v", err)
+	}
+	if replacement == "symlink" {
+		probe := managedRoot + "-symlink-probe"
+		if err = os.Symlink(replacementRoot, probe); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		if err = os.Remove(probe); err != nil {
+			t.Fatalf("remove symlink probe: %v", err)
+		}
+	} else {
+		replacementObservedAuthDir = filepath.Join(managedRoot, "auths")
+	}
+
+	called := false
+	hook := func() {
+		if called {
+			return
+		}
+		called = true
+		if err = os.Rename(managedRoot, originalRoot); err != nil {
+			t.Fatalf("move initialized object-store root: %v", err)
+		}
+		if replacement == "symlink" {
+			if err = os.Symlink(replacementRoot, managedRoot); err != nil {
+				t.Fatalf("replace object-store root with symlink: %v", err)
+			}
+			return
+		}
+		if err = os.Rename(replacementRoot, managedRoot); err != nil {
+			t.Fatalf("replace object-store root with directory: %v", err)
+		}
+	}
+	return store, store.authDir, filepath.Join(originalRoot, "auths"), replacementAuthDir, replacementObservedAuthDir, hook
+}
+
 func newPathSwapObjectStore(t *testing.T, serverURL string) (*ObjectTokenStore, string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -428,7 +596,7 @@ func newPathSwapObjectStore(t *testing.T, serverURL string) (*ObjectTokenStore, 
 	if err := os.MkdirAll(outsideDir, 0o700); err != nil {
 		t.Fatalf("create outside directory: %v", err)
 	}
-	store := &ObjectTokenStore{authDir: authDir}
+	store := &ObjectTokenStore{authDir: authDir, authRoot: mustCaptureSecureAuthRootIdentity(t, authDir)}
 	if serverURL != "" {
 		client, err := minio.New(strings.TrimPrefix(serverURL, "http://"), &minio.Options{
 			Creds:  credentials.NewStaticV4("access", "secret", ""),
@@ -458,5 +626,34 @@ func pathSwapHook(t *testing.T, authDir, component, outsideDir string) func() {
 		if err := os.Symlink(outsideDir, path); err != nil {
 			t.Fatalf("replace validated auth directory with symlink: %v", err)
 		}
+	}
+}
+
+func mustCaptureSecureAuthRootIdentity(t *testing.T, authDir string) secureAuthRootIdentity {
+	t.Helper()
+	identity, err := captureSecureAuthRootIdentity(authDir)
+	if err != nil {
+		t.Fatalf("capture secure auth root identity: %v", err)
+	}
+	return identity
+}
+
+func mustPrepareAuthRenderStaging(t *testing.T) (string, secureAuthRootIdentity) {
+	t.Helper()
+	stagingDir, stagingRoot, err := prepareAuthRenderStaging(t.TempDir())
+	if err != nil {
+		t.Fatalf("prepare auth render staging: %v", err)
+	}
+	return stagingDir, stagingRoot
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("contents of %s = %q, want %q", path, got, want)
 	}
 }

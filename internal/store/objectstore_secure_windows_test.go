@@ -17,13 +17,14 @@ import (
 
 func TestSecureAuthFileWindowsNestedLifecycle(t *testing.T) {
 	baseDir := t.TempDir()
+	root := mustCaptureSecureAuthRootIdentity(t, baseDir)
 	credentialPath := filepath.Join("team", "token.json")
 	siblingPath := filepath.Join("team", "sibling.json")
 
-	if err := secureWriteAuthFile(baseDir, credentialPath, []byte("first")); err != nil {
+	if err := secureWriteAuthFile(baseDir, root, credentialPath, []byte("first")); err != nil {
 		t.Fatalf("write nested auth file: %v", err)
 	}
-	data, info, err := secureReadAuthFile(baseDir, credentialPath)
+	data, info, err := secureReadAuthFile(baseDir, root, credentialPath)
 	if err != nil {
 		t.Fatalf("read nested auth file: %v", err)
 	}
@@ -34,20 +35,20 @@ func TestSecureAuthFileWindowsNestedLifecycle(t *testing.T) {
 		t.Fatalf("nested auth file mode = %v, want regular file", info.Mode())
 	}
 
-	if err = secureWriteAuthFile(baseDir, siblingPath, []byte("sibling")); err != nil {
+	if err = secureWriteAuthFile(baseDir, root, siblingPath, []byte("sibling")); err != nil {
 		t.Fatalf("write sibling auth file: %v", err)
 	}
-	if err = secureWriteAuthFile(baseDir, credentialPath, []byte("replacement")); err != nil {
+	if err = secureWriteAuthFile(baseDir, root, credentialPath, []byte("replacement")); err != nil {
 		t.Fatalf("replace nested auth file: %v", err)
 	}
-	data, _, err = secureReadAuthFile(baseDir, credentialPath)
+	data, _, err = secureReadAuthFile(baseDir, root, credentialPath)
 	if err != nil {
 		t.Fatalf("read replacement auth file: %v", err)
 	}
 	if !bytes.Equal(data, []byte("replacement")) {
 		t.Fatalf("replacement auth file = %q, want %q", data, "replacement")
 	}
-	siblingData, _, err := secureReadAuthFile(baseDir, siblingPath)
+	siblingData, _, err := secureReadAuthFile(baseDir, root, siblingPath)
 	if err != nil {
 		t.Fatalf("read sibling auth file: %v", err)
 	}
@@ -55,13 +56,13 @@ func TestSecureAuthFileWindowsNestedLifecycle(t *testing.T) {
 		t.Fatalf("sibling auth file = %q, want %q", siblingData, "sibling")
 	}
 
-	if err = secureRemoveAuthFile(baseDir, credentialPath); err != nil {
+	if err = secureRemoveAuthFile(baseDir, root, credentialPath); err != nil {
 		t.Fatalf("remove nested auth file: %v", err)
 	}
-	if _, _, err = secureReadAuthFile(baseDir, credentialPath); !errors.Is(err, fs.ErrNotExist) {
+	if _, _, err = secureReadAuthFile(baseDir, root, credentialPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("read removed auth file error = %v, want fs.ErrNotExist", err)
 	}
-	siblingData, _, err = secureReadAuthFile(baseDir, siblingPath)
+	siblingData, _, err = secureReadAuthFile(baseDir, root, siblingPath)
 	if err != nil {
 		t.Fatalf("read sibling after removing replacement: %v", err)
 	}
@@ -72,15 +73,16 @@ func TestSecureAuthFileWindowsNestedLifecycle(t *testing.T) {
 
 func TestSecureAuthFileWindowsMissingLeaf(t *testing.T) {
 	baseDir := t.TempDir()
+	root := mustCaptureSecureAuthRootIdentity(t, baseDir)
 	for _, relativePath := range []string{
 		"missing.json",
 		filepath.Join("missing-parent", "missing.json"),
 	} {
 		t.Run(relativePath, func(t *testing.T) {
-			if _, _, err := secureReadAuthFile(baseDir, relativePath); !errors.Is(err, fs.ErrNotExist) {
+			if _, _, err := secureReadAuthFile(baseDir, root, relativePath); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("read missing auth file error = %v, want fs.ErrNotExist", err)
 			}
-			if err := secureRemoveAuthFile(baseDir, relativePath); !errors.Is(err, fs.ErrNotExist) {
+			if err := secureRemoveAuthFile(baseDir, root, relativePath); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("remove missing auth file error = %v, want fs.ErrNotExist", err)
 			}
 		})
@@ -89,6 +91,7 @@ func TestSecureAuthFileWindowsMissingLeaf(t *testing.T) {
 
 func TestSecureAuthFileWindowsFinalDACL(t *testing.T) {
 	baseDir := t.TempDir()
+	root := mustCaptureSecureAuthRootIdentity(t, baseDir)
 	relativePath := "token.json"
 	path := filepath.Join(baseDir, relativePath)
 	if err := os.WriteFile(path, []byte("existing"), 0o666); err != nil {
@@ -106,7 +109,7 @@ func TestSecureAuthFileWindowsFinalDACL(t *testing.T) {
 		t.Fatalf("apply wide DACL: %v", err)
 	}
 
-	if err = secureWriteAuthFile(baseDir, relativePath, []byte("replacement")); err != nil {
+	if err = secureWriteAuthFile(baseDir, root, relativePath, []byte("replacement")); err != nil {
 		t.Fatalf("replace auth file: %v", err)
 	}
 	file, err := os.Open(path)
@@ -126,6 +129,7 @@ func TestSecureAuthFileWindowsFinalDACL(t *testing.T) {
 
 func TestSecureAuthFileWindowsRejectsDirectoryJunction(t *testing.T) {
 	baseDir := t.TempDir()
+	root := mustCaptureSecureAuthRootIdentity(t, baseDir)
 	outsideDir := t.TempDir()
 	outsidePath := filepath.Join(outsideDir, "escape.json")
 	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
@@ -137,13 +141,13 @@ func TestSecureAuthFileWindowsRejectsDirectoryJunction(t *testing.T) {
 	}
 
 	relativePath := filepath.Join("junction", "escape.json")
-	if err := secureWriteAuthFile(baseDir, relativePath, []byte("sensitive")); err == nil {
+	if err := secureWriteAuthFile(baseDir, root, relativePath, []byte("sensitive")); err == nil {
 		t.Fatal("write through directory junction succeeded, want rejection")
 	}
-	if _, _, err := secureReadAuthFile(baseDir, relativePath); err == nil {
+	if _, _, err := secureReadAuthFile(baseDir, root, relativePath); err == nil {
 		t.Fatal("read through directory junction succeeded, want rejection")
 	}
-	if err := secureRemoveAuthFile(baseDir, relativePath); err == nil {
+	if err := secureRemoveAuthFile(baseDir, root, relativePath); err == nil {
 		t.Fatal("remove through directory junction succeeded, want rejection")
 	}
 	outsideData, err := os.ReadFile(outsidePath)
@@ -152,6 +156,75 @@ func TestSecureAuthFileWindowsRejectsDirectoryJunction(t *testing.T) {
 	}
 	if !bytes.Equal(outsideData, []byte("outside")) {
 		t.Fatalf("outside auth file = %q, want %q", outsideData, "outside")
+	}
+}
+
+func TestSecureAuthFileWindowsRejectsInitializedRootReplacement(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(string, secureAuthRootIdentity, string) error
+	}{
+		{
+			name: "read",
+			run: func(baseDir string, root secureAuthRootIdentity, relativePath string) error {
+				data, _, err := secureReadAuthFile(baseDir, root, relativePath)
+				if len(data) != 0 {
+					t.Fatalf("secure read returned replacement-root data %q", data)
+				}
+				return err
+			},
+		},
+		{
+			name: "write",
+			run: func(baseDir string, root secureAuthRootIdentity, relativePath string) error {
+				return secureWriteAuthFile(baseDir, root, relativePath, []byte("sensitive"))
+			},
+		},
+		{
+			name: "delete",
+			run: func(baseDir string, root secureAuthRootIdentity, relativePath string) error {
+				return secureRemoveAuthFile(baseDir, root, relativePath)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := t.TempDir()
+			baseDir := filepath.Join(parent, "auths")
+			originalDir := filepath.Join(parent, "auths-original")
+			replacementDir := filepath.Join(parent, "auths-replacement")
+			relativePath := filepath.Join("team", "token.json")
+			if err := os.MkdirAll(filepath.Join(baseDir, "team"), 0o700); err != nil {
+				t.Fatalf("create initialized auth root: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(replacementDir, "team"), 0o700); err != nil {
+				t.Fatalf("create replacement auth root: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(baseDir, relativePath), []byte("inside"), 0o600); err != nil {
+				t.Fatalf("write initialized auth fixture: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(replacementDir, relativePath), []byte("outside"), 0o600); err != nil {
+				t.Fatalf("write replacement auth fixture: %v", err)
+			}
+			root := mustCaptureSecureAuthRootIdentity(t, baseDir)
+			if err := os.Rename(baseDir, originalDir); err != nil {
+				t.Fatalf("move initialized auth root: %v", err)
+			}
+			if err := os.Rename(replacementDir, baseDir); err != nil {
+				t.Fatalf("install replacement auth root: %v", err)
+			}
+
+			err := test.run(baseDir, root, relativePath)
+			if err == nil {
+				t.Fatal("secure auth operation accepted a replacement root identity")
+			}
+			if !errors.Is(err, errObjectStoreAuthRootChanged) {
+				t.Fatalf("secure auth operation error = %v, want root identity change", err)
+			}
+			assertFileContents(t, filepath.Join(originalDir, relativePath), "inside")
+			assertFileContents(t, filepath.Join(baseDir, relativePath), "outside")
+		})
 	}
 }
 

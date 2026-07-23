@@ -3,44 +3,107 @@
 package store
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
+const (
+	authRenderStagingDirName = ".auth-render-staging"
+	authRenderFilePrefix     = ".credential-"
+	authRenderFileSuffix     = ".tmp"
+)
+
+func prepareAuthRenderStaging(spoolRoot string) (string, secureAuthRootIdentity, error) {
+	stagingDir := filepath.Join(spoolRoot, authRenderStagingDirName)
+	if err := os.Mkdir(stagingDir, 0o700); err != nil && !os.IsExist(err) {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("create managed auth staging directory: %w", err)
+	}
+	info, err := os.Lstat(stagingDir)
+	if err != nil {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("inspect managed auth staging directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("managed auth staging path is not a regular directory")
+	}
+
+	directoryHandle, err := openLockedWindowsRenderDirectory(stagingDir, secureAuthRootIdentity{})
+	if err != nil {
+		return "", secureAuthRootIdentity{}, err
+	}
+	directory := os.NewFile(uintptr(directoryHandle), stagingDir)
+	if directory == nil {
+		_ = windows.CloseHandle(directoryHandle)
+		return "", secureAuthRootIdentity{}, fmt.Errorf("wrap managed auth staging directory handle")
+	}
+	defer func() { _ = directory.Close() }()
+
+	identity, err := secureAuthRootIdentityForHandle(directoryHandle)
+	if err != nil {
+		return "", secureAuthRootIdentity{}, err
+	}
+	entries, err := directory.ReadDir(-1)
+	if err != nil {
+		return "", secureAuthRootIdentity{}, fmt.Errorf("list managed auth staging directory: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, authRenderFilePrefix) || !strings.HasSuffix(name, authRenderFileSuffix) {
+			return "", secureAuthRootIdentity{}, fmt.Errorf("managed auth staging directory contains unexpected entry %q", name)
+		}
+		fileHandle, errOpen := openSecureWindowsAuthFileAt(directoryHandle, name, windows.DELETE|windows.SYNCHRONIZE)
+		if errOpen != nil {
+			return "", secureAuthRootIdentity{}, fmt.Errorf("open stale auth staging file %q: %w", name, errOpen)
+		}
+		errDelete := deleteWindowsFileByHandle(fileHandle)
+		errClose := windows.CloseHandle(fileHandle)
+		if errDelete != nil {
+			return "", secureAuthRootIdentity{}, fmt.Errorf("delete stale auth staging file %q: %w", name, errDelete)
+		}
+		if errClose != nil {
+			return "", secureAuthRootIdentity{}, fmt.Errorf("close stale auth staging file %q: %w", name, errClose)
+		}
+	}
+	return stagingDir, identity, nil
+}
+
 // renderAuthStorageIsolated captures legacy path-based TokenStorage output in
 // a file whose parent and leaf are held open without FILE_SHARE_DELETE. The
 // provider can open the same regular file for writing, but neither pathname can
 // be replaced by a junction or reparse point while credential bytes are written.
-func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error }) ([]byte, bool, error) {
-	stagingDir, err := os.MkdirTemp("", "cpa-object-auth-*")
-	if err != nil {
-		return nil, false, fmt.Errorf("object store: create auth staging directory: %w", err)
+func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error }, stagingDir string, stagingRoot secureAuthRootIdentity) ([]byte, bool, error) {
+	if strings.TrimSpace(stagingDir) == "" || !stagingRoot.valid {
+		return nil, false, fmt.Errorf("object store: managed auth staging directory is not initialized")
 	}
-	defer func() { _ = os.RemoveAll(stagingDir) }()
-
-	directoryHandle, err := openLockedWindowsRenderDirectory(stagingDir)
+	directoryHandle, err := openLockedWindowsRenderDirectory(stagingDir, stagingRoot)
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = windows.CloseHandle(directoryHandle) }()
 
-	stagingPath := filepath.Join(stagingDir, "credential.json")
-	fileHandle, err := createLockedWindowsRenderFile(stagingPath)
+	stagingName, fileHandle, err := createLockedWindowsRenderFileAt(directoryHandle)
 	if err != nil {
 		return nil, false, err
 	}
+	stagingPath := filepath.Join(stagingDir, stagingName)
 	file := os.NewFile(uintptr(fileHandle), stagingPath)
 	if file == nil {
 		_ = windows.CloseHandle(fileHandle)
 		return nil, false, fmt.Errorf("object store: create auth staging file: invalid handle")
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		_ = deleteWindowsFileByHandle(fileHandle)
+		_ = file.Close()
+	}()
 
 	if err = storage.SaveTokenToFile(stagingPath); err != nil {
 		return nil, false, err
@@ -62,7 +125,7 @@ func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error 
 	return raw, true, nil
 }
 
-func openLockedWindowsRenderDirectory(path string) (windows.Handle, error) {
+func openLockedWindowsRenderDirectory(path string, expectedRoot secureAuthRootIdentity) (windows.Handle, error) {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, fmt.Errorf("object store: encode auth staging directory: %w", err)
@@ -83,6 +146,12 @@ func openLockedWindowsRenderDirectory(path string) (windows.Handle, error) {
 		_ = windows.CloseHandle(handle)
 		return 0, fmt.Errorf("object store: validate auth staging directory: %w", err)
 	}
+	if expectedRoot.valid {
+		if err = validateSecureAuthRootIdentity(handle, expectedRoot); err != nil {
+			_ = windows.CloseHandle(handle)
+			return 0, fmt.Errorf("object store: validate managed auth staging identity: %w", err)
+		}
+	}
 	if err = restrictWindowsRenderHandle(handle); err != nil {
 		_ = windows.CloseHandle(handle)
 		return 0, err
@@ -90,37 +159,57 @@ func openLockedWindowsRenderDirectory(path string) (windows.Handle, error) {
 	return handle, nil
 }
 
-func createLockedWindowsRenderFile(path string) (windows.Handle, error) {
-	pathPtr, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return 0, fmt.Errorf("object store: encode auth staging file: %w", err)
-	}
+func createLockedWindowsRenderFileAt(parent windows.Handle) (string, windows.Handle, error) {
 	descriptor, err := currentUserOnlySecurityDescriptor()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	attributes := &windows.SecurityAttributes{
-		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
-		SecurityDescriptor: descriptor,
+	for attempt := 0; attempt < 16; attempt++ {
+		var random [8]byte
+		if _, err = rand.Read(random[:]); err != nil {
+			return "", 0, fmt.Errorf("object store: generate auth staging file name: %w", err)
+		}
+		name := authRenderFilePrefix + hex.EncodeToString(random[:]) + authRenderFileSuffix
+		objectName, errName := windows.NewNTUnicodeString(name)
+		if errName != nil {
+			return "", 0, fmt.Errorf("object store: encode auth staging file name: %w", errName)
+		}
+		attributes := &windows.OBJECT_ATTRIBUTES{
+			Length:             uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+			RootDirectory:      parent,
+			ObjectName:         objectName,
+			Attributes:         windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+			SecurityDescriptor: descriptor,
+		}
+		var handle windows.Handle
+		var status windows.IO_STATUS_BLOCK
+		var allocationSize int64
+		err = windows.NtCreateFile(
+			&handle,
+			windows.FILE_GENERIC_READ|windows.FILE_READ_ATTRIBUTES|windows.DELETE|windows.READ_CONTROL|windows.WRITE_DAC,
+			attributes,
+			&status,
+			&allocationSize,
+			windows.FILE_ATTRIBUTE_HIDDEN|windows.FILE_ATTRIBUTE_TEMPORARY,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+			windows.FILE_CREATE,
+			windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+			0,
+			0,
+		)
+		runtime.KeepAlive(descriptor)
+		if err == nil {
+			if err = rejectWindowsReparseHandle(handle); err != nil {
+				_ = windows.CloseHandle(handle)
+				return "", 0, fmt.Errorf("object store: validate auth staging file: %w", err)
+			}
+			return name, handle, nil
+		}
+		if !errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
+			return "", 0, fmt.Errorf("object store: create auth staging file: %w", err)
+		}
 	}
-	handle, err := windows.CreateFile(
-		pathPtr,
-		windows.GENERIC_READ|windows.READ_CONTROL|windows.WRITE_DAC,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-		attributes,
-		windows.CREATE_NEW,
-		windows.FILE_ATTRIBUTE_TEMPORARY|windows.FILE_FLAG_OPEN_REPARSE_POINT,
-		0,
-	)
-	runtime.KeepAlive(descriptor)
-	if err != nil {
-		return 0, fmt.Errorf("object store: create auth staging file: %w", err)
-	}
-	if err = rejectWindowsReparseHandle(handle); err != nil {
-		_ = windows.CloseHandle(handle)
-		return 0, fmt.Errorf("object store: validate auth staging file: %w", err)
-	}
-	return handle, nil
+	return "", 0, fmt.Errorf("object store: create auth staging file: exhausted unique names")
 }
 
 func restrictWindowsRenderHandle(handle windows.Handle) error {

@@ -12,7 +12,11 @@ import (
 // through an anonymous file descriptor. The provider sees only /dev/fd (or
 // /proc/self/fd), so another process cannot replace a staging pathname with a
 // symlink between validation and the credential write.
-func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error }) ([]byte, bool, error) {
+func prepareAuthRenderStaging(string) (string, secureAuthRootIdentity, error) {
+	return "", secureAuthRootIdentity{}, nil
+}
+
+func renderAuthStorageIsolated(storage interface{ SaveTokenToFile(string) error }, _ string, _ secureAuthRootIdentity) ([]byte, bool, error) {
 	file, err := os.CreateTemp("", "cpa-object-auth-*")
 	if err != nil {
 		return nil, false, fmt.Errorf("object store: create auth staging file: %w", err)

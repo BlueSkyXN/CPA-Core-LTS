@@ -12,13 +12,13 @@ import (
 func TestSecureAuthOperationsRejectAncestorSymlinkSwap(t *testing.T) {
 	tests := []struct {
 		name string
-		run  func(*testing.T, string, string, func()) error
+		run  func(*testing.T, string, secureAuthRootIdentity, string, func()) error
 	}{
 		{
 			name: "read",
-			run: func(t *testing.T, baseDir, relativePath string, hook func()) error {
+			run: func(t *testing.T, baseDir string, root secureAuthRootIdentity, relativePath string, hook func()) error {
 				t.Helper()
-				data, _, err := secureReadAuthFileWithRootHook(baseDir, relativePath, hook)
+				data, _, err := secureReadAuthFileWithRootHook(baseDir, root, relativePath, hook)
 				if len(data) != 0 {
 					t.Fatalf("secure read returned outside data %q", data)
 				}
@@ -27,14 +27,14 @@ func TestSecureAuthOperationsRejectAncestorSymlinkSwap(t *testing.T) {
 		},
 		{
 			name: "write",
-			run: func(_ *testing.T, baseDir, relativePath string, hook func()) error {
-				return secureWriteAuthFileWithRootHook(baseDir, relativePath, []byte("replacement"), hook)
+			run: func(_ *testing.T, baseDir string, root secureAuthRootIdentity, relativePath string, hook func()) error {
+				return secureWriteAuthFileWithRootHook(baseDir, root, relativePath, []byte("replacement"), hook)
 			},
 		},
 		{
 			name: "delete",
-			run: func(_ *testing.T, baseDir, relativePath string, hook func()) error {
-				return secureRemoveAuthFileWithRootHook(baseDir, relativePath, hook)
+			run: func(_ *testing.T, baseDir string, root secureAuthRootIdentity, relativePath string, hook func()) error {
+				return secureRemoveAuthFileWithRootHook(baseDir, root, relativePath, hook)
 			},
 		},
 	}
@@ -42,7 +42,8 @@ func TestSecureAuthOperationsRejectAncestorSymlinkSwap(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newSecureAuthAncestorSwapFixture(t)
-			if err := test.run(t, fixture.authDir, fixture.relativePath, fixture.swapToOutsideSymlink); err == nil {
+			root := mustCaptureSecureAuthRootIdentity(t, fixture.authDir)
+			if err := test.run(t, fixture.authDir, root, fixture.relativePath, fixture.swapToOutsideSymlink); err == nil {
 				t.Fatalf("secure %s accepted an auth-root ancestor symlink swap", test.name)
 			}
 			assertFileContents(t, fixture.outsideFile, "outside")
@@ -53,7 +54,8 @@ func TestSecureAuthOperationsRejectAncestorSymlinkSwap(t *testing.T) {
 
 func TestSecureAuthRootRejectsAncestorDirectoryReplacement(t *testing.T) {
 	fixture := newSecureAuthAncestorSwapFixture(t)
-	err := secureWriteAuthFileWithRootHook(fixture.authDir, fixture.relativePath, []byte("replacement"), func() {
+	root := mustCaptureSecureAuthRootIdentity(t, fixture.authDir)
+	err := secureWriteAuthFileWithRootHook(fixture.authDir, root, fixture.relativePath, []byte("replacement"), func() {
 		if errRename := os.Rename(fixture.ancestor, fixture.originalAncestor); errRename != nil {
 			t.Fatalf("move original auth ancestor: %v", errRename)
 		}
@@ -87,7 +89,8 @@ func TestSecureAuthRootRejectsSymlinkLeaf(t *testing.T) {
 		t.Fatalf("create auth-root symlink: %v", err)
 	}
 
-	data, _, err := secureReadAuthFile(authDir, relativePath)
+	rootIdentity := mustCaptureSecureAuthRootIdentity(t, outsideAuthDir)
+	data, _, err := secureReadAuthFile(authDir, rootIdentity, relativePath)
 	if err == nil {
 		t.Fatalf("secure read accepted an auth-root symlink and returned %q", data)
 	}
@@ -148,16 +151,5 @@ func newSecureAuthAncestorSwapFixture(t *testing.T) secureAuthAncestorSwapFixtur
 				t.Fatalf("replace auth ancestor with symlink: %v", err)
 			}
 		},
-	}
-}
-
-func assertFileContents(t *testing.T, path, want string) {
-	t.Helper()
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	if string(got) != want {
-		t.Fatalf("contents of %s = %q, want %q", path, got, want)
 	}
 }

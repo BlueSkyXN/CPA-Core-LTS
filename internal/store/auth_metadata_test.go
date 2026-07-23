@@ -64,8 +64,8 @@ func TestObjectTokenStoreReadAuthFileHydratesMetadata(t *testing.T) {
 		t.Fatalf("write auth file: %v", err)
 	}
 
-	store := &ObjectTokenStore{}
-	auth, err := store.readAuthFile(path, dir)
+	store := &ObjectTokenStore{authDir: dir, authRoot: mustCaptureSecureAuthRootIdentity(t, dir)}
+	auth, err := store.readAuthFile(path)
 	if err != nil {
 		t.Fatalf("readAuthFile() error: %v", err)
 	}

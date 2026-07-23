@@ -15,15 +15,61 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type secureAuthRootIdentity struct {
+	device uint64
+	inode  uint64
+	valid  bool
+}
+
+func captureSecureAuthRootIdentity(baseDir string) (secureAuthRootIdentity, error) {
+	dirFD, err := openSecureAuthRootWithHook(baseDir, nil)
+	if err != nil {
+		return secureAuthRootIdentity{}, err
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+	return secureAuthRootIdentityForDescriptor(dirFD)
+}
+
+func secureAuthRootIdentityForDescriptor(dirFD int) (secureAuthRootIdentity, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(dirFD, &stat); err != nil {
+		return secureAuthRootIdentity{}, fmt.Errorf("inspect auth directory identity: %w", err)
+	}
+	return secureAuthRootIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino), valid: true}, nil
+}
+
+func validateSecureAuthRootIdentity(dirFD int, expected secureAuthRootIdentity) error {
+	if !expected.valid {
+		return errObjectStoreAuthRootIdentityUnavailable
+	}
+	actual, err := secureAuthRootIdentityForDescriptor(dirFD)
+	if err != nil {
+		return err
+	}
+	if actual.device != expected.device || actual.inode != expected.inode {
+		return errObjectStoreAuthRootChanged
+	}
+	return nil
+}
+
+func validateSecureAuthRootPath(baseDir string, expected secureAuthRootIdentity) error {
+	dirFD, err := openSecureAuthRootWithHook(baseDir, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+	return validateSecureAuthRootIdentity(dirFD, expected)
+}
+
 // secureWriteAuthFile creates every path component relative to an opened auth
 // root and installs the file with renameat. The root and its canonical ancestors
 // are opened component by component without following symlinks.
-func secureWriteAuthFile(baseDir, relativePath string, data []byte) error {
-	return secureWriteAuthFileWithRootHook(baseDir, relativePath, data, nil)
+func secureWriteAuthFile(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, data []byte) error {
+	return secureWriteAuthFileWithRootHook(baseDir, expectedRoot, relativePath, data, nil)
 }
 
-func secureWriteAuthFileWithRootHook(baseDir, relativePath string, data []byte, afterRootSnapshot func()) error {
-	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, relativePath, true, afterRootSnapshot)
+func secureWriteAuthFileWithRootHook(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, data []byte, afterRootSnapshot func()) error {
+	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, expectedRoot, relativePath, true, afterRootSnapshot)
 	if err != nil {
 		return err
 	}
@@ -73,12 +119,12 @@ func secureWriteAuthFileWithRootHook(baseDir, relativePath string, data []byte, 
 
 // secureReadAuthFile opens each path component from an auth-root descriptor and
 // reads a regular final file without following symlinks.
-func secureReadAuthFile(baseDir, relativePath string) ([]byte, fs.FileInfo, error) {
-	return secureReadAuthFileWithRootHook(baseDir, relativePath, nil)
+func secureReadAuthFile(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string) ([]byte, fs.FileInfo, error) {
+	return secureReadAuthFileWithRootHook(baseDir, expectedRoot, relativePath, nil)
 }
 
-func secureReadAuthFileWithRootHook(baseDir, relativePath string, afterRootSnapshot func()) ([]byte, fs.FileInfo, error) {
-	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, relativePath, false, afterRootSnapshot)
+func secureReadAuthFileWithRootHook(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, afterRootSnapshot func()) ([]byte, fs.FileInfo, error) {
+	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, expectedRoot, relativePath, false, afterRootSnapshot)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -106,12 +152,12 @@ func secureReadAuthFileWithRootHook(baseDir, relativePath string, afterRootSnaps
 
 // secureRemoveAuthFile removes a final path relative to an auth-root
 // descriptor. Parent traversal never follows symlinks.
-func secureRemoveAuthFile(baseDir, relativePath string) error {
-	return secureRemoveAuthFileWithRootHook(baseDir, relativePath, nil)
+func secureRemoveAuthFile(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string) error {
+	return secureRemoveAuthFileWithRootHook(baseDir, expectedRoot, relativePath, nil)
 }
 
-func secureRemoveAuthFileWithRootHook(baseDir, relativePath string, afterRootSnapshot func()) error {
-	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, relativePath, false, afterRootSnapshot)
+func secureRemoveAuthFileWithRootHook(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, afterRootSnapshot func()) error {
+	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, expectedRoot, relativePath, false, afterRootSnapshot)
 	if err != nil {
 		return err
 	}
@@ -122,11 +168,11 @@ func secureRemoveAuthFileWithRootHook(baseDir, relativePath string, afterRootSna
 	return nil
 }
 
-func openSecureAuthParent(baseDir, relativePath string, create bool) (int, string, error) {
-	return openSecureAuthParentWithRootHook(baseDir, relativePath, create, nil)
+func openSecureAuthParent(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, create bool) (int, string, error) {
+	return openSecureAuthParentWithRootHook(baseDir, expectedRoot, relativePath, create, nil)
 }
 
-func openSecureAuthParentWithRootHook(baseDir, relativePath string, create bool, afterRootSnapshot func()) (int, string, error) {
+func openSecureAuthParentWithRootHook(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, create bool, afterRootSnapshot func()) (int, string, error) {
 	parts, err := secureAuthPathParts(relativePath)
 	if err != nil {
 		return -1, "", err
@@ -134,6 +180,10 @@ func openSecureAuthParentWithRootHook(baseDir, relativePath string, create bool,
 
 	dirFD, err := openSecureAuthRootWithHook(baseDir, afterRootSnapshot)
 	if err != nil {
+		return -1, "", err
+	}
+	if err = validateSecureAuthRootIdentity(dirFD, expectedRoot); err != nil {
+		_ = unix.Close(dirFD)
 		return -1, "", err
 	}
 	keepOpen := false

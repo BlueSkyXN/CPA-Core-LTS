@@ -29,11 +29,69 @@ type windowsFileDispositionInformationEx struct {
 	Flags uint32
 }
 
+type secureAuthRootIdentity struct {
+	volumeSerial uint32
+	fileIndex    uint64
+	valid        bool
+}
+
+func captureSecureAuthRootIdentity(baseDir string) (secureAuthRootIdentity, error) {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return secureAuthRootIdentity{}, fmt.Errorf("resolve auth directory: %w", err)
+	}
+	handle, err := openSecureWindowsRoot(absBase)
+	if err != nil {
+		return secureAuthRootIdentity{}, err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	return secureAuthRootIdentityForHandle(handle)
+}
+
+func secureAuthRootIdentityForHandle(handle windows.Handle) (secureAuthRootIdentity, error) {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return secureAuthRootIdentity{}, fmt.Errorf("inspect auth directory identity: %w", err)
+	}
+	return secureAuthRootIdentity{
+		volumeSerial: info.VolumeSerialNumber,
+		fileIndex:    uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
+		valid:        true,
+	}, nil
+}
+
+func validateSecureAuthRootIdentity(handle windows.Handle, expected secureAuthRootIdentity) error {
+	if !expected.valid {
+		return errObjectStoreAuthRootIdentityUnavailable
+	}
+	actual, err := secureAuthRootIdentityForHandle(handle)
+	if err != nil {
+		return err
+	}
+	if actual.volumeSerial != expected.volumeSerial || actual.fileIndex != expected.fileIndex {
+		return errObjectStoreAuthRootChanged
+	}
+	return nil
+}
+
+func validateSecureAuthRootPath(baseDir string, expected secureAuthRootIdentity) error {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolve auth directory: %w", err)
+	}
+	handle, err := openSecureWindowsRoot(absBase)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	return validateSecureAuthRootIdentity(handle, expected)
+}
+
 // secureWriteAuthFile binds every traversal and the final replacement to
 // directory handles. OBJ_DONT_REPARSE and FILE_OPEN_REPARSE_POINT prevent a
 // junction or symlink swap from redirecting the write outside the auth root.
-func secureWriteAuthFile(baseDir, relativePath string, data []byte) error {
-	dirHandle, leaf, err := openSecureWindowsAuthParent(baseDir, relativePath, true)
+func secureWriteAuthFile(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, data []byte) error {
+	dirHandle, leaf, err := openSecureWindowsAuthParent(baseDir, expectedRoot, relativePath, true)
 	if err != nil {
 		return err
 	}
@@ -65,8 +123,8 @@ func secureWriteAuthFile(baseDir, relativePath string, data []byte) error {
 }
 
 // secureReadAuthFile opens a regular final file beneath a no-reparse auth root.
-func secureReadAuthFile(baseDir, relativePath string) ([]byte, fs.FileInfo, error) {
-	dirHandle, leaf, err := openSecureWindowsAuthParent(baseDir, relativePath, false)
+func secureReadAuthFile(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string) ([]byte, fs.FileInfo, error) {
+	dirHandle, leaf, err := openSecureWindowsAuthParent(baseDir, expectedRoot, relativePath, false)
 	if err != nil {
 		return nil, nil, normalizeWindowsNotExist(err)
 	}
@@ -94,8 +152,8 @@ func secureReadAuthFile(baseDir, relativePath string) ([]byte, fs.FileInfo, erro
 
 // secureRemoveAuthFile opens the final path relative to a no-reparse parent
 // handle, rejects reparse points, and deletes only through that file handle.
-func secureRemoveAuthFile(baseDir, relativePath string) error {
-	dirHandle, leaf, err := openSecureWindowsAuthParent(baseDir, relativePath, false)
+func secureRemoveAuthFile(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string) error {
+	dirHandle, leaf, err := openSecureWindowsAuthParent(baseDir, expectedRoot, relativePath, false)
 	if err != nil {
 		return normalizeWindowsNotExist(err)
 	}
@@ -117,7 +175,7 @@ func validWindowsAuthPathComponent(component string) bool {
 		!strings.ContainsAny(component, `:/\\`)
 }
 
-func openSecureWindowsAuthParent(baseDir, relativePath string, create bool) (windows.Handle, string, error) {
+func openSecureWindowsAuthParent(baseDir string, expectedRoot secureAuthRootIdentity, relativePath string, create bool) (windows.Handle, string, error) {
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		return 0, "", fmt.Errorf("resolve auth directory: %w", err)
@@ -128,6 +186,10 @@ func openSecureWindowsAuthParent(baseDir, relativePath string, create bool) (win
 	}
 	dirHandle, err := openSecureWindowsRoot(absBase)
 	if err != nil {
+		return 0, "", err
+	}
+	if err = validateSecureAuthRootIdentity(dirHandle, expectedRoot); err != nil {
+		_ = windows.CloseHandle(dirHandle)
 		return 0, "", err
 	}
 	keepOpen := false

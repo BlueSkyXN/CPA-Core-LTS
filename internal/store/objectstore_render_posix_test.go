@@ -28,7 +28,7 @@ func (s *descriptorAuthStorage) SaveTokenToFile(path string) error {
 
 func TestRenderAuthStorageUsesAnonymousDescriptorPath(t *testing.T) {
 	storage := &descriptorAuthStorage{}
-	raw, wrote, err := renderAuthStorage(storage)
+	raw, wrote, err := renderAuthStorage(storage, "", secureAuthRootIdentity{})
 	if err != nil {
 		t.Fatalf("render descriptor auth storage: %v", err)
 	}
