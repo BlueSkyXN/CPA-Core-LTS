@@ -1619,7 +1619,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		buffering := abnormalRetry.StreamBuffer()
 		bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
 		scannerMaxTokenBytes := int64(52_428_800) // 50 MiB compatibility ceiling.
-		if bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
+		if buffering && bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
 			scannerMaxTokenBytes = bufferMaxBytes + 1
 			if scannerMaxTokenBytes < 64<<10 {
 				scannerMaxTokenBytes = 64 << 10
@@ -1635,6 +1635,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var bufferedChunks []cliproxyexecutor.StreamChunk
 		var bufferLimitErr error
 		bufferLimitExceeded := false
+		reconstructionCapExceeded := false
 		var flushBuffered func() bool
 		exceedBufferLimit := func() {
 			if bufferLimitExceeded {
@@ -1724,9 +1725,23 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				switch eventType {
 				case "response.output_item.done":
-					if !bufferLimitExceeded {
-						if bufferMaxBytes > 0 && bufferedBytes+outputItemsBytes+int64(len(data)) > bufferMaxBytes {
-							exceedBufferLimit()
+					if !bufferLimitExceeded && !reconstructionCapExceeded {
+						candidateBytes := outputItemsBytes + int64(len(data))
+						if buffering {
+							candidateBytes += bufferedBytes
+						}
+						if bufferMaxBytes > 0 && candidateBytes > bufferMaxBytes {
+							if buffering {
+								exceedBufferLimit()
+							} else {
+								// The client has already received stream deltas. Stop
+								// retaining reconstruction state instead of converting a
+								// delivered response into a terminal error.
+								reconstructionCapExceeded = true
+								outputItemsByIndex = nil
+								outputItemsFallback = nil
+								outputItemsBytes = 0
+							}
 						} else {
 							collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 							outputItemsBytes += int64(len(data))
@@ -1819,7 +1834,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if ctx.Err() != nil {
 				return
 			}
-			if bufferMaxBytes > 0 && strings.Contains(errScan.Error(), "token too long") {
+			if buffering && bufferMaxBytes > 0 && strings.Contains(errScan.Error(), "token too long") {
 				exceedBufferLimit()
 				helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
 				reporter.PublishFailure(ctx, bufferLimitErr)
@@ -2334,6 +2349,7 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 		msg:                 string(body),
 		modelFallbackReason: classification.ModelFallbackReason,
 		retryAfter:          classification.RetryAfter,
+		codexRateLimitClass: codexRateLimitClass(body),
 	}
 	return err
 }
@@ -2346,6 +2362,37 @@ type CodexUpstreamErrorClassification struct {
 	RetryAfter          *time.Duration
 	RequestInvalid      bool
 	RecordWithoutModel  bool
+}
+
+const (
+	CodexRateLimitClassUsageLimit = "usage-limit"
+	CodexRateLimitClassTransient  = "transient-rate-limit"
+)
+
+// CodexRateLimitClass exposes whether a 429 is a quota exhaustion or a
+// transient upstream rate limit without changing the downstream HTTP payload.
+// The auth conductor can use this optional error capability to avoid treating
+// rate_limit_error/rate_limit_exceeded as usage_limit_reached.
+func (e statusErr) CodexRateLimitClass() string {
+	return e.codexRateLimitClass
+}
+
+func codexRateLimitClass(body []byte) string {
+	if isCodexUsageLimitError(body) {
+		return CodexRateLimitClassUsageLimit
+	}
+	for _, candidate := range []string{
+		gjson.GetBytes(body, "error.type").String(),
+		gjson.GetBytes(body, "error.code").String(),
+		gjson.GetBytes(body, "type").String(),
+		gjson.GetBytes(body, "code").String(),
+	} {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "rate_limit_error", "rate_limit_exceeded":
+			return CodexRateLimitClassTransient
+		}
+	}
+	return ""
 }
 
 // ClassifyCodexUpstreamError normalizes Codex quota and capacity responses.

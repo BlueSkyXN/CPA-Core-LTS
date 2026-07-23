@@ -786,6 +786,7 @@ type statusErr struct {
 	msg                 string
 	retryAfter          *time.Duration
 	modelFallbackReason string
+	codexRateLimitClass string
 }
 
 func (e statusErr) Error() string {

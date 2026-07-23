@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -204,6 +205,72 @@ func TestManager_Update_ActiveInheritsModelStates(t *testing.T) {
 	}
 	if state.Quota.BackoffLevel != backoffLevel {
 		t.Fatalf("expected BackoffLevel to be %d, got %d", backoffLevel, state.Quota.BackoffLevel)
+	}
+}
+
+func TestManager_Update_ProviderChangeDoesNotInheritModelStates(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	staleRetry := time.Now().Add(time.Hour)
+	if _, err := m.Register(context.Background(), &Auth{
+		ID:       "auth-provider-change",
+		Provider: "claude",
+		Status:   StatusActive,
+		Success:  5,
+		Failed:   3,
+		ModelStates: map[string]*ModelState{
+			"shared-model": {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: time.Now().Add(time.Hour),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	if _, err := m.Update(context.Background(), &Auth{
+		ID:               "auth-provider-change",
+		Provider:         "xai",
+		Status:           StatusError,
+		StatusMessage:    "stale provider error",
+		Unavailable:      true,
+		Quota:            QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: staleRetry},
+		LastError:        &Error{Code: "stale", Message: "stale provider error"},
+		LastRefreshedAt:  staleRetry.Add(-2 * time.Hour),
+		NextRefreshAfter: staleRetry,
+		NextRetryAfter:   staleRetry,
+		Success:          9,
+		Failed:           7,
+		ModelStates: map[string]*ModelState{
+			"incoming-stale-model": {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: staleRetry,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: staleRetry},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("update auth: %v", err)
+	}
+
+	updated, ok := m.GetByID("auth-provider-change")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if len(updated.ModelStates) != 0 {
+		t.Fatalf("provider change inherited stale ModelStates: %+v", updated.ModelStates)
+	}
+	if updated.Status != StatusActive || updated.Unavailable || updated.StatusMessage != "" || updated.LastError != nil {
+		t.Fatalf("provider change retained stale auth error state: %+v", updated)
+	}
+	if updated.Quota != (QuotaState{}) || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("provider change retained stale quota/retry state: quota=%+v retry=%v", updated.Quota, updated.NextRetryAfter)
+	}
+	if !updated.LastRefreshedAt.IsZero() || !updated.NextRefreshAfter.IsZero() {
+		t.Fatalf("provider change retained stale refresh state: last=%v next=%v", updated.LastRefreshedAt, updated.NextRefreshAfter)
+	}
+	if updated.Success != 0 || updated.Failed != 0 {
+		t.Fatalf("provider change retained provider health counters: success=%d failed=%d", updated.Success, updated.Failed)
 	}
 }
 
