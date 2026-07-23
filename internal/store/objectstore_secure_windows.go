@@ -257,7 +257,7 @@ func openSecureWindowsAuthFileAt(parent windows.Handle, leaf string, access uint
 	var allocationSize int64
 	err = windows.NtCreateFile(
 		&handle,
-		access,
+		access|windows.FILE_READ_ATTRIBUTES,
 		attributes,
 		&status,
 		&allocationSize,
@@ -305,7 +305,7 @@ func createSecureWindowsTempAt(parent windows.Handle, _ string) (string, windows
 		var allocationSize int64
 		err = windows.NtCreateFile(
 			&handle,
-			windows.FILE_GENERIC_WRITE|windows.DELETE|windows.READ_CONTROL|windows.WRITE_DAC,
+			windows.FILE_GENERIC_WRITE|windows.FILE_READ_ATTRIBUTES|windows.DELETE|windows.READ_CONTROL|windows.WRITE_DAC,
 			attributes,
 			&status,
 			&allocationSize,
@@ -320,7 +320,7 @@ func createSecureWindowsTempAt(parent windows.Handle, _ string) (string, windows
 		if err == nil {
 			if err = rejectWindowsReparseHandle(handle); err != nil {
 				_ = windows.CloseHandle(handle)
-				return "", 0, err
+				return "", 0, fmt.Errorf("validate auth temp file: %w", err)
 			}
 			return name, handle, nil
 		}
