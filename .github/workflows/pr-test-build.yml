@@ -41,3 +41,5 @@ jobs:
           cache: true
       - name: Verify credential DACL hardening
         run: go test ./internal/misc -run TestOpenCredentialFileRestrictsAccessToCurrentUser -count=1
+      - name: Verify Object Store Windows auth hardening
+        run: go test -v ./internal/store -run 'TestSecureAuthFileWindows|TestRenderAuthStorageLocksWindowsStaging' -count=1
