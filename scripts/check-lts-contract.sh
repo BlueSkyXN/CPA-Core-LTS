@@ -145,6 +145,8 @@ require_grep "serveManagementControlPanel" internal/api/server.go
 require_grep "BlueSkyXN/CPA-Panel-LTS" internal/managementasset/updater.go internal/managementasset/updater_test.go internal/config/config.go
 require_grep "UsageReporter" internal/runtime/executor/helps/usage_helpers.go
 require_grep "codex.model-fallback" docs/lts/core-feature-contracts.yaml docs/lts/codex-429-resilience.md
+require_grep "global-targets" internal/config/config.go config.example.yaml docs/lts/core-feature-contracts.yaml docs/lts/codex-429-resilience.md
+require_grep "model_fallback_reason" sdk/cliproxy/auth/cooldown_state.go docs/lts/core-feature-contracts.yaml docs/lts/codex-429-resilience.md
 require_grep "CodexModelFallbackSourceModelMetadataKey" sdk/cliproxy/executor/types.go sdk/cliproxy/auth/codex_model_fallback.go
 require_grep "codex.rate-limit-continuity" docs/lts/core-feature-contracts.yaml docs/lts/codex-429-resilience.md
 require_grep "codexRateLimitContinuityStore" sdk/cliproxy/auth/codex_rate_limit_continuity.go docs/lts/core-feature-contracts.yaml

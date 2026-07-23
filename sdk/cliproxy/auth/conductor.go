@@ -881,6 +881,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	state.Status = StatusError
 	state.NextRetryAfter = record.NextRetryAfter
 	state.Quota = quota
+	state.modelFallbackReason = strings.ToLower(strings.TrimSpace(record.ModelFallbackReason))
 	state.UpdatedAt = updatedAt
 	if reason != "" {
 		state.StatusMessage = reason
@@ -910,6 +911,7 @@ func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
 			state.Unavailable = false
 			state.NextRetryAfter = time.Time{}
 			state.Quota = QuotaState{}
+			state.modelFallbackReason = ""
 			state.UpdatedAt = now
 			changed = true
 		}
@@ -1114,6 +1116,7 @@ func cooldownStateRecordEqual(a, b CooldownStateRecord) bool {
 		a.Model != b.Model ||
 		a.Status != b.Status ||
 		a.Reason != b.Reason ||
+		a.ModelFallbackReason != b.ModelFallbackReason ||
 		!a.NextRetryAfter.Equal(b.NextRetryAfter) ||
 		!a.UpdatedAt.Equal(b.UpdatedAt) ||
 		!cooldownQuotaEqual(a.Quota, b.Quota) {
@@ -1162,16 +1165,17 @@ func modelCooldownStateRecord(auth *Auth, model string, state *ModelState, now t
 		return CooldownStateRecord{}, false
 	}
 	return CooldownStateRecord{
-		Provider:       strings.TrimSpace(auth.Provider),
-		AuthID:         auth.ID,
-		AuthFile:       cooldownAuthFile(auth),
-		Model:          model,
-		Status:         "cooling",
-		NextRetryAfter: state.NextRetryAfter,
-		Reason:         cooldownReason(state.StatusMessage, state.Quota, state.LastError),
-		Quota:          state.Quota,
-		LastError:      cloneError(state.LastError),
-		UpdatedAt:      state.UpdatedAt,
+		Provider:            strings.TrimSpace(auth.Provider),
+		AuthID:              auth.ID,
+		AuthFile:            cooldownAuthFile(auth),
+		Model:               model,
+		Status:              "cooling",
+		NextRetryAfter:      state.NextRetryAfter,
+		Reason:              cooldownReason(state.StatusMessage, state.Quota, state.LastError),
+		Quota:               state.Quota,
+		LastError:           cloneError(state.LastError),
+		ModelFallbackReason: state.modelFallbackReason,
+		UpdatedAt:           state.UpdatedAt,
 	}, true
 }
 
@@ -4523,6 +4527,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				if !isRequestScopedResultError(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					state := ensureModelState(auth, result.Model)
+					state.modelFallbackReason = strings.ToLower(strings.TrimSpace(result.ModelFallbackReason))
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
@@ -4724,6 +4729,7 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.NextRetryAfter = time.Time{}
 	state.LastError = nil
 	state.Quota = QuotaState{}
+	state.modelFallbackReason = ""
 	state.UpdatedAt = now
 }
 

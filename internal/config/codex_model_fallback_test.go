@@ -15,6 +15,7 @@ codex:
     enabled: true
     triggers: [capacity]
     reasoning-continuity: context-reset
+    global-targets: [gpt-global, gpt-backup]
     mappings:
       - from: gpt-source
         to: [gpt-target, gpt-backup]
@@ -37,11 +38,15 @@ codex:
 	if got := effective.TargetsFor("gpt-source", CodexModelFallbackTriggerCapacity); !reflect.DeepEqual(got, []string{"gpt-target", "gpt-backup"}) {
 		t.Fatalf("TargetsFor() = %#v", got)
 	}
+	if !reflect.DeepEqual(effective.GlobalTargets, []string{"gpt-global", "gpt-backup"}) {
+		t.Fatalf("GlobalTargets = %#v", effective.GlobalTargets)
+	}
 }
 
 func TestCodexModelFallbackEffectiveDefaultsAndNormalizesMappings(t *testing.T) {
 	effective := (CodexModelFallbackConfig{
-		Enabled: true,
+		Enabled:       true,
+		GlobalTargets: []string{" gpt-global ", "GPT-GLOBAL", ""},
 		Mappings: []CodexModelFallbackMapping{
 			{From: " gpt-5.6-sol ", To: []string{" gpt-5.6-terra ", "GPT-5.6-TERRA", "gpt-5.6-sol", ""}},
 			{From: "", To: []string{"gpt-5.5"}},
@@ -65,6 +70,12 @@ func TestCodexModelFallbackEffectiveDefaultsAndNormalizesMappings(t *testing.T) 
 	}
 	if got := effective.TargetsFor("gpt-5.6-sol", "rate-limit"); got != nil {
 		t.Fatalf("TargetsFor(transient) = %#v, want nil", got)
+	}
+	if !reflect.DeepEqual(effective.GlobalTargets, []string{"gpt-global"}) {
+		t.Fatalf("GlobalTargets = %#v, want [gpt-global]", effective.GlobalTargets)
+	}
+	if !effective.AllowsTrigger(CodexModelFallbackTriggerUsageLimit) || effective.AllowsTrigger("rate-limit") {
+		t.Fatalf("AllowsTrigger() returned unexpected result for normalized triggers")
 	}
 }
 

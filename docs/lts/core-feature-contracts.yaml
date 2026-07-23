@@ -291,6 +291,7 @@ features:
       - codex.model-fallback.triggers
       - codex.model-fallback.reasoning-continuity
       - codex.model-fallback.mappings
+      - codex.model-fallback.global-targets
     core_files:
       - internal/config/config.go
       - internal/cache/codex_reasoning_replay_scope.go
@@ -302,6 +303,7 @@ features:
       - sdk/api/handlers/handlers_metadata_test.go
       - sdk/api/handlers/openai/openai_responses_websocket.go
       - sdk/cliproxy/auth/codex_model_fallback.go
+      - sdk/cliproxy/auth/cooldown_state.go
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/executor/types.go
       - config.example.yaml
@@ -319,8 +321,8 @@ features:
       - ResolveCodexReasoningReplaySessionKey
       - responsesWebsocketCanAttestContextReset
       - ModelFallbackZeroDispatch
-      - CodexModelFallbackContextResetReplayMetadataKey
-      - ModelFallbackZeroDispatch
+      - global-targets
+      - model_fallback_reason
     validation:
       - go test ./internal/config ./internal/watcher/diff
       - go test ./internal/runtime/executor -run 'Codex.*ModelFallback|Codex.*Retry|Codex.*Signature'

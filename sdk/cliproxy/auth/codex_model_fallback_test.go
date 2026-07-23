@@ -380,6 +380,199 @@ func newCodexModelFallbackTestManager(t *testing.T, executor *codexModelFallback
 	return manager, authID
 }
 
+func newCodexGlobalFallbackTestManager(t *testing.T, executor *codexModelFallbackTestExecutor, mappings []internalconfig.CodexModelFallbackMapping) (*Manager, string) {
+	t.Helper()
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	manager.SetConfig(&internalconfig.Config{Codex: internalconfig.CodexConfig{ModelFallback: internalconfig.CodexModelFallbackConfig{
+		Enabled:       true,
+		GlobalTargets: []string{"gpt-global"},
+		Mappings:      mappings,
+	}}})
+	manager.RegisterExecutor(executor)
+	authID := "codex-global-fallback-auth"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: "gpt-source"}, {ID: "gpt-target"}, {ID: "gpt-global"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(authID)
+	})
+	if _, err := manager.Register(context.Background(), &Auth{ID: authID, Provider: "codex", Status: StatusActive}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	return manager, authID
+}
+
+func codexUsageLimitTestError() error {
+	return &codexFallbackTestError{
+		message: "decorated provider usage limit",
+		reason:  internalconfig.CodexModelFallbackTriggerUsageLimit,
+	}
+}
+
+func TestManagerExecuteCodexGlobalFallbackOnConfirmedUsageLimitCooldown(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": codexUsageLimitTestError()}}
+	manager, _ := newCodexGlobalFallbackTestManager(t, executor, nil)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "gpt-global" {
+		t.Fatalf("response payload = %q, want gpt-global", got)
+	}
+	calls, metadata := executor.snapshot()
+	if len(calls) != 2 || calls[0] != "gpt-source" || calls[1] != "gpt-global" {
+		t.Fatalf("calls = %#v, want [gpt-source gpt-global]", calls)
+	}
+	if got := metadata["gpt-global"][cliproxyexecutor.CodexModelFallbackSourceModelMetadataKey]; got != "gpt-source" {
+		t.Fatalf("global fallback source metadata = %#v, want gpt-source", got)
+	}
+	if got := metadata["gpt-global"][cliproxyexecutor.RequestedModelMetadataKey]; got != "gpt-source" {
+		t.Fatalf("requested model metadata = %#v, want gpt-source", got)
+	}
+}
+
+func TestManagerExecuteCodexGlobalFallbackIgnoresOrdinary429(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{
+		"gpt-source": &codexFallbackTestError{message: `{"error":{"type":"rate_limit_error"}}`},
+	}}
+	manager, _ := newCodexGlobalFallbackTestManager(t, executor, nil)
+
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want ordinary 429")
+	}
+	calls, _ := executor.snapshot()
+	if len(calls) != 1 || calls[0] != "gpt-source" {
+		t.Fatalf("calls = %#v, want source only", calls)
+	}
+}
+
+func TestManagerExecuteCodexGlobalFallbackRunsAfterMappedTargetsCannotDispatch(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": codexUsageLimitTestError()}}
+	manager, _ := newCodexGlobalFallbackTestManager(t, executor, []internalconfig.CodexModelFallbackMapping{{From: "gpt-source", To: []string{"gpt-missing"}}})
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "gpt-global" {
+		t.Fatalf("response payload = %q, want gpt-global", got)
+	}
+	calls, _ := executor.snapshot()
+	if len(calls) != 2 || calls[0] != "gpt-source" || calls[1] != "gpt-global" {
+		t.Fatalf("calls = %#v, want [gpt-source gpt-global]", calls)
+	}
+}
+
+func TestManagerExecuteCodexGlobalFallbackDoesNotBypassSuccessfulMapping(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": codexUsageLimitTestError()}}
+	manager, _ := newCodexGlobalFallbackTestManager(t, executor, []internalconfig.CodexModelFallbackMapping{{From: "gpt-source", To: []string{"gpt-target"}}})
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "gpt-target" {
+		t.Fatalf("response payload = %q, want gpt-target", got)
+	}
+	calls, _ := executor.snapshot()
+	if len(calls) != 2 || calls[0] != "gpt-source" || calls[1] != "gpt-target" {
+		t.Fatalf("calls = %#v, want [gpt-source gpt-target]", calls)
+	}
+}
+
+func TestManagerExecuteCodexGlobalFallbackUsesExistingConfirmedCooldown(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{}}
+	manager, authID := newCodexGlobalFallbackTestManager(t, executor, nil)
+	now := time.Now()
+	manager.mu.Lock()
+	manager.auths[authID].ModelStates = map[string]*ModelState{
+		"gpt-source": {
+			Status:              StatusError,
+			Unavailable:         true,
+			NextRetryAfter:      now.Add(time.Minute),
+			LastError:           &Error{HTTPStatus: http.StatusTooManyRequests, Message: "decorated provider usage limit"},
+			Quota:               QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: now.Add(time.Minute)},
+			modelFallbackReason: internalconfig.CodexModelFallbackTriggerUsageLimit,
+		},
+	}
+	manager.mu.Unlock()
+	manager.RefreshSchedulerEntry(authID)
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "gpt-global" {
+		t.Fatalf("response payload = %q, want gpt-global", got)
+	}
+	calls, _ := executor.snapshot()
+	if len(calls) != 1 || calls[0] != "gpt-global" {
+		t.Fatalf("calls = %#v, want global target only", calls)
+	}
+}
+
+func TestManagerExecuteCodexGlobalFallbackIgnoresDisabledSourceCandidates(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": codexUsageLimitTestError()}}
+	manager, _ := newCodexGlobalFallbackTestManager(t, executor, nil)
+	reg := registry.GetGlobalRegistry()
+
+	disabledAuthID := "codex-global-fallback-disabled-auth"
+	reg.RegisterClient(disabledAuthID, "codex", []*registry.ModelInfo{{ID: "gpt-source"}})
+	if _, err := manager.Register(context.Background(), &Auth{ID: disabledAuthID, Provider: "codex", Status: StatusDisabled}); err != nil {
+		t.Fatalf("register disabled auth: %v", err)
+	}
+	disabledModelID := "codex-global-fallback-disabled-model"
+	reg.RegisterClient(disabledModelID, "codex", []*registry.ModelInfo{{ID: "gpt-source"}})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       disabledModelID,
+		Provider: "codex",
+		Status:   StatusActive,
+		ModelStates: map[string]*ModelState{
+			"gpt-source": {Status: StatusDisabled},
+		},
+	}); err != nil {
+		t.Fatalf("register auth with disabled model: %v", err)
+	}
+	t.Cleanup(func() {
+		reg.UnregisterClient(disabledAuthID)
+		reg.UnregisterClient(disabledModelID)
+	})
+
+	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := string(resp.Payload); got != "gpt-global" {
+		t.Fatalf("response payload = %q, want gpt-global", got)
+	}
+}
+
+func TestManagerExecuteStreamCodexGlobalFallbackBeforeFirstPayload(t *testing.T) {
+	executor := &codexModelFallbackTestExecutor{streamErrs: map[string]error{"gpt-source": codexUsageLimitTestError()}}
+	manager, _ := newCodexGlobalFallbackTestManager(t, executor, nil)
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	var payload []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		payload = append(payload, chunk.Payload...)
+	}
+	if got := string(payload); got != "gpt-global" {
+		t.Fatalf("stream payload = %q, want gpt-global", got)
+	}
+	calls, _ := executor.snapshot()
+	if len(calls) != 2 || calls[0] != "gpt-source" || calls[1] != "gpt-global" {
+		t.Fatalf("calls = %#v, want [gpt-source gpt-global]", calls)
+	}
+}
+
 func TestManagerExecuteCodexModelFallbackOnUsageLimit(t *testing.T) {
 	executor := &codexModelFallbackTestExecutor{
 		executeErrs: map[string]error{

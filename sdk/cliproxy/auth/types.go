@@ -192,6 +192,10 @@ type ModelState struct {
 	Quota QuotaState `json:"quota"`
 	// UpdatedAt tracks the last update timestamp for this model state.
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// modelFallbackReason preserves the typed provider classification that
+	// established the current cooldown without exposing it as auth API state.
+	modelFallbackReason string
 }
 
 func recentRequestBucketID(now time.Time) int64 {

@@ -551,6 +551,9 @@ func appendCodexModelFallbackChanges(changes []string, oldCfg, newCfg config.Eff
 	if !reflect.DeepEqual(oldCfg.Mappings, newCfg.Mappings) {
 		changes = append(changes, fmt.Sprintf("codex.model-fallback.mappings: updated (%d -> %d entries)", len(oldCfg.Mappings), len(newCfg.Mappings)))
 	}
+	if !reflect.DeepEqual(oldCfg.GlobalTargets, newCfg.GlobalTargets) {
+		changes = append(changes, fmt.Sprintf("codex.model-fallback.global-targets: updated (%d -> %d entries)", len(oldCfg.GlobalTargets), len(newCfg.GlobalTargets)))
+	}
 	return changes
 }
 

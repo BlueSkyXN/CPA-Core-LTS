@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -93,10 +95,6 @@ func (m *Manager) codexModelFallbackPlan(providers []string, req cliproxyexecuto
 	if m == nil || !codexModelFallbackRequestEligible(providers, opts) {
 		return internalconfig.EffectiveCodexModelFallbackConfig{}, "", nil, false
 	}
-	reason := modelFallbackReasonFromError(err)
-	if reason == "" {
-		return internalconfig.EffectiveCodexModelFallbackConfig{}, "", nil, false
-	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
 		return internalconfig.EffectiveCodexModelFallbackConfig{}, "", nil, false
@@ -106,9 +104,17 @@ func (m *Manager) codexModelFallbackPlan(providers []string, req cliproxyexecuto
 	if sourceModel == "" {
 		sourceModel = strings.TrimSpace(req.Model)
 	}
-	targets := effective.TargetsFor(sourceModel, reason)
-	if len(targets) == 0 {
+	confirmedUsageLimit := m.codexModelHasConfirmedUsageLimitCooldown(sourceModel, opts)
+	reason := modelFallbackReasonFromError(err)
+	if reason == "" && confirmedUsageLimit {
+		reason = internalconfig.CodexModelFallbackTriggerUsageLimit
+	}
+	if reason == "" || !effective.AllowsTrigger(reason) {
 		return effective, reason, nil, false
+	}
+	targets := effective.TargetsFor(sourceModel, reason)
+	if confirmedUsageLimit && reason == internalconfig.CodexModelFallbackTriggerUsageLimit {
+		targets = append(targets, effective.GlobalTargets...)
 	}
 	seen := map[string]struct{}{strings.ToLower(sourceModel): {}}
 	filtered := make([]string, 0, len(targets))
@@ -132,6 +138,78 @@ func (m *Manager) codexModelFallbackPlan(providers []string, req cliproxyexecuto
 		return effective, reason, nil, false
 	}
 	return effective, reason, filtered, true
+}
+
+func (m *Manager) codexModelHasConfirmedUsageLimitCooldown(routeModel string, opts cliproxyexecutor.Options) bool {
+	if m == nil || strings.TrimSpace(routeModel) == "" {
+		return false
+	}
+	now := time.Now()
+	registryRef := registry.GetGlobalRegistry()
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	excluded := excludedAuthIDsFromMetadata(opts.Metadata)
+	found := false
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled || executorKeyFromAuth(auth) != "codex" {
+			continue
+		}
+		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+			continue
+		}
+		if disallowFreeAuth && isFreeCodexAuth(auth) {
+			continue
+		}
+		if _, skip := excluded[auth.ID]; skip {
+			continue
+		}
+		if !m.authSupportsRouteModel(registryRef, auth, routeModel) {
+			continue
+		}
+		modelKey := m.selectionModelForAuth(auth, routeModel)
+		state := codexModelStateByCanonicalKey(auth, modelKey)
+		if state != nil && state.Status == StatusDisabled {
+			continue
+		}
+		found = true
+		if !codexModelStateHasConfirmedUsageLimitCooldown(state, now) {
+			return false
+		}
+	}
+	return found
+}
+
+func codexModelStateByCanonicalKey(auth *Auth, model string) *ModelState {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return nil
+	}
+	if state := auth.ModelStates[model]; state != nil {
+		return state
+	}
+	key := canonicalModelKey(model)
+	for candidate, state := range auth.ModelStates {
+		if state != nil && canonicalModelKey(candidate) == key {
+			return state
+		}
+	}
+	return nil
+}
+
+func codexModelStateHasConfirmedUsageLimitCooldown(state *ModelState, now time.Time) bool {
+	if state == nil || !state.Unavailable || !state.Quota.Exceeded || !strings.EqualFold(strings.TrimSpace(state.Quota.Reason), "quota") {
+		return false
+	}
+	deadline := state.NextRetryAfter
+	if state.Quota.NextRecoverAt.After(deadline) {
+		deadline = state.Quota.NextRecoverAt
+	}
+	if deadline.IsZero() || !deadline.After(now) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(state.modelFallbackReason), internalconfig.CodexModelFallbackTriggerUsageLimit)
 }
 
 func withCodexModelFallbackMetadata(opts cliproxyexecutor.Options, sourceModel, targetModel, reasoningContinuity string) cliproxyexecutor.Options {
