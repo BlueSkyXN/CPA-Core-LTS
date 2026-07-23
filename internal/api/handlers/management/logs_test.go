@@ -201,6 +201,70 @@ func TestGetLogsNoLimitUsesBoundedDefault(t *testing.T) {
 	}
 }
 
+func TestGetLogsDefaultTailIncludesTrailingPartialLine(t *testing.T) {
+	dir := t.TempDir()
+	writeMainLog(t, dir, "first\npartial")
+
+	resp := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs")
+	wantLines := []string{"first", "partial"}
+	if !reflect.DeepEqual(resp.Lines, wantLines) {
+		t.Fatalf("lines = %#v, want %#v", resp.Lines, wantLines)
+	}
+	cursor, errCursor := decodeLogCursor(resp.NextCursor)
+	if errCursor != nil {
+		t.Fatalf("decode initial cursor: %v", errCursor)
+	}
+	if !cursor.PreviewedPartial {
+		t.Fatal("initial cursor does not record the previewed partial line")
+	}
+
+	appendMainLog(t, dir, " complete\nnew\n")
+	next := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs?cursor="+url.QueryEscape(resp.NextCursor))
+	if !reflect.DeepEqual(next.Lines, []string{"partial complete", "new"}) {
+		t.Fatalf("completed partial lines = %#v", next.Lines)
+	}
+	if !next.ReplaceTrailingPartial {
+		t.Fatal("completed partial response did not request replacement of the previewed line")
+	}
+}
+
+func TestReadTailLogLinesUsesSingleSizeSnapshotDuringAppend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, defaultLogFileName)
+	writeMainLog(t, dir, "partial")
+
+	read, err := readTailLogLinesWithSnapshotHook(path, 10, func() {
+		appendMainLog(t, dir, " complete\nnew\n")
+	})
+	if err != nil {
+		t.Fatalf("readTailLogLinesWithSnapshotHook() error = %v", err)
+	}
+	if !reflect.DeepEqual(read.lines, []string{"partial"}) {
+		t.Fatalf("snapshot lines = %#v, want only the original partial preview", read.lines)
+	}
+	if read.cursor == nil || !read.cursor.PreviewedPartial || read.cursor.Offset != 0 || read.cursor.Size != int64(len("partial")) {
+		t.Fatalf("snapshot cursor = %+v, want previewed partial at original size", read.cursor)
+	}
+
+	rawCursor, err := encodeLogCursor(*read.cursor)
+	if err != nil {
+		t.Fatalf("encode snapshot cursor: %v", err)
+	}
+	next, reset, err := readLogFilesFromCursor(dir, []string{path}, rawCursor, 10)
+	if err != nil {
+		t.Fatalf("readLogFilesFromCursor() error = %v", err)
+	}
+	if reset {
+		t.Fatal("snapshot cursor unexpectedly reset after append")
+	}
+	if !next.replaceTrailingPartial {
+		t.Fatal("completed snapshot partial did not request trailing replacement")
+	}
+	if !reflect.DeepEqual(next.lines, []string{"partial complete", "new"}) {
+		t.Fatalf("incremental lines = %#v, want completed preview plus new line", next.lines)
+	}
+}
+
 func TestParseLimitClampsToPanelCompatibleMaximum(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -785,11 +849,12 @@ func mustEncodeRawCursor(t *testing.T, cursor logCursor) string {
 }
 
 type logsAPIResponse struct {
-	Lines           []string `json:"lines"`
-	LineCount       int      `json:"line-count"`
-	LatestTimestamp int64    `json:"latest-timestamp"`
-	NextCursor      string   `json:"next-cursor"`
-	CursorReset     bool     `json:"cursor-reset"`
+	Lines                  []string `json:"lines"`
+	LineCount              int      `json:"line-count"`
+	LatestTimestamp        int64    `json:"latest-timestamp"`
+	NextCursor             string   `json:"next-cursor"`
+	CursorReset            bool     `json:"cursor-reset"`
+	ReplaceTrailingPartial bool     `json:"replace-trailing-partial"`
 }
 
 func newLogsTestHandler(dir string, loggingToFile bool) *Handler {
