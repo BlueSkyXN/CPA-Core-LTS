@@ -34,6 +34,17 @@ type noOpTokenStorage struct{}
 
 func (*noOpTokenStorage) SaveTokenToFile(string) error { return nil }
 
+type rawJSONTokenStorage struct {
+	called bool
+}
+
+func (s *rawJSONTokenStorage) SaveTokenToFile(string) error {
+	s.called = true
+	return errors.New("path writer must not be called")
+}
+
+func (*rawJSONTokenStorage) RawJSON() []byte { return []byte(`{"type":"plugin"}`) }
+
 func TestRenderAuthStoragePreservesNoOpWriter(t *testing.T) {
 	raw, wrote, err := renderAuthStorage(&noOpTokenStorage{})
 	if err != nil {
@@ -41,6 +52,20 @@ func TestRenderAuthStoragePreservesNoOpWriter(t *testing.T) {
 	}
 	if wrote {
 		t.Fatalf("render no-op token storage reported a file with contents %q", raw)
+	}
+}
+
+func TestRenderAuthStoragePrefersPathFreeRawJSON(t *testing.T) {
+	storage := &rawJSONTokenStorage{}
+	raw, wrote, err := renderAuthStorage(storage)
+	if err != nil {
+		t.Fatalf("render raw JSON token storage: %v", err)
+	}
+	if !wrote || string(raw) != `{"type":"plugin"}` {
+		t.Fatalf("rendered raw JSON = %q, wrote=%v", raw, wrote)
+	}
+	if storage.called {
+		t.Fatal("path-based token writer was called despite RawJSON support")
 	}
 }
 

@@ -535,9 +535,16 @@ patches:
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
     affected_upstream_range: through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); upstream accepts caller-provided absolute auth paths and computes object keys from unchecked filepath.Rel results, so paths outside the mirror can reach local file and remote object operations.
     files:
+      - .github/workflows/pr-test-build.yml
       - internal/store/objectstore.go
+      - internal/store/objectstore_render_posix.go
+      - internal/store/objectstore_render_posix_test.go
+      - internal/store/objectstore_render_windows.go
+      - internal/store/objectstore_render_windows_test.go
       - internal/store/objectstore_secure_posix.go
+      - internal/store/objectstore_secure_posix_test.go
       - internal/store/objectstore_secure_windows.go
+      - internal/store/objectstore_secure_windows_test.go
       - internal/store/objectstore_path_test.go
     regression_tests:
       - TestObjectTokenStoreRejectsAuthPathsOutsideAuthDir
@@ -553,9 +560,18 @@ patches:
       - TestObjectTokenStoreUploadRejectsPathSwapWithoutExternalReadOrUpload
       - TestObjectTokenStoreUploadMissingAuthDeletesRemoteObject
       - TestObjectTokenStoreListSkipsPathSwappedExternalAuth
+      - TestRenderAuthStoragePrefersPathFreeRawJSON
+      - TestRenderAuthStorageUsesAnonymousDescriptorPath
+      - TestSecureAuthOperationsRejectAncestorSymlinkSwap
+      - TestSecureAuthRootRejectsAncestorDirectoryReplacement
+      - TestSecureAuthRootRejectsSymlinkLeaf
+    # Windows-only regression functions are build-tagged and therefore cannot
+    # be listed by the host-platform registry guard. The windows-latest job in
+    # pr-test-build.yml runs both TestSecureAuthFileWindows* and the isolated
+    # renderer path-lock regression natively and exposes any junction skip.
     upstream_issue_or_pr: not-filed
     state: required
-    retire_when: Upstream validates every object-store auth save, delete, upload, mirror, list, and watcher persistence path against lexical containment and performs actual reads, writes, and deletes with descriptor- or handle-relative no-follow traversal on POSIX and Windows, rejects symlink, junction, and path-swap escapes, preserves nested auth files, and all listed regressions pass without the downstream patch.
+    retire_when: Upstream validates every object-store auth save, delete, upload, mirror, list, and watcher persistence path against lexical containment; performs actual reads, writes, and deletes with descriptor- or handle-relative no-follow traversal on POSIX and Windows; renders legacy path-based storage through a non-redirectable descriptor or locked handle while preferring path-free storage output; rejects ancestor swaps, symlinks, junctions, reparse points, and final-path replacement; preserves nested auth files; runs the Windows handle implementation natively in CI; and all listed regressions pass without the downstream patch.
 
   - id: auth-token-private-file-permissions
     reason: OAuth tokens and service-account credentials must be created with owner-only permissions and must tighten pre-existing wider files before replacing their contents.

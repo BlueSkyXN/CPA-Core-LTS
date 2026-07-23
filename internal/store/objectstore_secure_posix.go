@@ -16,10 +16,14 @@ import (
 )
 
 // secureWriteAuthFile creates every path component relative to an opened auth
-// root and installs the file with renameat. O_NOFOLLOW prevents a same-user
-// symlink swap from redirecting either a directory traversal or the final write.
+// root and installs the file with renameat. The root and its canonical ancestors
+// are opened component by component without following symlinks.
 func secureWriteAuthFile(baseDir, relativePath string, data []byte) error {
-	dirFD, leaf, err := openSecureAuthParent(baseDir, relativePath, true)
+	return secureWriteAuthFileWithRootHook(baseDir, relativePath, data, nil)
+}
+
+func secureWriteAuthFileWithRootHook(baseDir, relativePath string, data []byte, afterRootSnapshot func()) error {
+	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, relativePath, true, afterRootSnapshot)
 	if err != nil {
 		return err
 	}
@@ -70,7 +74,11 @@ func secureWriteAuthFile(baseDir, relativePath string, data []byte) error {
 // secureReadAuthFile opens each path component from an auth-root descriptor and
 // reads a regular final file without following symlinks.
 func secureReadAuthFile(baseDir, relativePath string) ([]byte, fs.FileInfo, error) {
-	dirFD, leaf, err := openSecureAuthParent(baseDir, relativePath, false)
+	return secureReadAuthFileWithRootHook(baseDir, relativePath, nil)
+}
+
+func secureReadAuthFileWithRootHook(baseDir, relativePath string, afterRootSnapshot func()) ([]byte, fs.FileInfo, error) {
+	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, relativePath, false, afterRootSnapshot)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -99,7 +107,11 @@ func secureReadAuthFile(baseDir, relativePath string) ([]byte, fs.FileInfo, erro
 // secureRemoveAuthFile removes a final path relative to an auth-root
 // descriptor. Parent traversal never follows symlinks.
 func secureRemoveAuthFile(baseDir, relativePath string) error {
-	dirFD, leaf, err := openSecureAuthParent(baseDir, relativePath, false)
+	return secureRemoveAuthFileWithRootHook(baseDir, relativePath, nil)
+}
+
+func secureRemoveAuthFileWithRootHook(baseDir, relativePath string, afterRootSnapshot func()) error {
+	dirFD, leaf, err := openSecureAuthParentWithRootHook(baseDir, relativePath, false, afterRootSnapshot)
 	if err != nil {
 		return err
 	}
@@ -111,18 +123,18 @@ func secureRemoveAuthFile(baseDir, relativePath string) error {
 }
 
 func openSecureAuthParent(baseDir, relativePath string, create bool) (int, string, error) {
-	absBase, err := filepath.Abs(baseDir)
-	if err != nil {
-		return -1, "", fmt.Errorf("resolve auth directory: %w", err)
-	}
+	return openSecureAuthParentWithRootHook(baseDir, relativePath, create, nil)
+}
+
+func openSecureAuthParentWithRootHook(baseDir, relativePath string, create bool, afterRootSnapshot func()) (int, string, error) {
 	parts, err := secureAuthPathParts(relativePath)
 	if err != nil {
 		return -1, "", err
 	}
 
-	dirFD, err := unix.Open(absBase, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	dirFD, err := openSecureAuthRootWithHook(baseDir, afterRootSnapshot)
 	if err != nil {
-		return -1, "", fmt.Errorf("open auth directory: %w", err)
+		return -1, "", err
 	}
 	keepOpen := false
 	defer func() {
@@ -147,6 +159,99 @@ func openSecureAuthParent(baseDir, relativePath string, create bool) (int, strin
 	}
 	keepOpen = true
 	return dirFD, parts[len(parts)-1], nil
+}
+
+func openSecureAuthRootWithHook(baseDir string, afterRootSnapshot func()) (int, error) {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return -1, fmt.Errorf("resolve auth directory: %w", err)
+	}
+
+	// Resolve parent aliases such as macOS /var -> /private/var, but keep the
+	// auth-root leaf unresolved so a root symlink is still rejected. The later
+	// descriptor walk and identity check close swaps after this snapshot.
+	canonicalParent, err := filepath.EvalSymlinks(filepath.Dir(absBase))
+	if err != nil {
+		return -1, fmt.Errorf("resolve auth directory parent: %w", err)
+	}
+	canonicalBase := filepath.Join(canonicalParent, filepath.Base(absBase))
+	expectedInfo, err := os.Lstat(canonicalBase)
+	if err != nil {
+		return -1, fmt.Errorf("inspect auth directory: %w", err)
+	}
+	if !expectedInfo.IsDir() {
+		return -1, fmt.Errorf("auth directory %q is not a directory", baseDir)
+	}
+	if afterRootSnapshot != nil {
+		afterRootSnapshot()
+	}
+
+	components, err := secureAbsolutePathParts(canonicalBase)
+	if err != nil {
+		return -1, err
+	}
+	dirFD, err := unix.Open(string(os.PathSeparator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open filesystem root: %w", err)
+	}
+	keepOpen := false
+	defer func() {
+		if !keepOpen {
+			_ = unix.Close(dirFD)
+		}
+	}()
+
+	for _, component := range components {
+		nextFD, errOpen := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errOpen != nil {
+			return -1, fmt.Errorf("open auth root component %q: %w", component, errOpen)
+		}
+		_ = unix.Close(dirFD)
+		dirFD = nextFD
+	}
+
+	openedInfo, err := fileInfoForDescriptor(dirFD, canonicalBase)
+	if err != nil {
+		return -1, fmt.Errorf("inspect opened auth directory: %w", err)
+	}
+	if !os.SameFile(expectedInfo, openedInfo) {
+		return -1, fmt.Errorf("auth directory changed while opening")
+	}
+	keepOpen = true
+	return dirFD, nil
+}
+
+func secureAbsolutePathParts(path string) ([]string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return nil, fmt.Errorf("invalid absolute auth path %q", path)
+	}
+	if clean == string(os.PathSeparator) {
+		return nil, nil
+	}
+	trimmed := strings.TrimPrefix(clean, string(os.PathSeparator))
+	parts := strings.Split(trimmed, string(os.PathSeparator))
+	for _, component := range parts {
+		if component == "" || component == "." || component == ".." {
+			return nil, fmt.Errorf("invalid auth root component %q", component)
+		}
+	}
+	return parts, nil
+}
+
+func fileInfoForDescriptor(fd int, name string) (fs.FileInfo, error) {
+	dupFD, err := unix.Dup(fd)
+	if err != nil {
+		return nil, err
+	}
+	unix.CloseOnExec(dupFD)
+	file := os.NewFile(uintptr(dupFD), name)
+	if file == nil {
+		_ = unix.Close(dupFD)
+		return nil, fmt.Errorf("wrap auth directory descriptor")
+	}
+	defer func() { _ = file.Close() }()
+	return file.Stat()
 }
 
 func secureAuthPathParts(relativePath string) ([]string, error) {

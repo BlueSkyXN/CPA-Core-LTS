@@ -486,23 +486,19 @@ func (s *ObjectTokenStore) writeAuthMirrorFile(relativePath string, data []byte)
 }
 
 func renderAuthStorage(storage interface{ SaveTokenToFile(string) error }) ([]byte, bool, error) {
-	stagingDir, err := os.MkdirTemp("", "cpa-object-auth-*")
-	if err != nil {
-		return nil, false, fmt.Errorf("object store: create auth staging directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(stagingDir) }()
-	stagingPath := filepath.Join(stagingDir, "credential.json")
-	if err = storage.SaveTokenToFile(stagingPath); err != nil {
-		return nil, false, err
-	}
-	raw, _, err := secureReadAuthFile(stagingDir, filepath.Base(stagingPath))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, nil
+	// Plugin-backed storage can already render its merged JSON without touching
+	// a pathname. Prefer that capability so atomic path writers do not need a
+	// compatibility staging path at all.
+	if renderer, ok := storage.(interface{ RawJSON() []byte }); ok {
+		if raw := bytes.Clone(renderer.RawJSON()); len(bytes.TrimSpace(raw)) > 0 {
+			return raw, true, nil
 		}
-		return nil, false, fmt.Errorf("object store: read staged auth file: %w", err)
 	}
-	return raw, true, nil
+
+	// Legacy TokenStorage exposes only SaveTokenToFile. The OS-specific renderer
+	// gives it a non-redirectable target: an unlinked descriptor alias on POSIX,
+	// or a pre-opened file beneath rename/delete-locked handles on Windows.
+	return renderAuthStorageIsolated(storage)
 }
 
 func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
