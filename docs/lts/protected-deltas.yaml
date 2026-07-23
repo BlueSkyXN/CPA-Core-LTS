@@ -37,9 +37,22 @@ retained_capabilities:
       - /v0/management/usage/export
       - /v0/management/usage/import
       - /v0/management/usage-statistics-enabled
+      - CanonicalExportVersion
+      - uncached_input_tokens
+      - schema_version
+      - migrated_from_version
+      - code
+      - usage_version_unsupported
+      - usage_shape_invalid
+      - usage_v1_token_contract_invalid
+      - usage_v1_cache_semantics_ambiguous
+      - usage_v2_token_contract_invalid
+      - usage_aggregate_overflow
     validation:
       - management-usage-response-shape-test
       - export-import-roundtrip-test
+      - released-v1-to-v2-migration-matrix
+      - invalid-import-no-partial-merge
     conflict_policy: preserve_management_usage_contract
 
   - id: cpa-panel-lts-compatibility

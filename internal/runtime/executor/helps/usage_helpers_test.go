@@ -167,20 +167,27 @@ func TestUsageParsersNormalizeInputTotalsAcrossProviderShapes(t *testing.T) {
 }
 
 func TestUsageTotalFallbackDoesNotDoubleCountCacheCategories(t *testing.T) {
-	detail := normalizeUsageDetailTotal(usage.Detail{
+	detail := normalizeUsageDetailTotal("openai", usage.Detail{
 		InputTokens:         100,
 		OutputTokens:        20,
 		ReasoningTokens:     5,
 		CacheReadTokens:     30,
 		CacheCreationTokens: 40,
 	})
-	if detail.TotalTokens != 125 {
-		t.Fatalf("total_tokens = %d, want 125 without double-counting input cache categories", detail.TotalTokens)
+	if detail.TotalTokens != 120 {
+		t.Fatalf("total_tokens = %d, want 120 without double-counting cache or reasoning subsets", detail.TotalTokens)
+	}
+}
+
+func TestParseOpenAIUsageFallbackDoesNotDoubleCountReasoningSubset(t *testing.T) {
+	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":100,"output_tokens":20,"output_tokens_details":{"reasoning_tokens":5}}}`))
+	if detail.TotalTokens != 120 {
+		t.Fatalf("total_tokens = %d, want 120 because OpenAI output_tokens includes reasoning_tokens", detail.TotalTokens)
 	}
 }
 
 func TestUsageTotalFallbackFailsClosedOnOverflow(t *testing.T) {
-	detail := normalizeUsageDetailTotal(usage.Detail{
+	detail := normalizeUsageDetailTotal("openai", usage.Detail{
 		InputTokens:  math.MaxInt64,
 		OutputTokens: 1,
 	})
@@ -420,7 +427,7 @@ func TestParseClaudeUsageFailsClosedWhenCanonicalInputOverflows(t *testing.T) {
 	if detail.TotalTokens != 0 {
 		t.Fatalf("total_tokens = %d, want 0 when the canonical total is not representable", detail.TotalTokens)
 	}
-	if normalized := normalizeUsageDetailTotal(detail); normalized.TotalTokens != 0 {
+	if normalized := normalizeUsageDetailTotal("claude", detail); normalized.TotalTokens != 0 {
 		t.Fatalf("reporter fallback total_tokens = %d, want 0 rather than a wrapped value", normalized.TotalTokens)
 	}
 }
@@ -509,7 +516,7 @@ func TestParseInteractionsUsageFailsClosedWhenCanonicalInputOverflows(t *testing
 	if detail.TotalTokens != 0 {
 		t.Fatalf("total_tokens = %d, want 0 when the canonical total is not representable", detail.TotalTokens)
 	}
-	if normalized := normalizeUsageDetailTotal(detail); normalized.TotalTokens != 0 {
+	if normalized := normalizeUsageDetailTotal("interactions", detail); normalized.TotalTokens != 0 {
 		t.Fatalf("reporter fallback total_tokens = %d, want 0 rather than a wrapped value", normalized.TotalTokens)
 	}
 }

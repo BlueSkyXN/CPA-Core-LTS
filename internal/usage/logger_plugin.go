@@ -19,10 +19,14 @@ import (
 
 var statisticsEnabled atomic.Bool
 
-// ErrLegacyUncachedInputTokens rejects usage imports encoded with the retired
-// uncached-input token contract. Accepting the field would silently retain the
-// old InputTokens meaning and corrupt normalized cache accounting.
-var ErrLegacyUncachedInputTokens = errors.New("unsupported legacy token contract: uncached_input_tokens")
+const CanonicalExportVersion = 2
+
+var (
+	ErrInvalidLegacyTokenStats    = errors.New("invalid legacy usage token contract")
+	ErrAmbiguousLegacyTokenStats  = errors.New("ambiguous legacy usage token contract: cached version 1 details require uncached_input_tokens")
+	ErrInvalidCanonicalTokenStats = errors.New("invalid canonical usage token contract")
+	ErrUsageAggregateOverflow     = errors.New("usage aggregate overflow")
+)
 
 func init() {
 	statisticsEnabled.Store(true)
@@ -147,26 +151,229 @@ type TokenStats struct {
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	TotalTokens         int64 `json:"total_tokens"`
+
+	fieldsPresent                  tokenStatsFieldPresence
+	legacyUncachedInputTokens      *int64
+	legacyUncachedInputTokensFound bool
 }
 
-// UnmarshalJSON rejects retired token payloads instead of silently treating
-// their old InputTokens semantics as the normalized total-input contract.
+type tokenStatsFieldPresence uint16
+
+const (
+	tokenStatsInputPresent tokenStatsFieldPresence = 1 << iota
+	tokenStatsOutputPresent
+	tokenStatsReasoningPresent
+	tokenStatsCachedPresent
+	tokenStatsCacheReadPresent
+	tokenStatsCacheCreationPresent
+	tokenStatsTotalPresent
+)
+
+const tokenStatsRequiredExportFields = tokenStatsInputPresent |
+	tokenStatsOutputPresent |
+	tokenStatsReasoningPresent |
+	tokenStatsCachedPresent |
+	tokenStatsTotalPresent
+
+var tokenStatsJSONFields = []struct {
+	name string
+	bit  tokenStatsFieldPresence
+}{
+	{name: "input_tokens", bit: tokenStatsInputPresent},
+	{name: "output_tokens", bit: tokenStatsOutputPresent},
+	{name: "reasoning_tokens", bit: tokenStatsReasoningPresent},
+	{name: "cached_tokens", bit: tokenStatsCachedPresent},
+	{name: "cache_read_tokens", bit: tokenStatsCacheReadPresent},
+	{name: "cache_creation_tokens", bit: tokenStatsCacheCreationPresent},
+	{name: "total_tokens", bit: tokenStatsTotalPresent},
+}
+
+// UnmarshalJSON retains field presence and the released v1 migration marker.
+// Import validation uses the private presence mask to distinguish omitted
+// fields from explicit zero without changing the exported JSON schema.
 func (tokens *TokenStats) UnmarshalJSON(data []byte) error {
 	type tokenStatsAlias TokenStats
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	if _, exists := fields["uncached_input_tokens"]; exists {
-		return ErrLegacyUncachedInputTokens
-	}
 
 	var decoded tokenStatsAlias
 	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
+		return fmt.Errorf("%w: token fields must be integers", ErrInvalidCanonicalTokenStats)
 	}
-	*tokens = TokenStats(decoded)
+
+	presence := tokenStatsFieldPresence(0)
+	for _, field := range tokenStatsJSONFields {
+		rawValue, exists := fields[field.name]
+		if !exists {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(string(rawValue)), "null") {
+			return fmt.Errorf("%w: %s must be an integer", ErrInvalidCanonicalTokenStats, field.name)
+		}
+		presence |= field.bit
+	}
+
+	decodedTokens := TokenStats(decoded)
+	decodedTokens.fieldsPresent = presence
+	if rawUncached, exists := fields["uncached_input_tokens"]; exists {
+		decodedTokens.legacyUncachedInputTokensFound = true
+		if strings.EqualFold(strings.TrimSpace(string(rawUncached)), "null") {
+			return fmt.Errorf("%w: uncached_input_tokens must be an integer", ErrInvalidLegacyTokenStats)
+		}
+		var uncachedInputTokens int64
+		if err := json.Unmarshal(rawUncached, &uncachedInputTokens); err != nil {
+			return fmt.Errorf("%w: uncached_input_tokens must be an integer", ErrInvalidLegacyTokenStats)
+		}
+		decodedTokens.legacyUncachedInputTokens = &uncachedInputTokens
+	}
+	*tokens = decodedTokens
 	return nil
+}
+
+func (tokens TokenStats) hasRequiredExportFields() bool {
+	return tokens.fieldsPresent&tokenStatsRequiredExportFields == tokenStatsRequiredExportFields
+}
+
+// MigrateV1TokenStats converts released version 1 details into the canonical
+// version 2 total-input contract. Markerless details are safe only when all
+// cache categories are zero; cached markerless details remain ambiguous across
+// the released OpenAI-inclusive and Claude-uncached input semantics.
+func (snapshot *StatisticsSnapshot) MigrateV1TokenStats() error {
+	if snapshot == nil {
+		return nil
+	}
+	for apiName, apiSnapshot := range snapshot.APIs {
+		for modelName, modelSnapshot := range apiSnapshot.Models {
+			for detailIndex := range modelSnapshot.Details {
+				if err := migrateV1TokenStats(&modelSnapshot.Details[detailIndex].Tokens); err != nil {
+					return err
+				}
+			}
+			apiSnapshot.Models[modelName] = modelSnapshot
+		}
+		snapshot.APIs[apiName] = apiSnapshot
+	}
+	return nil
+}
+
+func migrateV1TokenStats(tokens *TokenStats) error {
+	if tokens == nil || !tokens.hasRequiredExportFields() || !validLegacyV1TokenStats(*tokens) {
+		return ErrInvalidLegacyTokenStats
+	}
+
+	if tokens.legacyUncachedInputTokens == nil {
+		if tokens.legacyUncachedInputTokensFound {
+			return ErrInvalidLegacyTokenStats
+		}
+		if tokens.CachedTokens != 0 || tokens.CacheReadTokens != 0 || tokens.CacheCreationTokens != 0 {
+			return ErrAmbiguousLegacyTokenStats
+		}
+		return nil
+	}
+
+	uncachedInputTokens := *tokens.legacyUncachedInputTokens
+	if uncachedInputTokens < 0 || uncachedInputTokens > tokens.InputTokens {
+		return ErrInvalidLegacyTokenStats
+	}
+	cacheReadTokens := tokens.CacheReadTokens
+	legacyCacheCreationAlias := tokens.CacheCreationTokens > 0 &&
+		cacheReadTokens == 0 &&
+		tokens.CachedTokens == tokens.CacheCreationTokens
+	if cacheReadTokens == 0 && tokens.CachedTokens > 0 && !legacyCacheCreationAlias {
+		cacheReadTokens = tokens.CachedTokens
+	}
+	canonicalInputTokens, ok := sumNonNegativeTokenCounts(
+		uncachedInputTokens,
+		cacheReadTokens,
+		tokens.CacheCreationTokens,
+	)
+	if !ok {
+		return ErrInvalidLegacyTokenStats
+	}
+	tokens.InputTokens = canonicalInputTokens
+	tokens.CacheReadTokens = cacheReadTokens
+	if legacyCacheCreationAlias {
+		tokens.CachedTokens = 0
+	} else {
+		tokens.CachedTokens = cacheReadTokens
+	}
+	tokens.legacyUncachedInputTokens = nil
+	tokens.legacyUncachedInputTokensFound = false
+	return nil
+}
+
+// HasLegacyUncachedInputTokens reports whether a canonical payload still
+// carries the version 1-only migration field.
+func (snapshot StatisticsSnapshot) HasLegacyUncachedInputTokens() bool {
+	for _, apiSnapshot := range snapshot.APIs {
+		for _, modelSnapshot := range apiSnapshot.Models {
+			for _, detail := range modelSnapshot.Details {
+				if detail.Tokens.legacyUncachedInputTokensFound {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// ValidateCanonicalV2TokenStats requires every non-omitempty export field and
+// validates the canonical token relationships for every imported detail.
+func (snapshot StatisticsSnapshot) ValidateCanonicalV2TokenStats() error {
+	for _, apiSnapshot := range snapshot.APIs {
+		for _, modelSnapshot := range apiSnapshot.Models {
+			for _, detail := range modelSnapshot.Details {
+				if !detail.Tokens.hasRequiredExportFields() || !validCanonicalTokenStats(detail.Tokens) {
+					return ErrInvalidCanonicalTokenStats
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateCanonicalTokenStats validates migrated v1 values after their
+// version-specific presence and ambiguity checks have completed.
+func (snapshot StatisticsSnapshot) ValidateCanonicalTokenStats() error {
+	for _, apiSnapshot := range snapshot.APIs {
+		for _, modelSnapshot := range apiSnapshot.Models {
+			for _, detail := range modelSnapshot.Details {
+				if !validCanonicalTokenStats(detail.Tokens) {
+					return ErrInvalidCanonicalTokenStats
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validCanonicalTokenStats(tokens TokenStats) bool {
+	if !validLegacyV1TokenStats(tokens) || tokens.CachedTokens != tokens.CacheReadTokens {
+		return false
+	}
+	cacheInputTokens, ok := sumNonNegativeTokenCounts(tokens.CacheReadTokens, tokens.CacheCreationTokens)
+	if !ok || cacheInputTokens > tokens.InputTokens {
+		return false
+	}
+	minimumTotalTokens, ok := sumNonNegativeTokenCounts(tokens.InputTokens, tokens.OutputTokens)
+	return ok && minimumTotalTokens <= tokens.TotalTokens
+}
+
+func validLegacyV1TokenStats(tokens TokenStats) bool {
+	if tokens.InputTokens < 0 ||
+		tokens.OutputTokens < 0 ||
+		tokens.ReasoningTokens < 0 ||
+		tokens.CachedTokens < 0 ||
+		tokens.CacheReadTokens < 0 ||
+		tokens.CacheCreationTokens < 0 ||
+		tokens.TotalTokens < 0 {
+		return false
+	}
+	return tokens.TotalTokens != 0 ||
+		(tokens.InputTokens == 0 && tokens.OutputTokens == 0 && tokens.ReasoningTokens == 0 &&
+			tokens.CachedTokens == 0 && tokens.CacheReadTokens == 0 && tokens.CacheCreationTokens == 0)
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -226,8 +433,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if timestamp.IsZero() {
 		timestamp = time.Now()
 	}
-	detail := normaliseDetail(record.Detail)
-	totalTokens := detail.TotalTokens
+	detail := normaliseDetail(record.Provider, record.Detail)
 	statsKey := record.APIKey
 	if statsKey == "" {
 		statsKey = resolveAPIIdentifier(ctx, record)
@@ -236,7 +442,6 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if !failed {
 		failed = !resolveSuccess(ctx)
 	}
-	success := !failed
 	failureReason, failureStatus := safeFailureDetail(record, failed)
 	modelName := record.Model
 	if modelName == "" {
@@ -251,26 +456,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		responseServiceTier = strings.TrimSpace(record.Detail.ResponseServiceTier)
 	}
 	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
-	dayKey := timestamp.Format("2006-01-02")
-	hourKey := timestamp.Hour()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.totalRequests++
-	if success {
-		s.successCount++
-	} else {
-		s.failureCount++
-	}
-	s.totalTokens = addNonNegativeTokenCounts(s.totalTokens, totalTokens)
-
-	stats, ok := s.apis[statsKey]
-	if !ok {
-		stats = &apiStats{Models: make(map[string]*modelStats)}
-		s.apis[statsKey] = stats
-	}
-	s.updateAPIStats(stats, modelName, RequestDetail{
+	requestDetail := RequestDetail{
 		Timestamp:            timestamp,
 		LatencyMs:            normaliseLatency(record.Latency),
 		Source:               record.Source,
@@ -286,12 +472,27 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		FailureReason:        failureReason,
 		FailureStatus:        failureStatus,
-	})
+	}
 
-	s.requestsByDay[dayKey]++
-	s.requestsByHour[hourKey]++
-	s.tokensByDay[dayKey] = addNonNegativeTokenCounts(s.tokensByDay[dayKey], totalTokens)
-	s.tokensByHour[hourKey] = addNonNegativeTokenCounts(s.tokensByHour[hourKey], totalTokens)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	candidate := mergeCandidate{apiName: statsKey, modelName: modelName, detail: requestDetail}
+	if err := s.validateMergeCandidates([]mergeCandidate{candidate}); err != nil {
+		candidate.detail.Tokens = TokenStats{}
+		if err = s.validateMergeCandidates([]mergeCandidate{candidate}); err != nil {
+			return
+		}
+	}
+
+	stats, ok := s.apis[statsKey]
+	if !ok || stats == nil {
+		stats = &apiStats{Models: make(map[string]*modelStats)}
+		s.apis[statsKey] = stats
+	} else if stats.Models == nil {
+		stats.Models = make(map[string]*modelStats)
+	}
+	s.recordImported(statsKey, modelName, stats, candidate.detail)
 }
 
 func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
@@ -373,12 +574,29 @@ type MergeResult struct {
 	Skipped int64 `json:"skipped"`
 }
 
+type mergeCandidate struct {
+	apiName   string
+	modelName string
+	detail    RequestDetail
+}
+
+type mergeAggregateDelta struct {
+	requests int64
+	tokens   int64
+}
+
+type mergeModelKey struct {
+	apiName   string
+	modelName string
+}
+
 // MergeSnapshot merges an exported statistics snapshot into the current store.
-// Existing data is preserved and duplicate request details are skipped.
-func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResult {
+// Existing data is preserved, duplicate request details are skipped, and every
+// aggregate is checked before any candidate is committed.
+func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeResult, error) {
 	result := MergeResult{}
 	if s == nil {
-		return result
+		return result, nil
 	}
 
 	s.mu.Lock()
@@ -399,17 +617,11 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 		}
 	}
 
+	candidates := make([]mergeCandidate, 0)
 	for apiName, apiSnapshot := range snapshot.APIs {
 		apiName = strings.TrimSpace(apiName)
 		if apiName == "" {
 			continue
-		}
-		stats, ok := s.apis[apiName]
-		if !ok || stats == nil {
-			stats = &apiStats{Models: make(map[string]*modelStats)}
-			s.apis[apiName] = stats
-		} else if stats.Models == nil {
-			stats.Models = make(map[string]*modelStats)
 		}
 		for modelName, modelSnapshot := range apiSnapshot.Models {
 			modelName = strings.TrimSpace(modelName)
@@ -422,22 +634,162 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
 				}
-				if detail.Timestamp.IsZero() {
-					detail.Timestamp = time.Now()
-				}
 				key := dedupKey(apiName, modelName, detail)
 				if _, exists := seen[key]; exists {
 					result.Skipped++
 					continue
 				}
 				seen[key] = struct{}{}
-				s.recordImported(apiName, modelName, stats, detail)
-				result.Added++
+				candidates = append(candidates, mergeCandidate{apiName: apiName, modelName: modelName, detail: detail})
 			}
 		}
 	}
 
-	return result
+	if err := s.validateMergeCandidates(candidates); err != nil {
+		return MergeResult{}, err
+	}
+	for _, candidate := range candidates {
+		stats, ok := s.apis[candidate.apiName]
+		if !ok || stats == nil {
+			stats = &apiStats{Models: make(map[string]*modelStats)}
+			s.apis[candidate.apiName] = stats
+		} else if stats.Models == nil {
+			stats.Models = make(map[string]*modelStats)
+		}
+		s.recordImported(candidate.apiName, candidate.modelName, stats, candidate.detail)
+		result.Added++
+	}
+
+	return result, nil
+}
+
+func (s *RequestStatistics) validateMergeCandidates(candidates []mergeCandidate) error {
+	global := mergeAggregateDelta{}
+	var successes int64
+	var failures int64
+	apiDeltas := make(map[string]mergeAggregateDelta)
+	modelDeltas := make(map[mergeModelKey]mergeAggregateDelta)
+	requestsByDay := make(map[string]int64)
+	requestsByHour := make(map[int]int64)
+	tokensByDay := make(map[string]int64)
+	tokensByHour := make(map[int]int64)
+
+	for _, candidate := range candidates {
+		var ok bool
+		global, ok = addMergeAggregateDelta(global, candidate.detail.Tokens.TotalTokens)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+		if candidate.detail.Failed {
+			failures, ok = sumNonNegativeTokenCounts(failures, 1)
+		} else {
+			successes, ok = sumNonNegativeTokenCounts(successes, 1)
+		}
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+
+		apiDelta := apiDeltas[candidate.apiName]
+		apiDelta, ok = addMergeAggregateDelta(apiDelta, candidate.detail.Tokens.TotalTokens)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+		apiDeltas[candidate.apiName] = apiDelta
+
+		modelKey := mergeModelKey{apiName: candidate.apiName, modelName: candidate.modelName}
+		modelDelta := modelDeltas[modelKey]
+		modelDelta, ok = addMergeAggregateDelta(modelDelta, candidate.detail.Tokens.TotalTokens)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+		modelDeltas[modelKey] = modelDelta
+
+		dayKey := candidate.detail.Timestamp.Format("2006-01-02")
+		hourKey := candidate.detail.Timestamp.Hour()
+		requestsByDay[dayKey], ok = sumNonNegativeTokenCounts(requestsByDay[dayKey], 1)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+		requestsByHour[hourKey], ok = sumNonNegativeTokenCounts(requestsByHour[hourKey], 1)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+		tokensByDay[dayKey], ok = sumNonNegativeTokenCounts(tokensByDay[dayKey], candidate.detail.Tokens.TotalTokens)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+		tokensByHour[hourKey], ok = sumNonNegativeTokenCounts(tokensByHour[hourKey], candidate.detail.Tokens.TotalTokens)
+		if !ok {
+			return ErrUsageAggregateOverflow
+		}
+	}
+
+	if !mergeAggregateFits(s.totalRequests, global.requests) ||
+		!mergeAggregateFits(s.successCount, successes) ||
+		!mergeAggregateFits(s.failureCount, failures) ||
+		!mergeAggregateFits(s.totalTokens, global.tokens) {
+		return ErrUsageAggregateOverflow
+	}
+	for apiName, delta := range apiDeltas {
+		var currentRequests, currentTokens int64
+		if stats := s.apis[apiName]; stats != nil {
+			currentRequests = stats.TotalRequests
+			currentTokens = stats.TotalTokens
+		}
+		if !mergeAggregateFits(currentRequests, delta.requests) || !mergeAggregateFits(currentTokens, delta.tokens) {
+			return ErrUsageAggregateOverflow
+		}
+	}
+	for key, delta := range modelDeltas {
+		var currentRequests, currentTokens int64
+		if stats := s.apis[key.apiName]; stats != nil && stats.Models != nil {
+			if model := stats.Models[key.modelName]; model != nil {
+				currentRequests = model.TotalRequests
+				currentTokens = model.TotalTokens
+			}
+		}
+		if !mergeAggregateFits(currentRequests, delta.requests) || !mergeAggregateFits(currentTokens, delta.tokens) {
+			return ErrUsageAggregateOverflow
+		}
+	}
+	for day, delta := range requestsByDay {
+		if !mergeAggregateFits(s.requestsByDay[day], delta) {
+			return ErrUsageAggregateOverflow
+		}
+	}
+	for hour, delta := range requestsByHour {
+		if !mergeAggregateFits(s.requestsByHour[hour], delta) {
+			return ErrUsageAggregateOverflow
+		}
+	}
+	for day, delta := range tokensByDay {
+		if !mergeAggregateFits(s.tokensByDay[day], delta) {
+			return ErrUsageAggregateOverflow
+		}
+	}
+	for hour, delta := range tokensByHour {
+		if !mergeAggregateFits(s.tokensByHour[hour], delta) {
+			return ErrUsageAggregateOverflow
+		}
+	}
+	return nil
+}
+
+func addMergeAggregateDelta(delta mergeAggregateDelta, tokens int64) (mergeAggregateDelta, bool) {
+	requests, ok := sumNonNegativeTokenCounts(delta.requests, 1)
+	if !ok {
+		return mergeAggregateDelta{}, false
+	}
+	totalTokens, ok := sumNonNegativeTokenCounts(delta.tokens, tokens)
+	if !ok {
+		return mergeAggregateDelta{}, false
+	}
+	return mergeAggregateDelta{requests: requests, tokens: totalTokens}, true
+}
+
+func mergeAggregateFits(current, delta int64) bool {
+	_, ok := sumNonNegativeTokenCounts(current, delta)
+	return ok
 }
 
 func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
@@ -570,8 +922,8 @@ func resolveSuccess(ctx context.Context) bool {
 
 const httpStatusBadRequest = 400
 
-func normaliseDetail(detail coreusage.Detail) TokenStats {
-	tokens := TokenStats{
+func normaliseDetail(provider string, detail coreusage.Detail) TokenStats {
+	return normaliseTokenStatsForProvider(provider, TokenStats{
 		InputTokens:         nonNegativeTokenCount(detail.InputTokens),
 		OutputTokens:        nonNegativeTokenCount(detail.OutputTokens),
 		ReasoningTokens:     nonNegativeTokenCount(detail.ReasoningTokens),
@@ -579,19 +931,14 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 		CacheReadTokens:     nonNegativeTokenCount(detail.CacheReadTokens),
 		CacheCreationTokens: nonNegativeTokenCount(detail.CacheCreationTokens),
 		TotalTokens:         nonNegativeTokenCount(detail.TotalTokens),
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens, _ = sumNonNegativeTokenCounts(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens)
-	}
-	if tokens.CachedTokens == 0 {
-		if tokens.CacheReadTokens != 0 {
-			tokens.CachedTokens = tokens.CacheReadTokens
-		}
-	}
-	return tokens
+	})
 }
 
 func normaliseTokenStats(tokens TokenStats) TokenStats {
+	return normaliseTokenStatsForProvider("", tokens)
+}
+
+func normaliseTokenStatsForProvider(provider string, tokens TokenStats) TokenStats {
 	tokens.InputTokens = nonNegativeTokenCount(tokens.InputTokens)
 	tokens.OutputTokens = nonNegativeTokenCount(tokens.OutputTokens)
 	tokens.ReasoningTokens = nonNegativeTokenCount(tokens.ReasoningTokens)
@@ -599,10 +946,49 @@ func normaliseTokenStats(tokens TokenStats) TokenStats {
 	tokens.CacheReadTokens = nonNegativeTokenCount(tokens.CacheReadTokens)
 	tokens.CacheCreationTokens = nonNegativeTokenCount(tokens.CacheCreationTokens)
 	tokens.TotalTokens = nonNegativeTokenCount(tokens.TotalTokens)
+	if tokens.CacheReadTokens == 0 && tokens.CachedTokens != 0 {
+		tokens.CacheReadTokens = tokens.CachedTokens
+	}
+	tokens.CachedTokens = tokens.CacheReadTokens
+	cacheInputTokens, ok := sumNonNegativeTokenCounts(tokens.CacheReadTokens, tokens.CacheCreationTokens)
+	if !ok || cacheInputTokens > tokens.InputTokens {
+		tokens.CachedTokens = 0
+		tokens.CacheReadTokens = 0
+		tokens.CacheCreationTokens = 0
+	}
+
+	minimumTotalTokens, ok := sumNonNegativeTokenCounts(tokens.InputTokens, tokens.OutputTokens)
+	if !ok {
+		return TokenStats{}
+	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens, _ = sumNonNegativeTokenCounts(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens)
+		fallbackTotal := minimumTotalTokens
+		if !reasoningTokensAreOutputSubset(provider) {
+			fallbackTotal, ok = sumNonNegativeTokenCounts(fallbackTotal, tokens.ReasoningTokens)
+			if !ok {
+				return TokenStats{}
+			}
+		}
+		tokens.TotalTokens = fallbackTotal
+	} else if tokens.TotalTokens < minimumTotalTokens {
+		tokens.TotalTokens = minimumTotalTokens
+	}
+	if tokens.TotalTokens == 0 && tokens.ReasoningTokens != 0 {
+		return TokenStats{}
+	}
+	if !validCanonicalTokenStats(tokens) {
+		return TokenStats{}
 	}
 	return tokens
+}
+
+func reasoningTokensAreOutputSubset(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "codex":
+		return true
+	default:
+		return false
+	}
 }
 
 func nonNegativeTokenCount(token int64) int64 {
