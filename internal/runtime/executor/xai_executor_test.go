@@ -566,13 +566,14 @@ func TestXAIExecutorPrepareCanonicalizesCustomToolChoices(t *testing.T) {
 func TestPruneXAIOrphanedToolChoice(t *testing.T) {
 	t.Parallel()
 
-	// Forced choice for a removed tool is dropped.
+	// A forced choice for a removed tool must fail closed instead of widening
+	// the surviving lookup tool back to the default auto policy.
 	out := pruneXAIOrphanedToolChoice([]byte(`{
 		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
 		"tool_choice":{"type":"image_generation"}
 	}`))
-	if gjson.GetBytes(out, "tool_choice").Exists() {
-		t.Fatalf("orphaned forced tool_choice should be removed: %s", out)
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "none" {
+		t.Fatalf("orphaned forced tool_choice = %q, want none: %s", got, out)
 	}
 
 	// allowed_tools keeps only still-available entries.
@@ -595,19 +596,65 @@ func TestPruneXAIOrphanedToolChoice(t *testing.T) {
 		t.Fatalf("allowed_tools.1.type = %q, want web_search; body=%s", got, out)
 	}
 
-	// When every allowed entry is orphaned, drop tool_choice entirely.
+	// When every allowed entry is orphaned, preserve the restriction as none.
 	out = pruneXAIOrphanedToolChoice([]byte(`{
 		"tools":[],
 		"tool_choice":{"type":"allowed_tools","tools":[{"type":"image_generation"}]}
 	}`))
-	if gjson.GetBytes(out, "tool_choice").Exists() {
-		t.Fatalf("fully orphaned allowed_tools should be removed: %s", out)
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "none" {
+		t.Fatalf("fully orphaned allowed_tools = %q, want none: %s", got, out)
 	}
 
 	// String choices are not tool references.
 	in := []byte(`{"tools":[{"type":"web_search"}],"tool_choice":"auto"}`)
 	if got := pruneXAIOrphanedToolChoice(in); !bytes.Equal(got, in) {
 		t.Fatalf("string tool_choice changed: got=%s want=%s", got, in)
+	}
+}
+
+func TestXAIExecutorPrepareFailsClosedWhenRestrictedChoiceIsOrphaned(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	for _, tt := range []struct {
+		name       string
+		toolChoice string
+	}{
+		{
+			name:       "allowed tools",
+			toolChoice: `{"type":"allowed_tools","tools":[{"type":"image_generation"}]}`,
+		},
+		{
+			name:       "forced tool",
+			toolChoice: `{"type":"image_generation"}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+				Model: "grok-4.5",
+				Payload: []byte(`{
+					"model":"grok-4.5",
+					"input":"do not broaden my tool restriction",
+					"tools":[
+						{"type":"image_generation"},
+						{"type":"function","name":"destructive_action","parameters":{"type":"object"}}
+					],
+					"tool_choice":` + tt.toolChoice + `
+				}`),
+			}, cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FormatOpenAIResponse,
+				Stream:       false,
+			}, false)
+			if err != nil {
+				t.Fatalf("prepareResponsesRequest() error = %v", err)
+			}
+			if got := gjson.GetBytes(prepared.body, "tools.0.name").String(); got != "destructive_action" {
+				t.Fatalf("surviving tool = %q, want destructive_action fixture: %s", got, prepared.body)
+			}
+			if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+				t.Fatalf("orphaned restricted choice = %q, want none: %s", got, prepared.body)
+			}
+		})
 	}
 }
 
@@ -636,8 +683,8 @@ func TestXAIExecutorPrepareDropsOrphanedToolChoiceWithoutXSearchInject(t *testin
 	if gjson.GetBytes(prepared.body, "tools").Exists() {
 		t.Fatalf("removed-only tools should not be replaced: %s", prepared.body)
 	}
-	if gjson.GetBytes(prepared.body, "tool_choice").Exists() {
-		t.Fatalf("orphaned image_generation tool_choice must not reach upstream: %s", prepared.body)
+	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+		t.Fatalf("orphaned image_generation tool_choice = %q, want none: %s", got, prepared.body)
 	}
 }
 

@@ -1324,10 +1324,10 @@ func sanitizeXAIResponsesBody(body []byte, model string) []byte {
 	return body
 }
 
-// pruneXAIOrphanedToolChoice removes tool_choice entries that no longer match
-// any remaining tool after normalizeXAITools filtering. Forced choices that
-// reference a deleted tool are dropped entirely; allowed_tools lists keep only
-// choices that still resolve against the post-normalization tools set.
+// pruneXAIOrphanedToolChoice reconciles tool_choice entries with the tools that
+// survive normalizeXAITools filtering. A restriction that loses every target
+// becomes an explicit none choice instead of being deleted: deleting it would
+// restore xAI's default auto policy and broaden authority to unrelated tools.
 func pruneXAIOrphanedToolChoice(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -1355,16 +1355,19 @@ func pruneXAIOrphanedToolChoice(body []byte) []byte {
 		if xaiToolChoiceMatchesAvailable(choice, available) {
 			return body
 		}
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		return body
+		return failClosedXAIToolChoice(body)
 	}
+}
+
+func failClosedXAIToolChoice(body []byte) []byte {
+	body, _ = sjson.SetBytes(body, "tool_choice", "none")
+	return body
 }
 
 func pruneXAIAllowedToolsChoice(body []byte, available map[xaiToolChoiceKey]struct{}) []byte {
 	allowed := gjson.GetBytes(body, "tool_choice.tools")
 	if !allowed.Exists() || !allowed.IsArray() {
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		return body
+		return failClosedXAIToolChoice(body)
 	}
 	allowedItems := allowed.Array()
 	filtered := make([][]byte, 0, len(allowedItems))
@@ -1380,8 +1383,7 @@ func pruneXAIAllowedToolsChoice(body []byte, available map[xaiToolChoiceKey]stru
 		return body
 	}
 	if len(filtered) == 0 {
-		body, _ = sjson.DeleteBytes(body, "tool_choice")
-		return body
+		return failClosedXAIToolChoice(body)
 	}
 	body, _ = sjson.SetRawBytes(body, "tool_choice.tools", helps.JoinRawJSONArray(filtered))
 	return body
