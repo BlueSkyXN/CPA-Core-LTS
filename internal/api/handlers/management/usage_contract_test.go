@@ -718,6 +718,38 @@ func TestUsageManagementImportReturnsStableSchemaErrorCodesAtomically(t *testing
 			wantCode: "usage_v1_token_contract_invalid",
 		},
 		{
+			name: "legacy optional reasoning is null",
+			payload: `{"version":1,"usage":{"apis":{"client":{"models":{"model":{"details":[{
+				"timestamp":"2026-07-21T12:00:00Z",
+				"tokens":{"input_tokens":3,"output_tokens":1,"reasoning_tokens":null,"total_tokens":4}
+			}]}}}}}}`,
+			wantCode: "usage_v1_token_contract_invalid",
+		},
+		{
+			name: "legacy optional cached field is mistyped",
+			payload: `{"version":1,"usage":{"apis":{"client":{"models":{"model":{"details":[{
+				"timestamp":"2026-07-21T12:00:00Z",
+				"tokens":{"input_tokens":3,"output_tokens":1,"cached_tokens":"0","total_tokens":4}
+			}]}}}}}}`,
+			wantCode: "usage_v1_token_contract_invalid",
+		},
+		{
+			name: "legacy optional cache read is negative",
+			payload: `{"version":1,"usage":{"apis":{"client":{"models":{"model":{"details":[{
+				"timestamp":"2026-07-21T12:00:00Z",
+				"tokens":{"input_tokens":3,"output_tokens":1,"cache_read_tokens":-1,"total_tokens":4}
+			}]}}}}}}`,
+			wantCode: "usage_v1_token_contract_invalid",
+		},
+		{
+			name: "legacy optional cache creation is fractional",
+			payload: `{"version":1,"usage":{"apis":{"client":{"models":{"model":{"details":[{
+				"timestamp":"2026-07-21T12:00:00Z",
+				"tokens":{"input_tokens":3,"output_tokens":1,"cache_creation_tokens":0.5,"total_tokens":4}
+			}]}}}}}}`,
+			wantCode: "usage_v1_token_contract_invalid",
+		},
+		{
 			name: "legacy marker exceeds released input",
 			payload: `{"version":1,"usage":{"apis":{"client":{"models":{"model":{"details":[{
 				"timestamp":"2026-07-21T12:00:00Z",

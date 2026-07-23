@@ -196,6 +196,16 @@ func TestParseCodexUsagePreservesReasoningOnlyDetail(t *testing.T) {
 	}
 }
 
+func TestParseCodexUsageRejectsNegativeReasoningOnlyFallback(t *testing.T) {
+	detail, ok := ParseCodexUsage([]byte(`{"response":{"usage":{"output_tokens_details":{"reasoning_tokens":-7}}}}`))
+	if !ok {
+		t.Fatal("ParseCodexUsage returned ok=false for an explicit usage object")
+	}
+	if detail != (usage.Detail{}) {
+		t.Fatalf("detail = %+v, want a zero token vector for negative reasoning", detail)
+	}
+}
+
 func TestUsageTotalFallbackFailsClosedOnOverflow(t *testing.T) {
 	detail := normalizeUsageDetailTotal("openai", usage.Detail{
 		InputTokens:  math.MaxInt64,
