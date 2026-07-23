@@ -144,6 +144,23 @@ func TestConvertAntigravityResponseToOpenAINonStreamRestoresDisambiguatedName(t 
 	}
 }
 
+func TestConvertAntigravityResponseToOpenAINonStreamDoesNotRestoreMixedToolShapeTwice(t *testing.T) {
+	original := []byte(`{"tools":[
+		{"type":"function","name":"a b","function":{"name":"a_b"}},
+		{"type":"function","function":{"name":"a b"}}
+	]}`)
+	mapped := util.SanitizedFunctionNameMap(original)["a_b"]
+	if mapped == "" || mapped == "a_b" {
+		t.Fatalf("expected collision-aware mapped name for a_b, got %q", mapped)
+	}
+	responseJSON := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + mapped + `","args":{}}}]}}]}}`)
+
+	output := ConvertAntigravityResponseToOpenAINonStream(context.Background(), "gemini-3-flash", original, nil, responseJSON, nil)
+	if got := gjson.GetBytes(output, "choices.0.message.tool_calls.0.function.name").String(); got != "a_b" {
+		t.Fatalf("function.name = %q, want a_b. Output: %s", got, output)
+	}
+}
+
 func TestConvertAntigravityResponseToOpenAINonStreamIncludesReasoningContent(t *testing.T) {
 	ctx := context.Background()
 	responseJSON := []byte(`{
