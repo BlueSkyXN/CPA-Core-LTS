@@ -186,6 +186,16 @@ func TestParseOpenAIUsageFallbackDoesNotDoubleCountReasoningSubset(t *testing.T)
 	}
 }
 
+func TestParseCodexUsagePreservesReasoningOnlyDetail(t *testing.T) {
+	detail, ok := ParseCodexUsage([]byte(`{"response":{"usage":{"output_tokens_details":{"reasoning_tokens":7}}}}`))
+	if !ok {
+		t.Fatal("ParseCodexUsage returned ok=false for reasoning-only usage")
+	}
+	if detail.ReasoningTokens != 7 || detail.TotalTokens != 7 {
+		t.Fatalf("detail = %+v, want reasoning_tokens=7 and total_tokens=7", detail)
+	}
+}
+
 func TestUsageTotalFallbackFailsClosedOnOverflow(t *testing.T) {
 	detail := normalizeUsageDetailTotal("openai", usage.Detail{
 		InputTokens:  math.MaxInt64,

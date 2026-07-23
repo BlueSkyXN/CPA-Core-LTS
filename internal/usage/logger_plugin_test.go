@@ -604,6 +604,11 @@ func TestMigrateV1TokenStatsReleasedFixtureMatrix(t *testing.T) {
 			wantInput: 4,
 		},
 		{
+			name:      "legacy v1 omitted zero reasoning and cached fields",
+			tokens:    `{"input_tokens":4,"output_tokens":5,"total_tokens":9}`,
+			wantInput: 4,
+		},
+		{
 			name:      "v1-tls-0.0.15 marker-bearing cache read",
 			tokens:    `{"input_tokens":100,"uncached_input_tokens":80,"output_tokens":10,"reasoning_tokens":0,"cached_tokens":20,"cache_read_tokens":20,"total_tokens":110}`,
 			wantInput: 100,
