@@ -70,7 +70,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 					latest = cursor.LatestTimestamp
 				}
 			}
-			writeLogsResponse(c, []string{}, 0, latest, "", rawCursor != "")
+			writeLogsResponse(c, []string{}, 0, latest, "", rawCursor != "", false)
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list log files: %v", err)})
@@ -96,10 +96,10 @@ func (h *Handler) GetLogs(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log files: %v", errCursor)})
 				return
 			}
-			writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, true)
+			writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, true, false)
 			return
 		}
-		writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false)
+		writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false, result.replaceTrailingPartial)
 		return
 	}
 
@@ -109,7 +109,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log files: %v", errTail)})
 			return
 		}
-		writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false)
+		writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false, false)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to prepare log cursor: %v", errCursor)})
 		return
 	}
-	writeLogsResponse(c, lines, total, latest, nextCursor, false)
+	writeLogsResponse(c, lines, total, latest, nextCursor, false, false)
 }
 
 // DeleteLogs removes all rotated log files and truncates the active log.
@@ -547,30 +547,34 @@ func (acc *logAccumulator) result() ([]string, int, int64) {
 }
 
 type logCursor struct {
-	Version         int    `json:"v"`
-	File            string `json:"file"`
-	Offset          int64  `json:"offset"`
-	Size            int64  `json:"size"`
-	ModTime         int64  `json:"modTime"`
-	ModTimeUnixNano int64  `json:"modTimeUnixNano,omitempty"`
-	LatestTimestamp int64  `json:"latestTimestamp"`
-	Fingerprint     string `json:"fingerprint"`
+	Version          int    `json:"v"`
+	File             string `json:"file"`
+	Offset           int64  `json:"offset"`
+	Size             int64  `json:"size"`
+	ModTime          int64  `json:"modTime"`
+	ModTimeUnixNano  int64  `json:"modTimeUnixNano,omitempty"`
+	LatestTimestamp  int64  `json:"latestTimestamp"`
+	Fingerprint      string `json:"fingerprint"`
+	PreviewedPartial bool   `json:"previewedPartial,omitempty"`
 }
 
 type completeLogRead struct {
-	lines     []string
-	endOffset int64
-	latest    int64
-	hitLimit  bool
+	lines           []string
+	endOffset       int64
+	latest          int64
+	hitLimit        bool
+	trailingPartial bool
+	cursor          *logCursor
 }
 
 type logReadResult struct {
-	lines      []string
-	latest     int64
-	nextCursor string
+	lines                  []string
+	latest                 int64
+	nextCursor             string
+	replaceTrailingPartial bool
 }
 
-func writeLogsResponse(c *gin.Context, lines []string, lineCount int, latest int64, nextCursor string, cursorReset bool) {
+func writeLogsResponse(c *gin.Context, lines []string, lineCount int, latest int64, nextCursor string, cursorReset, replaceTrailingPartial bool) {
 	if lines == nil {
 		lines = []string{}
 	}
@@ -583,6 +587,9 @@ func writeLogsResponse(c *gin.Context, lines []string, lineCount int, latest int
 	if cursorReset {
 		payload["cursor-reset"] = true
 	}
+	if replaceTrailingPartial {
+		payload["replace-trailing-partial"] = true
+	}
 	c.JSON(http.StatusOK, payload)
 }
 
@@ -591,6 +598,7 @@ func tailLogFiles(files []string, limit int, fallbackLatest int64) (logReadResul
 		lines:  []string{},
 		latest: fallbackLatest,
 	}
+	var tailCursor *logCursor
 	for i := len(files) - 1; i >= 0; i-- {
 		remaining := 0
 		if limit > 0 {
@@ -606,6 +614,10 @@ func tailLogFiles(files []string, limit int, fallbackLatest int64) (logReadResul
 			}
 			return logReadResult{}, errRead
 		}
+		if tailCursor == nil && read.cursor != nil {
+			cursorCopy := *read.cursor
+			tailCursor = &cursorCopy
+		}
 		if len(read.lines) == 0 {
 			continue
 		}
@@ -614,7 +626,14 @@ func tailLogFiles(files []string, limit int, fallbackLatest int64) (logReadResul
 			result.latest = read.latest
 		}
 	}
-	nextCursor, errCursor := cursorForLatestLogFile(files, result.latest)
+	var nextCursor string
+	var errCursor error
+	if tailCursor != nil {
+		tailCursor.LatestTimestamp = result.latest
+		nextCursor, errCursor = encodeLogCursor(*tailCursor)
+	} else {
+		nextCursor, errCursor = cursorForLatestLogFile(files, result.latest)
+	}
 	if errCursor != nil {
 		return logReadResult{}, errCursor
 	}
@@ -623,18 +642,76 @@ func tailLogFiles(files []string, limit int, fallbackLatest int64) (logReadResul
 }
 
 func readTailLogLines(path string, limit int) (completeLogRead, error) {
-	boundary, errBoundary := completeLogBoundary(path)
+	return readTailLogLinesWithSnapshotHook(path, limit, nil)
+}
+
+func readTailLogLinesWithSnapshotHook(path string, limit int, afterSnapshot func()) (completeLogRead, error) {
+	file, errOpen := os.Open(path)
+	if errOpen != nil {
+		return completeLogRead{}, errOpen
+	}
+	defer func() { _ = file.Close() }()
+
+	info, errStat := file.Stat()
+	if errStat != nil {
+		return completeLogRead{}, errStat
+	}
+	if info.IsDir() {
+		return completeLogRead{}, fmt.Errorf("invalid log file")
+	}
+	snapshotSize := info.Size()
+	boundary, errBoundary := completeLogBoundaryFromFile(file, snapshotSize)
 	if errBoundary != nil {
 		return completeLogRead{}, errBoundary
 	}
-	if boundary == 0 {
-		return completeLogRead{lines: []string{}}, nil
+	if afterSnapshot != nil {
+		afterSnapshot()
 	}
-	start, errStart := tailStartOffset(path, boundary, limit)
+	partialLength := snapshotSize - boundary
+	if partialLength < 0 {
+		return completeLogRead{}, fmt.Errorf("invalid log boundary")
+	}
+	completeLimit := limit
+	if partialLength > 0 && completeLimit > 0 {
+		completeLimit--
+	}
+	start, errStart := tailStartOffsetFromFile(file, boundary, completeLimit)
 	if errStart != nil {
 		return completeLogRead{}, errStart
 	}
-	return readCompleteLogLines(path, start, boundary, limit)
+	read := completeLogRead{lines: []string{}, endOffset: boundary}
+	if boundary > 0 && (limit <= 0 || completeLimit > 0) {
+		read, errBoundary = readCompleteLogLinesFromFile(file, snapshotSize, start, boundary, completeLimit)
+		if errBoundary != nil {
+			return completeLogRead{}, errBoundary
+		}
+	}
+	if partialLength > 0 {
+		if partialLength > logScannerMaxBuffer {
+			return completeLogRead{}, fmt.Errorf("log line exceeds %d bytes", logScannerMaxBuffer)
+		}
+		partial := make([]byte, partialLength)
+		n, errRead := file.ReadAt(partial, boundary)
+		if errRead != nil && errRead != io.EOF {
+			return completeLogRead{}, errRead
+		}
+		if int64(n) != partialLength {
+			return completeLogRead{}, fmt.Errorf("log file changed during tail read")
+		}
+		text := strings.TrimRight(string(partial), "\r")
+		read.lines = append(read.lines, text)
+		read.trailingPartial = true
+		if ts := parseTimestamp(text); ts > read.latest {
+			read.latest = ts
+		}
+	}
+	cursor, errCursor := newLogCursorFromFile(path, file, boundary, snapshotSize, info.ModTime(), read.latest)
+	if errCursor != nil {
+		return completeLogRead{}, errCursor
+	}
+	cursor.PreviewedPartial = read.trailingPartial
+	read.cursor = &cursor
+	return read, nil
 }
 
 func tailStartOffset(path string, boundary int64, limit int) (int64, error) {
@@ -648,6 +725,13 @@ func tailStartOffset(path string, boundary int64, limit int) (int64, error) {
 	defer func() {
 		_ = file.Close()
 	}()
+	return tailStartOffsetFromFile(file, boundary, limit)
+}
+
+func tailStartOffsetFromFile(file *os.File, boundary int64, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
 	buf := make([]byte, 32*1024)
 	pos := boundary
 	lineBreaks := 0
@@ -742,6 +826,9 @@ func readLogFilesFromCursor(logDir string, files []string, raw string, limit int
 			return result, false, errRead
 		}
 		if len(read.lines) > 0 {
+			if i == startIndex && cursor.PreviewedPartial {
+				result.replaceTrailingPartial = true
+			}
 			result.lines = append(result.lines, read.lines...)
 			if read.latest > result.latest {
 				result.latest = read.latest
@@ -993,7 +1080,12 @@ func safeLogFilePath(logDir, name string) (string, error) {
 }
 
 func newLogCursor(path string, offset, latest int64) (string, error) {
-	info, errStat := os.Stat(path)
+	file, errOpen := os.Open(path)
+	if errOpen != nil {
+		return "", errOpen
+	}
+	defer func() { _ = file.Close() }()
+	info, errStat := file.Stat()
 	if errStat != nil {
 		return "", errStat
 	}
@@ -1003,24 +1095,32 @@ func newLogCursor(path string, offset, latest int64) (string, error) {
 	if offset < 0 || offset > info.Size() {
 		return "", fmt.Errorf("invalid cursor offset")
 	}
-	fingerprintCursor := logCursor{
-		Offset: offset,
-		Size:   info.Size(),
+	cursor, errCursor := newLogCursorFromFile(path, file, offset, info.Size(), info.ModTime(), latest)
+	if errCursor != nil {
+		return "", errCursor
 	}
-	fingerprint, errFingerprint := logFileFingerprint(path, cursorFingerprintBoundary(fingerprintCursor))
+	return encodeLogCursor(cursor)
+}
+
+func newLogCursorFromFile(path string, file *os.File, offset, size int64, modTime time.Time, latest int64) (logCursor, error) {
+	if file == nil || offset < 0 || size < 0 || offset > size {
+		return logCursor{}, fmt.Errorf("invalid cursor offset")
+	}
+	fingerprintCursor := logCursor{Offset: offset, Size: size}
+	fingerprint, errFingerprint := logFileFingerprintFromFile(file, cursorFingerprintBoundary(fingerprintCursor))
 	if errFingerprint != nil {
-		return "", errFingerprint
+		return logCursor{}, errFingerprint
 	}
-	return encodeLogCursor(logCursor{
+	return logCursor{
 		Version:         logCursorVersion,
 		File:            filepath.Base(path),
 		Offset:          offset,
-		Size:            info.Size(),
-		ModTime:         info.ModTime().Unix(),
-		ModTimeUnixNano: info.ModTime().UnixNano(),
+		Size:            size,
+		ModTime:         modTime.Unix(),
+		ModTimeUnixNano: modTime.UnixNano(),
 		LatestTimestamp: latest,
 		Fingerprint:     fingerprint,
-	})
+	}, nil
 }
 
 func cursorFingerprintBoundary(cursor logCursor) int64 {
@@ -1048,6 +1148,13 @@ func logFileFingerprint(path string, boundary int64) (string, error) {
 	defer func() {
 		_ = file.Close()
 	}()
+	return logFileFingerprintFromFile(file, boundary)
+}
+
+func logFileFingerprintFromFile(file *os.File, boundary int64) (string, error) {
+	if file == nil {
+		return "", fmt.Errorf("invalid log file")
+	}
 	info, errStat := file.Stat()
 	if errStat != nil {
 		return "", errStat
@@ -1120,7 +1227,13 @@ func readCompleteLogLines(path string, offset, maxOffset int64, limit int) (comp
 	if info.IsDir() {
 		return completeLogRead{}, fmt.Errorf("invalid log file")
 	}
-	size := info.Size()
+	return readCompleteLogLinesFromFile(file, info.Size(), offset, maxOffset, limit)
+}
+
+func readCompleteLogLinesFromFile(file *os.File, size, offset, maxOffset int64, limit int) (completeLogRead, error) {
+	if file == nil || offset < 0 || size < 0 {
+		return completeLogRead{}, fmt.Errorf("invalid log offset")
+	}
 	if maxOffset < 0 || maxOffset > size {
 		maxOffset = size
 	}
@@ -1196,7 +1309,13 @@ func completeLogBoundary(path string) (int64, error) {
 	if info.IsDir() {
 		return 0, fmt.Errorf("invalid log file")
 	}
-	size := info.Size()
+	return completeLogBoundaryFromFile(file, info.Size())
+}
+
+func completeLogBoundaryFromFile(file *os.File, size int64) (int64, error) {
+	if file == nil || size < 0 {
+		return 0, fmt.Errorf("invalid log file")
+	}
 	if size == 0 {
 		return 0, nil
 	}
