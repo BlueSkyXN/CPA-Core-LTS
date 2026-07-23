@@ -465,6 +465,10 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				baseModel = strings.TrimSpace(modelKey)
 			}
 			registeredModels, supportedModel := supported[baseModel]
+			if supportedModel {
+				registeredModels = registeredModelsForReconciledState(modelKey, baseModel, registeredModels)
+				supportedModel = len(registeredModels) > 0
+			}
 			if !supportedModel {
 				// Drop state for models that disappeared from the current registry
 				// snapshot. Keeping them around leaks stale errors into auth-level
@@ -565,6 +569,34 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
+}
+
+// registeredModelsForReconciledState maps one persisted ModelState back to
+// concrete registry IDs without spreading a suffix-specific cooldown to sibling
+// suffixes. A canonical family state applies to every registration in that
+// family, matching scheduler lookup semantics. Otherwise, exact raw suffix
+// registrations win and a missing suffix may only fall back to an explicitly
+// registered canonical ID.
+func registeredModelsForReconciledState(stateModel, baseModel string, registeredModels []string) []string {
+	stateModel = strings.TrimSpace(stateModel)
+	baseModel = strings.TrimSpace(baseModel)
+	if stateModel == "" || baseModel == "" {
+		return nil
+	}
+	if strings.EqualFold(stateModel, baseModel) {
+		return append([]string(nil), registeredModels...)
+	}
+	for _, registeredModel := range registeredModels {
+		if strings.EqualFold(strings.TrimSpace(registeredModel), stateModel) {
+			return []string{registeredModel}
+		}
+	}
+	for _, registeredModel := range registeredModels {
+		if strings.EqualFold(strings.TrimSpace(registeredModel), baseModel) {
+			return []string{registeredModel}
+		}
+	}
+	return nil
 }
 
 func registrySuspensionForModelState(state *ModelState) (reason string, quota, suspend bool) {
@@ -972,6 +1004,7 @@ func clearProviderRuntimeState(auth *Auth, now time.Time) {
 	auth.NextRefreshAfter = time.Time{}
 	auth.NextRetryAfter = time.Time{}
 	auth.ModelStates = nil
+	auth.Runtime = nil
 	if auth.Disabled || auth.Status == StatusDisabled {
 		auth.Status = StatusDisabled
 	} else {
@@ -2573,7 +2606,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	if clearedCooldown {
+	if clearedCooldown || !sameProvider {
 		m.persistCooldownStates(ctx)
 	}
 	return auth.Clone(), nil
@@ -4589,10 +4622,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					state := ensureModelState(auth, result.Model)
 					transientRateLimit := isCodexTransientRateLimitResultError(auth.Provider, result.Error)
-					preserveActiveQuota := transientRateLimit &&
-						state.Quota.Exceeded &&
-						strings.EqualFold(strings.TrimSpace(state.Quota.Reason), "quota") &&
-						state.NextRetryAfter.After(now)
+					preserveActiveQuota := transientRateLimit && activeQuotaCooldown(state.Quota, state.NextRetryAfter, now)
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
@@ -5549,9 +5579,15 @@ func isXaiBadCredentialsResultError(provider string, err *Error) bool {
 }
 
 func isCodexTransientRateLimitResultError(provider string, err *Error) bool {
-	return err != nil &&
-		strings.EqualFold(strings.TrimSpace(provider), "codex") &&
-		strings.EqualFold(strings.TrimSpace(err.Code), codexTransientRateLimitClass)
+	if err == nil || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(err.Code)) {
+	case codexTransientRateLimitClass, "rate_limit_error", "rate_limit_exceeded":
+		return true
+	default:
+		return false
+	}
 }
 
 func isModelSupportResultError(err *Error) bool {
@@ -5991,9 +6027,13 @@ func applyTransientRateLimitAuthFailureState(auth *Auth, resultErr *Error, now t
 	if auth == nil {
 		return
 	}
+	preserveActiveQuota := activeQuotaCooldown(auth.Quota, auth.NextRetryAfter, now)
 	auth.Unavailable = true
 	auth.Status = StatusError
 	auth.UpdatedAt = now
+	if preserveActiveQuota {
+		return
+	}
 	auth.Quota = QuotaState{}
 	auth.LastError = cloneError(resultErr)
 	if resultErr != nil {
@@ -6004,6 +6044,12 @@ func applyTransientRateLimitAuthFailureState(auth *Auth, resultErr *Error, now t
 	} else {
 		auth.NextRetryAfter = nextTransientErrorRetryAfter(now)
 	}
+}
+
+func activeQuotaCooldown(quota QuotaState, nextRetryAfter, now time.Time) bool {
+	return quota.Exceeded &&
+		strings.EqualFold(strings.TrimSpace(quota.Reason), "quota") &&
+		nextRetryAfter.After(now)
 }
 
 // quotaCooldownAfterFailure returns the recovery deadline and backoff level for

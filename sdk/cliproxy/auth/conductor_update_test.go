@@ -211,10 +211,12 @@ func TestManager_Update_ActiveInheritsModelStates(t *testing.T) {
 func TestManager_Update_ProviderChangeDoesNotInheritModelStates(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	staleRetry := time.Now().Add(time.Hour)
+	staleRuntime := &struct{ provider string }{provider: "claude"}
 	if _, err := m.Register(context.Background(), &Auth{
 		ID:       "auth-provider-change",
 		Provider: "claude",
 		Status:   StatusActive,
+		Runtime:  staleRuntime,
 		Success:  5,
 		Failed:   3,
 		ModelStates: map[string]*ModelState{
@@ -239,6 +241,7 @@ func TestManager_Update_ProviderChangeDoesNotInheritModelStates(t *testing.T) {
 		LastRefreshedAt:  staleRetry.Add(-2 * time.Hour),
 		NextRefreshAfter: staleRetry,
 		NextRetryAfter:   staleRetry,
+		Runtime:          staleRuntime,
 		Success:          9,
 		Failed:           7,
 		ModelStates: map[string]*ModelState{
@@ -271,6 +274,66 @@ func TestManager_Update_ProviderChangeDoesNotInheritModelStates(t *testing.T) {
 	}
 	if updated.Success != 0 || updated.Failed != 0 {
 		t.Fatalf("provider change retained provider health counters: success=%d failed=%d", updated.Success, updated.Failed)
+	}
+	if updated.Runtime != nil {
+		t.Fatalf("provider change retained stale runtime: %#v", updated.Runtime)
+	}
+}
+
+func TestManager_Update_ProviderChangePersistsCooldownClear(t *testing.T) {
+	ctx := context.Background()
+	const authID = "auth-provider-change-persisted-cooldown"
+	retryAfter := 30 * time.Minute
+	store := &recordingCooldownStateStore{}
+	manager := NewManager(nil, nil, nil)
+	manager.SetCooldownStateStore(store)
+	if _, err := manager.Register(WithSkipPersist(ctx), &Auth{ID: authID, Provider: "claude", Status: StatusActive}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	manager.MarkResult(ctx, Result{
+		AuthID:     authID,
+		Provider:   "claude",
+		Model:      "shared-model",
+		Error:      &Error{Code: "rate_limit", Message: "quota", HTTPStatus: http.StatusTooManyRequests},
+		RetryAfter: &retryAfter,
+	})
+
+	store.mu.Lock()
+	before := cloneCooldownStateRecords(store.records)
+	store.mu.Unlock()
+	if len(before) == 0 {
+		t.Fatal("provider cooldown was not persisted before provider change")
+	}
+
+	// The incoming auth is already clean, as it is in watcher/management update
+	// paths. The provider transition itself must still persist removal of the old
+	// provider's independent cooldown snapshot.
+	if _, err := manager.Update(ctx, &Auth{ID: authID, Provider: "xai", Status: StatusActive}); err != nil {
+		t.Fatalf("update auth provider: %v", err)
+	}
+
+	store.mu.Lock()
+	persistedAfterUpdate := cloneCooldownStateRecords(store.records)
+	store.mu.Unlock()
+
+	restartStore := &recordingCooldownStateStore{load: persistedAfterUpdate}
+	restarted := NewManager(nil, nil, nil)
+	restarted.SetCooldownStateStore(restartStore)
+	if _, err := restarted.Register(WithSkipPersist(ctx), &Auth{ID: authID, Provider: "xai", Status: StatusActive}); err != nil {
+		t.Fatalf("register auth after restart: %v", err)
+	}
+	if err := restarted.RestoreCooldownStates(ctx); err != nil {
+		t.Fatalf("restore cooldown states: %v", err)
+	}
+	restored, ok := restarted.GetByID(authID)
+	if !ok || restored == nil {
+		t.Fatal("restarted auth missing")
+	}
+	if len(persistedAfterUpdate) != 0 {
+		t.Fatalf("provider change left persisted cooldown records: %#v", persistedAfterUpdate)
+	}
+	if len(restored.ModelStates) != 0 || restored.Unavailable || restored.Quota.Exceeded || !restored.NextRetryAfter.IsZero() {
+		t.Fatalf("old provider cooldown revived after restart: %+v", restored)
 	}
 }
 
