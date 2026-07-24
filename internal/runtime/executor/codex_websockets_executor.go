@@ -85,8 +85,11 @@ type codexWebsocketSession struct {
 	readerConn *websocket.Conn
 	readerGen  uint64
 
-	upstreamDisconnectOnce sync.Once
-	upstreamDisconnectCh   chan error
+	upstreamDisconnectOnce    sync.Once
+	upstreamDisconnectCh      chan error
+	upstreamDisconnectErrMu   sync.RWMutex
+	upstreamDisconnectErrConn *websocket.Conn
+	upstreamDisconnectErr     error
 }
 
 type codexWebsocketConnectionKey struct {
@@ -315,15 +318,42 @@ func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, 
 	return conn.WriteMessage(msgType, payload)
 }
 
+// sendTerminalWebsocketRead reports whether it invalidated a full channel's connection before waiting.
+func sendTerminalWebsocketRead(ch chan<- codexWebsocketRead, done <-chan struct{}, event codexWebsocketRead, invalidate func()) bool {
+	select {
+	case ch <- event:
+		return false
+	case <-done:
+		return false
+	default:
+	}
+
+	invalidated := invalidate != nil
+	if invalidated {
+		invalidate()
+	}
+	select {
+	case ch <- event:
+	case <-done:
+	}
+	return invalidated
+}
+
 func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	if s == nil || conn == nil {
 		return
 	}
+	s.resetUpstreamDisconnectError(conn)
 	conn.SetPingHandler(func(appData string) error {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 		// Reply pongs from the same write lock to avoid concurrent writes.
 		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
+	defaultCloseHandler := conn.CloseHandler()
+	conn.SetCloseHandler(func(code int, text string) error {
+		s.setUpstreamDisconnectError(conn, &websocket.CloseError{Code: code, Text: text})
+		return defaultCloseHandler(code, text)
 	})
 }
 
@@ -370,6 +400,39 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 		sess.clearActive(conn, ch)
 	}
 	return conn, previousAuthID, previousWSURL
+}
+
+func (s *codexWebsocketSession) resetUpstreamDisconnectError(conn *websocket.Conn) {
+	if s == nil || conn == nil {
+		return
+	}
+	s.upstreamDisconnectErrMu.Lock()
+	s.upstreamDisconnectErrConn = conn
+	s.upstreamDisconnectErr = nil
+	s.upstreamDisconnectErrMu.Unlock()
+}
+
+func (s *codexWebsocketSession) setUpstreamDisconnectError(conn *websocket.Conn, err error) {
+	if s == nil || conn == nil || err == nil {
+		return
+	}
+	s.upstreamDisconnectErrMu.Lock()
+	if s.upstreamDisconnectErrConn == conn && s.upstreamDisconnectErr == nil {
+		s.upstreamDisconnectErr = err
+	}
+	s.upstreamDisconnectErrMu.Unlock()
+}
+
+func (s *codexWebsocketSession) upstreamDisconnectError(conn *websocket.Conn) error {
+	if s == nil || conn == nil {
+		return nil
+	}
+	s.upstreamDisconnectErrMu.RLock()
+	defer s.upstreamDisconnectErrMu.RUnlock()
+	if s.upstreamDisconnectErrConn != conn {
+		return nil
+	}
+	return s.upstreamDisconnectErr
 }
 
 func (s *codexWebsocketSession) notifyUpstreamDisconnect(err error) {
@@ -548,8 +611,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	if errSend := writeCodexWebsocketMessage(sess, connection.conn, wsReqBody); errSend != nil {
+		errSend = mapCodexWebsocketWriteError(sess, connection.conn, errSend)
 		if sess != nil {
 			e.invalidateUpstreamConn(sess, connection, "send_error", errSend)
+			if !shouldRetryCodexWebsocketSend(errSend) {
+				helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
+				return resp, errSend
+			}
 
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
@@ -579,6 +647,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				if errSendRetry := writeCodexWebsocketMessage(sess, connection.conn, wsReqBodyRetry); errSendRetry == nil {
 					wsReqBody = wsReqBodyRetry
 				} else {
+					errSendRetry = mapCodexWebsocketWriteError(sess, connection.conn, errSendRetry)
 					e.invalidateUpstreamConn(sess, connection, "send_error", errSendRetry)
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 					return resp, errSendRetry
@@ -820,9 +889,15 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	if errSend := writeCodexWebsocketMessage(sess, connection.conn, wsReqBody); errSend != nil {
+		errSend = mapCodexWebsocketWriteError(sess, connection.conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 		if sess != nil {
 			e.invalidateUpstreamConn(sess, connection, "send_error", errSend)
+			if !shouldRetryCodexWebsocketSend(errSend) {
+				sess.clearActiveConnection(connection, readCh)
+				sess.reqMu.Unlock()
+				return nil, errSend
+			}
 
 			// Retry once with a new websocket connection for the same execution session.
 			connectionRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, connectionKey, wsHeaders)
@@ -858,6 +933,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			connection = connectionRetry
 			requestSignal = retrySignal
 			if errSendRetry := writeCodexWebsocketMessage(sess, connection.conn, wsReqBodyRetry); errSendRetry != nil {
+				errSendRetry = mapCodexWebsocketWriteError(sess, connection.conn, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, connection, "send_error", errSendRetry)
 				sess.clearActiveConnection(connection, readCh)
@@ -908,6 +984,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 		}
 
+		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
@@ -1027,7 +1104,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			eventType = gjson.GetBytes(payload, "type").String()
 			clientPayload = applyCodexIdentityExposeResponsePayload(payload, identityState)
 			line := encodeCodexWebsocketAsSSE(clientPayload)
-			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
 			for i := range chunks {
 				if !send(cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
 					terminateReason = "context_done"
@@ -1070,13 +1147,44 @@ func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Con
 	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
+func mapCodexWebsocketWriteError(sess *codexWebsocketSession, conn *websocket.Conn, err error) error {
+	if err == nil || sess == nil || conn == nil {
+		return err
+	}
+	upstreamErr := sess.upstreamDisconnectError(conn)
+	var closeErr *websocket.CloseError
+	if !errors.As(upstreamErr, &closeErr) || closeErr.Code != websocket.CloseMessageTooBig {
+		return err
+	}
+	return mapCodexWebsocketReadError(upstreamErr)
+}
+
+func shouldRetryCodexWebsocketSend(err error) bool {
+	if err == nil {
+		return false
+	}
+	var requestErr cliproxyexecutor.RequestScopedError
+	return !errors.As(err, &requestErr) || !requestErr.IsRequestScoped()
+}
+
+type codexWebsocketMessageTooBigError struct {
+	statusErr
+}
+
+func (codexWebsocketMessageTooBigError) IsRequestScoped() bool {
+	return true
+}
+
 func mapCodexWebsocketReadError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig {
-		return statusErr{code: http.StatusRequestEntityTooLarge, msg: `{"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`}
+		return codexWebsocketMessageTooBigError{statusErr: statusErr{
+			code: http.StatusRequestEntityTooLarge,
+			msg:  `{"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`,
+		}}
 	}
 	return err
 }
