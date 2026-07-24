@@ -451,6 +451,7 @@ type CodexModelFallbackConfig struct {
 	Triggers            []string                    `yaml:"triggers" json:"triggers"`
 	ReasoningContinuity string                      `yaml:"reasoning-continuity,omitempty" json:"reasoning-continuity,omitempty"`
 	Mappings            []CodexModelFallbackMapping `yaml:"mappings" json:"mappings"`
+	GlobalTargets       []string                    `yaml:"global-targets,omitempty" json:"global-targets,omitempty"`
 }
 
 // CodexModelFallbackMapping defines ordered target models for one requested
@@ -468,6 +469,7 @@ type EffectiveCodexModelFallbackConfig struct {
 	Triggers            []string
 	ReasoningContinuity string
 	Mappings            []CodexModelFallbackMapping
+	GlobalTargets       []string
 }
 
 // Effective returns a normalized model-fallback policy.
@@ -514,29 +516,47 @@ func (c CodexModelFallbackConfig) Effective() EffectiveCodexModelFallbackConfig 
 		}
 		mappings = append(mappings, CodexModelFallbackMapping{From: from, To: to})
 	}
+	globalTargets := make([]string, 0, len(c.GlobalTargets))
+	seenGlobalTargets := make(map[string]struct{}, len(c.GlobalTargets))
+	for _, target := range c.GlobalTargets {
+		target = strings.TrimSpace(target)
+		key := strings.ToLower(target)
+		if target == "" {
+			continue
+		}
+		if _, ok := seenGlobalTargets[key]; ok {
+			continue
+		}
+		seenGlobalTargets[key] = struct{}{}
+		globalTargets = append(globalTargets, target)
+	}
 
 	return EffectiveCodexModelFallbackConfig{
 		Enabled:             c.Enabled,
 		Triggers:            filteredTriggers,
 		ReasoningContinuity: reasoningContinuity,
 		Mappings:            mappings,
+		GlobalTargets:       globalTargets,
 	}
+}
+
+// AllowsTrigger reports whether the normalized fallback policy accepts trigger.
+func (c EffectiveCodexModelFallbackConfig) AllowsTrigger(trigger string) bool {
+	if !c.Enabled {
+		return false
+	}
+	trigger = strings.ToLower(strings.TrimSpace(trigger))
+	for _, candidate := range c.Triggers {
+		if candidate == trigger {
+			return true
+		}
+	}
+	return false
 }
 
 // TargetsFor returns the ordered fallback targets for model and trigger.
 func (c EffectiveCodexModelFallbackConfig) TargetsFor(model, trigger string) []string {
-	if !c.Enabled || strings.TrimSpace(model) == "" || strings.TrimSpace(trigger) == "" {
-		return nil
-	}
-	trigger = strings.ToLower(strings.TrimSpace(trigger))
-	allowed := false
-	for _, candidate := range c.Triggers {
-		if candidate == trigger {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	if strings.TrimSpace(model) == "" || !c.AllowsTrigger(trigger) {
 		return nil
 	}
 	for _, mapping := range c.Mappings {

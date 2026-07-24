@@ -26,7 +26,9 @@ type CooldownStateRecord struct {
 	Reason         string     `json:"reason,omitempty"`
 	Quota          QuotaState `json:"quota,omitempty"`
 	LastError      *Error     `json:"last_error,omitempty"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	// ModelFallbackReason is internal cooldown provenance used by request routing.
+	ModelFallbackReason string    `json:"model_fallback_reason,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // CooldownStateStore persists runtime cooldown state independently from auth tokens.

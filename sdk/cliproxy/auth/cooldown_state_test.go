@@ -129,8 +129,9 @@ func TestFileCooldownStateStore_SaveLoadAndCleanStale(t *testing.T) {
 			NextRecoverAt: nextRetry,
 			BackoffLevel:  1,
 		},
-		LastError: &Error{Message: "rate limited", HTTPStatus: 429},
-		UpdatedAt: updatedAt,
+		LastError:           &Error{Message: "rate limited", HTTPStatus: 429},
+		ModelFallbackReason: "usage-limit",
+		UpdatedAt:           updatedAt,
 	}
 
 	if errSave := store.Save(ctx, []CooldownStateRecord{record}); errSave != nil {
@@ -155,6 +156,9 @@ func TestFileCooldownStateStore_SaveLoadAndCleanStale(t *testing.T) {
 	}
 	if loaded[0].LastError == nil || loaded[0].LastError.HTTPStatus != 429 {
 		t.Fatalf("loaded last error = %+v, want HTTP 429", loaded[0].LastError)
+	}
+	if loaded[0].ModelFallbackReason != "usage-limit" {
+		t.Fatalf("loaded model fallback reason = %q, want usage-limit", loaded[0].ModelFallbackReason)
 	}
 
 	if errSave := store.Save(ctx, nil); errSave != nil {
@@ -269,8 +273,9 @@ func TestManager_RestoreCooldownStates(t *testing.T) {
 					Reason:        "quota",
 					NextRecoverAt: nextRetry,
 				},
-				LastError: &Error{Message: "rate limited", HTTPStatus: 429},
-				UpdatedAt: nextRetry.Add(-time.Minute),
+				LastError:           &Error{Message: "rate limited", HTTPStatus: 429},
+				ModelFallbackReason: "usage-limit",
+				UpdatedAt:           nextRetry.Add(-time.Minute),
 			},
 		},
 	}
@@ -297,6 +302,9 @@ func TestManager_RestoreCooldownStates(t *testing.T) {
 	}
 	if state.LastError == nil || state.LastError.HTTPStatus != 429 {
 		t.Fatalf("restored last error = %+v, want HTTP 429", state.LastError)
+	}
+	if state.modelFallbackReason != "usage-limit" {
+		t.Fatalf("restored model fallback reason = %q, want usage-limit", state.modelFallbackReason)
 	}
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("restore cleanup saved cooldown state %d times, want 1", got)

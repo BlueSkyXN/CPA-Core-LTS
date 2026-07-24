@@ -1836,6 +1836,41 @@ func TestManagerCodexRateLimitContinuityPendingFreshSessionUsesModelFallback(t *
 	}
 }
 
+func TestManagerCodexRateLimitContinuityFreshBlockedDoesNotUseGlobalFallback(t *testing.T) {
+	executor := &codexContinuityTestExecutor{failures: make(map[string]error)}
+	manager := newCodexContinuityManager(t, executor, []string{"auth-a"}, []string{"gpt-source", "gpt-global"}, 2)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{SessionAffinity: true},
+		Codex: internalconfig.CodexConfig{
+			RateLimitContinuity: internalconfig.CodexRateLimitContinuityConfig{
+				Enabled:                      true,
+				ObservationWindowSeconds:     10,
+				EstablishedSuccessThreshold:  2,
+				EstablishedSessionTTLSeconds: 3600,
+			},
+			ModelFallback: internalconfig.CodexModelFallbackConfig{
+				Enabled:       true,
+				GlobalTargets: []string{"gpt-global"},
+			},
+		},
+	})
+	key := codexRateLimitContinuityKey{authID: "auth-a", model: "gpt-source"}
+	manager.codexRateLimitContinuity.states[key] = &codexRateLimitContinuityState{
+		suspect:             true,
+		observeUntil:        time.Now().Add(time.Minute),
+		establishedSessions: make(map[string]time.Time),
+		inFlight:            make(map[string]int),
+	}
+
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, codexContinuityConversationOptions("fresh"))
+	if err == nil {
+		t.Fatal("Execute() error = nil, want continuity observation pending")
+	}
+	if calls := executor.snapshot(); len(calls) != 0 {
+		t.Fatalf("calls = %#v, want zero dispatch while FreshBlocked", calls)
+	}
+}
+
 func TestManagerCodexRateLimitContinuityConfirmedCooldownUsesModelFallback(t *testing.T) {
 	executor := &codexContinuityTestExecutor{failures: make(map[string]error)}
 	manager := newCodexContinuityManager(t, executor, []string{"auth-a"}, []string{"gpt-source", "gpt-target"}, 2)

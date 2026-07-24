@@ -96,6 +96,8 @@ lts_owned_features:
     maintenance_policy: long-term-maintained
     markers:
       - model-fallback
+      - global-targets
+      - model_fallback_reason
       - ModelFallbackReason
       - reasoning-continuity
     validation:

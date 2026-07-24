@@ -34,11 +34,36 @@ codex:
     mappings:
       - from: gpt-5.6-sol
         to: [gpt-5.6-terra, gpt-5.5]
+    global-targets: [gpt-5.4]
 ```
 
 The source mapping is exact and case-insensitive after trimming. Target order is
 significant. Duplicate and source-equivalent targets are removed in memory.
 Existing config files are not rewritten to add defaults.
+
+`global-targets` is a final, shared target list for source models whose normal
+mapping did not deliver a response. It is deliberately stricter than
+`mappings`: Core appends it only when a typed Codex
+`error.type=usage_limit_reached` has produced a currently active, formal quota
+cooldown for every eligible source credential. A `FreshBlocked` observation,
+an ordinary or untyped HTTP 429, `rate_limit_error`, and
+`rate_limit_exceeded` never activate the global targets. This keeps the global
+fallback tied to confirmed exhaustion rather than to the HTTP status alone.
+The typed cooldown provenance is retained internally on `ModelState`; when
+`save-cooldown-status` is enabled it is persisted as the additive
+`model_fallback_reason` field in the `.cds` record. Older records without that
+field fail closed for global fallback until a new typed failure is observed.
+Home control-plane dispatch uses a separate credential candidate inventory, so
+`global-targets` also fail closed while Home mode is enabled rather than using
+unrelated local auth cooldown state as proof about remote candidates.
+
+Mapped targets keep their existing precedence. Zero-dispatch mapped targets and
+mapped targets that return another typed fallback signal allow selection to
+continue into `global-targets`; a real dispatched request-invalid, auth,
+transient, or other unclassified target error still stops the chain. Global
+targets remain inside the Codex provider boundary and must be registered under
+`codex`; the word "global" means shared by all Codex source mappings, not an
+implicit cross-provider route.
 
 The fallback path is limited to standard Codex response execution. It does not
 apply to compact, image, or video requests. Streaming fallback is only possible
@@ -201,6 +226,7 @@ reasoning continuity.
 ## Retry, usage, and auth state
 
 - Same-model auth selection and ordinary retry run before model fallback.
+- Per-source mappings run before confirmed-cooldown-only `global-targets`.
 - Source and fallback targets share one request-level abnormal-reasoning retry
   counter, hedge state, and `UsageAccumulator`; fallback cannot reset or extend
   the configured retry/hedge budget. A target gets one auth-selection wave,

@@ -259,6 +259,7 @@ func TestBuildConfigChangeDetails_CodexModelFallback(t *testing.T) {
 				Enabled:             true,
 				Triggers:            []string{config.CodexModelFallbackTriggerCapacity},
 				ReasoningContinuity: config.CodexModelFallbackReasoningContinuityContextReset,
+				GlobalTargets:       []string{"gpt-5.4"},
 				Mappings: []config.CodexModelFallbackMapping{
 					{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra", "gpt-5.5"}},
 				},
@@ -271,6 +272,7 @@ func TestBuildConfigChangeDetails_CodexModelFallback(t *testing.T) {
 	expectContains(t, details, "codex.model-fallback.reasoning-continuity: same-model-only -> context-reset")
 	expectContains(t, details, "codex.model-fallback.triggers: updated (2 -> 1 entries)")
 	expectContains(t, details, "codex.model-fallback.mappings: updated (0 -> 1 entries)")
+	expectContains(t, details, "codex.model-fallback.global-targets: updated (0 -> 1 entries)")
 }
 
 func TestBuildConfigChangeDetails_CodexRateLimitContinuity(t *testing.T) {

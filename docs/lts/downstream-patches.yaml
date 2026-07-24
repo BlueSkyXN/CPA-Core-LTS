@@ -2,7 +2,7 @@ version: 1
 
 patches:
   - id: codex-model-fallback
-    reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
+    reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, including a confirmed-usage-cooldown-only global target list when source mappings cannot deliver, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
     introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
     affected_upstream_range: through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); upstream now drops overlong encrypted reasoning items and reuses normalized Codex payloads, while LTS preserves those request-shaping changes together with its typed configurable cross-model fallback, conservative source/target reasoning-continuity gates, target-model auth reselection, pre-delivery stream safety, and legacy replay migration.
     files:
@@ -34,6 +34,9 @@ patches:
       - sdk/api/handlers/handlers_metadata_test.go
       - sdk/cliproxy/auth/codex_model_fallback.go
       - sdk/cliproxy/auth/codex_model_fallback_test.go
+      - sdk/cliproxy/auth/codex_rate_limit_continuity_test.go
+      - sdk/cliproxy/auth/cooldown_state.go
+      - sdk/cliproxy/auth/cooldown_state_test.go
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/executor/types.go
       - sdk/api/handlers/openai/openai_responses_websocket.go
@@ -46,7 +49,15 @@ patches:
       - TestCodexExecutorModelFallbackSameModelOnlyBlocksSourceReplayCache
       - TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair
       - TestManagerExecuteCodexModelFallbackSelectsCredentialForTargetModel
+      - TestManagerExecuteCodexGlobalFallbackOnConfirmedUsageLimitCooldown
+      - TestManagerExecuteCodexGlobalFallbackIgnoresOrdinary429
+      - TestManagerCodexGlobalFallbackRequiresEveryEligibleSourceCredentialCooldown
+      - TestManagerCodexGlobalFallbackFailsClosedInHomeMode
+      - TestManagerExecuteCodexGlobalFallbackIgnoresDisabledSourceCandidates
+      - TestManagerCodexRateLimitContinuityFreshBlockedDoesNotUseGlobalFallback
+      - TestFileCooldownStateStore_SaveLoadAndCleanStale
       - TestManagerExecuteStreamCodexModelFallbackBeforeFirstPayload
+      - TestManagerExecuteStreamCodexGlobalFallbackBeforeFirstPayload
       - TestManagerExecuteStreamCodexModelFallbackDoesNotReplayAfterPayload
       - TestManagerExecuteCodexModelFallbackBlocksCachedClaudeReplayBeforeTargetSelection
       - TestManagerExecuteCodexModelFallbackReplayPreflightUsesAgentScopedExecutorKeyPriority
