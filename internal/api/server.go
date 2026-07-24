@@ -52,6 +52,7 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"golang.org/x/net/http2"
@@ -59,6 +60,8 @@ import (
 )
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+
+const codexAlphaSearchSourceFormat = "codex-alpha-search"
 
 var corsExposedResponseHeaders = []string{
 	logging.CPATraceIDHeader,
@@ -656,6 +659,61 @@ func (s *Server) setupRoutes() {
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
 
+func (s *Server) codexAlphaSearchModelRouterHost() handlers.PluginModelRouterHost {
+	if s == nil {
+		return nil
+	}
+	if s.pluginHost != nil {
+		return s.pluginHost
+	}
+	if s.handlers != nil && s.handlers.ModelRouterHost != nil {
+		return s.handlers.ModelRouterHost
+	}
+	return nil
+}
+
+func (s *Server) codexAlphaSearchSelectionModel(ctx context.Context, c *gin.Context, body []byte, model string) (string, error) {
+	host := s.codexAlphaSearchModelRouterHost()
+	if host == nil {
+		return model, nil
+	}
+
+	var headers http.Header
+	queryValues := make(map[string][]string)
+	requestPath := ""
+	if c != nil && c.Request != nil {
+		headers = c.Request.Header.Clone()
+		if c.Request.URL != nil {
+			queryValues = c.Request.URL.Query()
+			requestPath = c.Request.URL.Path
+		}
+	}
+	metadata := map[string]any{
+		coreexecutor.RequestedModelMetadataKey: model,
+	}
+	if requestPath != "" {
+		metadata[coreexecutor.RequestPathMetadataKey] = requestPath
+	}
+	resp, handled := host.RouteModel(ctx, pluginapi.ModelRouteRequest{
+		SourceFormat:   codexAlphaSearchSourceFormat,
+		RequestedModel: model,
+		Headers:        headers,
+		Query:          queryValues,
+		Body:           body,
+		Metadata:       metadata,
+	})
+	if !handled || !resp.Handled {
+		return model, nil
+	}
+	if resp.TargetKind != pluginapi.ModelRouteTargetProvider || !strings.EqualFold(strings.TrimSpace(resp.Target), "codex") {
+		return "", fmt.Errorf("unsupported Codex Alpha Search model route target %q (%q)", resp.TargetKind, resp.Target)
+	}
+	if targetModel := strings.TrimSpace(resp.TargetModel); targetModel != "" {
+		return targetModel, nil
+	}
+	return model, nil
+}
+
 func sanitizeCodexAlphaSearchBody(body []byte) []byte {
 	var payload map[string]json.RawMessage
 	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil || payload == nil {
@@ -718,9 +776,14 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {
 		selectionHeaders.Set("X-Session-ID", sessionID)
 	}
-	routeModel := strings.TrimSpace(routing.Model)
 	selectionCtx := context.WithValue(c.Request.Context(), "gin", c)
-	selected, resultCtx, err := s.handlers.AuthManager.SelectAuthForRequestByKind(selectionCtx, "codex", routeModel, auth.AuthKindOAuth, coreexecutor.Options{
+	selectionModel, errRoute := s.codexAlphaSearchSelectionModel(selectionCtx, c, body, strings.TrimSpace(routing.Model))
+	if errRoute != nil {
+		log.WithError(errRoute).Warn("codex alpha search: model router returned an unsupported target")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": errRoute.Error()})
+		return
+	}
+	selected, resultCtx, err := s.handlers.AuthManager.SelectAuthForRequestByKind(selectionCtx, "codex", selectionModel, auth.AuthKindOAuth, coreexecutor.Options{
 		Headers:         selectionHeaders,
 		OriginalRequest: body,
 	})
@@ -787,7 +850,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	resp, err := s.handlers.AuthManager.HttpRequest(ctx, selected, req)
 	if err != nil {
 		if codexAlphaSearchShouldMarkTransportFailure(ctx, err) {
-			markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, routeModel, http.StatusBadGateway, nil, nil, err)
+			markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, selectionModel, http.StatusBadGateway, nil, nil, err)
 		}
 		helps.RecordAPIResponseError(ctx, s.cfg, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -811,7 +874,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": errResponseTooLarge.Error()})
 		return
 	}
-	responseStatus := markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, routeModel, resp.StatusCode, resp.Header, upstreamBody, nil)
+	responseStatus := markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, selectionModel, resp.StatusCode, resp.Header, upstreamBody, nil)
 	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
 		c.Header("Content-Type", contentType)
 	}

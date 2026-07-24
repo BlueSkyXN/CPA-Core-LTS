@@ -1627,6 +1627,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, int(scannerMaxTokenBytes))
+		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
@@ -1760,7 +1761,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			} else {
 				qualityRecorder.recordLine(translatedLine)
 			}
-			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			if retryErr != nil {
 				var fallbackChunks []cliproxyexecutor.StreamChunk
 				if !bufferLimitExceeded {
