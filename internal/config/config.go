@@ -41,6 +41,12 @@ type Config struct {
 	// Home config is runtime-only and is populated from -home-jwt.
 	Home HomeConfig `yaml:"-" json:"-"`
 
+	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
+	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
+
+	// CredentialInFlight configures credential observation snapshots.
+	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
@@ -338,6 +344,10 @@ type CodexConfig struct {
 	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
 	RateLimitContinuity    CodexRateLimitContinuityConfig    `yaml:"rate-limit-continuity" json:"rate-limit-continuity"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
+	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
+	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
+	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
+	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
 }
 
 const (
@@ -849,6 +859,24 @@ func defaultedPositiveInt64List(values []int64, defaults []int64) []int64 {
 	return out
 }
 
+// CodexLiveMediaRelayConfig configures the in-process Codex Live WebRTC gateway.
+type CodexLiveMediaRelayConfig struct {
+	Enabled                 bool                 `yaml:"enabled" json:"enabled"`
+	MaxSessions             int                  `yaml:"max-sessions" json:"max-sessions"`
+	DisablePrivateRemoteIPs bool                 `yaml:"disable-private-remote-ips" json:"disable-private-remote-ips"`
+	PublicIP                string               `yaml:"public-ip" json:"public-ip"`
+	UDPPortMin              uint16               `yaml:"udp-port-min" json:"udp-port-min"`
+	UDPPortMax              uint16               `yaml:"udp-port-max" json:"udp-port-max"`
+	ICEServers              []CodexLiveICEServer `yaml:"ice-servers" json:"ice-servers"`
+}
+
+// CodexLiveICEServer configures a STUN or TURN server for the media relay.
+type CodexLiveICEServer struct {
+	URLs       []string `yaml:"urls" json:"urls"`
+	Username   string   `yaml:"username" json:"-"`
+	Credential string   `yaml:"credential" json:"-"`
+}
+
 // TLSConfig holds HTTPS server settings.
 type TLSConfig struct {
 	// Enable toggles HTTPS server mode.
@@ -1354,7 +1382,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
-				cfg := &Config{}
+				cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
 			}
@@ -1363,8 +1391,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
-	if optional && len(data) == 0 {
-		cfg := &Config{}
+	if optional && len(bytes.TrimSpace(data)) == 0 {
+		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
 	}
@@ -1387,10 +1415,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
-			cfgOptional := &Config{}
+			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
 		}
@@ -1415,6 +1444,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// 		cfg.legacyMigrationPending = true
 	// 	}
 	// }
+
+	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
+	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
