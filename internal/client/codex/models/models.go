@@ -1,4 +1,5 @@
-package openai
+// Package models builds model catalogs for official Codex clients.
+package models
 
 import (
 	"encoding/json"
@@ -13,7 +14,8 @@ type codexClientModelsPayload struct {
 	Models []map[string]any `json:"models"`
 }
 
-type codexClientModelProvidersFunc func(string) []string
+// ProvidersForModelFunc returns the providers registered for a model.
+type ProvidersForModelFunc func(string) []string
 
 var (
 	codexClientModelTemplatesMu       sync.Mutex
@@ -34,33 +36,14 @@ var codexClientAllowedReasoningLevels = map[string]struct{}{
 	"ultra":  {},
 }
 
-func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
-	optimizeMultiAgentV2 := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
-	return codexClientModelsResponseWithOptions(h.Models(), registry.GetGlobalRegistry().GetModelProviders, optimizeMultiAgentV2)
-}
-
-// CodexClientModelsResponse builds a Codex client model response.
-func CodexClientModelsResponse(models []map[string]any) map[string]any {
-	return codexClientModelsResponseWithOptions(models, nil, false)
-}
-
-func codexClientModelsResponse(models []map[string]any, providersForModel codexClientModelProvidersFunc) map[string]any {
-	return codexClientModelsResponseWithOptions(models, providersForModel, false)
-}
-
-// CodexClientModelsResponseWithMultiAgentV2 builds a Codex client model response
-// and advertises multi-agent v2 for synthesized models when enabled.
-func CodexClientModelsResponseWithMultiAgentV2(models []map[string]any, enabled bool) map[string]any {
-	return codexClientModelsResponseWithOptions(models, nil, enabled)
-}
-
-func codexClientModelsResponseWithOptions(models []map[string]any, providersForModel codexClientModelProvidersFunc, optimizeMultiAgentV2 bool) map[string]any {
+// BuildResponse builds a Codex client model response from available models.
+func BuildResponse(availableModels []map[string]any, providersForModel ProvidersForModelFunc, optimizeMultiAgentV2 bool) map[string]any {
 	return map[string]any{
-		"models": buildCodexClientModels(models, providersForModel, optimizeMultiAgentV2),
+		"models": buildCodexClientModels(availableModels, providersForModel, optimizeMultiAgentV2),
 	}
 }
 
-func buildCodexClientModels(models []map[string]any, providersForModel codexClientModelProvidersFunc, optimizeMultiAgentV2 bool) []map[string]any {
+func buildCodexClientModels(models []map[string]any, providersForModel ProvidersForModelFunc, optimizeMultiAgentV2 bool) []map[string]any {
 	templates, defaultTemplate, err := loadCodexClientModelTemplates()
 	if err != nil || defaultTemplate == nil {
 		return nil
@@ -198,7 +181,7 @@ func applyCodexClientDisplayName(entry map[string]any, model map[string]any) {
 	}
 }
 
-func applyCodexClientSearchToolSupport(entry map[string]any, id string, templateModel bool, providersForModel codexClientModelProvidersFunc) {
+func applyCodexClientSearchToolSupport(entry map[string]any, id string, templateModel bool, providersForModel ProvidersForModelFunc) {
 	supportsSearch, _ := entry["supports_search_tool"].(bool)
 	if !supportsSearch {
 		return
@@ -419,8 +402,6 @@ func codexClientReasoningDescription(level string) string {
 		return "Extra high reasoning depth for complex problems"
 	case "max":
 		return "Maximum available reasoning depth for complex problems"
-	case "ultra":
-		return "Maximum reasoning with automatic task delegation"
 	default:
 		return level
 	}

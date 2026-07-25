@@ -1,62 +1,10 @@
-package openai
+package models
 
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 )
-
-func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
-	modelID := "codex-client-multi-agent-v2-test"
-	clientID := "codex-client-multi-agent-v2-test-client"
-	modelRegistry := registry.GetGlobalRegistry()
-	modelRegistry.RegisterClient(clientID, "openai-compatibility", []*registry.ModelInfo{{ID: modelID}})
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient(clientID)
-	})
-
-	base := handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil)
-	handler := NewOpenAIAPIHandler(base)
-	for _, tt := range []struct {
-		name    string
-		enabled bool
-	}{
-		{name: "disabled", enabled: false},
-		{name: "enabled", enabled: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			base.Cfg.CodexOptimizeMultiAgentV2 = tt.enabled
-			response := handler.codexClientModelsResponse()
-			models, ok := response["models"].([]map[string]any)
-			if !ok {
-				t.Fatalf("models type = %T, want []map[string]any", response["models"])
-			}
-			var entry map[string]any
-			for _, model := range models {
-				slug, _ := model["slug"].(string)
-				if slug == modelID {
-					entry = model
-					break
-				}
-			}
-			if entry == nil {
-				t.Fatalf("missing synthesized model %q", modelID)
-			}
-			value, exists := entry["multi_agent_version"]
-			if tt.enabled {
-				if !exists || value != "v2" {
-					t.Fatalf("multi_agent_version = %#v, want v2", value)
-				}
-				return
-			}
-			if !exists || value != nil {
-				t.Fatalf("multi_agent_version = %#v, want preserved null", value)
-			}
-		})
-	}
-}
 
 func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	modelID := "mimo-v2.5-pro-codex-test"
@@ -99,7 +47,7 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	})
 
 	openaiModels := modelRegistry.GetAvailableModels("openai")
-	resp := CodexClientModelsResponse(openaiModels)
+	resp := BuildResponse(openaiModels, nil, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
@@ -182,10 +130,10 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 }
 
 func TestCodexClientModelsResponse_AppliesDisplayNameToTemplateModel(t *testing.T) {
-	resp := CodexClientModelsResponse([]map[string]any{{
+	resp := BuildResponse([]map[string]any{{
 		"id":           "gpt-5.5",
 		"display_name": "Configured Codex Name",
-	}})
+	}}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok || len(models) != 1 {
 		t.Fatalf("models = %#v, want one model", resp["models"])
@@ -195,54 +143,16 @@ func TestCodexClientModelsResponse_AppliesDisplayNameToTemplateModel(t *testing.
 	}
 }
 
-func TestCodexClientModelsResponse_GPT56UltraReasoningMetadata(t *testing.T) {
-	resp := CodexClientModelsResponse([]map[string]any{
-		{"id": "gpt-5.6-sol", "display_name": "Configured Sol"},
-		{"id": "gpt-5.6-terra"},
-		{"id": "gpt-5.6-luna"},
-	})
-	models, ok := resp["models"].([]map[string]any)
-	if !ok {
-		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
-	}
-	bySlug := make(map[string]map[string]any, len(models))
-	for _, model := range models {
-		bySlug[stringModelValue(model, "slug")] = model
-	}
-
-	for _, slug := range []string{"gpt-5.6-sol", "gpt-5.6-terra"} {
-		model := bySlug[slug]
-		if model == nil {
-			t.Fatalf("expected codex entry for %q", slug)
-		}
-		assertCodexClientReasoningEfforts(t, model, []string{"low", "medium", "high", "xhigh", "max", "ultra"})
-		if got := codexClientReasoningLevelDescription(model, "ultra"); got != "Maximum reasoning with automatic task delegation" {
-			t.Fatalf("%s ultra description = %q, want automatic task delegation description", slug, got)
-		}
-	}
-	if got := stringModelValue(bySlug["gpt-5.6-sol"], "display_name"); got != "Configured Sol" {
-		t.Fatalf("gpt-5.6-sol display_name = %q, want Configured Sol", got)
-	}
-
-	luna := bySlug["gpt-5.6-luna"]
-	if luna == nil {
-		t.Fatal("expected codex entry for gpt-5.6-luna")
-	}
-	assertCodexClientReasoningEfforts(t, luna, []string{"low", "medium", "high", "xhigh", "max"})
-	if got := codexClientReasoningLevelDescription(luna, "ultra"); got != "" {
-		t.Fatalf("gpt-5.6-luna unexpectedly exposes ultra description %q", got)
-	}
-}
-
 func TestCodexClientModelsResponse_DisablesSearchToolForSynthesizedModels(t *testing.T) {
-	resp := CodexClientModelsResponse([]map[string]any{
+	resp := BuildResponse([]map[string]any{
 		{"id": "custom-openai-compatible-model"},
 		{"id": "gpt-5.5"},
-	})
+	}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
 	}
+
 	bySlug := make(map[string]map[string]any, len(models))
 	for _, model := range models {
 		bySlug[stringModelValue(model, "slug")] = model
@@ -272,14 +182,14 @@ func TestCodexClientModelsResponse_RequiresTemplateAndCodexProvidersForSearchToo
 		"gpt-5.4":         {"codex", "xai"},
 		"gpt-5.6-sol":     {"codex"},
 	}
-	resp := codexClientModelsResponse([]map[string]any{
+	resp := BuildResponse([]map[string]any{
 		{"id": "new-codex-model"},
 		{"id": "gpt-5.5"},
 		{"id": "gpt-5.4"},
 		{"id": "gpt-5.6-sol"},
 	}, func(id string) []string {
 		return providers[id]
-	})
+	}, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
@@ -301,7 +211,7 @@ func TestCodexClientModelsResponse_RequiresTemplateAndCodexProvidersForSearchToo
 }
 
 func TestCodexClientModelsResponse_PreservesUltraReasoningEffort(t *testing.T) {
-	resp := CodexClientModelsResponse([]map[string]any{{"id": "gpt-5.6-sol"}})
+	resp := BuildResponse([]map[string]any{{"id": "gpt-5.6-sol"}}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
@@ -317,6 +227,7 @@ func TestCodexClientModelsResponse_PreservesUltraReasoningEffort(t *testing.T) {
 	if sol == nil {
 		t.Fatal("expected codex client entry for gpt-5.6-sol")
 	}
+
 	levels, ok := sol["supported_reasoning_levels"].([]any)
 	if !ok {
 		t.Fatalf("supported_reasoning_levels = %T, want []any", sol["supported_reasoning_levels"])
@@ -327,73 +238,8 @@ func TestCodexClientModelsResponse_PreservesUltraReasoningEffort(t *testing.T) {
 			return
 		}
 	}
+
 	t.Fatalf("supported_reasoning_levels = %#v, want ultra", levels)
-}
-
-func TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff(t *testing.T) {
-	resp := CodexClientModelsResponse([]map[string]any{{"id": "gpt-5.3-codex-spark"}})
-	models, ok := resp["models"].([]map[string]any)
-	if !ok {
-		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
-	}
-
-	var spark map[string]any
-	for _, model := range models {
-		if stringModelValue(model, "slug") == "gpt-5.3-codex-spark" {
-			spark = model
-			break
-		}
-	}
-	if spark == nil {
-		t.Fatal("expected codex entry for gpt-5.3-codex-spark")
-	}
-	if supports, okSupports := spark["supports_reasoning_summaries"].(bool); !okSupports || !supports {
-		t.Fatalf("supports_reasoning_summaries = %#v, want true so reasoning.effort remains enabled", spark["supports_reasoning_summaries"])
-	}
-	if got := stringModelValue(spark, "default_reasoning_summary"); got != "none" {
-		t.Fatalf("default_reasoning_summary = %q, want none", got)
-	}
-	assertCodexClientReasoningEfforts(t, spark, []string{"low", "medium", "high", "xhigh"})
-}
-
-func TestCodexClientReasoningDescriptionUltra(t *testing.T) {
-	const want = "Maximum reasoning with automatic task delegation"
-	if got := codexClientReasoningDescription("ultra"); got != want {
-		t.Fatalf("ultra description = %q, want %q", got, want)
-	}
-}
-
-func assertCodexClientReasoningEfforts(t *testing.T, model map[string]any, want []string) {
-	t.Helper()
-
-	rawLevels, ok := model["supported_reasoning_levels"].([]any)
-	if !ok {
-		t.Fatalf("%s supported_reasoning_levels = %#v, want array", stringModelValue(model, "slug"), model["supported_reasoning_levels"])
-	}
-	if len(rawLevels) != len(want) {
-		t.Fatalf("%s supported_reasoning_levels length = %d, want %d: %#v", stringModelValue(model, "slug"), len(rawLevels), len(want), rawLevels)
-	}
-	for index, wantEffort := range want {
-		level, ok := rawLevels[index].(map[string]any)
-		if !ok {
-			t.Fatalf("%s supported_reasoning_levels[%d] = %#v, want object", stringModelValue(model, "slug"), index, rawLevels[index])
-		}
-		if got := stringModelValue(level, "effort"); got != wantEffort {
-			t.Fatalf("%s supported_reasoning_levels[%d].effort = %q, want %q", stringModelValue(model, "slug"), index, got, wantEffort)
-		}
-	}
-}
-
-func codexClientReasoningLevelDescription(model map[string]any, effort string) string {
-	rawLevels, _ := model["supported_reasoning_levels"].([]any)
-	for _, rawLevel := range rawLevels {
-		level, ok := rawLevel.(map[string]any)
-		if !ok || stringModelValue(level, "effort") != effort {
-			continue
-		}
-		return stringModelValue(level, "description")
-	}
-	return ""
 }
 
 func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
@@ -445,5 +291,20 @@ func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
 	}
 	if got := stringModelValue(templates["gpt-5.5"], "display_name"); got != "Second" {
 		t.Fatalf("cached display_name = %q, want Second", got)
+	}
+}
+
+func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *testing.T) {
+	entry := map[string]any{"multi_agent_version": "v1"}
+	model := map[string]any{"id": "custom-model"}
+
+	applyCodexClientModelMetadata(entry, "custom-model", model, false)
+	if got := entry["multi_agent_version"]; got != "v1" {
+		t.Fatalf("disabled multi_agent_version = %#v, want preserved v1", got)
+	}
+
+	applyCodexClientModelMetadata(entry, "custom-model", model, true)
+	if got := entry["multi_agent_version"]; got != "v2" {
+		t.Fatalf("enabled multi_agent_version = %#v, want v2", got)
 	}
 }
