@@ -9,22 +9,35 @@ import (
 )
 
 func TestClaudeUsageTokensOpenAIUsageFailsClosedOnOverflow(t *testing.T) {
-	prompt, completion, total, cached := (claudeUsageTokens{
+	prompt, completion, total, cached, cachedCreation := (claudeUsageTokens{
 		InputTokens:              math.MaxInt64,
 		OutputTokens:             1,
 		CacheCreationInputTokens: 1,
 		CacheReadInputTokens:     1,
 	}).OpenAIUsage()
 
-	if prompt != math.MaxInt64 || completion != 1 || total != 0 || cached != 0 {
+	if prompt != math.MaxInt64 || completion != 1 || total != 0 || cached != 0 || cachedCreation != 0 {
 		t.Fatalf(
-			"overflowed usage = prompt:%d completion:%d total:%d cached:%d, want %d/1/0/0",
+			"overflowed usage = prompt:%d completion:%d total:%d cached:%d cached_creation:%d, want %d/1/0/0/0",
 			prompt,
 			completion,
 			total,
 			cached,
+			cachedCreation,
 			int64(math.MaxInt64),
 		)
+	}
+}
+
+func assertCachedCreationTokens(t *testing.T, payload []byte, want int64) {
+	t.Helper()
+
+	got := gjson.GetBytes(payload, "usage.prompt_tokens_details.cached_creation_tokens")
+	if !got.Exists() {
+		t.Fatalf("expected cached_creation_tokens to exist, payload=%s", string(payload))
+	}
+	if got.Int() != want {
+		t.Fatalf("expected cached_creation_tokens %d, got %d", want, got.Int())
 	}
 }
 
@@ -56,6 +69,7 @@ func TestConvertClaudeResponseToOpenAI_StreamUsageIncludesCachedTokens(t *testin
 	if gotCachedTokens := gjson.GetBytes(out[0], "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
+	assertCachedCreationTokens(t, out[0], 31)
 }
 
 func TestConvertClaudeResponseToOpenAI_StreamUsageMergesMessageStartUsage(t *testing.T) {
@@ -94,6 +108,7 @@ func TestConvertClaudeResponseToOpenAI_StreamUsageMergesMessageStartUsage(t *tes
 	if gotCachedTokens := gjson.GetBytes(out[0], "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
+	assertCachedCreationTokens(t, out[0], 31)
 }
 
 func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesCachedTokens(t *testing.T) {
@@ -114,6 +129,7 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesCachedTokens(t *tes
 	if gotCachedTokens := gjson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
+	assertCachedCreationTokens(t, out, 31)
 }
 
 func TestConvertClaudeResponseToOpenAINonStream_UsageMergesMessageStartUsage(t *testing.T) {
@@ -134,4 +150,5 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageMergesMessageStartUsage(t *
 	if gotCachedTokens := gjson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); gotCachedTokens != 22000 {
 		t.Fatalf("expected cached_tokens %d, got %d", 22000, gotCachedTokens)
 	}
+	assertCachedCreationTokens(t, out, 31)
 }

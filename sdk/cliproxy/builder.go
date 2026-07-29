@@ -197,6 +197,9 @@ func (b *Builder) Build() (*Service, error) {
 	if err := b.cfg.Codex.ClientMetadata.Validate(); err != nil {
 		return nil, fmt.Errorf("cliproxy: %w", err)
 	}
+	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {
+		return nil, fmt.Errorf("cliproxy: validate credential weights: %w", errValidate)
+	}
 	b.cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {
 		return nil, fmt.Errorf("cliproxy: %w", errResolvePluginsDir)
