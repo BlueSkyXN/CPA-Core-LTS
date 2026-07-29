@@ -29,7 +29,7 @@ features:
       - internal/runtime/executor/helps/usage_helpers.go
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/usage_contract_test.go
-      - internal/api/server.go
+      - internal/api/server_management.go
       - config.example.yaml
     required_markers:
       - usage-statistics-enabled
@@ -63,7 +63,7 @@ features:
       - /v0/management/usage/import
       - /v0/management/usage-statistics-enabled
     core_files:
-      - internal/api/server.go
+      - internal/api/server_management.go
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/config_basic.go
       - internal/api/handlers/management/usage_contract_test.go
@@ -115,8 +115,10 @@ features:
     core_files:
       - internal/managementasset/updater.go
       - internal/managementasset/updater_test.go
-      - internal/api/server.go
+      - internal/api/server_management.go
+      - internal/api/server_routes.go
       - internal/config/config.go
+      - internal/config/config_defaults.go
     required_markers:
       - BlueSkyXN/CPA-Panel-LTS
       - management.html
@@ -268,6 +270,7 @@ features:
       - internal/api/server.go
       - internal/watcher/diff/config_diff.go
       - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_cooldown.go
       - sdk/cliproxy/service.go
       - config.example.yaml
     required_markers:
@@ -297,6 +300,7 @@ features:
       - internal/cache/codex_reasoning_replay_scope.go
       - internal/runtime/executor/codex_model_fallback.go
       - internal/runtime/executor/codex_executor.go
+      - internal/runtime/executor/codex_executor_reasoning.go
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/helps/claude_code_session.go
       - sdk/api/handlers/handlers.go
@@ -377,7 +381,7 @@ features:
       - /v0/management/usage-queue
     core_files:
       - internal/redisqueue/
-      - internal/api/server.go
+      - internal/api/server_management.go
       - internal/api/redis_queue_protocol_integration_test.go
     required_markers:
       - usage-queue

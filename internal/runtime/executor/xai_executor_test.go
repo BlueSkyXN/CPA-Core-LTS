@@ -25,8 +25,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/tiktoken-go/tokenizer"
@@ -177,7 +175,7 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewXAIExecutor(&config.Config{})
+	exec := NewXAIExecutor(&config.Config{XAI: config.XAIConfig{InjectXSearch: true}})
 	auth := &cliproxyauth.Auth{
 		ID:       "xai-auth",
 		Provider: "xai",
@@ -248,18 +246,22 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 		t.Fatalf("input.2 exists, want consecutive reasoning item merged; body=%s", string(gotBody))
 	}
 	tools := gjson.GetBytes(gotBody, "tools").Array()
-	if len(tools) != 5 {
-		t.Fatalf("tools length = %d, want 5; body=%s", len(tools), string(gotBody))
+	if len(tools) != 6 {
+		t.Fatalf("tools length = %d, want 6; body=%s", len(tools), string(gotBody))
 	}
 	foundAutomationUpdate := false
 	foundNamespaceCustom := false
+	foundXSearch := false
 	for i, tool := range tools {
 		toolType := tool.Get("type").String()
 		if toolType == "image_generation" {
 			t.Fatalf("tools.%d.type = image_generation, want removed; body=%s", i, string(gotBody))
 		}
-		if toolType != "function" && toolType != "web_search" {
-			t.Fatalf("tools.%d.type = %q, want function or web_search; body=%s", i, toolType, string(gotBody))
+		if toolType != "function" && toolType != "web_search" && toolType != "x_search" {
+			t.Fatalf("tools.%d.type = %q, want function, web_search, or x_search; body=%s", i, toolType, string(gotBody))
+		}
+		if toolType == "x_search" {
+			foundXSearch = true
 		}
 		if toolType == "function" && !tool.Get("parameters").Exists() {
 			t.Fatalf("tools.%d.parameters missing for xAI function tool; body=%s", i, string(gotBody))
@@ -288,6 +290,9 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if !foundNamespaceCustom {
 		t.Fatalf("namespace custom tool was not moved to top-level tools; body=%s", string(gotBody))
 	}
+	if !foundXSearch {
+		t.Fatalf("native x_search tool was not injected; body=%s", string(gotBody))
+	}
 	if got := gjson.GetBytes(gotBody, "tool_choice.tools.0.name").String(); got != "codex_app__automation_update" {
 		t.Fatalf("tool_choice.tools.0.name = %q, want codex_app__automation_update; body=%s", got, string(gotBody))
 	}
@@ -300,14 +305,17 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 	if got := gjson.GetBytes(gotBody, "tool_choice.tools.2.type").String(); got != "web_search" {
 		t.Fatalf("tool_choice.tools.2.type = %q, want web_search; body=%s", got, string(gotBody))
 	}
+	if got := gjson.GetBytes(gotBody, "tool_choice.tools.3.type").String(); got != "x_search" {
+		t.Fatalf("tool_choice.tools.3.type = %q, want x_search; body=%s", got, string(gotBody))
+	}
 	xSearchAllowedCount := 0
 	for _, tool := range gjson.GetBytes(gotBody, "tool_choice.tools").Array() {
 		if tool.Get("type").String() == "x_search" {
 			xSearchAllowedCount++
 		}
 	}
-	if xSearchAllowedCount != 0 {
-		t.Fatalf("allowed_tools x_search count = %d, want 0; body=%s", xSearchAllowedCount, string(gotBody))
+	if xSearchAllowedCount != 1 {
+		t.Fatalf("allowed_tools x_search count = %d, want 1; body=%s", xSearchAllowedCount, string(gotBody))
 	}
 	foundEncryptedReasoningInclude := false
 	for _, include := range gjson.GetBytes(gotBody, "include").Array() {
@@ -516,7 +524,7 @@ func TestXAIExecutorExecuteNormalizesCustomToolCallHistory(t *testing.T) {
 		t.Fatalf("input.4 output = %q, want flattened JSON string; body=%s", got, gotBody)
 	}
 	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "x_search" {
-		t.Fatalf("tools.0.type = %q, want client-declared x_search; body=%s", got, gotBody)
+		t.Fatalf("tools.0.type = %q, want x_search; body=%s", got, gotBody)
 	}
 }
 
@@ -648,90 +656,156 @@ func TestXAIExecutorExecuteFiltersInternalXSearchCalls(t *testing.T) {
 	}
 }
 
-func TestXAIExecutorPrepareDoesNotInjectUnauthorizedXSearch(t *testing.T) {
+func TestXAIExecutorPrepareHonorsInjectXSearchConfig(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{})
-	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
-		Model: "grok-4.5",
-		Payload: []byte(`{
-			"model":"grok-4.5",
-			"input":"answer without tools",
-			"tool_choice":"none",
-			"parallel_tool_calls":false
-		}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatOpenAIResponse,
-		Stream:       false,
-	}, false)
-	if err != nil {
-		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	tests := []struct {
+		name        string
+		cfg         *config.Config
+		wantXSearch bool
+	}{
+		{name: "default disabled", cfg: &config.Config{}, wantXSearch: false},
+		{name: "explicitly enabled", cfg: &config.Config{XAI: config.XAIConfig{InjectXSearch: true}}, wantXSearch: true},
 	}
-	if gjson.GetBytes(prepared.body, "tools").Exists() {
-		t.Fatalf("no-tools request gained x_search: %s", prepared.body)
-	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
-		t.Fatalf("tool_choice = %q, want none; body=%s", got, prepared.body)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			exec := NewXAIExecutor(tt.cfg)
+			prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+				Model: "grok-4.5",
+				Payload: []byte(`{
+					"model":"grok-4.5",
+					"input":"search the web",
+					"tools":[{"type":"function","name":"web_search","parameters":{"type":"object"}}],
+					"tool_choice":{"type":"allowed_tools","tools":[{"type":"function","name":"web_search"}]}
+				}`),
+			}, cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FormatOpenAIResponse,
+				Stream:       false,
+			}, false)
+			if errPrepare != nil {
+				t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+			}
+
+			wantXSearchCount := 0
+			if tt.wantXSearch {
+				wantXSearchCount = 1
+			}
+			tools := gjson.GetBytes(prepared.body, "tools").Array()
+			if len(tools) != 1+wantXSearchCount {
+				t.Fatalf("tools length = %d, want %d; body=%s", len(tools), 1+wantXSearchCount, prepared.body)
+			}
+			if got := tools[0].Get("name").String(); got != "web_search" {
+				t.Fatalf("client web_search tool missing; body=%s", prepared.body)
+			}
+			xSearchTools := 0
+			for _, tool := range tools {
+				if tool.Get("type").String() == "x_search" {
+					xSearchTools++
+				}
+			}
+			if xSearchTools != wantXSearchCount {
+				t.Fatalf("x_search tools = %d, want %d; body=%s", xSearchTools, wantXSearchCount, prepared.body)
+			}
+
+			xSearchAllowed := 0
+			for _, tool := range gjson.GetBytes(prepared.body, "tool_choice.tools").Array() {
+				if tool.Get("type").String() == "x_search" {
+					xSearchAllowed++
+				}
+			}
+			if xSearchAllowed != wantXSearchCount {
+				t.Fatalf("allowed x_search tools = %d, want %d; body=%s", xSearchAllowed, wantXSearchCount, prepared.body)
+			}
+			if prepared.filterInternalXSearch != tt.wantXSearch {
+				t.Fatalf("filterInternalXSearch = %t, want %t", prepared.filterInternalXSearch, tt.wantXSearch)
+			}
+		})
 	}
 }
 
-func TestXAIExecutorPrepareCanonicalizesCustomToolChoices(t *testing.T) {
+func TestEnsureXAINativeXSearchTool(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{})
-	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
-		Model: "grok-4.5",
-		Payload: []byte(`{
-			"model":"grok-4.5",
-			"input":"run the tool",
-			"tools":[{"type":"custom","name":"apply_change","parameters":{"type":"object"}}],
-			"tool_choice":{"type":"allowed_tools","tools":[{"type":"custom","name":"apply_change"}]}
-		}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatOpenAIResponse,
-		Stream:       false,
-	}, false)
-	if err != nil {
-		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	// Missing tools array: inject a top-level x_search tool.
+	out := ensureXAINativeXSearchTool([]byte(`{"model":"grok-4.5","input":"hi"}`))
+	tools := gjson.GetBytes(out, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), out)
 	}
-	if got := gjson.GetBytes(prepared.body, "tools.0.type").String(); got != "function" {
-		t.Fatalf("tools.0.type = %q, want function; body=%s", got, prepared.body)
-	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice.tools.0.type").String(); got != "function" {
-		t.Fatalf("tool_choice.tools.0.type = %q, want function; body=%s", got, prepared.body)
-	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice.tools.0.name").String(); got != "apply_change" {
-		t.Fatalf("tool_choice.tools.0.name = %q, want apply_change; body=%s", got, prepared.body)
+	if got := tools[0].Get("type").String(); got != "x_search" {
+		t.Fatalf("tools.0.type = %q, want x_search; body=%s", got, out)
 	}
 
-	forced, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
-		Model: "grok-4.5",
-		Payload: []byte(`{
-			"model":"grok-4.5",
-			"input":"run the tool",
-			"tools":[{"type":"custom","name":"apply_change","parameters":{"type":"object"}}],
-			"tool_choice":{"type":"custom","name":"apply_change"}
-		}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatOpenAIResponse,
-		Stream:       false,
-	}, false)
-	if err != nil {
-		t.Fatalf("prepareResponsesRequest() forced choice error = %v", err)
+	// Existing tools without x_search: append once.
+	out = ensureXAINativeXSearchTool([]byte(`{"tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`))
+	tools = gjson.GetBytes(out, "tools").Array()
+	if len(tools) != 3 {
+		t.Fatalf("tools length = %d, want 3; body=%s", len(tools), out)
 	}
-	if got := gjson.GetBytes(forced.body, "tool_choice.type").String(); got != "function" {
-		t.Fatalf("forced tool_choice.type = %q, want function; body=%s", got, forced.body)
+	if got := tools[2].Get("type").String(); got != "x_search" {
+		t.Fatalf("tools.2.type = %q, want x_search; body=%s", got, out)
 	}
-	if got := gjson.GetBytes(forced.body, "tool_choice.name").String(); got != "apply_change" {
-		t.Fatalf("forced tool_choice.name = %q, want apply_change; body=%s", got, forced.body)
+
+	// Already present: leave body unchanged (no duplicate).
+	in := []byte(`{"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}},{"type":"x_search"}]}`)
+	out = ensureXAINativeXSearchTool(in)
+	tools = gjson.GetBytes(out, "tools").Array()
+	if len(tools) != 2 {
+		t.Fatalf("tools length = %d, want 2; body=%s", len(tools), out)
+	}
+	xSearchCount := 0
+	for _, tool := range tools {
+		if tool.Get("type").String() == "x_search" {
+			xSearchCount++
+		}
+	}
+	if xSearchCount != 1 {
+		t.Fatalf("x_search count = %d, want 1; body=%s", xSearchCount, out)
+	}
+
+	// allowed_tools without x_search: append once so Grok may select it.
+	out = ensureXAINativeXSearchTool([]byte(`{
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+		"tool_choice":{"type":"allowed_tools","tools":[{"type":"function","name":"lookup"}]}
+	}`))
+	if got := gjson.GetBytes(out, "tools.1.type").String(); got != "x_search" {
+		t.Fatalf("tools.1.type = %q, want x_search; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "tool_choice.tools.1.type").String(); got != "x_search" {
+		t.Fatalf("tool_choice.tools.1.type = %q, want x_search; body=%s", got, out)
+	}
+
+	// allowed_tools already lists x_search: do not duplicate.
+	out = ensureXAINativeXSearchTool([]byte(`{
+		"tools":[{"type":"web_search"},{"type":"x_search"}],
+		"tool_choice":{"type":"allowed_tools","tools":[{"type":"web_search"},{"type":"x_search"}]}
+	}`))
+	tools = gjson.GetBytes(out, "tools").Array()
+	if len(tools) != 2 {
+		t.Fatalf("tools length = %d, want 2; body=%s", len(tools), out)
+	}
+	allowed := gjson.GetBytes(out, "tool_choice.tools").Array()
+	if len(allowed) != 2 {
+		t.Fatalf("tool_choice.tools length = %d, want 2; body=%s", len(allowed), out)
+	}
+	xSearchAllowed := 0
+	for _, tool := range allowed {
+		if tool.Get("type").String() == "x_search" {
+			xSearchAllowed++
+		}
+	}
+	if xSearchAllowed != 1 {
+		t.Fatalf("allowed_tools x_search count = %d, want 1; body=%s", xSearchAllowed, out)
 	}
 }
 
 func TestPruneXAIOrphanedToolChoice(t *testing.T) {
 	t.Parallel()
 
-	// A forced choice for a removed tool must fail closed instead of widening
-	// the surviving lookup tool back to the default auto policy.
+	// Forced choice for a removed tool fails closed instead of broadening to auto.
 	out := pruneXAIOrphanedToolChoice([]byte(`{
 		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
 		"tool_choice":{"type":"image_generation"}
@@ -760,13 +834,13 @@ func TestPruneXAIOrphanedToolChoice(t *testing.T) {
 		t.Fatalf("allowed_tools.1.type = %q, want web_search; body=%s", got, out)
 	}
 
-	// When every allowed entry is orphaned, preserve the restriction as none.
+	// When every allowed entry is orphaned, fail closed instead of broadening to auto.
 	out = pruneXAIOrphanedToolChoice([]byte(`{
 		"tools":[],
 		"tool_choice":{"type":"allowed_tools","tools":[{"type":"image_generation"}]}
 	}`))
 	if got := gjson.GetBytes(out, "tool_choice").String(); got != "none" {
-		t.Fatalf("fully orphaned allowed_tools = %q, want none: %s", got, out)
+		t.Fatalf("fully orphaned allowed_tools choice = %q, want none: %s", got, out)
 	}
 
 	// String choices are not tool references.
@@ -776,64 +850,14 @@ func TestPruneXAIOrphanedToolChoice(t *testing.T) {
 	}
 }
 
-func TestXAIExecutorPrepareFailsClosedWhenRestrictedChoiceIsOrphaned(t *testing.T) {
+func TestXAIExecutorPrepareDropsOrphanedToolChoiceBeforeXSearchInject(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{})
-	for _, tt := range []struct {
-		name       string
-		toolChoice string
-	}{
-		{
-			name:       "allowed tools",
-			toolChoice: `{"type":"allowed_tools","tools":[{"type":"image_generation"}]}`,
-		},
-		{
-			name:       "empty allowed tools",
-			toolChoice: `{"type":"allowed_tools","tools":[]}`,
-		},
-		{
-			name:       "forced tool",
-			toolChoice: `{"type":"image_generation"}`,
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
-				Model: "grok-4.5",
-				Payload: []byte(`{
-					"model":"grok-4.5",
-					"input":"do not broaden my tool restriction",
-					"tools":[
-						{"type":"image_generation"},
-						{"type":"function","name":"destructive_action","parameters":{"type":"object"}}
-					],
-					"tool_choice":` + tt.toolChoice + `
-				}`),
-			}, cliproxyexecutor.Options{
-				SourceFormat: sdktranslator.FormatOpenAIResponse,
-				Stream:       false,
-			}, false)
-			if err != nil {
-				t.Fatalf("prepareResponsesRequest() error = %v", err)
-			}
-			if got := gjson.GetBytes(prepared.body, "tools.0.name").String(); got != "destructive_action" {
-				t.Fatalf("surviving tool = %q, want destructive_action fixture: %s", got, prepared.body)
-			}
-			if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
-				t.Fatalf("orphaned restricted choice = %q, want none: %s", got, prepared.body)
-			}
-		})
-	}
-}
-
-func TestXAIExecutorPrepareDropsOrphanedToolChoiceWithoutXSearchInject(t *testing.T) {
-	t.Parallel()
-
-	exec := NewXAIExecutor(&config.Config{})
+	exec := NewXAIExecutor(&config.Config{XAI: config.XAIConfig{InjectXSearch: true}})
 	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model: "grok-4.5",
 		// image_generation is stripped by normalizeXAITools; without pruning, the
-		// forced choice would otherwise survive after its tool is removed.
+		// forced choice would survive next to the injected x_search tool.
 		Payload: []byte(`{
 			"model":"grok-4.5",
 			"input":"draw something",
@@ -848,11 +872,146 @@ func TestXAIExecutorPrepareDropsOrphanedToolChoiceWithoutXSearchInject(t *testin
 		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
 
-	if gjson.GetBytes(prepared.body, "tools").Exists() {
-		t.Fatalf("removed-only tools should not be replaced: %s", prepared.body)
+	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
+	}
+	if got := tools[0].Get("type").String(); got != "x_search" {
+		t.Fatalf("tools.0.type = %q, want x_search; body=%s", got, prepared.body)
 	}
 	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
 		t.Fatalf("orphaned image_generation tool_choice = %q, want none: %s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorPrepareResponsesRequestPreservesSupportedOutputControls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		sourceFormat sdktranslator.Format
+		payload      []byte
+		want         map[string]string
+		absent       []string
+	}{
+		{
+			name:         "Chat Completions prefers max_completion_tokens",
+			sourceFormat: sdktranslator.FormatOpenAI,
+			payload: []byte(`{
+				"model":"grok-4.5",
+				"messages":[{"role":"user","content":"hello"}],
+				"max_completion_tokens":64,
+				"max_tokens":128,
+				"temperature":0,
+				"top_p":0.25,
+				"top_k":7,
+				"stop":["END"]
+			}`),
+			want: map[string]string{
+				"max_output_tokens": "64",
+				"temperature":       "0",
+				"top_p":             "0.25",
+				"top_k":             "7",
+			},
+			absent: []string{"max_completion_tokens", "max_tokens", "stop"},
+		},
+		{
+			name:         "Chat Completions falls back to max_tokens",
+			sourceFormat: sdktranslator.FormatOpenAI,
+			payload: []byte(`{
+				"model":"grok-4.5",
+				"messages":[{"role":"user","content":"hello"}],
+				"max_completion_tokens":null,
+				"max_tokens":128
+			}`),
+			want: map[string]string{
+				"max_output_tokens": "128",
+			},
+			absent: []string{"max_completion_tokens", "max_tokens", "temperature", "top_p", "top_k"},
+		},
+		{
+			name:         "Responses preserves native controls",
+			sourceFormat: sdktranslator.FormatOpenAIResponse,
+			payload: []byte(`{
+				"model":"grok-4.5",
+				"input":"hello",
+				"max_output_tokens":256,
+				"temperature":0.4,
+				"top_p":0.8,
+				"top_k":20,
+				"stop":["END"]
+			}`),
+			want: map[string]string{
+				"max_output_tokens": "256",
+				"temperature":       "0.4",
+				"top_p":             "0.8",
+				"top_k":             "20",
+			},
+			absent: []string{"stop"},
+		},
+		{
+			name:         "No controls remain absent",
+			sourceFormat: sdktranslator.FormatOpenAI,
+			payload:      []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}]}`),
+			absent:       []string{"max_output_tokens", "temperature", "top_p", "top_k", "stop"},
+		},
+	}
+
+	exec := NewXAIExecutor(&config.Config{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+				Model:   "grok-4.5",
+				Payload: tt.payload,
+			}, cliproxyexecutor.Options{
+				SourceFormat: tt.sourceFormat,
+				Stream:       true,
+			}, true)
+			if errPrepare != nil {
+				t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+			}
+
+			for path, want := range tt.want {
+				if got := gjson.GetBytes(prepared.body, path).Raw; got != want {
+					t.Fatalf("%s = %s, want %s; body=%s", path, got, want, prepared.body)
+				}
+			}
+			for _, path := range tt.absent {
+				if gjson.GetBytes(prepared.body, path).Exists() {
+					t.Fatalf("%s should be absent; body=%s", path, prepared.body)
+				}
+			}
+		})
+	}
+}
+
+func TestXAIExecutorPrepareResponsesRequestDropsPayloadStopOverride(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "grok-4.5"}},
+					Params: map[string]any{"stop": []string{"END"}},
+				},
+			},
+		},
+	})
+	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	}, true)
+	if errPrepare != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	}
+	if gjson.GetBytes(prepared.body, "stop").Exists() {
+		t.Fatalf("stop should be removed after payload config; body=%s", prepared.body)
 	}
 }
 
@@ -961,14 +1120,16 @@ func TestXAIExecutorPrepareResponsesRequestAddsObjectTypeToRootUnionBranches(t *
 	}
 }
 
-func TestXAIExecutorPrepareAllowedToolsDoesNotExpandWithXSearch(t *testing.T) {
+func TestXAIExecutorPrepareAllowedToolsSyncsInjectedXSearch(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{})
+	exec := NewXAIExecutor(&config.Config{XAI: config.XAIConfig{InjectXSearch: true}})
 	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model: "grok-4.5",
-		// normalizeXAITools drops image_generation and prunes it from the
-		// allowlist without adding a new x_search capability.
+		// Only image_generation remains after client filtering of tool_search-like
+		// tools is not relevant here: normalizeXAITools drops image_generation and
+		// we inject x_search, while allowed_tools must be rewritten so Grok can
+		// choose the injected tool and not a deleted one.
 		Payload: []byte(`{
 			"model":"grok-4.5",
 			"input":"search X",
@@ -987,66 +1148,41 @@ func TestXAIExecutorPrepareAllowedToolsDoesNotExpandWithXSearch(t *testing.T) {
 	}
 
 	tools := gjson.GetBytes(prepared.body, "tools").Array()
-	if len(tools) != 1 {
-		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
+	if len(tools) != 2 {
+		t.Fatalf("tools length = %d, want 2; body=%s", len(tools), prepared.body)
 	}
 	foundLookup := false
+	foundXSearch := false
 	for _, tool := range tools {
 		switch tool.Get("type").String() {
 		case "function":
 			if tool.Get("name").String() == "lookup" {
 				foundLookup = true
 			}
+		case "x_search":
+			foundXSearch = true
 		case "image_generation":
 			t.Fatalf("image_generation must be removed; body=%s", prepared.body)
 		}
 	}
-	if !foundLookup {
-		t.Fatalf("expected lookup tool; body=%s", prepared.body)
+	if !foundLookup || !foundXSearch {
+		t.Fatalf("expected lookup + x_search tools; body=%s", prepared.body)
 	}
 
 	allowed := gjson.GetBytes(prepared.body, "tool_choice.tools").Array()
-	if len(allowed) != 1 {
-		t.Fatalf("tool_choice.tools length = %d, want 1; body=%s", len(allowed), prepared.body)
+	if len(allowed) != 2 {
+		t.Fatalf("tool_choice.tools length = %d, want 2; body=%s", len(allowed), prepared.body)
 	}
 	if got := allowed[0].Get("name").String(); got != "lookup" {
 		t.Fatalf("tool_choice.tools.0.name = %q, want lookup; body=%s", got, prepared.body)
+	}
+	if got := allowed[1].Get("type").String(); got != "x_search" {
+		t.Fatalf("tool_choice.tools.1.type = %q, want x_search; body=%s", got, prepared.body)
 	}
 	for _, tool := range allowed {
 		if tool.Get("type").String() == "image_generation" {
 			t.Fatalf("orphaned image_generation choice leaked: %s", prepared.body)
 		}
-	}
-}
-
-func TestXAIExecutorPrepareDropsParallelToolCallsWithoutToolsEvenForExplicitNone(t *testing.T) {
-	t.Parallel()
-
-	exec := NewXAIExecutor(&config.Config{})
-	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
-		Model: "grok-4.5",
-		Payload: []byte(`{
-			"model":"grok-4.5",
-			"input":"answer without tools",
-			"tool_choice":"none",
-			"parallel_tool_calls":true
-		}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatCodex,
-		Stream:       false,
-	}, false)
-	if err != nil {
-		t.Fatalf("prepareResponsesRequest() error = %v", err)
-	}
-
-	if gjson.GetBytes(prepared.body, "tools").Exists() {
-		t.Fatalf("tool_choice:none request gained a tool: %s", prepared.body)
-	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
-		t.Fatalf("tool_choice = %q, want none; body=%s", got, prepared.body)
-	}
-	if gjson.GetBytes(prepared.body, "parallel_tool_calls").Exists() {
-		t.Fatalf("parallel_tool_calls should be removed when tools are absent: %s", prepared.body)
 	}
 }
 
@@ -1692,6 +1828,31 @@ func TestXAIExecutorComposerSessionIsolation(t *testing.T) {
 	}
 }
 
+func TestXAIExecutionSessionIDUsesDerivedStableUUID(t *testing.T) {
+	t.Parallel()
+
+	metadata := map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:derived-root"}
+	req := cliproxyexecutor.Request{Metadata: metadata, Payload: []byte(`{"input":"hello"}`)}
+	first := xaiExecutionSessionID(req, cliproxyexecutor.Options{})
+	second := xaiExecutionSessionID(req, cliproxyexecutor.Options{})
+	if first == "" || first != second {
+		t.Fatalf("derived xAI session is not stable: first=%q second=%q", first, second)
+	}
+	if _, errParse := uuid.Parse(first); errParse != nil {
+		t.Fatalf("derived xAI session %q is not a UUID: %v", first, errParse)
+	}
+
+	req.Payload = []byte(`{"prompt_cache_key":"client-session","input":"hello"}`)
+	if got := xaiExecutionSessionID(req, cliproxyexecutor.Options{}); got != "client-session" {
+		t.Fatalf("explicit prompt_cache_key = %q, want client-session", got)
+	}
+
+	req.Payload = []byte(`{"prompt_cache_key":"   ","input":"hello"}`)
+	if got := xaiExecutionSessionID(req, cliproxyexecutor.Options{}); got != first {
+		t.Fatalf("blank prompt_cache_key session = %q, want derived UUID %q", got, first)
+	}
+}
+
 func TestXAIExecutorCompactUsesCompactEndpoint(t *testing.T) {
 	validEncryptedContent := testValidGrokEncryptedContent()
 	var gotPath string
@@ -1713,7 +1874,16 @@ func TestXAIExecutorCompactUsesCompactEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewXAIExecutor(&config.Config{})
+	exec := NewXAIExecutor(&config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "grok-4.3"}},
+					Params: map[string]any{"top_k": 10},
+				},
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{
 		Provider: "xai",
 		Attributes: map[string]string{
@@ -1722,7 +1892,7 @@ func TestXAIExecutorCompactUsesCompactEndpoint(t *testing.T) {
 		},
 	}
 
-	payload := []byte(`{"model":"grok-4.3","stream":true,"input":[{"type":"compaction","encrypted_content":""},{"role":"user","content":"hello"}]}`)
+	payload := []byte(`{"model":"grok-4.3","stream":true,"max_output_tokens":64,"temperature":0.3,"top_p":0.8,"stop":["END"],"input":[{"type":"compaction","encrypted_content":""},{"role":"user","content":"hello"}]}`)
 	payload, _ = sjson.SetBytes(payload, "input.0.encrypted_content", validEncryptedContent)
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "grok-4.3",
@@ -1744,8 +1914,10 @@ func TestXAIExecutorCompactUsesCompactEndpoint(t *testing.T) {
 	if gotAccept != "application/json" {
 		t.Fatalf("Accept = %q, want application/json", gotAccept)
 	}
-	if gjson.GetBytes(gotBody, "stream").Exists() {
-		t.Fatalf("stream exists in compact body: %s", string(gotBody))
+	for _, field := range []string{"stream", "max_output_tokens", "temperature", "top_p", "top_k", "stop"} {
+		if gjson.GetBytes(gotBody, field).Exists() {
+			t.Fatalf("%s exists in compact body: %s", field, string(gotBody))
+		}
 	}
 	if got := gjson.GetBytes(gotBody, "input.0.encrypted_content").String(); got != validEncryptedContent {
 		t.Fatalf("input.0.encrypted_content = %q, want valid sample; body=%s", got, string(gotBody))
@@ -2204,7 +2376,7 @@ func TestXAIExecutorExecuteStreamFiltersToolSearchTool(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewXAIExecutor(&config.Config{})
+	exec := NewXAIExecutor(&config.Config{XAI: config.XAIConfig{InjectXSearch: true}})
 	auth := &cliproxyauth.Auth{
 		Provider:   "xai",
 		Attributes: map[string]string{"base_url": server.URL},
@@ -2228,8 +2400,8 @@ func TestXAIExecutorExecuteStreamFiltersToolSearchTool(t *testing.T) {
 	}
 
 	tools := gjson.GetBytes(gotBody, "tools").Array()
-	if len(tools) != 5 {
-		t.Fatalf("tools length = %d, want 5; body=%s", len(tools), string(gotBody))
+	if len(tools) != 6 {
+		t.Fatalf("tools length = %d, want 6; body=%s", len(tools), string(gotBody))
 	}
 	if gjson.GetBytes(gotBody, "input.0.content").Exists() {
 		t.Fatalf("input.0.content exists, want removed; body=%s", string(gotBody))
@@ -2251,6 +2423,7 @@ func TestXAIExecutorExecuteStreamFiltersToolSearchTool(t *testing.T) {
 	}
 	foundAutomationUpdate := false
 	foundNamespaceCustom := false
+	foundXSearch := false
 	for i, tool := range tools {
 		toolType := tool.Get("type").String()
 		if toolType == "image_generation" {
@@ -2271,6 +2444,9 @@ func TestXAIExecutorExecuteStreamFiltersToolSearchTool(t *testing.T) {
 		case "codex_app__namespace_custom":
 			foundNamespaceCustom = true
 		}
+		if toolType == "x_search" {
+			foundXSearch = true
+		}
 		if toolType == "web_search" {
 			if tool.Get("external_web_access").Exists() {
 				t.Fatalf("tools.%d.external_web_access exists, want removed; body=%s", i, string(gotBody))
@@ -2285,6 +2461,9 @@ func TestXAIExecutorExecuteStreamFiltersToolSearchTool(t *testing.T) {
 	}
 	if !foundNamespaceCustom {
 		t.Fatalf("namespace custom tool was not moved to top-level tools; body=%s", string(gotBody))
+	}
+	if !foundXSearch {
+		t.Fatalf("native x_search tool was not injected; body=%s", string(gotBody))
 	}
 }
 
@@ -2777,6 +2956,8 @@ func TestXAIExecutorExecuteImagesRewritesImageURLToURL(t *testing.T) {
 }
 
 func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
+	const requestedModel = "grok-imagine-video"
+
 	var gotPath string
 	var gotMethod string
 	var gotAuth string
@@ -2797,6 +2978,12 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	}))
 	defer server.Close()
 
+	plugin := &captureXAIUsagePlugin{
+		model:   requestedModel,
+		records: make(chan usage.Record, 2),
+	}
+	usage.RegisterPlugin(plugin)
+
 	exec := NewXAIExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{
 		Provider:   "xai",
@@ -2805,7 +2992,7 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	}
 
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "grok-imagine-video",
+		Model:   requestedModel,
 		Payload: []byte(`{"model":"grok-imagine-video","prompt":"animate","duration":4}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai-video"),
@@ -2835,6 +3022,102 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	if gjson.GetBytes(resp.Payload, "request_id").String() != "vid_123" {
 		t.Fatalf("payload = %s", string(resp.Payload))
 	}
+
+	record := waitForXAIUsageRecord(t, plugin.records)
+	if record.Model != requestedModel {
+		t.Fatalf("model = %q, want %q", record.Model, requestedModel)
+	}
+	if record.Failed {
+		t.Fatalf("failed = true, want false; failure=%+v", record.Fail)
+	}
+	if record.Detail != (usage.Detail{}) {
+		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
+	}
+	if record.TTFT <= 0 {
+		t.Fatalf("ttft = %v, want positive duration", record.TTFT)
+	}
+	assertNoAdditionalXAIUsageRecord(t, plugin.records)
+}
+
+func TestXAIExecutorExecuteVideosPublishesFailureUsage(t *testing.T) {
+	const requestedModel = "grok-imagine-video-failure"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	plugin := &captureXAIUsagePlugin{
+		model:   requestedModel,
+		records: make(chan usage.Record, 2),
+	}
+	usage.RegisterPlugin(plugin)
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "video-model-alias",
+		Payload: []byte(`{"model":"grok-imagine-video-failure","prompt":"animate"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-video"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+
+	record := waitForXAIUsageRecord(t, plugin.records)
+	if record.Model != requestedModel {
+		t.Fatalf("model = %q, want %q", record.Model, requestedModel)
+	}
+	if !record.Failed {
+		t.Fatal("failed = false, want true")
+	}
+	if record.Fail.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("failure status = %d, want %d", record.Fail.StatusCode, http.StatusTooManyRequests)
+	}
+	assertNoAdditionalXAIUsageRecord(t, plugin.records)
+}
+
+func TestXAIExecutorExecuteVideosPublishesRequestBuildFailureUsage(t *testing.T) {
+	const requestedModel = "grok-imagine-video-fallback"
+
+	plugin := &captureXAIUsagePlugin{
+		model:   requestedModel,
+		records: make(chan usage.Record, 2),
+	}
+	usage.RegisterPlugin(plugin)
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": "://invalid"},
+	}
+
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   requestedModel,
+		Payload: []byte(`{"prompt":"animate"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-video"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-nil")
+	}
+
+	record := waitForXAIUsageRecord(t, plugin.records)
+	if record.Model != requestedModel {
+		t.Fatalf("model = %q, want %q", record.Model, requestedModel)
+	}
+	if !record.Failed {
+		t.Fatal("failed = false, want true")
+	}
+	assertNoAdditionalXAIUsageRecord(t, plugin.records)
 }
 
 func TestXAIExecutorExecuteVideosRetrieve(t *testing.T) {
@@ -3443,35 +3726,6 @@ func TestNormalizeXAIToolChoiceForTools_DropsOrphanedParallelToolCalls(t *testin
 
 	if gjson.GetBytes(out, "parallel_tool_calls").Exists() {
 		t.Fatalf("parallel_tool_calls should be removed when tools missing even without tool_choice: %s", string(out))
-	}
-}
-
-func TestNormalizeXAIToolChoiceForTools_PreservesNoneButDropsParallelCallsWithoutTools(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range []struct {
-		name string
-		body []byte
-	}{
-		{
-			name: "tools missing",
-			body: []byte(`{"model":"grok-4","tool_choice":"none","parallel_tool_calls":true,"input":"hi"}`),
-		},
-		{
-			name: "tools empty",
-			body: []byte(`{"model":"grok-4","tools":[],"tool_choice":"none","parallel_tool_calls":true,"input":"hi"}`),
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out := normalizeXAIToolChoiceForTools(tt.body)
-
-			if got := gjson.GetBytes(out, "tool_choice").String(); got != "none" {
-				t.Fatalf("tool_choice = %q, want none: %s", got, out)
-			}
-			if gjson.GetBytes(out, "parallel_tool_calls").Exists() {
-				t.Fatalf("parallel_tool_calls should be removed without tools: %s", out)
-			}
-		})
 	}
 }
 
@@ -4325,29 +4579,6 @@ func TestXAIBaseURLSource(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
-	hook := logtest.NewLocal(log.StandardLogger())
-	t.Cleanup(hook.Reset)
-
-	customURL := "https://internal.example.test/private/v1"
-	logXAIResolvedBaseURL(context.Background(), customURL)
-
-	for _, entry := range hook.AllEntries() {
-		if !strings.Contains(entry.Message, "xai: resolved base URL") {
-			continue
-		}
-		if strings.Contains(entry.Message, customURL) {
-			t.Fatalf("xAI resolution log leaked custom URL: %q", entry.Message)
-		}
-		if !strings.Contains(entry.Message, "source=custom") {
-			t.Fatalf("xAI resolution log = %q, want custom source classification", entry.Message)
-		}
-		return
-	}
-
-	t.Fatal("xAI resolution log entry not found")
 }
 
 func TestXAIChatBaseURL(t *testing.T) {

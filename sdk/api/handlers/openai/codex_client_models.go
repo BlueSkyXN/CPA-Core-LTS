@@ -25,13 +25,14 @@ var (
 )
 
 var codexClientAllowedReasoningLevels = map[string]struct{}{
-	"none":   {},
-	"low":    {},
-	"medium": {},
-	"high":   {},
-	"xhigh":  {},
-	"max":    {},
-	"ultra":  {},
+	"none":    {},
+	"minimal": {},
+	"low":     {},
+	"medium":  {},
+	"high":    {},
+	"xhigh":   {},
+	"max":     {},
+	"ultra":   {},
 }
 
 func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
@@ -409,6 +410,8 @@ func codexClientReasoningDescription(level string) string {
 	switch level {
 	case "none":
 		return "No reasoning"
+	case "minimal":
+		return "Fastest responses with minimal reasoning"
 	case "low":
 		return "Fast responses with lighter reasoning"
 	case "medium":

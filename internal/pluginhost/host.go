@@ -857,6 +857,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.RequestTranslator != nil ||
 		caps.RequestNormalizer != nil ||
 		hasRequestInterceptorCapability(caps.RequestInterceptor) ||
+		caps.RequestLifecyclePlugin != nil ||
 		caps.ResponseTranslator != nil ||
 		caps.ResponseBeforeTranslator != nil ||
 		caps.ResponseAfterTranslator != nil ||

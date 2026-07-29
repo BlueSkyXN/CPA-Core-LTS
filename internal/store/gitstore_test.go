@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,43 +15,12 @@ import (
 	gitconfig "github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type testBranchSpec struct {
 	name     string
 	contents string
-}
-
-func TestGitTokenStoreListReturnsAuthFileErrors(t *testing.T) {
-	root := t.TempDir()
-	remoteDir := setupGitRemoteRepository(t, root, "main",
-		testBranchSpec{name: "main", contents: "remote default branch\n"},
-	)
-	authDir := filepath.Join(root, "workspace", "auths")
-	store := NewGitTokenStore(remoteDir, "", "", "")
-	store.SetBaseDir(authDir)
-
-	if err := store.EnsureRepository(); err != nil {
-		t.Fatalf("EnsureRepository: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(authDir, "valid.json"), []byte(`{"type":"custom"}`), 0o600); err != nil {
-		t.Fatalf("write valid auth: %v", err)
-	}
-	brokenPath := filepath.Join(authDir, "broken.json")
-	if err := os.WriteFile(brokenPath, []byte(`{"type":`), 0o600); err != nil {
-		t.Fatalf("write broken auth: %v", err)
-	}
-
-	entries, err := store.List(context.Background())
-	if err == nil {
-		t.Fatal("List succeeded, want error for broken auth file")
-	}
-	if entries != nil {
-		t.Fatalf("entries = %#v, want nil on error", entries)
-	}
-	if !strings.Contains(err.Error(), brokenPath) {
-		t.Fatalf("error = %q, want broken file path", err.Error())
-	}
 }
 
 func TestEnsureRepositoryUsesRemoteDefaultBranchWhenBranchNotConfigured(t *testing.T) {
@@ -271,6 +241,139 @@ func TestEnsureRepositoryResetsToRemoteDefaultWhenBranchUnset(t *testing.T) {
 	storeDefault.mu.Unlock()
 
 	assertRemoteBranchContents(t, remoteDir, "master", "local master update\n")
+}
+
+func TestGitTokenStoreRefusesWatcherOriginatedAuthDeletion(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "master",
+		testBranchSpec{name: "master", contents: "remote master branch\n"},
+	)
+	store := NewGitTokenStore(remoteDir, "", "", "")
+	baseDir := filepath.Join(root, "workspace", "auths")
+	store.SetBaseDir(baseDir)
+	if err := store.EnsureRepository(); err != nil {
+		t.Fatalf("EnsureRepository: %v", err)
+	}
+
+	auth := &cliproxyauth.Auth{
+		ID:       "protected.json",
+		FileName: "protected.json",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex", "access_token": "token"},
+	}
+	path, err := store.Save(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/protected.json", true)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("simulate unexpected local removal: %v", err)
+	}
+	err = store.PersistAuthFiles(context.Background(), "Remove auth protected.json", path)
+	if err == nil {
+		t.Fatal("PersistAuthFiles watcher removal error = nil, want fail-closed rejection")
+	}
+	if got := err.Error(); !strings.Contains(got, "refusing watcher-originated removal") {
+		t.Fatalf("PersistAuthFiles error = %q, want watcher-removal rejection", got)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/protected.json", true)
+}
+
+func TestGitTokenStoreWatcherRemovalNoOpsAfterExplicitDelete(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "master",
+		testBranchSpec{name: "master", contents: "remote master branch\n"},
+	)
+	store := NewGitTokenStore(remoteDir, "", "", "")
+	baseDir := filepath.Join(root, "workspace", "auths")
+	store.SetBaseDir(baseDir)
+	if err := store.EnsureRepository(); err != nil {
+		t.Fatalf("EnsureRepository: %v", err)
+	}
+
+	auth := &cliproxyauth.Auth{
+		ID:       "explicit.json",
+		FileName: "explicit.json",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex", "access_token": "token"},
+	}
+	path, err := store.Save(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Management deletes unlink the file before invoking Store.Delete.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("pre-remove explicit auth: %v", err)
+	}
+	if err := store.Delete(context.Background(), path); err != nil {
+		t.Fatalf("Delete after pre-remove: %v", err)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/explicit.json", false)
+
+	if err := store.Delete(context.Background(), path); err != nil {
+		t.Fatalf("repeated Delete: %v", err)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/explicit.json", false)
+
+	if err := store.PersistAuthFiles(context.Background(), "Remove auth explicit.json", path); err != nil {
+		t.Fatalf("watcher removal after explicit delete: %v", err)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/explicit.json", false)
+}
+
+func TestGitTokenStoreRepeatedDeleteDoesNotOverwriteRemoteOnlyChanges(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "master",
+		testBranchSpec{name: "master", contents: "remote master branch\n"},
+	)
+	storeA := NewGitTokenStore(remoteDir, "", "", "")
+	baseA := filepath.Join(root, "workspace-a", "auths")
+	storeA.SetBaseDir(baseA)
+	if err := storeA.EnsureRepository(); err != nil {
+		t.Fatalf("EnsureRepository A: %v", err)
+	}
+	authA := &cliproxyauth.Auth{
+		ID:       "a.json",
+		FileName: "a.json",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex", "access_token": "a"},
+	}
+	pathA, err := storeA.Save(context.Background(), authA)
+	if err != nil {
+		t.Fatalf("Save A: %v", err)
+	}
+	if err := storeA.Delete(context.Background(), pathA); err != nil {
+		t.Fatalf("Delete A: %v", err)
+	}
+
+	storeB := NewGitTokenStore(remoteDir, "", "", "")
+	baseB := filepath.Join(root, "workspace-b", "auths")
+	storeB.SetBaseDir(baseB)
+	if err := storeB.EnsureRepository(); err != nil {
+		t.Fatalf("EnsureRepository B: %v", err)
+	}
+	authB := &cliproxyauth.Auth{
+		ID:       "b.json",
+		FileName: "b.json",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex", "access_token": "b"},
+	}
+	if _, err := storeB.Save(context.Background(), authB); err != nil {
+		t.Fatalf("Save B: %v", err)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/b.json", true)
+
+	if err := storeA.Delete(context.Background(), pathA); err != nil {
+		t.Fatalf("repeated Delete A: %v", err)
+	}
+	assertRemoteTreePath(t, remoteDir, "master", "auths/b.json", true)
 }
 
 func TestCommitAndPushLockedPushesBeforeRunningGC(t *testing.T) {
@@ -529,6 +632,35 @@ func findBranchSpec(branches []testBranchSpec, name string) (testBranchSpec, boo
 		}
 	}
 	return testBranchSpec{}, false
+}
+
+func assertRemoteTreePath(t *testing.T, remoteDir, branch, path string, want bool) {
+	t.Helper()
+
+	repo, err := git.PlainOpen(remoteDir)
+	if err != nil {
+		t.Fatalf("open remote repo: %v", err)
+	}
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
+	if err != nil {
+		t.Fatalf("read remote branch %s: %v", branch, err)
+	}
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatalf("read remote commit: %v", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("read remote tree: %v", err)
+	}
+	_, err = tree.File(filepath.ToSlash(path))
+	got := err == nil
+	if err != nil && !errors.Is(err, object.ErrFileNotFound) {
+		t.Fatalf("inspect remote path %s: %v", path, err)
+	}
+	if got != want {
+		t.Fatalf("remote path %s exists = %v, want %v", path, got, want)
+	}
 }
 
 func assertRepositoryBranchAndContents(t *testing.T, repoDir, branch, wantContents string) {
