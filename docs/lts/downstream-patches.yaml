@@ -628,7 +628,7 @@ patches:
   - id: auth-store-list-error-propagation
     reason: A damaged or unreadable auth JSON file must fail Store.List instead of silently removing that credential from routing, fallback, and usage attribution while startup reports success.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
-    affected_upstream_range: through 53c1e7e2dd6ddf973098a4e685e852aeebed9fe3 (v7.2.92); the File and Git token stores still discard read, JSON decode, and stat errors inside filepath.WalkDir callbacks.
+    affected_upstream_range: through 4a2eb54dc6bf943196be4fb515e6a9407a4db143 (v7.2.105); upstream now validates credential weights but expects FileTokenStore.List to silently skip an invalid persisted plugin source. LTS instead keeps fail-closed list error propagation so damaged JSON, parser failures, and invalid source weights cannot silently remove credentials from routing and attribution.
     files:
       - internal/store/gitstore.go
       - internal/store/gitstore_test.go
@@ -642,6 +642,7 @@ patches:
       - TestGitTokenStoreListReturnsAuthFileErrors
       - TestFileTokenStoreListReturnsAuthFileErrors
       - TestFileTokenStoreListReturnsPluginParserErrors
+      - TestFileTokenStoreListReturnsInvalidPluginSourceWeight
       - TestSynthesizeAuthFilePluginParserErrorDoesNotFallback
     upstream_issue_or_pr: not-filed
     state: required

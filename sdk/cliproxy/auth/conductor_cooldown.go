@@ -86,6 +86,13 @@ func nextTransientErrorRetryAfter(now time.Time) time.Time {
 	return now.Add(time.Duration(seconds) * time.Second)
 }
 
+func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time {
+	if disableCooling {
+		return time.Time{}
+	}
+	return nextTransientErrorRetryAfter(now)
+}
+
 // SetConfig updates the runtime config snapshot used by request-time helpers.
 // Callers should provide the latest config on reload so per-credential alias mapping stays in sync.
 func (m *Manager) SetConfig(cfg *internalconfig.Config) {
@@ -130,6 +137,8 @@ func (m *Manager) SetConfigSnapshot(cfg *internalconfig.Config) bool {
 func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
+	} else {
+		cfg = cfg.CloneForRuntime()
 	}
 	// Publish policy and invalidate old absolute deadlines atomically with
 	// respect to begin/MarkResult, preserving manager -> continuity lock order.
@@ -861,16 +870,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								setModelQuota = true
 							}
 						case 408, 500, 502, 503, 504:
-							if disableCooling {
-								state.NextRetryAfter = time.Time{}
-							} else {
-								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
-							}
+							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+							state.Unavailable = !state.NextRetryAfter.IsZero()
 						default:
-							state.NextRetryAfter = time.Time{}
+							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+							state.Unavailable = !state.NextRetryAfter.IsZero()
 						}
 					}
 
+					if disableCooling && state.NextRetryAfter.IsZero() && state.Quota.NextRecoverAt.IsZero() {
+						state.Unavailable = false
+						state.Quota.Exceeded = false
+					}
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
@@ -1607,6 +1618,12 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	if isRequestScopedResultError(resultErr) {
 		return
 	}
+	defer func() {
+		if disableCooling && auth.NextRetryAfter.IsZero() && auth.Quota.NextRecoverAt.IsZero() {
+			auth.Unavailable = false
+			auth.Quota.Exceeded = false
+		}
+	}()
 	auth.Unavailable = true
 	auth.Status = StatusError
 	auth.UpdatedAt = now
@@ -1688,15 +1705,14 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
-		if disableCooling {
-			auth.NextRetryAfter = time.Time{}
-		} else {
-			auth.NextRetryAfter = nextTransientErrorRetryAfter(now)
-		}
+		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+		auth.Unavailable = !auth.NextRetryAfter.IsZero()
 	default:
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"
 		}
+		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+		auth.Unavailable = !auth.NextRetryAfter.IsZero()
 	}
 }
 

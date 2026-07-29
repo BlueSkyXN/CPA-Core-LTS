@@ -280,6 +280,21 @@ func TestResolveModelAliasPoolFromConfigModels(t *testing.T) {
 	}
 }
 
+func TestResolveModelAliasPoolPrefersExactSuffixedAlias(t *testing.T) {
+	models := []modelAliasEntry{
+		internalconfig.OpenAICompatibilityModel{Name: "base-model", Alias: "public"},
+		internalconfig.OpenAICompatibilityModel{Name: "low-model", Alias: "public(low)", ForceMapping: true},
+	}
+	got := resolveModelAliasPoolFromConfigModels("public(low)", models)
+	if len(got) != 1 || got[0] != "low-model(low)" {
+		t.Fatalf("exact suffixed pool = %v, want [low-model(low)]", got)
+	}
+	result := resolveModelAliasResultFromConfigModels("public(low)", models)
+	if result.UpstreamModel != "low-model(low)" || !result.ForceMapping {
+		t.Fatalf("exact suffixed alias result = %+v, want low-model(low) with force mapping", result)
+	}
+}
+
 func TestManagerExecute_OpenAICompatAliasPoolRotatesWithinAuth(t *testing.T) {
 	alias := "claude-opus-4.66"
 	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
@@ -519,6 +534,27 @@ func TestManagerExecute_OpenAICompatAliasPoolPublishesSelectedAuthOnceAcrossMode
 	}
 	if selected := executor.ExecuteSelectedAuths(); len(selected) != 2 || selected[0] != callbacks[0] || selected[1] != callbacks[0] {
 		t.Fatalf("executor selected auth metadata = %#v, want callback auth on both model attempts", selected)
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolUsesSelectedModelForceMapping(t *testing.T) {
+	alias := "public-model"
+	executor := &openAICompatPoolExecutor{
+		id:              openAICompatPoolProviderKey,
+		executeErrors:   map[string]error{"first-upstream": &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"}},
+		executePayloads: map[string][]byte{"second-upstream": []byte(`{"model":"second-upstream"}`)},
+	}
+	manager := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "first-upstream", Alias: alias, ForceMapping: true},
+		{Name: "second-upstream", Alias: alias},
+	}, executor)
+
+	response, errExecute := manager.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	if got := string(response.Payload); got != `{"model":"second-upstream"}` {
+		t.Fatalf("payload = %s, want selected model without force mapping", got)
 	}
 }
 
