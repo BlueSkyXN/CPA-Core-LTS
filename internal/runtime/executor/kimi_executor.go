@@ -334,7 +334,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return e.ClaudeExecutor.CountTokens(ctx, kimiClaudeAuth(auth), req, opts)
+	return e.ClaudeExecutor.countTokensUpstream(ctx, kimiClaudeAuth(auth), req, opts)
 }
 
 func kimiClaudeAuth(auth *cliproxyauth.Auth) *cliproxyauth.Auth {

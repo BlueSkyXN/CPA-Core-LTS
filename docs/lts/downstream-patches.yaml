@@ -24,6 +24,7 @@ patches:
       - internal/runtime/executor/codex_model_fallback_test.go
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/codex_websockets_lts_test.go
       - internal/runtime/executor/helps/claude_code_session.go
       - internal/runtime/executor/helps/claude_code_session_test.go
       - internal/runtime/executor/openai_compat_executor.go
@@ -282,6 +283,7 @@ patches:
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_model_header_profile_test.go
       - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/codex_websockets_lts_test.go
     regression_tests:
       - TestResolveCodexModelHeaderProfileUsesCodexProviderRegardlessOfRegistrationOrder
       - TestCodexModelHeaderProfileIsStableSnapshot
@@ -333,10 +335,12 @@ patches:
       - internal/runtime/executor/codex_client_metadata_test.go
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_executor_cache_test.go
+      - internal/runtime/executor/codex_executor_cache_lts_test.go
       - internal/runtime/executor/codex_openai_images.go
       - internal/runtime/executor/codex_openai_images_test.go
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/codex_websockets_lts_test.go
       - internal/runtime/executor/helps/logging_helpers.go
       - internal/runtime/executor/helps/logging_helpers_test.go
       - internal/watcher/diff/config_diff.go
@@ -431,6 +435,7 @@ patches:
     files:
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/codex_websockets_lts_test.go
       - internal/runtime/executor/websocket_session_target_test.go
       - internal/runtime/executor/xai_websockets_executor.go
       - internal/runtime/executor/xai_websockets_executor_test.go
@@ -478,6 +483,7 @@ patches:
     files:
       - internal/runtime/executor/xai_executor.go
       - internal/runtime/executor/xai_executor_test.go
+      - internal/runtime/executor/xai_executor_lts_test.go
     regression_tests:
       - TestXAIExecutorPrepareDoesNotInjectUnauthorizedXSearch
       - TestXAIExecutorPrepareCanonicalizesCustomToolChoices
@@ -626,8 +632,10 @@ patches:
     files:
       - internal/store/gitstore.go
       - internal/store/gitstore_test.go
+      - internal/store/gitstore_lts_test.go
       - sdk/auth/filestore.go
       - sdk/auth/filestore_test.go
+      - sdk/auth/filestore_lts_test.go
       - internal/watcher/synthesizer/file.go
       - internal/watcher/synthesizer/file_test.go
     regression_tests:
@@ -649,6 +657,7 @@ patches:
       - sdk/auth/filestore.go
       - sdk/auth/filestore_disabled_test.go
       - sdk/auth/filestore_test.go
+      - sdk/auth/filestore_lts_test.go
       - internal/store/gitstore.go
       - internal/store/objectstore.go
       - internal/store/postgresstore.go

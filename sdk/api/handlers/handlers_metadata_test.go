@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	"golang.org/x/net/context"
 )
 
@@ -23,10 +24,21 @@ func TestRequestExecutionMetadataIncludesExecutionSessionWithoutIdempotencyKey(t
 	}
 }
 
-func TestRequestExecutionMetadataIncludesInternalCodexContextResetReplayMarker(t *testing.T) {
-	meta := requestExecutionMetadata(WithCodexModelFallbackContextResetReplay(context.Background()))
-	if got, ok := meta[coreexecutor.CodexModelFallbackContextResetReplayMetadataKey].(bool); !ok || !got {
-		t.Fatalf("context reset replay marker = %#v, want true", meta[coreexecutor.CodexModelFallbackContextResetReplayMetadataKey])
+func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ginCtx.Set("userApiKey", "downstream-secret")
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	meta := requestExecutionMetadata(ctx)
+	got, _ := meta[coreexecutor.CallerScopeMetadataKey].(string)
+	want := coresession.CallerScope("downstream-secret")
+	if got != want {
+		t.Fatalf("CallerScopeMetadataKey = %q, want %q", got, want)
+	}
+	if got == "downstream-secret" {
+		t.Fatal("caller scope contains the raw downstream credential")
 	}
 }
 
@@ -42,6 +54,7 @@ func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "gin", ginCtx)
 
 		meta := requestExecutionMetadata(ctx)
+
 		if _, exists := meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey]; exists {
 			t.Fatal("unexpected selected auth index callback for websocket upgrade")
 		}
@@ -55,6 +68,7 @@ func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "gin", ginCtx)
 
 		meta := requestExecutionMetadata(ctx)
+
 		if _, exists := meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey]; !exists {
 			t.Fatal("missing selected auth index callback for ordinary HTTP request")
 		}

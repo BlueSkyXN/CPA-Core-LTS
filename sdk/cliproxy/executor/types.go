@@ -72,6 +72,10 @@ const (
 	// model-private reasoning state. It must never be set for websocket
 	// passthrough or incremental previous_response_id requests.
 	CodexModelFallbackContextResetReplayMetadataKey = "codex_model_fallback_context_reset_replay"
+	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
+	DerivedSessionIDMetadataKey = "derived_session_id"
+	// CallerScopeMetadataKey isolates inferred session identities between downstream callers.
+	CallerScopeMetadataKey = "caller_scope"
 )
 
 const (
@@ -286,6 +290,49 @@ type RequestAfterAuthInterceptResponse struct {
 	Body []byte
 	// ClearHeaders explicitly removes current request headers before Headers is applied.
 	ClearHeaders []string
+	// Terminate prevents the selected executor from receiving the request.
+	Terminate bool
+	// StatusCode is the downstream HTTP status used when Terminate is true.
+	StatusCode int
+	// ResponseHeaders contains downstream response headers used when Terminate is true.
+	ResponseHeaders http.Header
+	// ResponseBody contains the downstream response body used when Terminate is true.
+	ResponseBody []byte
+}
+
+// RequestTerminatedError carries a plugin-defined downstream response without executing upstream.
+type RequestTerminatedError struct {
+	HTTPStatus int
+	Header     http.Header
+	Body       []byte
+}
+
+func (e *RequestTerminatedError) Error() string {
+	return "request terminated by plugin"
+}
+
+// StatusCode returns the plugin-defined downstream HTTP status.
+func (e *RequestTerminatedError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.HTTPStatus
+}
+
+// ResponseHeaders returns a copy of the plugin-defined downstream headers.
+func (e *RequestTerminatedError) ResponseHeaders() http.Header {
+	if e == nil {
+		return nil
+	}
+	return e.Header.Clone()
+}
+
+// ResponseBody returns a copy of the plugin-defined downstream body.
+func (e *RequestTerminatedError) ResponseBody() []byte {
+	if e == nil {
+		return nil
+	}
+	return append([]byte(nil), e.Body...)
 }
 
 // Options controls execution behavior for both streaming and non-streaming calls.
