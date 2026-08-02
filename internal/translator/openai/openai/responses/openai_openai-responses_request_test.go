@@ -473,3 +473,286 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesInputImag
 		t.Fatalf("messages.0.content.0.image_url.detail = %q, want high; output=%s", got, out)
 	}
 }
+
+// messageShapesForTest renders the converted messages as compact shape tokens
+// such as assistant[call_a,call_b]{rc}, assistant(text), tool(call_a), user.
+func messageShapesForTest(out []byte) []string {
+	msgs := gjson.GetBytes(out, "messages").Array()
+	shapes := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		role := msg.Get("role").String()
+		switch role {
+		case "assistant":
+			toolCalls := msg.Get("tool_calls").Array()
+			if len(toolCalls) == 0 {
+				shapes = append(shapes, "assistant(text)")
+				continue
+			}
+			ids := ""
+			for i, tc := range toolCalls {
+				if i > 0 {
+					ids += ","
+				}
+				ids += tc.Get("id").String()
+			}
+			shape := "assistant[" + ids + "]"
+			if msg.Get("reasoning_content").String() != "" {
+				shape += "{rc}"
+			}
+			shapes = append(shapes, shape)
+		case "tool":
+			shapes = append(shapes, "tool("+msg.Get("tool_call_id").String()+")")
+		default:
+			shapes = append(shapes, role)
+		}
+	}
+	return shapes
+}
+
+func assertMessageShapesForTest(t *testing.T, out []byte, want []string) {
+	t.Helper()
+	got := messageShapesForTest(out)
+	if len(got) != len(want) {
+		t.Fatalf("message shapes = %v, want %v; output=%s", got, want, out)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("message shapes = %v, want %v; output=%s", got, want, out)
+		}
+	}
+}
+
+// One assistant turn of parallel calls must stay grouped in a single Chat
+// Completions assistant message even when Codex history interleaves assistant
+// texts between the calls; strict providers (Kimi) otherwise reject the
+// adjacent assistant(tool_calls) messages with HTTP 400.
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitByAssistantText(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_a","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sub-agent note"}]},
+			{"type":"function_call","call_id":"call_b","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_a","output":"file.txt"},
+			{"type":"function_call_output","call_id":"call_b","output":"/tmp"},
+			{"type":"message","role":"user","content":"next"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	assertMessageShapesForTest(t, out, []string{
+		"assistant[call_a,call_b]",
+		"tool(call_a)",
+		"tool(call_b)",
+		"assistant(text)",
+		"user",
+	})
+}
+
+// Reasoning items between calls must not split the assistant turn either, and
+// the pending reasoning content stays attached to the merged tool_calls
+// message.
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitByReasoning(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_a","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}]},
+			{"type":"function_call","call_id":"call_b","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_a","output":"file.txt"},
+			{"type":"function_call_output","call_id":"call_b","output":"/tmp"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	assertMessageShapesForTest(t, out, []string{
+		"assistant[call_a,call_b]{rc}",
+		"tool(call_a)",
+		"tool(call_b)",
+	})
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "think" {
+		t.Fatalf("messages.0.reasoning_content = %q, want %q; output=%s", got, "think", out)
+	}
+}
+
+// Custom (freeform) tool calls get the same grouping treatment.
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCustomToolCallsSplitByAssistantText(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"custom_tool_call","call_id":"call_a","name":"exec","input":"ls"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"note"}]},
+			{"type":"custom_tool_call","call_id":"call_b","name":"exec","input":"pwd"},
+			{"type":"custom_tool_call_output","call_id":"call_a","output":"file.txt"},
+			{"type":"custom_tool_call_output","call_id":"call_b","output":"/tmp"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	assertMessageShapesForTest(t, out, []string{
+		"assistant[call_a,call_b]",
+		"tool(call_a)",
+		"tool(call_b)",
+		"assistant(text)",
+	})
+	if got := gjson.GetBytes(out, "messages.0.tool_calls.0.function.arguments").String(); got != `{"input":"ls"}` {
+		t.Fatalf("messages.0.tool_calls.0.function.arguments = %q, want wrapped input; output=%s", got, out)
+	}
+}
+
+// Codex Desktop multi-agent sub-agent calls use harness style ids
+// (call-<uuid>-<n>); grouping must preserve them verbatim.
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesHarnessStyleCallIDsWhenMerging(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call-583ab1f9-5593-419e-bd7f-3e2e234b0711-0","name":"exec_command","arguments":"{}"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sub-agent note"}]},
+			{"type":"function_call","call_id":"call-583ab1f9-5593-419e-bd7f-3e2e234b0711-1","name":"exec_command","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call-583ab1f9-5593-419e-bd7f-3e2e234b0711-0","output":"ok"},
+			{"type":"function_call_output","call_id":"call-583ab1f9-5593-419e-bd7f-3e2e234b0711-1","output":"ok"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	assertMessageShapesForTest(t, out, []string{
+		"assistant[call-583ab1f9-5593-419e-bd7f-3e2e234b0711-0,call-583ab1f9-5593-419e-bd7f-3e2e234b0711-1]",
+		"tool(call-583ab1f9-5593-419e-bd7f-3e2e234b0711-0)",
+		"tool(call-583ab1f9-5593-419e-bd7f-3e2e234b0711-1)",
+		"assistant(text)",
+	})
+}
+
+// Shapes that were already correct must stay byte-stable: grouping only
+// changes the previously broken split-turn cases.
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_StableMessageShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name: "single call pair",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"}
+			]`,
+			want: []string{"assistant[call_a]", "tool(call_a)"},
+		},
+		{
+			name: "adjacent calls stay merged",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call","call_id":"call_b","name":"tool_b","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"},
+				{"type":"function_call_output","call_id":"call_b","output":"ok"}
+			]`,
+			want: []string{"assistant[call_a,call_b]", "tool(call_a)", "tool(call_b)"},
+		},
+		{
+			name: "message after completed call",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"},
+				{"type":"message","role":"user","content":"next"}
+			]`,
+			want: []string{"assistant[call_a]", "tool(call_a)", "user"},
+		},
+		{
+			name: "message before call",
+			input: `[
+				{"type":"message","role":"user","content":"go"},
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"}
+			]`,
+			want: []string{"user", "assistant[call_a]", "tool(call_a)"},
+		},
+		{
+			name: "reasoning before call",
+			input: `[
+				{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}]},
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"}
+			]`,
+			want: []string{"assistant[call_a]{rc}", "tool(call_a)"},
+		},
+		{
+			name: "two sequential turns",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"},
+				{"type":"message","role":"user","content":"next"},
+				{"type":"function_call","call_id":"call_b","name":"tool_b","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_b","output":"ok"}
+			]`,
+			want: []string{"assistant[call_a]", "tool(call_a)", "user", "assistant[call_b]", "tool(call_b)"},
+		},
+		{
+			name: "user interrupt without outputs keeps turn split",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"message","role":"user","content":"hold on"},
+				{"type":"function_call","call_id":"call_b","name":"tool_b","arguments":"{}"}
+			]`,
+			want: []string{"assistant[call_a]", "user", "assistant[call_b]"},
+		},
+		{
+			name: "dangling call does not trap assistant text",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"note"}]}
+			]`,
+			want: []string{"assistant[call_a]", "assistant(text)"},
+		},
+		{
+			name: "agent_message item is skipped",
+			input: `[
+				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+				{"type":"function_call_output","call_id":"call_a","output":"ok"},
+				{"type":"agent_message","role":"assistant","content":[{"type":"output_text","text":"sub"}]},
+				{"type":"message","role":"user","content":"next"}
+			]`,
+			want: []string{"assistant[call_a]", "tool(call_a)", "user"},
+		},
+		{
+			name: "custom tool single pair",
+			input: `[
+				{"type":"custom_tool_call","call_id":"call_a","name":"exec","input":"ls"},
+				{"type":"custom_tool_call_output","call_id":"call_a","output":"ok"}
+			]`,
+			want: []string{"assistant[call_a]", "tool(call_a)"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"input": ` + tc.input + `}`)
+			out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+			assertMessageShapesForTest(t, out, tc.want)
+		})
+	}
+}
+
+// Accepted delta: reasoning emitted between a call and its output now attaches
+// to the assistant tool_calls message instead of trailing as a separate
+// reasoning-only assistant message at the end.
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesMidCallReasoningToToolCallMessage(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}]},
+			{"type":"function_call_output","call_id":"call_a","output":"ok"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	assertMessageShapesForTest(t, out, []string{
+		"assistant[call_a]{rc}",
+		"tool(call_a)",
+	})
+}
