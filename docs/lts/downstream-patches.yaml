@@ -781,3 +781,21 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream prunes only explicitly expired resettable auth and model availability, preserves future, zero-deadline, disabled, Cloudflare, and independent auth-level state, reconciles registry, scheduler, and persisted cooldown snapshots without stale races, and all listed regressions pass without the downstream implementation.
+  - id: responses-chat-tool-call-turn-grouping
+    reason: Reasoning or assistant text items interleaved between consecutive Responses function_call/custom_tool_call items must not split one assistant turn into adjacent assistant(tool_calls) messages, because Kimi-style strict chat upstreams reject that shape with HTTP 400 ("assistant message with 'tool_calls' must be followed by tool messages") and every Codex multi-agent thread whose history carries sub-agent parallel calls is then permanently bricked. Upstream closed the original report on id-pairing grounds while the actual defect is turn grouping, so LTS keeps the fix as a downstream patch.
+    introduced_in: 12b542a201b1f8d083ada591cdb7687a7281b0a8
+    affected_upstream_range: through bc71c77f5cc42f3fbe1bf040cf14d4f166894835 (2026-08-01); upstream still flushes buffered calls on any non-call input item and splits the turn. PR #3213 groups only bare consecutive function_call items on a pre-17a1f53c base and cannot absorb reasoning/assistant-text splits.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - internal/translator/openai/openai/responses/openai_openai-responses_request.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_request_test.go
+    regression_tests:
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitByAssistantText
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitByReasoning
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCustomToolCallsSplitByAssistantText
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesHarnessStyleCallIDsWhenMerging
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_StableMessageShapes
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesMidCallReasoningToToolCallMessage
+    upstream_issue_or_pr: "router-for-me/CLIProxyAPI#3213 (misdiagnosed closure: router-for-me/CLIProxyAPI#3184)"
+    state: required
+    retire_when: Upstream merges an equivalent turn-grouping fix that keeps one assistant turn of parallel function/custom tool calls grouped across reasoning and assistant-text items, preserves turn boundaries at user/developer messages, and a protected full-sync absorbs it with all listed regressions passing after removing the downstream implementation.
