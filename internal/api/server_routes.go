@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -358,73 +359,57 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
 
-	headers := make(http.Header)
-	headers.Set("Content-Type", "application/json")
-	headers.Set("Accept", "application/json")
-	headers.Set("Originator", "codex_cli_rs")
+	baseHeaders := make(http.Header)
+	baseHeaders.Set("Content-Type", "application/json")
+	baseHeaders.Set("Accept", "application/json")
+	baseHeaders.Set("Originator", "codex_cli_rs")
 	for _, name := range []string{"Version", "User-Agent", "Session_id", "X-Client-Request-Id"} {
 		if value := strings.TrimSpace(c.GetHeader(name)); value != "" {
-			headers.Set(name, value)
+			baseHeaders.Set(name, value)
 		}
-	}
-	if accountID, ok := selected.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
-		headers.Set("Chatgpt-Account-Id", accountID)
 	}
 
-	upstreamURL := "https://chatgpt.com/backend-api/codex/alpha/search"
-	if selected.AuthKind() == auth.AuthKindAPIKey {
-		baseURL := ""
-		if selected.Attributes != nil {
-			baseURL = strings.TrimSpace(selected.Attributes["base_url"])
+	errMissingBaseURL := errors.New("Codex Alpha Search API key base URL unavailable")
+	performRequest := func(current *auth.Auth, confirmDispatch bool) (*http.Response, bool, error) {
+		headers := baseHeaders.Clone()
+		if accountID, ok := current.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
+			headers.Set("Chatgpt-Account-Id", accountID)
 		}
-		if baseURL == "" {
-			if selection != nil {
-				selection.End("missing_base_url")
+		upstreamURL := "https://chatgpt.com/backend-api/codex/alpha/search"
+		if current.AuthKind() == auth.AuthKindAPIKey {
+			baseURL := ""
+			if current.Attributes != nil {
+				baseURL = strings.TrimSpace(current.Attributes["base_url"])
 			}
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex Alpha Search API key base URL unavailable"})
-			return
+			if baseURL == "" {
+				return nil, false, errMissingBaseURL
+			}
+			upstreamURL = strings.TrimRight(baseURL, "/") + "/alpha/search"
 		}
-		upstreamURL = strings.TrimRight(baseURL, "/") + "/alpha/search"
-	}
-	req, err := s.handlers.AuthManager.NewHttpRequest(
-		ctx, selected, http.MethodPost, upstreamURL, upstreamRequestBody, headers,
-	)
-	if err != nil {
-		if selection != nil {
-			selection.End("request_build_failed")
+		req, errRequest := s.handlers.AuthManager.NewHttpRequest(ctx, current, http.MethodPost, upstreamURL, upstreamRequestBody, headers)
+		if errRequest != nil {
+			return nil, false, errRequest
 		}
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-	var authID, authLabel, authType, authValue string
-	if selected != nil {
-		authID = selected.ID
-		authLabel = selected.Label
-		authType, authValue = selected.AccountInfo()
-	}
-	if selection == nil {
-		err = s.handlers.AuthManager.ConfirmSelectedAuthDispatch(resultCtx)
-	}
-	if err != nil {
-		status := http.StatusServiceUnavailable
-		if statusError, ok := err.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
-			status = statusError.StatusCode()
+		if confirmDispatch {
+			if errConfirm := s.handlers.AuthManager.ConfirmSelectedAuthDispatch(resultCtx); errConfirm != nil {
+				return nil, false, errConfirm
+			}
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
-		return
+		authType, authValue := current.AccountInfo()
+		helps.RecordAPIRequest(ctx, s.cfg, helps.UpstreamRequestLog{
+			URL:       upstreamURL,
+			Method:    http.MethodPost,
+			Headers:   req.Header.Clone(),
+			Body:      nil,
+			Provider:  "codex",
+			AuthID:    current.ID,
+			AuthLabel: current.Label,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+		resp, errRequest := s.handlers.AuthManager.HttpRequest(ctx, current, req)
+		return resp, true, errRequest
 	}
-	helpHeaders := req.Header.Clone()
-	helps.RecordAPIRequest(ctx, s.cfg, helps.UpstreamRequestLog{
-		URL:       upstreamURL,
-		Method:    http.MethodPost,
-		Headers:   helpHeaders,
-		Body:      nil,
-		Provider:  "codex",
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
 
 	if errCtx := ctx.Err(); errCtx != nil {
 		if selection != nil {
@@ -433,8 +418,26 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(http.StatusRequestTimeout, gin.H{"error": errCtx.Error()})
 		return
 	}
-	resp, err := s.handlers.AuthManager.HttpRequest(ctx, selected, req)
+	resp, dispatched, err := performRequest(selected, selection == nil)
 	if err != nil {
+		if errors.Is(err, errMissingBaseURL) {
+			if selection != nil {
+				selection.End("missing_base_url")
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+		if !dispatched {
+			if selection != nil {
+				selection.End("request_build_failed")
+			}
+			status := http.StatusBadGateway
+			if statusError, ok := err.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
+				status = statusError.StatusCode()
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
 		if selection == nil && codexAlphaSearchShouldMarkTransportFailure(ctx, err) {
 			markCodexAlphaSearchResult(s.handlers.AuthManager, resultCtx, selected, selectionModel, http.StatusBadGateway, nil, nil, err)
 		} else if selection != nil {
@@ -443,6 +446,46 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		helps.RecordAPIResponseError(ctx, s.cfg, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
+	}
+	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
+		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
+		helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("codex alpha search: close unauthorized response body error: %v", errClose)
+		}
+		refreshed, didRefresh, errRefresh := s.handlers.AuthManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
+		if errRefresh != nil {
+			selection.End("refresh_failed")
+			status := http.StatusServiceUnavailable
+			if statusError, ok := errRefresh.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
+				status = statusError.StatusCode()
+			}
+			c.JSON(status, gin.H{"error": errRefresh.Error()})
+			return
+		}
+		if !didRefresh || refreshed == nil {
+			selection.End("refresh_unavailable")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Codex credential unauthorized"})
+			return
+		}
+		selected = refreshed
+		logging.SetGinCPATraceID(c, selected.EnsureIndex())
+		resp, _, err = performRequest(selected, false)
+		if err != nil {
+			if errors.Is(err, errMissingBaseURL) {
+				selection.End("missing_base_url")
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+				return
+			}
+			selection.End("retry_failed")
+			helps.RecordAPIResponseError(ctx, s.cfg, err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
+		}
 	}
 	closeResponseBody := func() error {
 		errClose := resp.Body.Close()
