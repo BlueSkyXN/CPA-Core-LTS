@@ -938,6 +938,18 @@ func isXaiBadCredentialsResultError(provider string, err *Error) bool {
 	return isXaiBadCredentialsMessage(err.Code) || isXaiBadCredentialsMessage(err.Message)
 }
 
+func isCodexTransientRateLimitResultError(provider string, err *Error) bool {
+	if err == nil || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(err.Code)) {
+	case codexTransientRateLimitClass, "rate_limit_error", "rate_limit_exceeded":
+		return true
+	default:
+		return false
+	}
+}
+
 // isRequestScopedModelNotFoundMessage identifies the OpenAI-style 404 emitted
 // when request/model routing or Codex client identity is rejected. This shape
 // is not evidence of unhealthy credentials, and penalizing each auth can

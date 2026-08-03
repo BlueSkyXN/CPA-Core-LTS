@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -204,6 +205,110 @@ func TestManager_Update_ActiveInheritsModelStates(t *testing.T) {
 	}
 	if state.Quota.BackoffLevel != backoffLevel {
 		t.Fatalf("expected BackoffLevel to be %d, got %d", backoffLevel, state.Quota.BackoffLevel)
+	}
+}
+
+func TestManager_Update_ProviderChangeDoesNotInheritRuntimeState(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	staleRetry := time.Now().Add(time.Hour)
+	staleRuntime := &struct{ provider string }{provider: "claude"}
+	if _, err := m.Register(context.Background(), &Auth{
+		ID: "auth-provider-change", Provider: "claude", Status: StatusActive,
+		Runtime: staleRuntime, Success: 5, Failed: 3,
+		ModelStates: map[string]*ModelState{
+			"shared-model": {Unavailable: true, Status: StatusError, NextRetryAfter: staleRetry},
+		},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	if _, err := m.Update(context.Background(), &Auth{
+		ID: "auth-provider-change", Provider: "xai", Status: StatusError,
+		StatusMessage: "stale provider error", Unavailable: true,
+		Quota:           QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: staleRetry},
+		LastError:       &Error{Code: "stale", Message: "stale provider error"},
+		LastRefreshedAt: staleRetry.Add(-2 * time.Hour), NextRefreshAfter: staleRetry,
+		NextRetryAfter: staleRetry, Runtime: staleRuntime, Success: 9, Failed: 7,
+		ModelStates: map[string]*ModelState{
+			"incoming-stale-model": {
+				Unavailable: true, Status: StatusError, NextRetryAfter: staleRetry,
+				Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: staleRetry},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("update auth: %v", err)
+	}
+
+	updated, ok := m.GetByID("auth-provider-change")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if len(updated.ModelStates) != 0 {
+		t.Fatalf("provider change retained ModelStates: %+v", updated.ModelStates)
+	}
+	if updated.Status != StatusActive || updated.Unavailable || updated.StatusMessage != "" || updated.LastError != nil {
+		t.Fatalf("provider change retained auth error state: %+v", updated)
+	}
+	if updated.Quota != (QuotaState{}) || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("provider change retained quota/retry state: quota=%+v retry=%v", updated.Quota, updated.NextRetryAfter)
+	}
+	if !updated.LastRefreshedAt.IsZero() || !updated.NextRefreshAfter.IsZero() {
+		t.Fatalf("provider change retained refresh state: last=%v next=%v", updated.LastRefreshedAt, updated.NextRefreshAfter)
+	}
+	if updated.Success != 0 || updated.Failed != 0 || updated.Runtime != nil {
+		t.Fatalf("provider change retained runtime state: success=%d failed=%d runtime=%#v", updated.Success, updated.Failed, updated.Runtime)
+	}
+}
+
+func TestManager_Update_ProviderChangePersistsCooldownClear(t *testing.T) {
+	ctx := context.Background()
+	const authID = "auth-provider-change-persisted-cooldown"
+	retryAfter := 30 * time.Minute
+	store := &recordingCooldownStateStore{}
+	manager := NewManager(nil, nil, nil)
+	manager.SetCooldownStateStore(store)
+	if _, err := manager.Register(WithSkipPersist(ctx), &Auth{ID: authID, Provider: "claude", Status: StatusActive}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	manager.MarkResult(ctx, Result{
+		AuthID: authID, Provider: "claude", Model: "shared-model",
+		Error:      &Error{Code: "rate_limit", Message: "quota", HTTPStatus: http.StatusTooManyRequests},
+		RetryAfter: &retryAfter,
+	})
+
+	store.mu.Lock()
+	before := cloneCooldownStateRecords(store.records)
+	store.mu.Unlock()
+	if len(before) == 0 {
+		t.Fatal("provider cooldown was not persisted before provider change")
+	}
+
+	if _, err := manager.Update(ctx, &Auth{ID: authID, Provider: "xai", Status: StatusActive}); err != nil {
+		t.Fatalf("update auth provider: %v", err)
+	}
+
+	store.mu.Lock()
+	persistedAfterUpdate := cloneCooldownStateRecords(store.records)
+	store.mu.Unlock()
+
+	restartStore := &recordingCooldownStateStore{load: persistedAfterUpdate}
+	restarted := NewManager(nil, nil, nil)
+	restarted.SetCooldownStateStore(restartStore)
+	if _, err := restarted.Register(WithSkipPersist(ctx), &Auth{ID: authID, Provider: "xai", Status: StatusActive}); err != nil {
+		t.Fatalf("register auth after restart: %v", err)
+	}
+	if err := restarted.RestoreCooldownStates(ctx); err != nil {
+		t.Fatalf("restore cooldown states: %v", err)
+	}
+	restored, ok := restarted.GetByID(authID)
+	if !ok || restored == nil {
+		t.Fatal("restarted auth missing")
+	}
+	if len(persistedAfterUpdate) != 0 {
+		t.Fatalf("provider change left persisted cooldown records: %#v", persistedAfterUpdate)
+	}
+	if len(restored.ModelStates) != 0 || restored.Unavailable || restored.Quota.Exceeded || !restored.NextRetryAfter.IsZero() {
+		t.Fatalf("old provider cooldown revived after restart: %+v", restored)
 	}
 }
 

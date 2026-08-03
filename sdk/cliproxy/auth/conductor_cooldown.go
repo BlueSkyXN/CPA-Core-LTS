@@ -21,6 +21,8 @@ var quotaCooldownDisabled atomic.Bool
 
 var transientErrorCooldownSeconds atomic.Int64
 
+const codexTransientRateLimitClass = "transient-rate-limit"
+
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
@@ -416,6 +418,31 @@ func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
 	}
 	return changed
 }
+
+func clearProviderRuntimeState(auth *Auth, now time.Time) {
+	if auth == nil {
+		return
+	}
+	auth.Success = 0
+	auth.Failed = 0
+	auth.recentRequests = recentRequestRing{}
+	auth.Unavailable = false
+	auth.Quota = QuotaState{}
+	auth.LastError = nil
+	auth.StatusMessage = ""
+	auth.LastRefreshedAt = time.Time{}
+	auth.NextRefreshAfter = time.Time{}
+	auth.NextRetryAfter = time.Time{}
+	auth.ModelStates = nil
+	auth.Runtime = nil
+	if auth.Disabled || auth.Status == StatusDisabled {
+		auth.Status = StatusDisabled
+	} else {
+		auth.Status = StatusActive
+	}
+	auth.UpdatedAt = now
+}
+
 func dedupeStrings(values []string) []string {
 	if len(values) < 2 {
 		return values
@@ -768,11 +795,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				if !isRequestScopedResultError(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					state := ensureModelState(auth, result.Model)
+					transientRateLimit := isCodexTransientRateLimitResultError(auth.Provider, result.Error)
+					preserveActiveQuota := transientRateLimit && activeQuotaCooldown(state.Quota, state.NextRetryAfter, now)
 					state.modelFallbackReason = strings.ToLower(strings.TrimSpace(result.ModelFallbackReason))
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
-					if result.Error != nil {
+					if result.Error != nil && !preserveActiveQuota {
 						state.LastError = cloneError(result.Error)
 						state.StatusMessage = result.Error.Message
 						auth.LastError = cloneError(result.Error)
@@ -817,6 +846,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							state.NextRetryAfter = next
 							suspendReason = "unauthorized"
 							shouldSuspendModel = true
+						}
+					} else if transientRateLimit {
+						if preserveActiveQuota {
+							setModelQuota = true
+							shouldSuspendModel = true
+							suspendReason = "quota"
+						} else {
+							if state.Quota.Exceeded && strings.EqualFold(strings.TrimSpace(state.Quota.Reason), "quota") {
+								clearModelQuota = true
+								shouldResumeModel = true
+							}
+							state.Quota = QuotaState{}
+							if disableCooling {
+								state.NextRetryAfter = time.Time{}
+							} else {
+								state.NextRetryAfter = nextTransientErrorRetryAfter(now)
+							}
 						}
 					} else {
 						switch statusCode {
@@ -888,7 +934,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
-				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
+				if isCodexTransientRateLimitResultError(auth.Provider, result.Error) {
+					applyTransientRateLimitAuthFailureState(auth, result.Error, now, disableCooling)
+				} else {
+					applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
+				}
 			}
 		}
 
@@ -1184,10 +1234,27 @@ func resultErrorFromError(err error) *Error {
 			resultErr.HTTPStatus = http.StatusBadGateway
 		}
 	}
+	if class := codexRateLimitClassFromError(err); class != "" {
+		resultErr.Code = class
+	}
 	if isRequestScopedError(err) || isRequestInvalidError(err) {
 		resultErr.Code = requestScopedErrorCode
 	}
 	return resultErr
+}
+
+func codexRateLimitClassFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	type rateLimitClassifier interface {
+		CodexRateLimitClass() string
+	}
+	var classifier rateLimitClassifier
+	if !errors.As(err, &classifier) || classifier == nil {
+		return ""
+	}
+	return strings.TrimSpace(classifier.CodexRateLimitClass())
 }
 
 func isUnauthorizedError(err error) bool {
@@ -1714,6 +1781,35 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
 		auth.Unavailable = !auth.NextRetryAfter.IsZero()
 	}
+}
+
+func applyTransientRateLimitAuthFailureState(auth *Auth, resultErr *Error, now time.Time, disableCooling bool) {
+	if auth == nil {
+		return
+	}
+	preserveActiveQuota := activeQuotaCooldown(auth.Quota, auth.NextRetryAfter, now)
+	auth.Unavailable = true
+	auth.Status = StatusError
+	auth.UpdatedAt = now
+	if preserveActiveQuota {
+		return
+	}
+	auth.Quota = QuotaState{}
+	auth.LastError = cloneError(resultErr)
+	if resultErr != nil {
+		auth.StatusMessage = resultErr.Message
+	}
+	if disableCooling {
+		auth.NextRetryAfter = time.Time{}
+	} else {
+		auth.NextRetryAfter = nextTransientErrorRetryAfter(now)
+	}
+}
+
+func activeQuotaCooldown(quota QuotaState, nextRetryAfter, now time.Time) bool {
+	return quota.Exceeded &&
+		strings.EqualFold(strings.TrimSpace(quota.Reason), "quota") &&
+		nextRetryAfter.After(now)
 }
 
 // quotaCooldownAfterFailure returns the recovery deadline and backoff level for

@@ -171,7 +171,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		buffering := abnormalRetry.StreamBuffer()
 		bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
 		scannerMaxTokenBytes := int64(52_428_800) // 50 MiB compatibility ceiling.
-		if bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
+		if buffering && bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
 			scannerMaxTokenBytes = bufferMaxBytes + 1
 			if scannerMaxTokenBytes < 64<<10 {
 				scannerMaxTokenBytes = 64 << 10
@@ -188,6 +188,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var bufferedChunks []cliproxyexecutor.StreamChunk
 		var bufferLimitErr error
 		bufferLimitExceeded := false
+		reconstructionCapExceeded := false
 		var flushBuffered func() bool
 		exceedBufferLimit := func() {
 			if bufferLimitExceeded {
@@ -279,9 +280,23 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				}
 				switch eventType {
 				case "response.output_item.done":
-					if !bufferLimitExceeded {
-						if bufferMaxBytes > 0 && bufferedBytes+outputItemsBytes+int64(len(data)) > bufferMaxBytes {
-							exceedBufferLimit()
+					if !bufferLimitExceeded && !reconstructionCapExceeded {
+						candidateBytes := outputItemsBytes + int64(len(data))
+						if buffering {
+							candidateBytes += bufferedBytes
+						}
+						if bufferMaxBytes > 0 && candidateBytes > bufferMaxBytes {
+							if buffering {
+								exceedBufferLimit()
+							} else {
+								// Deltas have already reached the client. Drop only optional
+								// completion reconstruction state instead of turning the
+								// delivered response into a terminal buffer-limit error.
+								reconstructionCapExceeded = true
+								outputItemsByIndex = nil
+								outputItemsFallback = nil
+								outputItemsBytes = 0
+							}
 						} else {
 							collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 							outputItemsBytes += int64(len(data))
@@ -374,7 +389,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if ctx.Err() != nil {
 				return
 			}
-			if bufferMaxBytes > 0 && strings.Contains(errScan.Error(), "token too long") {
+			if buffering && bufferMaxBytes > 0 && strings.Contains(errScan.Error(), "token too long") {
 				exceedBufferLimit()
 				helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
 				reporter.PublishFailure(ctx, bufferLimitErr)

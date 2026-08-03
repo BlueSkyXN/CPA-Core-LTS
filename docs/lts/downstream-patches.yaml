@@ -908,3 +908,47 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream records provenance only for Multi-Agent function schemas whose JSON boolean-true message.encrypted marker was actually removed, covers both root tools and input additional_tools, restores namespace before adding an empty encrypted_function_args without overwriting an existing field or changing arguments and call IDs, leaves ordinary, custom, disabled, and unproven calls untouched across HTTP non-stream, SSE, and WebSocket, and all listed regressions pass after removing the downstream implementation.
+
+  - id: provider-runtime-state-isolation
+    reason: Runtime state belongs to one concrete auth provider generation and must not leak across same-ID provider replacement. Codex transient rate limits must remain distinct from quota exhaustion, non-buffering streams must not fail after delivering visible deltas merely because optional completion reconstruction exceeds its cap, and thinking-suffix cooldown reconciliation must restore only the intended concrete registry IDs without racing a newer success.
+    introduced_in: e97ccfb8b41e0874745d807d6c1434bcf572840f
+    affected_upstream_range: through a88197f845c979132c8978ea223c6af05cc81536 (v7.2.116, 2026-08-03); upstream still applies the abnormal-reasoning reconstruction cap to non-buffering streams, treats raw Codex rate_limit_error/rate_limit_exceeded 429s as quota, restores canonicalized cooldowns to the wrong thinking-suffix registry ID, and inherits health, model, refresh, runtime, and persisted cooldown state across same-ID provider replacement. This adapts the still-unique behavior recovered from closed CPA-Core-LTS PR #192 commits 4c8250c5 and a39fb5ee to the post-v7.2.116 split executor/conductor files; integration merge artifacts 502c3af2 and 201a5ed8 were not replayed.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
+      - internal/runtime/executor/codex_executor_retry_test.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_executor_terminal.go
+      - internal/runtime/executor/openai_compat_executor.go
+      - sdk/cliproxy/auth/codex_transient_rate_limit_test.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_cooldown.go
+      - sdk/cliproxy/auth/conductor_lifecycle.go
+      - sdk/cliproxy/auth/conductor_lts.go
+      - sdk/cliproxy/auth/conductor_reconcile_cooldown_test.go
+      - sdk/cliproxy/auth/conductor_selection.go
+      - sdk/cliproxy/auth/conductor_update_test.go
+      - sdk/cliproxy/service_auth.go
+      - sdk/cliproxy/service_stale_state_test.go
+    regression_tests:
+      - TestCodexExecutorAbnormalReasoningRetry_NonBufferingStreamOverReconstructionCapDoesNotFailAfterDelta
+      - TestNewCodexStatusErrTreatsUsageLimitAsRetryableRateLimit
+      - TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback
+      - TestResultErrorFromErrorPreservesCodexRateLimitClass
+      - TestManagerMarkResultCodexTransientRateLimitDoesNotSetQuota
+      - TestManagerMarkResultCodexRawTransientRateLimitDoesNotSetQuota
+      - TestManagerMarkResultCodexTransientRateLimitWithoutModelDoesNotSetQuota
+      - TestManagerMarkResultCodexTransientRateLimitDoesNotEraseActiveQuota
+      - TestManagerMarkResultCodexRawTransientRateLimitDoesNotEraseActiveQuota
+      - TestManagerMarkResultCodexRawTransientRateLimitWithoutModelPreservesActiveQuota
+      - TestManagerMarkResultNonCodexRawRateLimitRemainsQuota
+      - TestManager_ReconcileRegistryModelStatesRestoresCooldownForRegisteredThinkingSuffix
+      - TestManager_ReconcileRegistryModelStatesCanonicalStateAppliesToEntireRegisteredFamily
+      - TestManager_ReconcileRegistryModelStatesMissingSuffixFallsBackToRegisteredCanonicalModel
+      - TestManager_ReconcileRegistryModelStatesDoesNotRestoreCooldownAfterRacedSuccess
+      - TestManager_Update_ProviderChangeDoesNotInheritRuntimeState
+      - TestManager_Update_ProviderChangePersistsCooldownClear
+      - TestServiceApplyCoreAuthAddOrUpdate_ProviderChangeDoesNotInheritRuntimeState
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream separates Codex transient rate limits from usage quota at executor and auth-state boundaries, preserves active confirmed quota against older transient results, keeps non-buffering delivered streams independent from reconstruction memory caps, restores exact/canonical thinking-family cooldowns without stale races, clears all provider-owned runtime and persisted cooldown state on same-ID provider replacement, and every listed regression passes after removing the downstream implementation.

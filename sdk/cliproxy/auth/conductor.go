@@ -163,6 +163,9 @@ type Manager struct {
 	// continuityBeforeDispatchHook is an internal test seam invoked after
 	// continuity admission and before the final dispatch recheck.
 	continuityBeforeDispatchHook func()
+	// reconcileBeforeRegistryRestoreHook is an internal test seam invoked after
+	// model cooldowns are snapshotted and before registry restoration.
+	reconcileBeforeRegistryRestoreHook func()
 
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider

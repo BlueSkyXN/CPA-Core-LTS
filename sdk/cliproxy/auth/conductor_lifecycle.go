@@ -118,15 +118,20 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.Index = existing.Index
 		auth.indexAssigned = existing.indexAssigned
 	}
-	auth.Success = existing.Success
-	auth.Failed = existing.Failed
-	auth.recentRequests = existing.recentRequests
-	if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
-		if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
-			auth.ModelStates = existing.ModelStates
-		}
-	}
 	now := time.Now()
+	sameProvider := strings.EqualFold(strings.TrimSpace(existing.Provider), strings.TrimSpace(auth.Provider))
+	if sameProvider {
+		auth.Success = existing.Success
+		auth.Failed = existing.Failed
+		auth.recentRequests = existing.recentRequests
+		if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
+			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
+				auth.ModelStates = existing.ModelStates
+			}
+		}
+	} else {
+		clearProviderRuntimeState(auth, now)
+	}
 	clearedCooldown := false
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		clearedCooldown = clearCooldownStateForAuth(auth, now)
@@ -144,7 +149,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	if clearedCooldown {
+	if clearedCooldown || !sameProvider {
 		m.persistCooldownStates(ctx)
 	}
 	return auth.Clone(), nil

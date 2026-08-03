@@ -864,6 +864,7 @@ type statusErr struct {
 	msg                 string
 	retryAfter          *time.Duration
 	modelFallbackReason string
+	codexRateLimitClass string
 }
 
 func (e statusErr) Error() string {
@@ -875,3 +876,4 @@ func (e statusErr) Error() string {
 func (e statusErr) StatusCode() int             { return e.code }
 func (e statusErr) RetryAfter() *time.Duration  { return e.retryAfter }
 func (e statusErr) ModelFallbackReason() string { return e.modelFallbackReason }
+func (e statusErr) CodexRateLimitClass() string { return e.codexRateLimitClass }
