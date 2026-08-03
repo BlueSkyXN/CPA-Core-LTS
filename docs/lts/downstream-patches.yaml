@@ -784,7 +784,7 @@ patches:
   - id: responses-chat-tool-call-turn-grouping
     reason: Reasoning, assistant text, or omitted assistant-side Responses items interleaved between consecutive function_call/custom_tool_call items must not split one assistant turn into adjacent assistant(tool_calls) messages. Kimi-style strict Chat Completions upstreams reject that shape with HTTP 400 ("assistant message with 'tool_calls' must be followed by tool messages"), permanently blocking affected Codex multi-agent histories routed through those upstreams. The related closed report focused on id pairing while the remaining defect is turn grouping, so LTS keeps the fix as a downstream patch.
     introduced_in: 12b542a201b1f8d083ada591cdb7687a7281b0a8
-    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream still flushes buffered calls on any non-call input item and splits the turn. Structured tool-output/image support (4d498ec7), Kimi thinking replay (8c37dd98), text-only OpenAI tool-result normalization (13435c93), and collaboration message schema handling from PR #4748 (ffdb9c9f) do not change this Responses-to-Chat request-grouping state machine. PR #3213 groups only bare consecutive function_call items on a pre-17a1f53c base and cannot absorb reasoning/assistant-text splits.
+    affected_upstream_range: through a88197f845c979132c8978ea223c6af05cc81536 (v7.2.116, 2026-08-03); upstream still flushes buffered calls on any non-call input item and splits the turn. The v7.2.116 Codex output-item ID hydration, Claude response work, and Home refresh recovery do not change this Responses-to-Chat request-grouping state machine. Structured tool-output/image support (4d498ec7), Kimi thinking replay (8c37dd98), text-only OpenAI tool-result normalization (13435c93), and collaboration message schema handling from PR #4748 (ffdb9c9f) remain non-equivalent. PR #3213 groups only bare consecutive function_call items on a pre-17a1f53c base and cannot absorb reasoning/assistant-text splits.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/translator/openai/openai/responses/openai_openai-responses_request.go
@@ -805,7 +805,7 @@ patches:
   - id: codex-desktop-tool-overlay
     reason: Codex Desktop registers deferred codex_app handlers that are not present in the Direct tool surface sent to third-party Responses models, so those models cannot read or coordinate existing Desktop tasks even though the app already owns the handlers. LTS therefore provides a default-off, fixed-version projection that adds only explicitly configured codex_app children after auth selection, only for provable root Desktop turns on non-GPT models, and preserves the existing provider namespace round trip without executing any app operation inside CPA.
     introduced_in: b052097362ef63bd35329c8b18d73c651078e85d
-    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream supports namespace flattening and response restoration for OpenAI Chat and xAI, but does not project the missing Codex Desktop codex_app children into eligible third-party Direct requests with the LTS model, UA, root-turn, tool-surface, and configuration gates.
+    affected_upstream_range: through a88197f845c979132c8978ea223c6af05cc81536 (v7.2.116, 2026-08-03); upstream supports namespace flattening and response restoration for OpenAI Chat and xAI, but does not project the missing Codex Desktop codex_app children into eligible third-party Direct requests with the LTS model, UA, root-turn, tool-surface, and configuration gates. The v7.2.116 Home refresh and conductor changes were adapted without replacing the overlay or its GPT/subagent isolation.
     files:
       - config.example.yaml
       - docs/lts/downstream-patches.yaml
@@ -854,7 +854,7 @@ patches:
   - id: codex-multi-agent-plaintext-contract
     reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex and provider paths, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces.
     introduced_in: 798ad1854064361461225fe766db9b2f54a7653d
-    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream PR #4748 rewrites string encrypted_content parts without plaintext provenance, discovers message tools by recursive short-name matching across unrelated tool surfaces, and deletes message.encrypted without requiring JSON boolean true.
+    affected_upstream_range: through a88197f845c979132c8978ea223c6af05cc81536 (v7.2.116, 2026-08-03); upstream PR #4748 still rewrites string encrypted_content parts without plaintext provenance, discovers message tools by recursive short-name matching across unrelated tool surfaces, and deletes message.encrypted without requiring JSON boolean true. No v7.2.116 change replaces the LTS namespace and boolean-marker contract.
     files:
       - config.example.yaml
       - docs/lts/downstream-patches.yaml
@@ -888,7 +888,7 @@ patches:
   - id: xai-multi-agent-plaintext-provenance
     reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS therefore records the exact root or additional_tools function declarations whose boolean-true marker was removed, restores namespace and short name first, then adds encrypted_function_args as an empty array only for response calls matching that request provenance across HTTP non-stream, SSE, and WebSocket.
     introduced_in: 23caefe8b2495856c2c8df50b63823846ad6b910
-    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream xAI handling flattens and restores namespace tools and filters internal X Search traces, but does not derive before/after plaintext provenance from the Multi-Agent schema rewrite or restore encrypted_function_args on HTTP, SSE, and WebSocket responses.
+    affected_upstream_range: through a88197f845c979132c8978ea223c6af05cc81536 (v7.2.116, 2026-08-03); upstream xAI handling flattens and restores namespace tools and filters internal X Search traces, but does not derive before/after plaintext provenance from the Multi-Agent schema rewrite or restore encrypted_function_args on HTTP, SSE, and WebSocket responses. No v7.2.116 change provides an equivalent return-path contract.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/xai_executor_execute.go
