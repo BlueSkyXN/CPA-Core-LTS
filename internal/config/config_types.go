@@ -152,6 +152,8 @@ type CodexConfig struct {
 	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
 	RateLimitContinuity    CodexRateLimitContinuityConfig    `yaml:"rate-limit-continuity" json:"rate-limit-continuity"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
+	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
+	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
@@ -442,6 +444,9 @@ type CodexKey struct {
 	// Websockets enables the Responses API websocket transport for this credential.
 	Websockets bool `yaml:"websockets,omitempty" json:"websockets,omitempty"`
 
+	// AlphaSearch allows this Codex API key to serve the Alpha Search endpoint.
+	AlphaSearch bool `yaml:"alpha-search,omitempty" json:"alpha-search,omitempty"`
+
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
@@ -599,6 +604,9 @@ type OpenAICompatibility struct {
 
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// SupportPromptCacheKey enables derived prompt_cache_key injection for supported requests.
+	SupportPromptCacheKey bool `yaml:"support-prompt-cache-key,omitempty" json:"support-prompt-cache-key,omitempty"`
 
 	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
