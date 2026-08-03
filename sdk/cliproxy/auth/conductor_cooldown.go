@@ -350,6 +350,10 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) {
 		return false
 	}
+	recordProvider := strings.TrimSpace(record.Provider)
+	if recordProvider != "" && !strings.EqualFold(recordProvider, strings.TrimSpace(auth.Provider)) {
+		return false
+	}
 	updatedAt := record.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = now
@@ -748,6 +752,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	cooldownStateChanged := false
 
 	m.mu.Lock()
+	auth := m.auths[result.AuthID]
+	if !resultMatchesAuthGeneration(ctx, result, auth) {
+		m.mu.Unlock()
+		m.abandonCodexRateLimitContinuityAttempt(ctx)
+		return
+	}
 	// The continuity state transition and the ModelState/cooldown mutation must
 	// be one manager critical section. begin() rechecks the continuity state
 	// before dispatch, so an in-flight candidate cannot clear a newly confirmed
@@ -756,7 +766,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if m.continuityTransitionHook != nil {
 		m.continuityTransitionHook()
 	}
-	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+	if auth != nil {
 		now := time.Now()
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
@@ -1000,7 +1010,12 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 
 	var authSnapshot *Auth
 	m.mu.Lock()
-	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+	auth := m.auths[result.AuthID]
+	if !resultMatchesAuthGeneration(ctx, result, auth) {
+		m.mu.Unlock()
+		return
+	}
+	if auth != nil {
 		now := time.Now()
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {

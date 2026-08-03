@@ -128,15 +128,10 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				failed = true
 				if !isRetryWithoutPenaltyError(chunk.Err) {
 					rerr := resultErrorFromError(chunk.Err)
-					m.recordExecutionResult(ctx, Result{
-						AuthID:              auth.ID,
-						Provider:            provider,
-						Model:               resultModel,
-						Success:             false,
-						Error:               rerr,
-						RetryAfter:          retryAfterFromError(chunk.Err),
-						ModelFallbackReason: modelFallbackReasonFromError(chunk.Err),
-					}, auth, ephemeralResult)
+					result := resultForAuth(auth, provider, resultModel, false, rerr)
+					result.RetryAfter = retryAfterFromError(chunk.Err)
+					result.ModelFallbackReason = modelFallbackReasonFromError(chunk.Err)
+					m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 				}
 			}
 			if !forward {
@@ -194,7 +189,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		if !failed && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
-			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true}, auth, ephemeralResult)
+			m.recordExecutionResult(ctx, resultForAuth(auth, provider, resultModel, true, nil), auth, ephemeralResult)
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out, Metadata: cloneSchedulerAnyMap(metadata)}
@@ -212,6 +207,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
+	ctx = contextWithAuthGeneration(ctx, auth)
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
 	didRefreshOnUnauthorized := false
@@ -272,6 +268,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					errStream = errRefresh
 				} else if okRefresh {
 					auth = refreshed
+					ctx = contextWithAuthGeneration(ctx, auth)
 					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
@@ -299,7 +296,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		streamResult, errStream = validateStreamResult(streamResult, errStream)
 		if errStream != nil {
 			rerr := resultErrorFromError(errStream)
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+			result := resultForAuth(auth, provider, resultModel, false, rerr)
 			result.RetryAfter = retryAfterFromError(errStream)
 			result.ModelFallbackReason = modelFallbackReasonFromError(errStream)
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
@@ -337,6 +334,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				} else if okRefresh {
 					discardStreamChunks(streamResult.Chunks)
 					auth = refreshed
+					ctx = contextWithAuthGeneration(ctx, auth)
 					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
@@ -369,7 +367,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			if isRequestInvalidError(bootstrapErr) {
 				rerr := resultErrorFromError(bootstrapErr)
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+				result := resultForAuth(auth, provider, resultModel, false, rerr)
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
@@ -378,7 +376,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			if idx < len(execModels)-1 {
 				rerr := resultErrorFromError(bootstrapErr)
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+				result := resultForAuth(auth, provider, resultModel, false, rerr)
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
@@ -387,7 +385,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				continue
 			}
 			rerr := resultErrorFromError(bootstrapErr)
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+			result := resultForAuth(auth, provider, resultModel, false, rerr)
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
 			result.ModelFallbackReason = modelFallbackReasonFromError(bootstrapErr)
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
@@ -397,7 +395,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 
 		if closed && len(buffered) == 0 {
 			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
+			result := resultForAuth(auth, provider, resultModel, false, emptyErr)
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 			if idx < len(execModels)-1 {
 				lastErr = emptyErr
