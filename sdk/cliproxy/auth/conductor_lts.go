@@ -1088,7 +1088,7 @@ func (m *Manager) selectAuthForRequest(ctx context.Context, provider, model, req
 		}
 		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, selected, provider, model, opts)
 		if allowed {
-			return selected, attemptCtx, nil
+			return selected, contextWithAuthGeneration(attemptCtx, selected), nil
 		}
 		tried[authID] = struct{}{}
 		if homeMode {

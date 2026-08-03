@@ -98,6 +98,10 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+	// generation is a process-local lifecycle epoch. It changes when an auth is
+	// registered or changes provider so stale asynchronous work cannot write back
+	// into a replacement auth with the same ID.
+	generation uint64 `json:"-"`
 }
 
 const (

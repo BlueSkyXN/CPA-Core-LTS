@@ -114,7 +114,9 @@ type Manager struct {
 	mu                        sync.RWMutex
 	configCooldownMu          sync.Mutex
 	auths                     map[string]*Auth
-	scheduler                 *authScheduler
+	// authGeneration is allocated under mu and never persisted.
+	authGeneration uint64
+	scheduler      *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.

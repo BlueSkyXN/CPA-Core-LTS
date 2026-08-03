@@ -81,8 +81,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		clearedCooldown = clearCooldownStateForAuth(auth, now)
 	}
 	auth.EnsureIndex()
-	authClone := auth.Clone()
 	m.mu.Lock()
+	auth.generation = m.nextAuthGenerationLocked()
+	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -102,17 +103,30 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 
 // Update replaces an existing auth entry and notifies hooks.
 func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
+	saved, _, err := m.update(ctx, auth, 0, false)
+	return saved, err
+}
+
+func (m *Manager) updateIfGeneration(ctx context.Context, auth *Auth, expectedGeneration uint64) (*Auth, bool, error) {
+	return m.update(ctx, auth, expectedGeneration, true)
+}
+
+func (m *Manager) update(ctx context.Context, auth *Auth, expectedGeneration uint64, requireGeneration bool) (*Auth, bool, error) {
 	if auth == nil || auth.ID == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
-		return nil, fmt.Errorf("update auth: %w", errWeight)
+		return nil, false, fmt.Errorf("update auth: %w", errWeight)
 	}
 	m.mu.Lock()
 	existing, ok := m.auths[auth.ID]
 	if !ok || existing == nil {
 		m.mu.Unlock()
-		return nil, nil
+		return nil, false, nil
+	}
+	if requireGeneration && existing.generation != expectedGeneration {
+		m.mu.Unlock()
+		return nil, false, nil
 	}
 	if !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
@@ -121,6 +135,10 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	now := time.Now()
 	sameProvider := strings.EqualFold(strings.TrimSpace(existing.Provider), strings.TrimSpace(auth.Provider))
 	if sameProvider {
+		auth.generation = existing.generation
+		if auth.generation == 0 {
+			auth.generation = m.nextAuthGenerationLocked()
+		}
 		auth.Success = existing.Success
 		auth.Failed = existing.Failed
 		auth.recentRequests = existing.recentRequests
@@ -130,6 +148,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 			}
 		}
 	} else {
+		auth.generation = m.nextAuthGenerationLocked()
 		clearProviderRuntimeState(auth, now)
 	}
 	clearedCooldown := false
@@ -152,7 +171,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if clearedCooldown || !sameProvider {
 		m.persistCooldownStates(ctx)
 	}
-	return auth.Clone(), nil
+	return auth.Clone(), true, nil
 }
 
 // Remove deletes an auth from runtime state without persisting.
@@ -248,6 +267,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			continue
 		}
 		auth.EnsureIndex()
+		auth.generation = m.nextAuthGenerationLocked()
 		m.auths[auth.ID] = auth.Clone()
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)

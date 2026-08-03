@@ -516,6 +516,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
 	}
+	expectedGeneration := auth.generation
+	if requestGeneration := authGenerationFromContext(ctx, id); requestGeneration != 0 && requestGeneration != expectedGeneration {
+		return nil, authLifecycleChangedError()
+	}
 
 	// Another request may already have refreshed this credential.
 	if failedAccessToken != "" {
@@ -536,7 +540,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		unauthorized := isUnauthorizedError(err)
 		shouldReschedule := false
 		m.mu.Lock()
-		if current := m.auths[id]; current != nil {
+		if current := m.auths[id]; current != nil && current.generation == expectedGeneration {
 			current.LastError = refreshErrorFromError(err)
 			if unauthorized {
 				current.NextRefreshAfter = time.Time{}
@@ -551,6 +555,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 			if m.scheduler != nil {
 				m.scheduler.upsertAuth(current.Clone())
 			}
+		} else {
+			m.mu.Unlock()
+			return nil, err
 		}
 		m.mu.Unlock()
 		if shouldReschedule {
@@ -579,7 +586,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
 	}
-	saved, errUpdate := m.Update(ctx, updated)
+	saved, applied, errUpdate := m.updateIfGeneration(ctx, updated, expectedGeneration)
+	if !applied {
+		return nil, nil
+	}
 	for _, model := range modelsToResume {
 		registry.GetGlobalRegistry().ResumeClientModel(id, model)
 	}

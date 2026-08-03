@@ -297,6 +297,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			lastErr = codexRateLimitObservationPendingError{}
 			continue
 		}
+		attemptCtx = contextWithAuthGeneration(attemptCtx, auth)
 		if m.continuityBeforeDispatchHook != nil {
 			m.continuityBeforeDispatchHook()
 		}
@@ -327,11 +328,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
+			result := resultForAuth(auth, provider, routeModel, false, resultErrorFromError(errPrepare))
 			m.MarkResult(execCtx, result)
 			lastErr = errPrepare
 			continue
 		}
+		execCtx = contextWithAuthGeneration(execCtx, auth)
 		var authErr error
 		didRefreshOnUnauthorized := false
 		selectedPublished := false
@@ -376,6 +378,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
+					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
@@ -395,7 +398,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
+			result := resultForAuth(auth, provider, resultModel, errExec == nil, nil)
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -464,7 +467,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 
 		tried[auth.ID] = struct{}{}
-		execCtx := ctx
+		execCtx := contextWithAuthGeneration(ctx, auth)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -482,11 +485,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
+			result := resultForAuth(auth, provider, routeModel, false, resultErrorFromError(errPrepare))
 			m.MarkResult(execCtx, result)
 			lastErr = errPrepare
 			continue
 		}
+		execCtx = contextWithAuthGeneration(execCtx, auth)
 		var authErr error
 		didRefreshOnUnauthorized := false
 		selectedPublished := false
@@ -523,6 +527,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
+					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					if errExec != nil {
@@ -538,7 +543,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
+			result := resultForAuth(auth, provider, resultModel, errExec == nil, nil)
 			if errExec != nil {
 				result.Error = countTokensResultErrorFromError(errExec, execReq.Model)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -654,6 +659,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			lastErr = codexRateLimitObservationPendingError{}
 			continue
 		}
+		attemptCtx = contextWithAuthGeneration(attemptCtx, auth)
 		if m.continuityBeforeDispatchHook != nil {
 			m.continuityBeforeDispatchHook()
 		}
@@ -717,7 +723,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					return nil, errCancel
 				}
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
+			result := resultForAuth(auth, provider, routeModel, false, resultErrorFromError(errPrepare))
 			if selection != nil {
 				m.reportHomeResult(execCtx, result, auth)
 				releaseAttempt()
@@ -732,6 +738,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
+		execCtx = contextWithAuthGeneration(execCtx, auth)
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
 		streamExecutionModel := ""
 		if restoreExecutionModel {
@@ -966,9 +973,15 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 	defer lock.mu.Unlock()
 
 	target := auth.Clone()
+	managed := false
 	m.mu.RLock()
 	if current := m.auths[id]; current != nil {
+		if auth.generation != 0 && current.generation != auth.generation {
+			m.mu.RUnlock()
+			return auth, authLifecycleChangedError()
+		}
 		target = current.Clone()
+		managed = true
 	}
 	m.mu.RUnlock()
 
@@ -984,9 +997,15 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 		return target, nil
 	}
 
-	saved, errUpdate := m.Update(ctx, updated)
+	if !managed {
+		return updated, nil
+	}
+	saved, applied, errUpdate := m.updateIfGeneration(ctx, updated, target.generation)
 	if errUpdate != nil {
 		return updated, errUpdate
+	}
+	if !applied {
+		return auth, authLifecycleChangedError()
 	}
 	if saved != nil {
 		return saved, nil

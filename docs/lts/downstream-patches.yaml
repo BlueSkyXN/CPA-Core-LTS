@@ -952,3 +952,37 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream separates Codex transient rate limits from usage quota at executor and auth-state boundaries, preserves active confirmed quota against older transient results, keeps non-buffering delivered streams independent from reconstruction memory caps, restores exact/canonical thinking-family cooldowns without stale races, clears all provider-owned runtime and persisted cooldown state on same-ID provider replacement, and every listed regression passes after removing the downstream implementation.
+
+  - id: auth-provider-generation-fence
+    reason: Auth IDs are stable across watcher refreshes and can be reused after provider replacement or remove-and-register. An execution, stream, token count, request-auth preparation, or credential refresh that started on the previous lifecycle could therefore write quota, health, token, runtime, scheduler, registry, or persisted cooldown state into the replacement auth. LTS assigns a process-local, non-persisted generation to each auth lifecycle, carries it through every managed request path, and accepts writebacks only when both generation and provider still match.
+    introduced_in: 7db4a30d3c7b489503873df855146ad911bec117
+    affected_upstream_range: through a88197f845c979132c8978ea223c6af05cc81536 (v7.2.116, 2026-08-03); upstream still keys asynchronous result, preparation, and refresh writebacks only by auth ID, accepts persisted cooldown records from a different provider, and allows a stale request to refresh a same-ID replacement provider. This adapts the unique lifecycle behavior recovered from closed CPA-Core-LTS PR #192 commit 29851edf to the post-v7.2.116 split conductor files, while adding count-token, stream, and stale cross-provider refresh coverage absent from the recovered patch.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_cooldown.go
+      - sdk/cliproxy/auth/conductor_cooldown_provider_test.go
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/conductor_generation.go
+      - sdk/cliproxy/auth/conductor_generation_test.go
+      - sdk/cliproxy/auth/conductor_home.go
+      - sdk/cliproxy/auth/conductor_lifecycle.go
+      - sdk/cliproxy/auth/conductor_lts.go
+      - sdk/cliproxy/auth/conductor_refresh.go
+      - sdk/cliproxy/auth/conductor_stream.go
+      - sdk/cliproxy/auth/types.go
+    regression_tests:
+      - TestManager_ProviderTransitionRejectsStaleExecutionGeneration
+      - TestManager_ProviderTransitionRejectsStaleCountTokensGeneration
+      - TestManager_ProviderTransitionRejectsStaleStreamGeneration
+      - TestManager_ProviderTransitionRejectsStaleRequestAuthPreparation
+      - TestManager_SelectAuthForRequestGenerationRejectsStaleExternalResult
+      - TestManager_StaleRequestCannotRefreshReplacementProvider
+      - TestManager_MarkResultRejectsStaleProviderWithoutGenerationContext
+      - TestManager_SelectAuthForRequestGenerationRejectsSameProviderReplacement
+      - TestManager_ProviderTransitionRejectsStaleRefreshSuccessGeneration
+      - TestManager_ProviderTransitionRejectsStaleRefreshFailureGeneration
+      - TestManager_RestoreCooldownRecordProviderCompatibility
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream gives every auth lifecycle a non-persisted generation, carries it through execute, stream, token-count, external selection, request preparation, refresh, model-pool, fallback, and Home-compatible paths, rejects stale provider or generation writebacks before hooks, persistence, scheduler, registry, and cooldown mutations, rejects persisted cooldown records from another provider, prevents an old request from refreshing a replacement provider, and all listed regressions pass after removing the downstream implementation.
