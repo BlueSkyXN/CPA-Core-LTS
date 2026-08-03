@@ -95,7 +95,9 @@ func TestCodexWebsocketsExecutorFinalizesClientIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	exec := NewCodexWebsocketsExecutor(&config.Config{
+		Codex: config.CodexConfig{DisableCodexCloaking: true},
+	})
 	auth := &cliproxyauth.Auth{
 		Provider: "codex",
 		Attributes: map[string]string{
@@ -206,7 +208,7 @@ func TestFinalizeCodexClientIdentityHeaders(t *testing.T) {
 			version:        "0.1.0",
 			wantOriginator: codexOriginator,
 			wantUserAgent:  codexUserAgent,
-			wantVersion:    "0.135.0",
+			wantVersion:    "0.146.0",
 			wantSession:    true,
 		},
 		{
@@ -217,7 +219,7 @@ func TestFinalizeCodexClientIdentityHeaders(t *testing.T) {
 			version:        "0.1.0",
 			wantOriginator: codexOriginator,
 			wantUserAgent:  codexUserAgent,
-			wantVersion:    "0.135.0",
+			wantVersion:    "0.146.0",
 			wantSession:    true,
 		},
 		{
@@ -315,8 +317,8 @@ func TestCodexDirectImageOAuthFinalizesClientIdentity(t *testing.T) {
 		if got := headers.Get("Originator"); got != codexOriginator {
 			t.Fatalf("Originator = %q, want %q", got, codexOriginator)
 		}
-		if got := headers.Get("Version"); got != "0.135.0" {
-			t.Fatalf("Version = %q, want 0.135.0", got)
+		if got := headers.Get("Version"); got != "0.146.0" {
+			t.Fatalf("Version = %q, want 0.146.0", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for direct image request")
