@@ -288,8 +288,32 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 		msg:                 string(body),
 		modelFallbackReason: classification.ModelFallbackReason,
 		retryAfter:          classification.RetryAfter,
+		codexRateLimitClass: codexRateLimitClass(body),
 	}
 	return err
+}
+
+const (
+	CodexRateLimitClassUsageLimit = "usage-limit"
+	CodexRateLimitClassTransient  = "transient-rate-limit"
+)
+
+func codexRateLimitClass(body []byte) string {
+	if isCodexUsageLimitError(body) {
+		return CodexRateLimitClassUsageLimit
+	}
+	for _, candidate := range []string{
+		gjson.GetBytes(body, "error.type").String(),
+		gjson.GetBytes(body, "error.code").String(),
+		gjson.GetBytes(body, "type").String(),
+		gjson.GetBytes(body, "code").String(),
+	} {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "rate_limit_error", "rate_limit_exceeded":
+			return CodexRateLimitClassTransient
+		}
+	}
+	return ""
 }
 
 func classifyCodexStatusError(statusCode int, body []byte) []byte {

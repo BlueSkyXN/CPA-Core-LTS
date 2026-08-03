@@ -95,12 +95,28 @@ func TestNewCodexStatusErrTreatsUsageLimitAsRetryableRateLimit(t *testing.T) {
 	if got := err.ModelFallbackReason(); got != "usage-limit" {
 		t.Fatalf("ModelFallbackReason() = %q, want usage-limit", got)
 	}
+	if got := err.CodexRateLimitClass(); got != CodexRateLimitClassUsageLimit {
+		t.Fatalf("CodexRateLimitClass() = %q, want %q", got, CodexRateLimitClassUsageLimit)
+	}
 }
 
 func TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback(t *testing.T) {
 	err := newCodexStatusErr(http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}`))
 	if got := err.ModelFallbackReason(); got != "" {
 		t.Fatalf("ModelFallbackReason() = %q, want empty", got)
+	}
+	if got := err.CodexRateLimitClass(); got != CodexRateLimitClassTransient {
+		t.Fatalf("CodexRateLimitClass() = %q, want %q", got, CodexRateLimitClassTransient)
+	}
+}
+
+func TestGenericStatusErrDoesNotClassifyCodexRateLimit(t *testing.T) {
+	err := statusErr{
+		code: http.StatusTooManyRequests,
+		msg:  `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+	}
+	if got := err.CodexRateLimitClass(); got != "" {
+		t.Fatalf("CodexRateLimitClass() = %q, want empty for non-Codex status error", got)
 	}
 }
 

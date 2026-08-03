@@ -1707,6 +1707,64 @@ func TestCodexExecutorAbnormalReasoningRetry_ObserveOnlyStreamingDoesNotBufferUn
 	}
 }
 
+func TestCodexExecutorAbnormalReasoningRetry_NonBufferingStreamOverReconstructionCapDoesNotFailAfterDelta(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{
+			name: "observe only",
+			cfg:  codexAbnormalReasoningRetryTestConfigWithAction(config.CodexAbnormalReasoningRetryActionObserveOnly),
+		},
+		{
+			name: "stream buffer disabled",
+			cfg: func() *config.Config {
+				streamBuffer := false
+				return codexAbnormalReasoningRetryTestConfig(nil, &streamBuffer)
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			streamBufferMaxBytes := int64(1)
+			tt.cfg.Codex.AbnormalReasoningRetry.StreamBufferMaxBytes = &streamBufferMaxBytes
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"visible"}` + "\n\n"))
+				_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"visible"}]}}` + "\n\n"))
+				_, _ = w.Write([]byte(codexCompletedSSE("gpt-5.5", 100)))
+			}))
+			defer server.Close()
+
+			executor := NewCodexExecutor(tt.cfg)
+			result, err := executor.ExecuteStream(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+				Model:   "gpt-5.5",
+				Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+			}, cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FromString("openai-response"),
+				Stream:       true,
+			})
+			if err != nil {
+				t.Fatalf("ExecuteStream error = %v", err)
+			}
+
+			var payload []byte
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					t.Fatalf("stream emitted an error after visible delta: %v", chunk.Err)
+				}
+				payload = append(payload, chunk.Payload...)
+			}
+			if !bytes.Contains(payload, []byte("visible")) {
+				t.Fatalf("stream payload = %s, want visible delta", payload)
+			}
+		})
+	}
+}
+
 func TestCodexExecutorAbnormalReasoningRetry_StreamingBufferMaxBytesAbnormalStillRetriesWithoutFallback(t *testing.T) {
 	streamBufferMaxBytes := int64(1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

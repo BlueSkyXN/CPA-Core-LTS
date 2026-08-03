@@ -109,6 +109,146 @@ func TestManager_ReconcileRegistryModelStatesPreservesFutureQuotaCooldown(t *tes
 	}
 }
 
+func TestManager_ReconcileRegistryModelStatesRestoresCooldownForRegisteredThinkingSuffix(t *testing.T) {
+	const (
+		authID       = "reconcile-thinking-suffix-auth"
+		model        = "reconcile-thinking-suffix-model(8192)"
+		siblingModel = "reconcile-thinking-suffix-model(16384)"
+	)
+	ctx := context.Background()
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}, {ID: siblingModel}})
+	t.Cleanup(func() { reg.UnregisterClient(authID) })
+
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	if _, err := manager.Register(ctx, &Auth{ID: authID, Provider: "codex"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	manager.MarkResult(ctx, Result{
+		AuthID: authID, Provider: "codex", Model: model,
+		Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"},
+	})
+
+	before, ok := manager.GetByID(authID)
+	if !ok || before.ModelStates[model] == nil {
+		t.Fatal("thinking-suffix cooldown was not recorded")
+	}
+	resetAggregatedAuthStateForReconcileTest(t, manager, before)
+
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}, {ID: siblingModel}})
+	manager.ReconcileRegistryModelStates(ctx, authID)
+	if count := reg.GetModelCount(model); count != 0 {
+		t.Fatalf("registry model count after reconciliation = %d, want 0", count)
+	}
+	if count := reg.GetModelCount(siblingModel); count != 1 {
+		t.Fatalf("sibling registry model count = %d, want unaffected suffix available", count)
+	}
+}
+
+func TestManager_ReconcileRegistryModelStatesCanonicalStateAppliesToEntireRegisteredFamily(t *testing.T) {
+	const (
+		authID       = "reconcile-canonical-thinking-auth"
+		model        = "reconcile-canonical-thinking-model"
+		firstSuffix  = "reconcile-canonical-thinking-model(8192)"
+		secondSuffix = "reconcile-canonical-thinking-model(16384)"
+	)
+	ctx := context.Background()
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}, {ID: firstSuffix}, {ID: secondSuffix}})
+	t.Cleanup(func() { reg.UnregisterClient(authID) })
+
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	if _, err := manager.Register(ctx, &Auth{ID: authID, Provider: "codex"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	manager.MarkResult(ctx, Result{
+		AuthID: authID, Provider: "codex", Model: model,
+		Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"},
+	})
+
+	before, ok := manager.GetByID(authID)
+	if !ok || before.ModelStates[model] == nil {
+		t.Fatal("canonical model cooldown was not recorded")
+	}
+	resetAggregatedAuthStateForReconcileTest(t, manager, before)
+
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}, {ID: firstSuffix}, {ID: secondSuffix}})
+	manager.ReconcileRegistryModelStates(ctx, authID)
+	for _, registeredModel := range []string{model, firstSuffix, secondSuffix} {
+		if count := reg.GetModelCount(registeredModel); count != 0 {
+			t.Fatalf("registry count for %s = %d, want cooldown restored", registeredModel, count)
+		}
+	}
+}
+
+func TestManager_ReconcileRegistryModelStatesMissingSuffixFallsBackToRegisteredCanonicalModel(t *testing.T) {
+	const (
+		authID         = "reconcile-missing-suffix-auth"
+		canonicalModel = "reconcile-missing-suffix-model"
+		stateModel     = "reconcile-missing-suffix-model(8192)"
+	)
+	ctx := context.Background()
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: canonicalModel}})
+	t.Cleanup(func() { reg.UnregisterClient(authID) })
+
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	if _, err := manager.Register(ctx, &Auth{ID: authID, Provider: "codex"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	manager.MarkResult(ctx, Result{
+		AuthID: authID, Provider: "codex", Model: stateModel,
+		Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"},
+	})
+
+	before, ok := manager.GetByID(authID)
+	if !ok || before.ModelStates[stateModel] == nil {
+		t.Fatal("suffix model cooldown was not recorded")
+	}
+	resetAggregatedAuthStateForReconcileTest(t, manager, before)
+
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: canonicalModel}})
+	manager.ReconcileRegistryModelStates(ctx, authID)
+	if count := reg.GetModelCount(canonicalModel); count != 0 {
+		t.Fatalf("canonical registry count = %d, want missing suffix cooldown restored", count)
+	}
+}
+
+func TestManager_ReconcileRegistryModelStatesDoesNotRestoreCooldownAfterRacedSuccess(t *testing.T) {
+	const (
+		authID = "reconcile-raced-success-auth"
+		model  = "reconcile-raced-success-model"
+	)
+	ctx := context.Background()
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(authID) })
+
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	if _, err := manager.Register(ctx, &Auth{ID: authID, Provider: "codex"}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	manager.MarkResult(ctx, Result{
+		AuthID: authID, Provider: "codex", Model: model,
+		Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"},
+	})
+
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}})
+	manager.reconcileBeforeRegistryRestoreHook = func() {
+		manager.reconcileBeforeRegistryRestoreHook = nil
+		manager.MarkResult(ctx, Result{AuthID: authID, Provider: "codex", Model: model, Success: true})
+	}
+
+	manager.ReconcileRegistryModelStates(ctx, authID)
+	if count := reg.GetModelCount(model); count != 1 {
+		t.Fatalf("registry model count after raced success = %d, want 1", count)
+	}
+	updated, ok := manager.GetByID(authID)
+	if !ok || updated.ModelStates[model] == nil || !modelStateIsClean(updated.ModelStates[model]) {
+		t.Fatalf("model state after raced success = %+v, want clean", updated)
+	}
+}
+
 func TestManager_ReconcileRegistryModelStatesKeepsCloudflareCooldownRoutingAvailable(t *testing.T) {
 	const (
 		authID = "reconcile-cloudflare-auth"

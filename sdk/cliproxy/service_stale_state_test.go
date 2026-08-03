@@ -73,6 +73,56 @@ func TestServiceApplyCoreAuthAddOrUpdate_DeleteReAddDoesNotInheritStaleRuntimeSt
 	}
 }
 
+func TestServiceApplyCoreAuthAddOrUpdate_ProviderChangeDoesNotInheritRuntimeState(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+	const authID = "service-provider-change-auth"
+	staleRetry := time.Now().Add(time.Hour)
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(authID) })
+
+	service.applyCoreAuthAddOrUpdate(context.Background(), &coreauth.Auth{
+		ID: authID, Provider: "claude", Status: coreauth.StatusActive,
+		LastRefreshedAt: time.Now().Add(-time.Hour), NextRefreshAfter: staleRetry,
+		ModelStates: map[string]*coreauth.ModelState{
+			"shared-model": {Unavailable: true, Status: coreauth.StatusError, NextRetryAfter: staleRetry},
+		},
+	})
+
+	service.applyCoreAuthAddOrUpdate(context.Background(), &coreauth.Auth{
+		ID: authID, Provider: "xai", Status: coreauth.StatusError,
+		StatusMessage: "incoming stale provider error", Unavailable: true,
+		Quota:           coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: staleRetry},
+		LastError:       &coreauth.Error{Code: "stale", Message: "incoming stale provider error"},
+		LastRefreshedAt: staleRetry.Add(-2 * time.Hour), NextRefreshAfter: staleRetry,
+		NextRetryAfter: staleRetry,
+		ModelStates: map[string]*coreauth.ModelState{
+			"incoming-stale-model": {
+				Unavailable: true, Status: coreauth.StatusError, NextRetryAfter: staleRetry,
+				Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: staleRetry},
+			},
+		},
+	})
+
+	updated, ok := service.coreManager.GetByID(authID)
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if !updated.LastRefreshedAt.IsZero() || !updated.NextRefreshAfter.IsZero() {
+		t.Fatalf("provider change inherited refresh timestamps: last=%v next=%v", updated.LastRefreshedAt, updated.NextRefreshAfter)
+	}
+	if len(updated.ModelStates) != 0 {
+		t.Fatalf("provider change inherited ModelStates: %+v", updated.ModelStates)
+	}
+	if updated.Status != coreauth.StatusActive || updated.Unavailable || updated.StatusMessage != "" || updated.LastError != nil {
+		t.Fatalf("provider change retained auth error state: %+v", updated)
+	}
+	if updated.Quota != (coreauth.QuotaState{}) || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("provider change retained quota/retry state: quota=%+v retry=%v", updated.Quota, updated.NextRetryAfter)
+	}
+}
+
 func TestForceHomeRuntimeConfigEnablesUsageStatistics(t *testing.T) {
 	cfg := &config.Config{
 		UsageStatisticsEnabled: false,

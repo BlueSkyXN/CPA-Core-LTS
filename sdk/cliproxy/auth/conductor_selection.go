@@ -194,22 +194,32 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	}
 
 	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(authID)
-	supported := make(map[string]struct{}, len(supportedModels))
+	supported := make(map[string][]string, len(supportedModels))
 	for _, model := range supportedModels {
 		if model == nil {
 			continue
 		}
+		rawModelID := strings.TrimSpace(model.ID)
 		modelKey := canonicalModelKey(model.ID)
-		if modelKey == "" {
+		if modelKey == "" || rawModelID == "" {
 			continue
 		}
-		supported[modelKey] = struct{}{}
+		registered := supported[modelKey]
+		alreadyRegistered := false
+		for _, existingModelID := range registered {
+			if existingModelID == rawModelID {
+				alreadyRegistered = true
+				break
+			}
+		}
+		if !alreadyRegistered {
+			supported[modelKey] = append(registered, rawModelID)
+		}
 	}
 
 	type registryCooldown struct {
-		model  string
-		reason string
-		quota  bool
+		stateModel       string
+		registeredModels []string
 	}
 
 	var snapshot *Auth
@@ -226,7 +236,12 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if baseModel == "" {
 				baseModel = strings.TrimSpace(modelKey)
 			}
-			if _, supportedModel := supported[baseModel]; !supportedModel {
+			registeredModels, supportedModel := supported[baseModel]
+			if supportedModel {
+				registeredModels = registeredModelsForReconciledState(modelKey, baseModel, registeredModels)
+				supportedModel = len(registeredModels) > 0
+			}
+			if !supportedModel {
 				// Drop state for models that disappeared from the current registry
 				// snapshot. Keeping them around leaks stale errors into auth-level
 				// status, management output, and websocket fallback checks.
@@ -242,11 +257,10 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			}
 			if state.Unavailable && state.NextRetryAfter.After(now) {
 				preserved = true
-				if reason, quota, suspend := registrySuspensionForModelState(state); suspend {
+				if _, _, suspend := registrySuspensionForModelState(state); suspend {
 					cooldowns = append(cooldowns, registryCooldown{
-						model:  baseModel,
-						reason: reason,
-						quota:  quota,
+						stateModel:       modelKey,
+						registeredModels: append([]string(nil), registeredModels...),
 					})
 				}
 				continue
@@ -293,17 +307,65 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 	}
 	m.mu.Unlock()
 
-	reg := registry.GetGlobalRegistry()
-	for _, cooldown := range cooldowns {
-		if cooldown.quota {
-			reg.SetModelQuotaExceeded(authID, cooldown.model)
-		}
-		reg.SuspendClientModel(authID, cooldown.model, cooldown.reason)
+	if m.reconcileBeforeRegistryRestoreHook != nil {
+		m.reconcileBeforeRegistryRestoreHook()
 	}
+
+	reg := registry.GetGlobalRegistry()
+	m.mu.Lock()
+	currentAuth := m.auths[authID]
+	for _, cooldown := range cooldowns {
+		if currentAuth == nil {
+			break
+		}
+		state := currentAuth.ModelStates[cooldown.stateModel]
+		if state == nil || !state.Unavailable || !state.NextRetryAfter.After(time.Now()) {
+			continue
+		}
+		reason, quota, suspend := registrySuspensionForModelState(state)
+		if !suspend {
+			continue
+		}
+		for _, registeredModel := range cooldown.registeredModels {
+			if quota {
+				reg.SetModelQuotaExceeded(authID, registeredModel)
+			}
+			reg.SuspendClientModel(authID, registeredModel, reason)
+		}
+	}
+	if snapshot != nil && currentAuth != nil {
+		snapshot = currentAuth.Clone()
+	}
+	m.mu.Unlock()
 
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
+}
+
+// registeredModelsForReconciledState maps one persisted ModelState back to
+// concrete registry IDs without spreading a suffix-specific cooldown to sibling
+// suffixes. Canonical state applies to the full registered family.
+func registeredModelsForReconciledState(stateModel, baseModel string, registeredModels []string) []string {
+	stateModel = strings.TrimSpace(stateModel)
+	baseModel = strings.TrimSpace(baseModel)
+	if stateModel == "" || baseModel == "" {
+		return nil
+	}
+	if strings.EqualFold(stateModel, baseModel) {
+		return append([]string(nil), registeredModels...)
+	}
+	for _, registeredModel := range registeredModels {
+		if strings.EqualFold(strings.TrimSpace(registeredModel), stateModel) {
+			return []string{registeredModel}
+		}
+	}
+	for _, registeredModel := range registeredModels {
+		if strings.EqualFold(strings.TrimSpace(registeredModel), baseModel) {
+			return []string{registeredModel}
+		}
+	}
+	return nil
 }
 
 // jitteredCooldownWait adds a small random delay to a cooldown wait so
