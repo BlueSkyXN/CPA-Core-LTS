@@ -23,17 +23,18 @@ import (
 )
 
 type xaiPreparedRequest struct {
-	baseModel             string
-	from                  sdktranslator.Format
-	responseFormat        sdktranslator.Format
-	to                    sdktranslator.Format
-	originalPayload       []byte
-	body                  []byte
-	namespaceTools        map[string]xaiNamespaceToolRef
-	clientDeclaredTools   map[xaiClientToolKey]struct{}
-	sessionID             string
-	replayScope           xaiReasoningReplayScope
-	filterInternalXSearch bool
+	baseModel                string
+	from                     sdktranslator.Format
+	responseFormat           sdktranslator.Format
+	to                       sdktranslator.Format
+	originalPayload          []byte
+	body                     []byte
+	namespaceTools           map[string]xaiNamespaceToolRef
+	plaintextMultiAgentTools map[xaiClientToolKey]struct{}
+	clientDeclaredTools      map[xaiClientToolKey]struct{}
+	sessionID                string
+	replayScope              xaiReasoningReplayScope
+	filterInternalXSearch    bool
 }
 
 type xaiNamespaceToolRef struct {
@@ -88,6 +89,9 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = helps.RewriteCodexMultiAgentV2Input(ctx, opts.Headers, body, e.cfg)
+	beforeMultiAgentEncryption := bytes.Clone(body)
+	body = helps.RewriteCodexMultiAgentV2MessageEncryption(ctx, opts.Headers, body, e.cfg)
+	plaintextMultiAgentTools := collectXAIPlaintextMultiAgentTools(beforeMultiAgentEncryption, body)
 	namespaceTools := collectXAINamespaceToolRefs(body)
 	// Collect before normalizeXAITools flattens namespace wrappers so keys match
 	// the post-restore (namespace, short-name) shape used by the response filter.
@@ -124,17 +128,18 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	}
 
 	return &xaiPreparedRequest{
-		baseModel:             baseModel,
-		from:                  from,
-		responseFormat:        responseFormat,
-		to:                    to,
-		originalPayload:       originalPayload,
-		body:                  body,
-		namespaceTools:        namespaceTools,
-		clientDeclaredTools:   clientDeclaredTools,
-		sessionID:             sessionID,
-		replayScope:           replayScope,
-		filterInternalXSearch: xaiRequestHasNativeXSearch(body),
+		baseModel:                baseModel,
+		from:                     from,
+		responseFormat:           responseFormat,
+		to:                       to,
+		originalPayload:          originalPayload,
+		body:                     body,
+		namespaceTools:           namespaceTools,
+		plaintextMultiAgentTools: plaintextMultiAgentTools,
+		clientDeclaredTools:      clientDeclaredTools,
+		sessionID:                sessionID,
+		replayScope:              replayScope,
+		filterInternalXSearch:    xaiRequestHasNativeXSearch(body),
 	}, nil
 }
 
@@ -1061,6 +1066,69 @@ func collectXAINamespaceToolRefs(body []byte) map[string]xaiNamespaceToolRef {
 		for _, item := range input.Array() {
 			if item.Get("type").String() == "additional_tools" {
 				collect(item.Get("tools"))
+			}
+		}
+	}
+	return refs
+}
+
+// collectXAIPlaintextMultiAgentTools records only function schemas whose
+// boolean-true encrypted marker was actually removed at the xAI boundary.
+// Comparing the adjacent before/after bodies keeps provenance tied to the
+// exported Multi-Agent rewrite instead of duplicating its namespace rules.
+func collectXAIPlaintextMultiAgentTools(beforeBody, afterBody []byte) map[xaiClientToolKey]struct{} {
+	refs := make(map[xaiClientToolKey]struct{})
+	if !gjson.ValidBytes(beforeBody) || !gjson.ValidBytes(afterBody) {
+		return refs
+	}
+
+	var collect func(gjson.Result, gjson.Result, string)
+	collect = func(beforeTools, afterTools gjson.Result, namespace string) {
+		if !beforeTools.IsArray() || !afterTools.IsArray() {
+			return
+		}
+		afterItems := afterTools.Array()
+		for index, beforeTool := range beforeTools.Array() {
+			if index >= len(afterItems) {
+				return
+			}
+			afterTool := afterItems[index]
+			beforeType := strings.TrimSpace(beforeTool.Get("type").String())
+			if beforeType != strings.TrimSpace(afterTool.Get("type").String()) ||
+				strings.TrimSpace(beforeTool.Get("name").String()) != strings.TrimSpace(afterTool.Get("name").String()) {
+				continue
+			}
+
+			switch beforeType {
+			case xaiNamespaceToolType:
+				collect(beforeTool.Get("tools"), afterTool.Get("tools"), strings.TrimSpace(beforeTool.Get("name").String()))
+			case xaiFunctionToolType:
+				if namespace == "" ||
+					beforeTool.Get("parameters.properties.message.encrypted").Type != gjson.True ||
+					afterTool.Get("parameters.properties.message.encrypted").Exists() {
+					continue
+				}
+				refs[xaiClientToolKey{
+					namespace: namespace,
+					name:      strings.TrimSpace(beforeTool.Get("name").String()),
+					toolType:  xaiFunctionToolType,
+				}] = struct{}{}
+			}
+		}
+	}
+
+	collect(gjson.GetBytes(beforeBody, "tools"), gjson.GetBytes(afterBody, "tools"), "")
+	beforeInput := gjson.GetBytes(beforeBody, "input")
+	afterInput := gjson.GetBytes(afterBody, "input")
+	if beforeInput.IsArray() && afterInput.IsArray() {
+		afterItems := afterInput.Array()
+		for index, beforeItem := range beforeInput.Array() {
+			if index >= len(afterItems) {
+				break
+			}
+			if strings.TrimSpace(beforeItem.Get("type").String()) == "additional_tools" &&
+				strings.TrimSpace(afterItems[index].Get("type").String()) == "additional_tools" {
+				collect(beforeItem.Get("tools"), afterItems[index].Get("tools"), "")
 			}
 		}
 	}

@@ -110,6 +110,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				hasPendingEventLine := pendingEventLine != nil
 				for i, eventData := range eventDataList {
 					eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+					eventData = restoreXAIPlaintextMultiAgentFunctionArgs(eventData, prepared.plaintextMultiAgentTools)
 					eventData = responseFilter.apply(eventData)
 					if len(eventData) == 0 {
 						if hasPendingEventLine && i == 0 {
