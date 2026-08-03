@@ -194,6 +194,62 @@ func NormalizeRequest(body []byte, directTurnMetadata string, policy Policy) ([]
 	return updatedBody, state, nil
 }
 
+// IsUnambiguousRootUserTurn reports whether the request body proves that it is
+// a root, user-originated Codex turn. Missing metadata is an ordinary false
+// result; malformed or duplicate metadata is rejected so callers can fail
+// closed without trusting ambiguous projections.
+func IsUnambiguousRootUserTurn(body []byte) (bool, error) {
+	clientMetadata, exists, err := clientMetadataObject(body)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	rawCanonical, exists := clientMetadata["x-codex-turn-metadata"]
+	if !exists {
+		return false, nil
+	}
+	var canonicalText string
+	if err = json.Unmarshal(rawCanonical, &canonicalText); err != nil {
+		return false, &ValidationError{Code: "canonical metadata must be a JSON string"}
+	}
+	canonical, _, err := decodeCanonicalObject(canonicalText)
+	if err != nil {
+		return false, err
+	}
+	requestKind, hasRequestKind := canonicalString(canonical, "request_kind")
+	if !hasRequestKind {
+		if _, present := canonical["request_kind"]; present {
+			return false, &ValidationError{Code: "canonical request_kind must be a string"}
+		}
+		return false, nil
+	}
+	threadSource, hasThreadSource := canonicalString(canonical, "thread_source")
+	if !hasThreadSource {
+		if _, present := canonical["thread_source"]; present {
+			return false, &ValidationError{Code: "canonical thread_source must be a string"}
+		}
+		return false, nil
+	}
+	if requestKind != "turn" || threadSource != "user" {
+		return false, nil
+	}
+	if _, present := canonical["parent_thread_id"]; present {
+		return false, nil
+	}
+	if _, present := canonical["subagent_kind"]; present {
+		return false, nil
+	}
+	if _, present := clientMetadata["x-openai-subagent"]; present {
+		return false, nil
+	}
+	if _, present := clientMetadata["x-codex-parent-thread-id"]; present {
+		return false, nil
+	}
+	return true, nil
+}
+
 func detectCanonicalState(body []byte, directTurnMetadata string) State {
 	state, bodyCanonical, bodyUnique := detectBodyCanonicalState(body)
 	if state.CanonicalPresent {

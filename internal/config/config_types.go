@@ -149,6 +149,7 @@ type XAIConfig struct {
 type CodexConfig struct {
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
 	ClientMetadata         CodexClientMetadataConfig         `yaml:"client-metadata" json:"client-metadata"`
+	DesktopToolOverlay     CodexDesktopToolOverlayConfig     `yaml:"desktop-tool-overlay" json:"desktop-tool-overlay"`
 	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
 	RateLimitContinuity    CodexRateLimitContinuityConfig    `yaml:"rate-limit-continuity" json:"rate-limit-continuity"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
@@ -158,6 +159,13 @@ type CodexConfig struct {
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
+}
+
+// CodexDesktopToolOverlayConfig projects selected codex_app children into
+// eligible Codex Desktop requests after auth selection.
+type CodexDesktopToolOverlayConfig struct {
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Tools   []string `yaml:"tools" json:"tools"`
 }
 
 // CodexLiveMediaRelayConfig configures the in-process Codex Live WebRTC gateway.

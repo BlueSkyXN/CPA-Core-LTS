@@ -191,6 +191,17 @@ func TestBuildConfigChangeDetailsCodexClientMetadata(t *testing.T) {
 	expectContains(t, details, "codex.client-metadata.workspace-policy: passthrough -> drop")
 }
 
+func TestBuildConfigChangeDetailsCodexDesktopToolOverlay(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{}
+	newCfg.Codex.DesktopToolOverlay.Enabled = true
+	newCfg.Codex.DesktopToolOverlay.Tools = []string{"list_threads", "read_thread"}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "codex.desktop-tool-overlay.enabled: false -> true")
+	expectContains(t, details, "codex.desktop-tool-overlay.tools: [] -> [list_threads, read_thread] (0 -> 2 entries)")
+}
+
 func TestBuildConfigChangeDetails_CodexAbnormalReasoningRetry(t *testing.T) {
 	streamBuffer := false
 	streamBufferMaxBytes := int64(4096)

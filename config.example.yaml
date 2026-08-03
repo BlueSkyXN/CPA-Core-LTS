@@ -236,6 +236,17 @@ codex:
   # normalizes encrypted agent_message content for Codex, and converts agent_message input
   # into standard user messages for non-Codex upstream protocols.
   optimize-multi-agent-v2: false
+  # Project selected Codex Desktop codex_app tools into eligible non-GPT root
+  # requests after credential selection. Disabled by default; Desktop GPT/Code
+  # Mode requests and subagent requests are always left unchanged.
+  desktop-tool-overlay:
+    enabled: false
+    tools:
+      - get_handoff_status
+      - list_projects
+      - list_threads
+      - read_thread
+      - wait_threads
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:
