@@ -118,6 +118,18 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OptimizeMultiAgentV2 != newCfg.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Codex.OptimizeMultiAgentV2, newCfg.Codex.OptimizeMultiAgentV2))
 	}
+	if oldCfg.Codex.DesktopToolOverlay.Enabled != newCfg.Codex.DesktopToolOverlay.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.desktop-tool-overlay.enabled: %t -> %t", oldCfg.Codex.DesktopToolOverlay.Enabled, newCfg.Codex.DesktopToolOverlay.Enabled))
+	}
+	if !reflect.DeepEqual(oldCfg.Codex.DesktopToolOverlay.Tools, newCfg.Codex.DesktopToolOverlay.Tools) {
+		changes = append(changes, fmt.Sprintf(
+			"codex.desktop-tool-overlay.tools: [%s] -> [%s] (%d -> %d entries)",
+			strings.Join(oldCfg.Codex.DesktopToolOverlay.Tools, ", "),
+			strings.Join(newCfg.Codex.DesktopToolOverlay.Tools, ", "),
+			len(oldCfg.Codex.DesktopToolOverlay.Tools),
+			len(newCfg.Codex.DesktopToolOverlay.Tools),
+		))
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}

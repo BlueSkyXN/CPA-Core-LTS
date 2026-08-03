@@ -801,3 +801,52 @@ patches:
     upstream_issue_or_pr: "router-for-me/CLIProxyAPI#3213; related closed report router-for-me/CLIProxyAPI#3184"
     state: required
     retire_when: Upstream merges an equivalent turn-grouping fix that keeps one assistant turn of parallel function/custom tool calls grouped across reasoning and assistant-text items, preserves turn boundaries at user/developer messages, and a protected full-sync absorbs it with all listed regressions passing after removing the downstream implementation.
+
+  - id: codex-desktop-tool-overlay
+    reason: Codex Desktop registers deferred codex_app handlers that are not present in the Direct tool surface sent to third-party Responses models, so those models cannot read or coordinate existing Desktop tasks even though the app already owns the handlers. LTS therefore provides a default-off, fixed-version projection that adds only explicitly configured codex_app children after auth selection, only for provable root Desktop turns on non-GPT models, and preserves the existing provider namespace round trip without executing any app operation inside CPA.
+    introduced_in: b052097362ef63bd35329c8b18d73c651078e85d
+    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream supports namespace flattening and response restoration for OpenAI Chat and xAI, but does not project the missing Codex Desktop codex_app children into eligible third-party Direct requests with the LTS model, UA, root-turn, tool-surface, and configuration gates.
+    files:
+      - config.example.yaml
+      - docs/lts/downstream-patches.yaml
+      - internal/codexapptools/registry.go
+      - internal/codexapptools/registry_test.go
+      - internal/codexmetadata/request.go
+      - internal/codexmetadata/request_test.go
+      - internal/config/codex_desktop_tool_overlay.go
+      - internal/config/codex_desktop_tool_overlay_test.go
+      - internal/config/config_load.go
+      - internal/config/config_types.go
+      - internal/config/parse.go
+      - internal/runtime/executor/xai_desktop_tool_overlay_test.go
+      - internal/translator/openai/openai/responses/desktop_tool_overlay_roundtrip_test.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/conductor_home_execution.go
+      - sdk/cliproxy/auth/conductor_stream.go
+      - sdk/cliproxy/auth/desktop_tool_overlay.go
+      - sdk/cliproxy/auth/desktop_tool_overlay_test.go
+    regression_tests:
+      - TestRegistryDefinitionsAndFingerprint
+      - TestNormalizeSelection
+      - TestIsUnambiguousRootUserTurn
+      - TestCodexDesktopToolOverlayDefaultsDisabled
+      - TestCodexDesktopToolOverlayNormalizesSelection
+      - TestCodexDesktopToolOverlayRejectsInvalidSelection
+      - TestLoadConfigOptionalCodexDesktopToolOverlay
+      - TestLoadConfigOptionalRejectsInvalidOverlayBeforePersistingSecret
+      - TestCloneForRuntimeDeepCopiesCodexDesktopToolOverlay
+      - TestBuildConfigChangeDetailsCodexDesktopToolOverlay
+      - TestBuildCodexDesktopToolOverlayInjectsStableSchemas
+      - TestBuildCodexDesktopToolOverlayEligibility
+      - TestBuildCodexDesktopToolOverlayHandlesPartialDuplicateAndAdditionalTools
+      - TestBuildCodexDesktopToolOverlayInjectsAdditionalToolsOnly
+      - TestManagerApplyRequestAfterAuthInterceptorOverlayPluginOrder
+      - TestManagerDesktopToolOverlayHotReload
+      - TestManagerDesktopToolOverlayExecutionPaths
+      - TestCodexDesktopToolOverlayOpenAIChatRoundTrip
+      - TestXAIExecutorCodexDesktopToolOverlayRoundTrip
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream or the official client path gives non-GPT Direct models an equivalent explicitly bounded codex_app child surface, preserves byte-for-byte no-op behavior for GPT, Code Mode, subagents, malformed or ambiguous metadata, and forbidden tool surfaces, retains provider request and response namespace round trips, and all listed regressions pass after removing the downstream overlay.

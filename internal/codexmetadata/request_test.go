@@ -8,6 +8,75 @@ import (
 	"testing"
 )
 
+func TestIsUnambiguousRootUserTurn(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "root user turn",
+			body: `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":\"user\"}"}}`,
+			want: true,
+		},
+		{
+			name: "Kimi subagent without flat marker",
+			body: `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":\"subagent\"}"}}`,
+		},
+		{
+			name: "flat subagent marker exists",
+			body: `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":\"user\"}","x-openai-subagent":"review"}}`,
+		},
+		{
+			name: "flat parent marker exists even null",
+			body: `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":\"user\"}","x-codex-parent-thread-id":null}}`,
+		},
+		{
+			name: "canonical parent exists even empty",
+			body: `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":\"user\",\"parent_thread_id\":\"\"}"}}`,
+		},
+		{
+			name: "canonical subagent kind exists",
+			body: `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":\"user\",\"subagent_kind\":\"worker\"}"}}`,
+		},
+		{name: "metadata missing", body: `{}`},
+		{name: "canonical missing", body: `{"client_metadata":{"thread_source":"user"}}`},
+		{
+			name:    "duplicate client metadata carrier",
+			body:    `{"client_metadata":{},"client_metadata":{}}`,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate canonical key",
+			body:    `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"request_kind\":\"turn\",\"thread_source\":\"user\"}"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "canonical not string",
+			body:    `{"client_metadata":{"x-codex-turn-metadata":{}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "thread source wrong type",
+			body:    `{"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"thread_source\":1}"}}`,
+			wantErr: true,
+		},
+		{name: "malformed request", body: `{`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := IsUnambiguousRootUserTurn([]byte(test.body))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("IsUnambiguousRootUserTurn() error = %v, wantErr %t", err, test.wantErr)
+			}
+			if got != test.want {
+				t.Fatalf("IsUnambiguousRootUserTurn() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 const sampleTurnMetadata = `{"installation_id":"11111111-1111-4111-8111-111111111111","session_id":"22222222-2222-4222-8222-222222222222","thread_id":"22222222-2222-4222-8222-222222222222","turn_id":"33333333-3333-4333-8333-333333333333","window_id":"22222222-2222-4222-8222-222222222222:1","request_kind":"turn","workspaces":{"/Users/example/project":{"associated_remote_urls":{"origin":"https://user:secret@example.com/org/repo.git?token=leak#fragment","upstream":"git@example.com:upstream/repo.git"},"latest_git_commit_hash":"0123456789abcdef0123456789abcdef01234567","has_changes":false}},"turn_started_at_unix_ms":1700000000000,"workspace_kind":"项目"}`
 
 func TestNormalizeRequestRepairSanitizesWorkspaceAndRegeneratesProjections(t *testing.T) {
