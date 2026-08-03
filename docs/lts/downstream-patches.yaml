@@ -884,3 +884,27 @@ patches:
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4748
     state: required
     retire_when: Upstream converts only fully proven plaintext agent_message content, preserves opaque, encrypted, mixed, empty, and malformed history, limits spawn/message rewrites to equivalent positively identified Multi-Agent namespaces, removes only boolean-true message.encrypted markers without changing ordinary, MCP, custom, top-level, or incomplete agents tools, preserves native Codex HTTP and WebSocket history, and all listed regressions pass after removing the downstream implementation.
+
+  - id: xai-multi-agent-plaintext-provenance
+    reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS therefore records the exact root or additional_tools function declarations whose boolean-true marker was removed, restores namespace and short name first, then adds encrypted_function_args as an empty array only for response calls matching that request provenance across HTTP non-stream, SSE, and WebSocket.
+    introduced_in: 23caefe8b2495856c2c8df50b63823846ad6b910
+    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream xAI handling flattens and restores namespace tools and filters internal X Search traces, but does not derive before/after plaintext provenance from the Multi-Agent schema rewrite or restore encrypted_function_args on HTTP, SSE, and WebSocket responses.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - internal/runtime/executor/xai_executor_execute.go
+      - internal/runtime/executor/xai_executor_request.go
+      - internal/runtime/executor/xai_executor_response.go
+      - internal/runtime/executor/xai_executor_stream.go
+      - internal/runtime/executor/xai_executor_test.go
+      - internal/runtime/executor/xai_websockets_executor.go
+      - internal/runtime/executor/xai_websockets_executor_test.go
+    regression_tests:
+      - TestXAIExecutorPrepareResponsesRequestRecordsPlaintextMultiAgentProvenance
+      - TestXAIExecutorPrepareResponsesRequestDoesNotRecordPlaintextProvenanceWhenDisabled
+      - TestRestoreXAIPlaintextMultiAgentFunctionArgsUsesRequestProvenance
+      - TestXAIExecutorExecuteRestoresPlaintextMultiAgentMarker
+      - TestXAIExecutorExecuteStreamRestoresPlaintextMultiAgentMarker
+      - TestXAIWebsocketsExecuteStreamRestoresPlaintextMultiAgentMarker
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream records provenance only for Multi-Agent function schemas whose JSON boolean-true message.encrypted marker was actually removed, covers both root tools and input additional_tools, restores namespace before adding an empty encrypted_function_args without overwriting an existing field or changing arguments and call IDs, leaves ordinary, custom, disabled, and unproven calls untouched across HTTP non-stream, SSE, and WebSocket, and all listed regressions pass after removing the downstream implementation.
