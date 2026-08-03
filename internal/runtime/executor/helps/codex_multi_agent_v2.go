@@ -21,6 +21,12 @@ func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, pay
 	return multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, payload, cfg)
 }
 
+// RewriteCodexMultiAgentV2MessageEncryption removes boolean-true encrypted
+// markers from positively identified Multi-Agent message schemas.
+func RewriteCodexMultiAgentV2MessageEncryption(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
+	return multiagentv2.RewriteCodexMultiAgentV2MessageEncryption(ctx, headers, payload, cfg)
+}
+
 // TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {

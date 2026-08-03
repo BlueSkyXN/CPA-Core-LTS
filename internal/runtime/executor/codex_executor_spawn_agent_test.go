@@ -101,7 +101,7 @@ func TestCodexExecutorOptimizeMultiAgentV2(t *testing.T) {
 			}
 
 			assertCodexSpawnAgentOptimization(t, upstreamBody, modelID, tt.enabled)
-			assertCodexSpawnAgentRequestMessage(t, upstreamBody, tt.enabled)
+			assertCodexSpawnAgentRequestMessage(t, upstreamBody)
 			assertCodexSpawnAgentClientNamespace(t, clientPayload)
 		})
 	}
@@ -130,7 +130,7 @@ func codexSpawnAgentTestPayload() []byte {
 			"recipient":"/root/worker",
 			"content":[
 				{"type":"input_text","text":"Payload:\n"},
-				{"type":"encrypted_content","encrypted_content":"delegated task"}
+				{"type":"encrypted_content","encrypted_content":"gAAAAABopaque-delegated-task"}
 			],
 			"internal_chat_message_metadata_passthrough":{"turn_id":"turn_1"}
 		}]
@@ -155,7 +155,7 @@ func assertCodexSpawnAgentClientNamespace(t *testing.T, payload []byte) {
 	}
 }
 
-func assertCodexSpawnAgentRequestMessage(t *testing.T, payload []byte, enabled bool) {
+func assertCodexSpawnAgentRequestMessage(t *testing.T, payload []byte) {
 	t.Helper()
 	message := gjson.GetBytes(payload, "input.1")
 	if message.Get("type").String() != "agent_message" || message.Get("role").Exists() {
@@ -164,17 +164,8 @@ func assertCodexSpawnAgentRequestMessage(t *testing.T, payload []byte, enabled b
 	if message.Get("author").String() != "/root" || message.Get("recipient").String() != "/root/worker" || message.Get("internal_chat_message_metadata_passthrough.turn_id").String() != "turn_1" {
 		t.Fatalf("Codex executor changed agent message metadata: %s", payload)
 	}
-	if enabled {
-		if message.Get("content.1.type").String() != "input_text" || message.Get("content.1.text").String() != "delegated task" {
-			t.Fatalf("Codex executor did not normalize agent message content: %s", payload)
-		}
-		if message.Get("content.1.encrypted_content").Exists() {
-			t.Fatalf("Codex executor preserved encrypted_content: %s", payload)
-		}
-		return
-	}
-	if message.Get("content.1.type").String() != "encrypted_content" || message.Get("content.1.encrypted_content").String() != "delegated task" {
-		t.Fatalf("disabled optimization changed agent message content: %s", payload)
+	if message.Get("content.1.type").String() != "encrypted_content" || message.Get("content.1.encrypted_content").String() != "gAAAAABopaque-delegated-task" {
+		t.Fatalf("Codex executor changed opaque agent message content: %s", payload)
 	}
 }
 

@@ -850,3 +850,37 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream or the official client path gives non-GPT Direct models an equivalent explicitly bounded codex_app child surface, preserves byte-for-byte no-op behavior for GPT, Code Mode, subagents, malformed or ambiguous metadata, and forbidden tool surfaces, retains provider request and response namespace round trips, and all listed regressions pass after removing the downstream overlay.
+
+  - id: codex-multi-agent-plaintext-contract
+    reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex and provider paths, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces.
+    introduced_in: 798ad1854064361461225fe766db9b2f54a7653d
+    affected_upstream_range: through ffdb9c9fbc78a6235d59c9ccbdc4243ba35ecdcd (v7.2.115, 2026-08-03); upstream PR #4748 rewrites string encrypted_content parts without plaintext provenance, discovers message tools by recursive short-name matching across unrelated tool surfaces, and deletes message.encrypted without requiring JSON boolean true.
+    files:
+      - config.example.yaml
+      - docs/lts/downstream-patches.yaml
+      - internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2.go
+      - internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2_test.go
+      - internal/runtime/executor/codex_executor_spawn_agent_test.go
+      - internal/runtime/executor/codex_websockets_spawn_agent_test.go
+      - internal/runtime/executor/helps/codex_multi_agent_v2.go
+      - internal/runtime/executor/xai_executor_test.go
+    regression_tests:
+      - TestRewriteCodexMultiAgentV2MessageEncryptionNamespacesAndToolNames
+      - TestRewriteCodexMultiAgentV2MessageEncryptionAdditionalToolsAndGates
+      - TestRewriteCodexSpawnAgentDescriptionIgnoresTopLevelSameNameTool
+      - TestOptimizeCodexMultiAgentV2RequestPreservesNativeAgentMessage
+      - TestRewriteCodexMultiAgentV2InputRewritesAgentMessage
+      - TestRewriteCodexMultiAgentV2InputFailsClosedForOpaqueOrInvalidContent
+      - TestTranslateRequestWithCodexMultiAgentV2Conditions
+      - TestCodexMultiAgentMessageToolPathsRequireConfirmedNamespaces
+      - TestRewriteCodexMultiAgentMessageEncryptionDeletesOnlyBooleanTrue
+      - TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionWithoutSpawnAgent
+      - TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionInAdditionalTools
+      - TestOptimizeCodexMultiAgentV2RequestIgnoresUnconfirmedSameNameTools
+      - TestCodexExecutorOptimizeMultiAgentV2
+      - TestCodexWebsocketsExecutorOptimizeMultiAgentV2
+      - TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage
+      - TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#4748
+    state: required
+    retire_when: Upstream converts only fully proven plaintext agent_message content, preserves opaque, encrypted, mixed, empty, and malformed history, limits spawn/message rewrites to equivalent positively identified Multi-Agent namespaces, removes only boolean-true message.encrypted markers without changing ordinary, MCP, custom, top-level, or incomplete agents tools, preserves native Codex HTTP and WebSocket history, and all listed regressions pass after removing the downstream implementation.

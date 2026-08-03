@@ -91,7 +91,7 @@ func TestCodexWebsocketsExecutorOptimizeMultiAgentV2(t *testing.T) {
 			}
 			upstreamPayload := <-capturedPayload
 			assertCodexSpawnAgentOptimization(t, upstreamPayload, modelID, tt.enabled)
-			assertCodexSpawnAgentRequestMessage(t, upstreamPayload, tt.enabled)
+			assertCodexSpawnAgentRequestMessage(t, upstreamPayload)
 			assertCodexSpawnAgentClientNamespace(t, clientPayload)
 		})
 	}
