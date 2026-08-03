@@ -120,7 +120,9 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		appendRegularMessage := func(message []byte) {
 			// Keep tool-call adjacency strict for providers that require
 			// assistant(tool_calls) -> tool(tool_call_id) with no message in between.
-			if hasAwaitingToolOutput() {
+			// Messages arriving while calls are still buffered are deferred too,
+			// so one assistant turn of parallel calls stays in a single message.
+			if len(pendingToolCalls) > 0 || hasAwaitingToolOutput() {
 				deferredMessages = append(deferredMessages, message)
 				return
 			}
@@ -141,9 +143,6 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
-			if itemType != "function_call" && itemType != "custom_tool_call" {
-				flushPendingToolCalls()
-			}
 
 			switch itemType {
 			case "message", "":
@@ -153,6 +152,11 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					role = "user"
 				}
 				if role != "assistant" {
+					// A user/developer message marks a turn boundary: flush
+					// buffered calls so separate turns stay separate assistant
+					// messages. Only assistant texts are deferred across
+					// pending calls to keep one turn of parallel calls grouped.
+					flushPendingToolCalls()
 					appendPendingReasoningMessage()
 				}
 				message := []byte(`{"role":"","content":[]}`)
@@ -235,6 +239,10 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 			case "function_call_output":
+				// Flush buffered calls here (not on reasoning/message items) so a
+				// single assistant turn of parallel calls stays grouped in one
+				// assistant message ahead of its tool responses.
+				flushPendingToolCalls()
 				// Handle function call output conversion to tool message
 				toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 				callID := ""
@@ -271,6 +279,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 			case "custom_tool_call_output":
+				flushPendingToolCalls()
 				toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 				callID := strings.TrimSpace(item.Get("call_id").String())
 				toolMessage, _ = sjson.SetBytes(toolMessage, "tool_call_id", callID)
