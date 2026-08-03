@@ -760,6 +760,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 
 			for _, payload := range xaiNormalizeReasoningSummaryDataEvents(payload) {
 				payload = restoreXAINamespaceToolCalls(payload, prepared.namespaceTools)
+				payload = restoreXAIPlaintextMultiAgentFunctionArgs(payload, prepared.plaintextMultiAgentTools)
 				payload = responseFilter.apply(payload)
 				if len(payload) == 0 {
 					continue

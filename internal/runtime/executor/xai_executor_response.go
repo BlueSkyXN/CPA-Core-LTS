@@ -346,6 +346,41 @@ func restoreXAINamespaceToolCallAtPath(data []byte, path string, refs map[string
 	return updated
 }
 
+// restoreXAIPlaintextMultiAgentFunctionArgs marks only calls whose request
+// declaration was actually rewritten from a boolean-true encrypted marker.
+func restoreXAIPlaintextMultiAgentFunctionArgs(data []byte, refs map[xaiClientToolKey]struct{}) []byte {
+	if len(refs) == 0 || len(data) == 0 || !gjson.ValidBytes(data) {
+		return data
+	}
+	data = restoreXAIPlaintextMultiAgentFunctionArgsAtPath(data, "item", refs)
+	output := gjson.GetBytes(data, "response.output")
+	if output.IsArray() {
+		for index := range output.Array() {
+			data = restoreXAIPlaintextMultiAgentFunctionArgsAtPath(data, fmt.Sprintf("response.output.%d", index), refs)
+		}
+	}
+	return data
+}
+
+func restoreXAIPlaintextMultiAgentFunctionArgsAtPath(data []byte, path string, refs map[xaiClientToolKey]struct{}) []byte {
+	if gjson.GetBytes(data, path+".type").String() != "function_call" {
+		return data
+	}
+	key := xaiClientToolKey{
+		namespace: strings.TrimSpace(gjson.GetBytes(data, path+".namespace").String()),
+		name:      strings.TrimSpace(gjson.GetBytes(data, path+".name").String()),
+		toolType:  xaiFunctionToolType,
+	}
+	if _, ok := refs[key]; !ok || gjson.GetBytes(data, path+".encrypted_function_args").Exists() {
+		return data
+	}
+	updated, errSet := sjson.SetRawBytes(data, path+".encrypted_function_args", []byte(`[]`))
+	if errSet != nil {
+		return data
+	}
+	return updated
+}
+
 // normalizeXAIObjectRootUnionBranchTypes makes untyped root union branches
 // explicitly object-only when the parameter root already permits only objects.
 // This preserves the original schema semantics while satisfying xAI validation.

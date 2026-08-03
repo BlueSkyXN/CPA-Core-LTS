@@ -422,6 +422,86 @@ func TestXAIWebsocketsExecuteStreamRestoresNamespaceToolCalls(t *testing.T) {
 	}
 }
 
+func TestXAIWebsocketsExecuteStreamRestoresPlaintextMultiAgentMarker(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	capturedPayload := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			t.Errorf("read upstream websocket message: %v", errRead)
+			return
+		}
+		capturedPayload <- bytes.Clone(payload)
+
+		events := [][]byte{
+			[]byte(`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"collaboration__spawn_agent","call_id":"call_1","arguments":"{\"task\":\"demo\"}"}}`),
+			[]byte(`{"type":"response.completed","response":{"id":"resp_1","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`),
+		}
+		for _, event := range events {
+			if errWrite := conn.WriteMessage(websocket.TextMessage, event); errWrite != nil {
+				t.Errorf("write websocket event: %v", errWrite)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewXAIWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url":   server.URL,
+			"websockets": "true",
+		},
+		Metadata: map[string]any{"access_token": "xai-token"},
+	}
+	result, err := exec.ExecuteStream(
+		cliproxyexecutor.WithDownstreamWebsocket(context.Background()),
+		auth,
+		cliproxyexecutor.Request{Model: "grok-4.5", Payload: xaiMultiAgentV2TestPayload()},
+		cliproxyexecutor.Options{
+			SourceFormat:   sdktranslator.FormatOpenAIResponse,
+			ResponseFormat: sdktranslator.FormatOpenAIResponse,
+			Stream:         true,
+			Headers:        http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	select {
+	case payload := <-capturedPayload:
+		assertXAIPlaintextMultiAgentSchemas(t, payload)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for upstream websocket payload")
+	}
+
+	var outputItemDone, completed gjson.Result
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		payload := gjson.ParseBytes(bytes.TrimSpace(chunk.Payload))
+		switch payload.Get("type").String() {
+		case "response.output_item.done":
+			outputItemDone = payload.Get("item")
+		case "response.completed":
+			completed = payload.Get("response.output.0")
+		}
+	}
+
+	assertXAIPlaintextMultiAgentCall(t, outputItemDone)
+	assertXAIPlaintextMultiAgentCall(t, completed)
+}
+
 func TestXAIWebsocketsExecuteStreamPreservesClientSameNameToolsWithXSearch(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

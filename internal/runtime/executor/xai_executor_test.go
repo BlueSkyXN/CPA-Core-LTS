@@ -414,6 +414,244 @@ func TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage(t *t
 	}
 }
 
+func TestXAIExecutorPrepareResponsesRequestRecordsPlaintextMultiAgentProvenance(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	payload := []byte(`{"model":"grok-4.5","tools":[
+		{"type":"namespace","name":"collaboration","tools":[
+			{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+			{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":false}}}},
+			{"type":"function","name":"followup_task","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":"true"}}}}
+		]},
+		{"type":"namespace","name":"ordinary","tools":[
+			{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}
+		]}
+	],"input":[
+		{"type":"additional_tools","tools":[{"type":"namespace","name":"collaboration-optimize","tools":[
+			{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}
+		]}]},
+		{"type":"additional_tools","tools":[{"type":"namespace","name":"agents","tools":[
+			{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+			{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+			{"type":"function","name":"followup_task","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}
+		]}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"delegate"}]}
+	]}`)
+	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Headers:      http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},
+	}, true)
+	if errPrepare != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	}
+
+	wantRefs := []xaiClientToolKey{
+		{namespace: "collaboration", name: "spawn_agent", toolType: xaiFunctionToolType},
+		{namespace: "collaboration-optimize", name: "send_message", toolType: xaiFunctionToolType},
+		{namespace: "agents", name: "spawn_agent", toolType: xaiFunctionToolType},
+		{namespace: "agents", name: "send_message", toolType: xaiFunctionToolType},
+		{namespace: "agents", name: "followup_task", toolType: xaiFunctionToolType},
+	}
+	if len(prepared.plaintextMultiAgentTools) != len(wantRefs) {
+		t.Fatalf("plaintext provenance count = %d, want %d: %#v", len(prepared.plaintextMultiAgentTools), len(wantRefs), prepared.plaintextMultiAgentTools)
+	}
+	for _, key := range wantRefs {
+		if _, ok := prepared.plaintextMultiAgentTools[key]; !ok {
+			t.Fatalf("plaintext provenance missing for %#v", key)
+		}
+		qualifiedName := qualifyXAINamespaceToolName(key.namespace, key.name)
+		path := `tools.#(name=="` + qualifiedName + `").parameters.properties.message.encrypted`
+		if marker := gjson.GetBytes(prepared.body, path); marker.Exists() {
+			t.Fatalf("%s marker remained: %s", qualifiedName, prepared.body)
+		}
+	}
+
+	for qualifiedName, wantRaw := range map[string]string{
+		"collaboration__send_message":  "false",
+		"collaboration__followup_task": `"true"`,
+		"ordinary__spawn_agent":        "true",
+	} {
+		path := `tools.#(name=="` + qualifiedName + `").parameters.properties.message.encrypted`
+		if marker := gjson.GetBytes(prepared.body, path); marker.Raw != wantRaw {
+			t.Fatalf("%s marker = %q, want %q; body=%s", qualifiedName, marker.Raw, wantRaw, prepared.body)
+		}
+	}
+}
+
+func TestXAIExecutorPrepareResponsesRequestDoesNotRecordPlaintextProvenanceWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: xaiMultiAgentV2TestPayload(),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Headers:      http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},
+	}, true)
+	if errPrepare != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	}
+	if len(prepared.plaintextMultiAgentTools) != 0 {
+		t.Fatalf("disabled optimization recorded plaintext provenance: %#v", prepared.plaintextMultiAgentTools)
+	}
+	for _, name := range []string{"spawn_agent", "send_message", "followup_task"} {
+		path := `tools.#(name=="collaboration__` + name + `").parameters.properties.message.encrypted`
+		if marker := gjson.GetBytes(prepared.body, path); marker.Type != gjson.True {
+			t.Fatalf("disabled optimization changed collaboration.%s marker: %s", name, prepared.body)
+		}
+	}
+}
+
+func TestRestoreXAIPlaintextMultiAgentFunctionArgsUsesRequestProvenance(t *testing.T) {
+	t.Parallel()
+
+	refs := map[xaiClientToolKey]struct{}{
+		{namespace: "collaboration", name: "spawn_agent", toolType: xaiFunctionToolType}:   {},
+		{namespace: "collaboration", name: "send_message", toolType: xaiFunctionToolType}:  {},
+		{namespace: "collaboration", name: "followup_task", toolType: xaiFunctionToolType}: {},
+	}
+	payload := []byte(`{"type":"response.completed","response":{"output":[
+		{"id":"fc_0","type":"function_call","call_id":"call_0","name":"spawn_agent","namespace":"collaboration","arguments":"{\"task\":\"demo\"}"},
+		{"id":"fc_1","type":"function_call","call_id":"call_1","name":"send_message","namespace":"collaboration","arguments":"{}","encrypted_function_args":["existing"]},
+		{"id":"fc_2","type":"function_call","call_id":"call_2","name":"followup_task","namespace":"collaboration","arguments":"{}","encrypted_function_args":null},
+		{"id":"fc_3","type":"function_call","call_id":"call_3","name":"spawn_agent","namespace":"ordinary","arguments":"{}"},
+		{"id":"fc_4","type":"custom_tool_call","call_id":"call_4","name":"spawn_agent","namespace":"collaboration","input":"{}"},
+		{"id":"fc_5","type":"function_call","call_id":"call_5","name":"unknown","namespace":"collaboration","arguments":"{}"}
+	]}}`)
+	got := restoreXAIPlaintextMultiAgentFunctionArgs(payload, refs)
+	marker := gjson.GetBytes(got, "response.output.0.encrypted_function_args")
+	if !marker.IsArray() || marker.Get("#").Int() != 0 {
+		t.Fatalf("proven plaintext call missing encrypted_function_args=[]: %s", got)
+	}
+	if arguments := gjson.GetBytes(got, "response.output.0.arguments").String(); arguments != `{"task":"demo"}` {
+		t.Fatalf("arguments changed: %q", arguments)
+	}
+	if callID := gjson.GetBytes(got, "response.output.0.call_id").String(); callID != "call_0" {
+		t.Fatalf("call_id changed: %q", callID)
+	}
+	if existing := gjson.GetBytes(got, "response.output.1.encrypted_function_args.0").String(); existing != "existing" {
+		t.Fatalf("existing encrypted_function_args changed: %s", got)
+	}
+	if nullMarker := gjson.GetBytes(got, "response.output.2.encrypted_function_args"); nullMarker.Raw != "null" {
+		t.Fatalf("existing null encrypted_function_args changed: %s", got)
+	}
+	for _, index := range []int{3, 4, 5} {
+		if unexpected := gjson.GetBytes(got, fmt.Sprintf("response.output.%d.encrypted_function_args", index)); unexpected.Exists() {
+			t.Fatalf("unproven output.%d was marked: %s", index, got)
+		}
+	}
+
+	event := []byte(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_event","name":"followup_task","namespace":"collaboration","arguments":"{}"}}`)
+	restoredEvent := restoreXAIPlaintextMultiAgentFunctionArgs(event, refs)
+	if eventMarker := gjson.GetBytes(restoredEvent, "item.encrypted_function_args"); !eventMarker.IsArray() || eventMarker.Get("#").Int() != 0 {
+		t.Fatalf("event item missing encrypted_function_args=[]: %s", restoredEvent)
+	}
+	malformed := []byte(`{"item":`)
+	if unchanged := restoreXAIPlaintextMultiAgentFunctionArgs(malformed, refs); !bytes.Equal(unchanged, malformed) {
+		t.Fatalf("malformed response changed: %s", unchanged)
+	}
+}
+
+func TestXAIExecutorExecuteRestoresPlaintextMultiAgentMarker(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read body: %v", errRead)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"name\":\"collaboration__spawn_agent\",\"call_id\":\"call_1\",\"arguments\":\"{\\\"task\\\":\\\"demo\\\"}\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"grok-4.5\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	auth := &cliproxyauth.Auth{Provider: "xai", Attributes: map[string]string{"base_url": server.URL}, Metadata: map[string]any{"access_token": "xai-token"}}
+	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{Model: "grok-4.5", Payload: xaiMultiAgentV2TestPayload()}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Headers: http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	assertXAIPlaintextMultiAgentSchemas(t, gotBody)
+	assertXAIPlaintextMultiAgentCall(t, gjson.GetBytes(resp.Payload, "output.0"))
+}
+
+func TestXAIExecutorExecuteStreamRestoresPlaintextMultiAgentMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"name\":\"collaboration__spawn_agent\",\"call_id\":\"call_1\",\"arguments\":\"{\\\"task\\\":\\\"demo\\\"}\"}}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"grok-4.5\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	auth := &cliproxyauth.Auth{Provider: "xai", Attributes: map[string]string{"base_url": server.URL}, Metadata: map[string]any{"access_token": "xai-token"}}
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{Model: "grok-4.5", Payload: xaiMultiAgentV2TestPayload()}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Stream: true, Headers: http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var outputItemDone gjson.Result
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		line := strings.TrimSpace(strings.TrimPrefix(string(chunk.Payload), "data:"))
+		if !gjson.Valid(line) {
+			continue
+		}
+		event := gjson.Parse(line)
+		if event.Get("type").String() == "response.output_item.done" {
+			outputItemDone = event.Get("item")
+		}
+	}
+	assertXAIPlaintextMultiAgentCall(t, outputItemDone)
+}
+
+func xaiMultiAgentV2TestPayload() []byte {
+	return []byte(`{"model":"grok-4.5","input":"delegate","tools":[{"type":"namespace","name":"collaboration","tools":[
+		{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+		{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+		{"type":"function","name":"followup_task","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}
+	]}]}`)
+}
+
+func assertXAIPlaintextMultiAgentSchemas(t *testing.T, body []byte) {
+	t.Helper()
+	for _, name := range []string{"spawn_agent", "send_message", "followup_task"} {
+		toolPath := `tools.#(name=="collaboration__` + name + `")`
+		if tool := gjson.GetBytes(body, toolPath); !tool.Exists() {
+			t.Fatalf("qualified collaboration.%s schema missing: %s", name, body)
+		}
+		if marker := gjson.GetBytes(body, toolPath+".parameters.properties.message.encrypted"); marker.Exists() {
+			t.Fatalf("collaboration.%s marker remained: %s", name, body)
+		}
+	}
+}
+
+func assertXAIPlaintextMultiAgentCall(t *testing.T, call gjson.Result) {
+	t.Helper()
+	if call.Get("type").String() != "function_call" || call.Get("name").String() != "spawn_agent" || call.Get("namespace").String() != "collaboration" {
+		t.Fatalf("unexpected restored Multi-Agent call: %s", call.Raw)
+	}
+	marker := call.Get("encrypted_function_args")
+	if !marker.IsArray() || marker.Get("#").Int() != 0 {
+		t.Fatalf("plaintext Multi-Agent call missing encrypted_function_args=[]: %s", call.Raw)
+	}
+	if call.Get("call_id").String() != "call_1" || call.Get("arguments").String() != `{"task":"demo"}` {
+		t.Fatalf("call identity or arguments changed: %s", call.Raw)
+	}
+}
+
 func TestXAIExecutorExecuteRestoresAdditionalToolsNamespaceCalls(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
