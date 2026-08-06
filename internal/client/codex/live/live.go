@@ -228,9 +228,6 @@ func (h *Handler) Handle(c *gin.Context) {
 	selectionOpts := coreexecutor.Options{
 		Headers:         c.Request.Header.Clone(),
 		OriginalRequest: body,
-		Metadata: map[string]any{
-			coreexecutor.SkipModelCapabilityCheckMetadataKey: true,
-		},
 	}
 	selection, selected, resultCtx, errSelect := h.selectOAuth(ctx, model, selectionOpts)
 	if errSelect != nil {
@@ -616,7 +613,7 @@ func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecut
 			selected = selection.CloneAuth()
 		}
 	} else {
-		selected, resultCtx, errSelect = h.authManager.SelectAuthForRequestByKind(ctx, "codex", model, auth.AuthKindOAuth, opts)
+		selected, resultCtx, errSelect = h.authManager.SelectAuthForRequestByKindWithUncataloguedModel(ctx, "codex", model, auth.AuthKindOAuth, opts)
 	}
 	if errSelect != nil && selection != nil {
 		selection.End("selection_failed")

@@ -51,6 +51,7 @@ func isBuiltInSelector(selector Selector) bool {
 
 type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
+type uncataloguedEndpointModelContextKey struct{}
 
 type authSelectionEligibility struct {
 	requiredKind     string
@@ -83,11 +84,15 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	return eligibility
 }
 
-func skipModelCapabilityCheck(opts cliproxyexecutor.Options) bool {
-	if len(opts.Metadata) == 0 {
+func withUncataloguedEndpointModel(ctx context.Context) context.Context {
+	return context.WithValue(ctx, uncataloguedEndpointModelContextKey{}, true)
+}
+
+func usesUncataloguedEndpointModel(ctx context.Context) bool {
+	if ctx == nil {
 		return false
 	}
-	value, _ := opts.Metadata[cliproxyexecutor.SkipModelCapabilityCheckMetadataKey].(bool)
+	value, _ := ctx.Value(uncataloguedEndpointModelContextKey{}).(bool)
 	return value
 }
 
@@ -1131,7 +1136,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
-		if modelKey != "" && !skipModelCapabilityCheck(opts) && !m.authSupportsRouteModel(registryRef, candidate, model) {
+		if modelKey != "" && !usesUncataloguedEndpointModel(ctx) && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -1342,7 +1347,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
 	}
-	if skipModelCapabilityCheck(opts) {
+	if usesUncataloguedEndpointModel(ctx) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 

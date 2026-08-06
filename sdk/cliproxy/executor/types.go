@@ -23,11 +23,6 @@ const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 // AuthSelectionModelMetadataKey overrides the model used only for auth selection.
 const AuthSelectionModelMetadataKey = "auth_selection_model"
 
-// SkipModelCapabilityCheckMetadataKey allows endpoint-specific requests to use
-// model-scoped auth availability without requiring the model in the general
-// proxy capability registry.
-const SkipModelCapabilityCheckMetadataKey = "skip_model_capability_check"
-
 // ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
 const ReasoningEffortMetadataKey = "reasoning_effort"
 

@@ -1000,7 +1000,6 @@ patches:
       - internal/config/parse.go
       - sdk/cliproxy/auth/conductor_lts.go
       - sdk/cliproxy/auth/conductor_selection.go
-      - sdk/cliproxy/executor/types.go
     regression_tests:
       - TestHandlerRewritesLiveCallAndSchedulesOAuth
       - TestHandlerLogsLiveBootstrapMetadataWithoutSDPCredentials

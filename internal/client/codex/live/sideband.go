@@ -354,9 +354,8 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		selectionOpts := coreexecutor.Options{
 			Headers: c.Request.Header.Clone(),
 			Metadata: map[string]any{
-				coreexecutor.PinnedAuthMetadataKey:               session.authID,
-				coreexecutor.ExecutionSessionMetadataKey:         callID,
-				coreexecutor.SkipModelCapabilityCheckMetadataKey: true,
+				coreexecutor.PinnedAuthMetadataKey:       session.authID,
+				coreexecutor.ExecutionSessionMetadataKey: callID,
 			},
 		}
 		selection, selected, resultCtx, errSelect = h.selectOAuth(ctx, session.model, selectionOpts)
