@@ -5108,6 +5108,11 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != "" {
 			t.Fatalf("%s = %q, want empty for official API", xaiClientVersionHeader, got)
 		}
+		for _, header := range []string{"x-grok-client-identifier", "x-authenticateresponse"} {
+			if got := req.Header.Get(header); got != "" {
+				t.Fatalf("%s = %q, want empty for official API", header, got)
+			}
+		}
 		if got := req.Header.Get("User-Agent"); got != "" {
 			t.Fatalf("User-Agent = %q, want empty for official API", got)
 		}
@@ -5135,6 +5140,12 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != xaiClientVersionValue {
 			t.Fatalf("%s = %q, want %q", xaiClientVersionHeader, got, xaiClientVersionValue)
 		}
+		if got := req.Header.Get("x-grok-client-identifier"); got != "grok-shell" {
+			t.Fatalf("x-grok-client-identifier = %q, want grok-shell", got)
+		}
+		if got := req.Header.Get("x-authenticateresponse"); got != "authenticate-response" {
+			t.Fatalf("x-authenticateresponse = %q, want authenticate-response", got)
+		}
 		if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+xaiClientVersionValue {
 			t.Fatalf("User-Agent = %q, want xai-grok-workspace/%s", got, xaiClientVersionValue)
 		}
@@ -5156,6 +5167,11 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		if got := req.Header.Get(xaiClientVersionHeader); got != "" {
 			t.Fatalf("%s = %q, want empty for custom gateway", xaiClientVersionHeader, got)
 		}
+		for _, header := range []string{"x-grok-client-identifier", "x-authenticateresponse"} {
+			if got := req.Header.Get(header); got != "" {
+				t.Fatalf("%s = %q, want empty for custom gateway", header, got)
+			}
+		}
 		if got := req.Header.Get("User-Agent"); got != "" {
 			t.Fatalf("User-Agent = %q, want empty for custom gateway", got)
 		}
@@ -5169,6 +5185,8 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 				xaiUsingAPIAttr:                    "false",
 				"header:" + xaiTokenAuthHeader:     "custom-token-auth",
 				"header:" + xaiClientVersionHeader: "custom-client-version",
+				"header:x-grok-client-identifier":  "custom-client-identifier",
+				"header:x-authenticateresponse":    "custom-authenticate-response",
 			},
 		}
 		applyXAIChatHeaders(req, auth, "xai-token", true, "")
@@ -5178,6 +5196,12 @@ func TestApplyXAIChatHeaders(t *testing.T) {
 		}
 		if got := req.Header.Get(xaiClientVersionHeader); got != "custom-client-version" {
 			t.Fatalf("%s = %q, want custom-client-version", xaiClientVersionHeader, got)
+		}
+		if got := req.Header.Get("x-grok-client-identifier"); got != "custom-client-identifier" {
+			t.Fatalf("x-grok-client-identifier = %q, want custom-client-identifier", got)
+		}
+		if got := req.Header.Get("x-authenticateresponse"); got != "custom-authenticate-response" {
+			t.Fatalf("x-authenticateresponse = %q, want custom-authenticate-response", got)
 		}
 	})
 
