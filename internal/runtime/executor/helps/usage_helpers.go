@@ -801,8 +801,23 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	cacheReadTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("cache_read_input_tokens"))
 	cacheCreationTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("cache_creation_input_tokens"))
 	outputTokens, _ := parseOptionalStrictUsageTokenCount(usageNode.Get("output_tokens"))
+	// Anthropic reports thinking as a subset of output_tokens. Prefer the official
+	// nested field, then fall back to legacy aliases used by some gateways.
+	reasoningNode := firstExistingUsageNode(
+		usageNode,
+		"output_tokens_details.thinking_tokens",
+		"output_tokens_details.reasoning_tokens",
+		"thinking_tokens",
+	)
+	reasoningTokens, _ := parseOptionalStrictUsageTokenCount(reasoningNode)
+	if reasoningTokens > outputTokens {
+		// Reject an inconsistent subset instead of manufacturing extra output.
+		reasoningTokens = 0
+	}
+	nonReasoningOutput := outputTokens - reasoningTokens
 	detail := usage.Detail{
 		OutputTokens:        outputTokens,
+		ReasoningTokens:     reasoningTokens,
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
@@ -826,8 +841,8 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		inputTokenCount,
 		detail.CacheReadTokens,
 		detail.CacheCreationTokens,
-		detail.OutputTokens,
-		0,
+		nonReasoningOutput,
+		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
 	return detail
