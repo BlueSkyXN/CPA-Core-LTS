@@ -51,6 +51,7 @@ func isBuiltInSelector(selector Selector) bool {
 
 type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
+type uncataloguedEndpointModelContextKey struct{}
 
 type authSelectionEligibility struct {
 	requiredKind     string
@@ -81,6 +82,18 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
 	}
 	return eligibility
+}
+
+func withUncataloguedEndpointModel(ctx context.Context) context.Context {
+	return context.WithValue(ctx, uncataloguedEndpointModelContextKey{}, true)
+}
+
+func usesUncataloguedEndpointModel(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(uncataloguedEndpointModelContextKey{}).(bool)
+	return value
 }
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
@@ -1123,7 +1136,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
+		if modelKey != "" && !usesUncataloguedEndpointModel(ctx) && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -1333,6 +1346,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
+	}
+	if usesUncataloguedEndpointModel(ctx) {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {

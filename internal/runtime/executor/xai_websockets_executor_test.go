@@ -34,6 +34,54 @@ func TestXAIWebsocketsEnabledForConfigAPIKey(t *testing.T) {
 	}
 }
 
+func TestXAIWebsocketTerminalReadInvalidationCancelsSaturatedActiveChannel(t *testing.T) {
+	conn := &websocket.Conn{}
+	sess := &codexWebsocketSession{
+		conn:                 conn,
+		connCloser:           &websocketConnectionCloser{},
+		authID:               "xai-auth",
+		wsURL:                "ws://example.test/responses",
+		upstreamDisconnectCh: make(chan error, 1),
+	}
+	ch := sess.activate(conn)
+	for i := 0; i < cap(ch); i++ {
+		ch <- codexWebsocketRead{payload: []byte("queued")}
+	}
+	_, done := sess.activeForConn(conn)
+	if done == nil {
+		t.Fatal("active done channel is nil")
+	}
+
+	exec := &XAIWebsocketsExecutor{}
+	terminalErr := errors.New("upstream disconnected")
+	result := make(chan bool, 1)
+	go func() {
+		result <- sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: terminalErr}, func() {
+			exec.invalidateUpstreamConn(sess, conn, "upstream_disconnected", terminalErr)
+		})
+	}()
+
+	select {
+	case invalidated := <-result:
+		if !invalidated {
+			t.Fatal("saturated terminal read should report invalidation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal read remained blocked after connection invalidation")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("connection invalidation did not cancel active reader")
+	}
+	if sess.conn != nil {
+		t.Fatal("invalidated connection still attached to session")
+	}
+	if got := len(ch); got != cap(ch) {
+		t.Fatalf("saturated channel length = %d, want %d queued items preserved", got, cap(ch))
+	}
+}
+
 func TestXAIAutoExecutorRequiredUpstreamWebsocketRejectsHTTPFallback(t *testing.T) {
 	exec := NewXAIAutoExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{

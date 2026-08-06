@@ -98,6 +98,10 @@ func TestCountXAIInputTokensExcludesRequestStructure(t *testing.T) {
 			body:     []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"unique message text"}]}]}`),
 			expected: "unique message text",
 		},
+		"implicit message content": {
+			body:     []byte(`{"input":[{"role":"user","content":"unique implicit message text"}]}`),
+			expected: "unique implicit message text",
+		},
 		"refusal": {
 			body:     []byte(`{"input":[{"type":"message","content":[{"type":"refusal","refusal":"unique refusal text"}]}]}`),
 			expected: "unique refusal text",

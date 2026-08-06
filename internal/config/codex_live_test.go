@@ -117,3 +117,18 @@ func TestCodexLiveMediaRelayConfigRejectsInvalidValues(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfigBytesValidatesCodexLiveMediaRelay(t *testing.T) {
+	_, err := ParseConfigBytes([]byte(`codex:
+  live-media-relay:
+    enabled: true
+    udp-port-min: 40100
+    udp-port-max: 40000
+`))
+	if err == nil {
+		t.Fatal("ParseConfigBytes() accepted an invalid Codex Live media relay port range")
+	}
+	if !strings.Contains(err.Error(), "udp-port-min") {
+		t.Fatalf("ParseConfigBytes() error = %q, want Live media relay validation error", err)
+	}
+}

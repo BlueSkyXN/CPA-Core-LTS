@@ -158,6 +158,20 @@ func (s *codexWebsocketSession) clearActive(conn *websocket.Conn, ch chan codexW
 	return true
 }
 
+// cancelActiveRead interrupts a reader waiting on the active channel without
+// clearing the channel ownership. The reader that owns the channel performs
+// the subsequent clear/close transition after observing the cancellation.
+func (s *codexWebsocketSession) cancelActiveRead() {
+	if s == nil {
+		return
+	}
+	s.activeMu.Lock()
+	if s.activeCancel != nil {
+		s.activeCancel()
+	}
+	s.activeMu.Unlock()
+}
+
 func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, payload []byte) error {
 	if s == nil {
 		return fmt.Errorf("codex websockets executor: session is nil")

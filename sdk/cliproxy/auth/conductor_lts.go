@@ -1052,9 +1052,29 @@ func (m *Manager) SelectAuthForRequestByKind(ctx context.Context, provider, mode
 	return m.selectAuthForRequest(ctx, provider, model, requiredKind, opts)
 }
 
+// SelectAuthForRequestByKindWithUncataloguedModel preserves model-scoped auth
+// availability and request lifecycle tracking for an endpoint-specific model
+// that is intentionally absent from the general proxy capability registry.
+func (m *Manager) SelectAuthForRequestByKindWithUncataloguedModel(ctx context.Context, provider, model, requiredKind string, opts cliproxyexecutor.Options) (*Auth, context.Context, error) {
+	requiredKind = normalizeAuthKind(requiredKind)
+	if requiredKind == "" {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return nil, ctx, &Error{Code: "invalid_auth_kind", Message: "required auth kind is invalid", HTTPStatus: http.StatusBadRequest}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return m.selectAuthForRequest(withUncataloguedEndpointModel(ctx), provider, model, requiredKind, opts)
+}
+
 func (m *Manager) selectAuthForRequest(ctx context.Context, provider, model, requiredKind string, opts cliproxyexecutor.Options) (*Auth, context.Context, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if requiredKind != "" {
+		ctx = withRequiredAuthKind(ctx, requiredKind)
 	}
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	homeMode := m.HomeEnabled()

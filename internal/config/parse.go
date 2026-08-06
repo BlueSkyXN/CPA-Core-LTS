@@ -47,6 +47,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := cfg.Codex.DesktopToolOverlay.normalizeAndValidate(); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
+	if err := cfg.Codex.LiveMediaRelay.Validate(); err != nil {
+		return nil, fmt.Errorf("parse config payload: %w", err)
+	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {

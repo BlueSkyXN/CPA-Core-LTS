@@ -849,6 +849,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						if state.LastError != nil {
 							state.LastError.Code = "unauthorized"
 						}
+						if auth.LastError != nil {
+							auth.LastError.Code = "unauthorized"
+						}
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
 						} else {

@@ -986,3 +986,72 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream gives every auth lifecycle a non-persisted generation, carries it through execute, stream, token-count, external selection, request preparation, refresh, model-pool, fallback, and Home-compatible paths, rejects stale provider or generation writebacks before hooks, persistence, scheduler, registry, and cooldown mutations, rejects persisted cooldown records from another provider, prevents an old request from refreshing a replacement provider, and all listed regressions pass after removing the downstream implementation.
+
+  - id: codex-live-bootstrap-accounting-and-egress
+    reason: Codex Live bootstrap SDP carries short-lived ICE credentials that must never enter request logs, while every actual bootstrap dispatch still needs zero-token usage attribution and local auth outcome tracking. Live and sideband also require model-scoped OAuth selection for models intentionally absent from the general proxy catalog, confirm/mark/abandon lifecycle coverage, Home retry attempt accounting without duplicate 401 records, in-memory config validation parity, and fail-closed sideband proxy handling.
+    introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
+    affected_upstream_range: through ea37d13a9eced4af835cad10bcb030d770a5ba88 (v7.2.120, 2026-08-06); upstream does not provide this LTS-owned Codex Live route, SDP-safe metadata-only logging, per-attempt usage accounting, uncatalogued-model OAuth selection, or fail-closed sideband proxy behavior.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - internal/client/codex/live/live.go
+      - internal/client/codex/live/live_test.go
+      - internal/client/codex/live/sideband.go
+      - internal/config/codex_live_test.go
+      - internal/config/parse.go
+      - sdk/cliproxy/auth/conductor_lts.go
+      - sdk/cliproxy/auth/conductor_selection.go
+    regression_tests:
+      - TestHandlerRewritesLiveCallAndSchedulesOAuth
+      - TestHandlerLogsLiveBootstrapMetadataWithoutSDPCredentials
+      - TestHandlerPublishesZeroTokenUsageAndMarksLocalAuthResult
+      - TestHandlerRefreshesUnauthorizedHomeSelectionOnce
+      - TestNewSidebandDialerRejectsInvalidProxyWithoutFallback
+      - TestParseConfigBytesValidatesCodexLiveMediaRelay
+      - TestHandleSidebandPinsAuthAndRelaysBidirectionally
+    upstream_issue_or_pr: "CPA-Core-LTS PR #195 review residue; upstream not-filed"
+    state: required
+    retire_when: Upstream or a replacement Live implementation records no SDP request or response body, emits one attributed zero-token usage record per real bootstrap attempt including Home refresh retries, completes model-scoped local auth outcome lifecycle without requiring Live models in the general catalog, validates media relay settings on every config parse path, fails closed for invalid explicit sideband proxies, and all listed regressions pass without the downstream implementation.
+
+  - id: xai-implicit-responses-message-token-accounting
+    reason: OpenAI Responses permits message-shaped input items with role/content and no explicit type, and xAI local token estimation must include their content instead of silently undercounting the request.
+    introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
+    affected_upstream_range: through ea37d13a9eced4af835cad10bcb030d770a5ba88 (v7.2.120, 2026-08-06); upstream xAI token collection still dispatches only on an explicit input item type and ignores ordinary untyped role/content messages.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - internal/runtime/executor/xai_executor_test.go
+      - internal/runtime/executor/xai_executor_tokens.go
+    regression_tests:
+      - TestCountXAIInputTokensExcludesRequestStructure
+    upstream_issue_or_pr: "CPA-Core-LTS PR #194 review residue; upstream not-filed"
+    state: required
+    retire_when: Upstream counts message-shaped Responses input with omitted type while preserving structure exclusion and function/tool item handling, and the listed regression passes without the downstream implementation.
+
+  - id: xai-websocket-saturated-reader-invalidation
+    reason: A terminal xAI WebSocket reader cannot enqueue its error when the active request channel is full; invalidation must cancel the active reader before the terminal sender waits, otherwise the reader and request can deadlock indefinitely.
+    introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
+    affected_upstream_range: through ea37d13a9eced4af835cad10bcb030d770a5ba88 (v7.2.120, 2026-08-06); upstream does not cancel the active read lifecycle when invalidating a saturated shared xAI WebSocket connection.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - internal/runtime/executor/codex_websockets_session.go
+      - internal/runtime/executor/xai_websockets_executor.go
+      - internal/runtime/executor/xai_websockets_executor_test.go
+    regression_tests:
+      - TestXAIWebsocketTerminalReadInvalidationCancelsSaturatedActiveChannel
+    upstream_issue_or_pr: "CPA-Core-LTS PR #194 review residue; upstream not-filed"
+    state: required
+    retire_when: Upstream invalidation wakes a terminal sender blocked behind a full active request channel without dropping queued messages or relying on a test-only callback to close the done channel, and the listed regression passes without the downstream implementation.
+
+  - id: xai-model-bad-credentials-auth-normalization
+    reason: xAI model-scoped 403 bad-credentials failures normalize the model error to unauthorized, and the auth-level LastError snapshot must use the same code so refresh and availability decisions do not continue treating the credential as an ordinary 403.
+    introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
+    affected_upstream_range: through ea37d13a9eced4af835cad10bcb030d770a5ba88 (v7.2.120, 2026-08-06); upstream leaves the auth-level bad-credentials snapshot at its raw 403 code after normalizing only the model state.
+    files:
+      - docs/lts/downstream-patches.yaml
+      - sdk/cliproxy/auth/conductor_cooldown.go
+      - sdk/cliproxy/auth/xai_bad_credentials_test.go
+    regression_tests:
+      - TestManager_MarkResult_XaiBadCredentialsMarksModelUnauthorized
+      - TestManager_MarkResult_XaiBadCredentialsMarksAuthUnauthorized
+    upstream_issue_or_pr: "CPA-Core-LTS PR #183 review residue; upstream not-filed"
+    state: required
+    retire_when: Upstream keeps model-level and auth-level xAI bad-credentials error codes aligned as unauthorized, prevents redundant refresh classification, and both listed regressions pass without the downstream implementation.
