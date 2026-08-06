@@ -273,6 +273,20 @@ patches:
     state: required
     retire_when: Upstream publishes a complete and authoritative Ultra server-side solution covering parser/suffix semantics, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, and HTTP/WebSocket paths while preserving the client-side proactive multi-agent boundary; the refreshed client catalog continues to satisfy the LTS compatibility validator and all listed regressions pass after removing the downstream runtime implementation.
 
+  - id: codex-client-media-model-visibility
+    reason: Codex client catalogs must hide image and video endpoint models in both catalog builders so Codex clients do not list media-only models as normal Responses choices. Upstream v7.2.120 added Grok Imagine Video 1.5 GA to the internal/Home builder and cross-route expectation, but omitted the SDK builder that serves non-Home /v1/models?client_version.
+    introduced_in: 650a98891a3ab72b9916e4f130eda66cc059e17e
+    affected_upstream_range: through ea37d13a9eced4af835cad10bcb030d770a5ba88 (v7.2.120, 2026-08-06); upstream commit abaeb55bb20e9a346cae7002c2ed8af5d82c2790 updates internal/client/codex/models and the server contract test, but not sdk/api/handlers/openai/codex_client_models.go, leaving the GA model visible on the non-Home route.
+    files:
+      - internal/api/server_test.go
+      - internal/client/codex/models/models.go
+      - sdk/api/handlers/openai/codex_client_models.go
+    regression_tests:
+      - TestModelsWithClientVersionReturnsCodexCatalog
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream applies the Grok Imagine Video 1.5 hidden-visibility override to the SDK/non-Home Codex catalog builder, and the listed regression passes after removing the downstream mirror fix.
+
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
