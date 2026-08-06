@@ -1056,6 +1056,9 @@ func (m *Manager) selectAuthForRequest(ctx context.Context, provider, model, req
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if requiredKind != "" {
+		ctx = withRequiredAuthKind(ctx, requiredKind)
+	}
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := homeAuthCountFromMetadata(opts.Metadata)

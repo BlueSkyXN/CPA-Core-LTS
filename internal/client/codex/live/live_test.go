@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 type apiKeyFirstSelector struct{}
@@ -43,6 +44,45 @@ type captureExecutor struct {
 	statuses     []int
 	httpCalls    atomic.Int32
 	refreshCalls atomic.Int32
+}
+
+type captureLiveUsagePlugin struct {
+	records chan usage.Record
+	authID  string
+}
+
+func (p *captureLiveUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
+	if p == nil || record.Provider != "codex" || record.Model != defaultLiveModel || record.AuthID != p.authID {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+type noopLiveUsagePlugin struct{}
+
+func (noopLiveUsagePlugin) HandleUsage(context.Context, usage.Record) {}
+
+func waitForLiveUsageRecord(t *testing.T, records <-chan usage.Record) usage.Record {
+	t.Helper()
+	select {
+	case record := <-records:
+		return record
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Codex Live usage record")
+		return usage.Record{}
+	}
+}
+
+func assertNoAdditionalLiveUsageRecord(t *testing.T, records <-chan usage.Record) {
+	t.Helper()
+	select {
+	case record := <-records:
+		t.Fatalf("received additional Codex Live usage record: %+v", record)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func (*captureExecutor) Identifier() string { return "codex" }
@@ -339,6 +379,109 @@ func TestHandlerRewritesLiveCallAndSchedulesOAuth(t *testing.T) {
 	}
 }
 
+func TestHandlerLogsLiveBootstrapMetadataWithoutSDPCredentials(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := auth.NewManager(nil, nil, nil)
+	executor := &captureExecutor{
+		responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\na=ice-ufrag:upstream-secret\r\na=ice-pwd:upstream-password\r\n")},
+	}
+	manager.RegisterExecutor(executor)
+	registerCredential(t, manager, &auth.Auth{
+		ID:       "codex-live-log-oauth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{"access_token": "oauth-token"},
+	})
+	cfg := &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}
+	handler := NewHandler(manager, cfg)
+
+	var requestLog, responseLog []byte
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Next()
+		if value, ok := c.Get("API_REQUEST"); ok {
+			requestLog, _ = value.([]byte)
+		}
+		if value, ok := c.Get("API_RESPONSE"); ok {
+			responseLog, _ = value.([]byte)
+		}
+	})
+	router.POST("/v1/live", handler.Handle)
+
+	const boundary = "live-log-boundary"
+	body := multipartBody(
+		boundary,
+		"v=0\r\na=ice-ufrag:client-secret\r\na=ice-pwd:client-password\r\n",
+		`{"model":"gpt-live-1-codex"}`,
+	)
+	req := httptest.NewRequest(http.MethodPost, "/v1/live", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	logs := string(append(append([]byte(nil), requestLog...), responseLog...))
+	if requestLog == nil || responseLog == nil {
+		t.Fatalf("request/response metadata logs were not captured: request=%q response=%q", requestLog, responseLog)
+	}
+	for _, secret := range []string{"client-secret", "client-password", "upstream-secret", "upstream-password", "ice-ufrag", "ice-pwd"} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("Codex Live metadata log leaked SDP credential marker %q: %s", secret, logs)
+		}
+	}
+}
+
+func TestHandlerPublishesZeroTokenUsageAndMarksLocalAuthResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	records := make(chan usage.Record, 4)
+	const pluginName = "codex-live-bootstrap-success-test"
+	usage.RegisterNamedPlugin(pluginName, &captureLiveUsagePlugin{records: records, authID: "codex-live-usage-oauth"})
+	t.Cleanup(func() { usage.RegisterNamedPlugin(pluginName, noopLiveUsagePlugin{}) })
+
+	manager := auth.NewManager(nil, nil, nil)
+	executor := &captureExecutor{
+		responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\n")},
+	}
+	manager.RegisterExecutor(executor)
+	credential := &auth.Auth{
+		ID:       "codex-live-usage-oauth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{"access_token": "oauth-token"},
+	}
+	registerCredential(t, manager, credential)
+
+	handler := NewHandler(manager, nil)
+	router := gin.New()
+	router.POST("/v1/live", handler.Handle)
+	req := httptest.NewRequest(http.MethodPost, "/v1/live", strings.NewReader(`{"model":"gpt-live-1-codex","sdp":"v=0"}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	record := waitForLiveUsageRecord(t, records)
+	if record.Failed || record.Model != defaultLiveModel || record.AuthID != credential.ID || record.AuthIndex == "" {
+		t.Fatalf("Codex Live usage record = %+v", record)
+	}
+	if record.RequestedAt.IsZero() || record.Latency <= 0 {
+		t.Fatalf("Codex Live usage timing = requested_at:%v latency:%v", record.RequestedAt, record.Latency)
+	}
+	if record.Detail.InputTokens != 0 || record.Detail.OutputTokens != 0 || record.Detail.TotalTokens != 0 {
+		t.Fatalf("Codex Live token usage = %+v, want zero-token request record", record.Detail)
+	}
+	assertNoAdditionalLiveUsageRecord(t, records)
+
+	updated, ok := manager.GetByID(credential.ID)
+	if !ok || updated.Success != 1 || updated.Failed != 0 {
+		t.Fatalf("local auth outcome = %#v, ok=%t; want one successful Live result", updated, ok)
+	}
+}
+
 func TestMediaCredentialNameUsesSafeIdentity(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		selected *auth.Auth
@@ -380,6 +523,24 @@ func TestProxyURLForAuthPrefersCredentialOverride(t *testing.T) {
 	}
 	if got := proxyURLForAuth(cfg, &auth.Auth{ProxyURL: "direct"}); got != "direct" {
 		t.Fatalf("effective proxy URL = %q, want explicit direct override", got)
+	}
+}
+
+func TestNewSidebandDialerRejectsInvalidProxyWithoutFallback(t *testing.T) {
+	for name, proxyURL := range map[string]string{
+		"invalid URL":        "://invalid",
+		"unsupported scheme": "ftp://proxy.example:21",
+		"invalid SOCKS":      "socks5://",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dialer, err := newSidebandDialer(proxyURL)
+			if err == nil {
+				t.Fatalf("newSidebandDialer(%q) error = nil, want proxy configuration error", proxyURL)
+			}
+			if dialer != nil {
+				t.Fatalf("newSidebandDialer(%q) returned a fallback dialer after error", proxyURL)
+			}
+		})
 	}
 }
 
@@ -608,6 +769,10 @@ func TestHandlerClosesMediaWhenResponseWriteFails(t *testing.T) {
 
 func TestHandlerRefreshesUnauthorizedHomeSelectionOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	records := make(chan usage.Record, 4)
+	const pluginName = "codex-live-home-refresh-usage-test"
+	usage.RegisterNamedPlugin(pluginName, &captureLiveUsagePlugin{records: records, authID: "home-codex-live"})
+	t.Cleanup(func() { usage.RegisterNamedPlugin(pluginName, noopLiveUsagePlugin{}) })
 	manager := auth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
 	registry := executionregistry.New()
@@ -635,6 +800,15 @@ func TestHandlerRefreshesUnauthorizedHomeSelectionOnce(t *testing.T) {
 	if got := executor.request.Header.Get("Authorization"); got != "Bearer refreshed-home-live-token" {
 		t.Fatalf("retry Authorization = %q, want refreshed token", got)
 	}
+	firstAttempt := waitForLiveUsageRecord(t, records)
+	secondAttempt := waitForLiveUsageRecord(t, records)
+	if !firstAttempt.Failed || firstAttempt.Fail.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first Home Live usage attempt = %+v, want failed 401", firstAttempt)
+	}
+	if secondAttempt.Failed || secondAttempt.AuthIndex == "" {
+		t.Fatalf("second Home Live usage attempt = %+v, want successful refreshed auth", secondAttempt)
+	}
+	assertNoAdditionalLiveUsageRecord(t, records)
 	if errDrain := registry.Drain(context.Background()); errDrain != nil {
 		t.Fatalf("Drain() error = %v", errDrain)
 	}

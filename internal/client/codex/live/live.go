@@ -15,14 +15,17 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -38,6 +41,32 @@ var liveProtocolHeaders = []string{
 	"Thread-Id",
 	"Originator",
 	"X-Oai-Attestation",
+}
+
+type liveBootstrapAttempt struct {
+	reporter   *helps.UsageReporter
+	selected   *auth.Auth
+	dispatched bool
+	statusCode int
+	body       []byte
+	err        error
+	finalized  bool
+}
+
+type liveHTTPStatusError struct {
+	statusCode int
+}
+
+func (e liveHTTPStatusError) Error() string {
+	message := http.StatusText(e.statusCode)
+	if message == "" {
+		message = "upstream request failed"
+	}
+	return message
+}
+
+func (e liveHTTPStatusError) StatusCode() int {
+	return e.statusCode
 }
 
 // Handler forwards Codex live session requests through the shared auth scheduler.
@@ -199,8 +228,11 @@ func (h *Handler) Handle(c *gin.Context) {
 	selectionOpts := coreexecutor.Options{
 		Headers:         c.Request.Header.Clone(),
 		OriginalRequest: body,
+		Metadata: map[string]any{
+			coreexecutor.SkipModelCapabilityCheckMetadataKey: true,
+		},
 	}
-	selection, selected, errSelect := h.selectOAuth(ctx, model, selectionOpts)
+	selection, selected, resultCtx, errSelect := h.selectOAuth(ctx, model, selectionOpts)
 	if errSelect != nil {
 		writeSelectionError(c, errSelect)
 		return
@@ -211,6 +243,10 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex auth unavailable"})
 		return
+	}
+	if selection == nil {
+		ctx = resultCtx
+		defer h.authManager.AbandonSelectedAuthRequest(resultCtx)
 	}
 
 	if selection != nil {
@@ -265,26 +301,42 @@ func (h *Handler) Handle(c *gin.Context) {
 
 	baseHeaders := protocolHeaders(c.Request.Header)
 	baseHeaders.Set("Content-Type", upstreamContentType)
-	performRequest := func(current *auth.Auth) (*http.Response, error) {
+	performRequest := func(current *auth.Auth, confirmDispatch bool) (*liveBootstrapAttempt, *http.Response, error) {
 		headers := baseHeaders.Clone()
 		setAccountHeader(headers, current)
 		req, errRequest := h.authManager.NewHttpRequest(ctx, current, http.MethodPost, upstreamCallURL, upstreamBody, headers)
 		if errRequest != nil {
-			return nil, errRequest
+			return nil, nil, errRequest
+		}
+		if confirmDispatch {
+			if errConfirm := h.authManager.ConfirmSelectedAuthDispatch(resultCtx); errConfirm != nil {
+				return nil, nil, errConfirm
+			}
 		}
 		authType, authValue := current.AccountInfo()
 		helps.RecordAPIRequest(ctx, runtimeConfig, helps.UpstreamRequestLog{
 			URL:       upstreamCallURL,
 			Method:    http.MethodPost,
 			Headers:   headersForLogging(req.Header),
-			Body:      upstreamBody,
+			Body:      nil,
 			Provider:  "codex",
 			AuthID:    current.ID,
 			AuthLabel: current.Label,
 			AuthType:  authType,
 			AuthValue: authValue,
 		})
-		return h.authManager.HttpRequest(ctx, current, req)
+		attempt := &liveBootstrapAttempt{
+			reporter:   helps.NewUsageReporter(ctx, "codex", model, current),
+			selected:   current,
+			dispatched: true,
+		}
+		attempt.reporter.StartResponseTTFT()
+		resp, errRequest := h.authManager.HttpRequest(ctx, current, req)
+		if resp != nil {
+			attempt.statusCode = resp.StatusCode
+			attempt.reporter.ObserveResponse(resp)
+		}
+		return attempt, resp, errRequest
 	}
 
 	if errContext := ctx.Err(); errContext != nil {
@@ -294,8 +346,12 @@ func (h *Handler) Handle(c *gin.Context) {
 		c.JSON(http.StatusRequestTimeout, gin.H{"error": errContext.Error()})
 		return
 	}
-	resp, errRequest := performRequest(selected)
+	activeAttempt, resp, errRequest := performRequest(selected, selection == nil)
 	if errRequest != nil {
+		if activeAttempt != nil {
+			activeAttempt.err = errRequest
+			activeAttempt.finalize(ctx, h.authManager, resultCtx, model, selection == nil)
+		}
 		if selection != nil {
 			selection.End("request_failed")
 		}
@@ -303,13 +359,19 @@ func (h *Handler) Handle(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": errRequest.Error()})
 		return
 	}
+	defer func() {
+		if activeAttempt != nil {
+			activeAttempt.finalize(ctx, h.authManager, resultCtx, model, selection == nil)
+		}
+	}()
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
-		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
 		helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, callResponseHeaders(resp.Header))
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("codex live: close unauthorized response body error: %v", errClose)
 		}
+		activeAttempt.finalize(ctx, h.authManager, resultCtx, model, false)
+		activeAttempt = nil
 		refreshed, didRefresh, errRefresh := h.authManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
 		if errRefresh != nil {
 			selection.End("refresh_failed")
@@ -323,15 +385,17 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 		selected = refreshed
 		logging.SetGinCPATraceID(c, selected.EnsureIndex())
-		resp, errRequest = performRequest(selected)
+		activeAttempt, resp, errRequest = performRequest(selected, false)
 		if errRequest != nil {
+			if activeAttempt != nil {
+				activeAttempt.err = errRequest
+				activeAttempt.finalize(ctx, h.authManager, resultCtx, model, false)
+				activeAttempt = nil
+			}
 			selection.End("retry_failed")
 			helps.RecordAPIResponseError(ctx, runtimeConfig, errRequest)
 			c.JSON(http.StatusBadGateway, gin.H{"error": errRequest.Error()})
 			return
-		}
-		if resp.StatusCode == http.StatusUnauthorized {
-			h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", model)
 		}
 	}
 
@@ -359,6 +423,9 @@ func (h *Handler) Handle(c *gin.Context) {
 	helps.RecordAPIResponseMetadata(ctx, runtimeConfig, resp.StatusCode, responseHeaders)
 	responseBody, errResponse := readLimitedBody(resp.Body)
 	if errResponse != nil {
+		if activeAttempt != nil {
+			activeAttempt.err = errResponse
+		}
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errResponse)
 		message := "Failed to read Codex live response"
 		if errors.Is(errResponse, errBodyTooLarge) {
@@ -367,7 +434,9 @@ func (h *Handler) Handle(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": message})
 		return
 	}
-	helps.AppendAPIResponseChunk(ctx, runtimeConfig, responseBody)
+	if activeAttempt != nil {
+		activeAttempt.body = responseBody
+	}
 	responseBodyToWrite := responseBody
 	success := resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices
 	callID := ""
@@ -443,6 +512,84 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 }
 
+func (a *liveBootstrapAttempt) finalize(ctx context.Context, manager *auth.Manager, resultCtx context.Context, model string, trackAuthResult bool) {
+	if a == nil || a.finalized {
+		return
+	}
+	a.finalized = true
+
+	if a.reporter != nil {
+		switch {
+		case a.err != nil:
+			a.reporter.PublishFailure(ctx, a.err)
+		case liveStatusSuccessful(a.statusCode):
+			a.reporter.EnsurePublished(ctx)
+		default:
+			a.reporter.PublishFailure(ctx, liveHTTPStatusError{statusCode: a.statusCode})
+		}
+	}
+	if !trackAuthResult || manager == nil || a.selected == nil || !a.dispatched {
+		return
+	}
+	if a.err != nil && (ctx.Err() != nil || errors.Is(a.err, context.Canceled) || errors.Is(a.err, context.DeadlineExceeded)) {
+		return
+	}
+	markLiveAuthResult(manager, resultCtx, a.selected, model, a.statusCode, a.body, a.err)
+}
+
+func markLiveAuthResult(manager *auth.Manager, ctx context.Context, selected *auth.Auth, model string, statusCode int, body []byte, requestErr error) {
+	if manager == nil || selected == nil {
+		return
+	}
+	if statusError, ok := requestErr.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
+		statusCode = statusError.StatusCode()
+	}
+	if statusCode <= 0 && requestErr != nil {
+		statusCode = http.StatusBadGateway
+	}
+	classification := runtimeexecutor.ClassifyCodexUpstreamError(statusCode, body, time.Now())
+	statusCode = classification.HTTPStatus
+	result := auth.Result{
+		AuthID:   selected.ID,
+		Provider: "codex",
+		Model:    strings.TrimSpace(model),
+		Success:  requestErr == nil && liveStatusSuccessful(statusCode),
+	}
+	if !result.Success {
+		code := liveResponseErrorField(body, "error.code", "error.type", "code", "type")
+		message := liveResponseErrorField(body, "error.message", "message")
+		if classification.RequestInvalid {
+			code = "request_scoped"
+		}
+		if requestErr != nil {
+			message = requestErr.Error()
+		}
+		if message == "" {
+			message = http.StatusText(statusCode)
+		}
+		if message == "" {
+			message = "Codex live request failed"
+		}
+		result.Error = &auth.Error{Code: code, Message: message, HTTPStatus: statusCode}
+		result.RetryAfter = classification.RetryAfter
+		result.ModelFallbackReason = classification.ModelFallbackReason
+	}
+	manager.MarkResult(ctx, result)
+}
+
+func liveStatusSuccessful(statusCode int) bool {
+	return statusCode == http.StatusSwitchingProtocols || (statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices)
+}
+
+func liveResponseErrorField(body []byte, paths ...string) string {
+	for _, path := range paths {
+		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func mediaCredentialName(selected *auth.Auth, authIndex string) string {
 	if selected == nil {
 		return strings.TrimSpace(authIndex)
@@ -458,9 +605,10 @@ func mediaCredentialName(selected *auth.Auth, authIndex string) string {
 	return strings.TrimSpace(authIndex)
 }
 
-func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecutor.Options) (*auth.HomeDispatchSelection, *auth.Auth, error) {
+func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecutor.Options) (*auth.HomeDispatchSelection, *auth.Auth, context.Context, error) {
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
+	resultCtx := ctx
 	var errSelect error
 	if h.authManager.HomeEnabled() {
 		selection, errSelect = h.authManager.SelectHomeAuthByKind(ctx, "codex", model, auth.AuthKindOAuth, opts)
@@ -468,12 +616,12 @@ func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecut
 			selected = selection.CloneAuth()
 		}
 	} else {
-		selected, errSelect = h.authManager.SelectAuthByKind(ctx, "codex", "", auth.AuthKindOAuth, opts)
+		selected, resultCtx, errSelect = h.authManager.SelectAuthForRequestByKind(ctx, "codex", model, auth.AuthKindOAuth, opts)
 	}
 	if errSelect != nil && selection != nil {
 		selection.End("selection_failed")
 	}
-	return selection, selected, errSelect
+	return selection, selected, resultCtx, errSelect
 }
 
 var errBodyTooLarge = errors.New("Codex live request body too large")

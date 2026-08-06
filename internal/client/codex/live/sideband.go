@@ -1,8 +1,10 @@
 package live
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -338,6 +340,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
+	resultCtx := ctx
 	var errSelect error
 	if session.homeSelection != nil {
 		if !session.homeSelection.Active() {
@@ -351,11 +354,12 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		selectionOpts := coreexecutor.Options{
 			Headers: c.Request.Header.Clone(),
 			Metadata: map[string]any{
-				coreexecutor.PinnedAuthMetadataKey:       session.authID,
-				coreexecutor.ExecutionSessionMetadataKey: callID,
+				coreexecutor.PinnedAuthMetadataKey:               session.authID,
+				coreexecutor.ExecutionSessionMetadataKey:         callID,
+				coreexecutor.SkipModelCapabilityCheckMetadataKey: true,
 			},
 		}
-		selection, selected, errSelect = h.selectOAuth(ctx, session.model, selectionOpts)
+		selection, selected, resultCtx, errSelect = h.selectOAuth(ctx, session.model, selectionOpts)
 	}
 	if errSelect != nil {
 		writeSelectionError(c, errSelect)
@@ -364,6 +368,10 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	if selected == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex auth unavailable"})
 		return
+	}
+	if selection == nil {
+		ctx = resultCtx
+		defer h.authManager.AbandonSelectedAuthRequest(resultCtx)
 	}
 
 	if selection != nil {
@@ -380,15 +388,25 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 
 	upstreamURL := buildSidebandURL(h.sidebandAPIBaseURL, style, callID)
 	upstreamHTTPURL := websocketHTTPURL(upstreamURL)
-	dialUpstream := func(current *auth.Auth) (*websocket.Conn, *http.Response, error) {
+	dialUpstream := func(current *auth.Auth, confirmDispatch bool) (*websocket.Conn, *http.Response, bool, error) {
 		req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, upstreamHTTPURL, nil)
 		if errRequest != nil {
-			return nil, nil, errRequest
+			return nil, nil, false, errRequest
 		}
 		req.Header = protocolHeaders(c.Request.Header)
 		setAccountHeader(req.Header, current)
 		if errPrepare := h.authManager.PrepareHttpRequest(ctx, current, req); errPrepare != nil {
-			return nil, nil, errPrepare
+			return nil, nil, false, errPrepare
+		}
+		dialer, errDialer := newProxyAwareSidebandDialer(runtimeConfig, current)
+		if errDialer != nil {
+			return nil, nil, false, errDialer
+		}
+		dialer.Subprotocols = websocket.Subprotocols(c.Request)
+		if confirmDispatch {
+			if errConfirm := h.authManager.ConfirmSelectedAuthDispatch(resultCtx); errConfirm != nil {
+				return nil, nil, false, errConfirm
+			}
 		}
 		authType, authValue := current.AccountInfo()
 		helps.RecordAPIWebsocketRequest(ctx, runtimeConfig, helps.UpstreamRequestLog{
@@ -401,12 +419,11 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 			AuthType:  authType,
 			AuthValue: authValue,
 		})
-		dialer := newProxyAwareSidebandDialer(runtimeConfig, current)
-		dialer.Subprotocols = websocket.Subprotocols(c.Request)
-		return dialer.DialContext(ctx, upstreamURL, req.Header)
+		upstream, response, errDial := dialer.DialContext(ctx, upstreamURL, req.Header)
+		return upstream, response, true, errDial
 	}
 
-	upstream, handshakeResponse, errDial := dialUpstream(selected)
+	upstream, handshakeResponse, dispatched, errDial := dialUpstream(selected, selection == nil)
 	if errDial != nil && selection != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
 		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", session.model)
 		helps.RecordAPIWebsocketHandshake(ctx, runtimeConfig, handshakeResponse.StatusCode, callResponseHeaders(handshakeResponse.Header))
@@ -426,10 +443,17 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		}
 		selected = refreshed
 		logging.SetGinCPATraceID(c, selected.EnsureIndex())
-		upstream, handshakeResponse, errDial = dialUpstream(selected)
+		upstream, handshakeResponse, _, errDial = dialUpstream(selected, false)
 		if errDial != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
 			h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", session.model)
 		}
+	}
+	if selection == nil && dispatched && (errDial == nil || (ctx.Err() == nil && !errors.Is(errDial, context.Canceled) && !errors.Is(errDial, context.DeadlineExceeded))) {
+		statusCode := http.StatusSwitchingProtocols
+		if handshakeResponse != nil && handshakeResponse.StatusCode > 0 {
+			statusCode = handshakeResponse.StatusCode
+		}
+		markLiveAuthResult(h.authManager, resultCtx, selected, session.model, statusCode, sidebandHandshakeBody(handshakeResponse), errDial)
 	}
 	if errDial != nil {
 		handleSidebandDialError(c, ctx, runtimeConfig, handshakeResponse, errDial)
@@ -566,6 +590,16 @@ func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Co
 	c.JSON(status, gin.H{"error": "Codex live sideband upstream unavailable"})
 }
 
+func sidebandHandshakeBody(response *http.Response) []byte {
+	if response == nil || response.Body == nil {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	_ = response.Body.Close()
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	return body
+}
+
 func websocketCloseFunc(name string, conn *websocket.Conn) func() error {
 	var once sync.Once
 	var closeErr error
@@ -640,7 +674,7 @@ func isNormalWebsocketClose(err error) bool {
 	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived)
 }
 
-func newProxyAwareSidebandDialer(cfg *config.Config, selected *auth.Auth) *websocket.Dialer {
+func newProxyAwareSidebandDialer(cfg *config.Config, selected *auth.Auth) (*websocket.Dialer, error) {
 	return newSidebandDialer(proxyURLForAuth(cfg, selected))
 }
 
@@ -654,24 +688,23 @@ func proxyURLForAuth(cfg *config.Config, selected *auth.Auth) string {
 	return ""
 }
 
-func newSidebandDialer(proxyURL string) *websocket.Dialer {
+func newSidebandDialer(proxyURL string) (*websocket.Dialer, error) {
 	dialer := &websocket.Dialer{Proxy: http.ProxyFromEnvironment}
 	if strings.TrimSpace(proxyURL) == "" {
-		return dialer
+		return dialer, nil
 	}
 
 	setting, errParse := proxyutil.Parse(proxyURL)
 	if errParse != nil {
-		log.Errorf("codex live sideband: %v", errParse)
-		return dialer
+		return nil, fmt.Errorf("codex live sideband proxy: %w", errParse)
 	}
 	switch setting.Mode {
 	case proxyutil.ModeDirect:
 		dialer.Proxy = nil
-		return dialer
+		return dialer, nil
 	case proxyutil.ModeProxy:
 	default:
-		return dialer
+		return nil, fmt.Errorf("codex live sideband proxy: unsupported mode")
 	}
 
 	switch setting.URL.Scheme {
@@ -684,8 +717,7 @@ func newSidebandDialer(proxyURL string) *websocket.Dialer {
 		}
 		socksDialer, errSOCKS5 := xproxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, xproxy.Direct)
 		if errSOCKS5 != nil {
-			log.Errorf("codex live sideband: create SOCKS5 dialer failed: %v", errSOCKS5)
-			return dialer
+			return nil, fmt.Errorf("codex live sideband proxy: create SOCKS5 dialer: %w", errSOCKS5)
 		}
 		dialer.Proxy = nil
 		if contextDialer, ok := socksDialer.(xproxy.ContextDialer); ok {
@@ -698,7 +730,7 @@ func newSidebandDialer(proxyURL string) *websocket.Dialer {
 	case "http", "https":
 		dialer.Proxy = http.ProxyURL(setting.URL)
 	default:
-		log.Errorf("codex live sideband: unsupported proxy scheme: %s", setting.URL.Scheme)
+		return nil, fmt.Errorf("codex live sideband proxy: unsupported scheme %q", setting.URL.Scheme)
 	}
-	return dialer
+	return dialer, nil
 }

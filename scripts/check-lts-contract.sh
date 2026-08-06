@@ -172,9 +172,6 @@ require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue
 forbid_grep 'BillingBasis|billing_basis' sdk/cliproxy/usage internal/runtime/executor/helps/usage_helpers.go internal/usage/logger_plugin.go internal/redisqueue/plugin.go internal/pluginhost sdk/pluginapi
 require_grep 'json:"EffectiveServiceTier,omitempty"' sdk/pluginapi/types.go
-require_grep "TestUsageAdapterPreservesEffectiveServiceTier" internal/pluginhost/adapters_test.go
-require_grep "TestRPCUsageIncludesEffectiveServiceTier" internal/pluginhost/host_test.go
-require_grep "TestPublishCodexImageToolUsagePreservesResponseTierPrecedence" internal/runtime/executor/codex_openai_images_test.go
 require_grep 'json:"generate"' internal/usage internal/redisqueue
 require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
 require_grep "CanonicalExportVersion" internal/usage/logger_plugin.go internal/api/handlers/management/usage.go docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml

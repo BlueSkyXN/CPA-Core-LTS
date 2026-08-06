@@ -83,6 +83,14 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	return eligibility
 }
 
+func skipModelCapabilityCheck(opts cliproxyexecutor.Options) bool {
+	if len(opts.Metadata) == 0 {
+		return false
+	}
+	value, _ := opts.Metadata[cliproxyexecutor.SkipModelCapabilityCheckMetadataKey].(bool)
+	return value
+}
+
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
 		return false
@@ -1123,7 +1131,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
+		if modelKey != "" && !skipModelCapabilityCheck(opts) && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -1333,6 +1341,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
+	}
+	if skipModelCapabilityCheck(opts) {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {

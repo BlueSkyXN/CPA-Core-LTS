@@ -1303,6 +1303,9 @@ func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebs
 	}
 	sess.connMu.Unlock()
 
+	// Wake a saturated reader channel before the terminal sender waits for
+	// capacity. The reader owns the eventual channel cleanup.
+	sess.cancelActiveRead()
 	logXAIWebsocketDisconnected(sessionID, authID, wsURL, reason, err)
 	if notify {
 		sess.notifyUpstreamDisconnect(err)

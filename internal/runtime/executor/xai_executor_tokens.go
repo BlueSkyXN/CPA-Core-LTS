@@ -70,7 +70,11 @@ func xaiCollectInputTokenSegments(input gjson.Result, segments *[]string) {
 		return
 	}
 	for _, item := range input.Array() {
-		switch item.Get("type").String() {
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if itemType == "" && (item.Get("role").Exists() || item.Get("content").Exists()) {
+			itemType = "message"
+		}
+		switch itemType {
 		case "message":
 			xaiCollectContentTokenSegments(item.Get("content"), segments)
 		case "function_call":

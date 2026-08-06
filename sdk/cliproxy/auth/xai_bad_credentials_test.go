@@ -83,6 +83,9 @@ func TestManager_MarkResult_XaiBadCredentialsMarksModelUnauthorized(t *testing.T
 	if state.LastError == nil || state.LastError.Code != "unauthorized" {
 		t.Fatalf("expected model LastError.Code = unauthorized, got %+v", state.LastError)
 	}
+	if updated.LastError == nil || updated.LastError.Code != "unauthorized" {
+		t.Fatalf("expected auth LastError.Code = unauthorized, got %+v", updated.LastError)
+	}
 	if count := reg.GetModelCount(model); count != 0 {
 		t.Fatalf("expected registry model suspension, count = %d", count)
 	}
