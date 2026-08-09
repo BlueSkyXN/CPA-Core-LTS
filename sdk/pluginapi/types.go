@@ -1352,6 +1352,13 @@ type UsageRecord struct {
 	ReasoningEffort string
 	// ServiceTier records the requested or reported service tier.
 	ServiceTier string
+	// RequestServiceTier records the client-requested service tier.
+	RequestServiceTier string `json:"RequestServiceTier,omitempty"`
+	// OutboundServiceTier records the trimmed raw top-level service_tier from the
+	// final payload sent by this provider attempt.
+	OutboundServiceTier string `json:"OutboundServiceTier,omitempty"`
+	// ResponseServiceTier records the raw service tier reported by the upstream response.
+	ResponseServiceTier string `json:"ResponseServiceTier,omitempty"`
 	// EffectiveServiceTier records the canonical tier selected for the request.
 	// It is empty when the effective tier cannot be determined safely.
 	EffectiveServiceTier string `json:"EffectiveServiceTier,omitempty"`

@@ -68,6 +68,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if requestServiceTier == "" {
 		requestServiceTier = serviceTier
 	}
+	outboundServiceTier := strings.TrimSpace(record.OutboundServiceTier)
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
@@ -128,6 +129,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ReasoningEffort:      reasoningEffort,
 		ServiceTier:          serviceTier,
 		RequestServiceTier:   requestServiceTier,
+		OutboundServiceTier:  outboundServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
 	})
@@ -152,6 +154,7 @@ type queuedUsageDetail struct {
 	ReasoningEffort      string                   `json:"reasoning_effort"`
 	ServiceTier          string                   `json:"service_tier"`
 	RequestServiceTier   string                   `json:"request_service_tier"`
+	OutboundServiceTier  string                   `json:"outbound_service_tier,omitempty"`
 	ResponseServiceTier  string                   `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string                   `json:"effective_service_tier,omitempty"`
 }

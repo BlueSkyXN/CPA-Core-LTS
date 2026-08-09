@@ -40,6 +40,7 @@ features:
       - reasoning_effort
       - service_tier
       - request_service_tier
+      - outbound_service_tier
       - response_service_tier
       - effective_service_tier
       - generate
@@ -85,6 +86,7 @@ features:
       - reasoning_effort
       - service_tier
       - request_service_tier
+      - outbound_service_tier
       - response_service_tier
       - effective_service_tier
       - generate
@@ -388,6 +390,7 @@ features:
       - redisqueue
       - latency_ms
       - auth_index
+      - outbound_service_tier
       - effective_service_tier
       - generate
     validation:

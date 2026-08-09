@@ -168,10 +168,14 @@ require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep 'json:"reasoning_effort,omitempty"' internal/usage
 require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
+require_grep 'json:"outbound_service_tier,omitempty"' internal/usage internal/redisqueue
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue
 forbid_grep 'BillingBasis|billing_basis' sdk/cliproxy/usage internal/runtime/executor/helps/usage_helpers.go internal/usage/logger_plugin.go internal/redisqueue/plugin.go internal/pluginhost sdk/pluginapi
 require_grep 'json:"EffectiveServiceTier,omitempty"' sdk/pluginapi/types.go
+require_grep 'json:"RequestServiceTier,omitempty"' sdk/pluginapi/types.go
+require_grep 'json:"OutboundServiceTier,omitempty"' sdk/pluginapi/types.go
+require_grep 'json:"ResponseServiceTier,omitempty"' sdk/pluginapi/types.go
 require_grep 'json:"generate"' internal/usage internal/redisqueue
 require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
 require_grep "CanonicalExportVersion" internal/usage/logger_plugin.go internal/api/handlers/management/usage.go docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml
@@ -213,6 +217,7 @@ fi
 require_grep "reasoning_effort" internal/api/handlers/management/usage_contract_test.go
 require_grep '"thinking"' internal/api/handlers/management/usage_contract_test.go
 require_grep "request_service_tier" internal/api/handlers/management/usage_contract_test.go
+require_grep "outbound_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "response_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep "effective_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep '"generate"' internal/api/handlers/management/usage_contract_test.go

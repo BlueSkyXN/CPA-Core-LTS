@@ -2240,7 +2240,7 @@ func TestUsageAdapterPreservesExplicitGenerateFalse(t *testing.T) {
 	}
 }
 
-func TestUsageAdapterPreservesEffectiveServiceTier(t *testing.T) {
+func TestUsageAdapterPreservesServiceTierMetadata(t *testing.T) {
 	var got pluginapi.UsageRecord
 	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
 		got = record
@@ -2259,11 +2259,23 @@ func TestUsageAdapterPreservesEffectiveServiceTier(t *testing.T) {
 	adapter.HandleUsage(context.Background(), coreusage.Record{
 		Provider:             "codex",
 		ServiceTier:          "priority",
+		RequestServiceTier:   "priority",
+		OutboundServiceTier:  " Scale ",
+		ResponseServiceTier:  "default",
 		EffectiveServiceTier: "standard",
 	})
 
 	if got.ServiceTier != "priority" {
 		t.Fatalf("plugin ServiceTier = %q, want priority", got.ServiceTier)
+	}
+	if got.RequestServiceTier != "priority" {
+		t.Fatalf("plugin RequestServiceTier = %q, want priority", got.RequestServiceTier)
+	}
+	if got.OutboundServiceTier != "Scale" {
+		t.Fatalf("plugin OutboundServiceTier = %q, want Scale", got.OutboundServiceTier)
+	}
+	if got.ResponseServiceTier != "default" {
+		t.Fatalf("plugin ResponseServiceTier = %q, want default", got.ResponseServiceTier)
 	}
 	if got.EffectiveServiceTier != "standard" {
 		t.Fatalf("plugin EffectiveServiceTier = %q, want standard", got.EffectiveServiceTier)
