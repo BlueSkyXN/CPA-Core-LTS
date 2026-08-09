@@ -506,7 +506,7 @@ func TestRPCInterceptorsIncludeHostCallbackID(t *testing.T) {
 	}
 }
 
-func TestRPCUsageIncludesEffectiveServiceTier(t *testing.T) {
+func TestRPCUsageIncludesServiceTierMetadata(t *testing.T) {
 	client := &capturePluginClient{}
 	adapter := &rpcPluginAdapter{
 		host:   New(),
@@ -516,6 +516,9 @@ func TestRPCUsageIncludesEffectiveServiceTier(t *testing.T) {
 	adapter.HandleUsage(context.Background(), pluginapi.UsageRecord{
 		Provider:             "codex",
 		ServiceTier:          "priority",
+		RequestServiceTier:   "priority",
+		OutboundServiceTier:  "Scale",
+		ResponseServiceTier:  "default",
 		EffectiveServiceTier: "standard",
 	})
 
@@ -525,6 +528,15 @@ func TestRPCUsageIncludesEffectiveServiceTier(t *testing.T) {
 	}
 	if record.ServiceTier != "priority" {
 		t.Fatalf("RPC ServiceTier = %q, want priority", record.ServiceTier)
+	}
+	if record.RequestServiceTier != "priority" {
+		t.Fatalf("RPC RequestServiceTier = %q, want priority", record.RequestServiceTier)
+	}
+	if record.OutboundServiceTier != "Scale" {
+		t.Fatalf("RPC OutboundServiceTier = %q, want Scale", record.OutboundServiceTier)
+	}
+	if record.ResponseServiceTier != "default" {
+		t.Fatalf("RPC ResponseServiceTier = %q, want default", record.ResponseServiceTier)
 	}
 	if record.EffectiveServiceTier != "standard" {
 		t.Fatalf("RPC EffectiveServiceTier = %q, want standard", record.EffectiveServiceTier)

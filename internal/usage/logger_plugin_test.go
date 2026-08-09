@@ -45,6 +45,7 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 		ReasoningEffort:      "medium",
 		ServiceTier:          "legacy-default",
 		RequestServiceTier:   " priority ",
+		OutboundServiceTier:  " Priority ",
 		ResponseServiceTier:  " standard ",
 		EffectiveServiceTier: " fast ",
 		Generate:             coreusage.GenerateFlag(false),
@@ -75,6 +76,9 @@ func TestRequestStatisticsRecordIncludesUsageMetadata(t *testing.T) {
 	}
 	if detail.RequestServiceTier != "priority" {
 		t.Fatalf("request_service_tier = %q, want %q", detail.RequestServiceTier, "priority")
+	}
+	if detail.OutboundServiceTier != "Priority" {
+		t.Fatalf("outbound_service_tier = %q, want %q", detail.OutboundServiceTier, "Priority")
 	}
 	if detail.ResponseServiceTier != "standard" {
 		t.Fatalf("response_service_tier = %q, want %q", detail.ResponseServiceTier, "standard")
@@ -371,8 +375,8 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatencyAndServiceTiers(t *tes
 	if details[0].ServiceTier != "" {
 		t.Fatalf("service_tier = %q, want legacy unknown to remain empty", details[0].ServiceTier)
 	}
-	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
-		t.Fatalf("service tier metadata = request:%q response:%q effective:%q, want legacy unknown to remain empty", details[0].RequestServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
+	if details[0].RequestServiceTier != "" || details[0].OutboundServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
+		t.Fatalf("service tier metadata = request:%q outbound:%q response:%q effective:%q, want legacy unknown to remain empty", details[0].RequestServiceTier, details[0].OutboundServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
 	}
 }
 
@@ -386,6 +390,7 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 			name: "legacy alias populates request tier",
 			detail: RequestDetail{
 				ServiceTier:          " priority ",
+				OutboundServiceTier:  " Scale ",
 				ResponseServiceTier:  " standard ",
 				EffectiveServiceTier: " fast ",
 			},
@@ -394,6 +399,7 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 			name: "request tier populates legacy alias",
 			detail: RequestDetail{
 				RequestServiceTier:   " priority ",
+				OutboundServiceTier:  " Scale ",
 				ResponseServiceTier:  " standard ",
 				EffectiveServiceTier: " fast ",
 			},
@@ -420,6 +426,9 @@ func TestRequestStatisticsMergeSnapshotNormalisesServiceTierAliases(t *testing.T
 			}
 			if got.ResponseServiceTier != " standard " {
 				t.Fatalf("response_service_tier = %q, want preserved raw import value", got.ResponseServiceTier)
+			}
+			if got.OutboundServiceTier != "Scale" {
+				t.Fatalf("outbound_service_tier = %q, want trimmed raw import value", got.OutboundServiceTier)
 			}
 			if got.EffectiveServiceTier != "priority" {
 				t.Fatalf("effective_service_tier = %q, want canonical priority", got.EffectiveServiceTier)

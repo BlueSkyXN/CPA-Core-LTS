@@ -48,10 +48,13 @@ func TestRequestInterceptorCapabilityAcceptsLegacyAndStagedImplementations(t *te
 	}
 }
 
-func TestUsageRecordEffectiveServiceTierJSONCompatibility(t *testing.T) {
+func TestUsageRecordServiceTierJSONCompatibility(t *testing.T) {
 	raw, errMarshal := json.Marshal(UsageRecord{
 		Provider:             "codex",
 		ServiceTier:          "priority",
+		RequestServiceTier:   "priority",
+		OutboundServiceTier:  "Scale",
+		ResponseServiceTier:  "default",
 		EffectiveServiceTier: "standard",
 	})
 	if errMarshal != nil {
@@ -62,8 +65,10 @@ func TestUsageRecordEffectiveServiceTierJSONCompatibility(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(raw, &fields); errUnmarshal != nil {
 		t.Fatalf("decode UsageRecord fields: %v", errUnmarshal)
 	}
-	if _, ok := fields["EffectiveServiceTier"]; !ok {
-		t.Fatalf("UsageRecord JSON missing EffectiveServiceTier: %s", raw)
+	for _, field := range []string{"RequestServiceTier", "OutboundServiceTier", "ResponseServiceTier", "EffectiveServiceTier"} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("UsageRecord JSON missing %s: %s", field, raw)
+		}
 	}
 	emptyRaw, errMarshal := json.Marshal(UsageRecord{Provider: "codex"})
 	if errMarshal != nil {
@@ -73,8 +78,10 @@ func TestUsageRecordEffectiveServiceTierJSONCompatibility(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(emptyRaw, &emptyFields); errUnmarshal != nil {
 		t.Fatalf("decode empty-tier UsageRecord fields: %v", errUnmarshal)
 	}
-	if _, ok := emptyFields["EffectiveServiceTier"]; ok {
-		t.Fatalf("empty UsageRecord JSON unexpectedly includes EffectiveServiceTier: %s", emptyRaw)
+	for _, field := range []string{"RequestServiceTier", "OutboundServiceTier", "ResponseServiceTier", "EffectiveServiceTier"} {
+		if _, ok := emptyFields[field]; ok {
+			t.Fatalf("empty UsageRecord JSON unexpectedly includes %s: %s", field, emptyRaw)
+		}
 	}
 
 	var legacy struct {
@@ -92,8 +99,8 @@ func TestUsageRecordEffectiveServiceTierJSONCompatibility(t *testing.T) {
 	if errUnmarshal := json.Unmarshal([]byte(`{"Provider":"codex","ServiceTier":"priority"}`), &current); errUnmarshal != nil {
 		t.Fatalf("decode legacy UsageRecord: %v", errUnmarshal)
 	}
-	if current.EffectiveServiceTier != "" {
-		t.Fatalf("legacy EffectiveServiceTier = %q, want empty", current.EffectiveServiceTier)
+	if current.RequestServiceTier != "" || current.OutboundServiceTier != "" || current.ResponseServiceTier != "" || current.EffectiveServiceTier != "" {
+		t.Fatalf("legacy service tier metadata = request:%q outbound:%q response:%q effective:%q, want empty", current.RequestServiceTier, current.OutboundServiceTier, current.ResponseServiceTier, current.EffectiveServiceTier)
 	}
 }
 

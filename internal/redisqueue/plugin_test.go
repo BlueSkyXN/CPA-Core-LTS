@@ -42,6 +42,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			Source:               "user@example.com",
 			ReasoningEffort:      "medium",
 			ServiceTier:          "auto",
+			OutboundServiceTier:  " priority ",
 			ResponseServiceTier:  "default",
 			EffectiveServiceTier: "standard",
 			Generate:             coreusage.GenerateFlag(true),
@@ -72,6 +73,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "reasoning_effort", "medium")
 		requireStringField(t, payload, "service_tier", "auto")
 		requireStringField(t, payload, "request_service_tier", "auto")
+		requireStringField(t, payload, "outbound_service_tier", "priority")
 		requireStringField(t, payload, "response_service_tier", "default")
 		requireStringField(t, payload, "effective_service_tier", "standard")
 		requireIntField(t, payload, "accounting_version", coreusage.TokenAccountingSchemaVersion)
@@ -82,6 +84,22 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireBoolField(t, payload, "failed", false)
 		requireBoolField(t, payload, "generate", true)
 		requireFailField(t, payload, http.StatusOK, "")
+
+		legacyJSON, errMarshal := json.Marshal(payload)
+		if errMarshal != nil {
+			t.Fatalf("marshal queue payload for legacy consumer: %v", errMarshal)
+		}
+		var legacyConsumer struct {
+			ServiceTier          string `json:"service_tier"`
+			ResponseServiceTier  string `json:"response_service_tier"`
+			EffectiveServiceTier string `json:"effective_service_tier"`
+		}
+		if errUnmarshal := json.Unmarshal(legacyJSON, &legacyConsumer); errUnmarshal != nil {
+			t.Fatalf("legacy queue consumer rejected additive outbound tier: %v", errUnmarshal)
+		}
+		if legacyConsumer.ServiceTier != "auto" || legacyConsumer.ResponseServiceTier != "default" || legacyConsumer.EffectiveServiceTier != "standard" {
+			t.Fatalf("legacy queue consumer = %+v, want existing tier fields preserved", legacyConsumer)
+		}
 	})
 }
 
@@ -261,6 +279,7 @@ func TestUsageQueuePluginEmitsSingleCanonicalAutoTier(t *testing.T) {
 		payload := popSinglePayload(t)
 		requireStringField(t, payload, "service_tier", "auto")
 		requireStringField(t, payload, "request_service_tier", "auto")
+		requireMissingField(t, payload, "outbound_service_tier")
 	})
 }
 

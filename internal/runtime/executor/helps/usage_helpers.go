@@ -135,9 +135,9 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
 }
 
-// SetOutboundServiceTier records the only request-side fallback allowed for
-// effective usage tier: an explicit recognized value in the final outbound
-// payload. The payload itself is not retained with usage metadata.
+// SetOutboundServiceTier records the trimmed raw top-level service_tier from
+// the final payload sent by this provider attempt. The payload itself is not
+// retained with usage metadata.
 func (r *UsageReporter) SetOutboundServiceTier(payload []byte) {
 	if r == nil {
 		return
@@ -348,6 +348,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
 		RequestServiceTier:  r.serviceTier,
+		OutboundServiceTier: r.outboundTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		EffectiveServiceTier: usage.ResolveEffectiveServiceTier(
 			detail.ResponseServiceTier,
@@ -371,7 +372,7 @@ func explicitOutboundServiceTier(payload []byte) string {
 	if !tier.Exists() || tier.Type != gjson.String {
 		return ""
 	}
-	return usage.CanonicalEffectiveServiceTier(tier.String())
+	return strings.TrimSpace(tier.String())
 }
 
 func failFromErrors(errs ...error) usage.Failure {

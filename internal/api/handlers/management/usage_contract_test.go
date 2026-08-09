@@ -54,6 +54,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"request_service_tier":"priority"`)) {
 		t.Fatalf("exported usage missing request_service_tier: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"outbound_service_tier":"priority"`)) {
+		t.Fatalf("exported usage missing outbound_service_tier: %s", exportedJSON)
+	}
 	if !bytes.Contains(exportedJSON, []byte(`"response_service_tier":"standard"`)) {
 		t.Fatalf("exported usage missing response_service_tier: %s", exportedJSON)
 	}
@@ -327,8 +330,8 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if details[0].ServiceTier != "" {
 		t.Fatalf("legacy detail.service_tier = %q, want empty/unknown", details[0].ServiceTier)
 	}
-	if details[0].RequestServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
-		t.Fatalf("legacy detail service tiers = request:%q response:%q effective:%q, want empty/unknown", details[0].RequestServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
+	if details[0].RequestServiceTier != "" || details[0].OutboundServiceTier != "" || details[0].ResponseServiceTier != "" || details[0].EffectiveServiceTier != "" {
+		t.Fatalf("legacy detail service tiers = request:%q outbound:%q response:%q effective:%q, want empty/unknown", details[0].RequestServiceTier, details[0].OutboundServiceTier, details[0].ResponseServiceTier, details[0].EffectiveServiceTier)
 	}
 	if !details[0].Generate {
 		t.Fatalf("legacy detail.generate = false, want backward-compatible true")
@@ -354,7 +357,7 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if !bytes.Contains(reexportedJSON, []byte(`"generate":true`)) {
 		t.Fatalf("legacy re-export missing normalized generate=true: %s", reexportedJSON)
 	}
-	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"effective_service_tier"`)) {
+	if bytes.Contains(reexportedJSON, []byte(`"request_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"outbound_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"response_service_tier"`)) || bytes.Contains(reexportedJSON, []byte(`"effective_service_tier"`)) {
 		t.Fatalf("legacy re-export fabricated explicit service-tier fields: %s", reexportedJSON)
 	}
 	if bytes.Contains(reexportedJSON, []byte(`"uncached_input_tokens"`)) {
@@ -1133,6 +1136,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		ReasoningEffort:      "medium",
 		ServiceTier:          "priority",
 		RequestServiceTier:   "priority",
+		OutboundServiceTier:  "priority",
 		ResponseServiceTier:  "standard",
 		EffectiveServiceTier: "standard",
 		Generate:             coreusage.GenerateFlag(false),
@@ -1346,6 +1350,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.RequestServiceTier != "priority" {
 		t.Fatalf("detail.request_service_tier = %q, want priority", detail.RequestServiceTier)
+	}
+	if detail.OutboundServiceTier != "priority" {
+		t.Fatalf("detail.outbound_service_tier = %q, want priority", detail.OutboundServiceTier)
 	}
 	if detail.ResponseServiceTier != "standard" {
 		t.Fatalf("detail.response_service_tier = %q, want standard", detail.ResponseServiceTier)

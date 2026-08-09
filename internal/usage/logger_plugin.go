@@ -108,6 +108,7 @@ type RequestDetail struct {
 	ReasoningEffort      string     `json:"reasoning_effort,omitempty"`
 	ServiceTier          string     `json:"service_tier,omitempty"`
 	RequestServiceTier   string     `json:"request_service_tier,omitempty"`
+	OutboundServiceTier  string     `json:"outbound_service_tier,omitempty"`
 	ResponseServiceTier  string     `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string     `json:"effective_service_tier,omitempty"`
 	Tokens               TokenStats `json:"tokens"`
@@ -459,6 +460,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if requestServiceTier == "" {
 		requestServiceTier = strings.TrimSpace(record.ServiceTier)
 	}
+	outboundServiceTier := strings.TrimSpace(record.OutboundServiceTier)
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	if responseServiceTier == "" {
 		responseServiceTier = strings.TrimSpace(record.Detail.ResponseServiceTier)
@@ -473,6 +475,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		ReasoningEffort:      strings.TrimSpace(record.ReasoningEffort),
 		ServiceTier:          requestServiceTier,
 		RequestServiceTier:   requestServiceTier,
+		OutboundServiceTier:  outboundServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
 		Tokens:               detail,
@@ -807,6 +810,7 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 	if strings.TrimSpace(detail.ServiceTier) == "" && strings.TrimSpace(detail.RequestServiceTier) != "" {
 		detail.ServiceTier = detail.RequestServiceTier
 	}
+	detail.OutboundServiceTier = strings.TrimSpace(detail.OutboundServiceTier)
 	detail.EffectiveServiceTier = coreusage.CanonicalEffectiveServiceTier(detail.EffectiveServiceTier)
 	return detail
 }

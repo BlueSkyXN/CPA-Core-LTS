@@ -39,6 +39,9 @@ type Record struct {
 	// RequestServiceTier explicitly aliases the client-requested service tier for
 	// LTS usage exports and downstream queue consumers.
 	RequestServiceTier string
+	// OutboundServiceTier stores the trimmed raw top-level service_tier from the
+	// final payload sent by this provider attempt.
+	OutboundServiceTier string
 	// ResponseServiceTier stores the final tier reported by the upstream response.
 	ResponseServiceTier string
 	// EffectiveServiceTier stores the canonical tier actually selected for the

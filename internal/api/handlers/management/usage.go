@@ -226,6 +226,7 @@ func validateUsageImportRawShape(data []byte) error {
 					"reasoning_effort",
 					"service_tier",
 					"request_service_tier",
+					"outbound_service_tier",
 					"response_service_tier",
 					"effective_service_tier",
 					"tokens",

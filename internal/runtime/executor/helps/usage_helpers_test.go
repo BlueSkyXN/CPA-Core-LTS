@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -839,17 +840,19 @@ func TestUsageReporterBuildRecordIncludesServiceTier(t *testing.T) {
 
 func TestUsageReporterResolvesEffectiveServiceTierFromFinalOutboundPayload(t *testing.T) {
 	tests := []struct {
-		name     string
-		outbound string
-		response string
-		want     string
+		name          string
+		outbound      string
+		response      string
+		wantOutbound  string
+		wantEffective string
 	}{
-		{name: "non stream response wins", outbound: `{"service_tier":"priority"}`, response: "standard", want: "standard"},
-		{name: "stream response wins", outbound: `{"service_tier":"standard"}`, response: "fast", want: "priority"},
-		{name: "missing response uses priority outbound", outbound: `{"service_tier":"fast"}`, want: "priority"},
-		{name: "missing response uses standard outbound", outbound: `{"service_tier":"default"}`, want: "standard"},
-		{name: "unknown response cannot fall back", outbound: `{"service_tier":"priority"}`, response: "flex", want: ""},
-		{name: "outbound omits tier", outbound: `{"model":"gpt-5.6"}`, want: ""},
+		{name: "non stream response wins", outbound: `{"service_tier":" priority "}`, response: "default", wantOutbound: "priority", wantEffective: "standard"},
+		{name: "stream response wins", outbound: `{"service_tier":"standard"}`, response: "fast", wantOutbound: "standard", wantEffective: "priority"},
+		{name: "missing response uses priority outbound", outbound: `{"service_tier":"fast"}`, wantOutbound: "fast", wantEffective: "priority"},
+		{name: "missing response uses standard outbound", outbound: `{"service_tier":"default"}`, wantOutbound: "default", wantEffective: "standard"},
+		{name: "unknown response cannot fall back", outbound: `{"service_tier":"priority"}`, response: "flex", wantOutbound: "priority", wantEffective: ""},
+		{name: "raw unknown outbound is retained", outbound: `{"service_tier":" Scale "}`, wantOutbound: "Scale", wantEffective: ""},
+		{name: "outbound omits tier", outbound: `{"model":"gpt-5.6"}`, wantOutbound: "", wantEffective: ""},
 	}
 
 	for _, tt := range tests {
@@ -857,10 +860,29 @@ func TestUsageReporterResolvesEffectiveServiceTierFromFinalOutboundPayload(t *te
 			reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", nil)
 			reporter.SetOutboundServiceTier([]byte(tt.outbound))
 			record := reporter.buildRecord(usage.Detail{TotalTokens: 1, ResponseServiceTier: tt.response}, false)
-			if record.EffectiveServiceTier != tt.want {
-				t.Fatalf("effective service tier = %q, want %q", record.EffectiveServiceTier, tt.want)
+			if record.OutboundServiceTier != tt.wantOutbound {
+				t.Fatalf("outbound service tier = %q, want %q", record.OutboundServiceTier, tt.wantOutbound)
+			}
+			if record.EffectiveServiceTier != tt.wantEffective {
+				t.Fatalf("effective service tier = %q, want %q", record.EffectiveServiceTier, tt.wantEffective)
 			}
 		})
+	}
+}
+
+func TestUsageReporterKeepsOutboundServiceTierAttemptLocal(t *testing.T) {
+	priorityReporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", &cliproxyauth.Auth{ID: "auth-priority", Index: "1"})
+	standardReporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", &cliproxyauth.Auth{ID: "auth-standard", Index: "2"})
+	priorityReporter.SetOutboundServiceTier([]byte(`{"service_tier":"priority"}`))
+	standardReporter.SetOutboundServiceTier([]byte(`{"service_tier":"default"}`))
+
+	priorityRecord := priorityReporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	standardRecord := standardReporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	if priorityRecord.AuthIndex != "1" || priorityRecord.OutboundServiceTier != "priority" || priorityRecord.EffectiveServiceTier != "priority" {
+		t.Fatalf("priority attempt record = %+v, want auth_index=1 outbound=priority effective=priority", priorityRecord)
+	}
+	if standardRecord.AuthIndex != "2" || standardRecord.OutboundServiceTier != "default" || standardRecord.EffectiveServiceTier != "standard" {
+		t.Fatalf("standard attempt record = %+v, want auth_index=2 outbound=default effective=standard", standardRecord)
 	}
 }
 
