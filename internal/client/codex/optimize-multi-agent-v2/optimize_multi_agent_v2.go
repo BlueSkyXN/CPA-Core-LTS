@@ -67,6 +67,15 @@ func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, pay
 	return rewriteCodexAgentMessageInput(payload, "assistant", "output_text")
 }
 
+// RewriteCodexMultiAgentV2PortableInput converts proven plaintext agent messages
+// into portable Responses request input for third-party compatible endpoints.
+func RewriteCodexMultiAgentV2PortableInput(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
+	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
+		return payload
+	}
+	return rewriteCodexAgentMessageInput(payload, "user", "input_text")
+}
+
 // RewriteCodexMultiAgentV2MessageEncryption removes a Codex-only marker from
 // positively identified Multi-Agent message schemas for eligible clients.
 func RewriteCodexMultiAgentV2MessageEncryption(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
