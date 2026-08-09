@@ -45,6 +45,13 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	// Set stream configuration
 	out, _ = sjson.SetBytes(out, "stream", stream)
 
+	// Map Responses text format to Chat Completions response format.
+	if textFormat := root.Get("text.format"); textFormat.Exists() {
+		if responseFormat := convertResponsesTextFormatToChatResponseFormat(textFormat); len(responseFormat) > 0 {
+			out, _ = sjson.SetRawBytes(out, "response_format", responseFormat)
+		}
+	}
+
 	// Map generation parameters from responses format to chat completions format
 	if maxTokens := root.Get("max_output_tokens"); maxTokens.Exists() {
 		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
@@ -313,25 +320,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	// "additional_tools" input item instead of the top-level "tools" field,
 	// so merge both sources.
 	var chatCompletionsTools []interface{}
-	appendChatTools := func(tools gjson.Result) {
-		if !tools.Exists() || !tools.IsArray() {
-			return
-		}
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			for _, chatTool := range convertResponsesToolToOpenAIChatTools(tool) {
-				chatCompletionsTools = append(chatCompletionsTools, gjson.ParseBytes(chatTool).Value())
-			}
-			return true
-		})
-	}
-	appendChatTools(root.Get("tools"))
-	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		input.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("type").String() == "additional_tools" {
-				appendChatTools(item.Get("tools"))
-			}
-			return true
-		})
+	for _, chatTool := range mergeResponsesRequestChatTools(root) {
+		chatCompletionsTools = append(chatCompletionsTools, gjson.ParseBytes(chatTool).Value())
 	}
 	if len(chatCompletionsTools) > 0 {
 		out, _ = sjson.SetBytes(out, "tools", chatCompletionsTools)
@@ -351,6 +341,29 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	}
 
 	return out
+}
+
+func convertResponsesTextFormatToChatResponseFormat(textFormat gjson.Result) []byte {
+	formatType := textFormat.Get("type").String()
+	switch formatType {
+	case "text", "json_object":
+		responseFormat := []byte(`{"type":""}`)
+		responseFormat, _ = sjson.SetBytes(responseFormat, "type", formatType)
+		return responseFormat
+	case "json_schema":
+		responseFormat := []byte(`{"type":"json_schema","json_schema":{}}`)
+		for _, field := range []string{"name", "description", "strict"} {
+			if value := textFormat.Get(field); value.Exists() {
+				responseFormat, _ = sjson.SetBytes(responseFormat, "json_schema."+field, value.Value())
+			}
+		}
+		if schema := textFormat.Get("schema"); schema.Exists() {
+			responseFormat, _ = sjson.SetRawBytes(responseFormat, "json_schema.schema", []byte(schema.Raw))
+		}
+		return responseFormat
+	default:
+		return nil
+	}
 }
 
 func setFunctionCallOutputContent(toolMessage []byte, output gjson.Result) []byte {

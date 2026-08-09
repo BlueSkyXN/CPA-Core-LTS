@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
@@ -204,7 +205,7 @@ func (h *Handler) Handle(c *gin.Context) {
 
 	body, errRead := readBody(c.Request.Body)
 	if errRead != nil {
-		status := http.StatusBadRequest
+		status := clienterror.HTTPStatusFromErrorOr(errRead, http.StatusBadRequest)
 		if errors.Is(errRead, errBodyTooLarge) {
 			status = http.StatusRequestEntityTooLarge
 		}
@@ -279,7 +280,7 @@ func (h *Handler) Handle(c *gin.Context) {
 			authIndex:  selectedIndex,
 		})
 		if errSDP != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": errSDP.Error()})
+			c.JSON(clienterror.HTTPStatusFromErrorOr(errSDP, http.StatusBadGateway), gin.H{"error": errSDP.Error()})
 			return
 		}
 		defer func() {
@@ -340,7 +341,7 @@ func (h *Handler) Handle(c *gin.Context) {
 		if selection != nil {
 			selection.End("attempt_canceled")
 		}
-		c.JSON(http.StatusRequestTimeout, gin.H{"error": errContext.Error()})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(errContext, http.StatusRequestTimeout), gin.H{"error": errContext.Error()})
 		return
 	}
 	activeAttempt, resp, errRequest := performRequest(selected, selection == nil)
@@ -353,7 +354,7 @@ func (h *Handler) Handle(c *gin.Context) {
 			selection.End("request_failed")
 		}
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errRequest)
-		c.JSON(http.StatusBadGateway, gin.H{"error": errRequest.Error()})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(errRequest, http.StatusBadGateway), gin.H{"error": errRequest.Error()})
 		return
 	}
 	defer func() {
@@ -391,7 +392,7 @@ func (h *Handler) Handle(c *gin.Context) {
 			}
 			selection.End("retry_failed")
 			helps.RecordAPIResponseError(ctx, runtimeConfig, errRequest)
-			c.JSON(http.StatusBadGateway, gin.H{"error": errRequest.Error()})
+			c.JSON(clienterror.HTTPStatusFromErrorOr(errRequest, http.StatusBadGateway), gin.H{"error": errRequest.Error()})
 			return
 		}
 	}
@@ -425,10 +426,12 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 		helps.RecordAPIResponseError(ctx, runtimeConfig, errResponse)
 		message := "Failed to read Codex live response"
+		status := clienterror.HTTPStatusFromErrorOr(errResponse, http.StatusBadGateway)
 		if errors.Is(errResponse, errBodyTooLarge) {
 			message = "Codex live response body too large"
+			status = http.StatusBadGateway
 		}
-		c.JSON(http.StatusBadGateway, gin.H{"error": message})
+		c.JSON(status, gin.H{"error": message})
 		return
 	}
 	if activeAttempt != nil {
@@ -455,7 +458,7 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 		downstreamAnswer, errAnswer := mediaSession.AcceptUpstreamAnswer(ctx, upstreamAnswer)
 		if errAnswer != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": errAnswer.Error()})
+			c.JSON(clienterror.HTTPStatusFromErrorOr(errAnswer, http.StatusBadGateway), gin.H{"error": errAnswer.Error()})
 			return
 		}
 		responseBodyToWrite = []byte(downstreamAnswer)
@@ -863,10 +866,7 @@ func writeResponseHeaders(destination, source http.Header) {
 }
 
 func writeSelectionError(c *gin.Context, err error) {
-	status := http.StatusServiceUnavailable
-	if statusError, ok := err.(interface{ StatusCode() int }); ok && statusError.StatusCode() > 0 {
-		status = statusError.StatusCode()
-	}
+	status := clienterror.HTTPStatusFromErrorOr(err, http.StatusServiceUnavailable)
 	for _, value := range auth.SafeResponseHeaders(err).Values("Retry-After") {
 		c.Writer.Header().Add("Retry-After", value)
 	}
