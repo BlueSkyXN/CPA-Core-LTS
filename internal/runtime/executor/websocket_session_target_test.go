@@ -240,6 +240,8 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			serverRelease := make(chan struct{})
+			defer close(serverRelease)
 			var connections atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, errUpgrade := upgrader.Upgrade(w, r, nil)
@@ -263,6 +265,7 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 				if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
 					t.Errorf("write websocket completion: %v", errWrite)
 				}
+				<-serverRelease
 			}))
 			defer server.Close()
 
