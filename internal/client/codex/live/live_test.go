@@ -49,10 +49,18 @@ type captureExecutor struct {
 type captureLiveUsagePlugin struct {
 	records chan usage.Record
 	authID  string
+	model   string
 }
 
 func (p *captureLiveUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
-	if p == nil || record.Provider != "codex" || record.Model != defaultLiveModel || record.AuthID != p.authID {
+	if p == nil || record.Provider != "codex" || record.AuthID != p.authID {
+		return
+	}
+	model := p.model
+	if model == "" {
+		model = defaultLiveModel
+	}
+	if record.Model != model {
 		return
 	}
 	select {
