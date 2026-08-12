@@ -28,6 +28,8 @@ func TestCodexWebsocketsExecutorRestoresMultiAgentV2NamespaceAcrossIncrementalTu
 		t.Run(tt.name, func(t *testing.T) {
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			capturedPayload := make(chan []byte, 6)
+			serverRelease := make(chan struct{})
+			defer close(serverRelease)
 			var connectionCount atomic.Int32
 			var requestCount atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -52,6 +54,7 @@ func TestCodexWebsocketsExecutorRestoresMultiAgentV2NamespaceAcrossIncrementalTu
 						return
 					}
 					if turn == 6 {
+						<-serverRelease
 						return
 					}
 				}
