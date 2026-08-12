@@ -305,7 +305,7 @@ func applyModelHeaderOverrides(headers http.Header, profile codexModelHeaderProf
 		headers.Set(key, value)
 	}
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && codexSessionHeaderValue(headers) == "" {
-		headers.Set("Session_id", uuid.NewString())
+		headers.Set("Session-Id", uuid.NewString())
 	}
 }
 

@@ -63,7 +63,7 @@ func finalizeCodexClientIdentityHeaders(headers http.Header, auth *cliproxyauth.
 	headers.Set("User-Agent", userAgent)
 	alignCodexClientVersion(headers, userAgent)
 	if strings.Contains(userAgent, "Mac OS") && codexSessionHeaderValue(headers) == "" {
-		headers.Set("Session_id", uuid.NewString())
+		headers.Set("Session-Id", uuid.NewString())
 	}
 }
 

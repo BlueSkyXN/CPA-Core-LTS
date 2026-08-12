@@ -63,7 +63,7 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 
 	if cache.ID != "" {
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
-		setHeaderCasePreserved(headers, "session_id", cache.ID)
+		setHeaderCasePreserved(headers, "Session-Id", cache.ID)
 		headers.Set("Conversation_id", cache.ID)
 	}
 
@@ -147,9 +147,13 @@ func ensureCodexWebsocketSessionHeader(target http.Header, source http.Header, f
 		sessionID = strings.TrimSpace(fallbackValue)
 	}
 	if sessionID != "" {
-		setHeaderCasePreserved(target, "session_id", sessionID)
+		setHeaderCasePreserved(target, "Session-Id", sessionID)
 	}
-	deleteHeaderCaseInsensitive(target, "Session-Id")
+	for existingKey := range target {
+		if codexSessionHeaderKey(existingKey) && existingKey != "Session-Id" {
+			delete(target, existingKey)
+		}
+	}
 }
 
 func codexSessionHeaderValue(headers http.Header) string {
