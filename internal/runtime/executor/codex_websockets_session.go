@@ -51,18 +51,19 @@ type codexWebsocketSession struct {
 
 	reqMu sync.Mutex
 
-	connMu          sync.Mutex
-	conn            *websocket.Conn
-	connCloser      *websocketConnectionCloser
-	connGen         uint64
-	connKey         codexWebsocketConnectionKey
-	wsURL           string
-	authID          string
-	closed          bool
-	lifecycleBindMu sync.Mutex
-	lifecycle       cliproxyexecutor.ExecutionLifecycle
-	lifecycleModel  string
-	lifecycleGen    uint64
+	connMu                   sync.Mutex
+	conn                     *websocket.Conn
+	connCloser               *websocketConnectionCloser
+	connGen                  uint64
+	connKey                  codexWebsocketConnectionKey
+	wsURL                    string
+	authID                   string
+	multiAgentV2OptimizedGen uint64
+	closed                   bool
+	lifecycleBindMu          sync.Mutex
+	lifecycle                cliproxyexecutor.ExecutionLifecycle
+	lifecycleModel           string
+	lifecycleGen             uint64
 
 	writeMu sync.Mutex
 
@@ -182,6 +183,30 @@ func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return conn.WriteMessage(msgType, payload)
+}
+
+func (s *codexWebsocketSession) setMultiAgentV2Optimized(connection codexWebsocketConnectionRef, optimized bool) {
+	if s == nil || connection.conn == nil {
+		return
+	}
+	s.connMu.Lock()
+	if s.conn == connection.conn && s.connGen == connection.generation {
+		if optimized {
+			s.multiAgentV2OptimizedGen = connection.generation
+		} else {
+			s.multiAgentV2OptimizedGen = 0
+		}
+	}
+	s.connMu.Unlock()
+}
+
+func (s *codexWebsocketSession) isMultiAgentV2Optimized(connection codexWebsocketConnectionRef) bool {
+	if s == nil || connection.conn == nil {
+		return false
+	}
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.conn == connection.conn && s.connGen == connection.generation && s.multiAgentV2OptimizedGen == connection.generation
 }
 
 // sendTerminalWebsocketRead reports whether it invalidated a full channel's connection before waiting.
@@ -369,6 +394,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	if sess.connGen == 0 {
 		sess.connGen++
 	}
+	sess.multiAgentV2OptimizedGen = 0
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 		sess.readerGen = 0
@@ -518,6 +544,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	if connection.conn != nil {
 		sess.conn = nil
 		sess.connCloser = nil
+		sess.multiAgentV2OptimizedGen = 0
 		sess.lifecycle = nil
 		sess.lifecycleModel = ""
 		sess.lifecycleGen = 0
@@ -584,6 +611,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.connKey = wantedKey
 	sess.wsURL = wantedKey.wsURL
 	sess.authID = wantedKey.authID
+	sess.multiAgentV2OptimizedGen = 0
 	sess.readerConn = conn
 	sess.readerGen = connection.generation
 	sess.connMu.Unlock()
@@ -654,6 +682,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 	sess.conn = nil
 	sess.connCloser = nil
 	sess.connKey = codexWebsocketConnectionKey{}
+	sess.multiAgentV2OptimizedGen = 0
 	if sess.readerConn == connection.conn && sess.readerGen == connection.generation {
 		sess.readerConn = nil
 		sess.readerGen = 0
@@ -748,6 +777,7 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 	sess.lifecycleModel = ""
 	sess.lifecycleGen = 0
 	sess.connCloser = nil
+	sess.multiAgentV2OptimizedGen = 0
 	sessionID := sess.sessionID
 	sess.closed = true
 	sess.conn = nil

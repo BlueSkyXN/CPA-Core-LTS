@@ -78,7 +78,7 @@ func applyCodexOutboundMetadataHeaders(headers http.Header, state *codexIdentity
 		}
 		state.clientMetadata.ApplyHeaders(headers)
 		if state.clientMetadata.HasSessionID {
-			setCodexSessionHeaderCasePreserved(headers, "Session_id", state.clientMetadata.SessionID)
+			setCodexSessionHeaderCasePreserved(headers, "Session-Id", state.clientMetadata.SessionID)
 		}
 		return
 	}

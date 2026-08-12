@@ -296,6 +296,37 @@ func TestCodexWebsocketStaleReaderCannotCloseNewActiveChannel(t *testing.T) {
 	sess.connMu.Unlock()
 }
 
+func TestCodexWebsocketMultiAgentV2StateIsGenerationScoped(t *testing.T) {
+	conn := &websocket.Conn{}
+	first := codexWebsocketConnectionRef{conn: conn, generation: 1}
+	second := codexWebsocketConnectionRef{conn: conn, generation: 2}
+	sess := &codexWebsocketSession{conn: conn, connGen: first.generation}
+
+	sess.setMultiAgentV2Optimized(first, true)
+	if !sess.isMultiAgentV2Optimized(first) {
+		t.Fatal("first generation did not retain Multi-Agent v2 optimization state")
+	}
+
+	sess.connMu.Lock()
+	sess.connGen = second.generation
+	sess.connMu.Unlock()
+	if sess.isMultiAgentV2Optimized(second) {
+		t.Fatal("new connection generation inherited stale Multi-Agent v2 optimization state")
+	}
+
+	sess.connMu.Lock()
+	sess.multiAgentV2OptimizedGen = first.generation
+	sess.connMu.Unlock()
+	sess.setMultiAgentV2Optimized(first, false)
+	if sess.multiAgentV2OptimizedGen != first.generation {
+		t.Fatalf("stale generation cleared optimization state: got %d, want %d", sess.multiAgentV2OptimizedGen, first.generation)
+	}
+	sess.setMultiAgentV2Optimized(second, false)
+	if sess.multiAgentV2OptimizedGen != 0 {
+		t.Fatalf("current generation did not clear optimization state: got %d", sess.multiAgentV2OptimizedGen)
+	}
+}
+
 func TestCodexWebsocketGenerationRetryRebindUsesCurrentConnection(t *testing.T) {
 	sess := &codexWebsocketSession{sessionID: "retry-generation-rebind"}
 	oldConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 1}
@@ -734,8 +765,8 @@ func TestApplyCodexPromptCacheHeadersOpenAIChatPreservesExplicitKey(t *testing.T
 	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
 		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
 	}
-	if got := headers["session_id"]; len(got) != 1 || got[0] != "tenant:explicit" {
-		t.Fatalf("session_id = %#v, want [tenant:explicit]", got)
+	if got := headers["Session-Id"]; len(got) != 1 || got[0] != "tenant:explicit" {
+		t.Fatalf("Session-Id = %#v, want [tenant:explicit]", got)
 	}
 	if got := headers.Get("Conversation_id"); got != "tenant:explicit" {
 		t.Fatalf("Conversation_id = %q, want tenant:explicit", got)

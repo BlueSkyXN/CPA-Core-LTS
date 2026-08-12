@@ -226,7 +226,7 @@ func TestConvertOpenAIResponsesRequestToCodex_OriginalIssue(t *testing.T) {
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToCodexPreservesPromptCacheControls(t *testing.T) {
+func TestConvertOpenAIResponsesRequestToCodexPreservesSupportedPromptCacheControls(t *testing.T) {
 	input := []byte(`{
 		"model":"gpt-5.6-sol",
 		"prompt_cache_key":"tenant:responses",
@@ -238,8 +238,8 @@ func TestConvertOpenAIResponsesRequestToCodexPreservesPromptCacheControls(t *tes
 	if got := gjson.GetBytes(out, "prompt_cache_key").String(); got != "tenant:responses" {
 		t.Fatalf("prompt_cache_key = %q, want tenant:responses; output=%s", got, out)
 	}
-	if got := gjson.GetBytes(out, "prompt_cache_options.mode").String(); got != "explicit" {
-		t.Fatalf("prompt_cache_options.mode = %q, want explicit; output=%s", got, out)
+	if gjson.GetBytes(out, "prompt_cache_options").Exists() {
+		t.Fatalf("unsupported prompt_cache_options was preserved; output=%s", out)
 	}
 	if got := gjson.GetBytes(out, "input.0.content.0.prompt_cache_breakpoint.mode").String(); got != "explicit" {
 		t.Fatalf("prompt_cache_breakpoint.mode = %q, want explicit; output=%s", got, out)
@@ -272,6 +272,7 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 		"top_p":0.9,
 		"service_tier":"standard",
 		"truncation":"auto",
+		"prompt_cache_options":{"mode":"implicit"},
 		"user":"request-owner",
 		"input":[{"type":"message","role":"system","content":"hello"}]
 	}`)
@@ -301,6 +302,7 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 		"top_p",
 		"service_tier",
 		"truncation",
+		"prompt_cache_options",
 		"user",
 	} {
 		if gjson.GetBytes(output, path).Exists() {

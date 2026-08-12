@@ -543,7 +543,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 
-		toolCacheTurn := newResponsesWebsocketToolCacheTurn(downstreamSessionKey)
+		var toolCacheTurn *responsesWebsocketToolCacheTurn
+		nextLastRequest := lastRequest
 		previousLastRequest := bytes.Clone(lastRequest)
 		previousLastResponseOutput := bytes.Clone(lastResponseOutput)
 		previousLastResponseID := lastResponseID
@@ -558,11 +559,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				passthroughModelName = modelName
 			}
 		} else {
-			toolCacheTurn.recordRequest(requestJSON)
-			requestJSON = repairResponsesWebsocketToolCallsWithoutRecording(downstreamSessionKey, requestJSON)
-			requestJSON = dedupeResponsesWebsocketInputItemsByID(requestJSON)
-			updatedLastRequest = bytes.Clone(requestJSON)
-			lastRequest = updatedLastRequest
+			requestJSON, toolCacheTurn = prepareResponsesWebsocketFallbackTurn(downstreamSessionKey, requestJSON)
+			nextLastRequest = requestJSON
 		}
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
@@ -681,6 +679,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		} else {
 			upstreamWebsocketAuthID = ""
 			forgetPinnedAuth()
+			lastRequest = nextLastRequest
 			lastResponseOutput = completedOutput
 			lastResponseID = strings.TrimSpace(completedResponseID)
 			lastResponsePendingToolCallIDs = append([]string(nil), completedPendingToolCallIDs...)
