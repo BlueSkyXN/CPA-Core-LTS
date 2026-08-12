@@ -765,8 +765,8 @@ func TestApplyCodexPromptCacheHeadersOpenAIChatPreservesExplicitKey(t *testing.T
 	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
 		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
 	}
-	if got := headers["session_id"]; len(got) != 1 || got[0] != "tenant:explicit" {
-		t.Fatalf("session_id = %#v, want [tenant:explicit]", got)
+	if got := headers["Session-Id"]; len(got) != 1 || got[0] != "tenant:explicit" {
+		t.Fatalf("Session-Id = %#v, want [tenant:explicit]", got)
 	}
 	if got := headers.Get("Conversation_id"); got != "tenant:explicit" {
 		t.Fatalf("Conversation_id = %q, want tenant:explicit", got)
