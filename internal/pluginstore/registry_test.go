@@ -326,6 +326,7 @@ func TestGitHubRepositoryPartsRejectsNonRepositoryURLs(t *testing.T) {
 		"https://github.com/owner/repo/issues",
 		"https://github.com/owner/repo.git",
 		"https://github.com/owner/repo?tab=readme",
+		"https://token@github.com/owner/repo",
 	}
 	for _, repository := range tests {
 		t.Run(repository, func(t *testing.T) {
