@@ -38,8 +38,8 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_PreservesExplicitPromptC
 	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
 		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
 	}
-	if got := httpReq.Header["Session_id"]; len(got) != 1 || got[0] != "tenant:explicit" {
-		t.Fatalf("Session_id = %#v, want [tenant:explicit]", got)
+	if got := codexSessionHeaderValue(httpReq.Header); got != "tenant:explicit" {
+		t.Fatalf("Session-Id = %q, want tenant:explicit", got)
 	}
 }
 
