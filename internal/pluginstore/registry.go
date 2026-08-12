@@ -418,7 +418,7 @@ func GitHubRepositoryParts(repository string) (string, string, error) {
 	if errParse != nil {
 		return "", "", fmt.Errorf("invalid repository URL: %w", errParse)
 	}
-	if parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", "", fmt.Errorf("repository must be https://github.com/{owner}/{repo}")
 	}
 	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
