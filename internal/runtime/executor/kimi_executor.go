@@ -27,6 +27,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const kimiReasoningUnavailable = "[reasoning unavailable]"
+
 // KimiExecutor is a stateless executor for Kimi API using OpenAI-compatible chat completions.
 type KimiExecutor struct {
 	ClaudeExecutor
@@ -419,7 +421,7 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 			reasoning := msg.Get("reasoning_content")
 			if reasoning.Exists() {
 				reasoningText := reasoning.String()
-				if strings.TrimSpace(reasoningText) != "" {
+				if isUsableKimiReasoning(reasoningText) {
 					latestReasoning = reasoningText
 					hasLatestReasoning = true
 				}
@@ -429,7 +431,7 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 			if toolCalls.Exists() && toolCalls.IsArray() {
 				toolCallItems := toolCalls.Array()
 				if len(toolCallItems) > 0 {
-					if !reasoning.Exists() || strings.TrimSpace(reasoning.String()) == "" {
+					if !reasoning.Exists() || !isUsableKimiReasoning(reasoning.String()) {
 						patches = append(patches, messagePatch{
 							index:        msgIndex,
 							path:         "reasoning_content",
@@ -604,8 +606,13 @@ func isKimiAssistantContentPartEmpty(part gjson.Result) bool {
 	return strings.TrimSpace(part.Raw) == "{}"
 }
 
+func isUsableKimiReasoning(reasoning string) bool {
+	trimmed := strings.TrimSpace(reasoning)
+	return trimmed != "" && trimmed != kimiReasoningUnavailable
+}
+
 func fallbackAssistantReasoning(msg gjson.Result, hasLatest bool, latest string) string {
-	if hasLatest && strings.TrimSpace(latest) != "" {
+	if hasLatest && isUsableKimiReasoning(latest) {
 		return latest
 	}
 
@@ -629,7 +636,7 @@ func fallbackAssistantReasoning(msg gjson.Result, hasLatest bool, latest string)
 		}
 	}
 
-	return "[reasoning unavailable]"
+	return kimiReasoningUnavailable
 }
 
 // Refresh refreshes the Kimi token using the refresh token.
