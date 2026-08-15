@@ -18,6 +18,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test release notes contract
+        run: scripts/generate-lts-release-notes_test.sh
+
       - name: Check LTS protected sentinels
         run: scripts/check-lts-contract.sh
 

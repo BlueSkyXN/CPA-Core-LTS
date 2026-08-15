@@ -10,6 +10,11 @@ on:
         description: 'Release tag to build and publish, for example v1-tls-0.0.3'
         required: true
         type: string
+      rewrite_release_notes:
+        description: 'Replace the title and notes when the Release already exists'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -18,6 +23,7 @@ env:
   GH_REPO: ${{ github.repository }}
   GO_VERSION: '1.26.4'
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+  REWRITE_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.rewrite_release_notes || false }}
 
 jobs:
   validate-release-catalog:
@@ -72,16 +78,24 @@ jobs:
             exit 1
           fi
 
+          release_exists=false
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            release_exists=true
+          fi
+          if [[ "$release_exists" == "true" && "$REWRITE_RELEASE_NOTES" != "true" ]]; then
+            echo "Release ${RELEASE_TAG} already exists; preserving its title and notes."
+            exit 0
+          fi
+
           notes_file="$(mktemp)"
           title_file="$(mktemp)"
           trap 'rm -f "$notes_file" "$title_file"' EXIT
           bash scripts/generate-lts-release-notes.sh \
-            --product core \
             --tag "${RELEASE_TAG}" \
             --notes-file "$notes_file" \
             --title-file "$title_file"
           title="$(tr -d '\n' < "$title_file")"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if [[ "$release_exists" == "true" ]]; then
             gh release edit "$RELEASE_TAG" --title "$title" --notes-file "$notes_file"
           else
             gh release create "$RELEASE_TAG" --title "$title" --notes-file "$notes_file"
