@@ -799,6 +799,64 @@ func TestCleanJSONSchemaForAntigravityResponsePreservesUnions(t *testing.T) {
 	}
 }
 
+func TestCleanJSONSchemaForAntigravityResponsePreservesAdditionalPropertiesFalse(t *testing.T) {
+	input := `{
+		"type":"object",
+		"properties":{
+			"name":{"type":"string"},
+			"nested":{
+				"type":"object",
+				"properties":{
+					"age":{"type":"integer"}
+				},
+				"additionalProperties":false
+			}
+		},
+		"additionalProperties":false
+	}`
+
+	result := gjson.Parse(CleanJSONSchemaForAntigravityResponse(input))
+
+	// Root additionalProperties should be preserved as false
+	rootAP := result.Get("additionalProperties")
+	if !rootAP.Exists() || rootAP.Type != gjson.False {
+		t.Errorf("root additionalProperties = %v, want false; cleaned: %s", rootAP, result.Raw)
+	}
+
+	// Nested additionalProperties should be preserved as false
+	nestedAP := result.Get("properties.nested.additionalProperties")
+	if !nestedAP.Exists() || nestedAP.Type != gjson.False {
+		t.Errorf("nested additionalProperties = %v, want false; cleaned: %s", nestedAP, result.Raw)
+	}
+
+	// Should not have converted additionalProperties into description hints
+	if strings.Contains(result.Raw, "No extra properties allowed") {
+		t.Errorf("expected no description hint for additionalProperties:false, got: %s", result.Raw)
+	}
+
+	// But CleanJSONSchemaForAntigravity (tool path) must still strip it and add hint
+	toolResult := CleanJSONSchemaForAntigravity(input)
+	if strings.Contains(toolResult, `"additionalProperties"`) {
+		t.Errorf("tool schema should not have additionalProperties: %s", toolResult)
+	}
+	if !strings.Contains(toolResult, "No extra properties allowed") {
+		t.Errorf("tool schema should have description hint: %s", toolResult)
+	}
+
+	// Non-false additionalProperties (e.g. true or schema-valued) should still be stripped in response schemas
+	nonFalseInput := `{
+		"type":"object",
+		"properties":{
+			"map":{"type":"object","additionalProperties":{"type":"string"}}
+		},
+		"additionalProperties":true
+	}`
+	nonFalseResult := CleanJSONSchemaForAntigravityResponse(nonFalseInput)
+	if strings.Contains(nonFalseResult, `"additionalProperties"`) {
+		t.Errorf("non-false additionalProperties should be stripped in response schema: %s", nonFalseResult)
+	}
+}
+
 func TestCleanJSONSchemaForAntigravityResponsePreservesEnumType(t *testing.T) {
 	input := `{
 		"type":"object",

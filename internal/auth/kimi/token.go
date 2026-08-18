@@ -87,6 +87,12 @@ func (ts *KimiTokenStorage) SaveTokenToFile(authFilePath string) (err error) {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
+	// Merge metadata using helper
+	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	if errMerge != nil {
+		return fmt.Errorf("failed to merge metadata: %w", errMerge)
+	}
+
 	f, err := misc.OpenCredentialFile(authFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
@@ -96,12 +102,6 @@ func (ts *KimiTokenStorage) SaveTokenToFile(authFilePath string) (err error) {
 			err = fmt.Errorf("failed to close token file: %w", errClose)
 		}
 	}()
-
-	// Merge metadata using helper
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
-	if errMerge != nil {
-		return fmt.Errorf("failed to merge metadata: %w", errMerge)
-	}
 
 	encoder := json.NewEncoder(f)
 	encoder.SetIndent("", "  ")

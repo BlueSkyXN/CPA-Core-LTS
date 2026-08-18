@@ -33,6 +33,14 @@ type VertexCredentialStorage struct {
 	// Prefix optionally namespaces models for this credential (e.g., "teamA").
 	// This results in model names like "teamA/gemini-2.0-flash".
 	Prefix string `json:"prefix,omitempty"`
+
+	// Metadata holds arbitrary key-value pairs injected via hooks.
+	Metadata map[string]any `json:"-"`
+}
+
+// SetMetadata allows external callers to inject metadata into the storage before saving.
+func (s *VertexCredentialStorage) SetMetadata(meta map[string]any) {
+	s.Metadata = meta
 }
 
 // SaveTokenToFile writes the credential payload to the given file path in JSON format.
@@ -51,6 +59,12 @@ func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) (err erro
 	if err := os.MkdirAll(filepath.Dir(authFilePath), 0o700); err != nil {
 		return fmt.Errorf("vertex credential: create directory failed: %w", err)
 	}
+
+	data, errMerge := misc.MergeMetadata(s, s.Metadata)
+	if errMerge != nil {
+		return fmt.Errorf("vertex credential: merge metadata failed: %w", errMerge)
+	}
+
 	f, err := misc.OpenCredentialFile(authFilePath)
 	if err != nil {
 		return fmt.Errorf("vertex credential: create file failed: %w", err)
@@ -62,7 +76,7 @@ func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) (err erro
 	}()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
-	if err = enc.Encode(s); err != nil {
+	if err = enc.Encode(data); err != nil {
 		return fmt.Errorf("vertex credential: encode failed: %w", err)
 	}
 	return nil

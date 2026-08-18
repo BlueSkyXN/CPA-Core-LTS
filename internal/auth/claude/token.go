@@ -78,6 +78,13 @@ func (ts *ClaudeTokenStorage) SaveTokenToFile(authFilePath string) (err error) {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
+	// Merge arbitrary non-secret hook metadata while preserving the credential
+	// writer's owner-only permissions and close-error propagation.
+	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	if errMerge != nil {
+		return fmt.Errorf("failed to merge metadata: %w", errMerge)
+	}
+
 	// Create the token file with owner-only permissions and tighten an
 	// existing file before replacing its contents.
 	f, err := misc.OpenCredentialFile(authFilePath)
@@ -89,12 +96,6 @@ func (ts *ClaudeTokenStorage) SaveTokenToFile(authFilePath string) (err error) {
 			err = fmt.Errorf("failed to close token file: %w", errClose)
 		}
 	}()
-
-	// Merge metadata using helper
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
-	if errMerge != nil {
-		return fmt.Errorf("failed to merge metadata: %w", errMerge)
-	}
 
 	// Encode and write the token data as JSON
 	if err = json.NewEncoder(f).Encode(data); err != nil {
