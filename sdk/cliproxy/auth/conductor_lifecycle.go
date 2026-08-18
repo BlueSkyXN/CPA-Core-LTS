@@ -146,6 +146,14 @@ func (m *Manager) update(ctx context.Context, auth *Auth, expectedGeneration uin
 			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 				auth.ModelStates = existing.ModelStates
 			}
+			if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
+				auth.Unavailable = existing.Unavailable
+				auth.NextRetryAfter = existing.NextRetryAfter
+				auth.Quota = existing.Quota
+				if auth.Status == StatusActive {
+					auth.Status = existing.Status
+				}
+			}
 		}
 	} else {
 		auth.generation = m.nextAuthGenerationLocked()
