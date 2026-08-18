@@ -311,7 +311,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 			}
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) {
+		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
 		}
 		lastErr = errExec
@@ -339,6 +339,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				}
 				if outcome.err == nil {
 					return outcome.response, nil
+				}
+				if isRequestStopError(outcome.err) {
+					return cliproxyexecutor.Response{}, outcome.err
 				}
 				lastErr = outcome.err
 				if !outcome.usageAccounted {
@@ -421,7 +424,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 			}
 			return result, nil
 		}
-		if isRequestTerminatedError(errStream) {
+		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
 			return nil, errStream
 		}
 		lastErr = errStream
@@ -449,6 +452,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				}
 				if outcome.err == nil {
 					return outcome.stream, nil
+				}
+				if isRequestStopError(outcome.err) {
+					return nil, outcome.err
 				}
 				lastErr = outcome.err
 				if !outcome.usageAccounted {

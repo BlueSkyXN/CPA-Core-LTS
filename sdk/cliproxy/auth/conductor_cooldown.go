@@ -26,7 +26,7 @@ var transientErrorCooldownSeconds atomic.Int64
 
 const codexTransientRateLimitClass = "transient-rate-limit"
 
-// SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
+// SetQuotaCooldownDisabled toggles auth/model cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
 }
@@ -42,6 +42,10 @@ func quotaCooldownDisabledForAuth(auth *Auth) bool {
 }
 
 func quotaCooldownDisabledForAuthWithConfig(auth *Auth, cfg *internalconfig.Config) bool {
+	// Home owns cooldown state, so downstream instances must not schedule local cooldowns.
+	if cfg != nil && cfg.Home.Enabled {
+		return true
+	}
 	if auth != nil {
 		if override, ok := auth.DisableCoolingOverride(); ok {
 			return override
@@ -77,7 +81,10 @@ func providerCoolingDisabledForAuth(auth *Auth, cfg *internalconfig.Config) bool
 		providerKey = provider
 	}
 	entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, provider)
-	return entry != nil && entry.DisableCooling
+	if entry == nil || entry.DisableCooling == nil {
+		return false
+	}
+	return *entry.DisableCooling
 }
 
 func nextTransientErrorRetryAfter(now time.Time) time.Time {
@@ -813,6 +820,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			if modelKey != "" {
 				if !shouldSkipCredentialCooldown(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
+					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
+						disableCooling = false
+					}
 					state := ensureModelState(auth, modelKey)
 					transientRateLimit := isCodexTransientRateLimitResultError(auth.Provider, result.Error)
 					preserveActiveQuota := transientRateLimit && activeQuotaCooldown(state.Quota, state.NextRetryAfter, now)
@@ -981,12 +991,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						state.Unavailable = false
 						state.Quota.Exceeded = false
 					}
+					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown && state.NextRetryAfter.IsZero() {
+						state.NextRetryAfter = now.Add(transientErrorCooldown)
+						state.Unavailable = true
+					}
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
+				if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
+					disableCooling = false
+				}
 				if isCodexTransientRateLimitResultError(auth.Provider, result.Error) {
 					applyTransientRateLimitAuthFailureState(auth, result.Error, now, disableCooling)
 				} else {
@@ -1445,6 +1462,9 @@ func codexRateLimitClassFromError(err error) string {
 // Connection lifecycle is intentionally separate from request_scoped so transport
 // drops do not also stop credential rotation via isRequestInvalidError.
 func shouldSkipCredentialCooldown(err *Error) bool {
+	if err != nil && err.Code == ErrorCodeForceCooldown {
+		return false
+	}
 	if isRequestScopedResultError(err) {
 		return true
 	}
@@ -2044,6 +2064,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
 		auth.Unavailable = !auth.NextRetryAfter.IsZero()
+	}
+	if resultErr != nil && resultErr.Code == ErrorCodeForceCooldown && auth.NextRetryAfter.IsZero() {
+		auth.NextRetryAfter = now.Add(transientErrorCooldown)
+		auth.Unavailable = true
 	}
 }
 

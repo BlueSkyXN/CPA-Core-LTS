@@ -46,6 +46,10 @@ type VertexCompatKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	// DisableCooling disables auth/model cooldowns for this credential when true.
+	// False or nil inherits the global policy for LTS compatibility.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// RequestRetry optionally overrides the global request-retry for this credential.
 	// Nil uses the global request-retry. 0 or a negative value disables retries.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
