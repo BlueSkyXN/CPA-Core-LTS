@@ -2,7 +2,7 @@
 
 `internal/auth/` owns provider OAuth/device flows, token storage structs, credential import helpers, and auth file naming.
 Read this card before changing OAuth URLs, PKCE/device flow code, token refresh fields, auth file serialization, or provider credential parsing.
-Key files: provider subdirectories under `antigravity/`, `claude/`, `codex/`, `gemini/`, `kimi/`, `vertex/`, plus `models.go`.
+Key files: provider subdirectories under `antigravity/`, `claude/`, `codex/`, `empty/`, `kimi/`, `vertex/`, `xai/`, plus `models.go`.
 
 ## Why this is high-risk
 
@@ -15,6 +15,8 @@ Key files: provider subdirectories under `antigravity/`, `claude/`, `codex/`, `g
 - Trace the provider through CLI command, token storage, watcher/auth manager, executor, SDK conductor, and management handlers.
 - Confirm logs use redacted summaries, not raw token payloads.
 - Preserve existing auth file compatibility unless a migration is explicitly requested.
+- OAuth/browser flow changes also inspect `internal/cmd/*_login.go`, `cmd/server/main.go`, and Management OAuth session handlers.
+- Token storage keeps private parent directories and `0600` credential files on supported platforms.
 
 ## Do not
 
@@ -22,9 +24,11 @@ Key files: provider subdirectories under `antigravity/`, `claude/`, `codex/`, `g
 - 不要 hard-code user credentials into source, examples, tests, or docs.
 - 不要 change auth filename conventions without checking watcher and Management API download/delete paths.
 - 不要 make OAuth flows require interactive browser opening when `--no-browser` is set.
+- 不要 move Management OAuth session/cancel/save/rollback decisions into a provider package without checking the Management handler contract.
 
 ## Validation
 
-- Provider-local tests, for example `go test ./internal/auth/codex` or `go test ./internal/auth/claude`.
+- Provider-local tests: `go test ./internal/auth/...`.
+- CLI login flow changes: `go test ./internal/cmd ./cmd/server`.
 - SDK auth integration changes: `go test ./sdk/cliproxy/auth`.
 - Management auth-file changes: `go test ./internal/api/handlers/management -run Auth`.

@@ -18,6 +18,7 @@ Key files: `main.go`, `main_test.go`.
 - New flags need source help text, parsing, and tests for mode interaction when behavior changes.
 - Config path changes require checking `internal/config/AGENTS.md` and `internal/watcher/AGENTS.md`.
 - Login/auth changes require checking `internal/auth/AGENTS.md`.
+- Home startup/JWT/config subscription changes require checking `internal/home/AGENTS.md` and `sdk/cliproxy/AGENTS.md`.
 
 ## Do not
 

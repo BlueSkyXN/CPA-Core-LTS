@@ -19,7 +19,7 @@ Key files: package Go files under this directory, plus examples under `examples/
 
 ## Do not
 
-- 不要 expose raw token, API key, cookie, service-account JSON, or full auth file content through public plugin structs.
+- 不要 expose credential material through scheduler, Management, usage, logging, or other non-credential capabilities. Existing auth-provider, executor, and host-auth callback fields such as `AuthData.StorageJSON`, `AuthParseRequest.RawJSON`, `HostAuthGetResponse.JSON`, and executor storage data are explicit credential-bearing contracts; keep them scoped to those approved flows and redact them everywhere else.
 - 不要 make plugin APIs depend on process-global state or interactive flows.
 - 不要 change JSON tags without migration/compatibility reasoning.
 

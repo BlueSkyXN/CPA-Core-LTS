@@ -2,18 +2,18 @@
 
 `internal/registry/` owns model registration, embedded model catalogs, remote model refresh hooks, client/model availability, and quota-related routing state.
 Read this card before changing model catalog JSON, model aliases, quota state, registry refresh behavior, provider model metadata, or client availability logic.
-Key files: `model_registry.go`, `model_definitions.go`, `model_updater.go`, `codex_client_models.go`, `models/models.json`, `models/codex_client_models.json`.
+Key files: `model_registry.go`, `model_definitions.go`, `model_updater.go`, `codex_client_models.go`, `models/models.json`, `models/codex_client_models.json`, `.github/scripts/refresh-model-catalogs.sh`.
 
 ## Local invariants
 
 - Go module path remains `github.com/router-for-me/CLIProxyAPI/v7`; registry changes must not introduce legacy `/v6` imports.
-- `models/models.json` is refreshed in CI from `router-for-me/models.git`; local copies may be stale when offline.
+- Embedded model catalogs are refreshed by `.github/scripts/refresh-model-catalogs.sh` in PR/release/container workflows; local copies may be stale when offline.
 - Quota state and suspended clients affect runtime routing and auth conductor behavior.
 - Model metadata may be exposed through Management API, SDK, and provider routing.
 
 ## Local rules
 
-- Treat embedded JSON catalogs as generated/externally refreshed unless the task is explicitly catalog maintenance.
+- Treat embedded JSON catalogs as generated/externally refreshed unless the task is explicitly catalog maintenance; update helper validation together with a catalog-shape change.
 - Codex/Antigravity helper command changes need auth and registry review together.
 - Quota reset or routing-state changes require checking `sdk/cliproxy/auth` and relevant Management API tests.
 

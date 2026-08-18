@@ -8,6 +8,7 @@ Key files: `builder.go`, `service.go`, `types.go`, `providers.go`, `rtprovider.g
 
 - Public structs, methods, and package paths are external API; avoid breaking changes unless user explicitly asks for a major contract change.
 - SDK auth conductor behavior must stay compatible with core auth manager, watcher updates, provider availability, cooldown, quota state, and recent request tracking.
+- Changes inside `auth/` must also read `auth/AGENTS.md`; Home, model fallback, rate-limit continuity, and retry semantics are narrower contracts than this parent card.
 - SDK usage records feed `internal/usage`; preserve token, auth index, source, latency, model, and failed state where available.
 - `sdk/config`, `internal/config`, `internal/pluginhost`, and `internal/watcher` compatibility matters when embedding the service.
 

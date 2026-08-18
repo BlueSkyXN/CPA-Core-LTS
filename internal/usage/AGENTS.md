@@ -9,14 +9,17 @@ Key files: `logger_plugin.go`, `internal/api/handlers/management/usage.go`, `sdk
 - `usage-statistics-enabled` 只控制是否继续记录新数据；不要破坏已有 snapshot/export/import 的读取能力。
 - Snapshot JSON 字段要继续兼容 Panel：`total_requests`、`success_count`、`failure_count`、`total_tokens`、`apis`、`models`、`details`、day/hour buckets。
 - Request detail 必须保留 timestamp、latency、source、auth_index、token breakdown、failed 状态。
-- Token 统计要兼容 input/output/reasoning/cached/total，并保留现有 normalise 逻辑。
-- Import 必须 merge，而不是覆盖；重复记录要按现有去重语义跳过。
-- 没有 API key 时继续通过 context/auth metadata 解析统计归属，不要退化成单一 unknown bucket。
+- Canonical v2 request detail 还包括 alias、`reasoning_effort`、request/outbound/response/effective service tier、`generate`、`failure_reason`、`failure_status`。
+- Token 统计要兼容 input/output/reasoning/cached/cache-read/cache-creation/total，并保留现有 normalise 逻辑。
+- Export 使用 `CanonicalExportVersion = 2`。Import 只接受受支持的 canonical v2 或可证明语义的 released v1 migration，并返回稳定 error code / migration receipt。
+- Import 必须先完整校验 shape、token semantics 和 aggregate overflow，再原子 merge；不能部分写入。重复记录按现有 dedup identity 跳过。
+- 没有 API key 时统计 key 依次使用 request endpoint、provider、`unknown`；不要把所有非 API-key 请求折叠到同一 bucket。
 
 ## Local rules
 
 - 改统计字段时，同时检查 Management API usage handlers、Panel usage 页面、TUI dashboard、SDK usage record、Redis queue payload。
 - 新增字段优先向后兼容：旧 export payload 能导入，新 export payload 不应让旧字段消失。
+- 不要在未迁移既有数据的情况下改变 dedup identity；当前 identity 包括 API/model/timestamp/source/auth/failure/token shape，不包括 latency 与 service-tier metadata。
 - 统计存储当前是 in-memory；不要在本目录里偷偷引入外部数据库、文件写入或后台网络依赖。
 
 ## Do not
@@ -30,4 +33,6 @@ Key files: `logger_plugin.go`, `internal/api/handlers/management/usage.go`, `sdk
 - `go test ./internal/usage`
 - `go test ./internal/api/handlers/management -run Usage`
 - `go test ./test -run Usage`
+- Canonical import/export changes: `go test ./internal/usage ./internal/api/handlers/management -run 'MigrateV1|CanonicalV2|UsageManagementImport'`
+- Contract guard: `scripts/check-lts-contract.sh`
 - 跨字段或 import/export 兼容性改动后，再运行 `go test ./...`。

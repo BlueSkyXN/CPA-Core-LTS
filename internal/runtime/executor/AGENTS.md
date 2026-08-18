@@ -16,6 +16,7 @@ Key files: `codex_executor.go`, `codex_websockets_executor.go`, `claude_executor
 
 - Prefer existing helpers in `helps/` for proxy, token, payload, cache, logging, and usage behavior.
 - Codex WebSocket output needs tests for event shape and final stream output.
+- Codex client metadata changes require `internal/codexmetadata/AGENTS.md`; replay/signature/thinking changes require the matching `internal/cache/`, `internal/signature/`, and `internal/thinking/` cards.
 - Antigravity/Claude signature changes need translator/cache tests too, not only executor tests.
 - Plugin executor changes also require `internal/pluginhost/` and `sdk/pluginapi/` review.
 

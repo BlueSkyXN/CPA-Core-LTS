@@ -27,4 +27,5 @@ Key files: `registry.go`, `github.go`, `install.go`, `checksum.go`, `version.go`
 
 - `go test ./internal/pluginstore`
 - Host integration changes: `go test ./internal/pluginhost`
+- Public facade changes: read `sdk/pluginstore/AGENTS.md` and run `go test ./sdk/pluginstore`
 - Management plugin-store endpoint changes: `go test ./internal/api/handlers/management -run Plugin`

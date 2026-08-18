@@ -2,19 +2,20 @@
 
 `.github/` owns repository automation: PR guards, LTS contract checks, build smoke, Docker image publishing, and release workflows.
 Read this card before modifying any workflow, PR template, permissions block, trigger, release asset logic, or path guard.
-Key files: `workflows/agents-md-guard.yml`, `workflows/pr-path-guard.yml`, `workflows/lts-contract.yml`, `workflows/pr-test-build.yml`, `workflows/docker-image.yml`, `workflows/release.yaml`, `pull_request_template.md`.
+Key files: `workflows/agents-md-guard.yml`, `workflows/pr-path-guard.yml`, `workflows/lts-contract.yml`, `workflows/pr-test-build.yml`, `workflows/docker-image.yml`, `workflows/release.yaml`, `scripts/refresh-model-catalogs.sh`, `pull_request_template.md`.
 
 ## Why this is high-risk
 
 - Workflow changes can publish artifacts, close PRs, change required checks, or alter LTS protected contract enforcement.
 - `release.yaml` uses tag-triggered `gh release` upload paths and `GITHUB_TOKEN`.
 - `docker-image.yml` can publish container images, so trigger and tag logic matter.
-- `pr-test-build.yml` refreshes `internal/registry/models/models.json` from `router-for-me/models.git` before build.
+- PR/release/container workflows use `scripts/refresh-model-catalogs.sh` to refresh embedded model catalogs before validation/build.
 
 ## Required before changes
 
 - Read the target workflow end to end and confirm its `on`, `permissions`, and external network/API usage.
 - For LTS guard changes, also read `docs/lts/AGENTS.md` and `scripts/check-lts-contract.sh`.
+- For catalog refresh changes, also read `internal/registry/AGENTS.md` and validate both provider and Codex client catalog contracts.
 - For release changes, identify whether a local check is only static/build validation because real release requires tag context and token.
 
 ## Do not
