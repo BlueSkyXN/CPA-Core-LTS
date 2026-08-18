@@ -1116,13 +1116,19 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			execReq := req
 			execReq.Model = upstreamModel
 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
-			result := resultForAuth(c.auth, c.provider, resultModel, errExec == nil, nil)
+			result := resultForAuthWithOptions(c.auth, c.provider, resultModel, errExec == nil, nil, creditsOpts)
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
 				}
+				if isCredentialScopedError(errExec) {
+					result.CredentialScope = true
+				}
 				m.MarkResult(creditsCtx, result)
+				if result.CredentialScope {
+					break
+				}
 				continue
 			}
 			m.MarkResult(creditsCtx, result)

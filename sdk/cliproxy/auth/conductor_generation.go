@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"strings"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type authGenerationContextKey struct{}
@@ -54,6 +56,12 @@ func resultForAuth(auth *Auth, provider, model string, success bool, resultErr *
 	if auth != nil {
 		result.AuthID = auth.ID
 	}
+	return result
+}
+
+func resultForAuthWithOptions(auth *Auth, provider, model string, success bool, resultErr *Error, opts cliproxyexecutor.Options) Result {
+	result := resultForAuth(auth, provider, model, success, resultErr)
+	result.Options = opts
 	return result
 }
 

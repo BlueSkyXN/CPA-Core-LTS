@@ -2682,3 +2682,64 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	tests := []struct {
+		name  string
+		model string
+		code  string
+	}{
+		{name: "model scoped body", model: "deepseek-chat"},
+		{name: "custom error code", model: "deepseek-chat", code: "custom_upstream_code"},
+		{name: "auth scoped body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			auth := &Auth{ID: "request-fault-" + strings.ReplaceAll(tt.name, " ", "-"), Provider: "deepseek"}
+			if _, err := m.Register(context.Background(), auth); err != nil {
+				t.Fatalf("register auth: %v", err)
+			}
+			m.MarkResult(context.Background(), Result{
+				AuthID:   auth.ID,
+				Provider: auth.Provider,
+				Model:    tt.model,
+				Error: &Error{
+					Code:       tt.code,
+					HTTPStatus: http.StatusUnauthorized,
+					Message:    `{"error":{"message":"Invalid request parameter","type":"invalid_request_error"}}`,
+				},
+			})
+			updated, ok := m.GetByID(auth.ID)
+			if !ok || updated == nil {
+				t.Fatal("auth missing after request fault")
+			}
+			if updated.Unavailable || !updated.NextRetryAfter.IsZero() {
+				t.Fatalf("request fault cooled auth: %#v", updated)
+			}
+			if tt.model != "" {
+				if state := updated.ModelStates[tt.model]; state != nil && (state.Unavailable || !state.NextRetryAfter.IsZero()) {
+					t.Fatalf("request fault cooled model: %#v", state)
+				}
+			}
+		})
+	}
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "real-auth-failure", Provider: "deepseek"}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register real-failure auth: %v", err)
+	}
+	m.MarkResult(context.Background(), Result{
+		AuthID: auth.ID, Provider: auth.Provider, Model: "deepseek-chat",
+		Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: `{"error":{"message":"Authentication Fails, Your api key is invalid","type":"authentication_error"}}`},
+	})
+	updated, _ := m.GetByID(auth.ID)
+	if updated == nil || !updated.Unavailable || updated.NextRetryAfter.IsZero() {
+		t.Fatalf("real authentication failure did not cool auth: %#v", updated)
+	}
+}
