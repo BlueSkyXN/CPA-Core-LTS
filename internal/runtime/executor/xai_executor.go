@@ -62,7 +62,8 @@ var xaiXSearchToolJSON = []byte(`{"type":"x_search"}`)
 
 // XAIExecutor is a stateless executor for xAI Grok's Responses API.
 type XAIExecutor struct {
-	cfg *config.Config
+	cfg           *config.Config
+	userIDFetcher func(context.Context, string, string) (string, error)
 }
 
 // NewXAIExecutor creates a new xAI executor.

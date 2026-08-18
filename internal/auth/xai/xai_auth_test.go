@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -258,6 +259,157 @@ func TestRefreshTokensPostsClientIDAndRefreshToken(t *testing.T) {
 	}
 }
 
+func TestFetchUserIDUsesOfficialIdentityHeadersAndDoesNotLeakToken(t *testing.T) {
+	const accessToken = "access-token-for-test"
+	var got http.Header
+	auth := NewXAIAuth(nil)
+	auth.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		got = req.Header.Clone()
+		return jsonHTTPResponse(http.StatusOK, `{"user_id":"billing-user-1"}`), nil
+	})}
+
+	userID, err := auth.FetchUserID(context.Background(), accessToken)
+	if err != nil {
+		t.Fatalf("FetchUserID() error = %v", err)
+	}
+	if userID != "billing-user-1" {
+		t.Fatalf("user_id = %q, want billing-user-1", userID)
+	}
+	if got.Get("Authorization") != "Bearer "+accessToken {
+		t.Fatalf("Authorization = %q, want bearer token", got.Get("Authorization"))
+	}
+	if got.Get("X-XAI-Token-Auth") != UserEndpointTokenAuthValue {
+		t.Fatalf("X-XAI-Token-Auth = %q, want %q", got.Get("X-XAI-Token-Auth"), UserEndpointTokenAuthValue)
+	}
+	if got.Get("x-grok-client-version") != UserEndpointClientVersion {
+		t.Fatalf("x-grok-client-version = %q, want %q", got.Get("x-grok-client-version"), UserEndpointClientVersion)
+	}
+	if got.Get("x-grok-client-mode") != UserEndpointClientMode {
+		t.Fatalf("x-grok-client-mode = %q, want %q", got.Get("x-grok-client-mode"), UserEndpointClientMode)
+	}
+	if got.Get("User-Agent") != UserEndpointUserAgent() {
+		t.Fatalf("User-Agent = %q, want %q", got.Get("User-Agent"), UserEndpointUserAgent())
+	}
+
+	auth.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonHTTPResponse(http.StatusUnauthorized, `{"error":"`+accessToken+`"}`), nil
+	})}
+	_, err = auth.FetchUserID(context.Background(), accessToken)
+	if err == nil || strings.Contains(err.Error(), accessToken) {
+		t.Fatalf("FetchUserID() error = %v, want redacted non-nil error", err)
+	}
+}
+
+func TestUserEndpointUserAgentUsesOfficialPlatformLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		goos   string
+		goarch string
+		want   string
+	}{
+		{
+			name:   "mac arm64",
+			goos:   "darwin",
+			goarch: "arm64",
+			want:   "grok-pager/1.0.3 grok-shell/1.0.3 (macos; aarch64)",
+		},
+		{
+			name:   "linux amd64",
+			goos:   "linux",
+			goarch: "amd64",
+			want:   "grok-pager/1.0.3 grok-shell/1.0.3 (linux; x86_64)",
+		},
+		{
+			name:   "windows amd64",
+			goos:   "windows",
+			goarch: "amd64",
+			want:   "grok-pager/1.0.3 grok-shell/1.0.3 (windows; x86_64)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := userEndpointUserAgent(tt.goos, tt.goarch); got != tt.want {
+				t.Fatalf("userEndpointUserAgent() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchUserIDAcceptsCamelCaseResponse(t *testing.T) {
+	auth := NewXAIAuth(nil)
+	auth.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonHTTPResponse(http.StatusOK, `{"userId":"billing-user-camel"}`), nil
+	})}
+	userID, err := auth.FetchUserID(context.Background(), "access-token")
+	if err != nil {
+		t.Fatalf("FetchUserID() error = %v", err)
+	}
+	if userID != "billing-user-camel" {
+		t.Fatalf("user_id = %q, want billing-user-camel", userID)
+	}
+}
+
+func TestWaitForAuthorizationEnrichesUserIDBestEffort(t *testing.T) {
+	auth := NewXAIAuth(nil)
+	auth.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://auth.x.ai/oauth2/token":
+			return jsonHTTPResponse(http.StatusOK, `{"access_token":"access-token","refresh_token":"refresh-token","expires_in":3600}`), nil
+		case UserEndpoint:
+			return jsonHTTPResponse(http.StatusOK, `{"user_id":"billing-user-wait"}`), nil
+		default:
+			return jsonHTTPResponse(http.StatusNotFound, `{}`), nil
+		}
+	})}
+	bundle, err := auth.WaitForAuthorization(context.Background(), &DeviceCodeResponse{
+		DeviceCode:    "device-code",
+		TokenEndpoint: "https://auth.x.ai/oauth2/token",
+	})
+	if err != nil {
+		t.Fatalf("WaitForAuthorization() error = %v", err)
+	}
+	if bundle == nil || bundle.TokenData.UserID != "billing-user-wait" {
+		t.Fatalf("bundle = %#v, want enriched user id", bundle)
+	}
+}
+
+func TestRefreshTokensKeepsLegacySuccessWithoutIdentityEnrichment(t *testing.T) {
+	const accessToken = "new-access-token"
+	var userRequests int
+	auth := NewXAIAuth(nil)
+	auth.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == UserEndpoint {
+			userRequests++
+			return jsonHTTPResponse(http.StatusUnauthorized, `{}`), nil
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"access_token":"`+accessToken+`","refresh_token":"new-refresh","expires_in":3600}`), nil
+	})}
+
+	tokenData, err := auth.RefreshTokens(context.Background(), "old-refresh", "https://auth.x.ai/oauth2/token")
+	if err != nil {
+		t.Fatalf("RefreshTokens() error = %v", err)
+	}
+	if tokenData == nil || tokenData.AccessToken != accessToken {
+		t.Fatalf("token data = %#v, want refreshed access token", tokenData)
+	}
+	if tokenData.UserID != "" {
+		t.Fatalf("UserID = %q, want empty before executor enrichment", tokenData.UserID)
+	}
+	if userRequests != 0 {
+		t.Fatalf("RefreshTokens() made %d identity requests, want none", userRequests)
+	}
+}
+
+func TestCreateTokenStoragePreservesNonSecretUserID(t *testing.T) {
+	storage := NewXAIAuth(nil).CreateTokenStorage(&AuthBundle{TokenData: TokenData{
+		AccessToken: "access-token",
+		UserID:      "billing-user-2",
+	}})
+	if storage == nil || storage.UserID != "billing-user-2" {
+		t.Fatalf("storage = %#v, want billing user id", storage)
+	}
+}
+
 func TestRefreshTokens_DeduplicatesConcurrentRefresh(t *testing.T) {
 	resetXAIRefreshGroupForTest()
 	t.Cleanup(resetXAIRefreshGroupForTest)
@@ -324,4 +476,18 @@ func fakeJWTWithEmail(email, subject string) string {
 	header := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	payload := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(`{"email":"` + email + `","sub":"` + subject + `"}`))
 	return header + "." + payload + ".sig"
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func jsonHTTPResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
 }

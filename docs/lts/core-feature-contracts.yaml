@@ -137,7 +137,7 @@ features:
     support: protected
     owner: cpa-core-lts
     upstream_relation: divergent
-    reason: Usage and provider status views require stable API key, auth source, and auth_index attribution.
+    reason: Usage and provider status views require stable API key, auth source, and auth_index attribution. xAI billing additionally requires the non-secret /user user_id while keeping OIDC sub and tokens private.
     core_files:
       - internal/access/
       - internal/api/handlers/management/auth_files.go
@@ -152,6 +152,10 @@ features:
       - source
       - api-key
       - APIKey
+      - user_id
+      - UserEndpoint
+      - UserEndpointUserAgent
+      - x86_64
     validation:
       - go test ./internal/api/handlers/management -run 'Auth|auth|Usage|usage'
       - go test ./internal/watcher ./internal/auth/...

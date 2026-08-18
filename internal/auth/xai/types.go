@@ -1,7 +1,11 @@
 // Package xai provides OAuth2 authentication helpers for xAI Grok.
 package xai
 
-import "time"
+import (
+	"fmt"
+	"runtime"
+	"time"
+)
 
 const (
 	// DefaultAPIBaseURL is the default official xAI API base URL.
@@ -27,6 +31,16 @@ const (
 	httpClientTimeout = 30 * time.Second
 	// MaxPollDuration is the upper bound for waiting on user authorization.
 	MaxPollDuration = 30 * time.Minute
+	// UserEndpoint is the official Grok CLI identity endpoint. Its response
+	// contains the billing user_id; the OIDC sub claim is not interchangeable.
+	UserEndpoint = CLIChatProxyBaseURL + "/user"
+	// UserEndpointTokenAuthValue identifies the official Grok CLI OAuth caller.
+	UserEndpointTokenAuthValue = "xai-grok-cli"
+	// UserEndpointClientVersion matches the current official Grok Shell request
+	// identity (it is independent of chat-proxy's API version).
+	UserEndpointClientVersion = "1.0.3"
+	// UserEndpointClientMode selects the interactive OAuth identity contract.
+	UserEndpointClientMode = "interactive"
 )
 
 var refreshLead = 5 * time.Minute
@@ -34,6 +48,33 @@ var refreshLead = 5 * time.Minute
 // RefreshLead returns the refresh lead time for xAI OAuth credentials.
 func RefreshLead() time.Duration {
 	return refreshLead
+}
+
+// UserEndpointUserAgent returns the current official interactive Grok client
+// identity with the host platform rendered using Grok Shell's wire labels.
+func UserEndpointUserAgent() string {
+	return userEndpointUserAgent(runtime.GOOS, runtime.GOARCH)
+}
+
+func userEndpointUserAgent(goos, goarch string) string {
+	osName := goos
+	if osName == "darwin" {
+		osName = "macos"
+	}
+	archName := goarch
+	switch archName {
+	case "arm64":
+		archName = "aarch64"
+	case "amd64":
+		archName = "x86_64"
+	}
+	return fmt.Sprintf(
+		"grok-pager/%s grok-shell/%s (%s; %s)",
+		UserEndpointClientVersion,
+		UserEndpointClientVersion,
+		osName,
+		archName,
+	)
 }
 
 // Discovery contains OAuth endpoints resolved from xAI OIDC discovery.
@@ -63,6 +104,9 @@ type TokenData struct {
 	Expire       string `json:"expired,omitempty"`
 	Email        string `json:"email,omitempty"`
 	Subject      string `json:"sub,omitempty"`
+	// UserID is the billing identity returned by UserEndpoint. It is kept
+	// separate from Subject because the OIDC sub claim is not a billing ID.
+	UserID string `json:"user_id,omitempty"`
 }
 
 // AuthBundle aggregates token data and OAuth metadata for persistence.

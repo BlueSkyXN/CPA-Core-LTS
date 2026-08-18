@@ -164,6 +164,12 @@ require_grep "codex_client_models.json" .github/scripts/refresh-model-catalogs.s
 require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/openai_responses_websocket.go sdk/api/handlers/openai/openai_responses_websocket_test.go
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
+require_grep "UserEndpoint" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
+require_grep "UserEndpointUserAgent" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
+require_grep 'case "amd64"' internal/auth/xai/types.go
+require_grep 'archName = "x86_64"' internal/auth/xai/types.go
+require_grep 'entry\["user_id"\]' internal/api/handlers/management/auth_files.go
+require_grep 'metadata\["user_id"\]' internal/api/handlers/management/auth_files_provider_oauth.go internal/runtime/executor/xai_executor_auth.go sdk/auth/xai.go
 require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep 'json:"reasoning_effort,omitempty"' internal/usage
 require_grep 'json:"service_tier,omitempty"' internal/usage
