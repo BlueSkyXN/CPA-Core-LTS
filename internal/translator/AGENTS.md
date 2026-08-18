@@ -16,7 +16,8 @@ Key files: `init.go`, `translator/translator.go`, provider pair directories such
 
 - Use structured JSON helpers already present in the codebase instead of ad hoc string concatenation.
 - Add table-driven tests near the translator pair being changed.
-- If a change affects SDK-facing behavior, check `sdk/translator`, `sdk/pluginapi`, and examples.
+- If a change affects SDK-facing behavior, read `sdk/translator/AGENTS.md` and check `sdk/pluginapi` plus examples.
+- Signature/thinking changes also read `internal/signature/AGENTS.md`, `internal/cache/AGENTS.md`, and `internal/thinking/AGENTS.md` as applicable.
 
 ## Do not
 
