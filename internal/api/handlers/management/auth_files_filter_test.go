@@ -130,6 +130,70 @@ func TestListAuthFilesFromDiskFiltersByNameAndRejectsAuthIndex(t *testing.T) {
 	}
 }
 
+func TestListAuthFilesXAIUserIDIsNonSecretOnly(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	authDir := t.TempDir()
+	fileName := "xai-user.json"
+	data := []byte(`{"type":"xai","user_id":"billing-user-1","sub":"oidc-sub","access_token":"secret-access","refresh_token":"secret-refresh"}`)
+	if errWrite := os.WriteFile(filepath.Join(authDir, fileName), data, 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files?name="+fileName, nil)
+	h.ListAuthFiles(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret-access") || strings.Contains(rec.Body.String(), "secret-refresh") {
+		t.Fatalf("auth-files response leaked token: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "oidc-sub") {
+		t.Fatalf("auth-files response exposed OIDC sub: %s", rec.Body.String())
+	}
+	var payload struct {
+		Files []map[string]any `json:"files"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(payload.Files) != 1 || payload.Files[0]["user_id"] != "billing-user-1" {
+		t.Fatalf("files = %#v, want xAI user_id", payload.Files)
+	}
+}
+
+func TestBuildAuthFileEntryXAIUserIDIsNonSecretOnly(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "xai-user.json",
+		FileName: "xai-user.json",
+		Provider: "xai",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path": "/tmp/xai-user.json",
+		},
+		Metadata: map[string]any{
+			"user_id":       "billing-user-2",
+			"sub":           "oidc-sub",
+			"access_token":  "secret-access",
+			"refresh_token": "secret-refresh",
+		},
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
+	entry := h.buildAuthFileEntry(auth)
+	if entry == nil || entry["user_id"] != "billing-user-2" {
+		t.Fatalf("entry = %#v, want xAI user_id", entry)
+	}
+	if _, ok := entry["sub"]; ok {
+		t.Fatalf("entry exposed OIDC sub: %#v", entry)
+	}
+	if _, ok := entry["access_token"]; ok {
+		t.Fatalf("entry exposed access token: %#v", entry)
+	}
+}
+
 func TestPatchAuthFileStatusVerifiesAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

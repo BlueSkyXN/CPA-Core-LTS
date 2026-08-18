@@ -181,6 +181,11 @@ func (a *XAIAuth) WaitForAuthorization(ctx context.Context, deviceCode *DeviceCo
 	if err != nil {
 		return nil, err
 	}
+	// xAI's OIDC sub identifies the OAuth subject, not the billing account.
+	// Enrich the token when the official Grok CLI identity endpoint is
+	// available, but keep OAuth login compatible with accounts/endpoints that
+	// do not expose it yet.
+	a.enrichTokenDataUserID(ctx, tokenData)
 	tokenEndpoint := ""
 	if deviceCode != nil {
 		tokenEndpoint = strings.TrimSpace(deviceCode.TokenEndpoint)
@@ -364,7 +369,86 @@ func (a *XAIAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken, t
 		"client_id":     {ClientID},
 		"refresh_token": {refreshToken},
 	}
-	return a.postTokenForm(ctx, tokenEndpoint, form)
+	tokenData, err := a.postTokenForm(ctx, tokenEndpoint, form)
+	if err != nil {
+		return nil, err
+	}
+	// Refresh remains usable for legacy credentials when identity enrichment is
+	// unavailable. Callers may enrich this token best-effort with its new
+	// access token without making refresh success depend on /user.
+	return tokenData, nil
+}
+
+// FetchUserID retrieves the non-secret billing identity used by xAI billing.
+// It intentionally does not derive the value from the OIDC sub claim.
+func (a *XAIAuth) FetchUserID(ctx context.Context, accessToken string) (string, error) {
+	return a.fetchUserIDAt(ctx, accessToken, UserEndpoint)
+}
+
+func (a *XAIAuth) fetchUserIDAt(ctx context.Context, accessToken, endpoint string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return "", fmt.Errorf("xai user identity: access token is required")
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", fmt.Errorf("xai user identity: endpoint is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("xai user identity: create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("X-XAI-Token-Auth", UserEndpointTokenAuthValue)
+	req.Header.Set("x-grok-client-version", UserEndpointClientVersion)
+	req.Header.Set("x-grok-client-mode", UserEndpointClientMode)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", UserEndpointUserAgent())
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("xai user identity request failed: %w", err)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("xai user identity: close response body error: %v", errClose)
+		}
+	}()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("xai user identity: read response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		// Do not include the upstream body: identity responses can contain
+		// account details and error bodies must never echo credential material.
+		return "", fmt.Errorf("xai user identity request failed with status %d", resp.StatusCode)
+	}
+	var payload struct {
+		UserID      string `json:"user_id"`
+		UserIDCamel string `json:"userId"`
+	}
+	if err = json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("xai user identity: parse response: %w", err)
+	}
+	userID := firstNonEmpty(payload.UserID, payload.UserIDCamel)
+	if userID == "" {
+		return "", fmt.Errorf("xai user identity response missing user_id")
+	}
+	return userID, nil
+}
+
+func (a *XAIAuth) enrichTokenDataUserID(ctx context.Context, tokenData *TokenData) {
+	if tokenData == nil || strings.TrimSpace(tokenData.AccessToken) == "" {
+		return
+	}
+	userID, err := a.FetchUserID(ctx, tokenData.AccessToken)
+	if err != nil {
+		log.WithError(err).Debug("xai user identity enrichment unavailable")
+		return
+	}
+	tokenData.UserID = userID
 }
 
 func (a *XAIAuth) postTokenForm(ctx context.Context, tokenEndpoint string, form url.Values) (*TokenData, error) {
@@ -426,6 +510,7 @@ func (a *XAIAuth) CreateTokenStorage(bundle *AuthBundle) *TokenStorage {
 		LastRefresh:   bundle.LastRefresh,
 		Email:         strings.TrimSpace(bundle.TokenData.Email),
 		Subject:       bundle.TokenData.Subject,
+		UserID:        strings.TrimSpace(bundle.TokenData.UserID),
 		BaseURL:       firstNonEmpty(bundle.BaseURL, DefaultAPIBaseURL),
 		RedirectURI:   bundle.RedirectURI,
 		TokenEndpoint: bundle.TokenEndpoint,

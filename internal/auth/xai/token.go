@@ -23,6 +23,7 @@ type TokenStorage struct {
 	LastRefresh   string `json:"last_refresh,omitempty"`
 	Email         string `json:"email,omitempty"`
 	Subject       string `json:"sub,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
 	BaseURL       string `json:"base_url,omitempty"`
 	RedirectURI   string `json:"redirect_uri,omitempty"`
 	TokenEndpoint string `json:"token_endpoint,omitempty"`

@@ -31,6 +31,21 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	if err != nil {
 		return nil, err
 	}
+	// Re-resolve the billing identity after every successful token refresh. The
+	// official client also refreshes /user-derived fields after rotation; a
+	// stale user_id must not survive an account change. Enrichment remains
+	// best-effort so a valid token refresh never depends on /user availability.
+	fetchUserID := svc.FetchUserID
+	if e.userIDFetcher != nil {
+		fetchUserID = func(ctx context.Context, accessToken string) (string, error) {
+			return e.userIDFetcher(ctx, accessToken, auth.ProxyURL)
+		}
+	}
+	if userID, errUserID := fetchUserID(ctx, td.AccessToken); errUserID == nil {
+		td.UserID = userID
+	} else {
+		log.WithError(errUserID).Debug("xai user identity enrichment unavailable after refresh")
+	}
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)
 	}
@@ -57,6 +72,9 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	}
 	if td.Subject != "" {
 		auth.Metadata["sub"] = td.Subject
+	}
+	if td.UserID != "" {
+		auth.Metadata["user_id"] = td.UserID
 	}
 	if tokenEndpoint != "" {
 		auth.Metadata["token_endpoint"] = tokenEndpoint

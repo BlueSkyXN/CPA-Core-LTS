@@ -249,6 +249,14 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				// xAI's billing identity is a non-secret value returned by the
+				// official /user endpoint. Do not expose OIDC sub or any token
+				// from the disk fallback.
+				if strings.EqualFold(strings.TrimSpace(typeValue), "xai") {
+					if userID := strings.TrimSpace(gjson.GetBytes(data, "user_id").String()); userID != "" {
+						fileData["user_id"] = userID
+					}
+				}
 				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 					fileData["project_id"] = projectID
 				}
@@ -347,6 +355,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
+	}
+	if userID := authUserID(auth); userID != "" {
+		entry["user_id"] = userID
 	}
 	if projectID := authProjectID(auth); projectID != "" {
 		entry["project_id"] = projectID
@@ -556,6 +567,23 @@ func authEmail(auth *coreauth.Auth) string {
 		if v := strings.TrimSpace(auth.Attributes["account_email"]); v != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+func authUserID(auth *coreauth.Auth) string {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if value, ok := auth.Metadata["user_id"].(string); ok {
+			if userID := strings.TrimSpace(value); userID != "" {
+				return userID
+			}
+		}
+	}
+	if auth.Attributes != nil {
+		return strings.TrimSpace(auth.Attributes["user_id"])
 	}
 	return ""
 }

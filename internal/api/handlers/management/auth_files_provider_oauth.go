@@ -581,6 +581,9 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		if tokenStorage.Subject != "" {
 			metadata["sub"] = tokenStorage.Subject
 		}
+		if tokenStorage.UserID != "" {
+			metadata["user_id"] = tokenStorage.UserID
+		}
 
 		record := &coreauth.Auth{
 			ID:       fileName,

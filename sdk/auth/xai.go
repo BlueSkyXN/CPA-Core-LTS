@@ -114,6 +114,9 @@ func (a XAIAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *L
 	if tokenStorage.Subject != "" {
 		metadata["sub"] = tokenStorage.Subject
 	}
+	if tokenStorage.UserID != "" {
+		metadata["user_id"] = tokenStorage.UserID
+	}
 
 	fmt.Println("xAI authentication successful")
 
