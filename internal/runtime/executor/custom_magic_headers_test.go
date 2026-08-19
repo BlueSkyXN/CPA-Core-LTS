@@ -406,3 +406,50 @@ func TestCustomMagicHeaders_Codex(t *testing.T) {
 		t.Errorf("expected X-Missing to be omitted, got %q", gotHeaders.Get("X-Missing"))
 	}
 }
+
+func TestCustomMagicHeaders_CodexDirectImages(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "non-stream"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			var gotHeaders http.Header
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHeaders = r.Header.Clone()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"created":1713833628,"data":[{"b64_json":"AA=="}]}`))
+			}))
+			defer server.Close()
+
+			executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{DisableCodexCloaking: true}})
+			auth := newCodexOpenAIImageTestAuth(server.URL)
+			auth.Attributes["header:X-Forwarded-Session"] = "$ABC"
+			auth.Attributes["header:X-Missing"] = "$NONEXISTENT"
+
+			opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, stream)
+			opts.Headers = http.Header{"Abc": []string{"direct-image-session"}}
+			req := cliproxyexecutor.Request{
+				Model:   "gpt-image-1.5",
+				Payload: []byte(`{"model":"gpt-image-1.5","prompt":"image"}`),
+			}
+			if stream {
+				result, err := executor.ExecuteStream(context.Background(), auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+				for range result.Chunks {
+				}
+			} else if _, err := executor.Execute(context.Background(), auth, req, opts); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			if got := gotHeaders.Get("X-Forwarded-Session"); got != "direct-image-session" {
+				t.Errorf("X-Forwarded-Session = %q, want %q", got, "direct-image-session")
+			}
+			if _, exists := gotHeaders["X-Missing"]; exists {
+				t.Errorf("expected X-Missing to be omitted, got %q", gotHeaders.Get("X-Missing"))
+			}
+		})
+	}
+}

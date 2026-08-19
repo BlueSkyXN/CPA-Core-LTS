@@ -350,7 +350,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 		return resp, errCache
 	}
 	reporter.SetOutboundServiceTier(body)
-	applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg)
+	applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
@@ -413,7 +413,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 		return nil, errCache
 	}
 	reporter.SetOutboundServiceTier(body)
-	applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
