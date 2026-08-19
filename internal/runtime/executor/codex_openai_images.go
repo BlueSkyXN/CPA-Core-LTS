@@ -119,7 +119,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 		return resp, errCache
 	}
 	reporter.SetOutboundServiceTier(body)
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
@@ -221,7 +221,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 		return nil, errCache
 	}
 	reporter.SetOutboundServiceTier(body)
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)

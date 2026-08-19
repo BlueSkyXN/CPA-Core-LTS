@@ -102,7 +102,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -306,7 +306,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
-	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string

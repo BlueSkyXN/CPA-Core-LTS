@@ -106,7 +106,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string

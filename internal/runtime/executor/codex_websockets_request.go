@@ -70,7 +70,7 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 	return rawJSON, headers, nil
 }
 
-func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config) http.Header {
+func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config, clientHeaders ...http.Header) http.Header {
 	if headers == nil {
 		headers = http.Header{}
 	}
@@ -79,7 +79,9 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	}
 
 	var ginHeaders http.Header
-	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+	if len(clientHeaders) > 0 && clientHeaders[0] != nil {
+		ginHeaders = clientHeaders[0].Clone()
+	} else if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 		ginHeaders = ginCtx.Request.Header.Clone()
 	}
 
@@ -129,7 +131,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs, ginHeaders)
 	applyCodexCloakingHeaders(headers, cfg)
 
 	return headers
