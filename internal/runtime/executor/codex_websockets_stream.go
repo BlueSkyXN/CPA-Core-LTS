@@ -107,7 +107,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	reporter.SetOutboundServiceTier(upstreamBody)
-	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(wsHeaders, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(wsHeaders, &identityState)
 
