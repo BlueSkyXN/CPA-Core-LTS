@@ -293,7 +293,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		return m.executeHome(ctx, normalized, req, opts, false)
 	}
 
-	_, maxRetryCredentials, maxWait := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
@@ -302,9 +302,10 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	retryWithoutPenaltyUsage := budget.usage
 	retryWithoutPenaltyHedgeState := budget.hedge
 	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(false)
+	retryRound := 0
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
+		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials, retryRound, defaultRequestRetry)
 		if errExec == nil {
 			if fallbackResp, ok := retryWithoutPenaltyMaybeSelectFallbackResponse(resp, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return fallbackResp, nil
@@ -352,7 +353,11 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
 					break
 				}
-				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
+				policyRound := retryRound
+				if !isRetryWithoutPenaltyError(outcome.err) {
+					policyRound = attempt
+				}
+				wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, outcome.err, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts)
 				if terminalErr != nil {
 					if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 						return resp, nil
@@ -365,6 +370,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 					return cliproxyexecutor.Response{}, errWait
 				}
+				if !isRetryWithoutPenaltyError(outcome.err) {
+					retryRound = policyRound + 1
+				}
 				attempt++
 				continue
 			}
@@ -372,7 +380,11 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(errExec) {
 			break
 		}
-		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
+		policyRound := retryRound
+		if !isRetryWithoutPenaltyError(errExec) {
+			policyRound = attempt
+		}
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, errExec, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
 			if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(errExec), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return resp, nil
@@ -384,6 +396,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
+		}
+		if !isRetryWithoutPenaltyError(errExec) {
+			retryRound = policyRound + 1
 		}
 		attempt++
 	}
@@ -406,7 +421,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
-	_, maxRetryCredentials, maxWait := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
@@ -415,15 +430,33 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	retryWithoutPenaltyUsage := budget.usage
 	retryWithoutPenaltyHedgeState := budget.hedge
 	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(true)
+	retryRound := 0
+	homeRetryLimit := -1
+	retryRoundPending := false
+	retryRoundWaited := false
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials)
+		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials, &homeRetryLimit, retryRound, defaultRequestRetry)
 		if errStream == nil {
 			if fallbackResult, ok := retryWithoutPenaltyMaybeSelectFallbackStreamResult(result, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return fallbackResult, nil
 			}
 			return result, nil
 		}
+		if m.HomeEnabled() && retryRoundPending {
+			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(retryRound-1, homeRetryLimit) {
+				if retryRoundWaited {
+					return nil, errStream
+				}
+				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+					return nil, errWait
+				}
+				retryRoundWaited = true
+				continue
+			}
+		}
+		retryRoundPending = false
+		retryRoundWaited = false
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
 			return nil, errStream
 		}
@@ -465,7 +498,11 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
 					break
 				}
-				wait, shouldRetry, terminalErr := m.shouldRetryAfterError(outcome.err, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
+				policyRound := retryRound
+				if !isRetryWithoutPenaltyError(outcome.err) && !m.HomeEnabled() {
+					policyRound = attempt
+				}
+				wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, outcome.err, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts)
 				if terminalErr != nil {
 					if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 						return result, nil
@@ -478,6 +515,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 					return nil, errWait
 				}
+				if !isRetryWithoutPenaltyError(outcome.err) {
+					retryRound = policyRound + 1
+				}
 				attempt++
 				continue
 			}
@@ -485,7 +525,11 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(errStream) {
 			break
 		}
-		wait, shouldRetry, terminalErr := m.shouldRetryAfterError(errStream, attempt, normalized, retryModel, maxWait, retryWithoutPenaltyCounts)
+		policyRound := retryRound
+		if !isRetryWithoutPenaltyError(errStream) && !m.HomeEnabled() {
+			policyRound = attempt
+		}
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, errStream, policyRound, normalized, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, retryWithoutPenaltyCounts)
 		if terminalErr != nil {
 			if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(errStream), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return result, nil
@@ -497,6 +541,11 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		}
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return nil, errWait
+		}
+		if !isRetryWithoutPenaltyError(errStream) {
+			retryRound = policyRound + 1
+			retryRoundPending = m.HomeEnabled()
+			retryRoundWaited = false
 		}
 		attempt++
 	}

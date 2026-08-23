@@ -933,6 +933,96 @@ func TestXAIExecutorExecuteFiltersInternalXSearchCalls(t *testing.T) {
 	}
 }
 
+func TestXAIExecutorExecuteAcceptsResponseIncomplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":1,\"total_tokens\":9}}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hi","max_output_tokens":1}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := gjson.GetBytes(resp.Payload, "status").String(); got != "incomplete" {
+		t.Fatalf("status = %q, want incomplete; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "incomplete_details.reason").String(); got != "max_output_tokens" {
+		t.Fatalf("incomplete reason = %q, want max_output_tokens; payload=%s", got, resp.Payload)
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.#").Int(); got != 1 {
+		t.Fatalf("output length = %d, want 1; payload=%s", got, resp.Payload)
+	}
+}
+
+func TestXAIExecutorExecuteStreamAcceptsResponseIncomplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":1,\"total_tokens\":9}}}\n\n")
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hi","max_output_tokens":1}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var stream bytes.Buffer
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		stream.Write(chunk.Payload)
+		stream.WriteByte('\n')
+	}
+
+	var incomplete gjson.Result
+	for _, line := range strings.Split(stream.String(), "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if !gjson.Valid(line) {
+			continue
+		}
+		if event := gjson.Parse(line); event.Get("type").String() == "response.incomplete" {
+			incomplete = event
+		}
+	}
+	if !incomplete.Exists() {
+		t.Fatalf("no response.incomplete chunk forwarded: %s", stream.String())
+	}
+	if got := incomplete.Get("response.output.#").Int(); got != 1 {
+		t.Fatalf("incomplete output length = %d, want 1; event=%s", got, incomplete.Raw)
+	}
+	if got := incomplete.Get("response.usage.total_tokens").Int(); got != 9 {
+		t.Fatalf("incomplete usage total_tokens = %d, want 9; event=%s", got, incomplete.Raw)
+	}
+}
+
 func TestXAIExecutorPrepareHonorsInjectXSearchConfig(t *testing.T) {
 	t.Parallel()
 
@@ -4117,6 +4207,47 @@ func TestXAIExecutorComposerReusesClaudeCodeSession(t *testing.T) {
 	applyXAIHeaders(httpReq, auth, "xai-token", true, first.sessionID)
 	if got := httpReq.Header.Get("x-grok-conv-id"); got != firstKey {
 		t.Fatalf("x-grok-conv-id = %q, want %q", got, firstKey)
+	}
+}
+
+func TestApplyXAIHeaders_EmptyAPIKey_OmitsAuthorization(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer preexisting-bearer")
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Attributes: map[string]string{
+			"auth_kind":           "apikey",
+			"base_url":            "https://custom-xai.example.com",
+			"header:Custom-Token": "xai-custom",
+		},
+	}
+	applyXAIHeaders(req, auth, "", false, "session-123")
+
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want empty for empty API key", got)
+	}
+	if got := req.Header.Get("x-grok-conv-id"); got != "session-123" {
+		t.Fatalf("x-grok-conv-id = %q, want session-123", got)
+	}
+	if got := req.Header.Get("Custom-Token"); got != "xai-custom" {
+		t.Fatalf("Custom-Token = %q, want xai-custom", got)
+	}
+
+	// Also verify PrepareRequest
+	req2, _ := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", nil)
+	req2.Header.Set("Authorization", "Bearer preexisting-bearer")
+	exec := &XAIExecutor{}
+	if errPrep := exec.PrepareRequest(req2, auth); errPrep != nil {
+		t.Fatalf("PrepareRequest() error = %v", errPrep)
+	}
+	if got := req2.Header.Get("Authorization"); got != "" {
+		t.Fatalf("PrepareRequest Authorization = %q, want empty", got)
+	}
+	if got := req2.Header.Get("Custom-Token"); got != "xai-custom" {
+		t.Fatalf("PrepareRequest Custom-Token = %q, want xai-custom", got)
 	}
 }
 

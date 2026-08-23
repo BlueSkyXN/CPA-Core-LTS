@@ -1453,6 +1453,8 @@ func applyXAIWebsocketHeaders(headers http.Header, auth *cliproxyauth.Auth, toke
 	headers.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		headers.Set("Authorization", "Bearer "+token)
+	} else {
+		headers.Del("Authorization")
 	}
 	if sessionID != "" {
 		headers.Set("x-grok-conv-id", sessionID)

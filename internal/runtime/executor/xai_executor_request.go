@@ -290,6 +290,8 @@ func applyXAIDefaultHeaders(r *http.Request, token string, stream bool, sessionI
 	r.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		r.Header.Del("Authorization")
 	}
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")

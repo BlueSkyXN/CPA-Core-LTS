@@ -51,7 +51,7 @@ type VertexCompatKey struct {
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// RequestRetry optionally overrides the global request-retry for this credential.
-	// Nil uses the global request-retry. 0 or a negative value disables retries.
+	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 }
 

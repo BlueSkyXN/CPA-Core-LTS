@@ -152,11 +152,15 @@ passthrough-headers: false
 # Omit the field to inherit this global setting; 0 or a negative value disables retries for that credential.
 request-retry: 3
 
-# Maximum number of different credentials to try for one failed request.
-# Set to 0 to keep legacy behavior (try all available credentials).
+# Maximum number of different credentials to try in each credential retry round
+# after per-credential round filtering. Set to 0 to try all available
+# credentials. Credentials skipped by this cap still age with the global round,
+# so the cap does not guarantee a fixed number of actual retries per credential.
 max-retry-credentials: 0
 
-# Maximum wait time in seconds for a cooled-down credential before triggering a retry.
+# Maximum cooldown wait in seconds between retry rounds.
+# Set to 0 or below to never wait for credential cooldown.
+# Retry rounds that need no wait remain controlled by request-retry.
 max-retry-interval: 30
 
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
@@ -238,6 +242,17 @@ codex:
   identity-confuse: false
   # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
+  # Hold back the initial handshake events (response.created, response.in_progress and the
+  # websocket metadata frames) until the upstream emits its first generated event.
+  # Why: the upstream smuggles `server_is_overloaded` rejections *inside* an HTTP 200 stream,
+  # right after those handshake events, instead of returning 503 on the wire. Buffering them
+  # keeps the downstream response headers uncommitted long enough to transparently retry on
+  # another credential. Only overload/rate-limit rejections trigger failover; every other
+  # terminal failure is still delivered in-stream exactly as before.
+  # Trade-off: response headers are delayed until generation starts, which can trip client or
+  # reverse-proxy read timeouts (e.g. nginx proxy_read_timeout) on long reasoning requests.
+  # Default: false
+  stream-bootstrap-buffering: false
   # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
   # This refreshes Codex spawn_agent model details, requests plaintext message arguments,
   # and converts only fully plaintext agent_message input. Opaque encrypted or mixed
@@ -786,6 +801,7 @@ nonstream-keepalive-interval: 0
 #   - api-key: "vk-123..."                        # x-goog-api-key header
 #     weight: 5                                    # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test"                              # optional: require calls like "test/vertex-pro" to target this credential
+#     disable-cooling: false                       # optional: per-auth override for auth/model cooldown scheduling
 #     request-retry: 3                             # optional: per-auth override of the global request-retry; omit to inherit global; 0 or a negative value disables retries
 #     base-url: "https://example.com/api"         # optional, e.g. https://zenmux.ai/api; falls back to Google Vertex when omitted
 #     proxy-url: "socks5://proxy.example.com:1080" # optional per-key proxy override
@@ -910,6 +926,48 @@ nonstream-keepalive-interval: 0
 #     - "kimi-k2-thinking"
 #   xai:
 #     - "grok-3-mini"
+
+# OAuth provider request-scoped error rules (custom error classification for OAuth credentials)
+# oauth-request-scoped-errors:
+#   vertex:
+#     - status: 400
+#       match:
+#         - "maximum_context_length"
+#         - "context_length_exceeded"
+#       match-regexr:
+#         - "maximum_context_length$"
+#         - "^context_length_exceeded"
+#       action: "stop" # options: "stop", "stop-and-cooldown", "continue", "continue-and-cooldown"
+#   aistudio:
+#     - status: 400
+#       match:
+#         - "invalid_argument"
+#       action: "stop"
+#   antigravity:
+#     - status: 500
+#       match:
+#         - "internal_server_error"
+#       action: "stop-and-cooldown"
+#   claude:
+#     - status: 400
+#       match:
+#         - "prompt is too long"
+#       action: "stop"
+#   codex:
+#     - status: 400
+#       match:
+#         - "context_window_exceeded"
+#       action: "stop"
+#   kimi:
+#     - status: 400
+#       match:
+#         - "length_limit"
+#       action: "stop"
+#   xai:
+#     - status: 400
+#       match:
+#         - "max_tokens_exceeded"
+#       action: "stop"
 
 # Optional payload configuration
 # payload:
