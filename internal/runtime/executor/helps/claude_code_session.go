@@ -32,6 +32,28 @@ func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.
 }
 
 // ClaudeCodePromptCache maps one Claude Code agent execution scope to a stable upstream prompt_cache_key.
+
+// HeaderValueCaseInsensitive returns the first non-empty header value matching name case-insensitively.
+func HeaderValueCaseInsensitive(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(headers.Get(name)); value != "" {
+		return value
+	}
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
 	modelName = strings.TrimSpace(modelName)
 	executionScope, ok := ClaudeCodeExecutionScope(ctx, payload, headers)

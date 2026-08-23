@@ -153,11 +153,95 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		err = newCodexStatusErr(httpResp.StatusCode, data)
 		return nil, err
 	}
+	abnormalStreamBuffering := abnormalRetry.StreamBuffer()
+	bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
+	scannerMaxTokenBytes := int64(52_428_800) // 50 MiB compatibility ceiling.
+	if abnormalStreamBuffering && bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
+		scannerMaxTokenBytes = bufferMaxBytes + 1
+		if scannerMaxTokenBytes < 64<<10 {
+			scannerMaxTokenBytes = 64 << 10
+		}
+	}
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(nil, int(scannerMaxTokenBytes))
+	closeResponseBody := func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("codex executor: close response body error: %v", errClose)
+		}
+	}
+
+	var bootstrapLines [][]byte
+	if e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering {
+		bootstrapReleased := false
+		handshakeEvents := 0
+		for scanner.Scan() {
+			rawLine := bytes.Clone(scanner.Bytes())
+			bootstrapLines = append(bootstrapLines, rawLine)
+			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
+			if !bytes.HasPrefix(line, dataTag) {
+				continue
+			}
+
+			data := bytes.TrimSpace(line[5:])
+			data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+			if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
+				if isCodexOverloadBootstrapFailure(terminalBody) {
+					for _, bufferedLine := range bootstrapLines {
+						helpersLine := applyCodexIdentityConfuseResponsePayload(bufferedLine, identityState)
+						helps.AppendAPIResponseChunk(ctx, e.cfg, helpersLine)
+					}
+					closeResponseBody()
+					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
+						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
+						reporter.PublishFailure(ctx, errClearReplay)
+						return nil, errClearReplay
+					}
+					overloadErr := newCodexBootstrapOverloadErr(terminalBody)
+					helps.RecordAPIResponseError(ctx, e.cfg, overloadErr)
+					reporter.PublishFailure(ctx, overloadErr)
+					helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered handshake events, failing over", handshakeEvents)
+					return nil, overloadErr
+				}
+				bootstrapReleased = true
+				break
+			}
+
+			eventType := gjson.GetBytes(data, "type").String()
+			if !isCodexHandshakeMetadataEvent(eventType) {
+				bootstrapReleased = true
+				break
+			}
+			handshakeEvents++
+			if handshakeEvents >= codexBootstrapMaxBufferedEvents {
+				helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap buffer limit %d reached, releasing stream without overload probing", codexBootstrapMaxBufferedEvents)
+				bootstrapReleased = true
+				break
+			}
+		}
+		if !bootstrapReleased {
+			closeResponseBody()
+			if errScan := scanner.Err(); errScan != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+				reporter.PublishFailure(ctx, errScan)
+				return nil, errScan
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			streamErr := newCodexIncompleteStreamError()
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			return nil, streamErr
+		}
+	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamUsage := &cliproxyexecutor.RetryWithoutPenaltyStreamUsage{}
 	var qualityRecorder *codexAbnormalReasoningRetryStreamRecorder
-	if abnormalRetry.StreamBuffer() {
-		qualityRecorder = newCodexAbnormalReasoningRetryStreamRecorder(abnormalRetry.StreamBufferMaxBytes())
+	if abnormalStreamBuffering {
+		qualityRecorder = newCodexAbnormalReasoningRetryStreamRecorder(bufferMaxBytes)
 	}
 	streamFinalizer := cliproxyexecutor.RetryWithoutPenaltyStreamFinalizer(func(headers http.Header, chunks []cliproxyexecutor.StreamChunk, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) *cliproxyexecutor.StreamResult {
 		if result := finalizeCodexAbnormalReasoningRetryStreamFromRaw(ctx, to, responseFormat, req.Model, originalPayload, body, identityState, qualityRecorder, headers, previous, abnormalRetry.clientUsageAggregation); result != nil {
@@ -167,22 +251,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	})
 	go func() {
 		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("codex executor: close response body error: %v", errClose)
-			}
-		}()
-		buffering := abnormalRetry.StreamBuffer()
-		bufferMaxBytes := abnormalRetry.StreamBufferMaxBytes()
-		scannerMaxTokenBytes := int64(52_428_800) // 50 MiB compatibility ceiling.
-		if buffering && bufferMaxBytes > 0 && bufferMaxBytes < scannerMaxTokenBytes {
-			scannerMaxTokenBytes = bufferMaxBytes + 1
-			if scannerMaxTokenBytes < 64<<10 {
-				scannerMaxTokenBytes = 64 << 10
-			}
-		}
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, int(scannerMaxTokenBytes))
+		defer closeResponseBody()
+		buffering := abnormalStreamBuffering
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
@@ -253,8 +323,24 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			case <-ctx.Done():
 			}
 		}
-		for scanner.Scan() {
-			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
+		bootstrapLineIndex := 0
+		nextLine := func() ([]byte, bool) {
+			if bootstrapLineIndex < len(bootstrapLines) {
+				line := bootstrapLines[bootstrapLineIndex]
+				bootstrapLineIndex++
+				return line, true
+			}
+			if scanner.Scan() {
+				return scanner.Bytes(), true
+			}
+			return nil, false
+		}
+		for {
+			rawLine, ok := nextLine()
+			if !ok {
+				break
+			}
+			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			translatedLine := bytes.Clone(line)
 			flushAfterLine := false

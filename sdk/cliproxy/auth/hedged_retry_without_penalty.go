@@ -221,7 +221,7 @@ func (m *Manager) executeRetryWithoutPenaltyHedged(ctx context.Context, provider
 		reservedAttempts++
 		go func() {
 			defer coordinator.release(name)
-			resp, err := m.executeMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials)
+			resp, err := m.executeMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials, 0, 0)
 			dispatched := tracker.dispatched()
 			accounted := false
 			if err != nil && accumulator != nil {
@@ -385,7 +385,7 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedged(ctx context.Context, pr
 		reservedAttempts++
 		go func() {
 			defer coordinator.release(name)
-			stream, err := m.executeStreamMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials)
+			stream, err := m.executeStreamMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials, nil, 0, 0)
 			dispatched := tracker.dispatched()
 			accounted := false
 			if err != nil && accumulator != nil {
@@ -543,7 +543,7 @@ func (m *Manager) executeRetryWithoutPenaltyHedgedQuality(ctx context.Context, p
 		reservedAttempts++
 		go func() {
 			defer coordinator.release(name)
-			resp, err := m.executeMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials)
+			resp, err := m.executeMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials, 0, 0)
 			dispatched := tracker.dispatched()
 			accounted := false
 			if err != nil && accumulator != nil {
@@ -715,7 +715,7 @@ func (m *Manager) executeStreamRetryWithoutPenaltyHedgedQuality(ctx context.Cont
 		reservedAttempts++
 		go func() {
 			defer coordinator.release(name)
-			stream, err := m.executeStreamMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials)
+			stream, err := m.executeStreamMixedOnce(laneCtx, providers, laneReq, laneOpts, maxRetryCredentials, nil, 0, 0)
 			var headers http.Header
 			var chunks []cliproxyexecutor.StreamChunk
 			var metadata map[string]any
