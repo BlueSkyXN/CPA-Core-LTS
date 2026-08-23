@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -46,6 +47,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+	isGrokClient := grokbuild.IsGrokClientContext(ctx, opts.Headers)
 	to := sdktranslator.FromString("codex")
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -178,6 +180,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			rawLine := bytes.Clone(scanner.Bytes())
 			bootstrapLines = append(bootstrapLines, rawLine)
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
+			if _, transformed := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); transformed {
+				handshakeEvents++
+				if handshakeEvents >= codexBootstrapMaxBufferedEvents {
+					helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap buffer limit %d reached, releasing stream without overload probing", codexBootstrapMaxBufferedEvents)
+					bootstrapReleased = true
+					break
+				}
+				continue
+			}
 			if !bytes.HasPrefix(line, dataTag) {
 				continue
 			}
@@ -187,8 +198,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
 				if isCodexOverloadBootstrapFailure(terminalBody) {
 					for _, bufferedLine := range bootstrapLines {
-						helpersLine := applyCodexIdentityConfuseResponsePayload(bufferedLine, identityState)
-						helps.AppendAPIResponseChunk(ctx, e.cfg, helpersLine)
+						loggedLine := applyCodexIdentityConfuseResponsePayload(bufferedLine, identityState)
+						helps.AppendAPIResponseChunk(ctx, e.cfg, loggedLine)
 					}
 					closeResponseBody()
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
@@ -351,7 +362,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			terminalSuccess := false
 			cacheReasoningReplay := false
 
-			if bytes.HasPrefix(line, dataTag) {
+			if transformed, ok := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); ok {
+				translatedLine = transformed
+			} else if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
 				data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
 				translatedLine = append([]byte("data: "), data...)
