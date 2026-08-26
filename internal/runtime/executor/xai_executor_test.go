@@ -3870,6 +3870,73 @@ func TestNormalizeXAITools_SimplifiesCodexAppAutomationUpdateSchema(t *testing.T
 	}
 }
 
+func TestNormalizeXAITools_SimplifiesMCPNamespacedCodexAppAutomationUpdateSchema(t *testing.T) {
+	// Codex Desktop 0.150 exposes the app tools through mcp__codex_app. Its
+	// automation schema has an object root whose oneOf branches are $refs; some
+	// referenced definitions are themselves untyped unions that xAI rejects.
+	params := `{
+		"type":"object",
+		"properties":{},
+		"oneOf":[
+			{"$ref":"#/$defs/create"},
+			{"$ref":"#/$defs/update"},
+			{"$ref":"#/$defs/view"},
+			{"$ref":"#/$defs/delete"}
+		],
+		"$defs":{
+			"create":{"type":"object","properties":{"mode":{"const":"create"}}},
+			"update":{"oneOf":[{"$ref":"#/$defs/heartbeat"},{"$ref":"#/$defs/cron"}]},
+			"view":{"oneOf":[{"type":"object"},{"type":"null"}]},
+			"delete":{"type":"object","properties":{"mode":{"const":"delete"}}},
+			"heartbeat":{"type":"object"},
+			"cron":{"type":"object"}
+		}
+	}`
+	body := []byte(`{
+		"model":"grok-4.6",
+		"tools":[
+			{"type":"namespace","name":"mcp__codex_app","tools":[
+				{"type":"function","name":"automation_update","strict":false,"parameters":` + params + `}
+			]},
+			{"type":"function","name":"exec_command","strict":true,"parameters":{
+				"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"],"additionalProperties":false
+			}}
+		]
+	}`)
+
+	out := normalizeXAITools(body)
+	tools := gjson.GetBytes(out, "tools").Array()
+	if len(tools) != 2 {
+		t.Fatalf("tools length = %d, want 2; body=%s", len(tools), string(out))
+	}
+
+	automationTool := tools[0]
+	if got := automationTool.Get("name").String(); got != "mcp__codex_app__automation_update" {
+		t.Fatalf("automation tool name = %q, want mcp__codex_app__automation_update; body=%s", got, string(out))
+	}
+	parameters := automationTool.Get("parameters")
+	if got := parameters.Get("type").String(); got != "object" {
+		t.Fatalf("automation parameters.type = %q, want object; parameters=%s", got, parameters.Raw)
+	}
+	if parameters.Get("additionalProperties").Type != gjson.True {
+		t.Fatalf("automation parameters should allow additionalProperties: %s", parameters.Raw)
+	}
+	if parameters.Get("oneOf").Exists() || parameters.Get("$defs").Exists() {
+		t.Fatalf("automation parameters were not simplified: %s", parameters.Raw)
+	}
+
+	execTool := tools[1]
+	if got := execTool.Get("parameters.properties.cmd.type").String(); got != "string" {
+		t.Fatalf("exec_command schema changed, cmd type = %q; body=%s", got, string(out))
+	}
+	if execTool.Get("parameters.additionalProperties").Type != gjson.False {
+		t.Fatalf("exec_command additionalProperties changed: %s", string(out))
+	}
+	if execTool.Get("strict").Type != gjson.True {
+		t.Fatalf("exec_command strict changed: %s", string(out))
+	}
+}
+
 func TestNormalizeXAITools_SimplifiesFlattenedAndInvalidRootSchemas(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","name":"codex_app__automation_update","strict":true,"parameters":{"oneOf":[{"type":"object","properties":{"action":{"type":"string"}},"required":["action"]},{"type":"null"}]}},{"type":"function","name":"nullable_lookup","strict":true,"parameters":{"anyOf":[{"type":"object","properties":{"query":{"type":"string"}}},{"type":["object","null"]}]}},{"type":"custom","name":"nullable_custom","strict":true,"parameters":{"oneOf":[{"type":"object"},{"type":"null"}]}},{"type":"function","name":"mixed_nullable","strict":true,"parameters":{"type":"object","oneOf":[{"required":["query"]},{"type":"null"}],"properties":{"query":{"type":"string"}}}},{"type":"function","name":"array_root_union","strict":true,"parameters":{"type":["object"],"anyOf":[{"required":["query"]},{"required":["id"]}],"properties":{"query":{"type":"string"},"id":{"type":"integer"}}}},{"type":"function","name":"echo_tool","strict":true,"parameters":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}}]}`)
 	out := normalizeXAITools(body)
@@ -4205,6 +4272,9 @@ func TestXAIFunctionParametersNeedSimplification(t *testing.T) {
 	if !xaiFunctionParametersNeedSimplification(auto, "codex_app") {
 		t.Fatal("codex_app.automation_update should need simplification")
 	}
+	if !xaiFunctionParametersNeedSimplification(auto, "mcp__codex_app") {
+		t.Fatal("mcp__codex_app.automation_update should need simplification")
+	}
 	if xaiFunctionParametersNeedSimplification(auto, "calendar") {
 		t.Fatal("automation_update outside codex_app should not need simplification")
 	}
@@ -4214,6 +4284,10 @@ func TestXAIFunctionParametersNeedSimplification(t *testing.T) {
 	flattened := gjson.Parse(`{"type":"function","name":"codex_app__automation_update","parameters":{"type":"object"}}`)
 	if !xaiFunctionParametersNeedSimplification(flattened, "") {
 		t.Fatal("flattened codex_app__automation_update should need simplification")
+	}
+	mcpFlattened := gjson.Parse(`{"type":"function","name":"mcp__codex_app__automation_update","parameters":{"type":"object"}}`)
+	if !xaiFunctionParametersNeedSimplification(mcpFlattened, "") {
+		t.Fatal("flattened mcp__codex_app__automation_update should need simplification")
 	}
 	custom := gjson.Parse(`{"type":"custom","name":"automation_update","parameters":{"type":"object"}}`)
 	if xaiFunctionParametersNeedSimplification(custom, "codex_app") {

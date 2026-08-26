@@ -444,10 +444,15 @@ func xaiFunctionParametersNeedSimplification(tool gjson.Result, namespaceName st
 	}
 
 	toolName := strings.TrimSpace(tool.Get("name").String())
+	namespaceName = strings.TrimSpace(namespaceName)
+	mcpCodexAppNamespaceName := "mcp__" + xaiCodexAppNamespaceName
 	qualifiedAutomationName := xaiCodexAppNamespaceName + "__" + xaiAutomationUpdateToolName
-	if isFunction && (strings.EqualFold(toolName, qualifiedAutomationName) ||
-		(strings.EqualFold(strings.TrimSpace(namespaceName), xaiCodexAppNamespaceName) &&
-			strings.EqualFold(toolName, xaiAutomationUpdateToolName))) {
+	mcpQualifiedAutomationName := mcpCodexAppNamespaceName + "__" + xaiAutomationUpdateToolName
+	isCodexAppNamespace := strings.EqualFold(namespaceName, xaiCodexAppNamespaceName) ||
+		strings.EqualFold(namespaceName, mcpCodexAppNamespaceName)
+	if isFunction && ((isCodexAppNamespace && strings.EqualFold(toolName, xaiAutomationUpdateToolName)) ||
+		strings.EqualFold(toolName, qualifiedAutomationName) ||
+		strings.EqualFold(toolName, mcpQualifiedAutomationName)) {
 		return true
 	}
 
