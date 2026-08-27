@@ -818,7 +818,7 @@ func (m *Manager) beginCodexRateLimitContinuityAttempt(ctx context.Context, auth
 		logEntryWithRequestID(ctx).
 			WithField("auth_id", auth.ID).
 			WithField("model", modelKey).
-			WithField("session", truncateSessionID(sessionID)).
+			WithField("session", sessionLogIdentity(sessionID)).
 			Info("codex rate-limit continuity: reserved fresh-session canary")
 	}
 	return context.WithValue(ctx, codexRateLimitContinuityAttemptContextKey{}, attempt), true
@@ -859,7 +859,7 @@ func (m *Manager) observeCodexRateLimitContinuityResult(ctx context.Context, res
 	entry := logEntryWithRequestID(ctx).
 		WithField("auth_id", result.AuthID).
 		WithField("model", attempt.key.model).
-		WithField("session", truncateSessionID(attempt.sessionID))
+		WithField("session", sessionLogIdentity(attempt.sessionID))
 	switch {
 	case disposition == codexRateLimitContinuityObserveOnly:
 		entry.Info("codex rate-limit continuity: observing fresh-session usage limit")

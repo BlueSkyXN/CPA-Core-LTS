@@ -39,12 +39,12 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts = cliproxysession.Enrich(req, opts)
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)
@@ -62,12 +62,12 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts = cliproxysession.Enrich(req, opts)
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -127,16 +127,16 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	var errPreflight error
+	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
+	if errPreflight != nil {
+		return nil, errPreflight
+	}
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
 		}
-	}
-	var errPreflight error
-	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
-	if errPreflight != nil {
-		return nil, errPreflight
 	}
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
