@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -773,7 +775,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
 				bind(auth.ID)
-				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+				entry.Infof("session-affinity: cache hit | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 				return auth, nil
 			}
 		}
@@ -783,7 +785,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			return nil, err
 		}
 		bind(auth.ID)
-		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 		return auth, nil
 	}
 
@@ -792,7 +794,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
 					bind(auth.ID)
-					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
+					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
 					return auth, nil
 				}
 			}
@@ -804,7 +806,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return nil, err
 	}
 	bind(auth.ID)
-	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+	entry.Infof("session-affinity: cache miss, new binding | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 	return auth, nil
 }
 
@@ -818,12 +820,29 @@ func selectorLogEntry(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-// truncateSessionID shortens session ID for logging (first 8 chars + "...")
-func truncateSessionID(id string) string {
-	if len(id) <= 20 {
-		return id
+// sessionLogIdentity returns a stable, non-reversible routing identifier for logs.
+// The source namespace remains visible while the opaque client value is never emitted.
+func sessionLogIdentity(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
 	}
-	return id[:8] + "..."
+	namespace := "session"
+	if candidate, _, ok := strings.Cut(id, ":"); ok && candidate != "" {
+		namespace = candidate
+	}
+	sum := sha256.Sum256([]byte(id))
+	return namespace + ":sha256:" + hex.EncodeToString(sum[:6])
+}
+
+func sessionAffinityAuthLogID(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if authIndex := strings.TrimSpace(auth.Index); authIndex != "" {
+		return authIndex
+	}
+	return auth.Clone().EnsureIndex()
 }
 
 // Stop releases resources held by the selector.
