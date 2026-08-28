@@ -63,6 +63,10 @@ type Result struct {
 	ModelFallbackReason string
 	// Options carries execution request options (headers, metadata, etc.) for result tracking.
 	Options cliproxyexecutor.Options
+	// SkipQuotaObservation reports that this result must not replace the last
+	// observed watermark. Count-tokens requests reuse the credential but are not
+	// generation traffic; their response headers are not a generation snapshot.
+	SkipQuotaObservation bool
 }
 
 // Selector chooses an auth candidate for execution.

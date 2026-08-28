@@ -29,6 +29,7 @@ type ConvertAnthropicResponseToOpenAIParams struct {
 	Usage        claudeUsageTokens
 	// Tool calls accumulator for streaming
 	ToolCallsAccumulator map[int]*ToolCallAccumulator
+	NextToolCallIndex    int
 }
 
 type claudeUsageTokens struct {
@@ -43,6 +44,7 @@ type claudeUsageTokens struct {
 type ToolCallAccumulator struct {
 	ID        string
 	Name      string
+	Index     int
 	Arguments strings.Builder
 }
 
@@ -148,6 +150,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 			if (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator == nil {
 				(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
 			}
+			(*param).(*ConvertAnthropicResponseToOpenAIParams).NextToolCallIndex = 0
 			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.Merge(message.Get("usage"))
 		}
 		return [][]byte{template}
@@ -167,9 +170,13 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 					(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
 				}
 
+				toolCallIndex := (*param).(*ConvertAnthropicResponseToOpenAIParams).NextToolCallIndex
+				(*param).(*ConvertAnthropicResponseToOpenAIParams).NextToolCallIndex++
+
 				(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator[index] = &ToolCallAccumulator{
-					ID:   toolCallID,
-					Name: toolName,
+					ID:    toolCallID,
+					Name:  toolName,
+					Index: toolCallIndex,
 				}
 
 				// Don't output anything yet - wait for complete tool call
@@ -227,7 +234,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 				if arguments == "" {
 					arguments = "{}"
 				}
-				template, _ = sjson.SetBytes(template, "choices.0.delta.tool_calls.0.index", index)
+				template, _ = sjson.SetBytes(template, "choices.0.delta.tool_calls.0.index", accumulator.Index)
 				template, _ = sjson.SetBytes(template, "choices.0.delta.tool_calls.0.id", accumulator.ID)
 				template, _ = sjson.SetBytes(template, "choices.0.delta.tool_calls.0.type", "function")
 				template, _ = sjson.SetBytes(template, "choices.0.delta.tool_calls.0.function.name", accumulator.Name)
