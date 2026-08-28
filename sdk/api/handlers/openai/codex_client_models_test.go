@@ -58,6 +58,24 @@ func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 	}
 }
 
+func TestPreserveLTSMediaModelVisibility(t *testing.T) {
+	response := map[string]any{
+		"models": []map[string]any{
+			{"slug": "grok-imagine-video-1.5", "visibility": "list"},
+			{"slug": "gpt-5.6-sol", "visibility": "list"},
+		},
+	}
+
+	preserveLTSMediaModelVisibility(response)
+	models := response["models"].([]map[string]any)
+	if got := models[0]["visibility"]; got != "hide" {
+		t.Fatalf("media visibility = %#v, want hide", got)
+	}
+	if got := models[1]["visibility"]; got != "list" {
+		t.Fatalf("non-media visibility = %#v, want list", got)
+	}
+}
+
 func TestCodexClientModelsResponseClientVersionFiltering(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	modelRegistry.RegisterClient("codex-version-filter-sdk-test", "openai-compatibility", []*registry.ModelInfo{
