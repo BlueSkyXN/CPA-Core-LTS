@@ -454,10 +454,11 @@ patches:
     retire_when: Upstream recognizes only the typed invalid_request_error model 404 as request-scoped, stops futile cross-auth retries without marking credentials or the model unavailable, preserves generic 404 cooldown behavior, and all listed regressions pass after removing the downstream implementation.
 
   - id: codex-websocket-reader-generation
-    reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request.
+    reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request, and a disconnect signal must not preempt a response already queued for the current request.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
     affected_upstream_range: "through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); fcea738f improves typed WebSocket handshake failures but does not add generation-safe reader/request ownership. LTS composes the upstream handshake path with replacement, detach, invalidation, session-close, request-owned cancellation, retry-rebinding, and stale-reader guards, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion."
     files:
+      - internal/runtime/executor/codex_websockets_connection.go
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
       - internal/runtime/executor/codex_websockets_lts_test.go
@@ -466,6 +467,7 @@ patches:
       - internal/runtime/executor/xai_websockets_executor_test.go
     regression_tests:
       - TestCodexWebsocketHandshakeFailureReleasesExecutionSession
+      - TestCodexWebsocketReadPrefersQueuedMessageOverDisconnectSignal
       - TestCodexWebsocketStaleReaderCannotCloseNewActiveChannel
       - TestCodexWebsocketGenerationRetryRebindUsesCurrentConnection
       - TestCodexWebsocketGenerationRetryRebindRejectedAfterSessionClose
@@ -475,7 +477,7 @@ patches:
       - TestWebsocketExecutorsReconnectWhenSessionTargetChanges
     upstream_issue_or_pr: not-filed
     state: required
-    retire_when: Upstream assigns equivalent connection generations, validates reader/request ownership atomically, keeps channels request-owned, and passes every listed concurrency regression after the downstream implementation is removed.
+    retire_when: Upstream assigns equivalent connection generations, validates reader/request ownership atomically, keeps channels request-owned, preserves queued response ordering when a disconnect cancellation follows, and passes every listed concurrency regression after the downstream implementation is removed.
 
   - id: codex-spark-reasoning-summary-compat
     reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
