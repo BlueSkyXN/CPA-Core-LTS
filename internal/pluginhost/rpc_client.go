@@ -15,9 +15,10 @@ import (
 )
 
 type rpcPluginAdapter struct {
-	id     string
-	host   *Host
-	client pluginClient
+	id            string
+	host          *Host
+	client        pluginClient
+	schemaVersion uint32
 }
 
 type rpcAuthProvider struct {
@@ -69,12 +70,12 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.SchemaVersion > pluginabi.SchemaVersion {
 		return pluginapi.Plugin{}, fmt.Errorf("plugin schema version %d is not supported", resp.SchemaVersion)
 	}
-	adapter := &rpcPluginAdapter{id: id, host: host, client: client}
 	schemaVersion := resp.SchemaVersion
 	if schemaVersion == 0 {
 		// Missing schema_version is treated as the original contract.
 		schemaVersion = 1
 	}
+	adapter := &rpcPluginAdapter{id: id, host: host, client: client, schemaVersion: schemaVersion}
 	plugin := pluginapi.Plugin{
 		Metadata:      resp.Metadata,
 		SchemaVersion: schemaVersion,
@@ -105,6 +106,15 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	}
 	if resp.Capabilities.Executor {
 		plugin.Capabilities.Executor = rpcProviderExecutor{rpcPluginAdapter: adapter}
+	}
+	if schemaVersion >= pluginabi.SchemaVersionExecutionLifecycle && resp.Capabilities.ExecutionCanceller {
+		plugin.Capabilities.ExecutionCanceller = adapter
+	}
+	if schemaVersion >= pluginabi.SchemaVersionExecutionLifecycle && resp.Capabilities.ExecutionSessionCloser {
+		plugin.Capabilities.ExecutionSessionCloser = adapter
+	}
+	if schemaVersion >= pluginabi.SchemaVersionExecutionLifecycle && resp.Capabilities.ProviderReadiness {
+		plugin.Capabilities.ProviderReadiness = adapter
 	}
 	if resp.Capabilities.RequestTranslator {
 		plugin.Capabilities.RequestTranslator = adapter
@@ -484,7 +494,7 @@ func (a *rpcPluginAdapter) Execute(ctx context.Context, req pluginapi.ExecutorRe
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
 	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorExecute, rpcExecutorRequest{
-		ExecutorRequest: req,
+		ExecutorRequest: a.executorRequestForSchema(req),
 		HostCallbackID:  callbackID,
 	})
 }
@@ -493,9 +503,33 @@ func (a *rpcPluginAdapter) CountTokens(ctx context.Context, req pluginapi.Execut
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
 	return callPlugin[pluginapi.ExecutorResponse](ctx, a.client, pluginabi.MethodExecutorCountTokens, rpcExecutorRequest{
-		ExecutorRequest: req,
+		ExecutorRequest: a.executorRequestForSchema(req),
 		HostCallbackID:  callbackID,
 	})
+}
+
+func (a *rpcPluginAdapter) executorRequestForSchema(req pluginapi.ExecutorRequest) pluginapi.ExecutorRequest {
+	if a == nil || a.schemaVersion >= pluginabi.SchemaVersionExecutionLifecycle {
+		return req
+	}
+	req.RequestID = ""
+	req.ExecutionSessionID = ""
+	req.AuthIndex = ""
+	return req
+}
+
+func (a *rpcPluginAdapter) CancelExecution(ctx context.Context, req pluginapi.CancelExecutionRequest) error {
+	_, errCall := callPlugin[rpcEmptyResponse](ctx, a.client, pluginabi.MethodExecutorCancel, req)
+	return errCall
+}
+
+func (a *rpcPluginAdapter) CloseExecutionSession(ctx context.Context, req pluginapi.CloseExecutionSessionRequest) error {
+	_, errCall := callPlugin[rpcEmptyResponse](ctx, a.client, pluginabi.MethodExecutorCloseSession, req)
+	return errCall
+}
+
+func (a *rpcPluginAdapter) ProbeReadiness(ctx context.Context, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
+	return callPlugin[pluginapi.ReadinessResponse](ctx, a.client, pluginabi.MethodExecutorReadiness, req)
 }
 
 func (a *rpcPluginAdapter) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRequest) (pluginapi.ExecutorHTTPResponse, error) {

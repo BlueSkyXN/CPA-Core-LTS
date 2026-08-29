@@ -95,6 +95,9 @@ type requestLifecycleTracker struct {
 
 func (h *BaseAPIHandler) newRequestLifecycleTracker(ctx context.Context, sourceFormat, model, requestedModel string, stream bool, metadata map[string]any, skipPluginID string) *requestLifecycleTracker {
 	requestID := uuid.NewString()
+	if metadata != nil {
+		metadata[coreexecutor.RequestIDMetadataKey] = requestID
+	}
 	traceID := logging.GetRequestID(ctx)
 	return &requestLifecycleTracker{
 		ctx:          ctx,

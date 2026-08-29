@@ -1,8 +1,8 @@
 # Example Standard Dynamic Library Plugin
 
-This is the full mixed-capability skeleton. For single-capability examples, see `../README.md`.
+This is the broad mixed-capability skeleton for the original synchronous surface. For single-capability examples and the optional schema 5 execution lifecycle contract, see `../README.md`.
 
-This directory is the reference skeleton for the current standard dynamic library plugin ABI. The ABI is language-neutral: the host loads a native dynamic library, calls `cliproxy_plugin_init`, and then exchanges JSON envelopes through a stable C function table.
+This directory is the reference skeleton for the stable dynamic library C function table. The ABI is language-neutral: the host loads a native dynamic library, calls `cliproxy_plugin_init`, and then exchanges JSON envelopes through that function table.
 
 This directory contains complete Go, C, and Rust implementations of the same mixed-capability sample. The Go sample uses `-buildmode=c-shared`; the C sample uses CMake; the Rust sample uses a `cdylib` crate.
 
@@ -58,7 +58,7 @@ Raw byte fields are encoded as base64 by JSON.
 
 ## Capabilities
 
-`plugin.register` and `plugin.reconfigure` return metadata and capability flags. This sample declares the full provider-native surface:
+`plugin.register` and `plugin.reconfigure` return metadata and capability flags. This sample declares a broad provider-native surface:
 
 - model provider
 - model registrar

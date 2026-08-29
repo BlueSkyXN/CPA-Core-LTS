@@ -1068,6 +1068,28 @@ func (m *Manager) updateSessionAffinity(result Result) {
 	}
 }
 
+func (m *Manager) releasePreDispatchSelection(auth *Auth, provider, model string, opts cliproxyexecutor.Options) {
+	if m == nil || auth == nil {
+		return
+	}
+	if affinity, ok := m.selector.(interface {
+		ReleasePreDispatchSelection(string, cliproxyexecutor.Options)
+	}); ok && affinity != nil {
+		affinity.ReleasePreDispatchSelection(auth.ID, opts)
+	}
+}
+
+func (m *Manager) commitPreDispatchSelection(auth *Auth, opts cliproxyexecutor.Options) {
+	if m == nil || auth == nil {
+		return
+	}
+	if affinity, ok := m.selector.(interface {
+		CommitPreDispatchSelection(string, cliproxyexecutor.Options)
+	}); ok && affinity != nil {
+		affinity.CommitPreDispatchSelection(auth.ID, opts)
+	}
+}
+
 func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
 	if !ephemeral {
 		m.MarkResult(ctx, result)

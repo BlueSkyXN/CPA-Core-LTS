@@ -4,7 +4,7 @@ This directory contains standard dynamic library plugin examples for the CLIProx
 
 ## Layout
 
-- `simple/`: full provider-native skeleton that declares every supported capability.
+- `simple/`: broad provider-native skeleton for the original synchronous capabilities.
 - `model/`: model capability only.
 - `auth/`: auth provider capability only.
 - `frontend-auth/`: frontend auth provider capability only.
@@ -57,6 +57,20 @@ plugins:
 ```
 
 See `request-lifecycle/README.md` for build instructions and lifecycle semantics.
+
+## Provider Execution Lifecycle (schema 5)
+
+Schema 5 adds typed `RequestID`, `ExecutionSessionID`, and `AuthIndex` fields to executor requests and three optional provider capabilities:
+
+- `execution_canceller` / `executor.cancel` interrupts one active execution while preserving its session;
+- `execution_session_closer` / `executor.close_session` releases one session, one auth's sessions, or all plugin sessions;
+- `provider_readiness` / `executor.readiness` reports `plugin_installed`, `runner_installed`, `protocol_ready`, `auth_ready`, and `session_ready` separately.
+
+Cancel and close calls are idempotent lifecycle operations. A plugin that advertises them must allow the host to call them concurrently with `executor.execute` or `executor.execute_stream`; it must not implement cancel by closing the whole session. The host bounds how long Core waits during context cancellation, plugin replacement, auth removal, and shutdown. A timed-out native call may still be running, so the plugin/Runner remains responsible for cooperative cancellation, graceful drain, and kill fallback.
+
+Pre-execution admission probes plugin, runner, protocol, and the selected auth with a bounded host timeout. It intentionally omits `ExecutionSessionID`: `executor.execute` or `executor.execute_stream` may be the operation that creates or attaches the vendor-native session. Call `executor.readiness` explicitly with `ExecutionSessionID` when checking an already-known session. Provider/runner/protocol failures stop credential fallback without cooling the selected auth; an `auth_ready` failure may rotate to another credential without cooling the failed one. Admission runs before selected-auth callbacks, dispatch markers, and result accounting, so a rejected candidate is not reported or counted as an upstream attempt and any provisional session-affinity binding is released.
+
+Plugins that negotiate schema 4 or earlier continue to execute without these optional methods. Their RPC executor request omits the new typed fields; the existing metadata extension bag remains available for compatibility. `RequestID` identifies one execution across auth retries and is distinct from the HTTP/logging trace ID. `ExecutionSessionID` is populated only for an explicit Core-owned lifecycle; an affinity-only `derived_session_id` remains metadata and must not be treated as a native session.
 
 ## Host Auth Files Callback
 

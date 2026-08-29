@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -40,6 +41,42 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 	return nil
 }
 
+func ensureExecutionRequestID(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+	requestID := stringMetadataValue(opts.Metadata, cliproxyexecutor.RequestIDMetadataKey)
+	if requestID == "" {
+		requestID = stringMetadataValue(req.Metadata, cliproxyexecutor.RequestIDMetadataKey)
+	}
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	opts.EnsureMetadata()[cliproxyexecutor.RequestIDMetadataKey] = requestID
+	return req, opts
+}
+
+type preDispatchSelectionContextKey struct{}
+
+func withPreDispatchSelection(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, preDispatchSelectionContextKey{}, true)
+}
+
+func preDispatchSelectionEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(preDispatchSelectionContextKey{}).(bool)
+	return enabled
+}
+
+func admitExecutorExecution(ctx context.Context, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (context.Context, error) {
+	if admitter, okAdmitter := executor.(PreDispatchExecutionAdmitter); okAdmitter && admitter != nil {
+		return admitter.AdmitExecution(ctx, auth, req, opts)
+	}
+	return ctx, nil
+}
+
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -48,7 +85,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	req, opts = ensureExecutionRequestID(req, opts)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = withPreDispatchSelection(ctx)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)
@@ -71,7 +110,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	req, opts = ensureExecutionRequestID(req, opts)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = withPreDispatchSelection(ctx)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -136,7 +177,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if errPreflight != nil {
 		return nil, errPreflight
 	}
+	req, opts = ensureExecutionRequestID(req, opts)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = withPreDispatchSelection(ctx)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
@@ -394,14 +437,28 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
+			if !restoreExecutionModel {
+				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
+			}
+			admittedCtx, errAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+			if errAdmission != nil {
+				m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+				if errCtx := execCtx.Err(); errCtx != nil {
+					return cliproxyexecutor.Response{}, errCtx
+				}
+				if isRequestInvalidError(errAdmission) {
+					return cliproxyexecutor.Response{}, errAdmission
+				}
+				authErr = errAdmission
+				break
+			}
+			execCtx = admittedCtx
+			m.commitPreDispatchSelection(auth, execOpts)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
 			}
 			markCodexModelFallbackDispatch(execOpts, auth.ID)
-			if !restoreExecutionModel {
-				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
-			}
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			durationExec := time.Since(startExec)
@@ -421,6 +478,20 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
+					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+					if errRetryAdmission != nil {
+						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+						if isRequestInvalidError(errRetryAdmission) {
+							return cliproxyexecutor.Response{}, errRetryAdmission
+						}
+						authErr = errRetryAdmission
+						break
+					}
+					execCtx = admittedRetryCtx
+					m.commitPreDispatchSelection(auth, execOpts)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
@@ -598,12 +669,26 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
+			if !restoreExecutionModel {
+				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
+			}
+			admittedCtx, errAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+			if errAdmission != nil {
+				m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+				if errCtx := execCtx.Err(); errCtx != nil {
+					return cliproxyexecutor.Response{}, errCtx
+				}
+				if isRequestInvalidError(errAdmission) {
+					return cliproxyexecutor.Response{}, errAdmission
+				}
+				authErr = errAdmission
+				break
+			}
+			execCtx = admittedCtx
+			m.commitPreDispatchSelection(auth, execOpts)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
-			}
-			if !restoreExecutionModel {
-				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
 			startExec := time.Now()
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
@@ -621,6 +706,20 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
+					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+					if errRetryAdmission != nil {
+						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+						if isRequestInvalidError(errRetryAdmission) {
+							return cliproxyexecutor.Response{}, errRetryAdmission
+						}
+						authErr = errRetryAdmission
+						break
+					}
+					execCtx = admittedRetryCtx
+					m.commitPreDispatchSelection(auth, execOpts)
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					durationRetry := time.Since(startRetry)

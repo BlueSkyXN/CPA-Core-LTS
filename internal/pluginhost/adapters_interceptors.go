@@ -391,6 +391,13 @@ func authID(auth *coreauth.Auth) string {
 	return auth.ID
 }
 
+func authIndex(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	return auth.Index
+}
+
 func authProvider(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""

@@ -14,6 +14,7 @@ type replaceAwareExecutor struct {
 
 	mu               sync.Mutex
 	closedSessionIDs []string
+	closedAuths      [][2]string
 }
 
 func (e *replaceAwareExecutor) Identifier() string {
@@ -54,6 +55,18 @@ func (e *replaceAwareExecutor) ClosedSessionIDs() []string {
 	out := make([]string, len(e.closedSessionIDs))
 	copy(out, e.closedSessionIDs)
 	return out
+}
+
+func (e *replaceAwareExecutor) CloseExecutionSessionsForAuth(authID, authIndex string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closedAuths = append(e.closedAuths, [2]string{authID, authIndex})
+}
+
+func (e *replaceAwareExecutor) ClosedAuths() [][2]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([][2]string(nil), e.closedAuths...)
 }
 
 func TestManagerRegisterExecutorClosesReplacedExecutionSessions(t *testing.T) {
@@ -100,5 +113,43 @@ func TestManagerExecutorReturnsRegisteredExecutor(t *testing.T) {
 	_, okMissing := manager.Executor("unknown")
 	if okMissing {
 		t.Fatal("expected unknown provider lookup to fail")
+	}
+}
+
+func TestManagerUnregisterExecutorClosesExecutionSessions(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	executor := &replaceAwareExecutor{id: "codex"}
+	manager.RegisterExecutor(executor)
+	manager.UnregisterExecutor("CODEX")
+
+	closed := executor.ClosedSessionIDs()
+	if len(closed) != 1 || closed[0] != CloseAllExecutionSessionsID {
+		t.Fatalf("unregister close calls = %#v, want %q", closed, CloseAllExecutionSessionsID)
+	}
+	if _, ok := manager.Executor("codex"); ok {
+		t.Fatal("executor remains registered after UnregisterExecutor")
+	}
+}
+
+func TestManagerRemoveClosesOnlyRemovedAuthSessionsWhenSupported(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	executor := &replaceAwareExecutor{id: "codex"}
+	manager.RegisterExecutor(executor)
+	auth := &Auth{ID: "auth-1", Index: "index-1", Provider: "codex"}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	manager.Remove(context.Background(), auth.ID)
+	closedAuths := executor.ClosedAuths()
+	if len(closedAuths) != 1 || closedAuths[0] != [2]string{"auth-1", "index-1"} {
+		t.Fatalf("auth-scoped close calls = %#v", closedAuths)
+	}
+	if closed := executor.ClosedSessionIDs(); len(closed) != 0 {
+		t.Fatalf("provider-wide close calls = %#v, want none", closed)
 	}
 }

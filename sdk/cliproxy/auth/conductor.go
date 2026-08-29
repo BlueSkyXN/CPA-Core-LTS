@@ -42,6 +42,26 @@ type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
 }
 
+// AuthExecutionSessionCloser allows executors to release only the sessions
+// owned by one credential while preserving other credentials for the provider.
+type AuthExecutionSessionCloser interface {
+	CloseExecutionSessionsForAuth(authID, authIndex string)
+}
+
+// ExecutionSessionReplacementCompatible lets an executor declare that replacing
+// it with another executor preserves the same underlying session owner.
+type ExecutionSessionReplacementCompatible interface {
+	CompatibleExecutorReplacement(next ProviderExecutor) bool
+}
+
+// PreDispatchExecutionAdmitter optionally validates whether one selected auth
+// may execute before the manager publishes selected-auth metadata or records an
+// upstream dispatch. The returned context is passed to the matching executor
+// call so implementations can avoid repeating the same admission probe.
+type PreDispatchExecutionAdmitter interface {
+	AdmitExecution(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (context.Context, error)
+}
+
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
 	// AuthID references the auth that produced this result.

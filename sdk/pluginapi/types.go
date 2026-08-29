@@ -87,6 +87,12 @@ type Capabilities struct {
 	ModelRouter ModelRouter
 	// Executor sends requests to an upstream provider or local backend.
 	Executor ProviderExecutor
+	// ExecutionCanceller optionally interrupts one active execution without closing its session.
+	ExecutionCanceller ExecutionCanceller
+	// ExecutionSessionCloser optionally releases one execution session or all plugin sessions.
+	ExecutionSessionCloser ExecutionSessionCloser
+	// ProviderReadiness optionally reports runner, protocol, auth, and session readiness.
+	ProviderReadiness ProviderReadiness
 	// ExecutorModelScope declares whether Executor serves static models, OAuth auth models, or both.
 	// Empty defaults to ExecutorModelScopeBoth for backward compatibility.
 	ExecutorModelScope ExecutorModelScope
@@ -593,6 +599,124 @@ type ProviderExecutor interface {
 	HttpRequest(context.Context, ExecutorHTTPRequest) (ExecutorHTTPResponse, error)
 }
 
+// ExecutionCancelReason classifies why the host is interrupting one execution.
+type ExecutionCancelReason string
+
+const (
+	// ExecutionCancelReasonExplicit is an explicit caller or control-plane cancellation.
+	ExecutionCancelReasonExplicit ExecutionCancelReason = "explicit"
+	// ExecutionCancelReasonContextCanceled means the request context was canceled.
+	ExecutionCancelReasonContextCanceled ExecutionCancelReason = "context_cancelled"
+	// ExecutionCancelReasonDeadlineExceeded means the request deadline expired.
+	ExecutionCancelReasonDeadlineExceeded ExecutionCancelReason = "deadline_exceeded"
+	// ExecutionCancelReasonDownstreamDisconnected means an interactive downstream disconnected.
+	ExecutionCancelReasonDownstreamDisconnected ExecutionCancelReason = "downstream_disconnected"
+)
+
+// CancelExecutionRequest identifies one active turn/execution. Implementations must
+// make repeated cancellation requests idempotent and must not close the containing session.
+type CancelExecutionRequest struct {
+	RequestID          string                `json:"RequestID,omitempty"`
+	ExecutionSessionID string                `json:"ExecutionSessionID,omitempty"`
+	Provider           string                `json:"Provider,omitempty"`
+	AuthID             string                `json:"AuthID,omitempty"`
+	AuthIndex          string                `json:"AuthIndex,omitempty"`
+	Reason             ExecutionCancelReason `json:"Reason,omitempty"`
+}
+
+// ExecutionCanceller interrupts one active execution while preserving its session.
+// The host may call it concurrently with Execute or ExecuteStream; implementations
+// that advertise this capability must make that concurrency safe.
+type ExecutionCanceller interface {
+	CancelExecution(context.Context, CancelExecutionRequest) error
+}
+
+// ExecutionSessionCloseScope identifies the ownership boundary to close.
+type ExecutionSessionCloseScope string
+
+const (
+	// ExecutionSessionCloseScopeSession closes exactly ExecutionSessionID.
+	ExecutionSessionCloseScopeSession ExecutionSessionCloseScope = "session"
+	// ExecutionSessionCloseScopeAuth closes every session for AuthID/AuthIndex within Provider.
+	ExecutionSessionCloseScopeAuth ExecutionSessionCloseScope = "auth"
+	// ExecutionSessionCloseScopeProvider closes every session owned by Provider.
+	ExecutionSessionCloseScopeProvider ExecutionSessionCloseScope = "provider"
+)
+
+// CloseExecutionSessionRequest identifies execution-session resources to release.
+type CloseExecutionSessionRequest struct {
+	Scope              ExecutionSessionCloseScope `json:"Scope"`
+	ExecutionSessionID string                     `json:"ExecutionSessionID,omitempty"`
+	Provider           string                     `json:"Provider,omitempty"`
+	AuthID             string                     `json:"AuthID,omitempty"`
+	AuthIndex          string                     `json:"AuthIndex,omitempty"`
+}
+
+// ExecutionSessionCloser releases native session bindings and related runner state.
+// The host may call it concurrently with an active execution. Repeated close requests
+// must be idempotent and must not disable or cool down auths.
+type ExecutionSessionCloser interface {
+	CloseExecutionSession(context.Context, CloseExecutionSessionRequest) error
+}
+
+// ReadinessLevel identifies one layer of provider execution readiness.
+type ReadinessLevel string
+
+const (
+	ReadinessLevelPluginInstalled ReadinessLevel = "plugin_installed"
+	ReadinessLevelRunnerInstalled ReadinessLevel = "runner_installed"
+	ReadinessLevelProtocolReady   ReadinessLevel = "protocol_ready"
+	ReadinessLevelAuthReady       ReadinessLevel = "auth_ready"
+	ReadinessLevelSessionReady    ReadinessLevel = "session_ready"
+)
+
+// ReadinessState reports the state of one readiness layer.
+type ReadinessState string
+
+const (
+	ReadinessStateReady       ReadinessState = "ready"
+	ReadinessStateNotReady    ReadinessState = "not_ready"
+	ReadinessStateDegraded    ReadinessState = "degraded"
+	ReadinessStateUnknown     ReadinessState = "unknown"
+	ReadinessStateUnsupported ReadinessState = "unsupported"
+)
+
+// ReadinessCheck reports one provider execution readiness layer. Details must
+// contain only bounded, secret-safe diagnostics.
+type ReadinessCheck struct {
+	Level   ReadinessLevel    `json:"Level"`
+	State   ReadinessState    `json:"State"`
+	Version string            `json:"Version,omitempty"`
+	Message string            `json:"Message,omitempty"`
+	Details map[string]string `json:"Details,omitempty"`
+}
+
+// ReadinessRequest scopes a provider readiness probe. Empty auth/session fields
+// request provider-wide readiness only. ExecutionSessionID is used only for an
+// explicit session-status probe; the host omits it from pre-execution admission
+// because Execute/ExecuteStream may be responsible for creating that session.
+type ReadinessRequest struct {
+	Provider           string `json:"Provider,omitempty"`
+	Model              string `json:"Model,omitempty"`
+	AuthID             string `json:"AuthID,omitempty"`
+	AuthIndex          string `json:"AuthIndex,omitempty"`
+	ExecutionSessionID string `json:"ExecutionSessionID,omitempty"`
+}
+
+// ReadinessResponse reports provider execution readiness and negotiated capabilities.
+type ReadinessResponse struct {
+	Provider     string           `json:"Provider,omitempty"`
+	Ready        bool             `json:"Ready"`
+	Generation   string           `json:"Generation,omitempty"`
+	Capabilities []string         `json:"Capabilities,omitempty"`
+	Checks       []ReadinessCheck `json:"Checks,omitempty"`
+}
+
+// ProviderReadiness probes runner, protocol, auth, and optional session readiness.
+type ProviderReadiness interface {
+	ProbeReadiness(context.Context, ReadinessRequest) (ReadinessResponse, error)
+}
+
 // HostHTTPClient executes plugin HTTP requests through host transport policy.
 // Plugin executors must use this client for upstream calls so request-log can
 // capture the outbound request and raw upstream response when enabled.
@@ -850,8 +974,15 @@ type ExecutorHTTPResponse struct {
 
 // ExecutorRequest describes a model execution or token counting call.
 type ExecutorRequest struct {
+	// RequestID identifies one execution and remains stable across auth retries.
+	RequestID string `json:"RequestID,omitempty"`
+	// ExecutionSessionID identifies a Core-owned long-lived execution session, when present.
+	// Affinity-only derived IDs are intentionally not promoted into this field.
+	ExecutionSessionID string `json:"ExecutionSessionID,omitempty"`
 	// AuthID identifies the selected credential.
 	AuthID string
+	// AuthIndex identifies the selected credential's stable runtime index.
+	AuthIndex string `json:"AuthIndex,omitempty"`
 	// AuthProvider identifies the credential provider.
 	AuthProvider string
 	// Model is the requested model identifier.

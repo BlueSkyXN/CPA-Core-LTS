@@ -33,6 +33,10 @@ const ServiceTierMetadataKey = "service_tier"
 // Missing or true means generation is enabled; only an explicit false disables generation.
 const GenerateMetadataKey = "generate"
 
+// RequestIDMetadataKey stores the execution lifecycle request ID. It is distinct
+// from the transport/logging trace ID and remains stable across auth retries.
+const RequestIDMetadataKey = "request_id"
+
 const (
 	// CodexAbnormalReasoningRetryUsageMetadataKey carries discarded abnormal attempt usage for client-visible aggregate usage only.
 	CodexAbnormalReasoningRetryUsageMetadataKey = "codex_abnormal_reasoning_retry_usage"

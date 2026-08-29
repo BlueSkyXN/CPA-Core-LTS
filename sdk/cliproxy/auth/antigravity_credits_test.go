@@ -19,6 +19,43 @@ type antigravityCreditsFallbackExecutor struct {
 	streamCreditsRequested []bool
 }
 
+type antigravityCreditsAdmissionExecutor struct {
+	admissionCalls int
+	executeCalls   int
+	streamCalls    int
+}
+
+func (*antigravityCreditsAdmissionExecutor) Identifier() string { return "antigravity" }
+
+func (e *antigravityCreditsAdmissionExecutor) AdmitExecution(ctx context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (context.Context, error) {
+	e.admissionCalls++
+	return ctx, NewRequestScopedError("credits runner is not ready", http.StatusServiceUnavailable)
+}
+
+func (e *antigravityCreditsAdmissionExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.executeCalls++
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *antigravityCreditsAdmissionExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	e.streamCalls++
+	chunks := make(chan cliproxyexecutor.StreamChunk)
+	close(chunks)
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (*antigravityCreditsAdmissionExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (*antigravityCreditsAdmissionExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (*antigravityCreditsAdmissionExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
 func (e *antigravityCreditsFallbackExecutor) Identifier() string { return "antigravity" }
 
 func (e *antigravityCreditsFallbackExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -125,6 +162,64 @@ func TestManagerExecuteStream_AntigravityCreditsFallbackAfterBootstrap429(t *tes
 	}
 	if executor.streamCreditsRequested[0] || !executor.streamCreditsRequested[1] {
 		t.Fatalf("credits flags = %v, want [false true]", executor.streamCreditsRequested)
+	}
+}
+
+func TestAntigravityCreditsFallbackAdmitsBeforeSelectionAndDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Manager, cliproxyexecutor.Options) error
+	}{
+		{
+			name: "execute",
+			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
+				_, ok, errExecute := manager.tryAntigravityCreditsExecute(context.Background(), cliproxyexecutor.Request{Model: "claude-admission-test"}, opts)
+				if ok {
+					return fmt.Errorf("credits execute unexpectedly reported success")
+				}
+				return errExecute
+			},
+		},
+		{
+			name: "stream",
+			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
+				_, ok, errStream := manager.tryAntigravityCreditsExecuteStream(context.Background(), cliproxyexecutor.Request{Model: "claude-admission-test"}, opts)
+				if ok {
+					return fmt.Errorf("credits stream unexpectedly reported success")
+				}
+				return errStream
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &antigravityCreditsAdmissionExecutor{}
+			manager := NewManager(nil, nil, nil)
+			manager.RegisterExecutor(executor)
+			authID := "ag-admission-" + tt.name
+			if _, errRegister := manager.Register(context.Background(), &Auth{ID: authID, Provider: "antigravity", Status: StatusActive}); errRegister != nil {
+				t.Fatalf("Register() error = %v", errRegister)
+			}
+			SetAntigravityCreditsHint(authID, AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
+			selected := 0
+			opts := cliproxyexecutor.Options{Metadata: map[string]any{
+				cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(string) { selected++ },
+			}}
+
+			if errRun := tt.run(manager, opts); errRun == nil {
+				t.Fatal("credits fallback error = nil, want admission rejection")
+			}
+			if executor.admissionCalls != 1 {
+				t.Fatalf("admission calls = %d, want 1", executor.admissionCalls)
+			}
+			if executor.executeCalls != 0 || executor.streamCalls != 0 {
+				t.Fatalf("executor calls = execute:%d stream:%d, want none", executor.executeCalls, executor.streamCalls)
+			}
+			if selected != 0 {
+				t.Fatalf("selected-auth callbacks = %d, want none before rejected admission", selected)
+			}
+		})
 	}
 }
 
