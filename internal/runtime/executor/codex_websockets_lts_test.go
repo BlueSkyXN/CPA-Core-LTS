@@ -366,6 +366,31 @@ func TestCodexWebsocketGenerationRetryRebindUsesCurrentConnection(t *testing.T) 
 	sess.clearActiveConnection(newConnection, readCh)
 }
 
+func TestCodexWebsocketReadPrefersQueuedMessageOverDisconnectSignal(t *testing.T) {
+	connection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 1}
+	wantPayload := []byte(`{"type":"response.completed"}`)
+	disconnectErr := errors.New("upstream disconnected after response")
+
+	for i := 0; i < 100; i++ {
+		readCh := make(chan codexWebsocketRead, 1)
+		requestSignal := newCodexWebsocketRequestSignal()
+		readCh <- codexWebsocketRead{
+			connection: connection,
+			msgType:    websocket.TextMessage,
+			payload:    wantPayload,
+		}
+		requestSignal.cancel(disconnectErr)
+
+		msgType, payload, errRead := readCodexWebsocketMessage(context.Background(), &codexWebsocketSession{}, connection, readCh, requestSignal)
+		if errRead != nil {
+			t.Fatalf("iteration %d read error = %v, want queued response", i, errRead)
+		}
+		if msgType != websocket.TextMessage || !bytes.Equal(payload, wantPayload) {
+			t.Fatalf("iteration %d response = type %d payload %s, want type %d payload %s", i, msgType, payload, websocket.TextMessage, wantPayload)
+		}
+	}
+}
+
 func TestCodexWebsocketGenerationRetryRebindRejectedAfterSessionClose(t *testing.T) {
 	sess := &codexWebsocketSession{sessionID: "retry-rebind-after-close"}
 	oldConnection := codexWebsocketConnectionRef{conn: &websocket.Conn{}, generation: 11}
