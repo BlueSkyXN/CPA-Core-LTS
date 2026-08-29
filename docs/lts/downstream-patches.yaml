@@ -288,7 +288,8 @@ patches:
       - TestModelsWithClientVersionReturnsCodexCatalog
       - TestPreserveLTSMediaModelVisibility
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@1cc72b9d13c43b725727a6ba4a30906004310a35
-    state: removable
+    state: retired
+    retired_in: e0b9f08cfc8f9e24a4e38dc556361bb0e41af258
     retire_when: After this removable baseline is merged, remove the redundant SDK visibility overlay in a dedicated retirement PR, retain the canonical internal builder behavior, run the listed regressions, and record the implementation-removal commit in retired_in.
 
   - id: codex-model-header-provider-snapshot
