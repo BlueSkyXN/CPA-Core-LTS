@@ -138,27 +138,44 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 	if requestSignal == nil || requestSignal.ctx == nil {
 		return 0, nil, fmt.Errorf("codex websockets executor: session request signal is nil")
 	}
+	readEvent := func(ev codexWebsocketRead, ok bool) (int, []byte, error, bool) {
+		if !ok {
+			return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed"), true
+		}
+		if ev.connection != connection {
+			return 0, nil, nil, false
+		}
+		if ev.err != nil {
+			return 0, nil, ev.err, true
+		}
+		return ev.msgType, ev.payload, nil, true
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return 0, nil, ctx.Err()
 		case <-requestSignal.ctx.Done():
-			cause := context.Cause(requestSignal.ctx)
-			if cause == nil {
-				cause = context.Canceled
+			// The reader loop can enqueue a final response and then immediately
+			// cancel the request after observing the peer close. Preserve channel
+			// order so the queued response wins over the later disconnect signal.
+			for {
+				select {
+				case ev, ok := <-readCh:
+					if msgType, payload, errRead, matched := readEvent(ev, ok); matched {
+						return msgType, payload, errRead
+					}
+				default:
+					cause := context.Cause(requestSignal.ctx)
+					if cause == nil {
+						cause = context.Canceled
+					}
+					return 0, nil, cause
+				}
 			}
-			return 0, nil, cause
 		case ev, ok := <-readCh:
-			if !ok {
-				return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed")
+			if msgType, payload, errRead, matched := readEvent(ev, ok); matched {
+				return msgType, payload, errRead
 			}
-			if ev.connection != connection {
-				continue
-			}
-			if ev.err != nil {
-				return 0, nil, ev.err
-			}
-			return ev.msgType, ev.payload, nil
 		}
 	}
 }
