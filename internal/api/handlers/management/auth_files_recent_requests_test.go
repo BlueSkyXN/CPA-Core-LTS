@@ -28,6 +28,22 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 		Metadata: map[string]any{
 			"type": "codex",
 		},
+		Quota: coreauth.QuotaState{
+			ObservedAt: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC),
+			Signals: map[string]string{
+				"X-Codex-Primary-Used-Percent": "58",
+			},
+		},
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5": {
+				Quota: coreauth.QuotaState{
+					ObservedAt: time.Date(2026, 8, 22, 0, 1, 0, 0, time.UTC),
+					Signals: map[string]string{
+						"Retry-After": "120",
+					},
+				},
+			},
+		},
 	}
 	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
 		t.Fatalf("failed to register auth record: %v", errRegister)
@@ -72,6 +88,31 @@ func TestListAuthFiles_IncludesRecentRequestsBuckets(t *testing.T) {
 	}
 	if got, _ := fileEntry["prefix"].(string); got != "team" {
 		t.Fatalf("prefix = %q, want team", got)
+	}
+
+	quota, ok := fileEntry["quota"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected quota observation object, got %#v", fileEntry["quota"])
+	}
+	if _, ok := quota["observed_at"].(string); !ok {
+		t.Fatalf("expected quota observed_at string, got %#v", quota["observed_at"])
+	}
+	quotaSignals, ok := quota["signals"].(map[string]any)
+	if !ok || quotaSignals["X-Codex-Primary-Used-Percent"] != "58" {
+		t.Fatalf("expected auth quota signals, got %#v", quota["signals"])
+	}
+
+	modelQuotas, ok := fileEntry["model_quotas"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected model_quotas object, got %#v", fileEntry["model_quotas"])
+	}
+	modelQuota, ok := modelQuotas["gpt-5"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected gpt-5 quota observation, got %#v", modelQuotas["gpt-5"])
+	}
+	modelSignals, ok := modelQuota["signals"].(map[string]any)
+	if !ok || modelSignals["Retry-After"] != "120" {
+		t.Fatalf("expected model quota signals, got %#v", modelQuota["signals"])
 	}
 
 	recentRaw, ok := fileEntry["recent_requests"].([]any)

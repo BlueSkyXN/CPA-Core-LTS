@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -297,7 +298,7 @@ func TestManager_Update_ProviderChangeDoesNotInheritRuntimeState(t *testing.T) {
 	if updated.Status != StatusActive || updated.Unavailable || updated.StatusMessage != "" || updated.LastError != nil {
 		t.Fatalf("provider change retained auth error state: %+v", updated)
 	}
-	if updated.Quota != (QuotaState{}) || !updated.NextRetryAfter.IsZero() {
+	if !reflect.DeepEqual(updated.Quota, QuotaState{}) || !updated.NextRetryAfter.IsZero() {
 		t.Fatalf("provider change retained quota/retry state: quota=%+v retry=%v", updated.Quota, updated.NextRetryAfter)
 	}
 	if !updated.LastRefreshedAt.IsZero() || !updated.NextRefreshAfter.IsZero() {

@@ -250,11 +250,127 @@ func TestCodexClientModelsResponse_PreservesUltraReasoningEffort(t *testing.T) {
 	for _, rawLevel := range levels {
 		level, ok := rawLevel.(map[string]any)
 		if ok && stringModelValue(level, "effort") == "ultra" {
+			if got := stringModelValue(level, "description"); got != "Maximum reasoning with automatic task delegation" {
+				t.Fatalf("ultra description = %q, want automatic task delegation description", got)
+			}
 			return
 		}
 	}
 
 	t.Fatalf("supported_reasoning_levels = %#v, want ultra", levels)
+}
+
+func TestCodexClientModelsResponse_GPT56ReasoningLevelsRemainModelSpecific(t *testing.T) {
+	resp := BuildResponse([]map[string]any{
+		{"id": "gpt-5.6-sol"},
+		{"id": "gpt-5.6-terra"},
+		{"id": "gpt-5.6-luna"},
+	}, nil, false)
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
+	}
+
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, model := range models {
+		bySlug[stringModelValue(model, "slug")] = model
+	}
+	assertCodexClientReasoningEfforts(t, bySlug["gpt-5.6-sol"], []string{"low", "medium", "high", "xhigh", "max", "ultra"})
+	assertCodexClientReasoningEfforts(t, bySlug["gpt-5.6-terra"], []string{"low", "medium", "high", "xhigh", "max", "ultra"})
+	assertCodexClientReasoningEfforts(t, bySlug["gpt-5.6-luna"], []string{"low", "medium", "high", "xhigh", "max"})
+}
+
+func TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff(t *testing.T) {
+	resp := BuildResponse([]map[string]any{{"id": "gpt-5.3-codex-spark"}}, nil, false)
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", resp["models"])
+	}
+	spark := models[0]
+	if supports, okSupports := spark["supports_reasoning_summaries"].(bool); !okSupports || !supports {
+		t.Fatalf("supports_reasoning_summaries = %#v, want true so reasoning.effort remains enabled", spark["supports_reasoning_summaries"])
+	}
+	if got := stringModelValue(spark, "default_reasoning_summary"); got != "none" {
+		t.Fatalf("default_reasoning_summary = %q, want none", got)
+	}
+	assertCodexClientReasoningEfforts(t, spark, []string{"low", "medium", "high", "xhigh"})
+}
+
+func assertCodexClientReasoningEfforts(t *testing.T, model map[string]any, want []string) {
+	t.Helper()
+	if model == nil {
+		t.Fatal("model entry is nil")
+	}
+	rawLevels, ok := model["supported_reasoning_levels"].([]any)
+	if !ok || len(rawLevels) != len(want) {
+		t.Fatalf("%s supported_reasoning_levels = %#v, want %v", stringModelValue(model, "slug"), model["supported_reasoning_levels"], want)
+	}
+	for index, wantEffort := range want {
+		level, okLevel := rawLevels[index].(map[string]any)
+		if !okLevel || stringModelValue(level, "effort") != wantEffort {
+			t.Fatalf("%s supported_reasoning_levels[%d] = %#v, want %q", stringModelValue(model, "slug"), index, rawLevels[index], wantEffort)
+		}
+	}
+}
+
+func TestCodexClientModelsResponse_FiltersMaxAndUltraForOlderClients(t *testing.T) {
+	resp := BuildResponseForClient([]map[string]any{{"id": "gpt-5.6-sol"}}, nil, false, "0.137.0")
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models type = %T, want []map[string]any", resp["models"])
+	}
+
+	var sol map[string]any
+	for _, entry := range models {
+		if stringModelValue(entry, "slug") == "gpt-5.6-sol" {
+			sol = entry
+			break
+		}
+	}
+	if sol == nil {
+		t.Fatal("expected codex client entry for gpt-5.6-sol")
+	}
+
+	levels, ok := sol["supported_reasoning_levels"].([]any)
+	if !ok {
+		t.Fatalf("supported_reasoning_levels = %T, want []any", sol["supported_reasoning_levels"])
+	}
+	for _, rawLevel := range levels {
+		level, ok := rawLevel.(map[string]any)
+		if !ok {
+			continue
+		}
+		effort := stringModelValue(level, "effort")
+		if effort == "max" || effort == "ultra" {
+			t.Fatalf("supported_reasoning_levels contains %q for older client 0.137.0: %#v", effort, levels)
+		}
+	}
+}
+
+func TestSupportsExtendedReasoningLevels(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"", true},
+		{"pi", true},
+		{"latest", true},
+		{"unknown", true},
+		{"0.137.0", false},
+		{"0.143.9", false},
+		{"v0.137.0", false},
+		{"0.137.0-beta.1", false},
+		{"0.144.0", true},
+		{"0.144.1", true},
+		{"0.149.1", true},
+		{"1.0.0", true},
+		{"invalid", true},
+	}
+	for _, tt := range tests {
+		if got := supportsExtendedReasoningLevels(tt.version); got != tt.want {
+			t.Errorf("supportsExtendedReasoningLevels(%q) = %v, want %v", tt.version, got, tt.want)
+		}
+	}
 }
 
 func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
@@ -313,12 +429,12 @@ func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *
 	entry := map[string]any{"multi_agent_version": "v1"}
 	model := map[string]any{"id": "custom-model"}
 
-	applyCodexClientModelMetadata(entry, "custom-model", model, false)
+	applyCodexClientModelMetadata(entry, "custom-model", model, false, "")
 	if got := entry["multi_agent_version"]; got != "v1" {
 		t.Fatalf("disabled multi_agent_version = %#v, want preserved v1", got)
 	}
 
-	applyCodexClientModelMetadata(entry, "custom-model", model, true)
+	applyCodexClientModelMetadata(entry, "custom-model", model, true, "")
 	if got := entry["multi_agent_version"]; got != "v2" {
 		t.Fatalf("enabled multi_agent_version = %#v, want v2", got)
 	}

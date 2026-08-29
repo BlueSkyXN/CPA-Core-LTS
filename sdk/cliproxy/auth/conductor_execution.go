@@ -23,6 +23,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func newUpstreamAttemptContext(ctx context.Context) context.Context {
+	return logging.WithFreshResponseHeadersHolder(ctx)
+}
+
 func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
 	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !strings.EqualFold(strings.TrimSpace(auth.Attributes["auth_kind"]), "oauth") {
 		return nil
@@ -39,12 +43,12 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts = cliproxysession.Enrich(req, opts)
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
 		opts = ensureRequestedModelMetadata(opts, req.Model)
@@ -62,12 +66,12 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	req, opts = cliproxysession.Enrich(req, opts)
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -127,16 +131,16 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	var errPreflight error
+	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
+	if errPreflight != nil {
+		return nil, errPreflight
+	}
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
 		}
-	}
-	var errPreflight error
-	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
-	if errPreflight != nil {
-		return nil, errPreflight
 	}
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
@@ -347,6 +351,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
+		execCtx = newUpstreamAttemptContext(execCtx)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
@@ -369,6 +374,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		didRefreshOnUnauthorized := false
 		selectedPublished := false
 		for _, upstreamModel := range models {
+			execCtx = newUpstreamAttemptContext(execCtx)
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
@@ -409,10 +415,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRetryWithoutPenaltyError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				refreshCtx := newUpstreamAttemptContext(execCtx)
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
+					execCtx = newUpstreamAttemptContext(execCtx)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
@@ -550,6 +558,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
+		execCtx = newUpstreamAttemptContext(execCtx)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
@@ -563,6 +572,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := resultForAuthWithOptions(auth, provider, routeModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.SkipQuotaObservation = true
 			m.MarkResult(execCtx, result)
 			lastErr = errPrepare
 			continue
@@ -572,6 +582,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		didRefreshOnUnauthorized := false
 		selectedPublished := false
 		for _, upstreamModel := range models {
+			execCtx = newUpstreamAttemptContext(execCtx)
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
@@ -604,10 +615,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if isRetryWithoutPenaltyError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				refreshCtx := newUpstreamAttemptContext(execCtx)
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
+					execCtx = newUpstreamAttemptContext(execCtx)
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					durationRetry := time.Since(startRetry)
@@ -628,6 +641,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
+			result.SkipQuotaObservation = true
 			if errExec != nil {
 				result.Error = countTokensResultErrorFromError(errExec, execReq.Model)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -879,6 +893,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		// Enrich before auth preparation so prepare-stage usage records observe the client request.
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
+		execCtx = newUpstreamAttemptContext(execCtx)
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias

@@ -61,6 +61,8 @@ fi
 for promotional_asset in \
   assets/apikey.png \
   assets/aicodemirror.png \
+  assets/apimart-en.png \
+  assets/apimart-zh.png \
   assets/bmoplus.png \
   assets/catapi.png \
   assets/claudeapi.png \

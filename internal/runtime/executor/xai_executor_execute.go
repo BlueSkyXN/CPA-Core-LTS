@@ -84,12 +84,13 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	outputItemsByIndex := make(map[int64][]byte)
 	var outputItemsFallback [][]byte
 	responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
+	namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		if !bytes.HasPrefix(line, xaiDataTag) {
 			continue
 		}
 		eventData := xaiNormalizeReasoningSummaryData(bytes.TrimSpace(line[len(xaiDataTag):]))
-		eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+		eventData = namespaceRestorer.restore(eventData)
 		eventData = restoreXAIPlaintextMultiAgentFunctionArgs(eventData, prepared.plaintextMultiAgentTools)
 		eventData = responseFilter.apply(eventData)
 		if len(eventData) == 0 {
@@ -150,7 +151,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	prepared.body, _ = sjson.DeleteBytes(prepared.body, "stream")
 	prepared.body, _ = sjson.DeleteBytes(prepared.body, "tools")
 	// Compact deletes tools after prepareResponsesRequestTo, which can now keep
-	// image_generation and rewrite its forced choice to allowed_tools on grok-4.6+.
+	// image_generation and rewrite its forced choice to "required" on grok-4.6+.
 	// Drop the leftover selection so compact does not send tool_choice without tools.
 	prepared.body = normalizeXAIToolChoiceForTools(prepared.body)
 	for _, field := range []string{"max_output_tokens", "temperature", "top_p", "top_k", "stop"} {

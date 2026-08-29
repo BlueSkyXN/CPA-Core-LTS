@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -118,7 +119,7 @@ func TestServiceApplyCoreAuthAddOrUpdate_ProviderChangeDoesNotInheritRuntimeStat
 	if updated.Status != coreauth.StatusActive || updated.Unavailable || updated.StatusMessage != "" || updated.LastError != nil {
 		t.Fatalf("provider change retained auth error state: %+v", updated)
 	}
-	if updated.Quota != (coreauth.QuotaState{}) || !updated.NextRetryAfter.IsZero() {
+	if !reflect.DeepEqual(updated.Quota, coreauth.QuotaState{}) || !updated.NextRetryAfter.IsZero() {
 		t.Fatalf("provider change retained quota/retry state: quota=%+v retry=%v", updated.Quota, updated.NextRetryAfter)
 	}
 }

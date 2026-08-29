@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -24,10 +26,15 @@ import (
 )
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
+//
+// Rotation continues from the identity of the previous pick rather than from a numeric
+// index. Candidate slices shrink whenever a retry excludes already tried credentials or a
+// credential enters cooldown, and indexing a monotonic counter into a shrinking slice
+// silently re-seats the rotation, which starves some credentials and hammers others.
 type RoundRobinSelector struct {
-	mu      sync.Mutex
-	cursors map[string]int
-	maxKeys int
+	mu         sync.Mutex
+	lastPicked map[string]string
+	maxKeys    int
 }
 
 // WeightedRoundRobinSelector provides smooth weighted round-robin selection.
@@ -401,29 +408,41 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	key := provider + ":" + canonicalModelKey(model)
 	s.mu.Lock()
-	if s.cursors == nil {
-		s.cursors = make(map[string]int)
+	defer s.mu.Unlock()
+	if s.lastPicked == nil {
+		s.lastPicked = make(map[string]string)
 	}
 	limit := s.maxKeys
 	if limit <= 0 {
 		limit = 4096
 	}
 
-	s.ensureCursorKey(key, limit)
-	index := s.cursors[key]
-	if index >= 2_147_483_640 {
-		index = 0
-	}
-	s.cursors[key] = index + 1
-	s.mu.Unlock()
-	return available[index%len(available)], nil
+	s.ensureRotationKey(key, limit)
+	picked := available[successorIndex(available, s.lastPicked[key])]
+	s.lastPicked[key] = picked.ID
+	return picked, nil
 }
 
-// ensureCursorKey ensures the cursor map has capacity for the given key.
+// successorIndex returns the index of the first candidate ordered after lastID, wrapping to
+// the start of the ring. Candidates arrive sorted by ID, so this resumes the rotation at the
+// credential that follows the previous pick even when candidates were filtered out in
+// between. An empty lastID starts at the head.
+func successorIndex(available []*Auth, lastID string) int {
+	if lastID == "" {
+		return 0
+	}
+	index := sort.Search(len(available), func(i int) bool { return available[i].ID > lastID })
+	if index >= len(available) {
+		return 0
+	}
+	return index
+}
+
+// ensureRotationKey ensures the rotation map has capacity for the given key.
 // Must be called with s.mu held.
-func (s *RoundRobinSelector) ensureCursorKey(key string, limit int) {
-	if _, ok := s.cursors[key]; !ok && len(s.cursors) >= limit {
-		s.cursors = make(map[string]int)
+func (s *RoundRobinSelector) ensureRotationKey(key string, limit int) {
+	if _, ok := s.lastPicked[key]; !ok && len(s.lastPicked) >= limit {
+		s.lastPicked = make(map[string]string)
 	}
 }
 
@@ -474,23 +493,60 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 	return picked, nil
 }
 
+// maxSmoothWeightedStateEntries bounds a single accumulator map so credentials that are
+// removed permanently cannot leak entries. Real pools stay far below this bound, so the
+// transient subsets produced by retry exclusions and cooldowns are never pruned.
+const maxSmoothWeightedStateEntries = 1024
+
+// prepare syncs the configured weights into the state without discarding accumulated
+// credits. Credits are reset only when a credential's configured weight actually changes,
+// never when the candidate set shrinks temporarily (retry exclusions, cooldowns, session
+// affinity), because discarding credits there would collapse selection onto the first
+// candidate in slice order.
 func (s *smoothWeightedState) prepare(weights map[string]int64) {
-	if s.current == nil || !weightVectorsEqual(s.weights, weights) {
-		s.current = make(map[string]int64)
+	if s.current == nil || weightsConfigChanged(s.weights, weights) {
+		s.current = make(map[string]int64, len(weights))
 	}
-	s.weights = weights
+	if s.weights == nil {
+		s.weights = make(map[string]int64, len(weights))
+	}
+	for authID, weight := range weights {
+		s.weights[authID] = weight
+	}
+	s.pruneStale(weights)
 }
 
-func weightVectorsEqual(left, right map[string]int64) bool {
-	if len(left) != len(right) {
-		return false
+// pruneStale drops entries for credentials outside the current candidate set, but only
+// once a map exceeds the safety bound, so ordinary transient exclusions keep their credits.
+func (s *smoothWeightedState) pruneStale(weights map[string]int64) {
+	if len(s.current) <= maxSmoothWeightedStateEntries && len(s.weights) <= maxSmoothWeightedStateEntries {
+		return
 	}
-	for authID, weight := range left {
-		if right[authID] != weight {
-			return false
+	for authID := range s.current {
+		if _, ok := weights[authID]; !ok {
+			delete(s.current, authID)
 		}
 	}
-	return true
+	for authID := range s.weights {
+		if _, ok := weights[authID]; !ok {
+			delete(s.weights, authID)
+		}
+	}
+}
+
+// weightsConfigChanged reports whether any credential present in both vectors has a
+// different configured weight. Credentials that are merely missing from one side are
+// ignored, since a candidate subset is not a configuration change.
+func weightsConfigChanged(left, right map[string]int64) bool {
+	if len(left) == 0 {
+		return false
+	}
+	for authID, weight := range right {
+		if previous, ok := left[authID]; ok && previous != weight {
+			return true
+		}
+	}
+	return false
 }
 
 func authWeightVector(auths []*Auth) map[string]int64 {
@@ -507,7 +563,6 @@ func authWeightVector(auths []*Auth) map[string]int64 {
 }
 
 func pickSmoothWeightedAuth(auths []*Auth, current map[string]int64) *Auth {
-	active := make(map[string]struct{}, len(auths))
 	var picked *Auth
 	var pickedCurrent int64
 	var totalWeight int64
@@ -516,17 +571,11 @@ func pickSmoothWeightedAuth(auths []*Auth, current map[string]int64) *Auth {
 		if auth == nil || weight <= 0 {
 			continue
 		}
-		active[auth.ID] = struct{}{}
 		current[auth.ID] = saturatingAddInt64(current[auth.ID], weight)
 		totalWeight = saturatingAddInt64(totalWeight, weight)
 		if picked == nil || current[auth.ID] > pickedCurrent {
 			picked = auth
 			pickedCurrent = current[auth.ID]
-		}
-	}
-	for authID := range current {
-		if _, ok := active[authID]; !ok {
-			delete(current, authID)
 		}
 	}
 	if picked == nil {
@@ -726,7 +775,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
 				bind(auth.ID)
-				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+				entry.Infof("session-affinity: cache hit | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 				return auth, nil
 			}
 		}
@@ -736,7 +785,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			return nil, err
 		}
 		bind(auth.ID)
-		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 		return auth, nil
 	}
 
@@ -745,7 +794,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
 					bind(auth.ID)
-					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
+					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
 					return auth, nil
 				}
 			}
@@ -757,7 +806,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return nil, err
 	}
 	bind(auth.ID)
-	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+	entry.Infof("session-affinity: cache miss, new binding | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 	return auth, nil
 }
 
@@ -771,12 +820,29 @@ func selectorLogEntry(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-// truncateSessionID shortens session ID for logging (first 8 chars + "...")
-func truncateSessionID(id string) string {
-	if len(id) <= 20 {
-		return id
+// sessionLogIdentity returns a stable, non-reversible routing identifier for logs.
+// The source namespace remains visible while the opaque client value is never emitted.
+func sessionLogIdentity(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
 	}
-	return id[:8] + "..."
+	namespace := "session"
+	if candidate, _, ok := strings.Cut(id, ":"); ok && candidate != "" {
+		namespace = candidate
+	}
+	sum := sha256.Sum256([]byte(id))
+	return namespace + ":sha256:" + hex.EncodeToString(sum[:6])
+}
+
+func sessionAffinityAuthLogID(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if authIndex := strings.TrimSpace(auth.Index); authIndex != "" {
+		return authIndex
+	}
+	return auth.Clone().EnsureIndex()
 }
 
 // Stop releases resources held by the selector.

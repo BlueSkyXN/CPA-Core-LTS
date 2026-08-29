@@ -170,16 +170,12 @@ func (m *Manager) ClearQuotaState(ctx context.Context, authID string) bool {
 }
 
 func (m *Manager) preflightCodexClientMetadata(providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Options, error) {
-	if !codexOnlyProviders(providers) {
+	codexOnly := codexOnlyProviders(providers)
+	xaiEligible := containsProvider(normalizeProviderKeys(providers), "xai")
+	if !codexOnly && !xaiEligible {
 		return opts, nil
 	}
 
-	effective := (internalconfig.CodexClientMetadataConfig{}).Effective()
-	if m != nil {
-		if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
-			effective = cfg.Codex.ClientMetadata.Effective()
-		}
-	}
 	directTurnMetadata := codexTurnMetadataHeaderValue(opts.Headers)
 	body := req.Payload
 	if len(body) == 0 {
@@ -191,6 +187,16 @@ func (m *Manager) preflightCodexClientMetadata(providers []string, req cliproxye
 			return opts, nil
 		}
 		body = []byte(`{}`)
+	}
+	if xaiEligible && !codexOnly && !hasCodexTurnMetadataCarrier(body, directTurnMetadata) {
+		return opts, nil
+	}
+
+	effective := (internalconfig.CodexClientMetadataConfig{}).Effective()
+	if m != nil {
+		if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
+			effective = cfg.Codex.ClientMetadata.Effective()
+		}
 	}
 
 	_, state, err := codexmetadata.NormalizeRequest(body, directTurnMetadata, codexmetadata.Policy{
@@ -208,9 +214,41 @@ func (m *Manager) preflightCodexClientMetadata(providers []string, req cliproxye
 	if metadata == nil {
 		metadata = make(map[string]any, 1)
 	}
-	metadata[codexCanonicalSessionMetadataKey] = state.SessionID
+	if codexOnly {
+		metadata[codexCanonicalSessionMetadataKey] = state.SessionID
+	} else if xaiEligible && contextStringValue(metadata[cliproxyexecutor.ExecutionSessionMetadataKey]) == "" {
+		// The native xAI executor already gives execution_session_id precedence
+		// when deriving prompt_cache_key and x-grok-conv-id. Project Codex's
+		// canonical root session into that shared contract before Enrich runs so
+		// auth selection and the upstream xAI conversation use the same identity.
+		metadata[cliproxyexecutor.ExecutionSessionMetadataKey] = state.SessionID
+	}
 	opts.Metadata = metadata
 	return opts, nil
+}
+
+func hasCodexTurnMetadataCarrier(body []byte, directTurnMetadata string) bool {
+	if strings.TrimSpace(directTurnMetadata) != "" {
+		return true
+	}
+	if !bytes.Contains(body, []byte("x-codex-turn-metadata")) && !bytes.Contains(body, []byte(`\u`)) {
+		return false
+	}
+
+	var envelope struct {
+		ClientMetadata json.RawMessage `json:"client_metadata"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		// Let NormalizeRequest return the request-scoped validation error when an
+		// apparent canonical carrier sits inside a malformed JSON request.
+		return true
+	}
+	var clientMetadata map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.ClientMetadata, &clientMetadata); err != nil {
+		return false
+	}
+	_, ok := clientMetadata["x-codex-turn-metadata"]
+	return ok
 }
 
 func codexTurnMetadataHeaderValue(headers http.Header) string {
