@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -108,6 +109,8 @@ func TestExecutorRequestLifecycleFieldsRespectSchemaVersion(t *testing.T) {
 	req := pluginapi.ExecutorRequest{
 		RequestID:          "request-1",
 		ExecutionSessionID: "session-1",
+		CallerScope:        "caller-1",
+		WorkspaceIdentity:  "workspace-1",
 		AuthID:             "auth-1",
 		AuthIndex:          "index-1",
 	}
@@ -121,7 +124,7 @@ func TestExecutorRequestLifecycleFieldsRespectSchemaVersion(t *testing.T) {
 	if errUnmarshalLegacy := json.Unmarshal(rawLegacy, &legacyFields); errUnmarshalLegacy != nil {
 		t.Fatalf("unmarshal legacy executor request: %v", errUnmarshalLegacy)
 	}
-	for _, field := range []string{"RequestID", "ExecutionSessionID", "AuthIndex"} {
+	for _, field := range []string{"RequestID", "ExecutionSessionID", "CallerScope", "WorkspaceIdentity", "AuthIndex"} {
 		if _, exists := legacyFields[field]; exists {
 			t.Fatalf("legacy executor request unexpectedly contains %s: %s", field, rawLegacy)
 		}
@@ -139,7 +142,7 @@ func TestExecutorRequestLifecycleFieldsRespectSchemaVersion(t *testing.T) {
 	if errUnmarshalCurrent := json.Unmarshal(rawCurrent, &currentFields); errUnmarshalCurrent != nil {
 		t.Fatalf("unmarshal current executor request: %v", errUnmarshalCurrent)
 	}
-	for _, field := range []string{"RequestID", "ExecutionSessionID", "AuthIndex"} {
+	for _, field := range []string{"RequestID", "ExecutionSessionID", "CallerScope", "WorkspaceIdentity", "AuthIndex"} {
 		if _, exists := currentFields[field]; !exists {
 			t.Fatalf("current executor request missing %s: %s", field, rawCurrent)
 		}
@@ -194,7 +197,7 @@ func TestRPCExecutionLifecycleMethods(t *testing.T) {
 	if errReadiness != nil {
 		t.Fatalf("ProbeReadiness() error = %v", errReadiness)
 	}
-	if client.cancelReq != cancelReq || client.closeReq != closeReq || client.readiness != readinessReq {
+	if client.cancelReq != cancelReq || client.closeReq != closeReq || !reflect.DeepEqual(client.readiness, readinessReq) {
 		t.Fatalf("captured lifecycle requests = cancel:%#v close:%#v readiness:%#v", client.cancelReq, client.closeReq, client.readiness)
 	}
 	if readiness.Provider != "qoder" || !readiness.Ready {

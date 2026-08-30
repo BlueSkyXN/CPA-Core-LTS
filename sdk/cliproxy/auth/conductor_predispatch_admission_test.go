@@ -64,6 +64,22 @@ type retryAdmissionResultHook struct {
 	results []Result
 }
 
+type cancelingAdmissionTestExecutor struct {
+	retryAdmissionTestExecutor
+	cancel context.CancelFunc
+}
+
+func (e *cancelingAdmissionTestExecutor) AdmitExecution(ctx context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (context.Context, error) {
+	e.admissionCalls++
+	e.cancel()
+	return ctx, nil
+}
+
+func (e *cancelingAdmissionTestExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.executeCalls++
+	return cliproxyexecutor.Response{}, nil
+}
+
 func (*retryAdmissionResultHook) OnAuthRegistered(context.Context, *Auth) {}
 func (*retryAdmissionResultHook) OnAuthUpdated(context.Context, *Auth)    {}
 func (h *retryAdmissionResultHook) OnResult(_ context.Context, result Result) {
@@ -159,5 +175,31 @@ func TestManagerRefreshRetryRequiresFreshPreDispatchAdmission(t *testing.T) {
 				t.Fatalf("result hook calls = %#v, want no result for rejected redispatch", hook.results)
 			}
 		})
+	}
+}
+
+func TestManagerAdmissionCancellationDoesNotPublishOrInvoke(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	executor := &cancelingAdmissionTestExecutor{cancel: cancel}
+	hook := &retryAdmissionResultHook{}
+	manager := NewManager(nil, nil, hook)
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "cancel-auth", Provider: executor.Identifier(), Status: StatusActive}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	selected := 0
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(string) { selected++ },
+	}}
+
+	_, errExecute := manager.Execute(ctx, []string{executor.Identifier()}, cliproxyexecutor.Request{}, opts)
+	if errExecute != context.Canceled {
+		t.Fatalf("Execute() error = %v, want context.Canceled", errExecute)
+	}
+	if executor.admissionCalls != 1 || executor.executeCalls != 0 {
+		t.Fatalf("calls = admission:%d execute:%d, want 1/0", executor.admissionCalls, executor.executeCalls)
+	}
+	if selected != 0 || len(hook.results) != 0 {
+		t.Fatalf("pre-dispatch publication = selected:%d results:%#v, want none", selected, hook.results)
 	}
 }

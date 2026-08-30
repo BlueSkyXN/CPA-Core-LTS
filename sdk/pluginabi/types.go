@@ -11,8 +11,9 @@ const (
 	// (ChunkIndex >= 0); those fields remain on StreamChunkHeaderInitIndex only.
 	// Plugins that still need per-chunk request bodies should keep schema_version < 3.
 	// Version 4 adds upstream WebSocket response event observation.
-	// Version 5 adds typed executor correlation plus optional cancel, session-close,
-	// and readiness capabilities. The native function table remains ABI version 1.
+	// Version 5 adds typed executor correlation and caller/workspace namespaces,
+	// plus optional cancel, session-close, and readiness capabilities. The native
+	// function table remains ABI version 1.
 	SchemaVersion uint32 = 5
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.

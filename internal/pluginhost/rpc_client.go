@@ -514,6 +514,8 @@ func (a *rpcPluginAdapter) executorRequestForSchema(req pluginapi.ExecutorReques
 	}
 	req.RequestID = ""
 	req.ExecutionSessionID = ""
+	req.CallerScope = ""
+	req.WorkspaceIdentity = ""
 	req.AuthIndex = ""
 	return req
 }

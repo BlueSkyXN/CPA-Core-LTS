@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -384,7 +385,62 @@ func (h *Host) ProbeProviderReadiness(ctx context.Context, provider string, req 
 	if adapter.readiness == nil {
 		return legacyProviderReadiness(provider, adapter.version), nil
 	}
+	if req.Purpose == "" {
+		req.Purpose = pluginapi.ReadinessPurposeDiagnostic
+	}
+	if errAuth := h.enrichReadinessAuth(provider, &req); errAuth != nil {
+		return pluginapi.ReadinessResponse{}, errAuth
+	}
 	return adapter.ProbeReadiness(ctx, req)
+}
+
+func (h *Host) enrichReadinessAuth(provider string, req *pluginapi.ReadinessRequest) error {
+	if h == nil || req == nil {
+		return nil
+	}
+	authID := strings.TrimSpace(req.AuthID)
+	authIndex := strings.TrimSpace(req.AuthIndex)
+	if authID == "" && authIndex == "" {
+		req.AuthProvider = ""
+		req.StorageJSON = nil
+		req.AuthMetadata = nil
+		req.AuthAttributes = nil
+		return nil
+	}
+	manager := h.currentAuthManager()
+	if manager == nil {
+		return fmt.Errorf("plugin auth manager is unavailable")
+	}
+	var selected *coreauth.Auth
+	if authID != "" {
+		selected, _ = manager.GetByID(authID)
+	} else {
+		for _, candidate := range manager.List() {
+			if candidate != nil && strings.TrimSpace(candidate.Index) == authIndex {
+				selected = candidate
+				break
+			}
+		}
+	}
+	if selected == nil {
+		return fmt.Errorf("provider %s readiness auth was not found", provider)
+	}
+	if authID != "" && strings.TrimSpace(selected.ID) != authID {
+		return fmt.Errorf("provider %s readiness auth id does not match the selected auth", provider)
+	}
+	if authIndex != "" && strings.TrimSpace(selected.Index) != authIndex {
+		return fmt.Errorf("provider %s readiness auth index does not match the selected auth", provider)
+	}
+	if selectedProvider := strings.ToLower(strings.TrimSpace(selected.Provider)); selectedProvider != provider {
+		return fmt.Errorf("readiness auth provider %s does not match executor %s", selectedProvider, provider)
+	}
+	req.AuthID = strings.TrimSpace(selected.ID)
+	req.AuthIndex = strings.TrimSpace(selected.Index)
+	req.AuthProvider = authProvider(selected)
+	req.StorageJSON = storageJSONFromAuth(selected)
+	req.AuthMetadata = cloneAnyMap(authMetadata(selected))
+	req.AuthAttributes = authAttributes(selected)
+	return nil
 }
 
 func legacyProviderReadiness(provider, pluginVersion string) pluginapi.ReadinessResponse {
@@ -399,6 +455,38 @@ func legacyProviderReadiness(provider, pluginVersion string) pluginapi.Readiness
 			{Level: pluginapi.ReadinessLevelSessionReady, State: pluginapi.ReadinessStateUnsupported},
 		},
 	}
+}
+
+// CancelProviderExecution routes an explicit control-plane cancellation to the
+// active plugin executor without closing the containing session.
+func (h *Host) CancelProviderExecution(ctx context.Context, provider string, req pluginapi.CancelExecutionRequest) error {
+	if h == nil {
+		return fmt.Errorf("plugin host is unavailable")
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+	manager := h.currentAuthManager()
+	if manager == nil {
+		return fmt.Errorf("plugin auth manager is unavailable")
+	}
+	executor, okExecutor := manager.Executor(provider)
+	if !okExecutor || executor == nil {
+		return fmt.Errorf("plugin executor %s is not registered", provider)
+	}
+	adapter, okAdapter := executor.(*executorAdapter)
+	if !okAdapter || adapter == nil || adapter.host != h {
+		return fmt.Errorf("provider %s is not owned by the plugin host", provider)
+	}
+	if requestedProvider := strings.ToLower(strings.TrimSpace(req.Provider)); requestedProvider != "" && requestedProvider != provider {
+		return fmt.Errorf("cancel provider %s does not match executor %s", requestedProvider, provider)
+	}
+	req.Provider = provider
+	if req.Reason == "" {
+		req.Reason = pluginapi.ExecutionCancelReasonExplicit
+	}
+	return adapter.CancelExecution(ctx, req)
 }
 
 // OwnsExecutor reports whether executor is an adapter managed by this host.
@@ -452,12 +540,18 @@ func (a *executorAdapter) CompatibleExecutorReplacement(next coreauth.ProviderEx
 }
 
 func (a *executorAdapter) CloseExecutionSession(sessionID string) {
+	a.CloseExecutionSessionScoped(sessionID, "", "")
+}
+
+func (a *executorAdapter) CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string) {
 	if a == nil || strings.TrimSpace(sessionID) == "" {
 		return
 	}
 	req := pluginapi.CloseExecutionSessionRequest{
 		Scope:              pluginapi.ExecutionSessionCloseScopeSession,
 		ExecutionSessionID: strings.TrimSpace(sessionID),
+		CallerScope:        strings.TrimSpace(callerScope),
+		WorkspaceIdentity:  strings.TrimSpace(workspaceIdentity),
 		Provider:           a.provider,
 	}
 	if req.ExecutionSessionID == coreauth.CloseAllExecutionSessionsID {
@@ -517,9 +611,9 @@ func validCloseExecutionSessionRequest(req pluginapi.CloseExecutionSessionReques
 	case pluginapi.ExecutionSessionCloseScopeSession:
 		return strings.TrimSpace(req.ExecutionSessionID) != ""
 	case pluginapi.ExecutionSessionCloseScopeAuth:
-		return strings.TrimSpace(req.ExecutionSessionID) == "" && (strings.TrimSpace(req.AuthID) != "" || strings.TrimSpace(req.AuthIndex) != "")
+		return strings.TrimSpace(req.ExecutionSessionID) == "" && strings.TrimSpace(req.CallerScope) == "" && strings.TrimSpace(req.WorkspaceIdentity) == "" && (strings.TrimSpace(req.AuthID) != "" || strings.TrimSpace(req.AuthIndex) != "")
 	case pluginapi.ExecutionSessionCloseScopeProvider:
-		return strings.TrimSpace(req.ExecutionSessionID) == "" && strings.TrimSpace(req.AuthID) == "" && strings.TrimSpace(req.AuthIndex) == "" && strings.TrimSpace(req.Provider) != ""
+		return strings.TrimSpace(req.ExecutionSessionID) == "" && strings.TrimSpace(req.CallerScope) == "" && strings.TrimSpace(req.WorkspaceIdentity) == "" && strings.TrimSpace(req.AuthID) == "" && strings.TrimSpace(req.AuthIndex) == "" && strings.TrimSpace(req.Provider) != ""
 	default:
 		return false
 	}
@@ -537,23 +631,93 @@ func (a *executorAdapter) cancelExecutionAsync(req pluginapi.ExecutorRequest, re
 	cancelReq := pluginapi.CancelExecutionRequest{
 		RequestID:          strings.TrimSpace(req.RequestID),
 		ExecutionSessionID: strings.TrimSpace(req.ExecutionSessionID),
+		CallerScope:        strings.TrimSpace(req.CallerScope),
+		WorkspaceIdentity:  strings.TrimSpace(req.WorkspaceIdentity),
 		Provider:           a.provider,
 		AuthID:             strings.TrimSpace(req.AuthID),
 		AuthIndex:          strings.TrimSpace(req.AuthIndex),
 		Reason:             reason,
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pluginExecutionLifecycleTimeout)
-		defer cancel()
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				a.fuseCurrentPlugin("ExecutionCanceller.CancelExecution", recovered)
-			}
-		}()
-		if errCancel := a.canceller.CancelExecution(ctx, cancelReq); errCancel != nil {
+		if errCancel := a.CancelExecution(context.Background(), cancelReq); errCancel != nil {
 			log.WithError(errCancel).WithField("plugin", a.pluginID).Warn("plugin execution cancel failed")
 		}
 	}()
+}
+
+func (a *executorAdapter) CancelExecution(ctx context.Context, req pluginapi.CancelExecutionRequest) error {
+	if a == nil || a.host == nil || a.canceller == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
+		return fmt.Errorf("plugin executor %s cancellation is unavailable", a.Identifier())
+	}
+	if strings.TrimSpace(req.RequestID) == "" && strings.TrimSpace(req.ExecutionSessionID) == "" {
+		return fmt.Errorf("request_id or execution_session_id is required")
+	}
+	if requestedProvider := strings.ToLower(strings.TrimSpace(req.Provider)); requestedProvider != "" && requestedProvider != a.provider {
+		return fmt.Errorf("cancel provider %s does not match executor %s", requestedProvider, a.provider)
+	}
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	req.ExecutionSessionID = strings.TrimSpace(req.ExecutionSessionID)
+	req.CallerScope = strings.TrimSpace(req.CallerScope)
+	req.WorkspaceIdentity = strings.TrimSpace(req.WorkspaceIdentity)
+	req.Provider = a.provider
+	req.AuthID = strings.TrimSpace(req.AuthID)
+	req.AuthIndex = strings.TrimSpace(req.AuthIndex)
+	if req.Reason == "" {
+		req.Reason = pluginapi.ExecutionCancelReasonExplicit
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	callCtx, cancel := context.WithTimeout(ctx, pluginExecutionLifecycleTimeout)
+	defer cancel()
+	result := make(chan pluginLifecycleCallResult, 1)
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				result <- pluginLifecycleCallResult{recovered: recovered}
+			}
+		}()
+		result <- pluginLifecycleCallResult{err: a.canceller.CancelExecution(callCtx, req)}
+	}()
+	select {
+	case callResult := <-result:
+		if callResult.recovered != nil {
+			a.fuseCurrentPlugin("ExecutionCanceller.CancelExecution", callResult.recovered)
+			return fmt.Errorf("plugin executor %s cancellation failed", a.Identifier())
+		}
+		return callResult.err
+	case <-callCtx.Done():
+		return callCtx.Err()
+	}
+}
+
+func (a *executorAdapter) watchExecutionCancellation(ctx context.Context, req pluginapi.ExecutorRequest) func() {
+	if a == nil || a.canceller == nil || ctx == nil || ctx.Done() == nil || (strings.TrimSpace(req.RequestID) == "" && strings.TrimSpace(req.ExecutionSessionID) == "") {
+		return func() {}
+	}
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	var cancelOnce sync.Once
+	sendCancel := func() {
+		cancelOnce.Do(func() {
+			a.cancelExecutionAsync(req, executionCancelReason(ctx))
+		})
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			sendCancel()
+		case <-stopped:
+		}
+	}()
+	return func() {
+		stopOnce.Do(func() {
+			if ctx.Err() != nil {
+				sendCancel()
+			}
+			close(stopped)
+		})
+	}
 }
 
 func (a *executorAdapter) fuseCurrentPlugin(method string, recovered any) {
@@ -584,6 +748,12 @@ func (a *executorAdapter) ProbeReadiness(ctx context.Context, req pluginapi.Read
 	if strings.TrimSpace(req.Provider) == "" {
 		req.Provider = a.provider
 	}
+	if req.Purpose == "" {
+		req.Purpose = pluginapi.ReadinessPurposeDiagnostic
+	}
+	if req.Purpose != pluginapi.ReadinessPurposeAdmission && req.Purpose != pluginapi.ReadinessPurposeDiagnostic {
+		return pluginapi.ReadinessResponse{}, fmt.Errorf("unsupported readiness purpose %q", req.Purpose)
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.fuseCurrentPlugin("ProviderReadiness.ProbeReadiness", recovered)
@@ -611,6 +781,8 @@ type executorReadinessAdmission struct {
 	adapter            *executorAdapter
 	requestID          string
 	executionSessionID string
+	callerScope        string
+	workspaceIdentity  string
 	authID             string
 	authIndex          string
 	model              string
@@ -634,6 +806,8 @@ func (a *executorAdapter) AdmitExecution(ctx context.Context, auth *coreauth.Aut
 		adapter:            a,
 		requestID:          pluginReq.RequestID,
 		executionSessionID: pluginReq.ExecutionSessionID,
+		callerScope:        pluginReq.CallerScope,
+		workspaceIdentity:  pluginReq.WorkspaceIdentity,
 		authID:             pluginReq.AuthID,
 		authIndex:          pluginReq.AuthIndex,
 		model:              pluginReq.Model,
@@ -651,6 +825,8 @@ func (a *executorAdapter) executionAdmitted(ctx context.Context, req pluginapi.E
 		admission.adapter == a &&
 		admission.requestID == req.RequestID &&
 		admission.executionSessionID == req.ExecutionSessionID &&
+		admission.callerScope == req.CallerScope &&
+		admission.workspaceIdentity == req.WorkspaceIdentity &&
 		admission.authID == req.AuthID &&
 		admission.authIndex == req.AuthIndex &&
 		admission.model == req.Model &&
@@ -669,10 +845,17 @@ func (a *executorAdapter) ensureReady(ctx context.Context, req pluginapi.Executo
 	probeCtx, cancel := context.WithTimeout(ctx, pluginExecutionLifecycleTimeout)
 	defer cancel()
 	probeReq := pluginapi.ReadinessRequest{
-		Provider:  a.provider,
-		Model:     req.Model,
-		AuthID:    req.AuthID,
-		AuthIndex: req.AuthIndex,
+		Purpose:           pluginapi.ReadinessPurposeAdmission,
+		Provider:          a.provider,
+		Model:             req.Model,
+		AuthID:            req.AuthID,
+		AuthIndex:         req.AuthIndex,
+		AuthProvider:      req.AuthProvider,
+		StorageJSON:       bytes.Clone(req.StorageJSON),
+		AuthMetadata:      cloneAnyMap(req.AuthMetadata),
+		AuthAttributes:    cloneStringMap(req.AuthAttributes),
+		CallerScope:       req.CallerScope,
+		WorkspaceIdentity: req.WorkspaceIdentity,
 	}
 	// Execute/ExecuteStream create or attach the vendor-native session. Requiring
 	// session_ready before that call would make a new explicit Core session
@@ -1079,9 +1262,13 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 			return coreexecutor.Response{}, errReady
 		}
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return coreexecutor.Response{}, ctx.Err()
+	}
+	stopCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
+	defer stopCancellationWatch()
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
-		a.cancelExecutionAsync(pluginReq, executionCancelReason(ctx))
 		return coreexecutor.Response{}, ctx.Err()
 	}
 	if errExecute != nil {
@@ -1116,9 +1303,13 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			return nil, errReady
 		}
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	stopBootstrapCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
+	defer stopBootstrapCancellationWatch()
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
-		a.cancelExecutionAsync(pluginReq, executionCancelReason(ctx))
 		return nil, ctx.Err()
 	}
 	if errExecuteStream != nil {
@@ -1258,7 +1449,15 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 			return coreexecutor.Response{}, errReady
 		}
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return coreexecutor.Response{}, ctx.Err()
+	}
+	stopCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
+	defer stopCancellationWatch()
 	pluginResp, errCountTokens := a.executor.CountTokens(ctx, pluginReq)
+	if ctx != nil && ctx.Err() != nil {
+		return coreexecutor.Response{}, ctx.Err()
+	}
 	if errCountTokens != nil {
 		return coreexecutor.Response{}, errCountTokens
 	}
@@ -1321,6 +1520,8 @@ func buildExecutorRequest(host *Host, provider string, auth *coreauth.Auth, req 
 	return pluginapi.ExecutorRequest{
 		RequestID:          executorMetadataID(metadata, coreexecutor.RequestIDMetadataKey),
 		ExecutionSessionID: executorExecutionSessionID(metadata),
+		CallerScope:        executorMetadataID(metadata, coreexecutor.CallerScopeMetadataKey),
+		WorkspaceIdentity:  executorMetadataID(metadata, coreexecutor.WorkspaceIdentityMetadataKey),
 		AuthID:             authID(auth),
 		AuthIndex:          authIndex(auth),
 		AuthProvider:       authProvider(auth),

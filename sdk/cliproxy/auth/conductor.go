@@ -42,6 +42,14 @@ type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
 }
 
+// ScopedExecutionSessionCloser allows an executor to distinguish identical
+// client session IDs owned by different callers or workspaces. Caller scope and
+// workspace identity are opaque, secret-safe namespaces rather than credentials
+// or raw filesystem paths.
+type ScopedExecutionSessionCloser interface {
+	CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string)
+}
+
 // AuthExecutionSessionCloser allows executors to release only the sessions
 // owned by one credential while preserving other credentials for the provider.
 type AuthExecutionSessionCloser interface {

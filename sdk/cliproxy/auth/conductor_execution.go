@@ -72,7 +72,20 @@ func preDispatchSelectionEnabled(ctx context.Context) bool {
 
 func admitExecutorExecution(ctx context.Context, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (context.Context, error) {
 	if admitter, okAdmitter := executor.(PreDispatchExecutionAdmitter); okAdmitter && admitter != nil {
-		return admitter.AdmitExecution(ctx, auth, req, opts)
+		admittedCtx, errAdmission := admitter.AdmitExecution(ctx, auth, req, opts)
+		if errAdmission != nil {
+			return admittedCtx, errAdmission
+		}
+		if admittedCtx == nil {
+			admittedCtx = ctx
+		}
+		if admittedCtx != nil && admittedCtx.Err() != nil {
+			return admittedCtx, admittedCtx.Err()
+		}
+		return admittedCtx, nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx, ctx.Err()
 	}
 	return ctx, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -251,6 +252,8 @@ func TestExecutionLifecycleTypesRoundTrip(t *testing.T) {
 	cancelRequest := CancelExecutionRequest{
 		RequestID:          "request-1",
 		ExecutionSessionID: "session-1",
+		CallerScope:        "caller-scope-1",
+		WorkspaceIdentity:  "workspace-1",
 		Provider:           "codebuddy",
 		AuthID:             "auth-1",
 		AuthIndex:          "index-1",
@@ -284,6 +287,32 @@ func TestExecutionLifecycleTypesRoundTrip(t *testing.T) {
 	}
 	if decodedClose != closeRequest {
 		t.Fatalf("CloseExecutionSessionRequest round trip = %#v, want %#v", decodedClose, closeRequest)
+	}
+
+	readinessRequest := ReadinessRequest{
+		Purpose:            ReadinessPurposeAdmission,
+		Provider:           "qoder",
+		Model:              "qwen-test",
+		AuthID:             "auth-2",
+		AuthIndex:          "index-2",
+		AuthProvider:       "qoder",
+		StorageJSON:        []byte(`{"access_token":"test-only"}`),
+		AuthMetadata:       map[string]any{"account_id": "account-2"},
+		AuthAttributes:     map[string]string{"auth_mode": "pat"},
+		ExecutionSessionID: "session-2",
+		CallerScope:        "caller-scope-2",
+		WorkspaceIdentity:  "workspace-2",
+	}
+	rawReadinessRequest, errMarshalReadinessRequest := json.Marshal(readinessRequest)
+	if errMarshalReadinessRequest != nil {
+		t.Fatalf("marshal ReadinessRequest: %v", errMarshalReadinessRequest)
+	}
+	var decodedReadinessRequest ReadinessRequest
+	if errUnmarshalReadinessRequest := json.Unmarshal(rawReadinessRequest, &decodedReadinessRequest); errUnmarshalReadinessRequest != nil {
+		t.Fatalf("unmarshal ReadinessRequest: %v", errUnmarshalReadinessRequest)
+	}
+	if !reflect.DeepEqual(decodedReadinessRequest, readinessRequest) {
+		t.Fatalf("ReadinessRequest round trip = %#v, want %#v", decodedReadinessRequest, readinessRequest)
 	}
 
 	readiness := ReadinessResponse{

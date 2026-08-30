@@ -618,6 +618,8 @@ const (
 type CancelExecutionRequest struct {
 	RequestID          string                `json:"RequestID,omitempty"`
 	ExecutionSessionID string                `json:"ExecutionSessionID,omitempty"`
+	CallerScope        string                `json:"CallerScope,omitempty"`
+	WorkspaceIdentity  string                `json:"WorkspaceIdentity,omitempty"`
 	Provider           string                `json:"Provider,omitempty"`
 	AuthID             string                `json:"AuthID,omitempty"`
 	AuthIndex          string                `json:"AuthIndex,omitempty"`
@@ -647,6 +649,8 @@ const (
 type CloseExecutionSessionRequest struct {
 	Scope              ExecutionSessionCloseScope `json:"Scope"`
 	ExecutionSessionID string                     `json:"ExecutionSessionID,omitempty"`
+	CallerScope        string                     `json:"CallerScope,omitempty"`
+	WorkspaceIdentity  string                     `json:"WorkspaceIdentity,omitempty"`
 	Provider           string                     `json:"Provider,omitempty"`
 	AuthID             string                     `json:"AuthID,omitempty"`
 	AuthIndex          string                     `json:"AuthIndex,omitempty"`
@@ -681,6 +685,17 @@ const (
 	ReadinessStateUnsupported ReadinessState = "unsupported"
 )
 
+// ReadinessPurpose identifies why the host is probing provider readiness.
+type ReadinessPurpose string
+
+const (
+	// ReadinessPurposeAdmission is the bounded check immediately before one
+	// selected auth is published and dispatched to an executor.
+	ReadinessPurposeAdmission ReadinessPurpose = "admission"
+	// ReadinessPurposeDiagnostic is an explicit status or management probe.
+	ReadinessPurposeDiagnostic ReadinessPurpose = "diagnostic"
+)
+
 // ReadinessCheck reports one provider execution readiness layer. Details must
 // contain only bounded, secret-safe diagnostics.
 type ReadinessCheck struct {
@@ -695,12 +710,23 @@ type ReadinessCheck struct {
 // request provider-wide readiness only. ExecutionSessionID is used only for an
 // explicit session-status probe; the host omits it from pre-execution admission
 // because Execute/ExecuteStream may be responsible for creating that session.
+//
+// Admission probes receive the same selected credential context as the matching
+// executor call. That context is credential-bearing and must stay inside the
+// provider capability; it must not be copied into diagnostics or logs.
 type ReadinessRequest struct {
-	Provider           string `json:"Provider,omitempty"`
-	Model              string `json:"Model,omitempty"`
-	AuthID             string `json:"AuthID,omitempty"`
-	AuthIndex          string `json:"AuthIndex,omitempty"`
-	ExecutionSessionID string `json:"ExecutionSessionID,omitempty"`
+	Purpose            ReadinessPurpose  `json:"Purpose,omitempty"`
+	Provider           string            `json:"Provider,omitempty"`
+	Model              string            `json:"Model,omitempty"`
+	AuthID             string            `json:"AuthID,omitempty"`
+	AuthIndex          string            `json:"AuthIndex,omitempty"`
+	AuthProvider       string            `json:"AuthProvider,omitempty"`
+	StorageJSON        []byte            `json:"StorageJSON,omitempty"`
+	AuthMetadata       map[string]any    `json:"AuthMetadata,omitempty"`
+	AuthAttributes     map[string]string `json:"AuthAttributes,omitempty"`
+	ExecutionSessionID string            `json:"ExecutionSessionID,omitempty"`
+	CallerScope        string            `json:"CallerScope,omitempty"`
+	WorkspaceIdentity  string            `json:"WorkspaceIdentity,omitempty"`
 }
 
 // ReadinessResponse reports provider execution readiness and negotiated capabilities.
@@ -713,6 +739,10 @@ type ReadinessResponse struct {
 }
 
 // ProviderReadiness probes runner, protocol, auth, and optional session readiness.
+// Implementations must be bounded, idempotent, non-interactive, and safe to run
+// concurrently. A probe may inspect or start configured local runner resources,
+// but it must not execute a model/agent turn, create a vendor-native session,
+// mutate the user workspace, persist credential changes, or trigger billable work.
 type ProviderReadiness interface {
 	ProbeReadiness(context.Context, ReadinessRequest) (ReadinessResponse, error)
 }
@@ -979,6 +1009,11 @@ type ExecutorRequest struct {
 	// ExecutionSessionID identifies a Core-owned long-lived execution session, when present.
 	// Affinity-only derived IDs are intentionally not promoted into this field.
 	ExecutionSessionID string `json:"ExecutionSessionID,omitempty"`
+	// CallerScope is an irreversible host-derived namespace for the downstream caller.
+	CallerScope string `json:"CallerScope,omitempty"`
+	// WorkspaceIdentity is an opaque, secret-safe workspace namespace. It must not
+	// contain a raw filesystem path, repository credential, or workspace contents.
+	WorkspaceIdentity string `json:"WorkspaceIdentity,omitempty"`
 	// AuthID identifies the selected credential.
 	AuthID string
 	// AuthIndex identifies the selected credential's stable runtime index.

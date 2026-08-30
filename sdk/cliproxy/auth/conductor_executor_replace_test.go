@@ -14,6 +14,7 @@ type replaceAwareExecutor struct {
 
 	mu               sync.Mutex
 	closedSessionIDs []string
+	closedScopes     [][3]string
 	closedAuths      [][2]string
 }
 
@@ -49,12 +50,25 @@ func (e *replaceAwareExecutor) CloseExecutionSession(sessionID string) {
 	e.closedSessionIDs = append(e.closedSessionIDs, sessionID)
 }
 
+func (e *replaceAwareExecutor) CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closedSessionIDs = append(e.closedSessionIDs, sessionID)
+	e.closedScopes = append(e.closedScopes, [3]string{sessionID, callerScope, workspaceIdentity})
+}
+
 func (e *replaceAwareExecutor) ClosedSessionIDs() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]string, len(e.closedSessionIDs))
 	copy(out, e.closedSessionIDs)
 	return out
+}
+
+func (e *replaceAwareExecutor) ClosedScopes() [][3]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([][3]string(nil), e.closedScopes...)
 }
 
 func (e *replaceAwareExecutor) CloseExecutionSessionsForAuth(authID, authIndex string) {
@@ -151,5 +165,20 @@ func TestManagerRemoveClosesOnlyRemovedAuthSessionsWhenSupported(t *testing.T) {
 	}
 	if closed := executor.ClosedSessionIDs(); len(closed) != 0 {
 		t.Fatalf("provider-wide close calls = %#v, want none", closed)
+	}
+}
+
+func TestManagerCloseExecutionSessionPreservesCallerWorkspaceScope(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	executor := &replaceAwareExecutor{id: "plugin-provider"}
+	manager.RegisterExecutor(executor)
+
+	manager.CloseExecutionSessionScoped("session-1", "caller-1", "workspace-1")
+
+	closedScopes := executor.ClosedScopes()
+	if len(closedScopes) != 1 || closedScopes[0] != [3]string{"session-1", "caller-1", "workspace-1"} {
+		t.Fatalf("scoped close calls = %#v", closedScopes)
 	}
 }

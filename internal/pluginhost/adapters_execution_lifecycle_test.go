@@ -1,7 +1,9 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,16 +47,18 @@ func TestExecutorAdapterMapsLifecycleIdentity(t *testing.T) {
 	opts := coreexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAI,
 		Metadata: map[string]any{
-			coreexecutor.RequestIDMetadataKey:        "request-1",
-			coreexecutor.ExecutionSessionMetadataKey: "session-1",
+			coreexecutor.RequestIDMetadataKey:         "request-1",
+			coreexecutor.ExecutionSessionMetadataKey:  "session-1",
+			coreexecutor.CallerScopeMetadataKey:       "caller-scope-1",
+			coreexecutor.WorkspaceIdentityMetadataKey: "workspace-1",
 		},
 	}
 
 	if _, errExecute := adapter.Execute(context.Background(), auth, req, opts); errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
-	if captured.RequestID != "request-1" || captured.ExecutionSessionID != "session-1" || captured.AuthID != "auth-1" || captured.AuthIndex != "index-1" {
-		t.Fatalf("lifecycle identity = request:%q session:%q auth:%q index:%q", captured.RequestID, captured.ExecutionSessionID, captured.AuthID, captured.AuthIndex)
+	if captured.RequestID != "request-1" || captured.ExecutionSessionID != "session-1" || captured.CallerScope != "caller-scope-1" || captured.WorkspaceIdentity != "workspace-1" || captured.AuthID != "auth-1" || captured.AuthIndex != "index-1" {
+		t.Fatalf("lifecycle identity = request:%q session:%q caller:%q workspace:%q auth:%q index:%q", captured.RequestID, captured.ExecutionSessionID, captured.CallerScope, captured.WorkspaceIdentity, captured.AuthID, captured.AuthIndex)
 	}
 
 	opts.Metadata = map[string]any{
@@ -93,8 +97,10 @@ func TestExecutorAdapterCancelsStreamOnContextDone(t *testing.T) {
 	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
 	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
 	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{
-		coreexecutor.RequestIDMetadataKey:        "request-cancel",
-		coreexecutor.ExecutionSessionMetadataKey: "session-cancel",
+		coreexecutor.RequestIDMetadataKey:         "request-cancel",
+		coreexecutor.ExecutionSessionMetadataKey:  "session-cancel",
+		coreexecutor.CallerScopeMetadataKey:       "caller-cancel",
+		coreexecutor.WorkspaceIdentityMetadataKey: "workspace-cancel",
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
@@ -112,7 +118,7 @@ func TestExecutorAdapterCancelsStreamOnContextDone(t *testing.T) {
 	}
 	select {
 	case cancelReq := <-cancelRequests:
-		if cancelReq.RequestID != "request-cancel" || cancelReq.ExecutionSessionID != "session-cancel" || cancelReq.AuthID != "auth-1" || cancelReq.AuthIndex != "index-1" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
+		if cancelReq.RequestID != "request-cancel" || cancelReq.ExecutionSessionID != "session-cancel" || cancelReq.CallerScope != "caller-cancel" || cancelReq.WorkspaceIdentity != "workspace-cancel" || cancelReq.AuthID != "auth-1" || cancelReq.AuthIndex != "index-1" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
 			t.Fatalf("cancel request = %#v", cancelReq)
 		}
 	case <-time.After(time.Second):
@@ -146,8 +152,10 @@ func TestExecutorAdapterCancelsNonStreamOnContextDone(t *testing.T) {
 	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
 	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
 	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{
-		coreexecutor.RequestIDMetadataKey:        "request-cancel-nonstream",
-		coreexecutor.ExecutionSessionMetadataKey: "session-cancel-nonstream",
+		coreexecutor.RequestIDMetadataKey:         "request-cancel-nonstream",
+		coreexecutor.ExecutionSessionMetadataKey:  "session-cancel-nonstream",
+		coreexecutor.CallerScopeMetadataKey:       "caller-cancel-nonstream",
+		coreexecutor.WorkspaceIdentityMetadataKey: "workspace-cancel-nonstream",
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	errResult := make(chan error, 1)
@@ -171,11 +179,111 @@ func TestExecutorAdapterCancelsNonStreamOnContextDone(t *testing.T) {
 	}
 	select {
 	case cancelReq := <-cancelRequests:
-		if cancelReq.RequestID != "request-cancel-nonstream" || cancelReq.ExecutionSessionID != "session-cancel-nonstream" {
+		if cancelReq.RequestID != "request-cancel-nonstream" || cancelReq.ExecutionSessionID != "session-cancel-nonstream" || cancelReq.CallerScope != "caller-cancel-nonstream" || cancelReq.WorkspaceIdentity != "workspace-cancel-nonstream" {
 			t.Fatalf("cancel request = %#v", cancelReq)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("plugin did not receive non-stream cancellation")
+	}
+}
+
+func TestExecutorAdapterSendsCancelWhileNonStreamCallIgnoresContext(t *testing.T) {
+	host := NewForTest(nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cancelRequests := make(chan pluginapi.CancelExecutionRequest, 1)
+	var releaseOnce sync.Once
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		execute: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+			close(started)
+			<-release
+			return pluginapi.ExecutorResponse{}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"lifecycle-cancel-blocked-nonstream",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+		cancelRequests <- req
+		releaseOnce.Do(func() { close(release) })
+		return nil
+	})
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{
+		coreexecutor.RequestIDMetadataKey: "request-cancel-blocked",
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	errResult := make(chan error, 1)
+	go func() {
+		_, errExecute := adapter.Execute(ctx, auth, req, opts)
+		errResult <- errExecute
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+	cancel()
+	select {
+	case cancelReq := <-cancelRequests:
+		if cancelReq.RequestID != "request-cancel-blocked" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
+			t.Fatalf("cancel request = %#v", cancelReq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive cancellation while Execute was blocked")
+	}
+	select {
+	case errExecute := <-errResult:
+		if errExecute != context.Canceled {
+			t.Fatalf("Execute() error = %v, want context.Canceled", errExecute)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Execute() did not return after cooperative cancellation")
+	}
+}
+
+func TestHostCancelProviderExecutionRoutesExplicitTurnCancel(t *testing.T) {
+	host := NewForTest(nil)
+	manager := coreauth.NewManager(nil, nil, nil)
+	host.SetAuthManager(manager)
+	cancelRequests := make(chan pluginapi.CancelExecutionRequest, 1)
+	record := normalizeTestCapabilityRecord(capabilityRecord{
+		id: "explicit-cancel-plugin",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			Executor: &fakeExecutor{identifier: "plugin-provider"},
+			ExecutionCanceller: executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+				cancelRequests <- req
+				return nil
+			}),
+		}},
+	})
+	setHostSnapshotForTest(host, true, record)
+	host.RegisterExecutors(manager, nil)
+
+	errCancel := host.CancelProviderExecution(context.Background(), "plugin-provider", pluginapi.CancelExecutionRequest{
+		RequestID:          "request-explicit",
+		ExecutionSessionID: "session-explicit",
+		CallerScope:        "caller-explicit",
+		WorkspaceIdentity:  "workspace-explicit",
+		AuthID:             "auth-explicit",
+		AuthIndex:          "index-explicit",
+	})
+	if errCancel != nil {
+		t.Fatalf("CancelProviderExecution() error = %v", errCancel)
+	}
+	select {
+	case cancelReq := <-cancelRequests:
+		if cancelReq.Provider != "plugin-provider" || cancelReq.Reason != pluginapi.ExecutionCancelReasonExplicit || cancelReq.RequestID != "request-explicit" || cancelReq.ExecutionSessionID != "session-explicit" || cancelReq.CallerScope != "caller-explicit" || cancelReq.WorkspaceIdentity != "workspace-explicit" || cancelReq.AuthID != "auth-explicit" || cancelReq.AuthIndex != "index-explicit" {
+			t.Fatalf("explicit cancel request = %#v", cancelReq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive explicit cancellation")
 	}
 }
 
@@ -195,7 +303,7 @@ func TestExecutorAdapterBridgesSessionAndAuthClose(t *testing.T) {
 		return nil
 	})
 
-	adapter.CloseExecutionSession("session-1")
+	adapter.CloseExecutionSessionScoped("session-1", "caller-1", "workspace-1")
 	adapter.CloseExecutionSession(coreauth.CloseAllExecutionSessionsID)
 	adapter.CloseExecutionSessionsForAuth("auth-1", "index-1")
 
@@ -208,7 +316,7 @@ func TestExecutorAdapterBridgesSessionAndAuthClose(t *testing.T) {
 			t.Fatalf("received %d close requests, want 3", len(got))
 		}
 	}
-	if got[0].Scope != pluginapi.ExecutionSessionCloseScopeSession || got[0].ExecutionSessionID != "session-1" {
+	if got[0].Scope != pluginapi.ExecutionSessionCloseScopeSession || got[0].ExecutionSessionID != "session-1" || got[0].CallerScope != "caller-1" || got[0].WorkspaceIdentity != "workspace-1" {
 		t.Fatalf("specific close = %#v", got[0])
 	}
 	if got[1].Scope != pluginapi.ExecutionSessionCloseScopeProvider || got[1].ExecutionSessionID != "" {
@@ -230,8 +338,11 @@ func TestHostProbeProviderReadiness(t *testing.T) {
 		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
 			Executor: executor,
 			ProviderReadiness: providerReadinessFunc(func(_ context.Context, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
-				if req.Provider != "qoder" || req.AuthID != "auth-1" {
+				if req.Purpose != pluginapi.ReadinessPurposeDiagnostic || req.Provider != "qoder" || req.AuthID != "auth-1" || req.AuthIndex != "index-1" || req.AuthProvider != "qoder" {
 					t.Fatalf("readiness request = %#v", req)
+				}
+				if !bytes.Contains(req.StorageJSON, []byte(`"profile":"profile-1"`)) || req.AuthMetadata["profile"] != "profile-1" || req.AuthAttributes["auth_mode"] != "pat" {
+					t.Fatalf("readiness auth context = %#v", req)
 				}
 				return pluginapi.ReadinessResponse{
 					Ready: true,
@@ -246,6 +357,16 @@ func TestHostProbeProviderReadiness(t *testing.T) {
 	})
 	setHostSnapshotForTest(host, true, record)
 	host.RegisterExecutors(manager, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:         "auth-1",
+		Index:      "index-1",
+		Provider:   "qoder",
+		Status:     coreauth.StatusActive,
+		Metadata:   map[string]any{"profile": "profile-1"},
+		Attributes: map[string]string{"auth_mode": "pat"},
+	}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
 
 	resp, errProbe := host.ProbeProviderReadiness(context.Background(), "qoder", pluginapi.ReadinessRequest{AuthID: "auth-1"})
 	if errProbe != nil {
@@ -290,6 +411,9 @@ func TestHostProbeProviderReadinessRequiresExplicitSessionCheck(t *testing.T) {
 	})
 	setHostSnapshotForTest(host, true, record)
 	host.RegisterExecutors(manager, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "qoder", Status: coreauth.StatusActive}); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
 
 	resp, errProbe := host.ProbeProviderReadiness(context.Background(), "qoder", pluginapi.ReadinessRequest{
 		AuthID:             "auth-1",
@@ -407,8 +531,14 @@ func TestExecutorAdapterPreExecutionReadinessAllowsNewExplicitSession(t *testing
 		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
 	)
 	adapter.readiness = providerReadinessFunc(func(_ context.Context, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
-		if req.ExecutionSessionID != "" {
+		if req.Purpose != pluginapi.ReadinessPurposeAdmission || req.ExecutionSessionID != "" {
 			t.Fatalf("pre-execution readiness session = %q, want empty for new/attach admission", req.ExecutionSessionID)
+		}
+		if req.AuthID != "auth-1" || req.AuthIndex != "index-1" || req.AuthProvider != "plugin-provider" || !bytes.Contains(req.StorageJSON, []byte(`"profile":"profile-1"`)) || req.AuthMetadata["profile"] != "profile-1" || req.AuthAttributes["auth_mode"] != "local_profile" {
+			t.Fatalf("pre-execution readiness auth context = %#v", req)
+		}
+		if req.CallerScope != "caller-1" || req.WorkspaceIdentity != "workspace-1" {
+			t.Fatalf("pre-execution readiness namespace = caller:%q workspace:%q", req.CallerScope, req.WorkspaceIdentity)
 		}
 		return pluginapi.ReadinessResponse{
 			Ready: true,
@@ -420,16 +550,24 @@ func TestExecutorAdapterPreExecutionReadinessAllowsNewExplicitSession(t *testing
 			},
 		}, nil
 	})
-	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	auth := &coreauth.Auth{
+		ID:         "auth-1",
+		Index:      "index-1",
+		Provider:   "plugin-provider",
+		Metadata:   map[string]any{"profile": "profile-1"},
+		Attributes: map[string]string{"auth_mode": "local_profile"},
+	}
 	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{
-		coreexecutor.ExecutionSessionMetadataKey: "new-session-1",
+		coreexecutor.ExecutionSessionMetadataKey:  "new-session-1",
+		coreexecutor.CallerScopeMetadataKey:       "caller-1",
+		coreexecutor.WorkspaceIdentityMetadataKey: "workspace-1",
 	}}
 
 	if _, errExecute := adapter.Execute(context.Background(), auth, coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}, opts); errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
-	if captured.ExecutionSessionID != "new-session-1" {
-		t.Fatalf("executor session = %q, want new-session-1", captured.ExecutionSessionID)
+	if captured.ExecutionSessionID != "new-session-1" || captured.CallerScope != "caller-1" || captured.WorkspaceIdentity != "workspace-1" {
+		t.Fatalf("executor session namespace = session:%q caller:%q workspace:%q", captured.ExecutionSessionID, captured.CallerScope, captured.WorkspaceIdentity)
 	}
 }
 

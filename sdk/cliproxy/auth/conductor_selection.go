@@ -1338,8 +1338,17 @@ func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 	return executor, true
 }
 
+// CloseExecutionSession releases one execution session without an explicit
+// caller/workspace namespace. Callers that have those namespaces should use
+// CloseExecutionSessionScoped to avoid cross-caller session ID collisions.
 func (m *Manager) CloseExecutionSession(sessionID string) {
 	m.closeExecutionSession(sessionID, "", "")
+}
+
+// CloseExecutionSessionScoped releases one execution session within its opaque
+// downstream caller and workspace namespaces.
+func (m *Manager) CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string) {
+	m.closeExecutionSessionScoped(sessionID, callerScope, workspaceIdentity, "", "")
 }
 
 func (m *Manager) useSchedulerFastPath() bool {

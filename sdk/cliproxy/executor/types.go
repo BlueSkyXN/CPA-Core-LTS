@@ -80,6 +80,10 @@ const (
 	DerivedSessionIDMetadataKey = "derived_session_id"
 	// CallerScopeMetadataKey isolates inferred session identities between downstream callers.
 	CallerScopeMetadataKey = "caller_scope"
+	// WorkspaceIdentityMetadataKey stores an opaque, secret-safe workspace namespace
+	// for provider execution sessions. It must not contain a raw filesystem path,
+	// repository credential, or workspace contents.
+	WorkspaceIdentityMetadataKey = "workspace_identity"
 	// SessionAffinityProviderMetadataKey carries the affinity selection namespace
 	// (provider string, e.g. the literal "mixed" pool key) used by SessionAffinitySelector.Pick,
 	// so OnResult keys the session cache identically to how selection read it.
