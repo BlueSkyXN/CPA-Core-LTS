@@ -2,11 +2,13 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -156,6 +158,22 @@ func TestStreamBridgeCloseDeliversTerminalError(t *testing.T) {
 	}
 	if _, ok = <-chunks; ok {
 		t.Fatal("stream remains open after terminal error")
+	}
+}
+
+func TestStreamBridgeStructuredLifecycleErrorPreservesClassification(t *testing.T) {
+	bridge := newStreamBridge()
+	streamID, chunks, _ := bridge.open(context.Background())
+
+	bridge.closeStructured(streamID, "Qoder runner event stream was lost", coreauth.ErrorCodeConnectionLifecycle, true, 0)
+
+	chunk, ok := <-chunks
+	if !ok || chunk.Err == nil {
+		t.Fatal("structured stream close did not emit terminal error")
+	}
+	var authErr *coreauth.Error
+	if !errors.As(chunk.Err, &authErr) || authErr.Code != coreauth.ErrorCodeConnectionLifecycle || !authErr.Retryable || authErr.HTTPStatus != 0 {
+		t.Fatalf("structured stream error = %#v", chunk.Err)
 	}
 }
 

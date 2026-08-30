@@ -34,6 +34,7 @@ type UsageReporter struct {
 	authType        string
 	apiKey          string
 	source          string
+	usageProvenance string
 	reasoning       string
 	serviceTier     string
 	outboundTier    string
@@ -143,6 +144,15 @@ func (r *UsageReporter) SetOutboundServiceTier(payload []byte) {
 		return
 	}
 	r.outboundTier = explicitOutboundServiceTier(payload)
+}
+
+// SetUsageProvenance records the trust class for usage counters produced by
+// this attempt. Unknown values are cleared rather than forwarded.
+func (r *UsageReporter) SetUsageProvenance(provenance string) {
+	if r == nil {
+		return
+	}
+	r.usageProvenance = usage.CanonicalUsageProvenance(provenance)
 }
 
 func (r *UsageReporter) ReasoningEffort() string {
@@ -340,6 +350,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Model:               model,
 		Alias:               r.alias,
 		Source:              r.source,
+		UsageProvenance:     r.usageProvenance,
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,

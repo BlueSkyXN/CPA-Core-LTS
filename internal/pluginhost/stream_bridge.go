@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -40,6 +41,9 @@ type streamBridgeEmit struct {
 
 type streamBridgeClose struct {
 	errorMessage string
+	errorCode    string
+	retryable    bool
+	httpStatus   int
 	accepted     chan struct{}
 }
 
@@ -50,8 +54,11 @@ type rpcStreamEmitRequest struct {
 }
 
 type rpcStreamCloseRequest struct {
-	StreamID string `json:"stream_id"`
-	Error    string `json:"error,omitempty"`
+	StreamID   string `json:"stream_id"`
+	Error      string `json:"error,omitempty"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	Retryable  bool   `json:"retryable,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
 }
 
 func newStreamBridge() *streamBridge {
@@ -98,7 +105,14 @@ func (s *streamBridgeStream) run() {
 			s.markClosed()
 			close(request.accepted)
 			if request.errorMessage != "" {
-				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("%s", request.errorMessage)})
+				errClose := error(fmt.Errorf("%s", request.errorMessage))
+				if request.errorCode != "" {
+					errClose = &coreauth.Error{
+						Code: request.errorCode, Message: request.errorMessage,
+						Retryable: request.retryable, HTTPStatus: request.httpStatus,
+					}
+				}
+				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: errClose})
 			}
 			for len(queue) > 0 {
 				select {
@@ -162,11 +176,18 @@ func (s *streamBridgeStream) emit(ctx context.Context, chunk pluginapi.ExecutorS
 }
 
 func (s *streamBridgeStream) close(errorMessage string) {
+	s.closeStructured(errorMessage, "", false, 0)
+}
+
+func (s *streamBridgeStream) closeStructured(errorMessage, errorCode string, retryable bool, httpStatus int) {
 	if s == nil {
 		return
 	}
 	request := streamBridgeClose{
 		errorMessage: errorMessage,
+		errorCode:    errorCode,
+		retryable:    retryable,
+		httpStatus:   httpStatus,
 		accepted:     make(chan struct{}),
 	}
 	select {
@@ -229,6 +250,10 @@ func (b *streamBridge) emit(ctx context.Context, id string, chunk pluginapi.Exec
 }
 
 func (b *streamBridge) close(id string, errorMessage string) {
+	b.closeStructured(id, errorMessage, "", false, 0)
+}
+
+func (b *streamBridge) closeStructured(id, errorMessage, errorCode string, retryable bool, httpStatus int) {
 	if b == nil || id == "" {
 		return
 	}
@@ -239,5 +264,5 @@ func (b *streamBridge) close(id string, errorMessage string) {
 	if stream == nil {
 		return
 	}
-	stream.close(errorMessage)
+	stream.closeStructured(errorMessage, errorCode, retryable, httpStatus)
 }

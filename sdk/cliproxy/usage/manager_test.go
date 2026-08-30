@@ -77,6 +77,23 @@ func TestResolveEffectiveServiceTier(t *testing.T) {
 	}
 }
 
+func TestCanonicalUsageProvenance(t *testing.T) {
+	for _, value := range []string{
+		UsageProvenanceExact,
+		UsageProvenanceProviderReportedUnverified,
+		UsageProvenanceEstimated,
+		UsageProvenanceUnavailable,
+		UsageProvenanceQuotaSnapshot,
+	} {
+		if got := CanonicalUsageProvenance("  " + value + "  "); got != value {
+			t.Fatalf("CanonicalUsageProvenance(%q) = %q", value, got)
+		}
+	}
+	if got := CanonicalUsageProvenance("provider_guess"); got != "" {
+		t.Fatalf("CanonicalUsageProvenance(unknown) = %q, want empty", got)
+	}
+}
+
 func TestManagerDequeueClearsConsumedContextAndBackingArray(t *testing.T) {
 	m := NewManager(2)
 	ctx := context.WithValue(context.Background(), struct{}{}, bytesMarker(1))

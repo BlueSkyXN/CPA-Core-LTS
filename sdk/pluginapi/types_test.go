@@ -61,6 +61,7 @@ func TestUsageRecordServiceTierJSONCompatibility(t *testing.T) {
 		OutboundServiceTier:  "Scale",
 		ResponseServiceTier:  "default",
 		EffectiveServiceTier: "standard",
+		UsageProvenance:      "provider_reported_unverified",
 	})
 	if errMarshal != nil {
 		t.Fatalf("marshal UsageRecord: %v", errMarshal)
@@ -70,7 +71,7 @@ func TestUsageRecordServiceTierJSONCompatibility(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(raw, &fields); errUnmarshal != nil {
 		t.Fatalf("decode UsageRecord fields: %v", errUnmarshal)
 	}
-	for _, field := range []string{"RequestServiceTier", "OutboundServiceTier", "ResponseServiceTier", "EffectiveServiceTier"} {
+	for _, field := range []string{"RequestServiceTier", "OutboundServiceTier", "ResponseServiceTier", "EffectiveServiceTier", "UsageProvenance"} {
 		if _, ok := fields[field]; !ok {
 			t.Fatalf("UsageRecord JSON missing %s: %s", field, raw)
 		}
@@ -83,7 +84,7 @@ func TestUsageRecordServiceTierJSONCompatibility(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(emptyRaw, &emptyFields); errUnmarshal != nil {
 		t.Fatalf("decode empty-tier UsageRecord fields: %v", errUnmarshal)
 	}
-	for _, field := range []string{"RequestServiceTier", "OutboundServiceTier", "ResponseServiceTier", "EffectiveServiceTier"} {
+	for _, field := range []string{"RequestServiceTier", "OutboundServiceTier", "ResponseServiceTier", "EffectiveServiceTier", "UsageProvenance"} {
 		if _, ok := emptyFields[field]; ok {
 			t.Fatalf("empty UsageRecord JSON unexpectedly includes %s: %s", field, emptyRaw)
 		}

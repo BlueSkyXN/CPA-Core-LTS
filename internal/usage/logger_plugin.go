@@ -103,6 +103,7 @@ type RequestDetail struct {
 	Timestamp            time.Time  `json:"timestamp"`
 	LatencyMs            int64      `json:"latency_ms"`
 	Source               string     `json:"source"`
+	UsageProvenance      string     `json:"usage_provenance,omitempty"`
 	AuthIndex            string     `json:"auth_index"`
 	Alias                string     `json:"alias,omitempty"`
 	ReasoningEffort      string     `json:"reasoning_effort,omitempty"`
@@ -470,6 +471,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Timestamp:            timestamp,
 		LatencyMs:            normaliseLatency(record.Latency),
 		Source:               record.Source,
+		UsageProvenance:      coreusage.CanonicalUsageProvenance(record.UsageProvenance),
 		AuthIndex:            record.AuthIndex,
 		Alias:                strings.TrimSpace(record.Alias),
 		ReasoningEffort:      strings.TrimSpace(record.ReasoningEffort),
@@ -642,6 +644,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeRes
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				detail = normaliseServiceTierAliases(detail)
+				detail.UsageProvenance = coreusage.CanonicalUsageProvenance(detail.UsageProvenance)
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
 				}

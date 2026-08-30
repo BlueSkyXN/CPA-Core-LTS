@@ -1,5 +1,6 @@
 EXAMPLES := simple model auth frontend-auth executor protocol-format request-translator request-normalizer response-translator response-normalizer thinking usage cli management-api host-callback host-callback-auth-files host-model-callback claude-web-search-router
 LANGUAGES := go c rust
+GO_ONLY_EXAMPLES := codebuddy qoder
 BIN_DIR := $(CURDIR)/bin
 BUILD_DIR := $(BIN_DIR)/build
 
@@ -21,10 +22,11 @@ endif
 
 .PHONY: build list clean
 
-build: $(foreach example,$(EXAMPLES),$(foreach lang,$(LANGUAGES),$(BIN_DIR)/$(example)-$(lang).$(PLUGIN_EXT)))
+build: $(foreach example,$(EXAMPLES),$(foreach lang,$(LANGUAGES),$(BIN_DIR)/$(example)-$(lang).$(PLUGIN_EXT))) $(foreach example,$(GO_ONLY_EXAMPLES),$(BIN_DIR)/$(example)-go.$(PLUGIN_EXT))
 
 list:
 	@$(foreach example,$(EXAMPLES),$(foreach lang,$(LANGUAGES),echo $(example)/$(lang);))
+	@$(foreach example,$(GO_ONLY_EXAMPLES),echo $(example)/go;)
 
 clean:
 	rm -rf $(BIN_DIR)

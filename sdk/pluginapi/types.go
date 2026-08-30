@@ -1548,6 +1548,9 @@ type UsageRecord struct {
 	AuthType string
 	// Source identifies the request source or integration.
 	Source string
+	// UsageProvenance states whether usage is exact, provider-reported but
+	// unverified, estimated, unavailable, or a quota snapshot.
+	UsageProvenance string `json:"UsageProvenance,omitempty"`
 	// ReasoningEffort records the requested reasoning effort.
 	ReasoningEffort string
 	// ServiceTier records the requested or reported service tier.
