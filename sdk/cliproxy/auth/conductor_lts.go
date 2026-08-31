@@ -1072,10 +1072,16 @@ func isRequestScopedModelNotFoundMessage(message string) bool {
 // preserving the already-admitted target auth/model attempt that triggered a
 // context-reset fallback. The source session state is still cleared.
 func (m *Manager) closeExecutionSession(sessionID, preserveAuthID, preserveRouteModel string) {
+	m.closeExecutionSessionScoped(sessionID, "", "", preserveAuthID, preserveRouteModel)
+}
+
+func (m *Manager) closeExecutionSessionScoped(sessionID, callerScope, workspaceIdentity, preserveAuthID, preserveRouteModel string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if m == nil || sessionID == "" {
 		return
 	}
+	callerScope = strings.TrimSpace(callerScope)
+	workspaceIdentity = strings.TrimSpace(workspaceIdentity)
 
 	m.mu.Lock()
 	var selections []*HomeDispatchSelection
@@ -1114,6 +1120,10 @@ func (m *Manager) closeExecutionSession(sessionID, preserveAuthID, preserveRoute
 		selection.End("session_closed")
 	}
 	for i := range executors {
+		if closer, ok := executors[i].(ScopedExecutionSessionCloser); ok && closer != nil {
+			closer.CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity)
+			continue
+		}
 		if closer, ok := executors[i].(ExecutionSessionCloser); ok && closer != nil {
 			closer.CloseExecutionSession(sessionID)
 		}

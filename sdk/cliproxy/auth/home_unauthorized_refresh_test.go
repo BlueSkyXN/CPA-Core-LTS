@@ -49,6 +49,18 @@ type homeUnauthorizedRefreshExecutor struct {
 	refreshCalls    atomic.Int32
 }
 
+type homeRetryAdmissionExecutor struct {
+	*homeUnauthorizedRefreshExecutor
+	admissionCalls atomic.Int32
+}
+
+func (e *homeRetryAdmissionExecutor) AdmitExecution(ctx context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (context.Context, error) {
+	if e.admissionCalls.Add(1) == 2 {
+		return ctx, NewRequestScopedError("refreshed Home execution is not ready", http.StatusServiceUnavailable)
+	}
+	return ctx, nil
+}
+
 func (*homeUnauthorizedRefreshExecutor) Identifier() string { return homeUnauthorizedRefreshProvider }
 
 func (e *homeUnauthorizedRefreshExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -164,6 +176,81 @@ func TestHomeUnauthorizedRefreshesSameSelectionBeforeRedispatch(t *testing.T) {
 			}
 			if test.name == "count_tokens" && executor.countCalls.Load() != 2 {
 				t.Fatalf("count calls = %d, want 2", executor.countCalls.Load())
+			}
+		})
+	}
+}
+
+func TestHomeUnauthorizedRefreshRetryRequiresFreshPreDispatchAdmission(t *testing.T) {
+	tests := []struct {
+		name       string
+		streamMode string
+		run        func(*Manager, cliproxyexecutor.Options) error
+		callCount  func(*homeUnauthorizedRefreshExecutor) int32
+	}{
+		{
+			name: "execute",
+			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
+				_, errExecute := manager.Execute(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
+				return errExecute
+			},
+			callCount: func(executor *homeUnauthorizedRefreshExecutor) int32 { return executor.executeCalls.Load() },
+		},
+		{
+			name: "count_tokens",
+			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
+				_, errCount := manager.ExecuteCount(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
+				return errCount
+			},
+			callCount: func(executor *homeUnauthorizedRefreshExecutor) int32 { return executor.countCalls.Load() },
+		},
+		{
+			name: "stream_immediate",
+			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
+				_, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
+				return errStream
+			},
+			callCount: func(executor *homeUnauthorizedRefreshExecutor) int32 { return executor.streamCalls.Load() },
+		},
+		{
+			name:       "stream_bootstrap",
+			streamMode: "bootstrap",
+			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
+				_, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
+				return errStream
+			},
+			callCount: func(executor *homeUnauthorizedRefreshExecutor) int32 { return executor.streamCalls.Load() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dispatcher := &homeUnauthorizedRefreshDispatcher{}
+			baseExecutor := &homeUnauthorizedRefreshExecutor{streamMode: tt.streamMode}
+			executor := &homeRetryAdmissionExecutor{homeUnauthorizedRefreshExecutor: baseExecutor}
+			manager := NewManager(nil, nil, nil)
+			manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+			manager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
+			manager.RegisterExecutor(executor)
+			selected := 0
+			opts := cliproxyexecutor.Options{Metadata: map[string]any{
+				cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(string) { selected++ },
+			}}
+
+			if errRun := tt.run(manager, opts); errRun == nil {
+				t.Fatal("execution error = nil, want retry admission rejection")
+			}
+			if got := executor.admissionCalls.Load(); got != 2 {
+				t.Fatalf("admission calls = %d, want one per attempted invocation", got)
+			}
+			if got := tt.callCount(baseExecutor); got != 1 {
+				t.Fatalf("executor calls = %d, want retry blocked before second invocation", got)
+			}
+			if got := baseExecutor.refreshCalls.Load(); got != 1 {
+				t.Fatalf("refresh calls = %d, want 1", got)
+			}
+			if selected != 1 {
+				t.Fatalf("selected-auth callbacks = %d, want only the initial dispatched attempt", selected)
 			}
 		})
 	}

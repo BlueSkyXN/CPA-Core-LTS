@@ -237,13 +237,18 @@ func contextWithQuery(query url.Values) context.Context {
 func TestRequestLifecycleTrackerUsesUniqueExecutionIDs(t *testing.T) {
 	handler := NewBaseAPIHandlers(nil, nil)
 	ctx := logging.WithRequestID(context.Background(), "trace-1")
-	first := handler.newRequestLifecycleTracker(ctx, "openai", "model", "model", false, nil, "")
-	second := handler.newRequestLifecycleTracker(ctx, "openai", "model", "model", false, nil, "")
+	firstMetadata := make(map[string]any)
+	secondMetadata := make(map[string]any)
+	first := handler.newRequestLifecycleTracker(ctx, "openai", "model", "model", false, firstMetadata, "")
+	second := handler.newRequestLifecycleTracker(ctx, "openai", "model", "model", false, secondMetadata, "")
 	if first.requestID() == "" || second.requestID() == "" || first.requestID() == second.requestID() {
 		t.Fatalf("lifecycle request IDs = %q and %q", first.requestID(), second.requestID())
 	}
 	if first.completion.TraceID != "trace-1" || second.completion.TraceID != "trace-1" {
 		t.Fatalf("trace IDs = %q and %q", first.completion.TraceID, second.completion.TraceID)
+	}
+	if firstMetadata[coreexecutor.RequestIDMetadataKey] != first.requestID() || secondMetadata[coreexecutor.RequestIDMetadataKey] != second.requestID() {
+		t.Fatalf("execution metadata request IDs = %#v and %#v", firstMetadata, secondMetadata)
 	}
 }
 

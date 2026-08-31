@@ -247,6 +247,16 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}
+		admittedCtx, errAdmission := admitExecutorExecution(ctx, executor, auth, execReq, execOpts)
+		if errAdmission != nil {
+			m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+			if errCtx := ctx.Err(); errCtx != nil {
+				return nil, errCtx
+			}
+			return nil, errAdmission
+		}
+		ctx = admittedCtx
+		m.commitPreDispatchSelection(auth, execOpts)
 		entry := logEntryWithRequestID(ctx)
 		startStream := time.Now()
 		if !selectedPublished {
@@ -284,9 +294,19 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
 					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
-					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
+					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(ctx, executor, auth, execReq, execOpts)
+					if errRetryAdmission != nil {
+						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+						if errCtx := ctx.Err(); errCtx != nil {
+							return nil, errCtx
+						}
+						return nil, errRetryAdmission
+					}
+					ctx = admittedRetryCtx
+					m.commitPreDispatchSelection(auth, execOpts)
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					startRetry := time.Now()
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
@@ -378,9 +398,19 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
 					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
-					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
+					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(ctx, executor, auth, execReq, execOpts)
+					if errRetryAdmission != nil {
+						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
+						if errCtx := ctx.Err(); errCtx != nil {
+							return nil, errCtx
+						}
+						return nil, errRetryAdmission
+					}
+					ctx = admittedRetryCtx
+					m.commitPreDispatchSelection(auth, execOpts)
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					startRetry := time.Now()
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)

@@ -27,6 +27,9 @@ type rpcCapabilities struct {
 	Scheduler                     bool                         `json:"scheduler"`
 	ModelRouter                   bool                         `json:"model_router"`
 	Executor                      bool                         `json:"executor"`
+	ExecutionCanceller            bool                         `json:"execution_canceller"`
+	ExecutionSessionCloser        bool                         `json:"execution_session_closer"`
+	ProviderReadiness             bool                         `json:"provider_readiness"`
 	ExecutorModelScope            pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats          []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats         []string                     `json:"executor_output_formats,omitempty"`
@@ -144,6 +147,9 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		Scheduler:                     caps.Scheduler != nil,
 		ModelRouter:                   caps.ModelRouter != nil,
 		Executor:                      caps.Executor != nil,
+		ExecutionCanceller:            caps.ExecutionCanceller != nil,
+		ExecutionSessionCloser:        caps.ExecutionSessionCloser != nil,
+		ProviderReadiness:             caps.ProviderReadiness != nil,
 		ExecutorModelScope:            normalizedExecutorModelScope(caps),
 		ExecutorInputFormats:          append([]string(nil), caps.ExecutorInputFormats...),
 		ExecutorOutputFormats:         append([]string(nil), caps.ExecutorOutputFormats...),

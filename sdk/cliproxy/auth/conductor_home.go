@@ -1338,16 +1338,34 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		}
 		c.auth = preparedAuth
 		creditsCtx = contextWithAuthGeneration(creditsCtx, c.auth)
-		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
 		}
+		selectedPublished := false
+		admissionRejected := false
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(c.auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
-			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+			execCtx := newUpstreamAttemptContext(creditsCtx)
+			admittedCtx, errAdmission := admitExecutorExecution(execCtx, c.executor, c.auth, execReq, creditsOpts)
+			if errAdmission != nil {
+				if errCtx := execCtx.Err(); errCtx != nil {
+					return cliproxyexecutor.Response{}, false, errCtx
+				}
+				if isRequestInvalidError(errAdmission) {
+					return cliproxyexecutor.Response{}, false, errAdmission
+				}
+				admissionRejected = true
+				break
+			}
+			m.commitPreDispatchSelection(c.auth, creditsOpts)
+			if !selectedPublished {
+				publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
+				selectedPublished = true
+			}
+			resp, errExec := c.executor.Execute(admittedCtx, c.auth, execReq, creditsOpts)
 			result := resultForAuthWithOptions(c.auth, c.provider, resultModel, errExec == nil, nil, creditsOpts)
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
@@ -1357,16 +1375,19 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				if isCredentialScopedError(errExec) {
 					result.CredentialScope = true
 				}
-				m.MarkResult(creditsCtx, result)
+				m.MarkResult(admittedCtx, result)
 				if result.CredentialScope {
 					break
 				}
 				continue
 			}
-			m.MarkResult(creditsCtx, result)
+			m.MarkResult(admittedCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, c.auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, true, nil
+		}
+		if admissionRejected {
+			continue
 		}
 	}
 	return cliproxyexecutor.Response{}, false, nil
@@ -1400,13 +1421,15 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		}
 		c.auth = preparedAuth
 		creditsCtx = contextWithAuthGeneration(creditsCtx, c.auth)
-		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
 			continue
 		}
 		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false, nil)
 		if errStream != nil {
+			if isRequestInvalidError(errStream) {
+				return nil, false, errStream
+			}
 			continue
 		}
 		return result, true, nil

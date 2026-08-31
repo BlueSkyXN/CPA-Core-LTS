@@ -2922,6 +2922,7 @@ func TestExecutorAdapterMethods(t *testing.T) {
 	)
 	auth := &coreauth.Auth{
 		ID:       "auth-1",
+		Index:    "auth-index-1",
 		Provider: "plugin-provider",
 		Metadata: map[string]any{"old": "value"},
 	}
@@ -2940,7 +2941,9 @@ func TestExecutorAdapterMethods(t *testing.T) {
 		OriginalRequest: []byte("original"),
 		SourceFormat:    sdktranslator.FormatOpenAI,
 		Metadata: map[string]any{
-			"opt": "metadata",
+			"opt":                                    "metadata",
+			coreexecutor.RequestIDMetadataKey:        "request-1",
+			coreexecutor.ExecutionSessionMetadataKey: "execution-session-1",
 		},
 	}
 
@@ -3665,7 +3668,7 @@ func (e *fakeExecutor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHT
 
 func assertExecutorRequest(t *testing.T, req pluginapi.ExecutorRequest) {
 	t.Helper()
-	if req.AuthID != "auth-1" || req.AuthProvider != "plugin-provider" || req.Model != "model-1" || req.Format != sdktranslator.FormatOpenAI.String() ||
+	if req.RequestID != "request-1" || req.ExecutionSessionID != "execution-session-1" || req.AuthID != "auth-1" || req.AuthIndex != "auth-index-1" || req.AuthProvider != "plugin-provider" || req.Model != "model-1" || req.Format != sdktranslator.FormatOpenAI.String() ||
 		!req.Stream || req.Alt != "alt" || req.Headers.Get("X-Request") != "yes" || string(req.OriginalRequest) != "original" ||
 		req.SourceFormat != sdktranslator.FormatOpenAI.String() || string(req.Payload) != "payload" ||
 		req.Metadata["req"] != "metadata" || req.Metadata["opt"] != "metadata" {

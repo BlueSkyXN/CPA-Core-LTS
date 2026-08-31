@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -48,6 +50,17 @@ var responsesWebsocketUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
+}
+
+func responsesWebsocketCallerScope(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, exists := c.Get("userApiKey")
+	if !exists || value == nil {
+		return ""
+	}
+	return cliproxysession.CallerScope(fmt.Sprint(value))
 }
 
 // writeWebsocketCloseForUpstreamError mirrors transport-level upstream close
@@ -259,6 +272,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 	writer := newResponsesWebsocketWriter(conn)
 	passthroughSessionID := uuid.NewString()
+	callerScope := responsesWebsocketCallerScope(c)
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
 	retainResponsesWebsocketToolCaches(downstreamSessionKey)
 	clientIP := websocketClientAddress(c)
@@ -305,7 +319,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			log.Infof("responses websocket: session closing id=%s", passthroughSessionID)
 		}
 		if h != nil && h.AuthManager != nil {
-			h.AuthManager.CloseExecutionSession(passthroughSessionID)
+			h.AuthManager.CloseExecutionSessionScoped(passthroughSessionID, callerScope, "")
 			log.Infof("responses websocket: upstream execution session closed id=%s", passthroughSessionID)
 		}
 		wsTimelineLog.SetContext(c)

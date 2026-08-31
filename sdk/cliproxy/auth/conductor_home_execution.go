@@ -114,7 +114,6 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			selection.End("runtime_auth_bind_failed")
 			return cliproxyexecutor.Response{}, errRuntimeAuth
 		}
-		publishSelectedAuthMetadata(opts.Metadata, auth)
 		execCtx, releaseAttempt, errBind := homeExecutionAttemptContext(ctx, selection)
 		if errBind != nil {
 			selection.End("attempt_bind_failed")
@@ -156,6 +155,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			continue
 		}
 		didRefreshOnUnauthorized := false
+		selectedPublished := false
 		for _, upstreamModel := range models {
 			execCtx = newUpstreamAttemptContext(execCtx)
 			resultModel := m.stateModelForExecution(preparedAuth, routeModel, upstreamModel, pooled)
@@ -180,6 +180,28 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				releaseAttempt()
 				selection.End("attempt_canceled")
 				return cliproxyexecutor.Response{}, errCtx
+			}
+			admittedCtx, errAdmission := admitExecutorExecution(execCtx, selection.Executor, preparedAuth, execReq, execOpts)
+			if errAdmission != nil {
+				m.releasePreDispatchSelection(preparedAuth, selection.Provider, resultModel, execOpts)
+				if errCtx := execCtx.Err(); errCtx != nil {
+					releaseAttempt()
+					selection.End("attempt_canceled")
+					return cliproxyexecutor.Response{}, errCtx
+				}
+				if isRequestInvalidError(errAdmission) {
+					releaseAttempt()
+					selection.End("execution_not_admitted")
+					return cliproxyexecutor.Response{}, errAdmission
+				}
+				lastErr = errAdmission
+				break
+			}
+			execCtx = admittedCtx
+			m.commitPreDispatchSelection(preparedAuth, execOpts)
+			if !selectedPublished {
+				publishSelectedAuthMetadata(execOpts.Metadata, preparedAuth)
+				selectedPublished = true
 			}
 			var response cliproxyexecutor.Response
 			var errExecute error
@@ -232,13 +254,31 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 					preparedAuth = refreshed
 					m.replaceHomeSelectionAuth(selection, preparedAuth)
 					didRefreshOnUnauthorized = true
-					publishSelectedAuthMetadata(opts.Metadata, preparedAuth)
 					setEffectiveAuth(preparedAuth)
 					execCtx = newUpstreamAttemptContext(execCtx)
+					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(execCtx, selection.Executor, preparedAuth, execReq, execOpts)
+					if errRetryAdmission != nil {
+						m.releasePreDispatchSelection(preparedAuth, selection.Provider, resultModel, execOpts)
+						if errCtx := execCtx.Err(); errCtx != nil {
+							releaseAttempt()
+							selection.End("attempt_canceled")
+							return cliproxyexecutor.Response{}, errCtx
+						}
+						if isRequestInvalidError(errRetryAdmission) {
+							releaseAttempt()
+							selection.End("execution_not_admitted")
+							return cliproxyexecutor.Response{}, errRetryAdmission
+						}
+						lastErr = errRetryAdmission
+						break
+					}
+					execCtx = admittedRetryCtx
+					m.commitPreDispatchSelection(preparedAuth, execOpts)
 					executorCtx = execCtx
 					if countTokens {
 						executorCtx = withAccessTokenFingerprintObserver(execCtx, setEffectiveAuth)
 					}
+					publishSelectedAuthMetadata(execOpts.Metadata, preparedAuth)
 					startHomeRetry := time.Now()
 					response, errExecute = execute()
 					durationHomeRetry := time.Since(startHomeRetry)

@@ -14,6 +14,8 @@ type replaceAwareExecutor struct {
 
 	mu               sync.Mutex
 	closedSessionIDs []string
+	closedScopes     [][3]string
+	closedAuths      [][2]string
 }
 
 func (e *replaceAwareExecutor) Identifier() string {
@@ -48,12 +50,37 @@ func (e *replaceAwareExecutor) CloseExecutionSession(sessionID string) {
 	e.closedSessionIDs = append(e.closedSessionIDs, sessionID)
 }
 
+func (e *replaceAwareExecutor) CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closedSessionIDs = append(e.closedSessionIDs, sessionID)
+	e.closedScopes = append(e.closedScopes, [3]string{sessionID, callerScope, workspaceIdentity})
+}
+
 func (e *replaceAwareExecutor) ClosedSessionIDs() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]string, len(e.closedSessionIDs))
 	copy(out, e.closedSessionIDs)
 	return out
+}
+
+func (e *replaceAwareExecutor) ClosedScopes() [][3]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([][3]string(nil), e.closedScopes...)
+}
+
+func (e *replaceAwareExecutor) CloseExecutionSessionsForAuth(authID, authIndex string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closedAuths = append(e.closedAuths, [2]string{authID, authIndex})
+}
+
+func (e *replaceAwareExecutor) ClosedAuths() [][2]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([][2]string(nil), e.closedAuths...)
 }
 
 func TestManagerRegisterExecutorClosesReplacedExecutionSessions(t *testing.T) {
@@ -100,5 +127,58 @@ func TestManagerExecutorReturnsRegisteredExecutor(t *testing.T) {
 	_, okMissing := manager.Executor("unknown")
 	if okMissing {
 		t.Fatal("expected unknown provider lookup to fail")
+	}
+}
+
+func TestManagerUnregisterExecutorClosesExecutionSessions(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	executor := &replaceAwareExecutor{id: "codex"}
+	manager.RegisterExecutor(executor)
+	manager.UnregisterExecutor("CODEX")
+
+	closed := executor.ClosedSessionIDs()
+	if len(closed) != 1 || closed[0] != CloseAllExecutionSessionsID {
+		t.Fatalf("unregister close calls = %#v, want %q", closed, CloseAllExecutionSessionsID)
+	}
+	if _, ok := manager.Executor("codex"); ok {
+		t.Fatal("executor remains registered after UnregisterExecutor")
+	}
+}
+
+func TestManagerRemoveClosesOnlyRemovedAuthSessionsWhenSupported(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	executor := &replaceAwareExecutor{id: "codex"}
+	manager.RegisterExecutor(executor)
+	auth := &Auth{ID: "auth-1", Index: "index-1", Provider: "codex"}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	manager.Remove(context.Background(), auth.ID)
+	closedAuths := executor.ClosedAuths()
+	if len(closedAuths) != 1 || closedAuths[0] != [2]string{"auth-1", "index-1"} {
+		t.Fatalf("auth-scoped close calls = %#v", closedAuths)
+	}
+	if closed := executor.ClosedSessionIDs(); len(closed) != 0 {
+		t.Fatalf("provider-wide close calls = %#v, want none", closed)
+	}
+}
+
+func TestManagerCloseExecutionSessionPreservesCallerWorkspaceScope(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	executor := &replaceAwareExecutor{id: "plugin-provider"}
+	manager.RegisterExecutor(executor)
+
+	manager.CloseExecutionSessionScoped("session-1", "caller-1", "workspace-1")
+
+	closedScopes := executor.ClosedScopes()
+	if len(closedScopes) != 1 || closedScopes[0] != [3]string{"session-1", "caller-1", "workspace-1"} {
+		t.Fatalf("scoped close calls = %#v", closedScopes)
 	}
 }

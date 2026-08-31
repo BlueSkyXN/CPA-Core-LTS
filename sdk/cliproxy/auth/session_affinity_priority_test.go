@@ -116,6 +116,40 @@ func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *t
 	}
 }
 
+func TestManagerSelectAuthWithRequestIDKeepsImmediateSessionAffinity(t *testing.T) {
+	ctx := context.Background()
+	provider := "select-auth-request-id-affinity"
+	model := "select-auth-request-id-model"
+	manager := NewManager(nil, nil, nil)
+	affinity := NewSessionAffinitySelector(&RoundRobinSelector{})
+	defer affinity.Stop()
+	manager.SetSelector(affinity)
+	manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
+	for _, authID := range []string{"auth-A", "auth-B"} {
+		if _, errRegister := manager.Register(WithSkipPersist(ctx), &Auth{ID: authID, Provider: provider, Status: StatusActive}); errRegister != nil {
+			t.Fatalf("Register(%s): %v", authID, errRegister)
+		}
+		registry.GetGlobalRegistry().RegisterClient(authID, provider, []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+	}
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.RequestIDMetadataKey:        "sdk-selection-request",
+		cliproxyexecutor.DerivedSessionIDMetadataKey: "sdk-selection-session",
+	}}
+
+	first, errFirst := manager.SelectAuth(ctx, provider, model, opts)
+	if errFirst != nil {
+		t.Fatalf("first SelectAuth() error = %v", errFirst)
+	}
+	second, errSecond := manager.SelectAuth(ctx, provider, model, opts)
+	if errSecond != nil {
+		t.Fatalf("second SelectAuth() error = %v", errSecond)
+	}
+	if first == nil || second == nil || first.ID != second.ID {
+		t.Fatalf("SelectAuth() affinity = first:%#v second:%#v, want same established auth", first, second)
+	}
+}
+
 func TestSessionAffinityFallbackOnlyReceivesHighestAvailablePriority(t *testing.T) {
 	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
 		Fallback: lastAuthSelector{},

@@ -48,6 +48,9 @@ func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	if replaced == nil || replaced == executor {
 		return
 	}
+	if compatible, ok := replaced.(ExecutionSessionReplacementCompatible); ok && compatible.CompatibleExecutorReplacement(executor) {
+		return
+	}
 	if closer, ok := replaced.(ExecutionSessionCloser); ok && closer != nil {
 		closer.CloseExecutionSession(CloseAllExecutionSessionsID)
 	}
@@ -60,8 +63,12 @@ func (m *Manager) UnregisterExecutor(provider string) {
 		return
 	}
 	m.mu.Lock()
+	removed := m.executors[provider]
 	delete(m.executors, provider)
 	m.mu.Unlock()
+	if closer, ok := removed.(ExecutionSessionCloser); ok && closer != nil {
+		closer.CloseExecutionSession(CloseAllExecutionSessionsID)
+	}
 }
 
 // Register inserts a new auth entry into the manager.
@@ -232,7 +239,9 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 
 	if provider != "" {
 		if exec, ok := m.Executor(provider); ok && exec != nil {
-			if closer, okCloser := exec.(ExecutionSessionCloser); okCloser {
+			if closer, okCloser := exec.(AuthExecutionSessionCloser); okCloser {
+				closer.CloseExecutionSessionsForAuth(existing.ID, existing.Index)
+			} else if closer, okCloser := exec.(ExecutionSessionCloser); okCloser {
 				closer.CloseExecutionSession(CloseAllExecutionSessionsID)
 			}
 		}

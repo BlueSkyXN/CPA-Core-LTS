@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,9 @@ var _ FrontendAuthProvider = (*compileTimePlugin)(nil)
 var _ Scheduler = (*compileTimePlugin)(nil)
 var _ ModelRouter = (*compileTimePlugin)(nil)
 var _ ProviderExecutor = (*compileTimePlugin)(nil)
+var _ ExecutionCanceller = (*compileTimePlugin)(nil)
+var _ ExecutionSessionCloser = (*compileTimePlugin)(nil)
+var _ ProviderReadiness = (*compileTimePlugin)(nil)
 var _ HostHTTPClient = (*compileTimePlugin)(nil)
 var _ RequestTranslator = (*compileTimePlugin)(nil)
 var _ RequestNormalizer = (*compileTimePlugin)(nil)
@@ -241,6 +245,99 @@ func TestHostInjectedHTTPClientIsNotEncodedInPluginJSON(t *testing.T) {
 		if errUnmarshal := json.Unmarshal(withLegacyHTTPClient, tt.dst); errUnmarshal != nil {
 			t.Fatalf("%s unmarshal with legacy HTTPClient object error = %v", tt.name, errUnmarshal)
 		}
+	}
+}
+
+func TestExecutionLifecycleTypesRoundTrip(t *testing.T) {
+	cancelRequest := CancelExecutionRequest{
+		RequestID:          "request-1",
+		ExecutionSessionID: "session-1",
+		CallerScope:        "caller-scope-1",
+		WorkspaceIdentity:  "workspace-1",
+		Provider:           "codebuddy",
+		AuthID:             "auth-1",
+		AuthIndex:          "index-1",
+		Reason:             ExecutionCancelReasonExplicit,
+	}
+	rawCancel, errMarshalCancel := json.Marshal(cancelRequest)
+	if errMarshalCancel != nil {
+		t.Fatalf("marshal CancelExecutionRequest: %v", errMarshalCancel)
+	}
+	var decodedCancel CancelExecutionRequest
+	if errUnmarshalCancel := json.Unmarshal(rawCancel, &decodedCancel); errUnmarshalCancel != nil {
+		t.Fatalf("unmarshal CancelExecutionRequest: %v", errUnmarshalCancel)
+	}
+	if decodedCancel != cancelRequest {
+		t.Fatalf("CancelExecutionRequest round trip = %#v, want %#v", decodedCancel, cancelRequest)
+	}
+
+	closeRequest := CloseExecutionSessionRequest{
+		Scope:     ExecutionSessionCloseScopeAuth,
+		Provider:  "qoder",
+		AuthID:    "auth-2",
+		AuthIndex: "index-2",
+	}
+	rawClose, errMarshalClose := json.Marshal(closeRequest)
+	if errMarshalClose != nil {
+		t.Fatalf("marshal CloseExecutionSessionRequest: %v", errMarshalClose)
+	}
+	var decodedClose CloseExecutionSessionRequest
+	if errUnmarshalClose := json.Unmarshal(rawClose, &decodedClose); errUnmarshalClose != nil {
+		t.Fatalf("unmarshal CloseExecutionSessionRequest: %v", errUnmarshalClose)
+	}
+	if decodedClose != closeRequest {
+		t.Fatalf("CloseExecutionSessionRequest round trip = %#v, want %#v", decodedClose, closeRequest)
+	}
+
+	readinessRequest := ReadinessRequest{
+		Purpose:            ReadinessPurposeAdmission,
+		Provider:           "qoder",
+		Model:              "qwen-test",
+		AuthID:             "auth-2",
+		AuthIndex:          "index-2",
+		AuthProvider:       "qoder",
+		StorageJSON:        []byte(`{"access_token":"test-only"}`),
+		AuthMetadata:       map[string]any{"account_id": "account-2"},
+		AuthAttributes:     map[string]string{"auth_mode": "pat"},
+		ExecutionSessionID: "session-2",
+		CallerScope:        "caller-scope-2",
+		WorkspaceIdentity:  "workspace-2",
+	}
+	rawReadinessRequest, errMarshalReadinessRequest := json.Marshal(readinessRequest)
+	if errMarshalReadinessRequest != nil {
+		t.Fatalf("marshal ReadinessRequest: %v", errMarshalReadinessRequest)
+	}
+	var decodedReadinessRequest ReadinessRequest
+	if errUnmarshalReadinessRequest := json.Unmarshal(rawReadinessRequest, &decodedReadinessRequest); errUnmarshalReadinessRequest != nil {
+		t.Fatalf("unmarshal ReadinessRequest: %v", errUnmarshalReadinessRequest)
+	}
+	if !reflect.DeepEqual(decodedReadinessRequest, readinessRequest) {
+		t.Fatalf("ReadinessRequest round trip = %#v, want %#v", decodedReadinessRequest, readinessRequest)
+	}
+
+	readiness := ReadinessResponse{
+		Provider:     "qoder",
+		Ready:        true,
+		Generation:   "runner-generation-2",
+		Capabilities: []string{"sessions", "cancel", "close"},
+		Checks: []ReadinessCheck{
+			{Level: ReadinessLevelPluginInstalled, State: ReadinessStateReady, Version: "1.0.0"},
+			{Level: ReadinessLevelRunnerInstalled, State: ReadinessStateReady, Version: "1.0.10"},
+			{Level: ReadinessLevelProtocolReady, State: ReadinessStateReady},
+			{Level: ReadinessLevelAuthReady, State: ReadinessStateReady},
+			{Level: ReadinessLevelSessionReady, State: ReadinessStateReady},
+		},
+	}
+	rawReadiness, errMarshalReadiness := json.Marshal(readiness)
+	if errMarshalReadiness != nil {
+		t.Fatalf("marshal ReadinessResponse: %v", errMarshalReadiness)
+	}
+	var decodedReadiness ReadinessResponse
+	if errUnmarshalReadiness := json.Unmarshal(rawReadiness, &decodedReadiness); errUnmarshalReadiness != nil {
+		t.Fatalf("unmarshal ReadinessResponse: %v", errUnmarshalReadiness)
+	}
+	if decodedReadiness.Provider != readiness.Provider || !decodedReadiness.Ready || len(decodedReadiness.Checks) != 5 {
+		t.Fatalf("ReadinessResponse round trip = %#v, want five ready levels", decodedReadiness)
 	}
 }
 
@@ -557,6 +654,16 @@ func (compileTimePlugin) CountTokens(context.Context, ExecutorRequest) (Executor
 
 func (compileTimePlugin) HttpRequest(context.Context, ExecutorHTTPRequest) (ExecutorHTTPResponse, error) {
 	return ExecutorHTTPResponse{}, nil
+}
+
+func (compileTimePlugin) CancelExecution(context.Context, CancelExecutionRequest) error { return nil }
+
+func (compileTimePlugin) CloseExecutionSession(context.Context, CloseExecutionSessionRequest) error {
+	return nil
+}
+
+func (compileTimePlugin) ProbeReadiness(context.Context, ReadinessRequest) (ReadinessResponse, error) {
+	return ReadinessResponse{}, nil
 }
 
 func (compileTimePlugin) Do(context.Context, HTTPRequest) (HTTPResponse, error) {

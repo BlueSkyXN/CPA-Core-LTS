@@ -27,14 +27,17 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 func TestMethodNamesAreStable(t *testing.T) {
-	if SchemaVersion != 4 {
-		t.Fatalf("SchemaVersion = %d, want 4", SchemaVersion)
+	if SchemaVersion != 5 {
+		t.Fatalf("SchemaVersion = %d, want 5", SchemaVersion)
 	}
 	if SchemaVersionWebSocketResponseObserver != 4 {
 		t.Fatalf("SchemaVersionWebSocketResponseObserver = %d, want 4", SchemaVersionWebSocketResponseObserver)
 	}
 	if SchemaVersionStreamChunkOmitRequestBody != 3 {
 		t.Fatalf("SchemaVersionStreamChunkOmitRequestBody = %d, want 3", SchemaVersionStreamChunkOmitRequestBody)
+	}
+	if SchemaVersionExecutionLifecycle != 5 {
+		t.Fatalf("SchemaVersionExecutionLifecycle = %d, want 5", SchemaVersionExecutionLifecycle)
 	}
 	if MethodPluginRegister != "plugin.register" {
 		t.Fatalf("MethodPluginRegister = %q", MethodPluginRegister)
@@ -92,6 +95,15 @@ func TestMethodNamesAreStable(t *testing.T) {
 	}
 	if MethodExecutorExecuteStream != "executor.execute_stream" {
 		t.Fatalf("MethodExecutorExecuteStream = %q", MethodExecutorExecuteStream)
+	}
+	if MethodExecutorCancel != "executor.cancel" {
+		t.Fatalf("MethodExecutorCancel = %q", MethodExecutorCancel)
+	}
+	if MethodExecutorCloseSession != "executor.close_session" {
+		t.Fatalf("MethodExecutorCloseSession = %q", MethodExecutorCloseSession)
+	}
+	if MethodExecutorReadiness != "executor.readiness" {
+		t.Fatalf("MethodExecutorReadiness = %q", MethodExecutorReadiness)
 	}
 }
 

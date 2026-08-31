@@ -1338,8 +1338,17 @@ func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
 	return executor, true
 }
 
+// CloseExecutionSession releases one execution session without an explicit
+// caller/workspace namespace. Callers that have those namespaces should use
+// CloseExecutionSessionScoped to avoid cross-caller session ID collisions.
 func (m *Manager) CloseExecutionSession(sessionID string) {
 	m.closeExecutionSession(sessionID, "", "")
+}
+
+// CloseExecutionSessionScoped releases one execution session within its opaque
+// downstream caller and workspace namespaces.
+func (m *Manager) CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string) {
+	m.closeExecutionSessionScoped(sessionID, callerScope, workspaceIdentity, "", "")
 }
 
 func (m *Manager) useSchedulerFastPath() bool {
@@ -1439,7 +1448,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if !handled {
 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		selected, errPick = pickForExecution(selectorCtx, selector, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
@@ -1779,7 +1788,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if !handled {
 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+		selected, errPick = pickForExecution(selectorCtx, selector, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)

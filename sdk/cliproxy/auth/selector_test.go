@@ -2088,6 +2088,52 @@ func TestSessionCache_GetAndRefresh(t *testing.T) {
 	}
 }
 
+func TestSessionAffinityPreDispatchSelectionsRemainPrivateUntilCommit(t *testing.T) {
+	selector := NewSessionAffinitySelector(&RoundRobinSelector{})
+	defer selector.Stop()
+	auths := []*Auth{{ID: "auth-A"}, {ID: "auth-B"}}
+	newOptions := func() cliproxyexecutor.Options {
+		return cliproxyexecutor.Options{Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "concurrent-cold-session",
+		}}
+	}
+	firstOpts := newOptions()
+	secondOpts := newOptions()
+
+	first, errFirst := selector.PickPreDispatch(context.Background(), "provider", "model-x", firstOpts, auths)
+	if errFirst != nil {
+		t.Fatalf("first PickPreDispatch() error = %v", errFirst)
+	}
+	second, errSecond := selector.PickPreDispatch(context.Background(), "provider", "model-x", secondOpts, auths)
+	if errSecond != nil {
+		t.Fatalf("second PickPreDispatch() error = %v", errSecond)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("concurrent cold selections = %q and %q, want independent fallback picks before commit", first.ID, second.ID)
+	}
+	primaryID, _ := extractSessionIDs(firstOpts.Headers, firstOpts.OriginalRequest, firstOpts.Metadata)
+	cacheKey := "provider::" + primaryID + "::" + canonicalModelKey("model-x")
+	if got, ok := selector.cache.Get(cacheKey); ok {
+		t.Fatalf("shared affinity before admission = %q, want no provisional cache entry", got)
+	}
+
+	selector.ReleasePreDispatchSelection(first.ID, firstOpts)
+	selector.ReleasePreDispatchSelection(second.ID, secondOpts)
+	if got, ok := selector.cache.Get(cacheKey); ok {
+		t.Fatalf("shared affinity after both rejections = %q, want missing", got)
+	}
+
+	committedOpts := newOptions()
+	committed, errCommitted := selector.PickPreDispatch(context.Background(), "provider", "model-x", committedOpts, auths)
+	if errCommitted != nil {
+		t.Fatalf("committed PickPreDispatch() error = %v", errCommitted)
+	}
+	selector.CommitPreDispatchSelection(committed.ID, committedOpts)
+	if got, ok := selector.cache.Get(cacheKey); !ok || got != committed.ID {
+		t.Fatalf("shared affinity after admission commit = %q, %v; want %q, true", got, ok, committed.ID)
+	}
+}
+
 func TestSessionAffinitySelector_RoundRobinDistribution(t *testing.T) {
 	t.Parallel()
 

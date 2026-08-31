@@ -686,6 +686,14 @@ type SessionAffinitySelector struct {
 	cache    *SessionCache
 }
 
+const sessionAffinitySelectionMetadataKey = "__cliproxy_session_affinity_selection"
+
+type sessionAffinitySelectionMarker struct {
+	selector *SessionAffinitySelector
+	authID   string
+	aliases  []string
+}
+
 // SessionAffinityConfig configures the session affinity selector.
 type SessionAffinityConfig struct {
 	Fallback Selector
@@ -728,10 +736,21 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	return s.pick(ctx, provider, model, opts, auths, false)
+}
+
+// PickPreDispatch stages new and rebound affinity until the selected executor
+// passes admission. Established cache hits remain immediately reusable.
+func (s *SessionAffinitySelector) PickPreDispatch(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	return s.pick(ctx, provider, model, opts, auths, true)
+}
+
+func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, deferBinding bool) (*Auth, error) {
 	entry := selectorLogEntry(ctx)
 	if opts.Metadata == nil {
 		opts.Metadata = make(map[string]any)
 	}
+	delete(opts.Metadata, sessionAffinitySelectionMetadataKey)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
@@ -763,18 +782,26 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
-	bind := func(authID string) {
+	bind := func(authID string, established bool) {
+		aliases := []string{cacheKey}
 		if fallbackKey != "" {
-			s.cache.SetAliases(authID, cacheKey, fallbackKey)
+			aliases = append(aliases, fallbackKey)
+		}
+		if deferBinding && !established {
+			opts.Metadata[sessionAffinitySelectionMetadataKey] = &sessionAffinitySelectionMarker{
+				selector: s,
+				authID:   authID,
+				aliases:  append([]string(nil), aliases...),
+			}
 			return
 		}
-		s.cache.Set(cacheKey, authID)
+		s.cache.SetAliases(authID, aliases...)
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
-				bind(auth.ID)
+				bind(auth.ID, true)
 				entry.Infof("session-affinity: cache hit | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 				return auth, nil
 			}
@@ -784,7 +811,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		if err != nil {
 			return nil, err
 		}
-		bind(auth.ID)
+		bind(auth.ID, false)
 		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 		return auth, nil
 	}
@@ -793,7 +820,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
-					bind(auth.ID)
+					bind(auth.ID, true)
 					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
 					return auth, nil
 				}
@@ -805,9 +832,49 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil {
 		return nil, err
 	}
-	bind(auth.ID)
+	bind(auth.ID, false)
 	entry.Infof("session-affinity: cache miss, new binding | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 	return auth, nil
+}
+
+// CommitPreDispatchSelection publishes a staged affinity only after the
+// selected executor passes readiness admission.
+func (s *SessionAffinitySelector) CommitPreDispatchSelection(authID string, opts cliproxyexecutor.Options) {
+	if s == nil || s.cache == nil || len(opts.Metadata) == 0 {
+		return
+	}
+	marker, ok := opts.Metadata[sessionAffinitySelectionMetadataKey].(*sessionAffinitySelectionMarker)
+	delete(opts.Metadata, sessionAffinitySelectionMetadataKey)
+	if !ok || marker == nil || marker.selector != s || marker.authID != authID || len(marker.aliases) == 0 {
+		return
+	}
+	s.cache.SetAliases(authID, marker.aliases...)
+}
+
+// ReleasePreDispatchSelection discards a staged affinity. Because the shared
+// cache is unchanged before admission, concurrent rejected selections cannot
+// promote one another into an established binding.
+func (s *SessionAffinitySelector) ReleasePreDispatchSelection(authID string, opts cliproxyexecutor.Options) {
+	if s == nil || len(opts.Metadata) == 0 {
+		return
+	}
+	marker, ok := opts.Metadata[sessionAffinitySelectionMetadataKey].(*sessionAffinitySelectionMarker)
+	delete(opts.Metadata, sessionAffinitySelectionMetadataKey)
+	if !ok || marker == nil || marker.selector != s || marker.authID != authID {
+		return
+	}
+}
+
+func pickForExecution(ctx context.Context, selector Selector, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	if !preDispatchSelectionEnabled(ctx) {
+		return selector.Pick(ctx, provider, model, opts, auths)
+	}
+	if staged, ok := selector.(interface {
+		PickPreDispatch(context.Context, string, string, cliproxyexecutor.Options, []*Auth) (*Auth, error)
+	}); ok && staged != nil {
+		return staged.PickPreDispatch(ctx, provider, model, opts, auths)
+	}
+	return selector.Pick(ctx, provider, model, opts, auths)
 }
 
 func selectorLogEntry(ctx context.Context) *log.Entry {
