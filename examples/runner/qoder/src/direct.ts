@@ -150,7 +150,8 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     if (!params.chat_request || !isRecord(params.chat_request)) {
       throw new ProtocolError("direct_request_missing", "direct_openai requires the original Chat request");
     }
-    const session = this.sessions.get(params.execution_session_id) ?? {
+    const existing = this.sessions.get(params.execution_session_id);
+    const session = existing ?? {
       executionSessionID: params.execution_session_id,
       nativeSessionID: `direct-${params.execution_session_id}`,
       closed: false,
@@ -171,7 +172,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       toolCalls: new Map(),
     };
     session.current = turn;
-    await this.emit(turn, "session.created", { native_session_id: session.nativeSessionID, transport: this.transport });
+    if (!existing) await this.emit(turn, "session.created", { native_session_id: session.nativeSessionID, transport: this.transport });
     await this.emit(turn, "turn.started", { transport: this.transport });
     void this.runTurn(turn);
     return {
@@ -446,10 +447,12 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     if (type === "turn.completed") {
       for (const [index] of turn.toolCalls) await this.emit(turn, "tool.completed", { index });
       turn.terminal = true;
+      if (turn.session.current === turn) turn.session.current = undefined;
       await this.emit(turn, type, { state: "completed" });
       return;
     }
     turn.terminal = true;
+    if (turn.session.current === turn) turn.session.current = undefined;
     await this.emit(turn, type, { state, code, message, retryable });
   }
 

@@ -333,6 +333,22 @@ test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle
     assert.equal(body.stream_options.include_usage, true);
     assert.deepEqual(body.tools[0].function.parameters, { type: "object" });
     assert.equal(body.metadata.context.request_id, params.request_id);
+    const second = {
+      ...params,
+      request_id: "request-2",
+      turn_id: "turn-2",
+      chat_request: { ...params.chat_request, model: "qfmodel" },
+    };
+    const secondEvents = [];
+    let secondTerminal;
+    const secondCompleted = new Promise((resolve) => { secondTerminal = resolve; });
+    await adapter.start(second, async (event) => {
+      secondEvents.push(event);
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.cancelled") secondTerminal(event);
+    });
+    await secondCompleted;
+    assert.equal(secondEvents[0].type, "turn.started");
+    assert.equal(secondEvents.some((event) => event.type === "session.created"), false);
     await adapter.close(params.execution_session_id);
   } finally {
     delete process.env[envVar];
