@@ -32,6 +32,9 @@ type Record struct {
 	AccessTokenSHA256 string
 	AuthType          string
 	Source            string
+	// UsageProvenance states how trustworthy the reported usage counters are.
+	// Empty preserves the legacy/unknown meaning for existing executors.
+	UsageProvenance string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier.
@@ -61,6 +64,34 @@ type Record struct {
 	Detail      Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
+}
+
+const (
+	UsageProvenanceExact                      = "exact"
+	UsageProvenanceProviderReportedUnverified = "provider_reported_unverified"
+	UsageProvenanceEstimated                  = "estimated"
+	UsageProvenanceUnavailable                = "unavailable"
+	UsageProvenanceQuotaSnapshot              = "quota_snapshot"
+)
+
+// CanonicalUsageProvenance accepts only stable values used by usage sinks.
+// Unknown values remain empty rather than being persisted as an accidental
+// contract.
+func CanonicalUsageProvenance(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case UsageProvenanceExact:
+		return UsageProvenanceExact
+	case UsageProvenanceProviderReportedUnverified:
+		return UsageProvenanceProviderReportedUnverified
+	case UsageProvenanceEstimated:
+		return UsageProvenanceEstimated
+	case UsageProvenanceUnavailable:
+		return UsageProvenanceUnavailable
+	case UsageProvenanceQuotaSnapshot:
+		return UsageProvenanceQuotaSnapshot
+	default:
+		return ""
+	}
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.

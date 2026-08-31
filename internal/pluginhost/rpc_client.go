@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -358,8 +359,17 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 			if message == "" {
 				message = "plugin call failed"
 			}
+			code := strings.TrimSpace(envelope.Error.Code)
+			if code == coreauth.ErrorCodeConnectionLifecycle {
+				return zero, &coreauth.Error{
+					Code:       code,
+					Message:    message,
+					Retryable:  envelope.Error.Retryable,
+					HTTPStatus: envelope.Error.HTTPStatus,
+				}
+			}
 			return zero, rpcError{
-				Code:       strings.TrimSpace(envelope.Error.Code),
+				Code:       code,
 				message:    message,
 				statusCode: envelope.Error.HTTPStatus,
 			}

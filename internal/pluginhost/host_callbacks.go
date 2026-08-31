@@ -328,7 +328,7 @@ func (h *Host) callHostStreamClose(request []byte) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode stream close request: %w", errUnmarshal)
 	}
-	h.streams.close(req.StreamID, req.Error)
+	h.streams.closeStructured(req.StreamID, req.Error, req.ErrorCode, req.Retryable, req.HTTPStatus)
 	return marshalRPCResult(rpcEmptyResponse{})
 }
 

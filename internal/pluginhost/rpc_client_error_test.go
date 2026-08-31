@@ -3,9 +3,11 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 )
 
@@ -40,6 +42,27 @@ func TestDecodeEnvelopeResultPreservesPluginHTTPStatus(t *testing.T) {
 	}
 	if got := statusProvider.StatusCode(); got != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", got, http.StatusForbidden)
+	}
+}
+
+func TestDecodeEnvelopeResultRestoresConnectionLifecycleError(t *testing.T) {
+	_, errDecode := decodeEnvelopeResult[rpcEmptyResponse](pluginabi.Envelope{
+		OK: false,
+		Error: &pluginabi.Error{
+			Code:      coreauth.ErrorCodeConnectionLifecycle,
+			Message:   "Qoder runner event stream was lost",
+			Retryable: true,
+		},
+	})
+	if errDecode == nil {
+		t.Fatal("decodeEnvelopeResult returned nil error")
+	}
+	var authErr *coreauth.Error
+	if !errors.As(errDecode, &authErr) {
+		t.Fatalf("error %T is not a typed auth lifecycle error", errDecode)
+	}
+	if authErr.Code != coreauth.ErrorCodeConnectionLifecycle || !authErr.Retryable || authErr.HTTPStatus != 0 {
+		t.Fatalf("typed lifecycle error = %#v", authErr)
 	}
 }
 

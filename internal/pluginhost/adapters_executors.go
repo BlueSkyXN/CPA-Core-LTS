@@ -13,10 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
@@ -1244,11 +1246,15 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	var reporter *helps.UsageReporter
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "Executor.Execute", recovered)
 			resp = coreexecutor.Response{}
 			err = fmt.Errorf("plugin executor %s panic: %v", a.Identifier(), recovered)
+			if reporter != nil {
+				reporter.PublishFailure(ctx, err)
+			}
 		}
 	}()
 
@@ -1267,12 +1273,27 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	}
 	stopCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
 	defer stopCancellationWatch()
+	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
+		if reporter != nil {
+			reporter.PublishFailure(ctx, ctx.Err())
+		}
 		return coreexecutor.Response{}, ctx.Err()
 	}
 	if errExecute != nil {
+		if reporter != nil {
+			reporter.PublishFailure(ctx, errExecute)
+		}
 		return coreexecutor.Response{}, errExecute
+	}
+	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
+	if reporter != nil {
+		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
+			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
+		}
+		reporter.Publish(ctx, pluginExecutorUsageDetail(prepared.outputFormat, pluginResp.Payload))
+		reporter.EnsurePublished(ctx)
 	}
 	return coreexecutor.Response{
 		Payload:  a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil),
@@ -1285,11 +1306,15 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	var reporter *helps.UsageReporter
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "Executor.ExecuteStream", recovered)
 			result = nil
 			err = fmt.Errorf("plugin executor %s stream panic: %v", a.Identifier(), recovered)
+			if reporter != nil {
+				reporter.PublishFailure(ctx, err)
+			}
 		}
 	}()
 
@@ -1308,14 +1333,26 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	}
 	stopBootstrapCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
 	defer stopBootstrapCancellationWatch()
+	reporter = a.formalUsageReporter(ctx, auth, prepared)
+	if reporter != nil {
+		reporter.StartResponseTTFT()
+	}
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
+		if reporter != nil {
+			reporter.PublishFailure(ctx, ctx.Err())
+		}
 		return nil, ctx.Err()
 	}
 	if errExecuteStream != nil {
+		if reporter != nil {
+			reporter.PublishFailure(ctx, errExecuteStream)
+		}
 		return nil, errExecuteStream
 	}
-	pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, pluginResp.Chunks)
+	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
+	rawPluginChunks := observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, pluginResp.Chunks)
+	pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, rawPluginChunks)
 	return &coreexecutor.StreamResult{
 		Headers: cloneHeader(pluginResp.Headers),
 		Chunks:  mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunks(ctx, prepared, pluginChunks)),

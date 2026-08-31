@@ -37,6 +37,7 @@ const (
 	wsTimelineBodyKey                     = "WEBSOCKET_TIMELINE_OVERRIDE"
 	wsCloseReasonMaxBytes                 = 123
 	wsHTTPReplayRequiredCloseReason       = "upstream requires HTTP replay"
+	responsesWebsocketInboundQueueSize    = 16
 	responsesWebsocketUpstreamModeUnknown = ""
 	responsesWebsocketUpstreamModeWS      = "websocket"
 	responsesWebsocketUpstreamModeHTTP    = "http"
@@ -120,6 +121,99 @@ type responsesWebsocketWriter struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 	closing atomic.Bool
+}
+
+type responsesWebsocketInboundMessage struct {
+	messageType int
+	payload     []byte
+}
+
+func pumpResponsesWebsocketReads(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	conn *websocket.Conn,
+	messages chan<- responsesWebsocketInboundMessage,
+	readErrors chan<- error,
+) {
+	reportError := func(err error) {
+		select {
+		case readErrors <- err:
+		default:
+		}
+		cancel()
+	}
+
+	for {
+		messageType, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			reportError(errRead)
+			return
+		}
+		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+			continue
+		}
+		message := responsesWebsocketInboundMessage{messageType: messageType, payload: payload}
+		select {
+		case messages <- message:
+		case <-ctx.Done():
+			return
+		default:
+			queueErr := &websocket.CloseError{
+				Code: websocket.ClosePolicyViolation,
+				Text: "too many queued response turns",
+			}
+			reportError(queueErr)
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(queueErr.Code, queueErr.Text),
+				time.Now().Add(time.Second),
+			)
+			_ = conn.Close()
+			return
+		}
+	}
+}
+
+func nextResponsesWebsocketInboundMessage(
+	ctx context.Context,
+	messages <-chan responsesWebsocketInboundMessage,
+	readErrors <-chan error,
+) (responsesWebsocketInboundMessage, error) {
+	select {
+	case errRead := <-readErrors:
+		return responsesWebsocketInboundMessage{}, errRead
+	default:
+	}
+	select {
+	case message := <-messages:
+		if ctx.Err() != nil {
+			select {
+			case errRead := <-readErrors:
+				return responsesWebsocketInboundMessage{}, errRead
+			default:
+				return responsesWebsocketInboundMessage{}, ctx.Err()
+			}
+		}
+		return message, nil
+	case errRead := <-readErrors:
+		return responsesWebsocketInboundMessage{}, errRead
+	case <-ctx.Done():
+		select {
+		case errRead := <-readErrors:
+			return responsesWebsocketInboundMessage{}, errRead
+		default:
+			return responsesWebsocketInboundMessage{}, ctx.Err()
+		}
+	}
+}
+
+func pendingResponsesWebsocketReadError(readErrors <-chan error) error {
+	select {
+	case errRead := <-readErrors:
+		return errRead
+	default:
+		return nil
+	}
 }
 
 func newResponsesWebsocketWriter(conn *websocket.Conn) *responsesWebsocketWriter {
@@ -270,6 +364,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	downstreamCtx, downstreamCancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(downstreamCtx)
+	inboundMessages := make(chan responsesWebsocketInboundMessage, responsesWebsocketInboundQueueSize)
+	readErrors := make(chan error, 1)
+	go pumpResponsesWebsocketReads(downstreamCtx, downstreamCancel, conn, inboundMessages, readErrors)
+	defer downstreamCancel()
+
 	writer := newResponsesWebsocketWriter(conn)
 	passthroughSessionID := uuid.NewString()
 	callerScope := responsesWebsocketCallerScope(c)
@@ -389,7 +490,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	forceTranscriptReplayNextRequest := false
 
 	for {
-		msgType, payload, errReadMessage := conn.ReadMessage()
+		message, errReadMessage := nextResponsesWebsocketInboundMessage(downstreamCtx, inboundMessages, readErrors)
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
@@ -399,6 +500,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			return
 		}
+		msgType := message.messageType
+		payload := message.payload
 		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
 			continue
 		}
@@ -642,6 +745,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		)
 		if errForward != nil {
 			wsTerminateErr = errForward
+			if errRead := pendingResponsesWebsocketReadError(readErrors); errRead != nil {
+				wsTerminateErr = errRead
+			}
 			switch {
 			case errors.Is(errForward, websocket.ErrCloseSent):
 			case isWebsocketConnectionClosedError(errForward):
