@@ -104,20 +104,6 @@ func (p *eventProjection) streamChunk(event pluginapi.AgentEventV1) ([]byte, boo
 		var payload pluginapi.AgentTextDeltaV1
 		_ = json.Unmarshal(event.Payload, &payload)
 		return chatChunk(p.requestID, p.model, p.created, map[string]any{"content": payload.Text}, nil, nil), false, nil
-	case pluginapi.AgentEventToolStarted:
-		var tool struct {
-			ToolCallID string         `json:"tool_call_id"`
-			Name       string         `json:"name"`
-			Input      map[string]any `json:"input"`
-		}
-		if json.Unmarshal(event.Payload, &tool) == nil {
-			arguments, _ := json.Marshal(tool.Input)
-			delta := map[string]any{"tool_calls": []any{map[string]any{
-				"index": 0, "id": tool.ToolCallID, "type": "function",
-				"function": map[string]any{"name": tool.Name, "arguments": string(arguments)},
-			}}}
-			return chatChunk(p.requestID, p.model, p.created, delta, nil, nil), false, nil
-		}
 	case pluginapi.AgentEventTurnCompleted:
 		return chatChunk(p.requestID, p.model, p.created, map[string]any{}, "stop", chatUsage(p.usage)), true, nil
 	case pluginapi.AgentEventTurnFailed, pluginapi.AgentEventTurnCancelled, pluginapi.AgentEventSessionClosed:

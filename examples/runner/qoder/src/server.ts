@@ -69,7 +69,10 @@ export class RunnerServer {
           protocol_version: RUNNER_PROTOCOL_VERSION,
           sdk_version: QODER_SDK_VERSION,
           node_version: process.version,
-          capabilities: ["readiness", "models", "sessions", "events", "cancel", "close", "fixed_permissions"],
+          capabilities: [
+            "readiness", "models", "sessions", "events", "cancel", "close", "structured_input",
+            "image_input", "fixed_permissions", "fixed_skills", "fixed_mcp",
+          ],
         };
       case "readiness": {
         const params = asObject<ReadinessParams>(request.params);
@@ -247,6 +250,50 @@ function validateStart(params: StartParams): void {
   if (!params.permission_policy || !["deny", "cancel_turn"].includes(params.permission_policy.default)) {
     throw new ProtocolError("invalid_permission_policy", "fixed permission policy must default to deny or cancel_turn");
   }
+  if (params.content !== undefined && (!Array.isArray(params.content) || params.content.length === 0)) {
+    throw new ProtocolError("invalid_content", "structured Qoder content must be a non-empty array when supplied");
+  }
+  for (const block of params.content ?? []) {
+    if (!isRecord(block)) throw new ProtocolError("invalid_content", "Qoder content block must be an object");
+    if (block.type === "text") {
+      required(typeof block.text === "string" ? block.text : undefined, "content text");
+      continue;
+    }
+    if (block.type !== "image" || !isRecord(block.source)) {
+      throw new ProtocolError("invalid_content", "Qoder content block type is unsupported");
+    }
+    if (block.source.type === "base64") {
+      required(typeof block.source.media_type === "string" ? block.source.media_type : undefined, "image media_type");
+      required(typeof block.source.data === "string" ? block.source.data : undefined, "image data");
+    } else if (block.source.type === "url") {
+      required(typeof block.source.url === "string" ? block.source.url : undefined, "image url");
+    } else {
+      throw new ProtocolError("invalid_content", "Qoder image source type is unsupported");
+    }
+  }
+  validateStringList(params.skills, "skills", 64);
+  validateStringList(params.allowed_tools, "allowed_tools", 256);
+  validateStringList(params.disallowed_tools, "disallowed_tools", 256);
+  validateStringList(params.setting_sources, "setting_sources", 3);
+  for (const source of params.setting_sources ?? []) {
+    if (!['user', 'project', 'local'].includes(source)) {
+      throw new ProtocolError("invalid_configuration", "Qoder setting source is unsupported");
+    }
+  }
+  if (params.mcp_servers !== undefined) {
+    if (!isRecord(params.mcp_servers) || Object.keys(params.mcp_servers).length > 32) {
+      throw new ProtocolError("invalid_configuration", "fixed Qoder MCP server config is invalid");
+    }
+    for (const [name, server] of Object.entries(params.mcp_servers)) {
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || !isRecord(server)) {
+        throw new ProtocolError("invalid_configuration", "fixed Qoder MCP server entry is invalid");
+      }
+      const type = server.type ?? "stdio";
+      if (type === "stdio") required("command" in server && typeof server.command === "string" ? server.command : undefined, "MCP command");
+      else if (type === "sse" || type === "http") required("url" in server && typeof server.url === "string" ? server.url : undefined, "MCP URL");
+      else throw new ProtocolError("invalid_configuration", "fixed Qoder MCP transport is unsupported");
+    }
+  }
 }
 
 function validateEvent(event: AgentEventV1): void {
@@ -266,6 +313,17 @@ function required(value: string | undefined, name: string): string {
   const result = String(value ?? "").trim();
   if (!result) throw new ProtocolError("invalid_params", `${name} is required`);
   return result;
+}
+
+function validateStringList(values: unknown, name: string, maxItems: number): void {
+  if (values === undefined) return;
+  if (!Array.isArray(values) || values.length > maxItems || values.some((value) => typeof value !== "string" || value.trim() === "")) {
+    throw new ProtocolError("invalid_configuration", `${name} is invalid`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isTerminal(type: AgentEventV1["type"]): boolean {

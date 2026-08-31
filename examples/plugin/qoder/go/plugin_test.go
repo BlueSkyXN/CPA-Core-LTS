@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +62,121 @@ func TestCanonicalModelsPreserveExactIDs(t *testing.T) {
 	}
 	if errExact := validateCanonicalModel("qfmodel"); errExact != nil {
 		t.Fatalf("exact canonical model rejected: %v", errExact)
+	}
+}
+
+func TestChatInputPreservesSystemContextAndImageBlocks(t *testing.T) {
+	input, errInput := inputFromChat([]byte(`{
+		"messages":[
+			{"role":"system","content":"Use marker SYSTEM-42."},
+			{"role":"user","content":"Remember ALPHA."},
+			{"role":"assistant","content":"Stored ALPHA."},
+			{"role":"tool","name":"lookup","tool_call_id":"call-1","content":"TOOL-RESULT"},
+			{"role":"user","content":[
+				{"type":"text","text":"What color is this?"},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,AA==","detail":"high"}}
+			]}
+		]
+	}`))
+	if errInput != nil {
+		t.Fatal(errInput)
+	}
+	if input.SystemPrompt != "Use marker SYSTEM-42." {
+		t.Fatalf("system prompt = %q", input.SystemPrompt)
+	}
+	for _, want := range []string{"User: Remember ALPHA.", "Assistant: Stored ALPHA.", "Tool lookup: TOOL-RESULT", "User: What color is this?"} {
+		if !strings.Contains(input.Prompt, want) {
+			t.Fatalf("prompt %q does not contain %q", input.Prompt, want)
+		}
+	}
+	var image *qoderImageSource
+	for _, block := range input.Content {
+		if block.Type == "image" {
+			image = block.Source
+		}
+	}
+	if image == nil || image.Type != "base64" || image.MediaType != "image/png" || image.Data != "AA==" {
+		t.Fatalf("structured image = %#v", image)
+	}
+	if _, errInvalid := inputFromChat([]byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:text/plain;base64,AA=="}}]}]}`)); errInvalid == nil {
+		t.Fatal("non-image data URL was accepted")
+	}
+}
+
+func TestLiveModelMetadataPreservesVisionReasoningAndContext(t *testing.T) {
+	model := qoderModelInfo(runnerModel{
+		ID: "qmodel_38max", DisplayName: "Qwen3.8-Max", IsVL: true, IsReasoning: true,
+		MaxInputTokens: 128000, MaxOutputTokens: 32768,
+		ReasoningEfforts: []string{"low", "high"}, SupportsDisabled: true,
+		AvailableContextWindows: []int64{128000, 200000}, DefaultContextWindow: 128000,
+	})
+	if strings.Join(model.SupportedInputModalities, ",") != "text,image" || model.ContextLength != 200000 {
+		t.Fatalf("model modalities/context = %#v / %d", model.SupportedInputModalities, model.ContextLength)
+	}
+	if model.InputTokenLimit != 128000 || model.OutputTokenLimit != 32768 || model.MaxCompletionTokens != 32768 {
+		t.Fatalf("model token limits = %#v", model)
+	}
+	if model.Thinking == nil || !model.Thinking.ZeroAllowed || strings.Join(model.Thinking.Levels, ",") != "low,high" {
+		t.Fatalf("model thinking = %#v", model.Thinking)
+	}
+}
+
+func TestFixedSkillToolAndMCPConfigValidation(t *testing.T) {
+	cfg, errConfig := decodePluginConfig([]byte(`
+runner_command: /usr/local/bin/cpa-qoder-runner
+qoder_cli_path: /usr/local/bin/qoderclicn
+working_directory: /tmp
+skills: [cpa-probe]
+setting_sources: [project]
+allowed_tools: [Read, mcp__cpa_probe__echo]
+disallowed_tools: [Bash]
+mcp_servers:
+  cpa_probe:
+    type: stdio
+    command: /usr/bin/node
+    args: [/opt/cpa/probe.mjs]
+`))
+	if errConfig != nil {
+		t.Fatal(errConfig)
+	}
+	if len(cfg.Skills) != 1 || len(cfg.MCPServers) != 1 || cfg.MCPServers["cpa_probe"].Command != "/usr/bin/node" {
+		t.Fatalf("fixed capability config = %#v", cfg)
+	}
+	_, errRemoteHTTP := decodePluginConfig([]byte(`
+runner_command: /usr/local/bin/cpa-qoder-runner
+qoder_cli_path: /usr/local/bin/qoderclicn
+working_directory: /tmp
+mcp_servers:
+  unsafe:
+    type: http
+    url: http://example.com/mcp
+`))
+	if errRemoteHTTP == nil {
+		t.Fatal("remote plain-HTTP MCP server was accepted")
+	}
+	_, errOverlap := decodePluginConfig([]byte(`
+runner_command: /usr/local/bin/cpa-qoder-runner
+qoder_cli_path: /usr/local/bin/qoderclicn
+working_directory: /tmp
+allowed_tools: [Bash]
+disallowed_tools: [Bash]
+`))
+	if errOverlap == nil {
+		t.Fatal("overlapping tool policy was accepted")
+	}
+}
+
+func TestRunnerCapabilityValidationErrorsRemainClientErrors(t *testing.T) {
+	for code, status := range map[string]int{
+		"invalid_content":               http.StatusBadRequest,
+		"invalid_configuration":         http.StatusBadRequest,
+		"content_required":              http.StatusBadRequest,
+		"session_configuration_changed": http.StatusConflict,
+	} {
+		errMapped, ok := runnerCallError(&runnerError{Code: code, Message: "bounded test error"}).(*pluginCallError)
+		if !ok || errMapped.statusCode != status {
+			t.Fatalf("runner code %s mapped to %#v, want HTTP %d", code, errMapped, status)
+		}
 	}
 }
 
@@ -223,6 +340,31 @@ func TestProjectionNonStreamAndHostFramedStreamChunks(t *testing.T) {
 		!strings.Contains(string(chunks[2]), `"finish_reason":"stop"`) ||
 		!strings.Contains(string(chunks[2]), `"total_tokens":5`) {
 		t.Fatalf("stream chunks = %q", chunks)
+	}
+}
+
+func TestProjectionDoesNotExposeRunnerExecutedToolsAsClientToolCalls(t *testing.T) {
+	now := time.Now().UTC()
+	events := []pluginapi.AgentEventV1{
+		testAgentEvent(1, pluginapi.AgentEventTurnStarted, map[string]any{}, now),
+		testAgentEvent(2, pluginapi.AgentEventToolStarted, map[string]any{"tool_call_id": "native-1", "name": "Read", "input": map[string]any{"file_path": "/tmp/probe"}}, now),
+		testAgentEvent(3, pluginapi.AgentEventToolCompleted, map[string]any{"tool_call_id": "native-1"}, now),
+		testAgentEvent(4, pluginapi.AgentEventMessageDelta, pluginapi.AgentTextDeltaV1{Text: "done"}, now),
+		testAgentEvent(5, pluginapi.AgentEventTurnCompleted, pluginapi.AgentTerminalPayloadV1{State: pluginapi.AgentTerminalCompleted}, now),
+	}
+	projection := newEventProjection("request-1", "qfmodel")
+	var chunks [][]byte
+	for _, event := range events {
+		chunk, _, errChunk := projection.streamChunk(event)
+		if errChunk != nil {
+			t.Fatal(errChunk)
+		}
+		if len(chunk) > 0 {
+			chunks = append(chunks, chunk)
+		}
+	}
+	if len(chunks) != 2 || bytes.Contains(bytes.Join(chunks, nil), []byte("tool_calls")) {
+		t.Fatalf("runner-executed tool leaked into client projection: %q", chunks)
 	}
 }
 

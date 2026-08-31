@@ -3,6 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 
 import { BoundedFrameWriter, ProtocolError, redactStderr } from "../dist/protocol.js";
+import { toModelRecord, userMessage } from "../dist/qoder.js";
 import { RunnerServer } from "../dist/server.js";
 
 class FakeAdapter {
@@ -70,6 +71,7 @@ function startParams() {
     auth_id: "auth-1",
     auth_index: "index-1",
     prompt: "reply OK",
+    content: [{ type: "text", text: "User:" }, { type: "text", text: "reply OK" }],
     model: "qfmodel",
     auth: { mode: "pat", env_var: "CPA_QODER_PAT" },
     permission_policy: { default: "deny", rules: [] },
@@ -127,6 +129,67 @@ test("version and permission policy fail closed", async () => {
   assert.equal(all.find((frame) => frame.id === "bad-policy").error.code, "invalid_permission_policy");
   assert.equal(adapter.params, null);
   await server.close();
+});
+
+test("prompt-only protocol v1 starts remain backward compatible", async () => {
+  const output = new PassThrough();
+  const adapter = new FakeAdapter();
+  const server = new RunnerServer(adapter, output);
+  const params = startParams();
+  delete params.content;
+  assert.equal(await server.handle(request("legacy", "start", params)), true);
+  assert.deepEqual(userMessage(params).message.content, [{ type: "text", text: "reply OK" }]);
+  await server.close();
+});
+
+test("structured image and fixed skill, tool, and MCP config cross the runner boundary", async () => {
+  const output = new PassThrough();
+  const adapter = new FakeAdapter();
+  const server = new RunnerServer(adapter, output);
+  const params = startParams();
+  params.system_prompt = "Return exact probe markers.";
+  params.content = [
+    { type: "text", text: "User:" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+  ];
+  params.skills = ["cpa-probe"];
+  params.setting_sources = ["project"];
+  params.allowed_tools = ["Read", "mcp__cpa_probe__echo"];
+  params.disallowed_tools = ["Bash"];
+  params.mcp_servers = {
+    cpa_probe: { type: "stdio", command: "/usr/bin/node", args: ["/tmp/mcp.mjs"] },
+  };
+  assert.equal(await server.handle(request("structured", "start", params)), true);
+  assert.deepEqual(adapter.params.content, params.content);
+  assert.deepEqual(adapter.params.mcp_servers, params.mcp_servers);
+  const message = userMessage(params);
+  assert.deepEqual(message.message.content, params.content);
+  await server.close();
+});
+
+test("live model metadata preserves vision, reasoning, and context capabilities", () => {
+  const model = toModelRecord({
+    value: "qmodel_38max",
+    modelId: "qmodel_38max",
+    displayName: "Qwen3.8-Max",
+    description: "test",
+    isEnabled: true,
+    isReasoning: true,
+    isVl: true,
+    maxInputTokens: 200000,
+    maxOutputTokens: 32768,
+    efforts: ["low", "high"],
+    defaultEffort: "high",
+    supportsDisabled: true,
+    availableContextWindows: [128000, 200000],
+    defaultContextWindow: 128000,
+  });
+  assert.equal(model.id, "qmodel_38max");
+  assert.equal(model.is_vl, true);
+  assert.equal(model.is_reasoning, true);
+  assert.deepEqual(model.reasoning_efforts, ["low", "high"]);
+  assert.deepEqual(model.available_context_windows, [128000, 200000]);
+  assert.equal(model.default_context_window, 128000);
 });
 
 test("terminal during start does not leave a stale active session", async () => {

@@ -31,6 +31,12 @@ stdin and stdout carry one JSON object per line. Every request and response has
 - `close`
 - `shutdown`
 
+`start` carries structured text/image content plus the system prompt and the
+Plugin's fixed skill, setting-source, tool, and MCP policy. The runner passes
+those values to Qoder Agent SDK 1.0.10 only when it creates the native session;
+later turns must retain the same fixed configuration. Live model discovery
+preserves Qoder's vision, reasoning, token-limit, and context-window metadata.
+
 PAT runners receive the PAT through a per-process environment variable and the
 request names only that variable. Qoder SDK 1.0.10 materializes a temporary
 mode-0600 auth payload for its CLI child; the owning Plugin therefore supplies

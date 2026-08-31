@@ -83,9 +83,9 @@ func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession
 	if errModel := validateCanonicalModel(req.Model); errModel != nil {
 		return nil, errModel
 	}
-	prompt, errPrompt := promptFromChat(req.Payload)
-	if errPrompt != nil {
-		return nil, errPrompt
+	input, errInput := inputFromChat(req.Payload)
+	if errInput != nil {
+		return nil, errInput
 	}
 	auth, errAuth := parseStoredAuth(req.StorageJSON)
 	if errAuth != nil {
@@ -109,9 +109,16 @@ func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession
 		"provider":             pluginIdentifier,
 		"auth_id":              req.AuthID,
 		"auth_index":           req.AuthIndex,
-		"prompt":               prompt,
+		"prompt":               input.Prompt,
+		"system_prompt":        input.SystemPrompt,
+		"content":              input.Content,
 		"model":                req.Model,
 		"auth":                 auth.runnerAuth(),
+		"skills":               cfg.Skills,
+		"setting_sources":      cfg.SettingSources,
+		"allowed_tools":        cfg.AllowedTools,
+		"disallowed_tools":     cfg.DisallowedTools,
+		"mcp_servers":          cfg.MCPServers,
 		"permission_policy": map[string]any{
 			"default": cfg.PermissionDefault,
 			"rules":   cfg.PermissionRules,

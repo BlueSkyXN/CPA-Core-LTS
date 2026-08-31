@@ -74,6 +74,50 @@ func TestModelsForAuthReturnsOnlyVerifiedModel(t *testing.T) {
 	if resp.Provider != pluginIdentifier || len(resp.Models) != 1 || resp.Models[0].ID != codeBuddyModel {
 		t.Fatalf("model response = %#v", resp)
 	}
+	if got := strings.Join(resp.Models[0].SupportedInputModalities, ","); got != "text,image" {
+		t.Fatalf("input modalities = %q, want text,image", got)
+	}
+}
+
+func TestRequestPayloadPreservesToolsImagesAndConversationContext(t *testing.T) {
+	raw := []byte(`{
+		"model":"hy3-preview-agent",
+		"messages":[
+			{"role":"system","content":"Use the supplied context."},
+			{"role":"user","content":"Remember marker ALPHA."},
+			{"role":"assistant","content":"Stored."},
+			{"role":"user","content":[
+				{"type":"text","text":"Identify the image and call lookup."},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,AA==","detail":"high"}}
+			]}
+		],
+		"tools":[{"type":"function","function":{"name":"lookup","description":"Return a marker","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup"}},
+		"stream":true
+	}`)
+	payload, errPayload := codeBuddyRequestPayload(raw)
+	if errPayload != nil {
+		t.Fatal(errPayload)
+	}
+	var body map[string]any
+	if errDecode := json.Unmarshal(payload, &body); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	messages, okMessages := body["messages"].([]any)
+	tools, okTools := body["tools"].([]any)
+	if !okMessages || len(messages) != 4 || !okTools || len(tools) != 1 {
+		t.Fatalf("payload lost messages or tools: %s", payload)
+	}
+	last := messages[3].(map[string]any)
+	content := last["content"].([]any)
+	image := content[1].(map[string]any)["image_url"].(map[string]any)
+	if image["url"] != "data:image/png;base64,AA==" || image["detail"] != "high" {
+		t.Fatalf("image content changed: %#v", image)
+	}
+	choice := body["tool_choice"].(map[string]any)["function"].(map[string]any)
+	if choice["name"] != "lookup" || body["model"] != codeBuddyModel || body["stream"] != true {
+		t.Fatalf("tool choice or enforced fields changed: %s", payload)
+	}
 }
 
 func TestReadinessIsSecretSafeAndRequiresSelectedAuth(t *testing.T) {

@@ -9,7 +9,7 @@ func codeBuddyModels() []pluginapi.ModelInfo {
 		OwnedBy:                    pluginIdentifier,
 		DisplayName:                "CodeBuddy HY3 Preview Agent",
 		SupportedGenerationMethods: []string{"chat"},
-		SupportedInputModalities:   []string{"text"},
+		SupportedInputModalities:   []string{"text", "image"},
 		SupportedOutputModalities:  []string{"text"},
 		UserDefined:                true,
 	}}

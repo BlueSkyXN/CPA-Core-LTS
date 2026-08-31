@@ -315,9 +315,9 @@ func runnerCallError(value *runnerError) error {
 	switch value.Code {
 	case "auth_expired", "auth_not_configured":
 		status = http.StatusUnauthorized
-	case "invalid_params", "prompt_required", "model_required", "invalid_permission_policy":
+	case "invalid_params", "invalid_content", "invalid_configuration", "prompt_required", "content_required", "model_required", "invalid_permission_policy":
 		status = http.StatusBadRequest
-	case "turn_conflict":
+	case "turn_conflict", "session_configuration_changed":
 		status = http.StatusConflict
 	case "runner_quiescing", "cli_unavailable", "cli_path_required", "sdk_cli_version_mismatch":
 		status = http.StatusServiceUnavailable

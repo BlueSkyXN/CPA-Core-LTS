@@ -50,9 +50,15 @@ The default upstream is `https://copilot.tencent.com/v2/chat/completions`. The o
 
 - Input/output format: OpenAI Chat Completions.
 - Model: `hy3-preview-agent`.
+- Text and image message content is forwarded without rewriting.
+- OpenAI `tools` and `tool_choice` are forwarded unchanged; tool execution remains the normal client/Chat Completions loop.
+- The complete client-supplied `messages` array is preserved, including system and prior-turn context.
 - `stream=true` is required; non-streaming requests fail before contacting the provider.
 - Upstream SSE must terminate with `data: [DONE]`.
 - Downstream disconnect and explicit execution cancellation close the host-owned upstream stream.
 - Readiness reports direct HTTPS as requiring no external Runner and reports native session readiness as unsupported.
 
 OpenAI Responses clients are handled through CPA's existing Responses-to-Chat request and streaming response translation; the plugin itself remains a Chat Completions provider.
+These compatibility features do not turn G1 into the CodeBuddy CLI runtime:
+CLI-native workspace sessions, skill discovery, MCP configuration, and native
+tool execution remain outside this plugin's advertised boundary.

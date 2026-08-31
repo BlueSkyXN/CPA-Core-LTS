@@ -18,6 +18,19 @@ export type FixedPermissionPolicy = {
   rules?: PermissionRule[];
 };
 
+export type QoderInputBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      source:
+        | { type: "base64"; media_type: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string }
+        | { type: "url"; url: string };
+    };
+
+export type FixedMcpServerConfig =
+  | { type?: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: "sse" | "http"; url: string; headers?: Record<string, string> };
+
 export type Correlation = {
   request_id: string;
   execution_session_id: string;
@@ -29,9 +42,16 @@ export type Correlation = {
 
 export type StartParams = Correlation & {
   prompt: string;
+  system_prompt?: string;
+  content?: QoderInputBlock[];
   model: string;
   auth: AuthSpec;
   permission_policy: FixedPermissionPolicy;
+  skills?: string[];
+  setting_sources?: Array<"user" | "project" | "local">;
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+  mcp_servers?: Record<string, FixedMcpServerConfig>;
 };
 
 export type ModelsParams = {
@@ -112,9 +132,15 @@ export type ModelRecord = {
   source?: string;
   is_default?: boolean;
   is_enabled?: boolean;
+  is_reasoning?: boolean;
+  is_vl?: boolean;
   max_input_tokens?: number;
   max_output_tokens?: number;
   reasoning_efforts?: string[];
+  default_reasoning_effort?: string;
+  supports_disabled?: boolean;
+  available_context_windows?: number[];
+  default_context_window?: number;
 };
 
 export interface ActiveTurn {

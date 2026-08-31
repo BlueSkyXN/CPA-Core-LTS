@@ -73,6 +73,8 @@ class SDKSession {
   current?: TurnState;
   nativeSessionID = "";
   model: string;
+  readonly configurationKey: string;
+  readonly systemPrompt: string;
   initialized = false;
   authExpired = false;
   closed = false;
@@ -80,26 +82,33 @@ class SDKSession {
 
   constructor(
     readonly executionSessionID: string,
-    auth: AuthSpec,
-    model: string,
+    params: StartParams,
     cliPath: string,
     cwd: string,
     stderr: (chunk: string) => void,
     canUseTool: CanUseTool,
     onAuthExpired: () => void,
   ) {
-    this.model = model;
+    this.model = params.model;
+    this.systemPrompt = params.system_prompt?.trim() || "";
+    this.configurationKey = sessionConfigurationKey(params);
     this.query = query({
       prompt: this.input,
       options: {
-        auth: auth.mode === "pat" ? accessTokenFromEnv(auth.env_var) : qodercliAuth(),
+        auth: params.auth.mode === "pat" ? accessTokenFromEnv(params.auth.env_var) : qodercliAuth(),
         transport: ProcessTransport.default,
         pathToQoderCLIExecutable: cliPath,
         cwd,
-        model,
+        model: params.model,
         tools: { type: "preset", preset: "qodercli" },
+        skills: params.skills,
+        allowedTools: params.allowed_tools,
+        disallowedTools: params.disallowed_tools,
+        mcpServers: params.mcp_servers,
+        strictMcpConfig: Boolean(params.mcp_servers && Object.keys(params.mcp_servers).length > 0),
         permissionMode: "dontAsk",
-        settingSources: [],
+        settingSources: params.setting_sources ?? [],
+        systemPrompt: this.systemPrompt || undefined,
         includePartialMessages: true,
         canUseTool,
         stderr,
@@ -202,8 +211,7 @@ export class QoderSDKAdapter implements QoderAdapter {
       };
       created = new SDKSession(
         params.execution_session_id,
-        params.auth,
-        params.model,
+        params,
         this.cliPath,
         this.cwd,
         (chunk) => this.writeSafeStderr(chunk, secrets),
@@ -217,6 +225,13 @@ export class QoderSDKAdapter implements QoderAdapter {
       session.pump = this.pumpSession(session);
       this.sessions.set(params.execution_session_id, session);
     } else {
+      if (session.configurationKey !== sessionConfigurationKey(params)) {
+        throw new ProtocolError("session_configuration_changed", "Qoder skill, tool, or MCP configuration changed within an execution session");
+      }
+      const nextSystemPrompt = params.system_prompt?.trim() || "";
+      if (nextSystemPrompt && nextSystemPrompt !== session.systemPrompt) {
+        throw new ProtocolError("session_configuration_changed", "Qoder system prompt changed within an execution session");
+      }
       if (session.model !== params.model) {
         try {
           await session.query.setModel(params.model);
@@ -230,7 +245,7 @@ export class QoderSDKAdapter implements QoderAdapter {
       state.started = true;
     }
 
-    session.input.push(userMessage(params.prompt));
+    session.input.push(userMessage(params));
     const selected = session;
     return {
       cancel: async () => {
@@ -470,15 +485,18 @@ export class QoderSDKAdapter implements QoderAdapter {
   }
 }
 
-function userMessage(prompt: string): SDKUserMessage {
+export function userMessage(params: StartParams): SDKUserMessage {
+  const content = Array.isArray(params.content) && params.content.length > 0
+    ? params.content
+    : [{ type: "text" as const, text: params.prompt }];
   return {
     type: "user",
-    message: { role: "user", content: [{ type: "text", text: prompt }] },
+    message: { role: "user", content },
     parent_tool_use_id: null,
   };
 }
 
-function toModelRecord(model: ModelInfo): ModelRecord {
+export function toModelRecord(model: ModelInfo): ModelRecord {
   return {
     id: String(model.value || model.modelId || "").trim(),
     display_name: String(model.displayName || model.value || model.modelId || "").trim(),
@@ -486,10 +504,26 @@ function toModelRecord(model: ModelInfo): ModelRecord {
     source: model.source,
     is_default: model.isDefault,
     is_enabled: model.isEnabled,
+    is_reasoning: model.isReasoning,
+    is_vl: model.isVl,
     max_input_tokens: model.maxInputTokens,
     max_output_tokens: model.maxOutputTokens,
     reasoning_efforts: model.efforts,
+    default_reasoning_effort: model.defaultEffort,
+    supports_disabled: model.supportsDisabled,
+    available_context_windows: model.availableContextWindows,
+    default_context_window: model.defaultContextWindow,
   };
+}
+
+function sessionConfigurationKey(params: StartParams): string {
+  return JSON.stringify({
+    skills: params.skills ?? [],
+    setting_sources: params.setting_sources ?? [],
+    allowed_tools: params.allowed_tools ?? [],
+    disallowed_tools: params.disallowed_tools ?? [],
+    mcp_servers: params.mcp_servers ?? {},
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

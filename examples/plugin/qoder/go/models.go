@@ -42,15 +42,21 @@ var canonicalQoderModelDisplayNames = map[string]string{
 }
 
 type runnerModel struct {
-	ID               string   `json:"id"`
-	DisplayName      string   `json:"display_name"`
-	Description      string   `json:"description,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	IsDefault        bool     `json:"is_default,omitempty"`
-	IsEnabled        *bool    `json:"is_enabled,omitempty"`
-	MaxInputTokens   int64    `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens  int64    `json:"max_output_tokens,omitempty"`
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ID                      string   `json:"id"`
+	DisplayName             string   `json:"display_name"`
+	Description             string   `json:"description,omitempty"`
+	Source                  string   `json:"source,omitempty"`
+	IsDefault               bool     `json:"is_default,omitempty"`
+	IsEnabled               *bool    `json:"is_enabled,omitempty"`
+	IsReasoning             bool     `json:"is_reasoning,omitempty"`
+	IsVL                    bool     `json:"is_vl,omitempty"`
+	MaxInputTokens          int64    `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens         int64    `json:"max_output_tokens,omitempty"`
+	ReasoningEfforts        []string `json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort  string   `json:"default_reasoning_effort,omitempty"`
+	SupportsDisabled        bool     `json:"supports_disabled,omitempty"`
+	AvailableContextWindows []int64  `json:"available_context_windows,omitempty"`
+	DefaultContextWindow    int64    `json:"default_context_window,omitempty"`
 }
 
 type runnerModelsResponse struct {
@@ -119,12 +125,9 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 		if display == "" {
 			display = id
 		}
-		models = append(models, pluginapi.ModelInfo{
-			ID: id, Name: id, DisplayName: display, Description: model.Description, Object: "model", OwnedBy: pluginIdentifier,
-			Type: "agent", InputTokenLimit: model.MaxInputTokens, OutputTokenLimit: model.MaxOutputTokens,
-			SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: []string{"text"},
-			SupportedOutputModalities: []string{"text"}, UserDefined: true,
-		})
+		model.ID = id
+		model.DisplayName = display
+		models = append(models, qoderModelInfo(model))
 	}
 	if len(models) == 0 {
 		return pluginapi.ModelResponse{}, newPluginCallError("models_unavailable", "Qoder live model discovery returned no enabled canonical IDs", http.StatusServiceUnavailable, true)
@@ -133,6 +136,34 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	r.modelCache[cacheKey] = cachedModels{expires: time.Now().Add(cfg.ModelCacheTTL), models: cloneModels(models)}
 	r.mu.Unlock()
 	return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, nil
+}
+
+func qoderModelInfo(model runnerModel) pluginapi.ModelInfo {
+	inputModalities := []string{"text"}
+	if model.IsVL {
+		inputModalities = append(inputModalities, "image")
+	}
+	contextLength := model.MaxInputTokens
+	for _, value := range model.AvailableContextWindows {
+		if value > contextLength {
+			contextLength = value
+		}
+	}
+	var thinking *pluginapi.ThinkingSupport
+	if model.IsReasoning || len(model.ReasoningEfforts) > 0 || model.SupportsDisabled {
+		thinking = &pluginapi.ThinkingSupport{
+			Levels:      append([]string(nil), model.ReasoningEfforts...),
+			ZeroAllowed: model.SupportsDisabled,
+		}
+	}
+	return pluginapi.ModelInfo{
+		ID: model.ID, Name: model.ID, DisplayName: model.DisplayName, Description: model.Description,
+		Object: "model", OwnedBy: pluginIdentifier, Type: "agent",
+		InputTokenLimit: model.MaxInputTokens, OutputTokenLimit: model.MaxOutputTokens,
+		ContextLength: contextLength, MaxCompletionTokens: model.MaxOutputTokens,
+		SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: inputModalities,
+		SupportedOutputModalities: []string{"text"}, Thinking: thinking, UserDefined: true,
+	}
 }
 
 func (auth qoderAuth) runnerAuth() map[string]any {
