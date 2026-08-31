@@ -19,7 +19,7 @@ func codeBuddyModels() []pluginapi.ModelInfo {
 			OwnedBy:                    pluginIdentifier,
 			DisplayName:                definition.DisplayName,
 			SupportedGenerationMethods: []string{"chat"},
-			SupportedInputModalities:   []string{"text", "image"},
+			SupportedInputModalities:   []string{"text"},
 			SupportedOutputModalities:  []string{"text"},
 			UserDefined:                true,
 		})

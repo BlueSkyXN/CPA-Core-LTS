@@ -50,8 +50,8 @@ The default upstream is `https://copilot.tencent.com/v2/chat/completions`. The o
 
 - Input/output format: OpenAI Chat Completions.
 - Models: `hy3` and `hy3-preview-agent`. The selected exact ID is forwarded unchanged; there is no silent fallback between them.
-- Text and image message content is forwarded without rewriting.
-- OpenAI `tools` and `tool_choice` are forwarded unchanged; tool execution remains the normal client/Chat Completions loop.
+- Text message content is the advertised G1 input capability.
+- Image content, OpenAI `tools`, and `tool_choice` are structurally forwarded without rewriting, but are not advertised as supported until the selected vendor model passes those live capability gates.
 - The complete client-supplied `messages` array is preserved, including system and prior-turn context.
 - `stream=true` is required; non-streaming requests fail before contacting the provider.
 - Upstream SSE must terminate with `data: [DONE]`.

@@ -65,7 +65,7 @@ func TestParseAuthRecognizesOnlyValidCodeBuddyAPIKeys(t *testing.T) {
 	}
 }
 
-func TestModelsForAuthReturnsOnlyVerifiedModel(t *testing.T) {
+func TestModelsForAuthReturnsVerifiedExactModels(t *testing.T) {
 	raw, _ := json.Marshal(rpcAuthModelRequest{AuthModelRequest: pluginapi.AuthModelRequest{StorageJSON: testAuthJSON()}})
 	resp, errModels := modelsForAuth(raw)
 	if errModels != nil {
@@ -75,8 +75,8 @@ func TestModelsForAuthReturnsOnlyVerifiedModel(t *testing.T) {
 		t.Fatalf("model response = %#v", resp)
 	}
 	for _, model := range resp.Models {
-		if got := strings.Join(model.SupportedInputModalities, ","); got != "text,image" {
-			t.Fatalf("model %s input modalities = %q, want text,image", model.ID, got)
+		if got := strings.Join(model.SupportedInputModalities, ","); got != "text" {
+			t.Fatalf("model %s input modalities = %q, want text", model.ID, got)
 		}
 	}
 }
