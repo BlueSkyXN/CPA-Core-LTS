@@ -21,7 +21,7 @@ func (r *pluginRuntime) execute(raw []byte) (pluginapi.ExecutorResponse, error) 
 	}
 	session, errStart := r.startTurn(req.ExecutorRequest)
 	if errStart != nil {
-		return pluginapi.ExecutorResponse{}, errStart
+		return pluginapi.ExecutorResponse{}, normalizeQoderExecutionLifecycleError(errStart)
 	}
 	defer r.completeTurn(session, req.RequestID)
 	projection := newEventProjection(req.RequestID, req.Model)
@@ -31,14 +31,15 @@ func (r *pluginRuntime) execute(raw []byte) (pluginapi.ExecutorResponse, error) 
 		event, errEvent := session.client.readEvent(ctx)
 		if errEvent != nil {
 			r.dropSession(session)
-			return pluginapi.ExecutorResponse{}, newPluginCallError("runner_lost", "Qoder runner event stream was lost", http.StatusBadGateway, true)
+			return pluginapi.ExecutorResponse{}, newPluginCallError("connection_lifecycle", "Qoder runner event stream was lost", 0, true)
 		}
 		if errConsume := projection.consume(event); errConsume != nil {
 			r.dropSession(session)
-			return pluginapi.ExecutorResponse{}, newPluginCallError("runner_protocol_error", errConsume.Error(), http.StatusBadGateway, true)
+			return pluginapi.ExecutorResponse{}, newPluginCallError("connection_lifecycle", errConsume.Error(), 0, true)
 		}
 		if event.IsTerminal() {
-			return projection.nonStreamResponse()
+			response, errProjection := projection.nonStreamResponse()
+			return response, normalizeQoderExecutionLifecycleError(errProjection)
 		}
 	}
 }
@@ -53,10 +54,23 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	}
 	session, errStart := r.startTurn(req.ExecutorRequest)
 	if errStart != nil {
-		return rpcStreamResponse{}, errStart
+		return rpcStreamResponse{}, normalizeQoderExecutionLifecycleError(errStart)
 	}
 	go r.forwardEvents(session, req)
 	return rpcStreamResponse{Headers: http.Header{"Content-Type": {"text/event-stream"}}}, nil
+}
+
+func normalizeQoderExecutionLifecycleError(err error) error {
+	callErr, ok := err.(*pluginCallError)
+	if !ok || callErr == nil {
+		return err
+	}
+	switch callErr.code {
+	case "runner_lost", "runner_protocol_error", "session_closed":
+		return newPluginCallError("connection_lifecycle", callErr.message, 0, callErr.retryable)
+	default:
+		return err
+	}
 }
 
 func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession, error) {
@@ -140,7 +154,7 @@ func (r *pluginRuntime) forwardEvents(session *runnerSession, req rpcExecutorReq
 				errorCode = callErr.code
 				errorRetryable = callErr.retryable
 				errorHTTPStatus = callErr.statusCode
-				if callErr.code == "runner_lost" || callErr.code == "session_closed" {
+				if callErr.code == "runner_lost" || callErr.code == "runner_protocol_error" || callErr.code == "session_closed" {
 					errorCode = "connection_lifecycle"
 					errorHTTPStatus = 0
 				}

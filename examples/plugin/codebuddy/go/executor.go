@@ -10,6 +10,8 @@ import (
 
 const maxSSELineBytes = 1024 * 1024
 
+const codeBuddyConnectionLifecycleErrorCode = "connection_lifecycle"
+
 func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	var req rpcExecutorRequest
 	if errDecode := decodeRequest(raw, &req); errDecode != nil {
@@ -62,8 +64,8 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 		return rpcStreamResponse{}, newPluginCallError("upstream_unavailable", "CodeBuddy upstream connection failed", http.StatusBadGateway, true)
 	}
 	if execution.bindUpstream(r.caller, upstream.StreamID) {
-		execution.finish(r.caller, "CodeBuddy stream canceled")
-		return rpcStreamResponse{}, newPluginCallError("request_canceled", "CodeBuddy request was canceled", 499, false)
+		execution.finish(r.caller, "CodeBuddy stream canceled", codeBuddyConnectionLifecycleErrorCode, true, 0)
+		return rpcStreamResponse{}, newPluginCallError(codeBuddyConnectionLifecycleErrorCode, "CodeBuddy request was canceled", 0, true)
 	}
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 		execution.closeUpstream(r.caller)
@@ -109,21 +111,30 @@ func codeBuddyRequestPayload(raw []byte) ([]byte, error) {
 func (r *pluginRuntime) forwardStream(execution *activeExecution) {
 	validator := &sseValidator{}
 	errorMessage := ""
+	errorCode := ""
+	errorRetryable := false
+	errorHTTPStatus := 0
+	markConnectionLifecycle := func(message string) {
+		errorMessage = message
+		errorCode = codeBuddyConnectionLifecycleErrorCode
+		errorRetryable = true
+		errorHTTPStatus = 0
+	}
 	defer func() {
 		execution.closeUpstream(r.caller)
-		execution.finish(r.caller, errorMessage)
+		execution.finish(r.caller, errorMessage, errorCode, errorRetryable, errorHTTPStatus)
 		r.releaseExecution(execution)
 	}()
 
 	for {
 		if execution.canceled() {
-			errorMessage = "CodeBuddy stream canceled"
+			markConnectionLifecycle("CodeBuddy stream canceled")
 			return
 		}
 		chunk, errRead := readHostHTTPStream(r.caller, execution.upstreamID())
 		if errRead != nil {
 			if execution.canceled() {
-				errorMessage = "CodeBuddy stream canceled"
+				markConnectionLifecycle("CodeBuddy stream canceled")
 			} else {
 				errorMessage = "CodeBuddy upstream stream read failed"
 			}
@@ -141,14 +152,14 @@ func (r *pluginRuntime) forwardStream(execution *activeExecution) {
 			}
 			for _, frame := range frames {
 				if errEmit := emitPluginStream(r.caller, execution.pluginStreamID, frame); errEmit != nil {
-					errorMessage = "CodeBuddy downstream stream closed"
+					markConnectionLifecycle("CodeBuddy downstream stream closed")
 					return
 				}
 			}
 		}
 		if chunk.Done {
 			if execution.canceled() {
-				errorMessage = "CodeBuddy stream canceled"
+				markConnectionLifecycle("CodeBuddy stream canceled")
 			} else {
 				frames, errFinish := validator.finish()
 				if errFinish != nil {
@@ -157,7 +168,7 @@ func (r *pluginRuntime) forwardStream(execution *activeExecution) {
 				}
 				for _, frame := range frames {
 					if errEmit := emitPluginStream(r.caller, execution.pluginStreamID, frame); errEmit != nil {
-						errorMessage = "CodeBuddy downstream stream closed"
+						markConnectionLifecycle("CodeBuddy downstream stream closed")
 						return
 					}
 				}

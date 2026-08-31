@@ -159,9 +159,9 @@ func (execution *activeExecution) upstreamID() string {
 	return execution.upstreamStreamID
 }
 
-func (execution *activeExecution) finish(caller hostCaller, errorMessage string) {
+func (execution *activeExecution) finish(caller hostCaller, errorMessage, errorCode string, retryable bool, httpStatus int) {
 	execution.terminalOnce.Do(func() {
-		closePluginStream(caller, execution.pluginStreamID, errorMessage)
+		closePluginStream(caller, execution.pluginStreamID, errorMessage, errorCode, retryable, httpStatus)
 	})
 	execution.signalDone()
 }

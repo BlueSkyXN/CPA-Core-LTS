@@ -47,8 +47,11 @@ type pluginStreamEmitRequest struct {
 }
 
 type pluginStreamCloseRequest struct {
-	StreamID string `json:"stream_id"`
-	Error    string `json:"error,omitempty"`
+	StreamID   string `json:"stream_id"`
+	Error      string `json:"error,omitempty"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	Retryable  bool   `json:"retryable,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
 }
 
 func openHostHTTPStream(caller hostCaller, req hostHTTPRequest) (hostHTTPStreamResponse, error) {
@@ -97,12 +100,15 @@ func emitPluginStream(caller hostCaller, streamID string, payload []byte) error 
 	return nil
 }
 
-func closePluginStream(caller hostCaller, streamID, errorMessage string) {
+func closePluginStream(caller hostCaller, streamID, errorMessage, errorCode string, retryable bool, httpStatus int) {
 	if strings.TrimSpace(streamID) == "" {
 		return
 	}
 	_, _ = caller.Call(pluginabi.MethodHostStreamClose, pluginStreamCloseRequest{
-		StreamID: streamID,
-		Error:    strings.TrimSpace(errorMessage),
+		StreamID:   streamID,
+		Error:      strings.TrimSpace(errorMessage),
+		ErrorCode:  strings.TrimSpace(errorCode),
+		Retryable:  retryable,
+		HTTPStatus: httpStatus,
 	})
 }

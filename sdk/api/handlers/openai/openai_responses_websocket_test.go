@@ -59,6 +59,14 @@ type homeResponsesWebsocketExecutor struct {
 	mu       sync.Mutex
 }
 
+type websocketKeepaliveExecutor struct {
+	websocketCaptureExecutor
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
 func (*homeResponsesWebsocketExecutor) Identifier() string { return "codex" }
 
 func (*homeResponsesWebsocketExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
@@ -89,6 +97,25 @@ func (*homeResponsesWebsocketExecutor) CountTokens(context.Context, *coreauth.Au
 
 func (*homeResponsesWebsocketExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
 	return nil, errors.New("not implemented")
+}
+
+func (e *websocketKeepaliveExecutor) Identifier() string { return "keepalive-provider" }
+
+func (e *websocketKeepaliveExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.startedOnce.Do(func() { close(e.started) })
+	select {
+	case <-e.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"keepalive-response","output":[]}}`)}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketKeepaliveExecutor) releaseTurn() {
+	e.releaseOnce.Do(func() { close(e.release) })
 }
 
 func TestResponsesWebsocketHomeSelectedAuthCallbackPinsAndReusesFirstSelection(t *testing.T) {
@@ -160,6 +187,86 @@ func TestResponsesWebsocketHomeSelectedAuthCallbackPinsAndReusesFirstSelection(t
 	}
 	if got := executor.calls.Load(); got != 2 {
 		t.Fatalf("executor calls = %d, want 2", got)
+	}
+}
+
+func TestResponsesWebsocketProcessesPingWhileTurnIsRunning(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketKeepaliveExecutor{started: make(chan struct{}), release: make(chan struct{})}
+	defer executor.releaseTurn()
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "auth-keepalive", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "keepalive-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	pongPayload := "turn-keepalive"
+	pongReceived := make(chan struct{}, 1)
+	conn.SetPongHandler(func(appData string) error {
+		if appData == pongPayload {
+			select {
+			case pongReceived <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	})
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"keepalive-model","input":[]}`)); errWrite != nil {
+		t.Fatalf("write websocket request: %v", errWrite)
+	}
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executor did not start")
+	}
+
+	type websocketReadResult struct {
+		payload []byte
+		err     error
+	}
+	responseRead := make(chan websocketReadResult, 1)
+	go func() {
+		_, payload, errRead := conn.ReadMessage()
+		responseRead <- websocketReadResult{payload: payload, err: errRead}
+	}()
+	if errPing := conn.WriteControl(websocket.PingMessage, []byte(pongPayload), time.Now().Add(time.Second)); errPing != nil {
+		t.Fatalf("write ping: %v", errPing)
+	}
+	select {
+	case <-pongReceived:
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("server did not process ping while the response turn was running")
+	}
+
+	executor.releaseTurn()
+	select {
+	case result := <-responseRead:
+		if result.err != nil {
+			t.Fatalf("read completed response: %v", result.err)
+		}
+		if got := gjson.GetBytes(result.payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("response type = %q, want %q: %s", got, wsEventTypeCompleted, result.payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for completed response")
 	}
 }
 

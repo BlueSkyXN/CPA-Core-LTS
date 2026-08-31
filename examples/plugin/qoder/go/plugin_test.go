@@ -337,6 +337,41 @@ func TestRunnerCrashIsRestartableWithFreshSession(t *testing.T) {
 	runtime.dropSession(session)
 }
 
+func TestNonStreamRunnerCrashReturnsConnectionLifecycleAndRecovers(t *testing.T) {
+	runtime := newPluginRuntime(nil)
+	runtime.config = fakeRunnerConfig(t)
+	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "crash"}
+	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
+		RequestID: "request-nonstream-crash", ExecutionSessionID: "session-nonstream-crash", CallerScope: "caller", WorkspaceIdentity: "workspace",
+		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
+		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
+		StorageJSON: []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"test","config_dir":"/tmp/qoder-test"}`),
+	}}
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	_, errExecute := runtime.execute(raw)
+	callErr, ok := errExecute.(*pluginCallError)
+	if !ok || callErr.code != "connection_lifecycle" || callErr.statusCode != 0 || !callErr.retryable {
+		t.Fatalf("non-stream runner crash error = %#v, want retryable connection_lifecycle without HTTP status", errExecute)
+	}
+
+	runtime.mu.Lock()
+	runtime.runnerExtraEnv["QODER_FAKE_MODE"] = "success"
+	runtime.mu.Unlock()
+	req.RequestID = "request-nonstream-recovery"
+	raw, errMarshal = json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	response, errRecovery := runtime.execute(raw)
+	if errRecovery != nil || !strings.Contains(string(response.Payload), `"content":"OK"`) {
+		t.Fatalf("immediate non-stream recovery response=%s error=%v", response.Payload, errRecovery)
+	}
+	runtime.shutdown()
+}
+
 func TestIdleRunnerExitIsReplacedBeforeNextTurn(t *testing.T) {
 	runtime := newPluginRuntime(nil)
 	runtime.config = fakeRunnerConfig(t)

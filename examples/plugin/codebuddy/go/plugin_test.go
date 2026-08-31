@@ -271,6 +271,20 @@ func TestCancelIsIdempotentUnderRace(t *testing.T) {
 	if closed.Error != "CodeBuddy stream canceled" {
 		t.Fatalf("close error = %q", closed.Error)
 	}
+	rawClose, errMarshal := json.Marshal(closed)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	var closeFields map[string]any
+	if errDecode := json.Unmarshal(rawClose, &closeFields); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if closeFields["error_code"] != "connection_lifecycle" || closeFields["retryable"] != true {
+		t.Fatalf("cancel close lifecycle fields = %s, want typed retryable connection_lifecycle", rawClose)
+	}
+	if _, exists := closeFields["http_status"]; exists {
+		t.Fatalf("cancel close unexpectedly attached HTTP status: %s", rawClose)
+	}
 	if host.httpCloseCount() != 1 || host.pluginCloseCount() != 1 {
 		t.Fatalf("close counts http=%d plugin=%d", host.httpCloseCount(), host.pluginCloseCount())
 	}
