@@ -50,8 +50,6 @@ type DirectTurn = {
   sequence: number;
   canceled: boolean;
   terminal: boolean;
-  sawData: boolean;
-  finishReason?: string;
   toolCalls: Map<number, { id?: string; name?: string }>;
 };
 
@@ -168,7 +166,6 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       sequence: 0,
       canceled: false,
       terminal: false,
-      sawData: false,
       toolCalls: new Map(),
     };
     session.current = turn;
@@ -320,7 +317,6 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       throw new ProtocolError("invalid_upstream_response", "Qoder direct response was not valid JSON");
     }
     await this.consumeChunk(turn, isRecord(value) ? value : {});
-    if (!turn.canceled && !turn.session.closed) turn.sawData = true;
     if (!turn.canceled && !turn.session.closed) {
       await this.emitTerminal(turn, "turn.completed", "completed");
     }
@@ -384,17 +380,12 @@ export class DirectOpenAIAdapter implements QoderAdapter {
         ? delta.reasoning_content
         : typeof delta.reasoning === "string" ? delta.reasoning : "";
       if (content) {
-        turn.sawData = true;
         await this.emit(turn, "message.delta", { text: content });
       }
       if (reasoning) {
-        turn.sawData = true;
         await this.emit(turn, "reasoning.delta", { text: reasoning });
       }
       if (Array.isArray(delta.tool_calls)) await this.consumeToolCalls(turn, delta.tool_calls);
-      if (typeof rawChoice.finish_reason === "string" && rawChoice.finish_reason.trim() !== "") {
-        turn.finishReason = rawChoice.finish_reason;
-      }
     }
   }
 
