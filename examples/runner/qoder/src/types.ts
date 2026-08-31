@@ -3,8 +3,10 @@ export const RUNNER_NAME = "cpa-qoder-runner";
 export const RUNNER_VERSION = "0.1.0";
 export const QODER_SDK_VERSION = "1.0.10";
 
+export type QoderTransport = "sdk_cli" | "direct_openai";
+
 export type AuthSpec =
-  | { mode: "pat"; env_var: string; account_id?: string }
+  | { mode: "pat"; env_var: string; account_id?: string; transport?: QoderTransport }
   | { mode: "local_cli"; profile_id?: string };
 
 export type PermissionRule = {
@@ -52,11 +54,15 @@ export type StartParams = Correlation & {
   allowed_tools?: string[];
   disallowed_tools?: string[];
   mcp_servers?: Record<string, FixedMcpServerConfig>;
+  /** Original bounded Chat Completions object, preserved for direct transport. */
+  chat_request?: Record<string, unknown>;
 };
 
 export type ModelsParams = {
   auth: AuthSpec;
   cache_ttl_ms?: number;
+  models_endpoint?: string;
+  models_json?: string;
 };
 
 export type ReadinessParams = {
@@ -148,6 +154,7 @@ export interface ActiveTurn {
 }
 
 export interface QoderAdapter {
+  readonly transport?: QoderTransport;
   readiness(auth?: AuthSpec): Promise<{ auth_ready: boolean; message: string }>;
   models(params: ModelsParams): Promise<ModelRecord[]>;
   start(params: StartParams, emit: (event: AgentEventV1) => Promise<void>): Promise<ActiveTurn>;

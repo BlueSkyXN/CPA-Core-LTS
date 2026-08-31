@@ -59,6 +59,7 @@ type runnerHandshake struct {
 	RunnerVersion   string   `json:"runner_version"`
 	ProtocolVersion int      `json:"protocol_version"`
 	SDKVersion      string   `json:"sdk_version"`
+	Transport       string   `json:"transport"`
 	Capabilities    []string `json:"capabilities"`
 }
 
@@ -77,7 +78,20 @@ type runnerClient struct {
 	runtimeRoot string
 }
 
-func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]string) (*runnerClient, error) {
+func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]string, requestedTransport ...string) (*runnerClient, error) {
+	transport := auth.Transport
+	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
+		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
+	}
+	if transport == "" {
+		transport = cfg.Transport
+	}
+	if transport == "" {
+		transport = "sdk_cli"
+	}
+	if transport != "sdk_cli" && transport != "direct_openai" {
+		return nil, newPluginCallError("invalid_transport", "Qoder transport is unsupported", http.StatusBadRequest, false)
+	}
 	runtimeRoot, errRuntimeRoot := os.MkdirTemp(cfg.WorkingDirectory, ".cpa-qoder-runner-")
 	if errRuntimeRoot != nil {
 		return nil, newPluginCallError("runner_unavailable", "Qoder runner private runtime directory could not be created", http.StatusServiceUnavailable, true)
@@ -94,12 +108,26 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 		}
 	}
 	args := append([]string(nil), cfg.RunnerArgs...)
-	args = append(args,
-		"--stdio",
-		"--cli-path", cfg.QoderCLIPath,
-		"--cwd", cfg.WorkingDirectory,
-		"--max-queue-frames", strconv.Itoa(cfg.MaxQueueFrames),
-	)
+	args = append(args, "--stdio", "--transport", transport, "--cwd", cfg.WorkingDirectory, "--max-queue-frames", strconv.Itoa(cfg.MaxQueueFrames))
+	if transport == "sdk_cli" {
+		args = append(args, "--cli-path", cfg.QoderCLIPath)
+	} else {
+		if cfg.DirectEndpoint != "" {
+			args = append(args, "--direct-endpoint", cfg.DirectEndpoint)
+		}
+		if cfg.DirectModelsEndpoint != "" {
+			args = append(args, "--direct-models-endpoint", cfg.DirectModelsEndpoint)
+		}
+		if cfg.DirectAuthEndpoint != "" {
+			args = append(args, "--direct-auth-endpoint", cfg.DirectAuthEndpoint)
+		}
+		args = append(args, "--direct-token-mode", cfg.DirectTokenMode)
+		if modelsJSON, errModels := directModelsJSON(cfg.DirectModels); errModels != nil {
+			return nil, newPluginCallError("invalid_config", errModels.Error(), http.StatusInternalServerError, false)
+		} else if modelsJSON != "" {
+			args = append(args, "--direct-models-json", modelsJSON)
+		}
+	}
 	cmd := exec.Command(cfg.RunnerCommand, args...)
 	configureRunnerProcess(cmd)
 	cmd.Env = runnerEnvironment(auth, extraEnv, runtimeRoot)
@@ -129,13 +157,22 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 	return client, nil
 }
 
-func (c *runnerClient) handshake(ctx context.Context) (runnerHandshake, error) {
+func (c *runnerClient) handshake(ctx context.Context, requestedTransport ...string) (runnerHandshake, error) {
 	var result runnerHandshake
 	if errCall := c.call(ctx, "handshake", map[string]any{}, &result); errCall != nil {
 		return runnerHandshake{}, errCall
 	}
-	if result.Runner != "cpa-qoder-runner" || result.ProtocolVersion != runnerProtocol || result.RunnerVersion == "" {
+	if strings.TrimSpace(result.Transport) == "" {
+		// Runner protocol v1 predates explicit transport negotiation. Preserve
+		// compatibility for existing SDK/CLI runners while still rejecting an
+		// old runner when a direct transport was explicitly requested below.
+		result.Transport = "sdk_cli"
+	}
+	if result.Runner != "cpa-qoder-runner" || result.ProtocolVersion != runnerProtocol || result.RunnerVersion == "" || result.Transport != "sdk_cli" && result.Transport != "direct_openai" {
 		return runnerHandshake{}, newPluginCallError("runner_version_mismatch", "Qoder runner handshake is incompatible", http.StatusServiceUnavailable, false)
+	}
+	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" && result.Transport != strings.ToLower(strings.TrimSpace(requestedTransport[0])) {
+		return runnerHandshake{}, newPluginCallError("runner_version_mismatch", "Qoder runner transport does not match the selected auth transport", http.StatusServiceUnavailable, false)
 	}
 	return result, nil
 }
@@ -313,13 +350,17 @@ func runnerCallError(value *runnerError) error {
 	}
 	status := http.StatusBadGateway
 	switch value.Code {
-	case "auth_expired", "auth_not_configured":
+	case "auth_expired", "auth_not_configured", "direct_auth_failed", "direct_auth_invalid":
 		status = http.StatusUnauthorized
-	case "invalid_params", "invalid_content", "invalid_configuration", "prompt_required", "content_required", "model_required", "invalid_permission_policy":
+	case "quota_or_rate_limit":
+		status = http.StatusTooManyRequests
+	case "direct_timeout":
+		status = http.StatusGatewayTimeout
+	case "invalid_params", "invalid_content", "invalid_configuration", "prompt_required", "content_required", "model_required", "invalid_permission_policy", "unsupported_model", "direct_invalid_request", "direct_models_invalid", "direct_request_missing", "direct_request_too_large":
 		status = http.StatusBadRequest
 	case "turn_conflict", "session_configuration_changed":
 		status = http.StatusConflict
-	case "runner_quiescing", "cli_unavailable", "cli_path_required", "sdk_cli_version_mismatch":
+	case "runner_quiescing", "cli_unavailable", "cli_path_required", "sdk_cli_version_mismatch", "direct_endpoint_required", "direct_endpoint_invalid", "direct_auth_config", "models_unavailable", "models_schema_invalid":
 		status = http.StatusServiceUnavailable
 	}
 	message := strings.TrimSpace(value.Message)

@@ -84,6 +84,34 @@ func canonicalQoderModels() []pluginapi.ModelInfo {
 	return models
 }
 
+func configuredDirectModels(models []directModelConfig) []pluginapi.ModelInfo {
+	result := make([]pluginapi.ModelInfo, 0, len(models))
+	for _, model := range models {
+		inputModalities := []string{"text"}
+		if model.IsVL {
+			inputModalities = append(inputModalities, "image")
+		}
+		var thinking *pluginapi.ThinkingSupport
+		if model.IsReasoning || len(model.ReasoningEfforts) > 0 || model.SupportsDisabled {
+			thinking = &pluginapi.ThinkingSupport{Levels: append([]string(nil), model.ReasoningEfforts...), ZeroAllowed: model.SupportsDisabled}
+		}
+		contextLength := model.MaxInputTokens
+		for _, value := range model.AvailableContextWindows {
+			if value > contextLength {
+				contextLength = value
+			}
+		}
+		result = append(result, pluginapi.ModelInfo{
+			ID: model.ID, Name: model.ID, DisplayName: model.DisplayName, Description: model.Description,
+			Object: "model", OwnedBy: pluginIdentifier, Type: "agent", InputTokenLimit: model.MaxInputTokens,
+			OutputTokenLimit: model.MaxOutputTokens, ContextLength: contextLength, MaxCompletionTokens: model.MaxOutputTokens,
+			SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: inputModalities,
+			SupportedOutputModalities: []string{"text"}, Thinking: thinking, UserDefined: true,
+		})
+	}
+	return result
+}
+
 func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, error) {
 	var req rpcAuthModelRequest
 	if errDecode := decodeRequest(raw, &req); errDecode != nil {
@@ -93,7 +121,8 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	if errAuth != nil {
 		return pluginapi.ModelResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusBadRequest, false)
 	}
-	cacheKey := authCacheKey(req.AuthID, req.AuthProvider, auth)
+	transport := r.transportForAuth(auth)
+	cacheKey := authCacheKey(req.AuthID, req.AuthProvider, auth, transport)
 	r.mu.Lock()
 	cached, ok := r.modelCache[cacheKey]
 	r.mu.Unlock()
@@ -104,14 +133,19 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	cfg := r.loadedConfig()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.RequestTimeout)
 	defer cancel()
-	client, errStart := r.startRunner(ctx, auth)
+	client, errStart := r.startRunner(ctx, auth, transport)
 	if errStart != nil {
 		return pluginapi.ModelResponse{}, errStart
 	}
 	defer client.shutdown()
 	var result runnerModelsResponse
+	directModels, errDirectModels := directModelsJSON(cfg.DirectModels)
+	if errDirectModels != nil {
+		return pluginapi.ModelResponse{}, newPluginCallError("invalid_config", errDirectModels.Error(), http.StatusInternalServerError, false)
+	}
 	if errCall := client.call(ctx, "models", map[string]any{
-		"auth": auth.runnerAuth(), "cache_ttl_ms": cfg.ModelCacheTTL.Milliseconds(),
+		"auth": auth.runnerAuth(transport), "cache_ttl_ms": cfg.ModelCacheTTL.Milliseconds(),
+		"models_endpoint": cfg.DirectModelsEndpoint, "models_json": directModels,
 	}, &result); errCall != nil {
 		return pluginapi.ModelResponse{}, errCall
 	}
@@ -166,15 +200,26 @@ func qoderModelInfo(model runnerModel) pluginapi.ModelInfo {
 	}
 }
 
-func (auth qoderAuth) runnerAuth() map[string]any {
-	if auth.AuthMode == "pat" {
-		return map[string]any{"mode": "pat", "env_var": runnerPATEnv, "account_id": auth.AccountID}
+func (auth qoderAuth) runnerAuth(requestedTransport ...string) map[string]any {
+	transport := auth.Transport
+	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
+		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
 	}
-	return map[string]any{"mode": "local_cli", "profile_id": auth.ProfileID}
+	if auth.AuthMode == "pat" {
+		return map[string]any{"mode": "pat", "env_var": runnerPATEnv, "account_id": auth.AccountID, "transport": transport}
+	}
+	return map[string]any{"mode": "local_cli", "profile_id": auth.ProfileID, "transport": transport}
 }
 
-func authCacheKey(authID, provider string, auth qoderAuth) string {
-	return sessionDigest([]string{"qoder-models", strings.TrimSpace(provider), strings.TrimSpace(authID), auth.AuthMode, auth.AccountID, auth.ProfileID, auth.ConfigDir})
+func authCacheKey(authID, provider string, auth qoderAuth, requestedTransport ...string) string {
+	transport := auth.Transport
+	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
+		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
+	}
+	if transport == "" {
+		transport = "sdk_cli"
+	}
+	return sessionDigest([]string{"qoder-models", strings.TrimSpace(provider), strings.TrimSpace(authID), auth.AuthMode, transport, auth.AccountID, auth.ProfileID, auth.ConfigDir})
 }
 
 func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {
