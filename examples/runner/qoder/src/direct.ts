@@ -316,6 +316,9 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     } catch {
       throw new ProtocolError("invalid_upstream_response", "Qoder direct response was not valid JSON");
     }
+    if (isRecord(value) && isRecord(value.error)) {
+      throw new ProtocolError("direct_upstream_error", "Qoder direct response reported an upstream error", true);
+    }
     await this.consumeChunk(turn, isRecord(value) ? value : {});
     if (!turn.canceled && !turn.session.closed) {
       await this.emitTerminal(turn, "turn.completed", "completed");
