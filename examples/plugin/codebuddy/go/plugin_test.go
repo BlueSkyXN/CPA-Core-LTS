@@ -71,17 +71,19 @@ func TestModelsForAuthReturnsOnlyVerifiedModel(t *testing.T) {
 	if errModels != nil {
 		t.Fatalf("modelsForAuth() error = %v", errModels)
 	}
-	if resp.Provider != pluginIdentifier || len(resp.Models) != 1 || resp.Models[0].ID != codeBuddyModel {
+	if resp.Provider != pluginIdentifier || len(resp.Models) != 2 || resp.Models[0].ID != codeBuddyModel || resp.Models[1].ID != codeBuddyPreviewModel {
 		t.Fatalf("model response = %#v", resp)
 	}
-	if got := strings.Join(resp.Models[0].SupportedInputModalities, ","); got != "text,image" {
-		t.Fatalf("input modalities = %q, want text,image", got)
+	for _, model := range resp.Models {
+		if got := strings.Join(model.SupportedInputModalities, ","); got != "text,image" {
+			t.Fatalf("model %s input modalities = %q, want text,image", model.ID, got)
+		}
 	}
 }
 
 func TestRequestPayloadPreservesToolsImagesAndConversationContext(t *testing.T) {
 	raw := []byte(`{
-		"model":"hy3-preview-agent",
+		"model":"hy3",
 		"messages":[
 			{"role":"system","content":"Use the supplied context."},
 			{"role":"user","content":"Remember marker ALPHA."},
@@ -95,7 +97,7 @@ func TestRequestPayloadPreservesToolsImagesAndConversationContext(t *testing.T) 
 		"tool_choice":{"type":"function","function":{"name":"lookup"}},
 		"stream":true
 	}`)
-	payload, errPayload := codeBuddyRequestPayload(raw)
+	payload, errPayload := codeBuddyRequestPayload(raw, codeBuddyModel)
 	if errPayload != nil {
 		t.Fatal(errPayload)
 	}
@@ -117,6 +119,20 @@ func TestRequestPayloadPreservesToolsImagesAndConversationContext(t *testing.T) 
 	choice := body["tool_choice"].(map[string]any)["function"].(map[string]any)
 	if choice["name"] != "lookup" || body["model"] != codeBuddyModel || body["stream"] != true {
 		t.Fatalf("tool choice or enforced fields changed: %s", payload)
+	}
+	if _, errMismatch := codeBuddyRequestPayload(raw, codeBuddyPreviewModel); errMismatch == nil {
+		t.Fatal("payload model mismatch was accepted")
+	}
+	previewPayload, errPreview := codeBuddyRequestPayload(
+		[]byte(`{"model":"hy3-preview-agent","messages":[{"role":"user","content":"reply OK"}],"stream":true}`),
+		codeBuddyPreviewModel,
+	)
+	if errPreview != nil {
+		t.Fatal(errPreview)
+	}
+	var previewBody map[string]any
+	if errDecode := json.Unmarshal(previewPayload, &previewBody); errDecode != nil || previewBody["model"] != codeBuddyPreviewModel {
+		t.Fatalf("preview payload = %s, err=%v", previewPayload, errDecode)
 	}
 }
 
@@ -379,7 +395,7 @@ func executorRequestJSON(t *testing.T, requestID string) []byte {
 			AuthProvider: pluginIdentifier,
 			Model:        codeBuddyModel,
 			Stream:       true,
-			Payload:      []byte(`{"model":"hy3-preview-agent","messages":[{"role":"user","content":"reply OK"}],"stream":true}`),
+			Payload:      []byte(`{"model":"hy3","messages":[{"role":"user","content":"reply OK"}],"stream":true}`),
 			StorageJSON:  testAuthJSON(),
 		},
 		StreamID:       "plugin-" + requestID,

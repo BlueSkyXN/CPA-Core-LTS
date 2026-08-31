@@ -208,7 +208,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(resp)
 	case pluginabi.MethodExecutorExecute:
-		return nil, newPluginCallError("stream_required", "CodeBuddy hy3-preview-agent supports streaming requests only", http.StatusBadRequest, false)
+		return nil, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
 	case pluginabi.MethodExecutorExecuteStream:
 		resp, errStream := r.executeStream(raw)
 		if errStream != nil {

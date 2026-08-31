@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	pluginIdentifier = "codebuddy"
-	pluginName       = "cpa-provider-codebuddy"
-	pluginVersion    = "0.1.0"
-	codeBuddyModel   = "hy3-preview-agent"
+	pluginIdentifier      = "codebuddy"
+	pluginName            = "cpa-provider-codebuddy"
+	pluginVersion         = "0.1.0"
+	codeBuddyModel        = "hy3"
+	codeBuddyPreviewModel = "hy3-preview-agent"
 )
 
 type envelope struct {

@@ -1,6 +1,6 @@
 # CodeBuddy G1 Provider Plugin
 
-`cpa-provider-codebuddy` is a schema 5 dynamic plugin for the verified CodeBuddy direct HTTPS streaming lane. It registers `codebuddy` as an auth, model, and executor provider and exposes `hy3-preview-agent` through CPA's normal auth selection and provider execution path.
+`cpa-provider-codebuddy` is a schema 5 dynamic plugin for the verified CodeBuddy direct HTTPS streaming lane. It registers `codebuddy` as an auth, model, and executor provider and exposes the exact `hy3` and `hy3-preview-agent` IDs through CPA's normal auth selection and provider execution path.
 
 This G1 implementation is deliberately stream-only. It does not advertise native sessions, workspace tools, `codebuddy --serve`, ACP, or an execution-session closer.
 
@@ -49,7 +49,7 @@ The default upstream is `https://copilot.tencent.com/v2/chat/completions`. The o
 ## Supported behavior
 
 - Input/output format: OpenAI Chat Completions.
-- Model: `hy3-preview-agent`.
+- Models: `hy3` and `hy3-preview-agent`. The selected exact ID is forwarded unchanged; there is no silent fallback between them.
 - Text and image message content is forwarded without rewriting.
 - OpenAI `tools` and `tool_choice` are forwarded unchanged; tool execution remains the normal client/Chat Completions loop.
 - The complete client-supplied `messages` array is preserved, including system and prior-turn context.

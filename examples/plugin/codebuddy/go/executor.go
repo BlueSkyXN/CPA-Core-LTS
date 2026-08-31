@@ -18,10 +18,11 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 		return rpcStreamResponse{}, newPluginCallError("invalid_request", "CodeBuddy executor request is invalid", http.StatusBadRequest, false)
 	}
 	if !req.Stream {
-		return rpcStreamResponse{}, newPluginCallError("stream_required", "CodeBuddy hy3-preview-agent supports streaming requests only", http.StatusBadRequest, false)
+		return rpcStreamResponse{}, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
 	}
-	if strings.TrimSpace(req.Model) != codeBuddyModel {
-		return rpcStreamResponse{}, newPluginCallError("unsupported_model", "CodeBuddy G1 supports hy3-preview-agent only", http.StatusBadRequest, false)
+	model := strings.TrimSpace(req.Model)
+	if !isCodeBuddyModel(model) {
+		return rpcStreamResponse{}, newPluginCallError("unsupported_model", "CodeBuddy G1 supports only exact model IDs returned by the selected-auth catalog", http.StatusBadRequest, false)
 	}
 	if strings.TrimSpace(req.HostCallbackID) == "" {
 		return rpcStreamResponse{}, newPluginCallError("invalid_stream", "CodeBuddy stream requires a host callback context", http.StatusBadRequest, false)
@@ -30,7 +31,7 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	if errAuth != nil {
 		return rpcStreamResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusUnauthorized, false)
 	}
-	body, errPayload := codeBuddyRequestPayload(req.Payload)
+	body, errPayload := codeBuddyRequestPayload(req.Payload, model)
 	if errPayload != nil {
 		return rpcStreamResponse{}, errPayload
 	}
@@ -85,21 +86,25 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	return rpcStreamResponse{Headers: http.Header{"Content-Type": {"text/event-stream"}}}, nil
 }
 
-func codeBuddyRequestPayload(raw []byte) ([]byte, error) {
+func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
+	model = strings.TrimSpace(model)
+	if !isCodeBuddyModel(model) {
+		return nil, newPluginCallError("unsupported_model", "CodeBuddy G1 supports only exact model IDs returned by the selected-auth catalog", http.StatusBadRequest, false)
+	}
 	var body map[string]any
 	if errDecode := json.Unmarshal(raw, &body); errDecode != nil || body == nil {
 		return nil, newPluginCallError("invalid_request", "CodeBuddy request body must be a JSON object", http.StatusBadRequest, false)
 	}
-	if model, ok := body["model"].(string); ok && strings.TrimSpace(model) != "" && strings.TrimSpace(model) != codeBuddyModel {
-		return nil, newPluginCallError("unsupported_model", "CodeBuddy G1 supports hy3-preview-agent only", http.StatusBadRequest, false)
+	if payloadModel, ok := body["model"].(string); ok && strings.TrimSpace(payloadModel) != "" && strings.TrimSpace(payloadModel) != model {
+		return nil, newPluginCallError("unsupported_model", "CodeBuddy payload model must match the selected exact model ID", http.StatusBadRequest, false)
 	}
 	if stream, exists := body["stream"]; exists {
 		streamEnabled, ok := stream.(bool)
 		if !ok || !streamEnabled {
-			return nil, newPluginCallError("stream_required", "CodeBuddy hy3-preview-agent supports streaming requests only", http.StatusBadRequest, false)
+			return nil, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
 		}
 	}
-	body["model"] = codeBuddyModel
+	body["model"] = model
 	body["stream"] = true
 	out, errMarshal := json.Marshal(body)
 	if errMarshal != nil {

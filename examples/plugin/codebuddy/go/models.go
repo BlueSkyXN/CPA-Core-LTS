@@ -2,17 +2,38 @@ package main
 
 import "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 
+var codeBuddyModelDefinitions = []struct {
+	ID          string
+	DisplayName string
+}{
+	{ID: codeBuddyModel, DisplayName: "CodeBuddy HY3"},
+	{ID: codeBuddyPreviewModel, DisplayName: "CodeBuddy HY3 Preview Agent"},
+}
+
 func codeBuddyModels() []pluginapi.ModelInfo {
-	return []pluginapi.ModelInfo{{
-		ID:                         codeBuddyModel,
-		Object:                     "model",
-		OwnedBy:                    pluginIdentifier,
-		DisplayName:                "CodeBuddy HY3 Preview Agent",
-		SupportedGenerationMethods: []string{"chat"},
-		SupportedInputModalities:   []string{"text", "image"},
-		SupportedOutputModalities:  []string{"text"},
-		UserDefined:                true,
-	}}
+	models := make([]pluginapi.ModelInfo, 0, len(codeBuddyModelDefinitions))
+	for _, definition := range codeBuddyModelDefinitions {
+		models = append(models, pluginapi.ModelInfo{
+			ID:                         definition.ID,
+			Object:                     "model",
+			OwnedBy:                    pluginIdentifier,
+			DisplayName:                definition.DisplayName,
+			SupportedGenerationMethods: []string{"chat"},
+			SupportedInputModalities:   []string{"text", "image"},
+			SupportedOutputModalities:  []string{"text"},
+			UserDefined:                true,
+		})
+	}
+	return models
+}
+
+func isCodeBuddyModel(model string) bool {
+	for _, definition := range codeBuddyModelDefinitions {
+		if model == definition.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func modelsForAuth(raw []byte) (pluginapi.ModelResponse, error) {
