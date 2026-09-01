@@ -27,6 +27,13 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if errLocal != nil || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" {
 		t.Fatalf("parse local = %#v, %v", local, errLocal)
 	}
+	direct, errDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"direct_openai","access_token":"jt-fixture"}`))
+	if errDirect != nil || direct.Transport != "direct_openai" || direct.AuthMode != "pat" {
+		t.Fatalf("parse direct = %#v, %v", direct, errDirect)
+	}
+	if _, errLocalDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","transport":"direct_openai","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalDirect == nil {
+		t.Fatal("local_cli direct transport was accepted")
+	}
 	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":" bad "}`)); errWhitespace == nil {
 		t.Fatal("PAT with surrounding whitespace was accepted")
 	}
@@ -164,6 +171,35 @@ disallowed_tools: [Bash]
 	if errOverlap == nil {
 		t.Fatal("overlapping tool policy was accepted")
 	}
+	direct, errDirect := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+direct_auth_endpoint: https://openapi.example.test
+direct_models:
+  - id: qfmodel
+    display_name: Qwen3.8-Flash
+`))
+	if errDirect != nil || direct.Transport != "direct_openai" || len(direct.DirectModels) != 1 {
+		t.Fatalf("direct config = %#v, %v", direct, errDirect)
+	}
+	if _, errNoModels := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+`)); errNoModels == nil {
+		t.Fatal("direct config without model source was accepted")
+	}
+	if _, errOwnedArg := decodePluginConfig([]byte(`
+runner_command: /usr/local/bin/cpa-qoder-runner
+qoder_cli_path: /usr/local/bin/qoderclicn
+working_directory: /tmp
+runner_args: [--transport=direct_openai]
+`)); errOwnedArg == nil {
+		t.Fatal("runner_args overrode transport")
+	}
 }
 
 func TestRunnerCapabilityValidationErrorsRemainClientErrors(t *testing.T) {
@@ -215,6 +251,9 @@ func TestSessionKeyIncludesAllOwnershipDimensions(t *testing.T) {
 		if got := executionSessionKey(candidate, auth); got == want {
 			t.Fatalf("mutation %d did not change session key", index)
 		}
+	}
+	if executionSessionKey(base, auth, "direct_openai") == want {
+		t.Fatal("transport mutation did not change session key")
 	}
 }
 
@@ -368,6 +407,55 @@ func TestProjectionDoesNotExposeRunnerExecutedToolsAsClientToolCalls(t *testing.
 	}
 }
 
+func TestProjectionPreservesDirectClientToolCalls(t *testing.T) {
+	now := time.Now().UTC()
+	events := []pluginapi.AgentEventV1{
+		testAgentEvent(1, pluginapi.AgentEventToolStarted, map[string]any{"index": 0, "tool_call_id": "call-1", "name": "probe"}, now),
+		testAgentEvent(2, pluginapi.AgentEventToolUpdated, map[string]any{"index": 0, "partial_json": `{"x":`}, now),
+		testAgentEvent(3, pluginapi.AgentEventToolUpdated, map[string]any{"index": 0, "partial_json": `1}`}, now),
+		testAgentEvent(4, pluginapi.AgentEventTurnCompleted, pluginapi.AgentTerminalPayloadV1{State: pluginapi.AgentTerminalCompleted}, now),
+	}
+	projection := newEventProjection("request-1", "qfmodel")
+	var chunks [][]byte
+	for _, event := range events {
+		chunk, _, errChunk := projection.streamChunk(event)
+		if errChunk != nil {
+			t.Fatal(errChunk)
+		}
+		if len(chunk) > 0 {
+			chunks = append(chunks, chunk)
+		}
+	}
+	if len(chunks) != 4 {
+		t.Fatalf("direct tool chunks = %d, want 4", len(chunks))
+	}
+	if !bytes.Contains(bytes.Join(chunks, nil), []byte(`"tool_calls"`)) || !bytes.Contains(bytes.Join(chunks, nil), []byte(`"arguments":"1}"`)) {
+		t.Fatalf("direct tool call was not projected: %q", chunks)
+	}
+	response, errResponse := projection.nonStreamResponse()
+	if errResponse != nil {
+		t.Fatal(errResponse)
+	}
+	if !bytes.Contains(response.Payload, []byte(`"finish_reason":"tool_calls"`)) || !bytes.Contains(response.Payload, []byte(`"name":"probe"`)) {
+		t.Fatalf("non-stream direct tool call = %s", response.Payload)
+	}
+}
+
+func TestProjectionPreservesDirectTerminalErrorClassification(t *testing.T) {
+	now := time.Now().UTC()
+	projection := newEventProjection("request-1", "qfmodel")
+	_, _, errChunk := projection.streamChunk(testAgentEvent(1, pluginapi.AgentEventTurnFailed, pluginapi.AgentTerminalPayloadV1{
+		State: pluginapi.AgentTerminalFailed, Code: "quota_or_rate_limit", Message: "rate limited", Retryable: true,
+	}, now))
+	if errChunk == nil {
+		t.Fatal("direct terminal error was accepted as a successful stream")
+	}
+	callErr, ok := errChunk.(*pluginCallError)
+	if !ok || callErr.code != "quota_or_rate_limit" || callErr.statusCode != http.StatusTooManyRequests || !callErr.retryable {
+		t.Fatalf("terminal error = %#v, want typed 429 retryable error", errChunk)
+	}
+}
+
 func TestFakeRunnerProtocolModelsCancelCloseAndSecretIsolation(t *testing.T) {
 	cfg := fakeRunnerConfig(t)
 	auth := qoderAuth{Type: "qoder", AuthMode: "pat", AccountID: "acct", AccessToken: "pt-test-secret"}
@@ -441,6 +529,32 @@ func TestRunnerVersionMismatchAndBoundedEventQueue(t *testing.T) {
 		t.Fatal("runner queue overflow did not terminate client")
 	}
 	flood.shutdown()
+}
+
+func TestDirectTransportNegotiatesWithRunner(t *testing.T) {
+	cfg := fakeRunnerConfig(t)
+	cfg.DirectEndpoint = "https://api2-v2.example.test/model/v1/chat/completions"
+	cfg.DirectModels = []directModelConfig{{ID: "qfmodel", DisplayName: "Qwen3.8-Flash"}}
+	auth := qoderAuth{Type: "qoder", AuthMode: "pat", Transport: "direct_openai", AccessToken: "jt-fixture"}
+	client, errStart := newRunnerClient(cfg, auth, map[string]string{
+		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success", "QODER_FAKE_TRANSPORT": "direct_openai",
+	}, "direct_openai")
+	if errStart != nil {
+		t.Fatal(errStart)
+	}
+	defer client.shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, errHandshake := client.handshake(ctx, "direct_openai"); errHandshake != nil {
+		t.Fatal(errHandshake)
+	}
+	start := fakeStartParams()
+	start["auth"] = auth.runnerAuth("direct_openai")
+	start["transport"] = "direct_openai"
+	start["chat_request"] = map[string]any{"model": "qfmodel", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	if errCall := client.call(ctx, "start", start, nil); errCall != nil {
+		t.Fatal(errCall)
+	}
 }
 
 func TestRunnerExitTakesPriorityOverBufferedEvents(t *testing.T) {
@@ -658,7 +772,8 @@ func TestQoderFakeRunnerProcess(t *testing.T) {
 			if mode == "version-mismatch" {
 				version = 2
 			}
-			result = map[string]any{"runner": "cpa-qoder-runner", "runner_version": "0.1.0-test", "protocol_version": version, "sdk_version": "1.0.10"}
+			transport := os.Getenv("QODER_FAKE_TRANSPORT")
+			result = map[string]any{"runner": "cpa-qoder-runner", "runner_version": "0.1.0-test", "protocol_version": version, "sdk_version": "1.0.10", "transport": transport}
 		case "models":
 			result = map[string]any{"models": []any{map[string]any{"id": "qfmodel", "display_name": "Qwen3.8-Flash", "is_enabled": true}}}
 		case "readiness":

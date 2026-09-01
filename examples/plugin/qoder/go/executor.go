@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -93,6 +94,15 @@ func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.loadedConfig().RequestTimeout)
 	defer cancel()
+	transport := r.transportForAuth(auth)
+	var chatRequest map[string]any
+	if transport == "direct_openai" {
+		var errChatRequest error
+		chatRequest, errChatRequest = decodeChatRequestForRunner(req.Payload)
+		if errChatRequest != nil {
+			return nil, errChatRequest
+		}
+	}
 	session, errSession := r.acquireSession(ctx, req, auth)
 	if errSession != nil {
 		return nil, errSession
@@ -113,7 +123,8 @@ func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession
 		"system_prompt":        input.SystemPrompt,
 		"content":              input.Content,
 		"model":                req.Model,
-		"auth":                 auth.runnerAuth(),
+		"auth":                 auth.runnerAuth(transport),
+		"transport":            transport,
 		"skills":               cfg.Skills,
 		"setting_sources":      cfg.SettingSources,
 		"allowed_tools":        cfg.AllowedTools,
@@ -124,12 +135,29 @@ func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession
 			"rules":   cfg.PermissionRules,
 		},
 	}
+	if transport == "direct_openai" {
+		params["chat_request"] = chatRequest
+	}
 	if errCall := session.client.call(ctx, "start", params, nil); errCall != nil {
 		r.completeTurn(session, req.RequestID)
 		r.dropSession(session)
 		return nil, errCall
 	}
 	return session, nil
+}
+
+func decodeChatRequestForRunner(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 || len(raw) > maxExecutorBodyBytes {
+		return nil, newPluginCallError("invalid_request", "Qoder Chat request is empty or exceeds the bounded body limit", http.StatusBadRequest, false)
+	}
+	var request map[string]any
+	if errDecode := json.Unmarshal(raw, &request); errDecode != nil || request == nil {
+		return nil, newPluginCallError("invalid_request", "Qoder Chat request must be a JSON object", http.StatusBadRequest, false)
+	}
+	if _, ok := request["messages"]; !ok {
+		return nil, newPluginCallError("invalid_request", "Qoder Chat request must contain messages", http.StatusBadRequest, false)
+	}
+	return request, nil
 }
 
 func (r *pluginRuntime) forwardEvents(session *runnerSession, req rpcExecutorRequest) {

@@ -13,6 +13,7 @@ import (
 type qoderAuth struct {
 	Type        string `json:"type"`
 	AuthMode    string `json:"auth_mode"`
+	Transport   string `json:"transport,omitempty"`
 	AccountID   string `json:"account_id,omitempty"`
 	AccessToken string `json:"access_token,omitempty"`
 	ProfileID   string `json:"profile_id,omitempty"`
@@ -30,9 +31,13 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 	}
 	auth.Type = pluginIdentifier
 	auth.AuthMode = strings.TrimSpace(auth.AuthMode)
+	auth.Transport = strings.ToLower(strings.TrimSpace(auth.Transport))
 	auth.AccountID = strings.TrimSpace(auth.AccountID)
 	auth.ProfileID = strings.TrimSpace(auth.ProfileID)
 	auth.ConfigDir = strings.TrimSpace(auth.ConfigDir)
+	if auth.Transport != "" && auth.Transport != "sdk_cli" && auth.Transport != "direct_openai" {
+		return qoderAuth{}, fmt.Errorf("Qoder transport must be sdk_cli or direct_openai")
+	}
 	switch auth.AuthMode {
 	case "pat":
 		if auth.AccessToken == "" || strings.TrimSpace(auth.AccessToken) != auth.AccessToken {
@@ -44,6 +49,9 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 		auth.ProfileID = ""
 		auth.ConfigDir = ""
 	case "local_cli":
+		if auth.Transport == "direct_openai" {
+			return qoderAuth{}, fmt.Errorf("Qoder local_cli auth cannot use direct_openai transport")
+		}
 		if auth.ProfileID == "" {
 			return qoderAuth{}, fmt.Errorf("Qoder local_cli profile_id is required")
 		}
@@ -75,6 +83,11 @@ func parseAuthRequest(raw []byte) (pluginapi.AuthParseResponse, error) {
 	}
 	label := "Qoder PAT"
 	attributes := map[string]string{"auth_mode": auth.AuthMode, "multi_account": "supported"}
+	metadata := map[string]any{"type": pluginIdentifier, "auth_mode": auth.AuthMode}
+	if auth.Transport != "" {
+		attributes["transport"] = auth.Transport
+		metadata["transport"] = auth.Transport
+	}
 	if auth.AuthMode == "local_cli" {
 		label = "Qoder Local CLI " + auth.ProfileID
 		attributes["profile_id"] = auth.ProfileID
@@ -85,7 +98,7 @@ func parseAuthRequest(raw []byte) (pluginapi.AuthParseResponse, error) {
 		FileName:    strings.TrimSpace(req.FileName),
 		Label:       label,
 		StorageJSON: bytes.Clone(req.RawJSON),
-		Metadata:    map[string]any{"type": pluginIdentifier, "auth_mode": auth.AuthMode},
+		Metadata:    metadata,
 		Attributes:  attributes,
 	}}, nil
 }

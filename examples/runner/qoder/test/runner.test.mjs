@@ -3,6 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 
 import { BoundedFrameWriter, ProtocolError, redactStderr } from "../dist/protocol.js";
+import { DirectOpenAIAdapter } from "../dist/direct.js";
 import { toModelRecord, userMessage } from "../dist/qoder.js";
 import { RunnerServer } from "../dist/server.js";
 
@@ -270,4 +271,238 @@ test("stderr redaction removes direct and header secrets", () => {
   const safe = redactStderr(`token=${secret} Authorization: Bearer ${secret}`, [secret]);
   assert.equal(safe.includes(secret), false);
   assert.match(safe, /REDACTED_SECRET/);
+});
+
+test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle events", async () => {
+  const envVar = "CPA_TEST_QODER_DIRECT_TOKEN";
+  process.env[envVar] = "jt-fixture";
+  const calls = [];
+  const adapter = new DirectOpenAIAdapter({
+    endpoint: "https://direct.example.test/model/v1/chat/completions",
+    modelsEndpoint: "https://direct.example.test/model/v1/models",
+    tokenMode: "bearer",
+    models: [],
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "qfmodel", display_name: "Qwen3.8-Flash", is_enabled: true }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response([
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+        'data: {"choices":[{"delta":{"content":"ok"}}]}',
+        'data: {"choices":[{"delta":{"reasoning_content":"trace"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"raw_usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}',
+        "data: [DONE]",
+        "",
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  try {
+    const models = await adapter.models({ auth: { mode: "pat", env_var: envVar }, models_endpoint: "https://direct.example.test/model/v1/models" });
+    assert.deepEqual(models.map((model) => model.id), ["qfmodel"]);
+    const params = {
+      ...startParams(),
+      auth: { mode: "pat", env_var: envVar, transport: "direct_openai" },
+      chat_request: {
+        model: "client-alias",
+        messages: [{ role: "user", content: "hello" }],
+        stream: false,
+        tools: [{ type: "function", function: { name: "probe", parameters: { type: "object" } } }],
+      },
+    };
+    const events = [];
+    let terminal;
+    const completed = new Promise((resolve) => { terminal = resolve; });
+    await adapter.start(params, async (event) => {
+      events.push(event);
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.cancelled") terminal(event);
+    });
+    await completed;
+    assert.deepEqual(events.map((event) => event.type), [
+      "session.created", "turn.started", "message.delta", "reasoning.delta", "usage.updated", "turn.completed",
+    ]);
+    const inference = calls.find((call) => call.url.endsWith("/chat/completions"));
+    assert.ok(inference);
+    assert.equal(inference.init.headers.Authorization, "Bearer jt-fixture");
+    const body = JSON.parse(inference.init.body);
+    assert.equal(body.model, "qfmodel");
+    assert.equal(body.stream, true);
+    assert.equal(body.stream_options.include_usage, true);
+    assert.deepEqual(body.tools[0].function.parameters, { type: "object" });
+    assert.equal(body.metadata.context.request_id, params.request_id);
+    const second = {
+      ...params,
+      request_id: "request-2",
+      turn_id: "turn-2",
+      chat_request: { ...params.chat_request, model: "qfmodel" },
+    };
+    const secondEvents = [];
+    let secondTerminal;
+    const secondCompleted = new Promise((resolve) => { secondTerminal = resolve; });
+    await adapter.start(second, async (event) => {
+      secondEvents.push(event);
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.cancelled") secondTerminal(event);
+    });
+    await secondCompleted;
+    assert.equal(secondEvents[0].type, "turn.started");
+    assert.equal(secondEvents.some((event) => event.type === "session.created"), false);
+    await adapter.close(params.execution_session_id);
+  } finally {
+    delete process.env[envVar];
+    await adapter.shutdown();
+  }
+});
+
+test("direct OpenAI transport exchanges PAT and retries one unauthorized response with refresh token", async () => {
+  const envVar = "CPA_TEST_QODER_DIRECT_PAT";
+  process.env[envVar] = "pt-fixture";
+  const calls = [];
+  let inferenceCalls = 0;
+  const adapter = new DirectOpenAIAdapter({
+    endpoint: "https://direct.example.test/model/v1/chat/completions",
+    authEndpoint: "https://openapi.example.test",
+    tokenMode: "auto",
+    models: [{ id: "qfmodel", display_name: "Qwen3.8-Flash" }],
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/jobToken/exchange")) {
+        return new Response(JSON.stringify({ token: "jt-one", refresh_token: "jrt-one", expires_in: 86400000 }), { status: 200 });
+      }
+      if (String(url).endsWith("/jobToken/refresh")) {
+        return new Response(JSON.stringify({ token: "jt-two", refresh_token: "jrt-two", expires_in: 86400000 }), { status: 200 });
+      }
+      inferenceCalls += 1;
+      if (inferenceCalls === 1) return new Response("unauthorized", { status: 401 });
+      return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\ndata: [DONE]\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  try {
+    const params = {
+      ...startParams(),
+      auth: { mode: "pat", env_var: envVar, transport: "direct_openai" },
+      chat_request: { model: "qfmodel", messages: [{ role: "user", content: "hello" }] },
+    };
+    const events = [];
+    let terminal;
+    const completed = new Promise((resolve) => { terminal = resolve; });
+    await adapter.start(params, async (event) => {
+      events.push(event);
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.cancelled") terminal(event);
+    });
+    await completed;
+    assert.equal(events.at(-1).type, "turn.completed");
+    const inference = calls.filter((call) => call.url.endsWith("/chat/completions"));
+    assert.equal(inference.length, 2);
+    assert.equal(inference[0].init.headers.Authorization, "Bearer jt-one");
+    assert.equal(inference[1].init.headers.Authorization, "Bearer jt-two");
+  } finally {
+    delete process.env[envVar];
+    await adapter.shutdown();
+  }
+});
+
+test("direct OpenAI transport aborts the upstream request on cancel", async () => {
+  const envVar = "CPA_TEST_QODER_DIRECT_CANCEL_TOKEN";
+  process.env[envVar] = "jt-fixture";
+  const adapter = new DirectOpenAIAdapter({
+    endpoint: "https://direct.example.test/model/v1/chat/completions",
+    tokenMode: "bearer",
+    models: [{ id: "qfmodel" }],
+    fetchImpl: async (_url, init = {}) => await new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }),
+  });
+  try {
+    const params = {
+      ...startParams(),
+      auth: { mode: "pat", env_var: envVar, transport: "direct_openai" },
+      chat_request: { model: "qfmodel", messages: [{ role: "user", content: "hello" }] },
+    };
+    const events = [];
+    let terminal;
+    const completed = new Promise((resolve) => { terminal = resolve; });
+    const turn = await adapter.start(params, async (event) => {
+      events.push(event);
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.cancelled") terminal(event);
+    });
+    await turn.cancel();
+    const finalEvent = await completed;
+    assert.equal(finalEvent.type, "turn.cancelled");
+    assert.equal(events.at(-1).payload.code, "request_cancelled");
+  } finally {
+    delete process.env[envVar];
+    await adapter.shutdown();
+  }
+});
+
+test("direct OpenAI transport projects client tool-call deltas into AgentEventV1", async () => {
+  const envVar = "CPA_TEST_QODER_DIRECT_TOOL_TOKEN";
+  process.env[envVar] = "jt-fixture";
+  const adapter = new DirectOpenAIAdapter({
+    endpoint: "https://direct.example.test/model/v1/chat/completions",
+    tokenMode: "bearer",
+    models: [{ id: "qfmodel" }],
+    fetchImpl: async () => new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"probe","arguments":"{\\"x\\":1}"}}]}}]}',
+      "data: [DONE]",
+      "",
+    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+  });
+  try {
+    const params = {
+      ...startParams(),
+      auth: { mode: "pat", env_var: envVar, transport: "direct_openai" },
+      chat_request: { model: "qfmodel", messages: [{ role: "user", content: "call probe" }], tools: [{ type: "function", function: { name: "probe" } }] },
+    };
+    const events = [];
+    let terminal;
+    const completed = new Promise((resolve) => { terminal = resolve; });
+    await adapter.start(params, async (event) => {
+      events.push(event);
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.cancelled") terminal(event);
+    });
+    await completed;
+    assert.deepEqual(events.map((event) => event.type), [
+      "session.created", "turn.started", "tool.started", "tool.updated", "tool.completed", "turn.completed",
+    ]);
+    assert.equal(events.find((event) => event.type === "tool.updated").payload.partial_json, '{"x":1}');
+  } finally {
+    delete process.env[envVar];
+    await adapter.shutdown();
+  }
+});
+
+test("direct OpenAI transport rejects a display-name or guessed model alias", async () => {
+  const envVar = "CPA_TEST_QODER_DIRECT_MODEL_TOKEN";
+  process.env[envVar] = "jt-fixture";
+  const adapter = new DirectOpenAIAdapter({
+    endpoint: "https://direct.example.test/model/v1/chat/completions",
+    tokenMode: "bearer",
+    models: [{ id: "qfmodel", display_name: "Qwen3.8-Flash" }],
+    fetchImpl: async () => { throw new Error("network must not be called for an unknown model"); },
+  });
+  try {
+    const params = {
+      ...startParams(),
+      model: "Qwen3.8-Flash",
+      auth: { mode: "pat", env_var: envVar, transport: "direct_openai" },
+      chat_request: { model: "Qwen3.8-Flash", messages: [{ role: "user", content: "hello" }] },
+    };
+    let terminal;
+    const completed = new Promise((resolve) => { terminal = resolve; });
+    await adapter.start(params, async (event) => {
+      if (event.type === "turn.failed") terminal(event);
+    });
+    const result = await completed;
+    assert.equal(result.payload.code, "unsupported_model");
+  } finally {
+    delete process.env[envVar];
+    await adapter.shutdown();
+  }
 });

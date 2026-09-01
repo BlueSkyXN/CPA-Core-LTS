@@ -17,6 +17,7 @@ import {
   type CloseParams,
   type ModelsParams,
   type QoderAdapter,
+  type QoderTransport,
   type ReadinessParams,
   type RunnerRequest,
   type RunnerResponse,
@@ -62,18 +63,22 @@ export class RunnerServer {
 
   private async dispatch(request: RunnerRequest): Promise<unknown> {
     switch (request.method) {
-      case "handshake":
+      case "handshake": {
+        const transport: QoderTransport = this.adapter.transport ?? "sdk_cli";
         return {
           runner: RUNNER_NAME,
           runner_version: RUNNER_VERSION,
           protocol_version: RUNNER_PROTOCOL_VERSION,
-          sdk_version: QODER_SDK_VERSION,
+          sdk_version: transport === "direct_openai" ? "not_applicable" : QODER_SDK_VERSION,
+          transport,
           node_version: process.version,
           capabilities: [
-            "readiness", "models", "sessions", "events", "cancel", "close", "structured_input",
-            "image_input", "fixed_permissions", "fixed_skills", "fixed_mcp",
+            ...(transport === "direct_openai"
+              ? ["readiness", "models", "events", "cancel", "close", "direct_openai", "client_tools", "structured_input", "image_input"]
+              : ["readiness", "models", "sessions", "events", "cancel", "close", "structured_input", "image_input", "fixed_permissions", "fixed_skills", "fixed_mcp"]),
           ],
         };
+      }
       case "readiness": {
         const params = asObject<ReadinessParams>(request.params);
         const state = await this.adapter.readiness(params.auth);

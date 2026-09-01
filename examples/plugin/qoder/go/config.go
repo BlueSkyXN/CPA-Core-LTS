@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -29,32 +30,55 @@ type mcpServerConfig struct {
 }
 
 type pluginConfig struct {
-	RunnerCommand     string                     `yaml:"runner_command"`
-	RunnerArgs        []string                   `yaml:"runner_args"`
-	QoderCLIPath      string                     `yaml:"qoder_cli_path"`
-	WorkingDirectory  string                     `yaml:"working_directory"`
-	MaxQueueFrames    int                        `yaml:"max_queue_frames"`
-	RequestTimeout    time.Duration              `yaml:"-"`
-	RequestTimeoutRaw string                     `yaml:"request_timeout"`
-	ModelCacheTTL     time.Duration              `yaml:"-"`
-	ModelCacheTTLRaw  string                     `yaml:"model_cache_ttl"`
-	PermissionDefault string                     `yaml:"permission_default"`
-	PermissionRules   []permissionRule           `yaml:"permission_rules"`
-	Skills            []string                   `yaml:"skills"`
-	SettingSources    []string                   `yaml:"setting_sources"`
-	AllowedTools      []string                   `yaml:"allowed_tools"`
-	DisallowedTools   []string                   `yaml:"disallowed_tools"`
-	MCPServers        map[string]mcpServerConfig `yaml:"mcp_servers"`
+	Transport            string                     `yaml:"transport"`
+	RunnerCommand        string                     `yaml:"runner_command"`
+	RunnerArgs           []string                   `yaml:"runner_args"`
+	QoderCLIPath         string                     `yaml:"qoder_cli_path"`
+	DirectEndpoint       string                     `yaml:"direct_endpoint"`
+	DirectModelsEndpoint string                     `yaml:"direct_models_endpoint"`
+	DirectAuthEndpoint   string                     `yaml:"direct_auth_endpoint"`
+	DirectTokenMode      string                     `yaml:"direct_token_mode"`
+	DirectModels         []directModelConfig        `yaml:"direct_models"`
+	WorkingDirectory     string                     `yaml:"working_directory"`
+	MaxQueueFrames       int                        `yaml:"max_queue_frames"`
+	RequestTimeout       time.Duration              `yaml:"-"`
+	RequestTimeoutRaw    string                     `yaml:"request_timeout"`
+	ModelCacheTTL        time.Duration              `yaml:"-"`
+	ModelCacheTTLRaw     string                     `yaml:"model_cache_ttl"`
+	PermissionDefault    string                     `yaml:"permission_default"`
+	PermissionRules      []permissionRule           `yaml:"permission_rules"`
+	Skills               []string                   `yaml:"skills"`
+	SettingSources       []string                   `yaml:"setting_sources"`
+	AllowedTools         []string                   `yaml:"allowed_tools"`
+	DisallowedTools      []string                   `yaml:"disallowed_tools"`
+	MCPServers           map[string]mcpServerConfig `yaml:"mcp_servers"`
+}
+
+type directModelConfig struct {
+	ID                      string   `yaml:"id" json:"id"`
+	DisplayName             string   `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	Description             string   `yaml:"description,omitempty" json:"description,omitempty"`
+	IsReasoning             bool     `yaml:"is_reasoning,omitempty" json:"is_reasoning,omitempty"`
+	IsVL                    bool     `yaml:"is_vl,omitempty" json:"is_vl,omitempty"`
+	MaxInputTokens          int64    `yaml:"max_input_tokens,omitempty" json:"max_input_tokens,omitempty"`
+	MaxOutputTokens         int64    `yaml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
+	ReasoningEfforts        []string `yaml:"reasoning_efforts,omitempty" json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort  string   `yaml:"default_reasoning_effort,omitempty" json:"default_reasoning_effort,omitempty"`
+	SupportsDisabled        bool     `yaml:"supports_disabled,omitempty" json:"supports_disabled,omitempty"`
+	AvailableContextWindows []int64  `yaml:"available_context_windows,omitempty" json:"available_context_windows,omitempty"`
+	DefaultContextWindow    int64    `yaml:"default_context_window,omitempty" json:"default_context_window,omitempty"`
 }
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
+		Transport:         "sdk_cli",
 		RunnerCommand:     "cpa-qoder-runner",
 		WorkingDirectory:  os.TempDir(),
 		MaxQueueFrames:    128,
 		RequestTimeout:    30 * time.Second,
 		ModelCacheTTL:     time.Minute,
 		PermissionDefault: "deny",
+		DirectTokenMode:   "auto",
 	}
 }
 
@@ -66,7 +90,24 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		}
 	}
 	cfg.RunnerCommand = strings.TrimSpace(cfg.RunnerCommand)
+	cfg.Transport = strings.ToLower(strings.TrimSpace(cfg.Transport))
 	cfg.QoderCLIPath = strings.TrimSpace(cfg.QoderCLIPath)
+	cfg.DirectEndpoint = strings.TrimSpace(cfg.DirectEndpoint)
+	cfg.DirectModelsEndpoint = strings.TrimSpace(cfg.DirectModelsEndpoint)
+	cfg.DirectAuthEndpoint = strings.TrimRight(strings.TrimSpace(cfg.DirectAuthEndpoint), "/")
+	cfg.DirectTokenMode = strings.ToLower(strings.TrimSpace(cfg.DirectTokenMode))
+	if cfg.Transport == "" {
+		cfg.Transport = "sdk_cli"
+	}
+	if cfg.DirectTokenMode == "" {
+		cfg.DirectTokenMode = "auto"
+	}
+	if cfg.Transport != "sdk_cli" && cfg.Transport != "direct_openai" {
+		return pluginConfig{}, fmt.Errorf("transport must be sdk_cli or direct_openai")
+	}
+	if cfg.DirectTokenMode != "auto" && cfg.DirectTokenMode != "bearer" && cfg.DirectTokenMode != "pat_exchange" {
+		return pluginConfig{}, fmt.Errorf("direct_token_mode must be auto, bearer, or pat_exchange")
+	}
 	cfg.WorkingDirectory = strings.TrimSpace(cfg.WorkingDirectory)
 	if cfg.RunnerCommand == "" || strings.ContainsRune(cfg.RunnerCommand, '\x00') {
 		return pluginConfig{}, fmt.Errorf("runner_command is required")
@@ -75,13 +116,73 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		if strings.ContainsRune(arg, '\x00') {
 			return pluginConfig{}, fmt.Errorf("runner_args contains an invalid argument")
 		}
-		switch arg {
-		case "--stdio", "--cli-path", "--cwd", "--max-queue-frames", "--version":
-			return pluginConfig{}, fmt.Errorf("runner_args must not override plugin-owned runner arguments")
+		for _, owned := range []string{"--stdio", "--cli-path", "--cwd", "--max-queue-frames", "--version", "--transport", "--direct-endpoint", "--direct-models-endpoint", "--direct-auth-endpoint", "--direct-token-mode", "--direct-models-json"} {
+			if arg == owned || strings.HasPrefix(arg, owned+"=") {
+				return pluginConfig{}, fmt.Errorf("runner_args must not override plugin-owned runner arguments")
+			}
 		}
 	}
 	if cfg.QoderCLIPath != "" && (!filepath.IsAbs(cfg.QoderCLIPath) || strings.ContainsRune(cfg.QoderCLIPath, '\x00')) {
 		return pluginConfig{}, fmt.Errorf("qoder_cli_path must be an absolute path")
+	}
+	if cfg.Transport == "direct_openai" && cfg.DirectEndpoint == "" {
+		return pluginConfig{}, fmt.Errorf("direct_endpoint is required when transport is direct_openai")
+	}
+	if cfg.DirectEndpoint != "" {
+		if errEndpoint := validateDirectURL(cfg.DirectEndpoint, "direct_endpoint"); errEndpoint != nil {
+			return pluginConfig{}, errEndpoint
+		}
+	}
+	if cfg.DirectModelsEndpoint != "" {
+		if errEndpoint := validateDirectURL(cfg.DirectModelsEndpoint, "direct_models_endpoint"); errEndpoint != nil {
+			return pluginConfig{}, errEndpoint
+		}
+	}
+	if cfg.DirectAuthEndpoint != "" {
+		if errEndpoint := validateDirectURL(cfg.DirectAuthEndpoint, "direct_auth_endpoint"); errEndpoint != nil {
+			return pluginConfig{}, errEndpoint
+		}
+	}
+	if cfg.DirectTokenMode == "pat_exchange" && cfg.DirectAuthEndpoint == "" {
+		return pluginConfig{}, fmt.Errorf("direct_auth_endpoint is required when direct_token_mode is pat_exchange")
+	}
+	if cfg.DirectModels != nil && len(cfg.DirectModels) > 256 {
+		return pluginConfig{}, fmt.Errorf("direct_models supports at most 256 entries")
+	}
+	seenDirectModels := make(map[string]struct{}, len(cfg.DirectModels))
+	for index := range cfg.DirectModels {
+		model := &cfg.DirectModels[index]
+		model.ID = strings.TrimSpace(model.ID)
+		model.DisplayName = strings.TrimSpace(model.DisplayName)
+		model.Description = strings.TrimSpace(model.Description)
+		if model.ID == "" || len(model.ID) > 512 || strings.ContainsAny(model.ID, "\\x00\\r\\n") {
+			return pluginConfig{}, fmt.Errorf("direct_models contains an invalid id")
+		}
+		if _, exists := seenDirectModels[model.ID]; exists {
+			return pluginConfig{}, fmt.Errorf("direct_models contains duplicate id %q", model.ID)
+		}
+		seenDirectModels[model.ID] = struct{}{}
+		if model.DisplayName == "" {
+			model.DisplayName = model.ID
+		}
+		if len(model.DisplayName) > 512 || len(model.Description) > 4096 {
+			return pluginConfig{}, fmt.Errorf("direct_models contains an oversized display name or description")
+		}
+		if model.MaxInputTokens < 0 || model.MaxOutputTokens < 0 || model.DefaultContextWindow < 0 {
+			return pluginConfig{}, fmt.Errorf("direct_models contains a negative token limit")
+		}
+		if len(model.ReasoningEfforts) > 16 {
+			return pluginConfig{}, fmt.Errorf("direct_models reasoning_efforts supports at most 16 entries")
+		}
+		for effortIndex := range model.ReasoningEfforts {
+			model.ReasoningEfforts[effortIndex] = strings.TrimSpace(model.ReasoningEfforts[effortIndex])
+			if model.ReasoningEfforts[effortIndex] == "" || len(model.ReasoningEfforts[effortIndex]) > 64 {
+				return pluginConfig{}, fmt.Errorf("direct_models contains an invalid reasoning effort")
+			}
+		}
+	}
+	if cfg.DirectModelsEndpoint == "" && len(cfg.DirectModels) == 0 && cfg.Transport == "direct_openai" {
+		return pluginConfig{}, fmt.Errorf("direct_models or direct_models_endpoint is required for direct_openai transport")
 	}
 	if cfg.WorkingDirectory == "" || !filepath.IsAbs(cfg.WorkingDirectory) {
 		return pluginConfig{}, fmt.Errorf("working_directory must be an absolute path")
@@ -167,6 +268,34 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		cfg.MCPServers[name] = server
 	}
 	return cfg, nil
+}
+
+func validateDirectURL(raw, name string) error {
+	parsed, errParse := url.Parse(strings.TrimSpace(raw))
+	if errParse != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s must be an absolute URL without credentials, query, or fragment", name)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme != "http" || !isLoopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("%s must use HTTPS; plain HTTP is allowed only on loopback", name)
+	}
+	return nil
+}
+
+func directModelsJSON(models []directModelConfig) (string, error) {
+	if len(models) == 0 {
+		return "", nil
+	}
+	raw, errMarshal := json.Marshal(models)
+	if errMarshal != nil {
+		return "", fmt.Errorf("encode direct_models: %w", errMarshal)
+	}
+	if len(raw) > 128*1024 {
+		return "", fmt.Errorf("direct_models JSON exceeds the bounded 128KiB runner argument limit")
+	}
+	return string(raw), nil
 }
 
 var (

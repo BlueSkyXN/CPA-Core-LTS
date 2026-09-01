@@ -23,6 +23,7 @@ import type {
   ModelRecord,
   ModelsParams,
   QoderAdapter,
+  QoderTransport,
   StartParams,
 } from "./types.js";
 
@@ -120,6 +121,7 @@ class SDKSession {
 }
 
 export class QoderSDKAdapter implements QoderAdapter {
+  readonly transport: QoderTransport = "sdk_cli";
   private readonly sessions = new Map<string, SDKSession>();
   private readonly modelCache = new Map<string, { expires: number; models: ModelRecord[] }>();
 
