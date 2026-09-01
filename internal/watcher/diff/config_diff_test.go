@@ -10,6 +10,7 @@ import (
 
 func TestBuildConfigChangeDetails(t *testing.T) {
 	oldCfg := &config.Config{
+		SDKConfig:                       config.SDKConfig{APIRequestBodyMaxBytes: 16 << 20},
 		Port:                            8080,
 		AuthDir:                         "/tmp/auth-old",
 		RedisUsageQueueRetentionSeconds: 60,
@@ -43,6 +44,7 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 	}
 
 	newCfg := &config.Config{
+		SDKConfig:                       config.SDKConfig{APIRequestBodyMaxBytes: 64 << 20},
 		Port:                            9090,
 		AuthDir:                         "/tmp/auth-new",
 		RedisUsageQueueRetentionSeconds: 300,
@@ -90,6 +92,7 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 
 	expectContains(t, details, "port: 8080 -> 9090")
 	expectContains(t, details, "auth-dir: /tmp/auth-old -> /tmp/auth-new")
+	expectContains(t, details, "api-request-body-max-bytes: 16777216 -> 67108864")
 	expectContains(t, details, "redis-usage-queue-retention-seconds: 60 -> 300")
 	expectContains(t, details, "gemini[0].excluded-models: updated (1 -> 2 entries)")
 	expectContains(t, details, "ampcode.upstream-url: http://old-upstream -> http://new-upstream")

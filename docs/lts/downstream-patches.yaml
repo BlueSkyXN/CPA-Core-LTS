@@ -564,10 +564,17 @@ patches:
     retire_when: Upstream removes unbounded or tempfile-backed request logging from the hot path, bounds request/response/deferred upstream previews, provides idempotent middleware-owned unwind cleanup for normal completion and all panic paths, and all listed regressions pass after removing the downstream implementation.
 
   - id: api-request-body-size-limit
-    reason: Public Claude, Gemini, OpenAI, Responses, image, and video JSON handlers previously used unbounded body reads and unbounded zstd expansion, so a small number of concurrent oversized requests could consume container memory before provider routing or normal validation ran.
+    reason: Public Claude, Gemini, OpenAI, Responses, image, and video JSON handlers previously used unbounded body reads and unbounded zstd expansion, so a small number of concurrent oversized requests could consume container memory before provider routing or normal validation ran. The bounded default remains 16 MiB, while api-request-body-max-bytes lets operators explicitly raise the same encoded and decoded limit for legitimate large multimodal requests.
     introduced_in: b2b593fad3f18bfe700fe5f11d4e88e10bbc7f16
     affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); the new Gemini schema, translator, WebSocket, and proxy fixes do not add a decoded-body limit. Upstream handlers still use unbounded GetRawData/io.ReadAll behavior and do not enforce the same limit on every decoded Content-Encoding layer, so the patch remains required.
     files:
+      - config.example.yaml
+      - internal/config/api_request_body.go
+      - internal/config/api_request_body_test.go
+      - internal/config/sdk_config.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - sdk/config/config.go
       - sdk/api/handlers/request_body.go
       - sdk/api/handlers/request_body_test.go
       - sdk/api/handlers/claude/code_handlers.go
@@ -581,9 +588,14 @@ patches:
       - TestReadRequestBodyRejectsIdentityBodyOverLimit
       - TestDecodeZstdRequestBodyRejectsDecodedBodyOverLimit
       - TestReadRequestBodyKeepsValidJSONFallbackForBadEncoding
-    upstream_issue_or_pr: not-filed
+      - TestBaseAPIHandlerReadRequestBodyAllowsConfiguredLargerBody
+      - TestBaseAPIHandlerReadRequestBodyUsesHotReloadedLimit
+      - TestBaseAPIHandlerReadRequestBodyAppliesConfiguredLimitAfterZstdDecode
+      - TestSDKConfigEffectiveAPIRequestBodyMaxBytes
+      - TestParseConfigBytesAPIRequestBodyMaxBytes
+    upstream_issue_or_pr: BlueSkyXN/CPA-Core-LTS#237
     state: required
-    retire_when: Upstream bounds encoded public API request bodies and every decoded Content-Encoding layer, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.
+    retire_when: Upstream bounds encoded public API request bodies and every decoded Content-Encoding layer, provides an operator-controlled bounded override with a safe default, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.
 
   - id: object-store-auth-path-containment
     reason: Object-store auth persistence must never create, overwrite, upload, delete, or render credential files outside its managed private roots, including traversal, sibling-prefix, absolute-path, pre-existing or dangling symlinks, junctions, initialized-root replacement, check/write path-swap races, and crash-persistent global-temp copies.

@@ -602,7 +602,7 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		return
 	}
 
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := h.ReadRequestBody(c)
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
@@ -889,7 +889,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 }
 
 func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := h.ReadRequestBody(c)
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
