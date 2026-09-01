@@ -269,8 +269,9 @@ func TestReadVideosCreateCompatRequestDecodesContentEncoding(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	handler := NewOpenAIAPIHandler(apihandlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
 	router.POST(videosPath, func(c *gin.Context) {
-		got, errRead := readVideosCreateCompatRequest(c)
+		got, errRead := handler.readVideosCreateCompatRequest(c)
 		if errRead != nil {
 			t.Fatalf("readVideosCreateCompatRequest() error = %v", errRead)
 		}

@@ -234,13 +234,13 @@ func responseVideosModel(model string) string {
 	return canonicalXAIVideosModel(model)
 }
 
-func readVideosCreateRequest(c *gin.Context) ([]byte, error) {
+func (h *OpenAIAPIHandler) readVideosCreateRequest(c *gin.Context) ([]byte, error) {
 	contentType := strings.ToLower(strings.TrimSpace(c.ContentType()))
 	switch contentType {
 	case "multipart/form-data", "application/x-www-form-urlencoded":
 		return videosCreateRequestFromForm(c)
 	default:
-		rawJSON, err := handlers.ReadRequestBody(c)
+		rawJSON, err := h.ReadRequestBody(c)
 		if err != nil {
 			return nil, err
 		}
@@ -251,8 +251,8 @@ func readVideosCreateRequest(c *gin.Context) ([]byte, error) {
 	}
 }
 
-func readXAIVideosNativeRequest(c *gin.Context) ([]byte, error) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+func (h *OpenAIAPIHandler) readXAIVideosNativeRequest(c *gin.Context) ([]byte, error) {
+	rawJSON, err := h.ReadRequestBody(c)
 	if err != nil {
 		return nil, err
 	}
@@ -270,8 +270,8 @@ func videosCreateCompatTargetForJSON(rawJSON []byte) videosCreateCompatTarget {
 	return videosCreateCompatOpenAI
 }
 
-func readVideosCreateCompatRequest(c *gin.Context) ([]byte, error) {
-	rawBody, err := handlers.ReadRequestBody(c)
+func (h *OpenAIAPIHandler) readVideosCreateCompatRequest(c *gin.Context) ([]byte, error) {
+	rawBody, err := h.ReadRequestBody(c)
 	if err != nil {
 		return nil, err
 	}
@@ -718,7 +718,7 @@ func openAIVideoStatus(status string) string {
 }
 
 func (h *OpenAIAPIHandler) VideosCreate(c *gin.Context) {
-	rawJSON, err := readVideosCreateRequest(c)
+	rawJSON, err := h.readVideosCreateRequest(c)
 	if err != nil {
 		writeVideosFailedError(c, handlers.RequestBodyStatusCode(err), defaultOpenAIVideosModel, "invalid_request_error", fmt.Sprintf("Invalid request: %v", err))
 		return
@@ -749,7 +749,7 @@ func (h *OpenAIAPIHandler) VideosCreateCompat(c *gin.Context) {
 		return
 	}
 
-	rawBody, err := readVideosCreateCompatRequest(c)
+	rawBody, err := h.readVideosCreateCompatRequest(c)
 	if err != nil {
 		writeVideosFailedError(c, handlers.RequestBodyStatusCode(err), defaultOpenAIVideosModel, "invalid_request_error", fmt.Sprintf("Invalid request: %v", err))
 		return
@@ -775,7 +775,7 @@ func (h *OpenAIAPIHandler) XAIVideosExtensions(c *gin.Context) {
 }
 
 func (h *OpenAIAPIHandler) handleXAIVideosNativePost(c *gin.Context) {
-	rawJSON, err := readXAIVideosNativeRequest(c)
+	rawJSON, err := h.readXAIVideosNativeRequest(c)
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

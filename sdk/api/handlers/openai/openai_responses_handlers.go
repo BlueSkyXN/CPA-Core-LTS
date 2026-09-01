@@ -518,7 +518,7 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := h.ReadRequestBody(c)
 	// If data retrieval fails, return a request-body error.
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
@@ -543,7 +543,7 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 }
 
 func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := h.ReadRequestBody(c)
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

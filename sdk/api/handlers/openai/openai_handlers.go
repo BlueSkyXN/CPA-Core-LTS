@@ -102,7 +102,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := h.ReadRequestBody(c)
 	// If data retrieval fails, return a request-body error.
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
@@ -157,7 +157,7 @@ func shouldTreatAsResponsesFormat(rawJSON []byte) bool {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIAPIHandler) Completions(c *gin.Context) {
-	rawJSON, err := handlers.ReadRequestBody(c)
+	rawJSON, err := h.ReadRequestBody(c)
 	// If data retrieval fails, return a request-body error.
 	if err != nil {
 		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
