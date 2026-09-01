@@ -100,8 +100,11 @@ type modelStats struct {
 
 // RequestDetail stores request-level metadata and token usage for a single request.
 type RequestDetail struct {
-	Timestamp            time.Time  `json:"timestamp"`
-	LatencyMs            int64      `json:"latency_ms"`
+	Timestamp time.Time `json:"timestamp"`
+	LatencyMs int64     `json:"latency_ms"`
+	// TTFBMs records the first upstream response byte/payload latency. The
+	// runtime currently carries this value in the legacy Record.TTFT field.
+	TTFBMs               int64      `json:"ttfb_ms,omitempty"`
 	Source               string     `json:"source"`
 	UsageProvenance      string     `json:"usage_provenance,omitempty"`
 	AuthIndex            string     `json:"auth_index"`
@@ -470,6 +473,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	requestDetail := RequestDetail{
 		Timestamp:            timestamp,
 		LatencyMs:            normaliseLatency(record.Latency),
+		TTFBMs:               normaliseLatency(record.TTFT),
 		Source:               record.Source,
 		UsageProvenance:      coreusage.CanonicalUsageProvenance(record.UsageProvenance),
 		AuthIndex:            record.AuthIndex,
@@ -647,6 +651,9 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeRes
 				detail.UsageProvenance = coreusage.CanonicalUsageProvenance(detail.UsageProvenance)
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
+				}
+				if detail.TTFBMs < 0 {
+					detail.TTFBMs = 0
 				}
 				key := dedupKey(apiName, modelName, detail)
 				if _, exists := seen[key]; exists {

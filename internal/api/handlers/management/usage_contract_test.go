@@ -66,6 +66,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"generate":false`)) {
 		t.Fatalf("exported usage missing explicit generate=false: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"ttfb_ms":500`)) {
+		t.Fatalf("exported usage missing ttfb_ms: %s", exportedJSON)
+	}
 	requireCanonicalReasoningEffortJSON(t, exportedJSON, "exported usage")
 	var legacyDecoded struct {
 		Version int `json:"version"`
@@ -1142,6 +1145,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		Generate:             coreusage.GenerateFlag(false),
 		RequestedAt:          time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:              2 * time.Second,
+		TTFT:                 500 * time.Millisecond,
 		Detail: coreusage.Detail{
 			InputTokens:     5,
 			OutputTokens:    7,
@@ -1365,6 +1369,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.LatencyMs != 2000 {
 		t.Fatalf("detail.latency_ms = %d, want 2000", detail.LatencyMs)
+	}
+	if detail.TTFBMs != 500 {
+		t.Fatalf("detail.ttfb_ms = %d, want 500", detail.TTFBMs)
 	}
 	if detail.Failed {
 		t.Fatalf("detail.failed = true, want false")

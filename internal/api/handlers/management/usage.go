@@ -220,6 +220,7 @@ func validateUsageImportRawShape(data []byte) error {
 					detailObject,
 					"timestamp",
 					"latency_ms",
+					"ttfb_ms",
 					"source",
 					"auth_index",
 					"alias",
