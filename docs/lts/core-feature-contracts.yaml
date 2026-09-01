@@ -37,6 +37,7 @@ features:
       - RequestDetail
       - auth_index
       - latency_ms
+      - ttfb_ms
       - reasoning_effort
       - service_tier
       - request_service_tier
