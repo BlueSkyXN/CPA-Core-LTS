@@ -87,9 +87,18 @@ func TestCodexExecutorModelFallbackBlockedStreamDoesNotPublishFailureUsage(t *te
 		t.Fatalf("ExecuteStream() error = %v, want fallback continuity block", err)
 	}
 	// A blocked fallback has no upstream dispatch. Give the async default usage
-	// sink a scheduling opportunity, then prove no failed record was emitted.
+	// sink a scheduling opportunity, then prove no record for this auth was
+	// emitted. The named plugin also observes unrelated parallel package tests.
 	time.Sleep(100 * time.Millisecond)
-	if got := recorder.recordCount(); got != 0 {
+	recorder.mu.Lock()
+	got := 0
+	for _, record := range recorder.records {
+		if record.AuthID == "auth-fallback-stream-block" {
+			got++
+		}
+	}
+	recorder.mu.Unlock()
+	if got != 0 {
 		t.Fatalf("usage records = %d, want zero for blocked stream fallback", got)
 	}
 }
