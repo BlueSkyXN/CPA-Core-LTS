@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -40,10 +41,10 @@ type UsageReporter struct {
 	outboundTier    string
 	generate        bool
 	requestedAt     time.Time
-	ttftMu          sync.RWMutex
-	ttft            time.Duration
-	ttftStart       time.Time
-	ttftSet         bool
+	timingMu        sync.RWMutex
+	timing          *responseTimingTracker
+	timingFormat    sdktranslator.Format
+	timingEnabled   bool
 	once            sync.Once
 }
 
@@ -134,6 +135,76 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+	r.timingMu.Lock()
+	r.timingFormat = sdktranslator.FromString(format)
+	if stream := gjson.GetBytes(payload, "stream"); stream.Type == gjson.True {
+		r.timingEnabled = true
+	}
+	if r.timing != nil {
+		r.timing.configure(r.timingFormat, r.timingEnabled)
+	}
+	r.timingMu.Unlock()
+}
+
+// EnableSemanticTiming enables raw stream event classification for the
+// current upstream format. It is intentionally opt-in so non-streaming
+// responses never manufacture TTFT or TTFA from a complete response body.
+func (r *UsageReporter) EnableSemanticTiming(format string) {
+	if r == nil {
+		return
+	}
+	r.timingMu.Lock()
+	r.timingFormat = sdktranslator.FromString(format)
+	r.timingEnabled = true
+	if r.timing != nil {
+		r.timing.configure(r.timingFormat, true)
+	}
+	r.timingMu.Unlock()
+}
+
+func (r *UsageReporter) beginResponseTiming() *responseTimingTracker {
+	if r == nil {
+		return nil
+	}
+	r.timingMu.RLock()
+	format := r.timingFormat
+	enabled := r.timingEnabled
+	r.timingMu.RUnlock()
+	tracker := newResponseTimingTracker(format, enabled)
+	r.timingMu.Lock()
+	r.timing = tracker
+	r.timingMu.Unlock()
+	return tracker
+}
+
+func (r *UsageReporter) currentResponseTiming() *responseTimingTracker {
+	if r == nil {
+		return nil
+	}
+	r.timingMu.RLock()
+	defer r.timingMu.RUnlock()
+	return r.timing
+}
+
+// ObserveTimingPayload classifies one raw upstream JSON/SSE payload. Callers
+// must invoke it before translation or filtering so derived timing reflects
+// the upstream event rather than a synthetic downstream event.
+func (r *UsageReporter) ObserveTimingPayload(format string, payload []byte) {
+	if r == nil || len(payload) == 0 {
+		return
+	}
+	r.timingMu.Lock()
+	if format != "" {
+		r.timingFormat = sdktranslator.FromString(format)
+	}
+	tracker := r.timing
+	if tracker == nil {
+		tracker = newResponseTimingTracker(r.timingFormat, r.timingEnabled)
+		r.timing = tracker
+	}
+	tracker.configure(r.timingFormat, r.timingEnabled)
+	r.timingMu.Unlock()
+	tracker.observeBytes(payload)
 }
 
 // SetOutboundServiceTier records the trimmed raw top-level service_tier from
@@ -182,42 +253,57 @@ func (r *UsageReporter) ObserveResponse(resp *http.Response) {
 	if r == nil || resp == nil || resp.Body == nil {
 		return
 	}
-	r.StartResponseTTFT()
+	tracker := r.currentResponseTiming()
+	if tracker == nil {
+		tracker = r.beginResponseTiming()
+	}
+	tracker.start(time.Now())
 	resp.Body = &usageTTFTReadCloser{
 		ReadCloser: resp.Body,
 		mark: func() {
-			r.MarkFirstResponseByte()
+			tracker.markTTFB(time.Now())
+		},
+		observe: func(payload []byte) {
+			tracker.observeBytes(payload)
 		},
 	}
 }
 
-func (r *UsageReporter) StartResponseTTFT() {
+// BeginResponseTiming starts a fresh upstream attempt. It is used by manual
+// WebSocket/relay retry paths where no HTTP RoundTripper can create the
+// attempt boundary for us.
+func (r *UsageReporter) BeginResponseTiming() {
+	tracker := r.beginResponseTiming()
+	if tracker != nil {
+		tracker.start(time.Now())
+	}
+}
+
+func (r *UsageReporter) StartResponseTiming() {
 	if r == nil {
 		return
 	}
-	r.ttftMu.Lock()
-	if !r.ttftSet && r.ttftStart.IsZero() {
-		r.ttftStart = time.Now()
+	tracker := r.currentResponseTiming()
+	if tracker == nil {
+		tracker = r.beginResponseTiming()
 	}
-	r.ttftMu.Unlock()
+	tracker.start(time.Now())
 }
+
+// StartResponseTTFT is retained as a source-compatible alias for existing
+// executors. The tracked value is now the neutral upstream-attempt start, not
+// a first-token timestamp.
+func (r *UsageReporter) StartResponseTTFT() { r.StartResponseTiming() }
 
 func (r *UsageReporter) MarkFirstResponseByte() {
 	if r == nil {
 		return
 	}
-	r.ttftMu.Lock()
-	if r.ttftSet {
-		r.ttftMu.Unlock()
+	tracker := r.currentResponseTiming()
+	if tracker == nil {
 		return
 	}
-	start := r.ttftStart
-	r.ttftStart = time.Time{}
-	r.ttftMu.Unlock()
-	if start.IsZero() {
-		return
-	}
-	r.setTTFT(time.Since(start))
+	tracker.markTTFB(time.Now())
 }
 
 func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.Detail) (usage.Record, bool) {
@@ -344,6 +430,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	if r == nil {
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
+	timing := r.timingSnapshot()
 	return usage.Record{
 		Provider:            r.provider,
 		ExecutorType:        r.executorType,
@@ -365,13 +452,16 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 			detail.ResponseServiceTier,
 			r.outboundTier,
 		),
-		Generate:    usage.GenerateFlag(r.generate),
-		RequestedAt: r.requestedAt,
-		Latency:     r.latency(),
-		TTFT:        r.ttftDuration(),
-		Failed:      failed,
-		Fail:        fail,
-		Detail:      detail,
+		Generate:      usage.GenerateFlag(r.generate),
+		RequestedAt:   r.requestedAt,
+		Latency:       r.latency(),
+		TimingVersion: timing.TimingVersion,
+		TTFB:          timing.TTFB,
+		TTFT:          timing.TTFT,
+		TTFA:          timing.TTFA,
+		Failed:        failed,
+		Fail:          fail,
+		Detail:        detail,
 	}
 }
 
@@ -410,31 +500,24 @@ func (r *UsageReporter) latency() time.Duration {
 	return latency
 }
 
-func (r *UsageReporter) setTTFT(ttft time.Duration) {
+func (r *UsageReporter) timingSnapshot() ResponseTimingSnapshot {
 	if r == nil {
-		return
+		return ResponseTimingSnapshot{}
 	}
-	if ttft < 0 {
-		ttft = 0
+	tracker := r.currentResponseTiming()
+	if tracker == nil {
+		// Every detail produced by the current Core is versioned, even when the
+		// transport never exposed a measurable timing event (for example a
+		// non-streaming response or an executor-side failure before dispatch).
+		return ResponseTimingSnapshot{TimingVersion: UsageTimingVersionV1}
 	}
-	r.ttftMu.Lock()
-	if r.ttftSet {
-		r.ttftMu.Unlock()
-		return
-	}
-	r.ttft = ttft
-	r.ttftSet = true
-	r.ttftStart = time.Time{}
-	r.ttftMu.Unlock()
+	return tracker.snapshot()
 }
 
+// ttftDuration is retained for package-local compatibility with existing
+// timing tests; new code should use timingSnapshot or the published record.
 func (r *UsageReporter) ttftDuration() time.Duration {
-	if r == nil {
-		return 0
-	}
-	r.ttftMu.RLock()
-	defer r.ttftMu.RUnlock()
-	return r.ttft
+	return r.timingSnapshot().TTFT
 }
 
 type usageTTFTRoundTripper struct {
@@ -443,19 +526,34 @@ type usageTTFTRoundTripper struct {
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	t.reporter.StartResponseTTFT()
+	tracker := t.reporter.beginResponseTiming()
+	if tracker == nil {
+		return t.base.RoundTrip(req)
+	}
+	tracker.start(time.Now())
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		return resp, errRoundTrip
 	}
-	t.reporter.ObserveResponse(resp)
+	if resp != nil && resp.Body != nil {
+		resp.Body = &usageTTFTReadCloser{
+			ReadCloser: resp.Body,
+			mark: func() {
+				tracker.markTTFB(time.Now())
+			},
+			observe: func(payload []byte) {
+				tracker.observeBytes(payload)
+			},
+		}
+	}
 	return resp, nil
 }
 
 type usageTTFTReadCloser struct {
 	io.ReadCloser
-	once sync.Once
-	mark func()
+	once    sync.Once
+	mark    func()
+	observe func([]byte)
 }
 
 func (r *usageTTFTReadCloser) Read(p []byte) (int, error) {
@@ -465,6 +563,9 @@ func (r *usageTTFTReadCloser) Read(p []byte) (int, error) {
 	n, errRead := r.ReadCloser.Read(p)
 	if n > 0 && r.mark != nil {
 		r.once.Do(r.mark)
+	}
+	if n > 0 && r.observe != nil {
+		r.observe(p[:n])
 	}
 	return n, errRead
 }

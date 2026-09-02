@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,11 +16,14 @@ import (
 func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	stats := NewRequestStatistics()
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey:      "test-key",
-		Model:       "gpt-5.4",
-		RequestedAt: time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
-		Latency:     1500 * time.Millisecond,
-		TTFT:        450 * time.Millisecond,
+		APIKey:        "test-key",
+		Model:         "gpt-5.4",
+		RequestedAt:   time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
+		Latency:       1500 * time.Millisecond,
+		TimingVersion: 1,
+		TTFB:          450 * time.Millisecond,
+		TTFT:          700 * time.Millisecond,
+		TTFA:          900 * time.Millisecond,
 		Detail: coreusage.Detail{
 			InputTokens:  10,
 			OutputTokens: 20,
@@ -37,6 +41,49 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	}
 	if details[0].TTFBMs != 450 {
 		t.Fatalf("ttfb_ms = %d, want 450", details[0].TTFBMs)
+	}
+	if details[0].TTFTMs != 700 || details[0].TTFAMs != 900 || details[0].TimingVersion != 1 {
+		t.Fatalf("semantic timing = version:%d ttft:%d ttfa:%d, want 1/700/900", details[0].TimingVersion, details[0].TTFTMs, details[0].TTFAMs)
+	}
+}
+
+func TestRequestDetailTimingPresencePreservesMeasuredZeroAndMissingFields(t *testing.T) {
+	data := []byte(`{"timestamp":"2026-03-20T12:00:00Z","latency_ms":10,"timing_version":1,"ttfb_ms":0,"ttft_ms":0,"tokens":{"input_tokens":1,"output_tokens":1,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":2},"failed":false,"generate":true}`)
+	var detail RequestDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		t.Fatalf("unmarshal explicit zero timing detail: %v", err)
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal explicit zero timing detail: %v", err)
+	}
+	for _, field := range []string{`"timing_version":1`, `"ttfb_ms":0`, `"ttft_ms":0`} {
+		if !bytes.Contains(encoded, []byte(field)) {
+			t.Fatalf("round-tripped detail missing %s: %s", field, encoded)
+		}
+	}
+	if bytes.Contains(encoded, []byte(`"ttfa_ms"`)) {
+		t.Fatalf("round-tripped detail invented missing ttfa_ms: %s", encoded)
+	}
+
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:        "unobserved-timing-key",
+		Model:         "gpt-5.4",
+		TimingVersion: coreusage.TimingVersionV1,
+		Detail:        coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	})
+	generated, err := json.Marshal(stats.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal unobserved timing snapshot: %v", err)
+	}
+	if !bytes.Contains(generated, []byte(`"timing_version":1`)) {
+		t.Fatalf("generated detail missing timing_version: %s", generated)
+	}
+	for _, field := range []string{`"ttfb_ms"`, `"ttft_ms"`, `"ttfa_ms"`} {
+		if bytes.Contains(generated, []byte(field)) {
+			t.Fatalf("generated detail emitted unobserved %s: %s", field, generated)
+		}
 	}
 }
 

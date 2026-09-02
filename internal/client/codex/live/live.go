@@ -345,7 +345,7 @@ func (h *Handler) Handle(c *gin.Context) {
 			selected:   current,
 			dispatched: true,
 		}
-		attempt.reporter.StartResponseTTFT()
+		attempt.reporter.StartResponseTiming()
 		resp, errRequest := h.authManager.HttpRequest(ctx, current, req)
 		if resp != nil {
 			attempt.statusCode = resp.StatusCode

@@ -37,8 +37,8 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	}
 
 	exported := exportUsageStatistics(t, h)
-	if exported.Version != 2 {
-		t.Fatalf("export version = %d, want 2", exported.Version)
+	if exported.Version != 3 {
+		t.Fatalf("export version = %d, want 3", exported.Version)
 	}
 	if exported.ExportedAt.IsZero() {
 		t.Fatalf("exported_at is zero")
@@ -69,6 +69,11 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"ttfb_ms":500`)) {
 		t.Fatalf("exported usage missing ttfb_ms: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"timing_version":1`)) ||
+		!bytes.Contains(exportedJSON, []byte(`"ttft_ms":900`)) ||
+		!bytes.Contains(exportedJSON, []byte(`"ttfa_ms":1500`)) {
+		t.Fatalf("exported usage missing canonical semantic timing: %s", exportedJSON)
+	}
 	requireCanonicalReasoningEffortJSON(t, exportedJSON, "exported usage")
 	var legacyDecoded struct {
 		Version int `json:"version"`
@@ -88,7 +93,7 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("legacy decoder rejected additive service-tier fields: %v", err)
 	}
 	legacyDetails := legacyDecoded.Usage.APIs["panel-client-key"].Models["gpt-5.4"].Details
-	if legacyDecoded.Version != 2 || legacyDecoded.Usage.TotalRequests != 1 || len(legacyDetails) != 1 || legacyDetails[0].Source != "auths/openai.json" || legacyDetails[0].Tokens.TotalTokens != 17 {
+	if legacyDecoded.Version != 3 || legacyDecoded.Usage.TotalRequests != 1 || len(legacyDetails) != 1 || legacyDetails[0].Source != "auths/openai.json" || legacyDetails[0].Tokens.TotalTokens != 17 {
 		t.Fatalf("legacy decoded export lost existing fields: version=%d usage=%+v details=%+v", legacyDecoded.Version, legacyDecoded.Usage, legacyDetails)
 	}
 
@@ -102,8 +107,8 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if importResult.TotalRequests != 1 || importResult.FailedRequests != 0 {
 		t.Fatalf("import totals = %+v, want total_requests=1 failed_requests=0", importResult)
 	}
-	if importResult.SchemaVersion != 2 || importResult.MigratedFromVersion != 0 || importResult.Migration != "" {
-		t.Fatalf("canonical import receipt = %+v, want schema_version=2 without migration fields", importResult)
+	if importResult.SchemaVersion != 3 || importResult.MigratedFromVersion != 0 || importResult.Migration != "" {
+		t.Fatalf("canonical import receipt = %+v, want schema_version=3 without migration fields", importResult)
 	}
 	reimported := exportUsageStatistics(t, importHandler)
 	requirePanelUsageShape(t, reimported.Usage)
@@ -112,6 +117,161 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("marshal re-exported usage: %v", err)
 	}
 	requireCanonicalReasoningEffortJSON(t, reimportedJSON, "usage re-exported after import")
+}
+
+func TestUsageManagementTimingV3MatrixAndAtomicRejection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	valid := map[string]any{
+		"version": 3,
+		"usage": map[string]any{
+			"apis": map[string]any{
+				"timing-client": map[string]any{
+					"models": map[string]any{
+						"gpt-5.6-sol": map[string]any{
+							"details": []any{map[string]any{
+								"timestamp":      "2026-09-02T12:00:00Z",
+								"latency_ms":     2000,
+								"timing_version": 1,
+								"ttfb_ms":        500,
+								"ttft_ms":        900,
+								"ttfa_ms":        1500,
+								"tokens": map[string]any{
+									"input_tokens":          10,
+									"output_tokens":         20,
+									"reasoning_tokens":      5,
+									"cached_tokens":         0,
+									"cache_read_tokens":     0,
+									"cache_creation_tokens": 0,
+									"total_tokens":          30,
+								},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+	validPayload, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("marshal valid v3 payload: %v", err)
+	}
+	stats := usage.NewRequestStatistics()
+	h := &Handler{}
+	h.SetUsageStatistics(stats)
+	validResult := performUsageImport(h, validPayload)
+	if validResult.Code != http.StatusOK {
+		t.Fatalf("valid v3 import status = %d body=%s", validResult.Code, validResult.Body.String())
+	}
+	var receipt struct {
+		SchemaVersion       int      `json:"schema_version"`
+		MigratedFromVersion int      `json:"migrated_from_version"`
+		Migrations          []string `json:"migrations"`
+	}
+	if err := json.Unmarshal(validResult.Body.Bytes(), &receipt); err != nil {
+		t.Fatalf("decode valid v3 receipt: %v", err)
+	}
+	if receipt.SchemaVersion != 3 || receipt.MigratedFromVersion != 0 || len(receipt.Migrations) != 0 {
+		t.Fatalf("valid v3 receipt = %+v, want direct v3 receipt", receipt)
+	}
+
+	for _, version := range []int{1, 2} {
+		legacy := map[string]any{}
+		if err := json.Unmarshal(validPayload, &legacy); err != nil {
+			t.Fatalf("clone valid payload: %v", err)
+		}
+		legacy["version"] = version
+		legacyUsage := legacy["usage"].(map[string]any)
+		legacyAPI := legacyUsage["apis"].(map[string]any)
+		legacyClient := legacyAPI["timing-client"].(map[string]any)
+		legacyModel := legacyClient["models"].(map[string]any)
+		legacyDetail := legacyModel["gpt-5.6-sol"].(map[string]any)["details"].([]any)[0].(map[string]any)
+		before := stats.Snapshot()
+		result := performUsageImport(h, mustMarshalUsagePayload(t, legacy))
+		if result.Code != http.StatusBadRequest {
+			t.Fatalf("legacy v%d semantic timing status = %d body=%s", version, result.Code, result.Body.String())
+		}
+		var errorBody struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(result.Body.Bytes(), &errorBody); err != nil {
+			t.Fatalf("decode legacy v%d error: %v", version, err)
+		}
+		wantCode := usageCodeV1TimingAmbiguous
+		if version == 2 {
+			wantCode = usageCodeV2TimingAmbiguous
+		}
+		if errorBody.Code != wantCode {
+			t.Fatalf("legacy v%d error code = %q, want %q", version, errorBody.Code, wantCode)
+		}
+		if after := stats.Snapshot(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("legacy v%d rejection mutated snapshot: before=%+v after=%+v", version, before, after)
+		}
+		delete(legacyDetail, "timing_version")
+		delete(legacyDetail, "ttft_ms")
+		delete(legacyDetail, "ttfa_ms")
+		legacyDetail["latency_ms"] = -1
+		negativeLatencyResult := performUsageImport(h, mustMarshalUsagePayload(t, legacy))
+		if negativeLatencyResult.Code != http.StatusBadRequest {
+			t.Fatalf("legacy v%d negative latency status = %d body=%s", version, negativeLatencyResult.Code, negativeLatencyResult.Body.String())
+		}
+		var negativeLatencyError struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(negativeLatencyResult.Body.Bytes(), &negativeLatencyError); err != nil {
+			t.Fatalf("decode legacy v%d negative latency error: %v", version, err)
+		}
+		if negativeLatencyError.Code != usageCodeShapeInvalid {
+			t.Fatalf("legacy v%d negative latency error code = %q, want %q", version, negativeLatencyError.Code, usageCodeShapeInvalid)
+		}
+		legacyDetail["latency_ms"] = 2000
+		migratedResult := performUsageImport(h, mustMarshalUsagePayload(t, legacy))
+		if migratedResult.Code != http.StatusOK {
+			t.Fatalf("legacy v%d token/timing-compatible import status = %d body=%s", version, migratedResult.Code, migratedResult.Body.String())
+		}
+		var migratedReceipt struct {
+			SchemaVersion       int      `json:"schema_version"`
+			MigratedFromVersion int      `json:"migrated_from_version"`
+			Migrations          []string `json:"migrations"`
+		}
+		if err := json.Unmarshal(migratedResult.Body.Bytes(), &migratedReceipt); err != nil {
+			t.Fatalf("decode legacy v%d migration receipt: %v", version, err)
+		}
+		wantMigrations := []string{usageV2TimingMigrationName}
+		if version == 1 {
+			wantMigrations = []string{usageV1MigrationName, usageV2TimingMigrationName}
+		}
+		if migratedReceipt.SchemaVersion != 3 || migratedReceipt.MigratedFromVersion != version || !reflect.DeepEqual(migratedReceipt.Migrations, wantMigrations) {
+			t.Fatalf("legacy v%d migration receipt = %+v, want schema_version=3 migrated_from_version=%d migrations=%v", version, migratedReceipt, version, wantMigrations)
+		}
+	}
+
+	invalid := map[string]any{}
+	if err := json.Unmarshal(validPayload, &invalid); err != nil {
+		t.Fatalf("clone valid payload for invalid v3: %v", err)
+	}
+	invalidUsage := invalid["usage"].(map[string]any)
+	invalidAPI := invalidUsage["apis"].(map[string]any)
+	invalidClient := invalidAPI["timing-client"].(map[string]any)
+	invalidModel := invalidClient["models"].(map[string]any)
+	invalidDetail := invalidModel["gpt-5.6-sol"].(map[string]any)["details"].([]any)[0].(map[string]any)
+	invalidDetail["ttfa_ms"] = 2500
+	before := stats.Snapshot()
+	invalidResult := performUsageImport(h, mustMarshalUsagePayload(t, invalid))
+	if invalidResult.Code != http.StatusBadRequest {
+		t.Fatalf("invalid v3 timing status = %d body=%s", invalidResult.Code, invalidResult.Body.String())
+	}
+	var invalidError struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(invalidResult.Body.Bytes(), &invalidError); err != nil {
+		t.Fatalf("decode invalid v3 timing error: %v", err)
+	}
+	if invalidError.Code != usageCodeV3TimingInvalid {
+		t.Fatalf("invalid v3 timing error code = %q, want %q", invalidError.Code, usageCodeV3TimingInvalid)
+	}
+	if after := stats.Snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("invalid v3 timing rejection mutated snapshot: before=%+v after=%+v", before, after)
+	}
 }
 
 func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
@@ -163,7 +323,7 @@ func TestUsageManagementFailedDetailIncludesFailureReason(t *testing.T) {
 	}
 }
 
-func TestUsageManagementProducerSnapshotsAlwaysRoundTripAsCanonicalV2(t *testing.T) {
+func TestUsageManagementProducerSnapshotsAlwaysRoundTripAsCanonicalV3(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	prevEnabled := usage.StatisticsEnabled()
 	usage.SetStatisticsEnabled(true)
@@ -223,8 +383,8 @@ func TestUsageManagementProducerSnapshotsAlwaysRoundTripAsCanonicalV2(t *testing
 			h.SetUsageStatistics(stats)
 			exported := exportUsageStatistics(t, h)
 			model := exported.Usage.APIs["producer-key"].Models["producer-model"]
-			if exported.Version != 2 || len(model.Details) != len(tt.wantTotals) {
-				t.Fatalf("export = version:%d details:%d, want version 2 and %d details", exported.Version, len(model.Details), len(tt.wantTotals))
+			if exported.Version != 3 || len(model.Details) != len(tt.wantTotals) {
+				t.Fatalf("export = version:%d details:%d, want version 3 and %d details", exported.Version, len(model.Details), len(tt.wantTotals))
 			}
 			if exported.Usage.TotalTokens != tt.wantOverall {
 				t.Fatalf("export total_tokens = %d, want %d", exported.Usage.TotalTokens, tt.wantOverall)
@@ -239,8 +399,8 @@ func TestUsageManagementProducerSnapshotsAlwaysRoundTripAsCanonicalV2(t *testing
 			freshHandler := &Handler{}
 			freshHandler.SetUsageStatistics(fresh)
 			receipt := importUsageStatistics(t, freshHandler, exported.Usage)
-			if receipt.Added != int64(len(tt.wantTotals)) || receipt.Skipped != 0 || receipt.SchemaVersion != 2 {
-				t.Fatalf("roundtrip receipt = %+v, want all producer details imported as canonical v2", receipt)
+			if receipt.Added != int64(len(tt.wantTotals)) || receipt.Skipped != 0 || receipt.SchemaVersion != 3 {
+				t.Fatalf("roundtrip receipt = %+v, want all producer details imported as canonical v3", receipt)
 			}
 			if got := fresh.Snapshot(); !reflect.DeepEqual(got, exported.Usage) {
 				t.Fatalf("roundtrip snapshot mismatch: exported=%+v imported=%+v", exported.Usage, got)
@@ -307,13 +467,13 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 
 	var importResult struct {
-		Added               int64  `json:"added"`
-		Skipped             int64  `json:"skipped"`
-		TotalRequests       int64  `json:"total_requests"`
-		FailedRequests      int64  `json:"failed_requests"`
-		SchemaVersion       int    `json:"schema_version"`
-		MigratedFromVersion int    `json:"migrated_from_version"`
-		Migration           string `json:"migration"`
+		Added               int64    `json:"added"`
+		Skipped             int64    `json:"skipped"`
+		TotalRequests       int64    `json:"total_requests"`
+		FailedRequests      int64    `json:"failed_requests"`
+		SchemaVersion       int      `json:"schema_version"`
+		MigratedFromVersion int      `json:"migrated_from_version"`
+		Migrations          []string `json:"migrations"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &importResult); err != nil {
 		t.Fatalf("unmarshal legacy import response: %v body=%s", err, rec.Body.String())
@@ -321,8 +481,8 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	if importResult.Added != 1 || importResult.Skipped != 0 || importResult.TotalRequests != 1 || importResult.FailedRequests != 0 {
 		t.Fatalf("legacy import result = %+v, want added=1 skipped=0 total_requests=1 failed_requests=0", importResult)
 	}
-	if importResult.SchemaVersion != 2 || importResult.MigratedFromVersion != 1 || importResult.Migration != "v1_uncached_input_tokens_to_v2" {
-		t.Fatalf("legacy import migration receipt = %+v, want v1-to-v2 receipt", importResult)
+	if importResult.SchemaVersion != 3 || importResult.MigratedFromVersion != 1 || !reflect.DeepEqual(importResult.Migrations, []string{"v1_uncached_input_tokens_to_v2", "v2_timing_contract_to_v3"}) {
+		t.Fatalf("legacy import migration receipt = %+v, want v1-to-v3 receipt", importResult)
 	}
 
 	snapshot := stats.Snapshot()
@@ -347,8 +507,8 @@ func TestUsageManagementImportLegacyExportKeepsServiceTierUnknown(t *testing.T) 
 	}
 
 	reexported := exportUsageStatistics(t, h)
-	if reexported.Version != 2 {
-		t.Fatalf("legacy re-export version = %d, want 2", reexported.Version)
+	if reexported.Version != 3 {
+		t.Fatalf("legacy re-export version = %d, want 3", reexported.Version)
 	}
 	reexportedJSON, err := json.Marshal(reexported)
 	if err != nil {
@@ -435,15 +595,15 @@ func TestUsageManagementImportMigratesReleasedV1UncachedInputTokensAtomically(t 
 		t.Fatalf("legacy token-contract import status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var response struct {
-		Added               int64  `json:"added"`
-		SchemaVersion       int    `json:"schema_version"`
-		MigratedFromVersion int    `json:"migrated_from_version"`
-		Migration           string `json:"migration"`
+		Added               int64    `json:"added"`
+		SchemaVersion       int      `json:"schema_version"`
+		MigratedFromVersion int      `json:"migrated_from_version"`
+		Migrations          []string `json:"migrations"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("unmarshal legacy token-contract migration receipt: %v body=%s", err, rec.Body.String())
 	}
-	if response.Added != 2 || response.SchemaVersion != 2 || response.MigratedFromVersion != 1 || response.Migration != "v1_uncached_input_tokens_to_v2" {
+	if response.Added != 2 || response.SchemaVersion != 3 || response.MigratedFromVersion != 1 || !reflect.DeepEqual(response.Migrations, []string{"v1_uncached_input_tokens_to_v2", "v2_timing_contract_to_v3"}) {
 		t.Fatalf("legacy token-contract migration receipt = %+v", response)
 	}
 	snapshot := stats.Snapshot()
@@ -475,8 +635,8 @@ func TestUsageManagementImportMigratesReleasedV1UncachedInputTokensAtomically(t 
 	if err := json.Unmarshal(repeat.Body.Bytes(), &repeatResult); err != nil {
 		t.Fatalf("unmarshal duplicate v1 receipt: %v body=%s", err, repeat.Body.String())
 	}
-	if repeatResult.Added != 0 || repeatResult.Skipped != 2 || repeatResult.TotalRequests != 3 || repeatResult.SchemaVersion != 2 {
-		t.Fatalf("duplicate v1 import result = %+v, want added=0 skipped=2 total_requests=3 schema_version=2", repeatResult)
+	if repeatResult.Added != 0 || repeatResult.Skipped != 2 || repeatResult.TotalRequests != 3 || repeatResult.SchemaVersion != 3 {
+		t.Fatalf("duplicate v1 import result = %+v, want added=0 skipped=2 total_requests=3 schema_version=3", repeatResult)
 	}
 	if afterDuplicate := stats.Snapshot(); !reflect.DeepEqual(afterDuplicate, beforeDuplicate) {
 		t.Fatalf("duplicate v1 import mutated statistics: before=%+v after=%+v", beforeDuplicate, afterDuplicate)
@@ -1145,7 +1305,10 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		Generate:             coreusage.GenerateFlag(false),
 		RequestedAt:          time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:              2 * time.Second,
-		TTFT:                 500 * time.Millisecond,
+		TimingVersion:        1,
+		TTFB:                 500 * time.Millisecond,
+		TTFT:                 900 * time.Millisecond,
+		TTFA:                 1500 * time.Millisecond,
 		Detail: coreusage.Detail{
 			InputTokens:     5,
 			OutputTokens:    7,
@@ -1201,17 +1364,18 @@ func exportUsageStatistics(t *testing.T, h *Handler) usageExportPayload {
 }
 
 func importUsageStatistics(t *testing.T, h *Handler, snapshot usage.StatisticsSnapshot) struct {
-	Added               int64  `json:"added"`
-	Skipped             int64  `json:"skipped"`
-	TotalRequests       int64  `json:"total_requests"`
-	FailedRequests      int64  `json:"failed_requests"`
-	SchemaVersion       int    `json:"schema_version"`
-	MigratedFromVersion int    `json:"migrated_from_version"`
-	Migration           string `json:"migration"`
+	Added               int64    `json:"added"`
+	Skipped             int64    `json:"skipped"`
+	TotalRequests       int64    `json:"total_requests"`
+	FailedRequests      int64    `json:"failed_requests"`
+	SchemaVersion       int      `json:"schema_version"`
+	MigratedFromVersion int      `json:"migrated_from_version"`
+	Migration           string   `json:"migration"`
+	Migrations          []string `json:"migrations"`
 } {
 	t.Helper()
 
-	body, err := json.Marshal(usageImportPayload{Version: 2, Usage: snapshot})
+	body, err := json.Marshal(usageImportPayload{Version: 3, Usage: snapshot})
 	if err != nil {
 		t.Fatalf("marshal import payload: %v", err)
 	}
@@ -1226,13 +1390,14 @@ func importUsageStatistics(t *testing.T, h *Handler, snapshot usage.StatisticsSn
 	}
 
 	var payload struct {
-		Added               int64  `json:"added"`
-		Skipped             int64  `json:"skipped"`
-		TotalRequests       int64  `json:"total_requests"`
-		FailedRequests      int64  `json:"failed_requests"`
-		SchemaVersion       int    `json:"schema_version"`
-		MigratedFromVersion int    `json:"migrated_from_version"`
-		Migration           string `json:"migration"`
+		Added               int64    `json:"added"`
+		Skipped             int64    `json:"skipped"`
+		TotalRequests       int64    `json:"total_requests"`
+		FailedRequests      int64    `json:"failed_requests"`
+		SchemaVersion       int      `json:"schema_version"`
+		MigratedFromVersion int      `json:"migrated_from_version"`
+		Migration           string   `json:"migration"`
+		Migrations          []string `json:"migrations"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal import response: %v body=%s", err, rec.Body.String())
@@ -1290,6 +1455,15 @@ func performUsageImport(h *Handler, payload []byte) *httptest.ResponseRecorder {
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/usage/import", bytes.NewReader(payload))
 	h.ImportUsageStatistics(ginCtx)
 	return rec
+}
+
+func mustMarshalUsagePayload(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal usage payload: %v", err)
+	}
+	return data
 }
 
 func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
@@ -1372,6 +1546,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.TTFBMs != 500 {
 		t.Fatalf("detail.ttfb_ms = %d, want 500", detail.TTFBMs)
+	}
+	if detail.TimingVersion != 1 || detail.TTFTMs != 900 || detail.TTFAMs != 1500 {
+		t.Fatalf("detail semantic timing = version:%d ttft:%d ttfa:%d, want 1/900/1500", detail.TimingVersion, detail.TTFTMs, detail.TTFAMs)
 	}
 	if detail.Failed {
 		t.Fatalf("detail.failed = true, want false")

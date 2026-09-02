@@ -167,6 +167,9 @@ require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/o
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "ttfb_ms" internal/usage internal/api/handlers/management
+require_grep "timing_version" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "ttft_ms" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "ttfa_ms" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "UserEndpoint" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep "UserEndpointUserAgent" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep 'case "amd64"' internal/auth/xai/types.go
@@ -188,9 +191,11 @@ require_grep 'json:"ResponseServiceTier,omitempty"' sdk/pluginapi/types.go
 require_grep 'json:"generate"' internal/usage internal/redisqueue
 require_grep "GenerateEnabled" internal/usage internal/redisqueue sdk/cliproxy/usage
 require_grep "CanonicalExportVersion" internal/usage/logger_plugin.go internal/api/handlers/management/usage.go docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml
+require_grep "TimingVersionV1" sdk/cliproxy/usage/manager.go internal/runtime/executor/helps/usage_timing.go docs/lts/core-feature-contracts.yaml
 require_grep "uncached_input_tokens" internal/usage/logger_plugin.go internal/api/handlers/management/usage_contract_test.go docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml
 require_grep '"schema_version"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
 require_grep '"migrated_from_version"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+require_grep '"migrations"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260902-USAGE-SCHEMA-V3.md
 require_grep "v1_uncached_input_tokens_to_v2" internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/core-feature-contracts.yaml docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
 require_grep '"code"' internal/api/handlers/management/usage.go internal/api/handlers/management/usage_contract_test.go docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
 for approved_usage_code in \
@@ -199,6 +204,10 @@ for approved_usage_code in \
   usage_v1_token_contract_invalid \
   usage_v1_cache_semantics_ambiguous \
   usage_v2_token_contract_invalid \
+  usage_v1_timing_semantics_ambiguous \
+  usage_v2_timing_semantics_ambiguous \
+  usage_v3_token_contract_invalid \
+  usage_v3_timing_contract_invalid \
   usage_aggregate_overflow; do
   require_grep "$approved_usage_code" \
     internal/api/handlers/management/usage.go \

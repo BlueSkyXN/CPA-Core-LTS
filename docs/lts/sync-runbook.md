@@ -183,7 +183,7 @@ Validator 会把当前 ledger 与 `--base-ref`（CI 使用 PR base branch）比�
 - `internal/usage/`：保留 LTS 完整统计，必要时适配 upstream 新结构。
 - `usage-statistics-enabled`：必须继续控制新 usage record 写入，不影响既有 snapshot/export/import 读取。
 - `/v0/management/usage`、`/export`、`/import`：必须保留。
-- usage record schema：保留 API key、auth file/source、model、token、latency、首字节 `ttfb_ms`、success/failure、auth index 等字段。
+- usage record schema：保留 API key、auth file/source、model、token、latency、`timing_version`、首字节 `ttfb_ms`、首 reasoning `ttft_ms`、首回答 `ttfa_ms`、success/failure、auth index 等字段。
 - Management usage response shape：保持 CPA-Panel-LTS 兼容。
 - config schema：接收 upstream 新项，同时保留旧配置兼容。
 - panel release source：保持 `BlueSkyXN/CPA-Panel-LTS`，除非用户明确改变策略。
@@ -212,7 +212,7 @@ git diff --check
 
 最小行为级 contract tests 必须覆盖：
 
-- usage record creation / schema：API key、auth source、model、token、latency、首字节 `ttfb_ms`、success/failure。
+- usage record creation / schema：API key、auth source、model、token、latency、`timing_version`、`ttfb_ms`、`ttft_ms`、`ttfa_ms`、success/failure。
 - Management usage response shape：`usage`、`failed_requests`、`apis`、`models`、`details`。
 - export/import roundtrip：导出后导入仍保留核心字段。
 

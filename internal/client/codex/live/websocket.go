@@ -124,7 +124,7 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 			selected:   current,
 			dispatched: true,
 		}
-		attempt.reporter.StartResponseTTFT()
+		attempt.reporter.StartResponseTiming()
 		upstream, response, errDial := dialer.DialContext(ctx, upstreamURL, request.Header)
 		if response != nil {
 			attempt.statusCode = response.StatusCode

@@ -46,6 +46,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("codex")
+	reporter.EnableSemanticTiming(to.String())
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -180,7 +181,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
-	reporter.StartResponseTTFT()
+	reporter.StartResponseTiming()
 	if sess == nil {
 		logCodexWebsocketConnected(executionSessionID, authID, wsURL)
 		defer func() {
@@ -250,7 +251,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 					AuthValue: authValue,
 				})
 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
-				reporter.StartResponseTTFT()
+				reporter.BeginResponseTiming()
 				retrySignal, errActive := sess.setActiveConnection(connectionRetry, readCh)
 				if errActive != nil {
 					return resp, errActive
@@ -312,6 +313,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 		reporter.MarkFirstResponseByte()
+		reporter.ObserveTimingPayload(to.String(), payload)
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)

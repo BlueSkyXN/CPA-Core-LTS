@@ -41,6 +41,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("antigravity")
+	reporter.EnableSemanticTiming(to.String())
 
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {

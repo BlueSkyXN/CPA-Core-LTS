@@ -135,8 +135,8 @@ func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
 	}
 
 	record := waitForAIStudioUsageRecord(t, plugin.records, "gemini-3.1-pro-preview")
-	if record.TTFT < delay {
-		t.Fatalf("ttft = %v, want >= %v", record.TTFT, delay)
+	if record.TTFB < delay {
+		t.Fatalf("ttfb = %v, want >= %v", record.TTFB, delay)
 	}
 }
 

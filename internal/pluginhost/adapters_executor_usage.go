@@ -101,6 +101,7 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 						reporter.MarkFirstResponseByte()
 						firstPayload = false
 					}
+					reporter.ObserveTimingPayload(format.String(), chunk.Payload)
 					observePluginUsageChunk(format, chunk.Payload, &usageBuffer)
 				}
 				select {

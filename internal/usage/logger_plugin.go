@@ -19,13 +19,16 @@ import (
 
 var statisticsEnabled atomic.Bool
 
-const CanonicalExportVersion = 2
+const CanonicalExportVersion = 3
+
+const usageTimingVersion = uint32(1)
 
 var (
-	ErrInvalidLegacyTokenStats    = errors.New("invalid legacy usage token contract")
-	ErrAmbiguousLegacyTokenStats  = errors.New("ambiguous legacy usage token contract: cached version 1 details require uncached_input_tokens")
-	ErrInvalidCanonicalTokenStats = errors.New("invalid canonical usage token contract")
-	ErrUsageAggregateOverflow     = errors.New("usage aggregate overflow")
+	ErrInvalidLegacyTokenStats     = errors.New("invalid legacy usage token contract")
+	ErrAmbiguousLegacyTokenStats   = errors.New("ambiguous legacy usage token contract: cached version 1 details require uncached_input_tokens")
+	ErrInvalidCanonicalTokenStats  = errors.New("invalid canonical usage token contract")
+	ErrInvalidCanonicalTimingStats = errors.New("invalid canonical usage timing contract")
+	ErrUsageAggregateOverflow      = errors.New("usage aggregate overflow")
 )
 
 func init() {
@@ -102,9 +105,15 @@ type modelStats struct {
 type RequestDetail struct {
 	Timestamp time.Time `json:"timestamp"`
 	LatencyMs int64     `json:"latency_ms"`
-	// TTFBMs records the first upstream response byte/payload latency. The
-	// runtime currently carries this value in the legacy Record.TTFT field.
-	TTFBMs               int64      `json:"ttfb_ms,omitempty"`
+	// TimingVersion identifies the semantic timing contract used by the
+	// optional timing fields below. Zero is retained for migrated legacy rows.
+	TimingVersion uint32 `json:"timing_version,omitempty"`
+	// TTFBMs records the first upstream response byte/payload latency.
+	TTFBMs int64 `json:"ttfb_ms,omitempty"`
+	// TTFTMs records the first non-empty reasoning content latency.
+	TTFTMs int64 `json:"ttft_ms,omitempty"`
+	// TTFAMs records the first non-empty assistant text latency.
+	TTFAMs               int64      `json:"ttfa_ms,omitempty"`
 	Source               string     `json:"source"`
 	UsageProvenance      string     `json:"usage_provenance,omitempty"`
 	AuthIndex            string     `json:"auth_index"`
@@ -120,6 +129,56 @@ type RequestDetail struct {
 	Generate             bool       `json:"generate"`
 	FailureReason        string     `json:"failure_reason,omitempty"`
 	FailureStatus        int        `json:"failure_status,omitempty"`
+
+	timingFieldsPresent timingFieldPresence
+}
+
+type timingFieldPresence uint8
+
+const (
+	timingVersionPresent timingFieldPresence = 1 << iota
+	timingTTFBPresent
+	timingTTFTPresent
+	timingTTFAPresent
+)
+
+// MarshalJSON preserves explicit zero timing values. The scalar fields remain
+// source-compatible for existing callers, while the private presence mask
+// keeps an omitted field distinct from a measured zero after import/export.
+func (d RequestDetail) MarshalJSON() ([]byte, error) {
+	type requestDetailAlias RequestDetail
+	encoded, err := json.Marshal(requestDetailAlias(d))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, err
+	}
+	setField := func(name string, value any, present bool) error {
+		if !present {
+			return nil
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		fields[name] = raw
+		return nil
+	}
+	if err := setField("timing_version", d.TimingVersion, d.timingFieldPresent(timingVersionPresent)); err != nil {
+		return nil, err
+	}
+	if err := setField("ttfb_ms", d.TTFBMs, d.timingFieldPresent(timingTTFBPresent)); err != nil {
+		return nil, err
+	}
+	if err := setField("ttft_ms", d.TTFTMs, d.timingFieldPresent(timingTTFTPresent)); err != nil {
+		return nil, err
+	}
+	if err := setField("ttfa_ms", d.TTFAMs, d.timingFieldPresent(timingTTFAPresent)); err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
 }
 
 // UnmarshalJSON keeps legacy usage exports compatible with the generate field.
@@ -141,10 +200,47 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
+	for _, field := range []string{"timing_version", "ttfb_ms", "ttft_ms", "ttfa_ms"} {
+		if rawValue, ok := fields[field]; ok && strings.EqualFold(strings.TrimSpace(string(rawValue)), "null") {
+			return fmt.Errorf("%w: %s must be an integer", ErrInvalidCanonicalTimingStats, field)
+		}
+	}
 
 	*d = RequestDetail(decoded)
 	d.Generate = generate
+	var timingFields timingFieldPresence
+	if _, ok := fields["timing_version"]; ok {
+		timingFields |= timingVersionPresent
+	}
+	if _, ok := fields["ttfb_ms"]; ok {
+		timingFields |= timingTTFBPresent
+	}
+	if _, ok := fields["ttft_ms"]; ok {
+		timingFields |= timingTTFTPresent
+	}
+	if _, ok := fields["ttfa_ms"]; ok {
+		timingFields |= timingTTFAPresent
+	}
+	d.timingFieldsPresent = timingFields
 	return nil
+}
+
+func (d RequestDetail) timingFieldPresent(field timingFieldPresence) bool {
+	if d.timingFieldsPresent != 0 {
+		return d.timingFieldsPresent&field != 0
+	}
+	switch field {
+	case timingVersionPresent:
+		return d.TimingVersion != 0
+	case timingTTFBPresent:
+		return d.TTFBMs != 0
+	case timingTTFTPresent:
+		return d.TTFTMs != 0
+	case timingTTFAPresent:
+		return d.TTFAMs != 0
+	default:
+		return false
+	}
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -347,6 +443,58 @@ func (snapshot StatisticsSnapshot) ValidateCanonicalV2TokenStats() error {
 	return nil
 }
 
+// ValidateCanonicalV3TokenStats keeps the canonical token contract explicit
+// at the schema version boundary. The token relationships remain unchanged
+// from v2; only the surrounding timing contract is new in v3.
+func (snapshot StatisticsSnapshot) ValidateCanonicalV3TokenStats() error {
+	return snapshot.ValidateCanonicalV2TokenStats()
+}
+
+// ValidateCanonicalTimingStats validates the optional v3 timing fields. A
+// zero timing version is reserved for migrated legacy details that may retain
+// only an explicitly named TTFB value.
+func (snapshot StatisticsSnapshot) ValidateCanonicalTimingStats() error {
+	for _, apiSnapshot := range snapshot.APIs {
+		for _, modelSnapshot := range apiSnapshot.Models {
+			for _, detail := range modelSnapshot.Details {
+				if !validCanonicalTimingDetail(detail) {
+					return ErrInvalidCanonicalTimingStats
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validCanonicalTimingDetail(detail RequestDetail) bool {
+	if detail.TimingVersion != 0 && detail.TimingVersion != usageTimingVersion {
+		return false
+	}
+	hasTimingVersion := detail.timingFieldPresent(timingVersionPresent)
+	hasTTFB := detail.timingFieldPresent(timingTTFBPresent)
+	hasTTFT := detail.timingFieldPresent(timingTTFTPresent)
+	hasTTFA := detail.timingFieldPresent(timingTTFAPresent)
+	if hasTimingVersion && detail.TimingVersion == 0 {
+		return false
+	}
+	if (hasTTFT || hasTTFA) && !hasTTFB {
+		return false
+	}
+	if detail.LatencyMs < 0 || detail.TTFBMs < 0 || detail.TTFTMs < 0 || detail.TTFAMs < 0 {
+		return false
+	}
+	if detail.TTFBMs > detail.LatencyMs || detail.TTFTMs > detail.LatencyMs || detail.TTFAMs > detail.LatencyMs {
+		return false
+	}
+	if (hasTTFT && detail.TTFTMs < detail.TTFBMs) || (hasTTFA && detail.TTFAMs < detail.TTFBMs) {
+		return false
+	}
+	if detail.TimingVersion == 0 && (hasTTFT || hasTTFA) {
+		return false
+	}
+	return true
+}
+
 // ValidateCanonicalTokenStats validates migrated v1 values after their
 // version-specific presence and ambiguity checks have completed.
 func (snapshot StatisticsSnapshot) ValidateCanonicalTokenStats() error {
@@ -473,7 +621,6 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	requestDetail := RequestDetail{
 		Timestamp:            timestamp,
 		LatencyMs:            normaliseLatency(record.Latency),
-		TTFBMs:               normaliseLatency(record.TTFT),
 		Source:               record.Source,
 		UsageProvenance:      coreusage.CanonicalUsageProvenance(record.UsageProvenance),
 		AuthIndex:            record.AuthIndex,
@@ -489,6 +636,31 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		FailureReason:        failureReason,
 		FailureStatus:        failureStatus,
+	}
+	if record.TimingVersion == usageTimingVersion {
+		requestDetail.TimingVersion = usageTimingVersion
+		requestDetail.timingFieldsPresent |= timingVersionPresent
+		requestDetail.TTFBMs = normaliseLatency(record.TTFB)
+		requestDetail.TTFTMs = normaliseLatency(record.TTFT)
+		requestDetail.TTFAMs = normaliseLatency(record.TTFA)
+		if record.TTFB > 0 {
+			requestDetail.timingFieldsPresent |= timingTTFBPresent
+		}
+		if record.TTFT > 0 {
+			requestDetail.timingFieldsPresent |= timingTTFTPresent
+		}
+		if record.TTFA > 0 {
+			requestDetail.timingFieldsPresent |= timingTTFAPresent
+		}
+		if !validCanonicalTimingDetail(requestDetail) {
+			// A malformed optional timing sample must not drop the request
+			// accounting record. Keep the usage detail and fail closed on timing.
+			requestDetail.TimingVersion = 0
+			requestDetail.TTFBMs = 0
+			requestDetail.TTFTMs = 0
+			requestDetail.TTFAMs = 0
+			requestDetail.timingFieldsPresent = 0
+		}
 	}
 
 	s.mu.Lock()
@@ -649,11 +821,8 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeRes
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				detail = normaliseServiceTierAliases(detail)
 				detail.UsageProvenance = coreusage.CanonicalUsageProvenance(detail.UsageProvenance)
-				if detail.LatencyMs < 0 {
-					detail.LatencyMs = 0
-				}
-				if detail.TTFBMs < 0 {
-					detail.TTFBMs = 0
+				if !validCanonicalTimingDetail(detail) {
+					return MergeResult{}, ErrInvalidCanonicalTimingStats
 				}
 				key := dedupKey(apiName, modelName, detail)
 				if _, exists := seen[key]; exists {

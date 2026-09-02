@@ -166,7 +166,10 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		RequestedAt:          record.RequestedAt,
 		Latency:              record.Latency,
+		TimingVersion:        record.TimingVersion,
+		TTFB:                 record.TTFB,
 		TTFT:                 record.TTFT,
+		TTFA:                 record.TTFA,
 		Failed:               record.Failed,
 		Failure: pluginapi.UsageFailure{
 			StatusCode: record.Fail.StatusCode,
