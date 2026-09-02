@@ -31,6 +31,13 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if errLegacy != nil || legacy.tokenSource() != "pt-legacy" || legacy.AccountID != "legacy-account" {
 		t.Fatalf("legacy access_token = %#v, err=%v", legacy, errLegacy)
 	}
+	if legacy.runnerAuth()["mode"] != "pat" {
+		t.Fatalf("legacy pt- access_token runner auth = %#v", legacy.runnerAuth())
+	}
+	legacyBearer, errLegacyBearer := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"legacy-bearer","account_id":"legacy-account"}`))
+	if errLegacyBearer != nil || legacyBearer.runnerAuth()["mode"] != "access_token" {
+		t.Fatalf("legacy bearer access_token runner auth = %#v, err=%v", legacyBearer.runnerAuth(), errLegacyBearer)
+	}
 	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","access_token":"legacy-ignored","account_id":"legacy-account","profile_id":"cn-main","config_dir":"/tmp/qoder-cn","label":"Qoder CN"}`))
 	if errLocal != nil || local.AuthMode != "local_cli" || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" || local.AccessToken != "" || local.AccountID != "" {
 		t.Fatalf("local_cli auth = %#v, err=%v", local, errLocal)

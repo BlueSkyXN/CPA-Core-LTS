@@ -206,7 +206,11 @@ func (auth qoderAuth) runnerAuth(requestedTransport ...string) map[string]any {
 		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
 	}
 	if auth.AuthMode == "pat" {
-		return map[string]any{"mode": "pat", "env_var": runnerPATEnv, "account_id": auth.AccountID, "transport": transport}
+		mode := "access_token"
+		if auth.isPAT() {
+			mode = "pat"
+		}
+		return map[string]any{"mode": mode, "env_var": runnerPATEnv, "account_id": auth.AccountID, "transport": transport}
 	}
 	return map[string]any{"mode": "local_cli", "profile_id": auth.ProfileID, "transport": transport}
 }

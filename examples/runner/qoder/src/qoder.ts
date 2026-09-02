@@ -3,6 +3,7 @@ import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { access, constants as fsConstants } from "node:fs/promises";
 
 import {
+  accessTokenFromEnv,
   jobToken,
   ProcessTransport,
   qodercliAuth,
@@ -52,7 +53,7 @@ type QoderSDKOptions = {
 };
 
 type SDKAuthentication = {
-  auth: ReturnType<typeof qodercliAuth> | ReturnType<typeof jobToken>;
+  auth: ReturnType<typeof accessTokenFromEnv> | ReturnType<typeof qodercliAuth> | ReturnType<typeof jobToken>;
   spawnQoderCLIProcess?: (options: SpawnOptions) => SpawnedProcess;
 };
 
@@ -176,20 +177,23 @@ export class QoderSDKAdapter implements QoderAdapter {
       throw new ProtocolError("cli_unavailable", "configured Qoder CLI is not executable");
     }
     if (!auth) return { auth_ready: false, message: "selected Qoder auth was not supplied" };
-    if (auth.mode === "pat") {
+    if (auth.mode === "pat" || auth.mode === "access_token") {
       if (!auth.env_var || !process.env[auth.env_var]) {
-        return { auth_ready: false, message: "configured Qoder PAT environment source is unavailable" };
+        return { auth_ready: false, message: "configured Qoder token environment source is unavailable" };
       }
-      if (!this.tokenManager) {
+      if (auth.mode === "pat" && !this.tokenManager) {
         return { auth_ready: false, message: "Qoder OpenAPI endpoint is required for SDK PAT exchange" };
       }
-      return { auth_ready: true, message: "Qoder PAT source is configured; remote acceptance is checked on execution" };
+      const source = auth.mode === "pat" ? "PAT" : "legacy access token";
+      return { auth_ready: true, message: `Qoder ${source} source is configured; remote acceptance is checked on execution` };
     }
     return { auth_ready: true, message: "Qoder local CLI profile reuse is configured; remote acceptance is checked on execution" };
   }
 
   async models(params: ModelsParams): Promise<ModelRecord[]> {
-    const cacheKey = params.auth.mode === "pat" ? `pat:${params.auth.env_var}` : `local:${params.auth.profile_id ?? "default"}`;
+    const cacheKey = params.auth.mode === "local_cli"
+      ? `local:${params.auth.profile_id ?? "default"}`
+      : `${params.auth.mode}:${params.auth.env_var}`;
     const cached = this.modelCache.get(cacheKey);
     if (cached && cached.expires > Date.now()) return cached.models.map((model) => ({ ...model }));
 
@@ -337,6 +341,7 @@ export class QoderSDKAdapter implements QoderAdapter {
     onAuthExpired?: () => void,
   ): SDKAuthentication {
     if (auth.mode === "local_cli") return { auth: qodercliAuth() };
+    if (auth.mode === "access_token") return { auth: accessTokenFromEnv(auth.env_var) };
     if (!this.tokenManager) {
       throw new ProtocolError("sdk_auth_config", "Qoder OpenAPI endpoint is required for SDK PAT exchange");
     }
@@ -547,7 +552,7 @@ export class QoderSDKAdapter implements QoderAdapter {
   }
 
   private authSecrets(auth: AuthSpec): string[] {
-    return auth.mode === "pat" ? [process.env[auth.env_var] ?? ""] : [];
+    return auth.mode === "local_cli" ? [] : [process.env[auth.env_var] ?? ""];
   }
 
   private writeSafeStderr(chunk: string, secrets: string[]): void {

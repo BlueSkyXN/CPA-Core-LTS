@@ -13,9 +13,10 @@
 The transport is selected by administrator configuration or an auth profile,
 never by a client request. A session keeps one transport for its lifetime.
 New integrations should use a `pt-` PAT. The runner also retains the legacy
-`access_token`/`local_cli` auth-file paths for compatibility: `access_token`
-values use the configured Direct token mode, while `local_cli` is SDK-only and
-uses the caller's isolated `QODER_CONFIG_DIR`.
+`access_token`/`local_cli` auth-file paths for compatibility. A `pt-` value in
+the legacy field follows the PAT exchange path; an opaque `access_token` keeps
+the released SDK access-token selector and Direct bearer semantics.
+`local_cli` is SDK-only and uses the caller's isolated `QODER_CONFIG_DIR`.
 
 The runner deliberately requires an external Qoder CLI path for `sdk_cli`:
 

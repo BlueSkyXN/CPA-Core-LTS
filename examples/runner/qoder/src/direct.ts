@@ -114,12 +114,12 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       throw new ProtocolError("direct_endpoint_invalid", "direct endpoint is invalid");
     }
     if (!auth) return { auth_ready: false, message: "selected Qoder direct auth was not supplied" };
-    if (auth.mode !== "pat") {
+    if (auth.mode === "local_cli") {
       return { auth_ready: false, message: "direct_openai requires a PAT or bearer access-token auth" };
     }
     const source = process.env[auth.env_var] ?? "";
     if (!source) return { auth_ready: false, message: "configured Qoder direct token source is unavailable" };
-    const requiresExchange = this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-");
+    const requiresExchange = auth.mode === "pat" && (this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-"));
     if (requiresExchange && !this.authEndpoint) return { auth_ready: false, message: "Qoder OpenAPI endpoint is not configured" };
     return { auth_ready: true, message: "Qoder direct OpenAI transport is configured; remote acceptance is checked on execution" };
   }
@@ -518,16 +518,16 @@ export class QoderTokenManager {
   }
 
   private async ensure(auth: AuthSpec, signal?: AbortSignal): Promise<TokenState> {
-    if (auth.mode !== "pat") throw new ProtocolError("direct_auth_invalid", "direct_openai requires PAT or bearer token auth");
+    if (auth.mode === "local_cli") throw new ProtocolError("direct_auth_invalid", "direct_openai requires PAT or bearer token auth");
     const source = String(process.env[auth.env_var] ?? "");
     if (!source) throw new ProtocolError("auth_not_configured", "Qoder direct token environment source is not configured");
-    const patExchange = this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-");
+    const patExchange = auth.mode === "pat" && (this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-"));
     if (!patExchange) {
       this.state = { source, accessToken: source, expiresAt: Number.POSITIVE_INFINITY, patExchange: false };
       return this.state;
     }
     if (!this.authEndpoint) throw new ProtocolError("direct_auth_config", "Qoder OpenAPI endpoint is not configured");
-    if (this.state?.source === source && this.state.expiresAt > Date.now() + 30_000) return this.state;
+    if (this.state?.source === source && this.state.patExchange === patExchange && this.state.expiresAt > Date.now() + 30_000) return this.state;
     this.state = await this.exchange(source, signal);
     return this.state;
   }

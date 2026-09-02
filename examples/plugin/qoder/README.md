@@ -17,10 +17,12 @@ transport midway. There is no silent fallback between transports.
 New auth files should use the long-lived `pt-` PAT. Both SDK Agent and Direct
 paths exchange it for a short-lived Job Token, and the read-only
 account/plan/quota Summary uses the same regional OpenAPI. Existing auth files using
-`access_token` or `local_cli` remain readable for compatibility; the latter
-continues to use its explicitly isolated `config_dir` and is not available to
-the Direct transport. OAuth, interactive login, and persisted short-lived
-tokens are not part of this plugin.
+`access_token` or `local_cli` remain executable for compatibility. A legacy
+`access_token` with the `pt-` prefix follows the PAT exchange path, while an
+opaque value keeps the released SDK access-token selector and Direct bearer
+semantics. `local_cli` continues to use its explicitly isolated `config_dir`
+and is not available to the Direct transport. OAuth, interactive login, and
+persisted short-lived tokens are not part of this plugin.
 
 The plugin implements `AuthProvider`, `ModelsForAuth`, `ProviderExecutor`,
 `ProviderReadiness`, `ExecutionCanceller`, `ExecutionSessionCloser`, and the

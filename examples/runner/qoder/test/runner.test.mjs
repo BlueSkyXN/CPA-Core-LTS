@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { BoundedFrameWriter, ProtocolError, redactStderr } from "../dist/protocol.js";
 import { DirectOpenAIAdapter, QoderTokenManager } from "../dist/direct.js";
-import { patchQoderSDKJobTokenPayload, toModelRecord, userMessage } from "../dist/qoder.js";
+import { patchQoderSDKJobTokenPayload, QoderSDKAdapter, toModelRecord, userMessage } from "../dist/qoder.js";
 import { RunnerServer } from "../dist/server.js";
 
 class FakeAdapter {
@@ -218,6 +218,28 @@ test("SDK PAT auth adapts the one-shot host job-token payload without storing a 
   }
 });
 
+test("SDK auth keeps opaque legacy access tokens on the released direct selector", () => {
+  const adapter = new QoderSDKAdapter("/bin/true", "/tmp", {
+    openAPIEndpoint: "https://openapi.example.test",
+  });
+  const legacy = adapter.sdkAuthentication(
+    { mode: "access_token", env_var: "CPA_QODER_LEGACY_ACCESS_TOKEN" },
+    () => {},
+  );
+  assert.deepEqual(legacy.auth, {
+    type: "accessToken",
+    accessToken: { envVar: "CPA_QODER_LEGACY_ACCESS_TOKEN" },
+  });
+  assert.equal(legacy.spawnQoderCLIProcess, undefined);
+
+  const pat = adapter.sdkAuthentication(
+    { mode: "pat", env_var: "CPA_QODER_PAT" },
+    () => {},
+  );
+  assert.equal(pat.auth.type, "jobToken");
+  assert.equal(typeof pat.spawnQoderCLIProcess, "function");
+});
+
 test("shared Qoder token manager exchanges PAT and refreshes an unauthorized SDK job token", async () => {
   const envVar = "CPA_QODER_SDK_TOKEN_MANAGER_TEST";
   const previous = process.env[envVar];
@@ -244,6 +266,33 @@ test("shared Qoder token manager exchanges PAT and refreshes an unauthorized SDK
     assert.equal(await manager.getAccessToken(auth, "initial"), "job-initial");
     assert.equal(await manager.getAccessToken(auth, "unauthorized"), "job-refreshed");
     assert.deepEqual(paths, ["/api/v1/jobToken/exchange", "/api/v1/jobToken/refresh"]);
+  } finally {
+    if (previous === undefined) delete process.env[envVar];
+    else process.env[envVar] = previous;
+  }
+});
+
+test("legacy access-token mode never exchanges an opaque bearer even when it has a pt- prefix", async () => {
+  const envVar = "CPA_QODER_LEGACY_BEARER_TEST";
+  const previous = process.env[envVar];
+  process.env[envVar] = "pt-opaque-access-token";
+  let exchangeCalls = 0;
+  const manager = new QoderTokenManager(
+    "https://openapi.example.test",
+    "pat_exchange",
+    "qoder/test",
+    async () => {
+      exchangeCalls += 1;
+      throw new Error("legacy access token must not be exchanged");
+    },
+    1000,
+  );
+  try {
+    assert.equal(
+      await manager.getAccessToken({ mode: "access_token", env_var: envVar }),
+      "pt-opaque-access-token",
+    );
+    assert.equal(exchangeCalls, 0);
   } finally {
     if (previous === undefined) delete process.env[envVar];
     else process.env[envVar] = previous;
