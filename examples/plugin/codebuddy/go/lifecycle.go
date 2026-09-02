@@ -13,11 +13,13 @@ import (
 const shutdownWait = 2 * time.Second
 
 type pluginRuntime struct {
-	mu        sync.Mutex
-	caller    hostCaller
-	config    pluginConfig
-	accepting bool
-	active    map[string]*activeExecution
+	mu           sync.Mutex
+	caller       hostCaller
+	config       pluginConfig
+	accepting    bool
+	active       map[string]*activeExecution
+	catalogCache map[string]codeBuddyCatalogCacheEntry
+	summaryCache map[string]codeBuddySummaryCacheEntry
 }
 
 type activeExecution struct {
@@ -34,10 +36,12 @@ type activeExecution struct {
 
 func newPluginRuntime(caller hostCaller) *pluginRuntime {
 	return &pluginRuntime{
-		caller:    caller,
-		config:    defaultPluginConfig(),
-		accepting: true,
-		active:    make(map[string]*activeExecution),
+		caller:       caller,
+		config:       defaultPluginConfig(),
+		accepting:    true,
+		active:       make(map[string]*activeExecution),
+		catalogCache: make(map[string]codeBuddyCatalogCacheEntry),
+		summaryCache: make(map[string]codeBuddySummaryCacheEntry),
 	}
 }
 
@@ -54,6 +58,8 @@ func (r *pluginRuntime) configure(raw []byte) error {
 	}
 	r.mu.Lock()
 	r.config = cfg
+	r.catalogCache = make(map[string]codeBuddyCatalogCacheEntry)
+	r.summaryCache = make(map[string]codeBuddySummaryCacheEntry)
 	if len(r.active) == 0 {
 		r.accepting = true
 	}
@@ -215,6 +221,10 @@ func (r *pluginRuntime) quiesceAndWait() {
 
 func (r *pluginRuntime) shutdown() {
 	r.quiesceAndWait()
+	r.mu.Lock()
+	r.catalogCache = make(map[string]codeBuddyCatalogCacheEntry)
+	r.summaryCache = make(map[string]codeBuddySummaryCacheEntry)
+	r.mu.Unlock()
 }
 
 func (r *pluginRuntime) readiness(req pluginapi.ReadinessRequest) pluginapi.ReadinessResponse {

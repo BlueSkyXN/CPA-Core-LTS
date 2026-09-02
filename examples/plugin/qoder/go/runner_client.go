@@ -118,10 +118,12 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 		if cfg.DirectModelsEndpoint != "" {
 			args = append(args, "--direct-models-endpoint", cfg.DirectModelsEndpoint)
 		}
-		if cfg.DirectAuthEndpoint != "" {
-			args = append(args, "--direct-auth-endpoint", cfg.DirectAuthEndpoint)
+		if cfg.OpenAPIEndpoint != "" {
+			args = append(args, "--openapi-endpoint", cfg.OpenAPIEndpoint)
 		}
-		args = append(args, "--direct-token-mode", cfg.DirectTokenMode)
+		if cfg.OpenAPIUserAgent != "" {
+			args = append(args, "--openapi-user-agent", cfg.OpenAPIUserAgent)
+		}
 		if modelsJSON, errModels := directModelsJSON(cfg.DirectModels); errModels != nil {
 			return nil, newPluginCallError("invalid_config", errModels.Error(), http.StatusInternalServerError, false)
 		} else if modelsJSON != "" {
@@ -151,7 +153,7 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 		return nil, newPluginCallError("runner_unavailable", "Qoder runner could not be started", http.StatusServiceUnavailable, true)
 	}
 	go client.readLoop(stdout)
-	go client.drainStderr(stderr, auth.AccessToken)
+	go client.drainStderr(stderr, auth.PAT)
 	go client.waitLoop()
 	cleanupRuntimeRoot = false
 	return client, nil
@@ -395,10 +397,8 @@ func runnerEnvironment(auth qoderAuth, extra map[string]string, runtimeRoot stri
 	if auth.AuthMode == "pat" {
 		env = append(env,
 			"HOME="+filepath.Join(runtimeRoot, "home"),
-			runnerPATEnv+"="+auth.AccessToken,
+			runnerPATEnv+"="+auth.PAT,
 		)
-	} else if auth.ConfigDir != "" {
-		env = append(env, "QODER_CONFIG_DIR="+auth.ConfigDir)
 	}
 	for key, value := range extra {
 		env = append(env, key+"="+value)

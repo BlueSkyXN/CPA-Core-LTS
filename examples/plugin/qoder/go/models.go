@@ -206,9 +206,9 @@ func (auth qoderAuth) runnerAuth(requestedTransport ...string) map[string]any {
 		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
 	}
 	if auth.AuthMode == "pat" {
-		return map[string]any{"mode": "pat", "env_var": runnerPATEnv, "account_id": auth.AccountID, "transport": transport}
+		return map[string]any{"mode": "pat", "env_var": runnerPATEnv, "transport": transport}
 	}
-	return map[string]any{"mode": "local_cli", "profile_id": auth.ProfileID, "transport": transport}
+	return map[string]any{"mode": "pat", "env_var": runnerPATEnv, "transport": transport}
 }
 
 func authCacheKey(authID, provider string, auth qoderAuth, requestedTransport ...string) string {
@@ -219,7 +219,7 @@ func authCacheKey(authID, provider string, auth qoderAuth, requestedTransport ..
 	if transport == "" {
 		transport = "sdk_cli"
 	}
-	return sessionDigest([]string{"qoder-models", strings.TrimSpace(provider), strings.TrimSpace(authID), auth.AuthMode, transport, auth.AccountID, auth.ProfileID, auth.ConfigDir})
+	return sessionDigest([]string{"qoder-models", strings.TrimSpace(provider), strings.TrimSpace(authID), auth.AuthMode, transport, auth.PAT})
 }
 
 func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {

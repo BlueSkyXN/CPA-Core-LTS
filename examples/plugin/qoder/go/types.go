@@ -89,6 +89,7 @@ type registrationCapabilities struct {
 	ExecutorModelScope     pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats   []string                     `json:"executor_input_formats"`
 	ExecutorOutputFormats  []string                     `json:"executor_output_formats"`
+	ManagementAPI          bool                         `json:"management_api"`
 }
 
 type identifierResponse struct {
@@ -102,6 +103,20 @@ type rpcExecutorRequest struct {
 
 type rpcAuthModelRequest struct {
 	pluginapi.AuthModelRequest
+}
+
+type managementRegistrationResponse struct {
+	Routes []managementRoute `json:"routes,omitempty"`
+}
+
+type managementRoute struct {
+	Method string `json:"Method"`
+	Path   string `json:"Path"`
+}
+
+type rpcManagementRequest struct {
+	pluginapi.ManagementRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type rpcStreamResponse struct {

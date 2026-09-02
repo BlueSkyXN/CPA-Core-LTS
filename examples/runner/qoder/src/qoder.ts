@@ -3,7 +3,6 @@ import { access, constants as fsConstants } from "node:fs/promises";
 import {
   accessTokenFromEnv,
   ProcessTransport,
-  qodercliAuth,
   query,
   type CanUseTool,
   type ModelInfo,
@@ -96,7 +95,7 @@ class SDKSession {
     this.query = query({
       prompt: this.input,
       options: {
-        auth: params.auth.mode === "pat" ? accessTokenFromEnv(params.auth.env_var) : qodercliAuth(),
+        auth: accessTokenFromEnv(params.auth.env_var),
         transport: ProcessTransport.default,
         pathToQoderCLIExecutable: cliPath,
         cwd,
@@ -108,7 +107,7 @@ class SDKSession {
         mcpServers: params.mcp_servers,
         strictMcpConfig: Boolean(params.mcp_servers && Object.keys(params.mcp_servers).length > 0),
         permissionMode: "dontAsk",
-        settingSources: params.setting_sources ?? [],
+        settingSources: params.setting_sources && params.setting_sources.length > 0 ? params.setting_sources : undefined,
         systemPrompt: this.systemPrompt || undefined,
         includePartialMessages: true,
         canUseTool,
@@ -139,17 +138,14 @@ export class QoderSDKAdapter implements QoderAdapter {
       throw new ProtocolError("cli_unavailable", "configured Qoder CLI is not executable");
     }
     if (!auth) return { auth_ready: false, message: "selected Qoder auth was not supplied" };
-    if (auth.mode === "pat") {
-      if (!auth.env_var || !process.env[auth.env_var]) {
-        return { auth_ready: false, message: "configured Qoder PAT environment source is unavailable" };
-      }
-      return { auth_ready: true, message: "Qoder PAT source is configured; remote acceptance is checked on execution" };
+    if (!auth.env_var || !process.env[auth.env_var]) {
+      return { auth_ready: false, message: "configured Qoder PAT environment source is unavailable" };
     }
-    return { auth_ready: true, message: "Qoder local CLI profile reuse is configured; remote acceptance is checked on execution" };
+    return { auth_ready: true, message: "Qoder PAT source is configured; remote acceptance is checked on execution" };
   }
 
   async models(params: ModelsParams): Promise<ModelRecord[]> {
-    const cacheKey = params.auth.mode === "pat" ? `pat:${params.auth.env_var}` : `local:${params.auth.profile_id ?? "default"}`;
+    const cacheKey = `pat:${params.auth.env_var}`;
     const cached = this.modelCache.get(cacheKey);
     if (cached && cached.expires > Date.now()) return cached.models.map((model) => ({ ...model }));
 
@@ -158,13 +154,13 @@ export class QoderSDKAdapter implements QoderAdapter {
     const q = query({
       prompt: input,
       options: {
-        auth: params.auth.mode === "pat" ? accessTokenFromEnv(params.auth.env_var) : qodercliAuth(),
+        auth: accessTokenFromEnv(params.auth.env_var),
         transport: ProcessTransport.default,
         pathToQoderCLIExecutable: this.cliPath,
         cwd: this.cwd,
         tools: [],
         permissionMode: "dontAsk",
-        settingSources: [],
+        settingSources: undefined,
         stderr: (chunk) => this.writeSafeStderr(chunk, secrets),
       },
     });
@@ -478,7 +474,7 @@ export class QoderSDKAdapter implements QoderAdapter {
   }
 
   private authSecrets(auth: AuthSpec): string[] {
-    return auth.mode === "pat" ? [process.env[auth.env_var] ?? ""] : [];
+    return [process.env[auth.env_var] ?? ""];
   }
 
   private writeSafeStderr(chunk: string, secrets: string[]): void {

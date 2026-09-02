@@ -12,7 +12,9 @@ import (
 type codeBuddyAuth struct {
 	Type     string `json:"type"`
 	AuthMode string `json:"auth_mode"`
-	APIKey   string `json:"api_key"`
+	PAT      string `json:"pat,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+	Label    string `json:"label,omitempty"`
 }
 
 func parseStoredAuth(raw []byte) (codeBuddyAuth, error) {
@@ -23,15 +25,32 @@ func parseStoredAuth(raw []byte) (codeBuddyAuth, error) {
 	if !strings.EqualFold(strings.TrimSpace(auth.Type), pluginIdentifier) {
 		return codeBuddyAuth{}, fmt.Errorf("auth type is not CodeBuddy")
 	}
-	if strings.TrimSpace(auth.AuthMode) != "api_key" {
-		return codeBuddyAuth{}, fmt.Errorf("CodeBuddy auth_mode must be api_key")
+	auth.AuthMode = strings.ToLower(strings.TrimSpace(auth.AuthMode))
+	if auth.AuthMode != "pat" && auth.AuthMode != "api_key" {
+		return codeBuddyAuth{}, fmt.Errorf("CodeBuddy auth_mode must be pat or api_key")
 	}
+	auth.PAT = strings.TrimSpace(auth.PAT)
 	auth.APIKey = strings.TrimSpace(auth.APIKey)
-	if auth.APIKey == "" {
+	auth.Label = strings.TrimSpace(auth.Label)
+	if strings.ContainsAny(auth.PAT, "\r\n\x00") || strings.ContainsAny(auth.APIKey, "\r\n\x00") || strings.ContainsAny(auth.Label, "\r\n\x00") {
+		return codeBuddyAuth{}, fmt.Errorf("CodeBuddy auth contains invalid characters")
+	}
+	if auth.PAT != "" && auth.APIKey != "" && auth.PAT != auth.APIKey {
+		return codeBuddyAuth{}, fmt.Errorf("CodeBuddy pat and api_key must match when both are present")
+	}
+	if auth.AuthMode == "pat" && auth.PAT == "" {
+		return codeBuddyAuth{}, fmt.Errorf("CodeBuddy pat is required")
+	}
+	if auth.AuthMode == "api_key" && auth.APIKey == "" {
 		return codeBuddyAuth{}, fmt.Errorf("CodeBuddy api_key is required")
 	}
 	auth.Type = pluginIdentifier
-	auth.AuthMode = "api_key"
+	if auth.PAT == "" {
+		auth.PAT = auth.APIKey
+	}
+	if auth.APIKey == "" {
+		auth.APIKey = auth.PAT
+	}
 	return auth, nil
 }
 
@@ -49,7 +68,8 @@ func parseAuthRequest(raw []byte) (pluginapi.AuthParseResponse, error) {
 	if !strings.EqualFold(strings.TrimSpace(discriminator.Type), pluginIdentifier) {
 		return pluginapi.AuthParseResponse{Handled: false}, nil
 	}
-	if _, errAuth := parseStoredAuth(req.RawJSON); errAuth != nil {
+	auth, errAuth := parseStoredAuth(req.RawJSON)
+	if errAuth != nil {
 		return pluginapi.AuthParseResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), 400, false)
 	}
 	return pluginapi.AuthParseResponse{
@@ -57,14 +77,25 @@ func parseAuthRequest(raw []byte) (pluginapi.AuthParseResponse, error) {
 		Auth: pluginapi.AuthData{
 			Provider:    pluginIdentifier,
 			FileName:    strings.TrimSpace(req.FileName),
-			Label:       "CodeBuddy API Key",
+			Label:       authLabelForDisplay(req.RawJSON),
 			StorageJSON: bytes.Clone(req.RawJSON),
 			Metadata: map[string]any{
 				"type":      pluginIdentifier,
-				"auth_mode": "api_key",
+				"auth_mode": auth.AuthMode,
 			},
 		},
 	}, nil
+}
+
+func authLabelForDisplay(raw []byte) string {
+	auth, errAuth := parseStoredAuth(raw)
+	if errAuth == nil && auth.Label != "" {
+		return auth.Label
+	}
+	if errAuth == nil && auth.AuthMode == "pat" {
+		return "CodeBuddy PAT"
+	}
+	return "CodeBuddy API Key"
 }
 
 func refreshAuthRequest(raw []byte) (pluginapi.AuthRefreshResponse, error) {

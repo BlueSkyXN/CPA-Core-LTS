@@ -125,15 +125,25 @@ func (r *pluginRuntime) startTurn(req pluginapi.ExecutorRequest) (*runnerSession
 		"model":                req.Model,
 		"auth":                 auth.runnerAuth(transport),
 		"transport":            transport,
-		"skills":               cfg.Skills,
-		"setting_sources":      cfg.SettingSources,
-		"allowed_tools":        cfg.AllowedTools,
-		"disallowed_tools":     cfg.DisallowedTools,
-		"mcp_servers":          cfg.MCPServers,
 		"permission_policy": map[string]any{
 			"default": cfg.PermissionDefault,
 			"rules":   cfg.PermissionRules,
 		},
+	}
+	if len(cfg.Skills) > 0 {
+		params["skills"] = cfg.Skills
+	}
+	if len(cfg.SettingSources) > 0 {
+		params["setting_sources"] = cfg.SettingSources
+	}
+	if len(cfg.AllowedTools) > 0 {
+		params["allowed_tools"] = cfg.AllowedTools
+	}
+	if len(cfg.DisallowedTools) > 0 {
+		params["disallowed_tools"] = cfg.DisallowedTools
+	}
+	if len(cfg.MCPServers) > 0 {
+		params["mcp_servers"] = cfg.MCPServers
 	}
 	if transport == "direct_openai" {
 		params["chat_request"] = chatRequest

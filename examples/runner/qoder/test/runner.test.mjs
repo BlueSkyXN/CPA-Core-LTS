@@ -95,8 +95,8 @@ test("protocol handshake, model IDs, event correlation, cancel, close and shutdo
   const server = new RunnerServer(adapter, output, 16);
 
   assert.equal(await server.handle(request("h", "handshake")), true);
-  assert.equal(await server.handle(request("r", "readiness", { auth: { mode: "local_cli", profile_id: "default" } })), true);
-  assert.equal(await server.handle(request("m", "models", { auth: { mode: "local_cli" } })), true);
+  assert.equal(await server.handle(request("r", "readiness", { auth: { mode: "pat", env_var: "CPA_QODER_PAT" } })), true);
+  assert.equal(await server.handle(request("m", "models", { auth: { mode: "pat", env_var: "CPA_QODER_PAT" } })), true);
   assert.equal(await server.handle(request("s", "start", startParams())), true);
   assert.equal(await server.handle(request("c", "cancel", { request_id: "request-1", execution_session_id: "session-1" })), true);
   assert.equal(await server.handle(request("x", "close", { execution_session_id: "session-1" })), true);
@@ -275,15 +275,18 @@ test("stderr redaction removes direct and header secrets", () => {
 
 test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle events", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const calls = [];
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
     modelsEndpoint: "https://direct.example.test/model/v1/models",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [],
     fetchImpl: async (url, init = {}) => {
       calls.push({ url: String(url), init });
+      if (String(url).endsWith("/jobToken/exchange")) {
+        return new Response(JSON.stringify({ token: "jt-fixture", refresh_token: "jrt-fixture", expires_in: 86400 }), { status: 200 });
+      }
       if (String(url).endsWith("/models")) {
         return new Response(JSON.stringify({ data: [{ id: "qfmodel", display_name: "Qwen3.8-Flash", is_enabled: true }] }), {
           status: 200,
@@ -363,8 +366,7 @@ test("direct OpenAI transport exchanges PAT and retries one unauthorized respons
   let inferenceCalls = 0;
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    authEndpoint: "https://openapi.example.test",
-    tokenMode: "auto",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel", display_name: "Qwen3.8-Flash" }],
     fetchImpl: async (url, init = {}) => {
       calls.push({ url: String(url), init });
@@ -409,14 +411,19 @@ test("direct OpenAI transport exchanges PAT and retries one unauthorized respons
 
 test("direct OpenAI transport aborts the upstream request on cancel", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_CANCEL_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel" }],
-    fetchImpl: async (_url, init = {}) => await new Promise((_resolve, reject) => {
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).endsWith("/jobToken/exchange")) {
+        return new Response(JSON.stringify({ token: "jt-cancel", expires_in: 86400 }), { status: 200 });
+      }
+      return await new Promise((_resolve, reject) => {
       init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-    }),
+      });
+    },
   });
   try {
     const params = {
@@ -443,16 +450,21 @@ test("direct OpenAI transport aborts the upstream request on cancel", async () =
 
 test("direct OpenAI transport projects client tool-call deltas into AgentEventV1", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_TOOL_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel" }],
-    fetchImpl: async () => new Response([
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"probe","arguments":"{\\"x\\":1}"}}]}}]}',
-      "data: [DONE]",
-      "",
-    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/jobToken/exchange")) {
+        return new Response(JSON.stringify({ token: "jt-tool", expires_in: 86400 }), { status: 200 });
+      }
+      return new Response([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"probe","arguments":"{\\"x\\":1}"}}]}}]}',
+        "data: [DONE]",
+        "",
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
   });
   try {
     const params = {
@@ -480,10 +492,10 @@ test("direct OpenAI transport projects client tool-call deltas into AgentEventV1
 
 test("direct OpenAI transport rejects a display-name or guessed model alias", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_MODEL_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel", display_name: "Qwen3.8-Flash" }],
     fetchImpl: async () => { throw new Error("network must not be called for an unknown model"); },
   });

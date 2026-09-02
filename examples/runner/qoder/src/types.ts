@@ -6,8 +6,7 @@ export const QODER_SDK_VERSION = "1.0.10";
 export type QoderTransport = "sdk_cli" | "direct_openai";
 
 export type AuthSpec =
-  | { mode: "pat"; env_var: string; account_id?: string; transport?: QoderTransport }
-  | { mode: "local_cli"; profile_id?: string };
+  { mode: "pat"; env_var: string; transport?: QoderTransport };
 
 export type PermissionRule = {
   tool_name: string;

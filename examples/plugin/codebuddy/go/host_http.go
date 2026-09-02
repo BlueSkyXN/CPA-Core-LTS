@@ -27,6 +27,12 @@ type hostHTTPStreamResponse struct {
 	StreamID   string      `json:"stream_id,omitempty"`
 }
 
+type hostHTTPResponse struct {
+	StatusCode int         `json:"StatusCode"`
+	Headers    http.Header `json:"Headers"`
+	Body       []byte      `json:"Body"`
+}
+
 type hostHTTPStreamReadRequest struct {
 	StreamID string `json:"stream_id"`
 }
@@ -52,6 +58,21 @@ type pluginStreamCloseRequest struct {
 	ErrorCode  string `json:"error_code,omitempty"`
 	Retryable  bool   `json:"retryable,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
+}
+
+func doHostHTTP(caller hostCaller, req hostHTTPRequest) (hostHTTPResponse, error) {
+	if caller == nil {
+		return hostHTTPResponse{}, fmt.Errorf("CodeBuddy host HTTP callback is unavailable")
+	}
+	raw, errCall := caller.Call(pluginabi.MethodHostHTTPDo, req)
+	if errCall != nil {
+		return hostHTTPResponse{}, fmt.Errorf("CodeBuddy host HTTP request failed")
+	}
+	var response hostHTTPResponse
+	if errDecode := json.Unmarshal(raw, &response); errDecode != nil {
+		return hostHTTPResponse{}, fmt.Errorf("decode CodeBuddy host HTTP response")
+	}
+	return response, nil
 }
 
 func openHostHTTPStream(caller hostCaller, req hostHTTPRequest) (hostHTTPStreamResponse, error) {
