@@ -754,6 +754,29 @@ func TestExecutorUsesRunnerAndProjectsChat(t *testing.T) {
 	}
 }
 
+func TestExecutorRetainsLegacyLocalCLIAuthPath(t *testing.T) {
+	runtime := newPluginRuntime(nil)
+	runtime.config = fakeRunnerConfig(t)
+	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success"}
+	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
+		RequestID: "request-local", ExecutionSessionID: "session-local", CallerScope: "caller", WorkspaceIdentity: "workspace",
+		AuthID: "auth-local", AuthIndex: "index-local", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
+		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
+		StorageJSON: []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`),
+	}}
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	response, errExecute := runtime.execute(raw)
+	if errExecute != nil {
+		t.Fatal(errExecute)
+	}
+	if !strings.Contains(string(response.Payload), `"content":"OK"`) {
+		t.Fatalf("local_cli response = %s", response.Payload)
+	}
+}
+
 func testAgentEvent(sequence uint64, eventType pluginapi.AgentEventType, payload any, timestamp time.Time) pluginapi.AgentEventV1 {
 	raw, _ := json.Marshal(payload)
 	return pluginapi.AgentEventV1{
