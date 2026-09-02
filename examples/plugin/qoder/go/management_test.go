@@ -123,6 +123,31 @@ func TestQoderQuotaPreservesExactValues(t *testing.T) {
 	}
 }
 
+func TestQoderQuotaExcludesUnavailableHistoricalPackagesFromCurrentTotals(t *testing.T) {
+	quota := parseQoderQuota([]byte(`{
+		"totalUsagePercentage":0.01,
+		"isQuotaExceeded":false,
+		"userQuota":{"total":2000.0,"used":0.0,"remaining":2000.0,"percentage":0.0,"unit":"credits"},
+		"addOnQuota":{"total":4000.0,"used":53.0,"remaining":3947.0,"percentage":0.02,"unit":"credits"},
+		"dedicatedResourcePackages":[
+			{"name":"historical-1","status":"QUOTA_DETAIL_STATUS_EXHAUSTED","available":false,"total":500.0,"used":500.0,"remaining":0.0,"percentage":1.0,"unit":"credits","expiresAt":1787882400000},
+			{"name":"historical-2","status":"QUOTA_DETAIL_STATUS_EXHAUSTED","available":false,"total":500.0,"used":500.0,"remaining":0.0,"percentage":1.0,"unit":"credits","expiresAt":1787968800000},
+			{"name":"historical-3","status":"QUOTA_DETAIL_STATUS_EXHAUSTED","available":false,"total":500.0,"used":500.0,"remaining":0.0,"percentage":1.0,"unit":"credits","expiresAt":1788228000000}
+		]
+	}`))
+	if quota.Status != "available" || quota.TotalExact != "6000" || quota.UsedExact != "53" || quota.RemainingExact != "5947" {
+		t.Fatalf("current quota totals = %#v", quota)
+	}
+	if quota.Percentage == nil || *quota.Percentage != 0.01 || len(quota.Packages) != 5 {
+		t.Fatalf("quota metadata = %#v", quota)
+	}
+	for _, item := range quota.Packages[2:] {
+		if item.Available == nil || *item.Available || item.TotalExact != "500" || item.ExpiresAt == "" {
+			t.Fatalf("historical package detail = %#v", item)
+		}
+	}
+}
+
 func TestQoderLocalCLISummaryDoesNotExchangeProfileCredentials(t *testing.T) {
 	host := &qoderSummaryFakeHost{}
 	runtime := newPluginRuntime(host)

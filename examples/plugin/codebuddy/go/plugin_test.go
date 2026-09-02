@@ -94,18 +94,24 @@ func TestModelsForAuthReturnsVerifiedExactModels(t *testing.T) {
 }
 
 func TestParseCodeBuddyCatalogSupportsCurrentAndCLIAgentShapes(t *testing.T) {
-	current := []byte(`{"code":0,"data":{"enterpriseId":"enterprise-1","models":[{"id":"hy3","name":"Hy3","supportsImages":true,"supportsReasoning":true,"onlyReasoning":true,"maxInputTokens":192000,"maxOutputTokens":64000},{"id":"qmodel"}],"agents":[{"name":"craft","models":["hy3"]}]}}`)
+	current := []byte(`{"code":0,"data":{"enterpriseId":"enterprise-1","models":[{"id":"auto","name":"Auto"},{"id":"hy3","name":"Hy3","supportsImages":true,"supportsReasoning":true,"onlyReasoning":true,"maxInputTokens":192000,"maxOutputTokens":64000},{"id":"codewise-completions"}],"agents":[{"name":"craft","models":["auto","hy3"]},{"name":"ask","models":["hy3"]},{"name":"CodeCompletion","models":["codewise-completions"]}]}}`)
 	catalog, errCurrent := parseCodeBuddyCatalog(current)
-	if errCurrent != nil || len(catalog.Models) != 2 || catalog.Models[0].ID != "hy3" || catalog.EnterpriseID != "enterprise-1" {
+	if errCurrent != nil || len(catalog.Models) != 2 || catalog.Models[0].ID != "auto" || catalog.Models[1].ID != "hy3" || catalog.EnterpriseID != "enterprise-1" {
 		t.Fatalf("current catalog = %#v, err=%v", catalog, errCurrent)
 	}
-	if got := strings.Join(catalog.Models[0].SupportedInputModalities, ","); got != "text,image" {
+	if got := strings.Join(catalog.Models[1].SupportedInputModalities, ","); got != "text,image" {
 		t.Fatalf("hy3 modalities = %q", got)
+	}
+	if _, exposed := catalog.Allowed["codewise-completions"]; exposed {
+		t.Fatal("completion-only model was exposed through the Chat provider")
 	}
 	cli := []byte(`{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3"},{"id":"blocked","name":"Blocked"}],"agents":[{"name":"cli","models":["hy3"]}]}}`)
 	filtered, errFiltered := parseCodeBuddyCatalog(cli)
 	if errFiltered != nil || len(filtered.Models) != 1 || filtered.Models[0].ID != "hy3" {
 		t.Fatalf("CLI catalog = %#v, err=%v", filtered, errFiltered)
+	}
+	if _, errUnsupportedShape := parseCodeBuddyCatalog([]byte(`{"code":0,"data":{"models":[{"id":"hy3"}],"agents":[{"name":"CodeCompletion","models":["hy3"]}]}}`)); errUnsupportedShape == nil {
+		t.Fatal("catalog without a CLI or craft agent was treated as a Chat catalog")
 	}
 }
 
@@ -556,7 +562,7 @@ func newFakeHost() *fakeHost {
 		catalogResponse: hostHTTPResponse{
 			StatusCode: http.StatusOK,
 			Headers:    http.Header{"Content-Type": {"application/json"}},
-			Body:       []byte(`{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3"},{"id":"hy3-preview-agent","name":"Hy3 Preview Agent"}],"agents":[]}}`),
+			Body:       []byte(`{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3"},{"id":"hy3-preview-agent","name":"Hy3 Preview Agent"}],"agents":[{"name":"craft","models":["hy3","hy3-preview-agent"]}]}}`),
 		},
 		billingResponse: hostHTTPResponse{
 			StatusCode: http.StatusOK,

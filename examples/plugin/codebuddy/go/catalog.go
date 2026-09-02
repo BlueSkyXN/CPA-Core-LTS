@@ -170,25 +170,28 @@ func parseCodeBuddyCatalog(raw []byte) (codeBuddyCatalog, error) {
 	}
 
 	allowed := make(map[string]struct{}, len(modelByID))
-	cliAgentFound := false
-	for _, agent := range response.Data.Agents {
-		if !strings.EqualFold(strings.TrimSpace(agent.Name), "cli") {
-			continue
-		}
-		cliAgentFound = true
-		for _, rawID := range agent.Models {
-			if id := strings.TrimSpace(rawID); id != "" {
-				allowed[id] = struct{}{}
+	selectedAgent := ""
+	for _, preferredAgent := range []string{"cli", "craft"} {
+		for _, agent := range response.Data.Agents {
+			if !strings.EqualFold(strings.TrimSpace(agent.Name), preferredAgent) {
+				continue
+			}
+			selectedAgent = preferredAgent
+			for _, rawID := range agent.Models {
+				if id := strings.TrimSpace(rawID); id != "" {
+					allowed[id] = struct{}{}
+				}
 			}
 		}
-	}
-	if cliAgentFound && len(allowed) == 0 {
-		return codeBuddyCatalog{}, newPluginCallError("catalog_empty", "CodeBuddy CLI catalog returned no authorized models", http.StatusServiceUnavailable, true)
-	}
-	if !cliAgentFound {
-		for id := range modelByID {
-			allowed[id] = struct{}{}
+		if selectedAgent != "" {
+			break
 		}
+	}
+	if selectedAgent == "" {
+		return codeBuddyCatalog{}, newPluginCallError("catalog_empty", "CodeBuddy catalog returned no CLI or craft model set", http.StatusServiceUnavailable, true)
+	}
+	if len(allowed) == 0 {
+		return codeBuddyCatalog{}, newPluginCallError("catalog_empty", fmt.Sprintf("CodeBuddy %s catalog returned no authorized models", selectedAgent), http.StatusServiceUnavailable, true)
 	}
 
 	models := make([]pluginapi.ModelInfo, 0, len(allowed))

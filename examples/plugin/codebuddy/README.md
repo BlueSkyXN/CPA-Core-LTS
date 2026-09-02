@@ -81,10 +81,11 @@ available for every CLI key or product family.
 ## Dynamic catalog
 
 `ModelsForAuth` fetches the catalog for each credential. Current WorkBuddy
-responses expose authorized product models under `data.models`; if a response
-also contains an Agent named `cli`, its model IDs are used as the narrower
-authorization set. The parser therefore supports both the current WorkBuddy
-shape and the earlier CLI-agent shape without hard-coding a public model list.
+responses use the `craft` Agent's model IDs for interactive Chat, while the
+earlier catalog shape used an Agent named `cli`. The parser prefers `cli` when
+present and otherwise requires `craft`; it does not expose completion, rewrite,
+image, or other task-specific entries merely because they appear in
+`data.models`.
 
 Model IDs are preserved exactly as returned. Display names are not executable
 IDs, and no alias or fallback is guessed. Model metadata such as image,

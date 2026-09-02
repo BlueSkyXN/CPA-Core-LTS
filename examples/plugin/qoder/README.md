@@ -150,7 +150,10 @@ Summary exchanges the selected PAT, then reads `/api/v1/userinfo`,
 returned independently so an unavailable component does not hide the others.
 The quota response keeps exact decimal strings alongside convenient numeric
 values and distinguishes real zero from `unsupported`, `not_configured`, and
-`auth_rejected`. Short-lived tokens and raw vendor payloads are never returned.
+`auth_rejected`. Package details retain exhausted or expired historical grants,
+but top-level totals include only currently available packages so they stay in
+the same current-quota scope as the upstream percentage. Short-lived tokens and
+raw vendor payloads are never returned.
 
 ## Agent and Direct behavior
 

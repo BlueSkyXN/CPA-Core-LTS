@@ -93,6 +93,7 @@ type qoderQuotaSummary struct {
 type qoderQuotaPackage struct {
 	Name           string   `json:"name,omitempty"`
 	Status         string   `json:"status,omitempty"`
+	Available      *bool    `json:"available,omitempty"`
 	Unit           string   `json:"unit,omitempty"`
 	Total          *float64 `json:"total,omitempty"`
 	TotalExact     string   `json:"total_exact,omitempty"`
@@ -384,6 +385,7 @@ func parseQoderQuotaPackage(name string, value map[string]any) qoderQuotaPackage
 	return qoderQuotaPackage{
 		Name:           name,
 		Status:         stringValueFromMap(value, "status"),
+		Available:      boolPointerFromMap(value, "available"),
 		Unit:           firstNonEmpty(stringValueFromMap(value, "unit"), "credits"),
 		Total:          approximateQoderPointer(total),
 		TotalExact:     total,
@@ -400,6 +402,9 @@ func aggregateQoderQuota(result qoderQuotaSummary) qoderQuotaSummary {
 	unit := firstNonEmpty(result.Packages[0].Unit, "credits")
 	totals, used, remaining := make([]string, 0), make([]string, 0), make([]string, 0)
 	for _, item := range result.Packages {
+		if !qoderQuotaPackageContributes(item) {
+			continue
+		}
 		if !strings.EqualFold(firstNonEmpty(item.Unit, "credits"), unit) || item.TotalExact == "" || item.UsedExact == "" || item.RemainingExact == "" {
 			result.Status = "partial"
 			result.Code = "invalid_package_amount"
@@ -409,6 +414,16 @@ func aggregateQoderQuota(result qoderQuotaSummary) qoderQuotaSummary {
 		totals = append(totals, item.TotalExact)
 		used = append(used, item.UsedExact)
 		remaining = append(remaining, item.RemainingExact)
+	}
+	if len(totals) == 0 {
+		result.Unit = unit
+		result.Total = floatPointer(0)
+		result.TotalExact = "0"
+		result.Used = floatPointer(0)
+		result.UsedExact = "0"
+		result.Remaining = floatPointer(0)
+		result.RemainingExact = "0"
+		return result
 	}
 	var ok bool
 	result.Unit = unit
@@ -431,6 +446,14 @@ func aggregateQoderQuota(result qoderQuotaSummary) qoderQuotaSummary {
 	result.Used = approximateQoderPointer(result.UsedExact)
 	result.Remaining = approximateQoderPointer(result.RemainingExact)
 	return result
+}
+
+func qoderQuotaPackageContributes(item qoderQuotaPackage) bool {
+	if item.Available != nil {
+		return *item.Available
+	}
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	return !strings.Contains(status, "exhausted") && !strings.Contains(status, "expired") && !strings.Contains(status, "inactive")
 }
 
 func decodeJSONMap(raw []byte) (map[string]any, bool) {
