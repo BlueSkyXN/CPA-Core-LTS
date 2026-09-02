@@ -448,6 +448,50 @@ func TestPickNextViaHomePassesParentSessionIDToHierarchyDispatcher(t *testing.T)
 	}
 }
 
+func TestPickNextViaHomeNestedRequestSubagentHierarchy(t *testing.T) {
+	dispatcher := &hierarchyCaptureDispatcher{}
+	oldCurrentHomeDispatcher := currentHomeDispatcher
+	currentHomeDispatcher = func() homeAuthDispatcher { return dispatcher }
+	t.Cleanup(func() { currentHomeDispatcher = oldCurrentHomeDispatcher })
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Home:    internalconfig.HomeConfig{Enabled: true},
+		Routing: internalconfig.RoutingConfig{SessionAffinityTTL: "1h"},
+	})
+	manager.SetHomeExecutionRegistry(executionregistry.New())
+	manager.RegisterExecutor(schedulerTestExecutor{provider: "hierarchy-provider"})
+
+	nestedSubOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{
+			"request": {
+				"sessionId": "root-home-session",
+				"metadata": {
+					"agent_id": "worker-subagent"
+				}
+			}
+		}`),
+		Metadata: map[string]any{},
+	}
+
+	auth, _, _, errPick := manager.pickNextViaHome(context.Background(), "test-model", nestedSubOpts, nil)
+	if errPick != nil {
+		t.Fatalf("pickNextViaHome() error = %v", errPick)
+	}
+	if auth == nil || auth.ID != "hierarchy-auth" {
+		t.Fatalf("auth = %#v, want hierarchy-auth", auth)
+	}
+
+	dispatcher.mu.Lock()
+	defer dispatcher.mu.Unlock()
+	if len(dispatcher.sessionIDs) != 1 || dispatcher.sessionIDs[0] != "session:root-home-session:agent:worker-subagent" {
+		t.Fatalf("dispatched sessionID = %v, want session:root-home-session:agent:worker-subagent", dispatcher.sessionIDs)
+	}
+	if len(dispatcher.parentIDs) != 1 || dispatcher.parentIDs[0] != "session:root-home-session" {
+		t.Fatalf("dispatched parentID = %v, want session:root-home-session", dispatcher.parentIDs)
+	}
+}
+
 func TestHomeDispatchSessionIDsExtractsParentFromHeaderPlusBody(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	manager.SetConfig(&internalconfig.Config{
@@ -526,5 +570,51 @@ func TestHomeDispatchSessionIDsExtractsParentFromHeaderPlusBody(t *testing.T) {
 	}
 	if geminiParentID != "geminicache:cache-parent-200" {
 		t.Fatalf("geminiParentID = %q, want geminicache:cache-parent-200", geminiParentID)
+	}
+}
+
+func TestHomeDispatchSessionIDsNestedRequestSubagent(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Home:    internalconfig.HomeConfig{Enabled: true},
+		Routing: internalconfig.RoutingConfig{SessionAffinityTTL: "1h"},
+	})
+
+	// 1. Nested request with sessionId and agent_id
+	nestedAgentOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{
+			"request": {
+				"sessionId": "root",
+				"metadata": {
+					"agent_id": "worker"
+				}
+			}
+		}`),
+	}
+	sessionID, parentID := manager.homeDispatchSessionIDs(nestedAgentOpts)
+	if sessionID != "session:root:agent:worker" {
+		t.Fatalf("sessionID = %q, want session:root:agent:worker", sessionID)
+	}
+	if parentID != "session:root" {
+		t.Fatalf("parentID = %q, want session:root", parentID)
+	}
+
+	// 2. Nested request with sessionId and subagent_id
+	nestedSubagentOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{
+			"request": {
+				"sessionId": "root",
+				"metadata": {
+					"subagent_id": "worker-sub"
+				}
+			}
+		}`),
+	}
+	subSessionID, subParentID := manager.homeDispatchSessionIDs(nestedSubagentOpts)
+	if subSessionID != "session:root:agent:worker-sub" {
+		t.Fatalf("subSessionID = %q, want session:root:agent:worker-sub", subSessionID)
+	}
+	if subParentID != "session:root" {
+		t.Fatalf("subParentID = %q, want session:root", subParentID)
 	}
 }

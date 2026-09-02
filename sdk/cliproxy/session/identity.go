@@ -63,6 +63,12 @@ func ClaudeMetadataIdentities(payload []byte) (sessionID, parentSessionID, agent
 	root := util.ParseGJSONBytesNoCopy(payload)
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
 	if userID == "" {
+		req := root.Get("request")
+		if req.Exists() && !root.Get("contents").Exists() {
+			userID = strings.TrimSpace(req.Get("metadata.user_id").String())
+		}
+	}
+	if userID == "" {
 		return "", "", ""
 	}
 	if strings.HasPrefix(userID, "{") {
@@ -182,6 +188,12 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 	// Parsing without copying matters here: this runs on every request and the
 	// payload can be multiple megabytes.
 	root := util.ParseGJSONBytesNoCopy(payload)
+	reqRoot := root
+	req := root.Get("request")
+	hasNestedReq := req.Exists() && !root.Get("contents").Exists()
+	if hasNestedReq {
+		reqRoot = req
+	}
 	for _, path := range []string{
 		"session_id",
 		"sessionId",
@@ -210,15 +222,24 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 		if NormalizeExplicitID(root.Get(path).String()) != "" {
 			return true
 		}
+		if hasNestedReq && NormalizeExplicitID(reqRoot.Get(path).String()) != "" {
+			return true
+		}
 	}
 	if ClaudeMetadataSessionID(payload) != "" {
 		return true
 	}
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
+	if userID == "" && hasNestedReq {
+		userID = strings.TrimSpace(reqRoot.Get("metadata.user_id").String())
+	}
 	if NormalizeExplicitID(userID) != "" {
 		return true
 	}
 	conversation := root.Get("conversation")
+	if !conversation.Exists() && hasNestedReq {
+		conversation = reqRoot.Get("conversation")
+	}
 	if NormalizeExplicitID(conversation.Get("id").String()) != "" {
 		return true
 	}

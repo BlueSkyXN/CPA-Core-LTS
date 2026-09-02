@@ -196,6 +196,14 @@ func TestEnrichSkipsDerivationForExplicitSessions(t *testing.T) {
 				cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:stale",
 			},
 		},
+		{
+			name:    "nested request sessionId",
+			payload: []byte(`{"request":{"sessionId":"nested-session"},"messages":[{"role":"user","content":"hello"}]}`),
+		},
+		{
+			name:    "nested request subagent",
+			payload: []byte(`{"request":{"sessionId":"nested-session","metadata":{"agent_id":"worker"}},"messages":[{"role":"user","content":"hello"}]}`),
+		},
 	}
 
 	for _, test := range tests {

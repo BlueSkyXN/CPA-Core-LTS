@@ -416,6 +416,79 @@ func TestMerklePrefixMatcherConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestMerklePrefixMatcherRollingPrefixSessionIDDifferentSystemPrompts(t *testing.T) {
+	t.Parallel()
+
+	matcher := NewMerklePrefixMatcher(time.Minute)
+	defer matcher.Clear()
+	namespace := "lcp:v1:test:model:caller"
+
+	// Two conversations with different system instructions but identical first user prompt
+	conv1 := []CanonicalTurn{
+		{Role: "system", Parts: []CanonicalPart{{Kind: "text", Value: "system instruction AAA"}}},
+		{Role: "user", Parts: []CanonicalPart{{Kind: "text", Value: "common question"}}},
+	}
+	conv2 := []CanonicalTurn{
+		{Role: "system", Parts: []CanonicalPart{{Kind: "text", Value: "system instruction BBB"}}},
+		{Role: "user", Parts: []CanonicalPart{{Kind: "text", Value: "common question"}}},
+	}
+
+	sessionID1 := matcher.Bind(namespace, conv1, "auth-1")
+	sessionID2 := matcher.Bind(namespace, conv2, "auth-2")
+
+	if sessionID1 == "" || sessionID2 == "" {
+		t.Fatalf("expected non-empty session IDs, got sessionID1=%q, sessionID2=%q", sessionID1, sessionID2)
+	}
+
+	// Rolling prefix ensures that because turn 0 differs, the derived session ID for turn 2 differs
+	if sessionID1 == sessionID2 {
+		t.Fatalf("expected distinct session IDs for conversations with different system prompts, got same: %q", sessionID1)
+	}
+}
+
+func TestMerklePrefixMatcherConfigBoundsSanitization(t *testing.T) {
+	t.Parallel()
+
+	matcher := NewMerklePrefixMatcherWithConfig(MerklePrefixMatcherConfig{
+		MaxTurns:    10,
+		MaxPrefixes: 2, // Less than MaxTurns
+	})
+	defer matcher.Clear()
+
+	if matcher.maxPrefixes < matcher.maxTurns {
+		t.Fatalf("matcher.maxPrefixes = %d, want >= maxTurns (%d)", matcher.maxPrefixes, matcher.maxTurns)
+	}
+}
+
+func TestNormalizeCanonicalTurnToolPartsDigestTieBreak(t *testing.T) {
+	t.Parallel()
+
+	turn1 := CanonicalTurn{
+		Role: "assistant",
+		Parts: []CanonicalPart{
+			{Kind: "tool:call", Value: "same_value", Digest: "digest_b"},
+			{Kind: "tool:call", Value: "same_value", Digest: "digest_a"},
+		},
+	}
+	turn2 := CanonicalTurn{
+		Role: "assistant",
+		Parts: []CanonicalPart{
+			{Kind: "tool:call", Value: "same_value", Digest: "digest_a"},
+			{Kind: "tool:call", Value: "same_value", Digest: "digest_b"},
+		},
+	}
+
+	norm1 := normalizeCanonicalTurn(turn1)
+	norm2 := normalizeCanonicalTurn(turn2)
+
+	if norm1.Parts[0].Digest != "digest_a" || norm2.Parts[0].Digest != "digest_a" {
+		t.Fatalf("tool parts were not sorted deterministically by Digest: %#v vs %#v", norm1, norm2)
+	}
+	if FastTurnFingerprint(norm1) != FastTurnFingerprint(norm2) {
+		t.Fatal("fingerprints differed for tool parts in different input order")
+	}
+}
+
 func BenchmarkFastTurnFingerprint(b *testing.B) {
 	turn := CanonicalTurn{
 		Role: "user",

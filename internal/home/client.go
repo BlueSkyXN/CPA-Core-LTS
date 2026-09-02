@@ -582,9 +582,9 @@ func (c *Client) trackedRedisDialer(dialer func(context.Context, string, string)
 	}
 }
 
-func (c *homeDispatchConn) Close() error {
-	if c == nil || c.Conn == nil {
-		return net.ErrClosed
+func (c *homeDispatchConn) untrack() {
+	if c == nil {
+		return
 	}
 	c.once.Do(func() {
 		if c.client != nil {
@@ -593,7 +593,21 @@ func (c *homeDispatchConn) Close() error {
 			c.client.mu.Unlock()
 		}
 	})
+}
+
+func (c *homeDispatchConn) Close() error {
+	if c == nil || c.Conn == nil {
+		return net.ErrClosed
+	}
+	c.untrack()
 	return c.Conn.Close()
+}
+
+func (c *homeDispatchConn) NetConn() net.Conn {
+	if c == nil {
+		return nil
+	}
+	return c.Conn
 }
 
 func cloneRedisOptions(options *redis.Options) *redis.Options {
@@ -1699,13 +1713,46 @@ func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
 		case <-ctx.Done():
 			// The Redis client may install its read deadline after this goroutine
 			// observes cancellation. Closing the dedicated one-command connection
-			// guarantees that a later deadline cannot turn cancellation into the
-			// full plugin-sync timeout.
-			_ = conn.Close()
+			// at its underlying transport guarantees that a later deadline cannot
+			// turn cancellation into the full plugin-sync timeout.
+			_ = closeUnderlyingTransport(conn)
 		case <-wrapped.done:
 		}
 	}()
 	return wrapped
+}
+
+func closeUnderlyingTransport(conn net.Conn) error {
+	if conn == nil {
+		return net.ErrClosed
+	}
+	current := conn
+	for {
+		if dispatchConn, ok := current.(*homeDispatchConn); ok {
+			dispatchConn.untrack()
+			if next := dispatchConn.NetConn(); next != nil && next != current {
+				current = next
+				continue
+			}
+		}
+		if tlsConn, ok := current.(*tls.Conn); ok {
+			if netConn := tlsConn.NetConn(); netConn != nil && netConn != current {
+				current = netConn
+				continue
+			}
+		}
+		type unwrapper interface {
+			NetConn() net.Conn
+		}
+		if u, ok := current.(unwrapper); ok {
+			if next := u.NetConn(); next != nil && next != current {
+				current = next
+				continue
+			}
+		}
+		break
+	}
+	return current.Close()
 }
 
 func (c *pluginSyncCancelableConn) Close() error {

@@ -586,7 +586,10 @@ func normalizeCanonicalTurn(turn CanonicalTurn) CanonicalTurn {
 	}
 	if len(toolParts) > 1 {
 		sort.SliceStable(toolParts, func(i, j int) bool {
-			return toolParts[i].Value < toolParts[j].Value
+			if toolParts[i].Value != toolParts[j].Value {
+				return toolParts[i].Value < toolParts[j].Value
+			}
+			return toolParts[i].Digest < toolParts[j].Digest
 		})
 		for index, partIndex := range toolIndexes {
 			parts[partIndex] = toolParts[index]
@@ -692,6 +695,9 @@ func NewMerklePrefixMatcherWithConfig(cfg MerklePrefixMatcherConfig) *MerklePref
 	}
 	if cfg.MaxPrefixes <= 0 {
 		cfg.MaxPrefixes = defaultMatcherMaxPrefixes
+	}
+	if cfg.MaxPrefixes < cfg.MaxTurns {
+		cfg.MaxPrefixes = cfg.MaxTurns
 	}
 	return &MerklePrefixMatcher{
 		ttl:         cfg.TTL,
@@ -955,10 +961,15 @@ func (m *MerklePrefixMatcher) bindLocked(namespace string, fingerprints []string
 	if match, ok := m.matchLocked(namespace, fingerprints, minPrefixLength, now); ok {
 		sessionID = match.SessionID
 	}
+	prefixKeys := rollingPrefixKeys(fingerprints)
 	if sessionID == "" {
-		firstKey := fingerprints[0]
-		if minPrefixLength > 0 && minPrefixLength <= len(fingerprints) {
-			firstKey = fingerprints[minPrefixLength-1]
+		firstKey := ""
+		if len(prefixKeys) > 0 {
+			targetIndex := 0
+			if minPrefixLength > 0 && minPrefixLength <= len(prefixKeys) {
+				targetIndex = minPrefixLength - 1
+			}
+			firstKey = prefixKeys[targetIndex]
 		}
 		sessionID = newLCPSessionID(namespace, firstKey)
 	}
@@ -969,6 +980,7 @@ func (m *MerklePrefixMatcher) bindLocked(namespace string, fingerprints []string
 		sessionID:       sessionID,
 		minPrefixLength: minPrefixLength,
 		fingerprints:    append([]string(nil), fingerprints...),
+		prefixKeys:      prefixKeys,
 		expiresAt:       now.Add(m.ttl),
 	})
 	return sessionID
@@ -976,7 +988,9 @@ func (m *MerklePrefixMatcher) bindLocked(namespace string, fingerprints []string
 
 func (m *MerklePrefixMatcher) addGroupLocked(group *lcpGroup) {
 	ns := m.namespaceLocked(group.namespace)
-	group.prefixKeys = rollingPrefixKeys(group.fingerprints)
+	if len(group.prefixKeys) == 0 {
+		group.prefixKeys = rollingPrefixKeys(group.fingerprints)
+	}
 	ns.groups[group.key] = group
 	for _, prefix := range group.prefixKeys {
 		bucket := ns.prefixes[prefix]

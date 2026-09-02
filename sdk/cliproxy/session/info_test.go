@@ -432,3 +432,104 @@ func TestExtractSessionInfoNestedRequestAgent(t *testing.T) {
 		t.Fatalf("AgentName = %q, want worker-sub", info.AgentName)
 	}
 }
+
+func TestExtractSessionInfoClaudeMetadataUserIDWithAgentHeader(t *testing.T) {
+	t.Parallel()
+
+	headers := http.Header{
+		"X-Claude-Code-Agent-Id": []string{"subagent-uuid-123"},
+	}
+	payload := []byte(`{
+		"metadata": {
+			"user_id": "{\"device_id\":\"dev-1\",\"session_id\":\"main-sess-456\"}"
+		}
+	}`)
+	info, ok := ExtractSessionInfo(headers, payload, nil)
+	if !ok {
+		t.Fatal("ExtractSessionInfo failed on Claude metadata user_id with agent header")
+	}
+	if info.ClientType != "claude" {
+		t.Fatalf("ClientType = %q, want claude", info.ClientType)
+	}
+	if info.SessionID != "claude:main-sess-456:agent:subagent-uuid-123" {
+		t.Fatalf("SessionID = %q, want claude:main-sess-456:agent:subagent-uuid-123", info.SessionID)
+	}
+	if info.ParentSessionID != "claude:main-sess-456" {
+		t.Fatalf("ParentSessionID = %q, want claude:main-sess-456", info.ParentSessionID)
+	}
+	if info.AgentName != "subagent-uuid-123" {
+		t.Fatalf("AgentName = %q, want subagent-uuid-123", info.AgentName)
+	}
+}
+
+func TestExtractSessionInfoNestedSubagentIDAndUserID(t *testing.T) {
+	t.Parallel()
+
+	// 1. Nested request with subagent_id
+	payloadSub := []byte(`{
+		"request": {
+			"sessionId": "main-sess-999",
+			"metadata": {
+				"subagent_id": "worker-sub-999"
+			}
+		}
+	}`)
+	info, ok := ExtractSessionInfo(nil, payloadSub, nil)
+	if !ok {
+		t.Fatal("ExtractSessionInfo failed on nested subagent_id request")
+	}
+	if info.SessionID != "session:main-sess-999:agent:worker-sub-999" {
+		t.Fatalf("SessionID = %q, want session:main-sess-999:agent:worker-sub-999", info.SessionID)
+	}
+	if info.ParentSessionID != "session:main-sess-999" {
+		t.Fatalf("ParentSessionID = %q, want session:main-sess-999", info.ParentSessionID)
+	}
+	if info.AgentName != "worker-sub-999" {
+		t.Fatalf("AgentName = %q, want worker-sub-999", info.AgentName)
+	}
+
+	// 2. Nested request with plain user_id
+	payloadUser := []byte(`{
+		"request": {
+			"metadata": {
+				"user_id": "nested-user-123"
+			}
+		}
+	}`)
+	infoUser, okUser := ExtractSessionInfo(nil, payloadUser, nil)
+	if !okUser {
+		t.Fatal("ExtractSessionInfo failed on nested user_id request")
+	}
+	if infoUser.SessionID != "user:nested-user-123" {
+		t.Fatalf("SessionID = %q, want user:nested-user-123", infoUser.SessionID)
+	}
+
+	// 3. Nested request with promptCacheKey
+	payloadPCK := []byte(`{
+		"request": {
+			"promptCacheKey": "nested-pck-456"
+		}
+	}`)
+	infoPCK, okPCK := ExtractSessionInfo(nil, payloadPCK, nil)
+	if !okPCK {
+		t.Fatal("ExtractSessionInfo failed on nested promptCacheKey request")
+	}
+	if infoPCK.SessionID != "pck:nested-pck-456" {
+		t.Fatalf("SessionID = %q, want pck:nested-pck-456", infoPCK.SessionID)
+	}
+
+	// 4. Nested promptCacheKey when top-level prompt_cache_key is empty string
+	payloadPCKShadow := []byte(`{
+		"prompt_cache_key": "",
+		"request": {
+			"promptCacheKey": "nested-pck-valid"
+		}
+	}`)
+	infoShadow, okShadow := ExtractSessionInfo(nil, payloadPCKShadow, nil)
+	if !okShadow {
+		t.Fatal("ExtractSessionInfo failed on shadowed promptCacheKey request")
+	}
+	if infoShadow.SessionID != "pck:nested-pck-valid" {
+		t.Fatalf("SessionID = %q, want pck:nested-pck-valid", infoShadow.SessionID)
+	}
+}

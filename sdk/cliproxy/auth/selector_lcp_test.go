@@ -848,6 +848,73 @@ func TestSessionCacheTinyTTLNoPanic(t *testing.T) {
 	cache.Stop()
 }
 
+func TestSessionAffinityClaudeMetadataSubagentNonInheritingGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a", Provider: "antigravity", Status: StatusActive},
+		{ID: "auth-b", Provider: "antigravity", Status: StatusActive},
+	}
+
+	// 1. Parent request binds to auth-a
+	parentOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"model":"gemini-3.7-flash-high","metadata":{"user_id":"{\"device_id\":\"dev-1\",\"session_id\":\"sess-main-1\"}"},"messages":[{"role":"user","content":"parent task"}]}`),
+		Metadata:        map[string]any{},
+	}
+	parentAuth, errParent := selector.Pick(context.Background(), "mixed", "gemini-3.7-flash-high", parentOpts, auths)
+	if errParent != nil {
+		t.Fatalf("parent Pick() error = %v", errParent)
+	}
+	if parentAuth.ID != "auth-a" {
+		t.Fatalf("parent auth = %q, want auth-a", parentAuth.ID)
+	}
+	if got := parentOpts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != "claude:sess-main-1" {
+		t.Fatalf("parent canonical session ID = %v, want claude:sess-main-1", got)
+	}
+
+	// 2. Subagent 1 request with X-Claude-Code-Agent-Id header and metadata.user_id in payload
+	subagent1Opts := cliproxyexecutor.Options{
+		Headers: http.Header{
+			"X-Claude-Code-Agent-Id": []string{"subagent-001"},
+		},
+		OriginalRequest: []byte(`{"model":"gemini-3.7-flash-high","metadata":{"user_id":"{\"device_id\":\"dev-1\",\"session_id\":\"sess-main-1\"}"},"messages":[{"role":"user","content":"subagent 1 task"}]}`),
+		Metadata:        map[string]any{},
+	}
+	subagent1Auth, errSub1 := selector.Pick(context.Background(), "mixed", "gemini-3.7-flash-high", subagent1Opts, auths)
+	if errSub1 != nil {
+		t.Fatalf("subagent 1 Pick() error = %v", errSub1)
+	}
+	// For Gemini/Antigravity, subagents must NOT inherit the parent's auth; they should balance to auth-b
+	if subagent1Auth.ID != "auth-b" {
+		t.Fatalf("subagent 1 should not inherit parent auth for Gemini, got %q, want auth-b", subagent1Auth.ID)
+	}
+	if got := subagent1Opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != "claude:sess-main-1:agent:subagent-001" {
+		t.Fatalf("subagent 1 canonical session ID = %v, want claude:sess-main-1:agent:subagent-001", got)
+	}
+
+	// 3. Subsequent turn for subagent 1 must retain auth-b
+	subagent1Turn2Opts := cliproxyexecutor.Options{
+		Headers: http.Header{
+			"X-Claude-Code-Agent-Id": []string{"subagent-001"},
+		},
+		OriginalRequest: []byte(`{"model":"gemini-3.7-flash-high","metadata":{"user_id":"{\"device_id\":\"dev-1\",\"session_id\":\"sess-main-1\"}"},"messages":[{"role":"user","content":"subagent 1 turn 2"}]}`),
+		Metadata:        map[string]any{},
+	}
+	subagent1Turn2Auth, errSub1Turn2 := selector.Pick(context.Background(), "mixed", "gemini-3.7-flash-high", subagent1Turn2Opts, auths)
+	if errSub1Turn2 != nil {
+		t.Fatalf("subagent 1 turn 2 Pick() error = %v", errSub1Turn2)
+	}
+	if subagent1Turn2Auth.ID != "auth-b" {
+		t.Fatalf("subagent 1 turn 2 affinity broken: got %q, want auth-b", subagent1Turn2Auth.ID)
+	}
+}
+
 func BenchmarkSessionAffinitySelectorPickLCP(b *testing.B) {
 	log.SetLevel(log.WarnLevel)
 	defer log.SetLevel(log.InfoLevel)
