@@ -54,6 +54,9 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 	}
 	switch auth.AuthMode {
 	case "pat":
+		if auth.PAT != "" && !strings.HasPrefix(auth.PAT, "pt-") {
+			return qoderAuth{}, fmt.Errorf("Qoder pat must use the pt- prefix")
+		}
 		if auth.PAT == "" {
 			auth.PAT = auth.AccessToken
 		}
@@ -62,9 +65,6 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 		}
 		// New `pat` files are validated as PATs. Legacy access_token files are
 		// intentionally accepted as opaque token sources for compatibility.
-		if auth.AccessToken == "" && !strings.HasPrefix(auth.PAT, "pt-") {
-			return qoderAuth{}, fmt.Errorf("Qoder pat must use the pt- prefix")
-		}
 		auth.AccessToken = auth.PAT
 	case "local_cli":
 		if auth.Transport == "direct_openai" {

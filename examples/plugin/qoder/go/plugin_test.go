@@ -55,6 +55,9 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if _, errLegacyWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":" pt-legacy "}`)); errLegacyWhitespace == nil {
 		t.Fatal("legacy access_token with surrounding whitespace was accepted")
 	}
+	if _, errExplicitOpaquePAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":"opaque","access_token":"opaque"}`)); errExplicitOpaquePAT == nil {
+		t.Fatal("explicit non-pt PAT was accepted through the legacy access_token field")
+	}
 	if _, errLocalPAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","pat":"pt-invalid-mix","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalPAT == nil {
 		t.Fatal("local_cli with the new pat field was accepted")
 	}
