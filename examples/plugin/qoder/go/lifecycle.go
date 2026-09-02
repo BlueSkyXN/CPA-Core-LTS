@@ -416,7 +416,7 @@ func executionSessionKey(req pluginapi.ExecutorRequest, auth qoderAuth, requeste
 	}
 	return sessionDigest([]string{
 		pluginIdentifier, strings.TrimSpace(req.AuthID), strings.TrimSpace(req.AuthIndex), effectiveExecutionSessionID(req),
-		strings.TrimSpace(req.CallerScope), strings.TrimSpace(req.WorkspaceIdentity), auth.AuthMode, transport, auth.PAT,
+		strings.TrimSpace(req.CallerScope), strings.TrimSpace(req.WorkspaceIdentity), auth.AuthMode, transport, auth.AccountID, auth.tokenSource(), auth.ProfileID, auth.ConfigDir,
 	})
 }
 

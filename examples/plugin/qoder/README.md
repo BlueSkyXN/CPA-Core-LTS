@@ -14,10 +14,13 @@ The transport can be selected by plugin configuration or an auth-file override.
 It is part of the execution-session identity, so a session never changes
 transport midway. There is no silent fallback between transports.
 
-Qoder authentication is PAT-only. The same long-lived `pt-` PAT can be passed
+New auth files should use the long-lived `pt-` PAT. The same PAT can be passed
 to the SDK Agent path, exchanged for a short-lived Job Token in Direct mode,
-and used by the read-only account/plan/quota Summary. OAuth, interactive login,
-`local_cli`, and persisted short-lived tokens are not part of this plugin.
+and used by the read-only account/plan/quota Summary. Existing auth files using
+`access_token` or `local_cli` remain readable for compatibility; the latter
+continues to use its explicitly isolated `config_dir` and is not available to
+the Direct transport. OAuth, interactive login, and persisted short-lived
+tokens are not part of this plugin.
 
 The plugin implements `AuthProvider`, `ModelsForAuth`, `ProviderExecutor`,
 `ProviderReadiness`, `ExecutionCanceller`, `ExecutionSessionCloser`, and the
@@ -54,6 +57,8 @@ request_timeout: 30s
 model_cache_ttl: 1m
 openapi_endpoint: https://openapi.qoder.com.cn
 openapi_user_agent: qoder/1.1.40
+direct_auth_endpoint: https://openapi.qoder.com.cn # legacy alias
+direct_token_mode: auto # auto, bearer, or pat_exchange
 transport: sdk_cli
 permission_default: deny
 permission_rules: []
@@ -84,8 +89,9 @@ direct_models:
 configured endpoint returns an OpenAI-compatible `{data:[...]}` catalog.
 Direct mode always exchanges the PAT through
 `POST /api/v1/jobToken/exchange`, refreshes in memory when needed, and retries
-one 401/403 response. There is no bearer-token shortcut and no
-`direct_token_mode` switch.
+one 401/403 response. Existing `direct_token_mode: bearer` and opaque legacy
+`access_token` values remain supported; new PAT files should use `auto` or
+`pat_exchange`.
 
 ## Dynamic models and exact IDs
 
@@ -99,6 +105,33 @@ configured Direct catalog endpoint. A SDK model is never automatically treated
 as a Direct model. Display names such as `Qwen3.8-Max` are not executable IDs;
 the real exact ID must come from that transport's catalog. No alias or silent
 fallback to `auto` is performed.
+
+### Legacy auth-file compatibility
+
+The following existing shapes remain accepted so an upgrade does not strand
+stored Qoder credentials:
+
+```json
+{
+  "type": "qoder",
+  "auth_mode": "pat",
+  "access_token": "pt-LEGACY_PAT",
+  "account_id": "legacy-account"
+}
+```
+
+```json
+{
+  "type": "qoder",
+  "auth_mode": "local_cli",
+  "profile_id": "cn-main",
+  "config_dir": "/absolute/path/to/qoder-config"
+}
+```
+
+`pat` is preferred for new files. When both `pat` and `access_token` are
+present, they must match. `local_cli` is SDK-only and its profile directory is
+never copied into the PAT Summary or Direct transport.
 
 ## Read-only account, plan and quota Summary
 

@@ -274,6 +274,8 @@ func pluginRegistration() registration {
 				{Name: "qoder_cli_path", Type: pluginapi.ConfigFieldTypeString, Description: "Required external Qoder CLI absolute path. SDK bundled CLI fallback is disabled."},
 				{Name: "direct_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Explicit HTTPS OpenAI-compatible Qoder endpoint for direct_openai; loopback HTTP is allowed only for local tests."},
 				{Name: "direct_models_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional OpenAI-compatible model catalog endpoint for direct_openai; otherwise direct_models must be configured."},
+				{Name: "direct_auth_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Legacy alias for the Qoder OpenAPI base used by direct PAT exchange; retained for existing configurations."},
+				{Name: "direct_token_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"auto", "bearer", "pat_exchange"}, Description: "Legacy direct credential mode; auto exchanges pt- PATs and bearer passes opaque access_token values through."},
 				{Name: "openapi_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Qoder OpenAPI base used for PAT exchange and account/plan/quota queries; never put a token in this URL."},
 				{Name: "openapi_user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "Non-secret User-Agent sent to the Qoder OpenAPI base."},
 				{Name: "direct_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional administrator-supplied exact direct model records; no guessed aliases or silent auto fallback."},

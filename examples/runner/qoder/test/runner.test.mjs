@@ -275,18 +275,16 @@ test("stderr redaction removes direct and header secrets", () => {
 
 test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle events", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_TOKEN";
-  process.env[envVar] = "pt-fixture";
+  process.env[envVar] = "jt-fixture";
   const calls = [];
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
     modelsEndpoint: "https://direct.example.test/model/v1/models",
-    openAPIEndpoint: "https://openapi.example.test",
+    authEndpoint: "https://openapi.example.test",
+    tokenMode: "bearer",
     models: [],
     fetchImpl: async (url, init = {}) => {
       calls.push({ url: String(url), init });
-      if (String(url).endsWith("/jobToken/exchange")) {
-        return new Response(JSON.stringify({ token: "jt-fixture", refresh_token: "jrt-fixture", expires_in: 86400 }), { status: 200 });
-      }
       if (String(url).endsWith("/models")) {
         return new Response(JSON.stringify({ data: [{ id: "qfmodel", display_name: "Qwen3.8-Flash", is_enabled: true }] }), {
           status: 200,
@@ -330,6 +328,7 @@ test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle
     const inference = calls.find((call) => call.url.endsWith("/chat/completions"));
     assert.ok(inference);
     assert.equal(inference.init.headers.Authorization, "Bearer jt-fixture");
+    assert.equal(calls.some((call) => call.url.endsWith("/jobToken/exchange")), false);
     const body = JSON.parse(inference.init.body);
     assert.equal(body.model, "qfmodel");
     assert.equal(body.stream, true);

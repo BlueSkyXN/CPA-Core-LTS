@@ -122,3 +122,19 @@ func TestQoderQuotaPreservesExactValues(t *testing.T) {
 		t.Fatalf("quota = %#v", quota)
 	}
 }
+
+func TestQoderLocalCLISummaryDoesNotExchangeProfileCredentials(t *testing.T) {
+	host := &qoderSummaryFakeHost{}
+	runtime := newPluginRuntime(host)
+	runtime.config = pluginConfig{OpenAPIEndpoint: "https://openapi.example.test", OpenAPIUserAgent: "qoder/1.1.40"}
+	summary := runtime.qoderSummary(qoderAuth{AuthMode: "local_cli", ProfileID: "cn-main", ConfigDir: "/tmp/qoder-cn"}, "management-callback")
+	if summary.Credential.Kind != "local_cli" || summary.Account.Status != "unsupported" || summary.Plan == nil || summary.Plan.Status != "unsupported" || summary.Quota.Status != "unsupported" {
+		t.Fatalf("local_cli summary = %#v", summary)
+	}
+	host.mu.Lock()
+	requestCount := len(host.requests)
+	host.mu.Unlock()
+	if requestCount != 0 {
+		t.Fatalf("local_cli summary made %d HTTP calls", requestCount)
+	}
+}

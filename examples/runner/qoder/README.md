@@ -12,8 +12,10 @@
 
 The transport is selected by administrator configuration or an auth profile,
 never by a client request. A session keeps one transport for its lifetime.
-Qoder authentication is PAT-only; the runner never accepts a bearer token or a
-local CLI profile as an auth source.
+New integrations should use a `pt-` PAT. The runner also retains the legacy
+`access_token`/`local_cli` auth-file paths for compatibility: `access_token`
+values use the configured Direct token mode, while `local_cli` is SDK-only and
+uses the caller's isolated `QODER_CONFIG_DIR`.
 
 The runner deliberately requires an external Qoder CLI path for `sdk_cli`:
 
@@ -37,7 +39,9 @@ node dist/index.js --stdio \
 
 Direct mode always exchanges the PAT through
 `POST /api/v1/jobToken/exchange`, keeps the Job Token and Refresh Token in
-memory, and performs one bounded 401/403 refresh retry. CN and global Qoder
+memory, and performs one bounded 401/403 refresh retry. Legacy
+`--direct-token-mode bearer` remains available for opaque `access_token`
+values. CN and global Qoder
 endpoints must be configured explicitly because their product families are not
 interchangeable.
 

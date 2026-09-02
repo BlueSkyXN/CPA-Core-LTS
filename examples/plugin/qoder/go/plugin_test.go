@@ -27,8 +27,20 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if errDirect != nil || direct.Transport != "direct_openai" || direct.AuthMode != "pat" {
 		t.Fatalf("parse direct = %#v, %v", direct, errDirect)
 	}
-	if _, errLegacy := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"pt-legacy"}`)); errLegacy == nil {
-		t.Fatal("legacy access_token was accepted")
+	legacy, errLegacy := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"pt-legacy","account_id":"legacy-account"}`))
+	if errLegacy != nil || legacy.tokenSource() != "pt-legacy" || legacy.AccountID != "legacy-account" {
+		t.Fatalf("legacy access_token = %#v, err=%v", legacy, errLegacy)
+	}
+	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn","label":"Qoder CN"}`))
+	if errLocal != nil || local.AuthMode != "local_cli" || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" {
+		t.Fatalf("local_cli auth = %#v, err=%v", local, errLocal)
+	}
+	localRunnerAuth := local.runnerAuth()
+	if localRunnerAuth["mode"] != "local_cli" || localRunnerAuth["profile_id"] != "cn-main" {
+		t.Fatalf("local_cli runner auth = %#v", localRunnerAuth)
+	}
+	if _, errLocalDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","transport":"direct_openai","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalDirect == nil {
+		t.Fatal("local_cli direct transport was accepted")
 	}
 	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":" bad "}`)); errWhitespace == nil {
 		t.Fatal("PAT with surrounding whitespace was accepted")
@@ -177,7 +189,7 @@ direct_models:
   - id: qfmodel
     display_name: Qwen3.8-Flash
 `))
-	if errDirect != nil || direct.Transport != "direct_openai" || len(direct.DirectModels) != 1 {
+	if errDirect != nil || direct.Transport != "direct_openai" || len(direct.DirectModels) != 1 || direct.DirectAuthEndpoint != "https://openapi.example.test" {
 		t.Fatalf("direct config = %#v, %v", direct, errDirect)
 	}
 	if _, errNoModels := decodePluginConfig([]byte(`
@@ -195,8 +207,32 @@ working_directory: /tmp
 direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
 direct_models:
   - id: qfmodel
-`)); errNoOpenAPI == nil {
-		t.Fatal("direct config without OpenAPI endpoint was accepted")
+`)); errNoOpenAPI != nil {
+		t.Fatalf("direct config without an auth endpoint was rejected: %v", errNoOpenAPI)
+	}
+	bearer, errBearer := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+direct_token_mode: bearer
+direct_auth_endpoint: https://openapi.example.test
+direct_models:
+  - id: qfmodel
+`))
+	if errBearer != nil || bearer.DirectTokenMode != "bearer" || bearer.OpenAPIEndpoint != "https://openapi.example.test" || bearer.DirectAuthEndpoint != bearer.OpenAPIEndpoint {
+		t.Fatalf("legacy bearer config = %#v, %v", bearer, errBearer)
+	}
+	if _, errMissingAuth := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+direct_token_mode: pat_exchange
+direct_models:
+  - id: qfmodel
+`)); errMissingAuth == nil {
+		t.Fatal("pat_exchange config without an auth endpoint was accepted")
 	}
 	if _, errOwnedArg := decodePluginConfig([]byte(`
 runner_command: /usr/local/bin/cpa-qoder-runner
@@ -326,6 +362,17 @@ func TestRunnerEnvironmentIsolatesPATHomeAndTemporaryFiles(t *testing.T) {
 	}
 	if values[runnerPATEnv] != "pt-test-secret" {
 		t.Fatal("runner PAT was not placed in the dedicated process environment")
+	}
+	localEnv := runnerEnvironment(qoderAuth{AuthMode: "local_cli", ProfileID: "cn-main", ConfigDir: "/tmp/qoder-cn"}, nil, runtimeRoot)
+	localValues := make(map[string]string, len(localEnv))
+	for _, item := range localEnv {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			localValues[key] = value
+		}
+	}
+	if localValues["QODER_CONFIG_DIR"] != "/tmp/qoder-cn" || localValues[runnerPATEnv] != "" {
+		t.Fatalf("local_cli environment = %#v", localValues)
 	}
 }
 
@@ -728,7 +775,7 @@ func fakeRunnerConfig(t *testing.T) pluginConfig {
 func startFakeRunner(t *testing.T, cfg pluginConfig, auth qoderAuth, mode string) *runnerClient {
 	t.Helper()
 	client, errStart := newRunnerClient(cfg, auth, map[string]string{
-		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": mode, "QODER_FAKE_SECRET": auth.PAT,
+		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": mode, "QODER_FAKE_SECRET": auth.tokenSource(),
 	})
 	if errStart != nil {
 		t.Fatal(errStart)

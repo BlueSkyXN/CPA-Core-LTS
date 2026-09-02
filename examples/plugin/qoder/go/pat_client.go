@@ -108,10 +108,22 @@ func (r *pluginRuntime) qoderSummary(auth qoderAuth, callbackID string) qoderSum
 	cfg := r.loadedConfig()
 	result := qoderSummary{
 		Provider:   pluginIdentifier,
-		Credential: qoderCredentialSummary{Kind: "pat", Fingerprint: qoderCredentialFingerprint(auth)},
+		Credential: qoderCredentialSummary{Kind: qoderCredentialKind(auth), Fingerprint: qoderCredentialFingerprint(auth)},
 		Account:    qoderAccountSummary{Status: "fallback", Source: "auth_label"},
 		Quota:      qoderQuotaSummary{Status: "not_configured", Code: "openapi_endpoint_missing"},
 		UpdatedAt:  time.Now().UTC(),
+	}
+	if auth.AuthMode == "local_cli" {
+		result.Account = qoderAccountSummary{Status: "unsupported", Code: "local_cli_account_unavailable", Source: "auth_label"}
+		result.Plan = &qoderPlanSummary{Status: "unsupported", Code: "local_cli_plan_unavailable"}
+		result.Quota = qoderQuotaSummary{Status: "unsupported", Code: "local_cli_quota_unavailable"}
+		return result
+	}
+	if !auth.isPAT() {
+		result.Account = qoderAccountSummary{Status: "unsupported", Code: "legacy_token_not_pat", Source: "auth_label"}
+		result.Plan = &qoderPlanSummary{Status: "unsupported", Code: "legacy_token_not_pat"}
+		result.Quota = qoderQuotaSummary{Status: "unsupported", Code: "legacy_token_not_pat"}
+		return result
 	}
 	if strings.TrimSpace(cfg.OpenAPIEndpoint) == "" {
 		result.Plan = &qoderPlanSummary{Status: "not_configured", Code: "openapi_endpoint_missing"}
@@ -159,7 +171,11 @@ func (r *pluginRuntime) qoderToken(auth qoderAuth, callbackID string) (qoderToke
 	if ok && time.Since(cached.FetchedAt) < qoderTokenCacheTTL && cached.State.ExpiresAt.After(time.Now().Add(30*time.Second)) {
 		return cached.State, nil
 	}
-	state, errExchange := r.qoderTokenRequest(auth.PAT, "", callbackID, "/api/v1/jobToken/exchange", map[string]string{"personal_token": auth.PAT})
+	if !auth.isPAT() {
+		return qoderTokenState{}, fmt.Errorf("Qoder summary requires a pt- PAT")
+	}
+	source := auth.tokenSource()
+	state, errExchange := r.qoderTokenRequest(source, "", callbackID, "/api/v1/jobToken/exchange", map[string]string{"personal_token": source})
 	if errExchange != nil {
 		return qoderTokenState{}, errExchange
 	}
@@ -196,11 +212,12 @@ func (r *pluginRuntime) qoderJSONWithRefresh(auth qoderAuth, callbackID string, 
 func (r *pluginRuntime) qoderRefreshOrExchange(auth qoderAuth, callbackID string, state qoderTokenState) (qoderTokenState, error) {
 	if state.RefreshToken != "" {
 		if refreshed, errRefresh := r.qoderTokenRequest("", state.RefreshToken, callbackID, "/api/v1/jobToken/refresh", map[string]string{"refresh_token": state.RefreshToken}); errRefresh == nil {
-			refreshed.Source = auth.PAT
+			refreshed.Source = auth.tokenSource()
 			return refreshed, nil
 		}
 	}
-	return r.qoderTokenRequest(auth.PAT, "", callbackID, "/api/v1/jobToken/exchange", map[string]string{"personal_token": auth.PAT})
+	source := auth.tokenSource()
+	return r.qoderTokenRequest(source, "", callbackID, "/api/v1/jobToken/exchange", map[string]string{"personal_token": source})
 }
 
 func (r *pluginRuntime) qoderTokenRequest(source, refreshToken, callbackID, path string, body map[string]string) (qoderTokenState, error) {
@@ -706,8 +723,19 @@ func floatPointer(value float64) *float64 {
 }
 
 func qoderCredentialFingerprint(auth qoderAuth) string {
-	sum := sha256.Sum256([]byte(auth.PAT))
+	source := auth.tokenSource()
+	if source == "" {
+		source = strings.Join([]string{"local_cli", auth.ProfileID, auth.ConfigDir}, "\x00")
+	}
+	sum := sha256.Sum256([]byte(source))
 	return hex.EncodeToString(sum[:8])
+}
+
+func qoderCredentialKind(auth qoderAuth) string {
+	if auth.AuthMode == "local_cli" {
+		return "local_cli"
+	}
+	return "pat"
 }
 
 func qoderTokenCacheKey(auth qoderAuth, endpoint string) string {
