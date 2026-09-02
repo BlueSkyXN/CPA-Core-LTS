@@ -22,8 +22,18 @@ The runner deliberately requires an external Qoder CLI path for `sdk_cli`:
 ```bash
 npm ci --ignore-scripts
 npm run build
-node dist/index.js --stdio --cli-path /absolute/path/to/qoderclicn
+node dist/index.js --stdio \
+  --cli-path /absolute/path/to/qoderclicn \
+  --openapi-endpoint https://openapi.qoder.com.cn \
+  --openapi-user-agent qoder/1.1.40
 ```
+
+For PAT auth, `sdk_cli` exchanges the long-lived PAT for an in-memory Job Token
+and supplies it through the SDK host-token callback. The runner adapts the
+mode-0600 one-shot payload field used by Qoder Agent SDK 1.0.10 to the field
+accepted by `qoderclicn` 1.1.40; the payload contains only the host-callback
+selector, not either token. `local_cli` continues to use the selected read-only
+CLI profile and does not require PAT exchange.
 
 Direct OpenAI mode requires an explicit endpoint and either an exact model list
 or an OpenAI-compatible model catalog endpoint:
@@ -73,8 +83,9 @@ configuration. Live model discovery preserves Qoder's vision, reasoning,
 token-limit, and context-window metadata.
 
 PAT runners receive the PAT through a per-process environment variable and the
-request names only that variable. Qoder SDK materializes a temporary mode-0600
-auth payload for its CLI child; the owning Plugin supplies an isolated `TMPDIR`
-and PAT `HOME`, terminates the runner process group on Unix, and removes the
-private runtime root after exit. Output is bounded by frame and queue limits,
-and vendor stderr is redacted before it reaches runner stderr.
+request names only that variable. The runner keeps exchanged Job/Refresh Tokens
+in memory, while Qoder SDK materializes and removes a temporary mode-0600
+host-callback payload for its CLI child. The owning Plugin supplies an isolated
+`TMPDIR` and PAT `HOME`, terminates the runner process group on Unix, and removes
+the private runtime root after exit. Output is bounded by frame and queue
+limits, and vendor stderr is redacted before it reaches runner stderr.

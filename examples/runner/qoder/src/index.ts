@@ -89,7 +89,10 @@ async function main(): Promise<void> {
       openAPIUserAgent: options.openAPIUserAgent,
       models: options.directModels,
     })
-    : new QoderSDKAdapter(options.cliPath, options.cwd);
+    : new QoderSDKAdapter(options.cliPath, options.cwd, {
+      openAPIEndpoint: options.openAPIEndpoint || undefined,
+      openAPIUserAgent: options.openAPIUserAgent,
+    });
   const server = new RunnerServer(adapter, process.stdout, options.maxQueueFrames);
   await runJSONLServer(server, process.stdin);
 }

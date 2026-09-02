@@ -15,7 +15,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_ERROR_BYTES = 8 * 1024;
 
-type DirectTokenMode = "auto" | "bearer" | "pat_exchange";
+export type DirectTokenMode = "auto" | "bearer" | "pat_exchange";
 
 type DirectOptions = {
   endpoint: string;
@@ -63,7 +63,7 @@ type DirectChunk = {
 export class DirectOpenAIAdapter implements QoderAdapter {
   readonly transport: QoderTransport = "direct_openai";
   private readonly sessions = new Map<string, DirectSession>();
-  private readonly tokenManager: DirectTokenManager;
+  private readonly tokenManager: QoderTokenManager;
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
   private readonly modelsConfig: ModelRecord[];
@@ -100,7 +100,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.requestTimeoutMs = Math.max(1000, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
     this.modelsConfig = validateModelRecords(options.models);
-    this.tokenManager = new DirectTokenManager(
+    this.tokenManager = new QoderTokenManager(
       authEndpoint,
       this.tokenMode,
       this.openAPIUserAgent,
@@ -477,7 +477,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
   }
 }
 
-class DirectTokenManager {
+export class QoderTokenManager {
   private state?: TokenState;
 
   constructor(
@@ -503,6 +503,18 @@ class DirectTokenManager {
       response = await request(refreshed.accessToken);
     }
     return response;
+  }
+
+  async getAccessToken(
+    auth: AuthSpec,
+    reason: "initial" | "unauthorized" = "initial",
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const state = await this.ensure(auth, signal);
+    if (reason === "unauthorized" && state.patExchange) {
+      return (await this.refreshOrExchange(state, signal)).accessToken;
+    }
+    return state.accessToken;
   }
 
   private async ensure(auth: AuthSpec, signal?: AbortSignal): Promise<TokenState> {
@@ -723,7 +735,7 @@ function expiryFromTokenRecord(record: Record<string, unknown>): number {
   return Date.now() + Math.max(60_000, expiresIn ?? 86_400_000);
 }
 
-function isSupportedEndpoint(raw: string): boolean {
+export function isSupportedEndpoint(raw: string): boolean {
   try {
     const url = new URL(raw);
     if (url.username || url.password || url.search || url.hash || !url.hostname) return false;

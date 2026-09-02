@@ -14,9 +14,9 @@ The transport can be selected by plugin configuration or an auth-file override.
 It is part of the execution-session identity, so a session never changes
 transport midway. There is no silent fallback between transports.
 
-New auth files should use the long-lived `pt-` PAT. The same PAT can be passed
-to the SDK Agent path, exchanged for a short-lived Job Token in Direct mode,
-and used by the read-only account/plan/quota Summary. Existing auth files using
+New auth files should use the long-lived `pt-` PAT. Both SDK Agent and Direct
+paths exchange it for a short-lived Job Token, and the read-only
+account/plan/quota Summary uses the same regional OpenAPI. Existing auth files using
 `access_token` or `local_cli` remain readable for compatibility; the latter
 continues to use its explicitly isolated `config_dir` and is not available to
 the Direct transport. OAuth, interactive login, and persisted short-lived
@@ -41,9 +41,9 @@ handles Responses requests and responses around that boundary.
 ```
 
 The PAT is never put into JSONL frames or logs. The plugin gives the runner a
-dedicated environment variable, while Qoder Agent SDK creates and removes its
-own mode-0600 temporary auth payload. Each runner also receives a private
-`TMPDIR` and PAT `HOME`.
+dedicated environment variable. The runner exchanges it in memory and Qoder
+Agent SDK creates and removes a mode-0600 host-callback payload that contains no
+token. Each runner also receives a private `TMPDIR` and PAT `HOME`.
 
 ## Configuration
 
@@ -95,8 +95,9 @@ one 401/403 response. Existing `direct_token_mode: bearer` and opaque legacy
 
 ## Dynamic models and exact IDs
 
-The SDK path uses the typed `getAvailableModels({ fetchStrategy: "live" })`
-response for each PAT and preserves every returned ID and capability field.
+The SDK path exchanges the PAT through the configured `openapi_endpoint`, then
+uses the typed `getAvailableModels({ fetchStrategy: "live" })` response and
+preserves every returned ID and capability field.
 Vision, reasoning, disable-thinking support, token limits, and context windows
 are projected only when the selected account reports them.
 

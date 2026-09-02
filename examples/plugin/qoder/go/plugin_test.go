@@ -256,6 +256,8 @@ func TestRunnerCapabilityValidationErrorsRemainClientErrors(t *testing.T) {
 		"invalid_configuration":         http.StatusBadRequest,
 		"content_required":              http.StatusBadRequest,
 		"session_configuration_changed": http.StatusConflict,
+		"sdk_auth_config":               http.StatusServiceUnavailable,
+		"sdk_auth_payload_incompatible": http.StatusServiceUnavailable,
 	} {
 		errMapped, ok := runnerCallError(&runnerError{Code: code, Message: "bounded test error"}).(*pluginCallError)
 		if !ok || errMapped.statusCode != status {

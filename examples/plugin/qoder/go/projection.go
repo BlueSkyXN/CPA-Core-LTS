@@ -156,6 +156,8 @@ func (p *eventProjection) terminalError() error {
 	switch code {
 	case "auth_expired", "direct_auth_failed", "direct_auth_invalid":
 		status = http.StatusUnauthorized
+	case "sdk_auth_config", "sdk_auth_payload_incompatible":
+		status = http.StatusServiceUnavailable
 	case "direct_invalid_request", "direct_request_missing", "direct_request_too_large", "unsupported_model":
 		status = http.StatusBadRequest
 	case "quota_or_rate_limit":

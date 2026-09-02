@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 
 import { BoundedFrameWriter, ProtocolError, redactStderr } from "../dist/protocol.js";
-import { DirectOpenAIAdapter } from "../dist/direct.js";
-import { toModelRecord, userMessage } from "../dist/qoder.js";
+import { DirectOpenAIAdapter, QoderTokenManager } from "../dist/direct.js";
+import { patchQoderSDKJobTokenPayload, toModelRecord, userMessage } from "../dist/qoder.js";
 import { RunnerServer } from "../dist/server.js";
 
 class FakeAdapter {
@@ -191,6 +194,60 @@ test("live model metadata preserves vision, reasoning, and context capabilities"
   assert.deepEqual(model.reasoning_efforts, ["low", "high"]);
   assert.deepEqual(model.available_context_windows, [128000, 200000]);
   assert.equal(model.default_context_window, 128000);
+});
+
+test("SDK PAT auth adapts the one-shot host job-token payload without storing a token", async () => {
+  const root = await mkdtemp(join(tmpdir(), "qoder-sdk-auth-test-"));
+  const payloadPath = join(root, "payload.json");
+  try {
+    await writeFile(payloadPath, JSON.stringify({ type: "jobToken", hostTokenCallback: true }), { mode: 0o600 });
+    patchQoderSDKJobTokenPayload(payloadPath);
+    assert.deepEqual(JSON.parse(await readFile(payloadPath, "utf8")), {
+      type: "jobToken",
+      jobTokenProvider: "host",
+    });
+    assert.equal((await stat(payloadPath)).mode & 0o777, 0o600);
+
+    await writeFile(payloadPath, JSON.stringify({ type: "accessToken", accessToken: "must-not-be-read" }), { mode: 0o600 });
+    assert.throws(
+      () => patchQoderSDKJobTokenPayload(payloadPath),
+      (error) => error instanceof ProtocolError && error.code === "sdk_auth_payload_incompatible",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shared Qoder token manager exchanges PAT and refreshes an unauthorized SDK job token", async () => {
+  const envVar = "CPA_QODER_SDK_TOKEN_MANAGER_TEST";
+  const previous = process.env[envVar];
+  process.env[envVar] = "pt-fixture";
+  const paths = [];
+  const manager = new QoderTokenManager(
+    "https://openapi.example.test",
+    "pat_exchange",
+    "qoder/test",
+    async (url, init) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path.endsWith("/exchange")) {
+        assert.deepEqual(JSON.parse(init.body), { personal_token: "pt-fixture" });
+        return new Response(JSON.stringify({ token: "job-initial", refresh_token: "refresh-fixture", expires_in: 3600 }), { status: 200 });
+      }
+      assert.deepEqual(JSON.parse(init.body), { refresh_token: "refresh-fixture" });
+      return new Response(JSON.stringify({ token: "job-refreshed", refresh_token: "refresh-next", expires_in: 3600 }), { status: 200 });
+    },
+    1000,
+  );
+  try {
+    const auth = { mode: "pat", env_var: envVar };
+    assert.equal(await manager.getAccessToken(auth, "initial"), "job-initial");
+    assert.equal(await manager.getAccessToken(auth, "unauthorized"), "job-refreshed");
+    assert.deepEqual(paths, ["/api/v1/jobToken/exchange", "/api/v1/jobToken/refresh"]);
+  } finally {
+    if (previous === undefined) delete process.env[envVar];
+    else process.env[envVar] = previous;
+  }
 });
 
 test("terminal during start does not leave a stale active session", async () => {
