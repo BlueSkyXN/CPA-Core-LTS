@@ -1211,6 +1211,73 @@ func TestSessionAffinitySelector_FailoverWhenAuthUnavailable(t *testing.T) {
 	}
 }
 
+func TestExtractSessionID_NestedRequestSubagent(t *testing.T) {
+	t.Parallel()
+
+	// 1. Nested request with sessionId and metadata.agent_id
+	payloadAgent := []byte(`{
+		"request": {
+			"sessionId": "root",
+			"metadata": {
+				"agent_id": "worker"
+			}
+		}
+	}`)
+	if got := ExtractSessionID(nil, payloadAgent, nil); got != "session:root:agent:worker" {
+		t.Fatalf("ExtractSessionID() = %q, want session:root:agent:worker", got)
+	}
+	primary, fallback := extractExplicitSessionIDs(nil, payloadAgent, nil)
+	if primary != "session:root:agent:worker" || fallback != "session:root" {
+		t.Fatalf("extractExplicitSessionIDs() = (%q, %q), want (session:root:agent:worker, session:root)", primary, fallback)
+	}
+
+	// 2. Nested request with sessionId and metadata.subagent_id
+	payloadSubagent := []byte(`{
+		"request": {
+			"sessionId": "root",
+			"metadata": {
+				"subagent_id": "worker"
+			}
+		}
+	}`)
+	if got := ExtractSessionID(nil, payloadSubagent, nil); got != "session:root:agent:worker" {
+		t.Fatalf("ExtractSessionID() = %q, want session:root:agent:worker", got)
+	}
+	primary, fallback = extractExplicitSessionIDs(nil, payloadSubagent, nil)
+	if primary != "session:root:agent:worker" || fallback != "session:root" {
+		t.Fatalf("extractExplicitSessionIDs() = (%q, %q), want (session:root:agent:worker, session:root)", primary, fallback)
+	}
+
+	// 3. Nested request with sessionId and parentSessionId
+	payloadParent := []byte(`{
+		"request": {
+			"sessionId": "root",
+			"parentSessionId": "parent-root",
+			"metadata": {
+				"agent_id": "worker"
+			}
+		}
+	}`)
+	if got := ExtractSessionID(nil, payloadParent, nil); got != "session:root:agent:worker" {
+		t.Fatalf("ExtractSessionID() = %q, want session:root:agent:worker", got)
+	}
+	primary, fallback = extractExplicitSessionIDs(nil, payloadParent, nil)
+	if primary != "session:root:agent:worker" || fallback != "session:parent-root" {
+		t.Fatalf("extractExplicitSessionIDs() = (%q, %q), want (session:root:agent:worker, session:parent-root)", primary, fallback)
+	}
+
+	// 4. Nested promptCacheKey when top-level prompt_cache_key is empty string
+	payloadPCKShadow := []byte(`{
+		"prompt_cache_key": "",
+		"request": {
+			"promptCacheKey": "nested-pck-valid"
+		}
+	}`)
+	if got := ExtractSessionID(nil, payloadPCKShadow, nil); got != "pck:nested-pck-valid" {
+		t.Fatalf("ExtractSessionID() with shadowed empty top-level pck = %q, want pck:nested-pck-valid", got)
+	}
+}
+
 func TestExtractSessionID_ClaudeCodePriorityOverHeader(t *testing.T) {
 	t.Parallel()
 
@@ -2131,6 +2198,57 @@ func TestSessionAffinityPreDispatchSelectionsRemainPrivateUntilCommit(t *testing
 	selector.CommitPreDispatchSelection(committed.ID, committedOpts)
 	if got, ok := selector.cache.Get(cacheKey); !ok || got != committed.ID {
 		t.Fatalf("shared affinity after admission commit = %q, %v; want %q, true", got, ok, committed.ID)
+	}
+}
+
+func TestSessionAffinitySubagentPreDispatchBindingRemainsPrivateUntilCommit(t *testing.T) {
+	selector := NewSessionAffinitySelector(&RoundRobinSelector{})
+	defer selector.Stop()
+	auths := []*Auth{{ID: "auth-A", Provider: "claude"}, {ID: "auth-B", Provider: "claude"}}
+
+	parentOpts := cliproxyexecutor.Options{
+		Headers:  http.Header{"X-Claude-Code-Session-Id": []string{"parent-session"}},
+		Metadata: map[string]any{},
+	}
+	parent, errParent := selector.Pick(context.Background(), "claude", "claude-sonnet-4-6", parentOpts, auths)
+	if errParent != nil {
+		t.Fatalf("parent Pick() error = %v", errParent)
+	}
+
+	newChildOptions := func() cliproxyexecutor.Options {
+		return cliproxyexecutor.Options{
+			Headers: http.Header{
+				"X-Claude-Code-Session-Id": []string{"parent-session"},
+				"X-Claude-Code-Agent-Id":   []string{"child-agent"},
+			},
+			Metadata: map[string]any{},
+		}
+	}
+	childKey := "claude::claude:parent-session:agent:child-agent::" + canonicalModelKey("claude-sonnet-4-6")
+	rejectedOpts := newChildOptions()
+	rejected, errRejected := selector.PickPreDispatch(context.Background(), "claude", "claude-sonnet-4-6", rejectedOpts, auths)
+	if errRejected != nil {
+		t.Fatalf("rejected child PickPreDispatch() error = %v", errRejected)
+	}
+	if rejected.ID != parent.ID {
+		t.Fatalf("child auth = %q, want inherited parent auth %q", rejected.ID, parent.ID)
+	}
+	if got, ok := selector.cache.Get(childKey); ok {
+		t.Fatalf("child affinity before admission = %q, want missing", got)
+	}
+	selector.ReleasePreDispatchSelection(rejected.ID, rejectedOpts)
+	if got, ok := selector.cache.Get(childKey); ok {
+		t.Fatalf("rejected child affinity = %q, want missing", got)
+	}
+
+	committedOpts := newChildOptions()
+	committed, errCommitted := selector.PickPreDispatch(context.Background(), "claude", "claude-sonnet-4-6", committedOpts, auths)
+	if errCommitted != nil {
+		t.Fatalf("committed child PickPreDispatch() error = %v", errCommitted)
+	}
+	selector.CommitPreDispatchSelection(committed.ID, committedOpts)
+	if got, ok := selector.cache.Get(childKey); !ok || got != parent.ID {
+		t.Fatalf("child affinity after admission = %q, %v; want %q, true", got, ok, parent.ID)
 	}
 }
 

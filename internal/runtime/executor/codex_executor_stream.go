@@ -131,7 +131,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	})
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClient(httpClient)
+	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -196,6 +196,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			data := bytes.TrimSpace(line[5:])
 			data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+			observeCodexTokenEvent(reporter, data)
 			if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
 				if isCodexOverloadBootstrapFailure(terminalBody) {
 					for _, bufferedLine := range bootstrapLines {
@@ -368,6 +369,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			} else if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
 				data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+				observeCodexTokenEvent(reporter, data)
 				translatedLine = append([]byte("data: "), data...)
 				eventType := gjson.GetBytes(data, "type").String()
 				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
@@ -406,8 +408,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 							outputItemsBytes += int64(len(data))
 						}
 					}
-				case "response.completed", "response.incomplete":
+				case "response.completed", "response.incomplete", "response.done":
 					terminalSuccess = true
+					data = normalizeCodexWebsocketCompletion(data)
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						usageDetail = detail
 						usageDetailOK = true
@@ -422,7 +425,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					outputItemsFallback = nil
 					outputItemsBytes = 0
 					data = patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
-					cacheReasoningReplay = eventType == "response.completed"
+					cacheReasoningReplay = eventType == "response.completed" || eventType == "response.done"
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
 				}

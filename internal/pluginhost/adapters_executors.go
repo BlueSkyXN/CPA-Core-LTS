@@ -1255,6 +1255,10 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 			if reporter != nil {
 				reporter.PublishFailure(ctx, err)
 			}
+			return
+		}
+		if err != nil && reporter != nil {
+			reporter.PublishFailure(ctx, err)
 		}
 	}()
 
@@ -1294,11 +1298,12 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if reporter != nil {
 		if len(pluginResp.Payload) > 0 {
 			reporter.MarkFirstResponseByte()
+			reporter.RecordFirstPacket()
 		}
 		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
 		}
-		reporter.Publish(ctx, pluginExecutorUsageDetail(prepared.outputFormat, pluginResp.Payload))
+		reporter.Publish(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload))
 		reporter.EnsurePublished(ctx)
 	}
 	return coreexecutor.Response{
@@ -1321,6 +1326,10 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			if reporter != nil {
 				reporter.PublishFailure(ctx, err)
 			}
+			return
+		}
+		if err != nil && reporter != nil {
+			reporter.PublishFailure(ctx, err)
 		}
 	}()
 
