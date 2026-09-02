@@ -170,10 +170,15 @@ func markHomeRetryRoundExhausted(err error, retryAfter *time.Duration, retryNow 
 	if err == nil {
 		return nil
 	}
+	upstreamAttempt := hasUpstreamExecutionAttempt(err)
+	err = unwrapUpstreamExecutionAttempt(err)
 	marked := &homeRetryRoundExhaustedError{cause: err, retryNow: retryNow}
 	if retryAfter != nil {
 		marked.retryAfter = *retryAfter
 		marked.hasRetryAfter = true
+	}
+	if upstreamAttempt {
+		return markUpstreamExecutionAttempt(marked)
 	}
 	return marked
 }
@@ -1367,6 +1372,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			}
 			resp, errExec := c.executor.Execute(admittedCtx, c.auth, execReq, creditsOpts)
 			result := resultForAuthWithOptions(c.auth, c.provider, resultModel, errExec == nil, nil, creditsOpts)
+			result.RouteModel = routeModel
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -1425,7 +1431,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if len(models) == 0 {
 			continue
 		}
-		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false, nil)
+		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false)
 		if errStream != nil {
 			if isRequestInvalidError(errStream) {
 				return nil, false, errStream

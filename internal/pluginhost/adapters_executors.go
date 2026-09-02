@@ -1255,6 +1255,10 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 			if reporter != nil {
 				reporter.PublishFailure(ctx, err)
 			}
+			return
+		}
+		if err != nil && reporter != nil {
+			reporter.PublishFailure(ctx, err)
 		}
 	}()
 
@@ -1274,6 +1278,9 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	stopCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
 	defer stopCancellationWatch()
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
+	if reporter != nil {
+		reporter.StartResponseTTFT()
+	}
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
 		if reporter != nil {
@@ -1289,10 +1296,11 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
 	if reporter != nil {
+		reporter.RecordFirstPacket()
 		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
 		}
-		reporter.Publish(ctx, pluginExecutorUsageDetail(prepared.outputFormat, pluginResp.Payload))
+		reporter.Publish(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload))
 		reporter.EnsurePublished(ctx)
 	}
 	return coreexecutor.Response{
@@ -1315,6 +1323,10 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			if reporter != nil {
 				reporter.PublishFailure(ctx, err)
 			}
+			return
+		}
+		if err != nil && reporter != nil {
+			reporter.PublishFailure(ctx, err)
 		}
 	}()
 

@@ -1,9 +1,13 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -18,7 +22,11 @@ func (a *executorAdapter) formalUsageReporter(ctx context.Context, auth *coreaut
 	if a == nil || auth == nil {
 		return nil
 	}
-	reporter := helps.NewExecutorUsageReporter(ctx, a, prepared.req.Model, auth)
+	modelName := strings.TrimSpace(thinking.ParseSuffix(prepared.req.Model).ModelName)
+	if modelName == "" {
+		modelName = prepared.req.Model
+	}
+	reporter := helps.NewExecutorUsageReporter(ctx, a, modelName, auth)
 	reporter.SetTranslatedReasoningEffort(prepared.req.Payload, prepared.inputFormat.String())
 	reporter.SetOutboundServiceTier(prepared.req.Payload)
 	reporter.SetUsageProvenance(coreusage.UsageProvenanceUnavailable)
@@ -62,11 +70,42 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 	go func() {
 		defer close(out)
 		var usageBuffer helps.StreamUsageBuffer
-		firstPayload := true
 		sawPayload := false
+		var lineBuffer []byte
+		const maxLineBufferSize = 64 * 1024
+
+		observePayload := func(payload []byte) {
+			helps.ObservePluginExecutorStreamTTFT(format.String(), reporter, payload)
+			lineBuffer = append(lineBuffer, payload...)
+			for {
+				idx := bytes.IndexByte(lineBuffer, '\n')
+				if idx < 0 {
+					break
+				}
+				line := lineBuffer[:idx+1]
+				lineBuffer = lineBuffer[idx+1:]
+				helps.ObservePluginExecutorStreamUsage(format.String(), line, &usageBuffer)
+			}
+			if jsonPayload := helps.ExtractStreamJSONPayload(lineBuffer); len(jsonPayload) > 0 && json.Valid(jsonPayload) {
+				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
+				lineBuffer = nil
+			}
+			if len(lineBuffer) > maxLineBufferSize {
+				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
+				lineBuffer = nil
+			}
+		}
+		flushUsage := func() {
+			if len(lineBuffer) == 0 {
+				return
+			}
+			helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
+			lineBuffer = nil
+		}
 		for {
 			select {
 			case <-ctx.Done():
+				flushUsage()
 				setPluginUsageProvenance(reporter, &usageBuffer)
 				if !usageBuffer.PublishFailure(ctx, reporter, ctx.Err()) {
 					reporter.PublishFailure(ctx, ctx.Err())
@@ -74,6 +113,7 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 				return
 			case chunk, ok := <-in:
 				if !ok {
+					flushUsage()
 					if errContext := ctx.Err(); errContext != nil {
 						setPluginUsageProvenance(reporter, &usageBuffer)
 						if !usageBuffer.PublishFailure(ctx, reporter, errContext) {
@@ -91,17 +131,14 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 					return
 				}
 				if chunk.Err != nil {
+					flushUsage()
 					setPluginUsageProvenance(reporter, &usageBuffer)
 					if !usageBuffer.PublishFailure(ctx, reporter, chunk.Err) {
 						reporter.PublishFailure(ctx, chunk.Err)
 					}
 				} else if len(chunk.Payload) > 0 {
 					sawPayload = true
-					if firstPayload {
-						reporter.MarkFirstResponseByte()
-						firstPayload = false
-					}
-					observePluginUsageChunk(format, chunk.Payload, &usageBuffer)
+					observePayload(chunk.Payload)
 				}
 				select {
 				case out <- chunk:

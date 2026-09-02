@@ -71,7 +71,7 @@ func (e *homeUnauthorizedRefreshExecutor) Execute(_ context.Context, auth *Auth,
 		}
 	}
 	if authAccessToken(auth) == "stale-access-token" {
-		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
+		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "access token expired"}
 	}
 	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
 }
@@ -82,17 +82,17 @@ func (e *homeUnauthorizedRefreshExecutor) ExecuteStream(_ context.Context, auth 
 		switch e.streamMode {
 		case "bootstrap":
 			chunks := make(chan cliproxyexecutor.StreamChunk, 1)
-			chunks <- cliproxyexecutor.StreamChunk{Err: &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}}
+			chunks <- cliproxyexecutor.StreamChunk{Err: &Error{HTTPStatus: http.StatusUnauthorized, Message: "access token expired"}}
 			close(chunks)
 			return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
 		case "started":
 			chunks := make(chan cliproxyexecutor.StreamChunk, 2)
 			chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("started")}
-			chunks <- cliproxyexecutor.StreamChunk{Err: &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}}
+			chunks <- cliproxyexecutor.StreamChunk{Err: &Error{HTTPStatus: http.StatusUnauthorized, Message: "access token expired"}}
 			close(chunks)
 			return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
 		default:
-			return nil, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
+			return nil, &Error{HTTPStatus: http.StatusUnauthorized, Message: "access token expired"}
 		}
 	}
 	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
@@ -120,7 +120,7 @@ func (e *homeUnauthorizedRefreshExecutor) Refresh(_ context.Context, auth *Auth)
 func (e *homeUnauthorizedRefreshExecutor) CountTokens(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	e.countCalls.Add(1)
 	if authAccessToken(auth) == "stale-access-token" {
-		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "expired access token"}
+		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusUnauthorized, Message: "access token expired"}
 	}
 	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
 }
@@ -137,7 +137,7 @@ func newHomeUnauthorizedRefreshManager(dispatcher *homeUnauthorizedRefreshDispat
 	return manager
 }
 
-func TestHomeUnauthorizedRefreshesSameSelectionBeforeRedispatch(t *testing.T) {
+func TestHomeUnauthorizedReturnsOriginalErrorWithoutRefresh(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		run  func(*Manager) error
@@ -162,26 +162,24 @@ func TestHomeUnauthorizedRefreshesSameSelectionBeforeRedispatch(t *testing.T) {
 			executor := &homeUnauthorizedRefreshExecutor{}
 			manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
 
-			if errRun := test.run(manager); errRun != nil {
-				t.Fatalf("execution error = %v", errRun)
+			errRun := test.run(manager)
+			if errRun == nil || errRun.Error() != "access token expired" || statusCodeFromError(errRun) != http.StatusUnauthorized {
+				t.Fatalf("execution error = %v, want original 401", errRun)
 			}
-			if got := dispatcher.calls.Load(); got != 1 {
-				t.Fatalf("Home dispatch calls = %d, want 1", got)
+			if got := executor.refreshCalls.Load(); got != 0 {
+				t.Fatalf("refresh calls = %d, want 0", got)
 			}
-			if got := executor.refreshCalls.Load(); got != 1 {
-				t.Fatalf("refresh calls = %d, want 1", got)
+			if test.name == "execute" && executor.executeCalls.Load() != 1 {
+				t.Fatalf("execute calls = %d, want 1", executor.executeCalls.Load())
 			}
-			if test.name == "execute" && executor.executeCalls.Load() != 2 {
-				t.Fatalf("execute calls = %d, want 2", executor.executeCalls.Load())
-			}
-			if test.name == "count_tokens" && executor.countCalls.Load() != 2 {
-				t.Fatalf("count calls = %d, want 2", executor.countCalls.Load())
+			if test.name == "count_tokens" && executor.countCalls.Load() != 1 {
+				t.Fatalf("count calls = %d, want 1", executor.countCalls.Load())
 			}
 		})
 	}
 }
 
-func TestHomeUnauthorizedRefreshRetryRequiresFreshPreDispatchAdmission(t *testing.T) {
+func TestHomeUnauthorizedDoesNotReplayPreDispatchAdmission(t *testing.T) {
 	tests := []struct {
 		name       string
 		streamMode string
@@ -216,8 +214,15 @@ func TestHomeUnauthorizedRefreshRetryRequiresFreshPreDispatchAdmission(t *testin
 			name:       "stream_bootstrap",
 			streamMode: "bootstrap",
 			run: func(manager *Manager, opts cliproxyexecutor.Options) error {
-				_, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
-				return errStream
+				result, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
+				if errStream != nil {
+					return errStream
+				}
+				chunk, ok := <-result.Chunks
+				if !ok {
+					return &Error{Message: "stream closed before unauthorized result"}
+				}
+				return chunk.Err
 			},
 			callCount: func(executor *homeUnauthorizedRefreshExecutor) int32 { return executor.streamCalls.Load() },
 		},
@@ -237,17 +242,17 @@ func TestHomeUnauthorizedRefreshRetryRequiresFreshPreDispatchAdmission(t *testin
 				cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(string) { selected++ },
 			}}
 
-			if errRun := tt.run(manager, opts); errRun == nil {
-				t.Fatal("execution error = nil, want retry admission rejection")
+			if errRun := tt.run(manager, opts); statusCodeFromError(errRun) != http.StatusUnauthorized {
+				t.Fatalf("execution error = %v, want original 401", errRun)
 			}
-			if got := executor.admissionCalls.Load(); got != 2 {
-				t.Fatalf("admission calls = %d, want one per attempted invocation", got)
+			if got := executor.admissionCalls.Load(); got != 1 {
+				t.Fatalf("admission calls = %d, want only the original invocation", got)
 			}
 			if got := tt.callCount(baseExecutor); got != 1 {
-				t.Fatalf("executor calls = %d, want retry blocked before second invocation", got)
+				t.Fatalf("executor calls = %d, want no replay", got)
 			}
-			if got := baseExecutor.refreshCalls.Load(); got != 1 {
-				t.Fatalf("refresh calls = %d, want 1", got)
+			if got := baseExecutor.refreshCalls.Load(); got != 0 {
+				t.Fatalf("refresh calls = %d, want Home-owned credentials left untouched", got)
 			}
 			if selected != 1 {
 				t.Fatalf("selected-auth callbacks = %d, want only the initial dispatched attempt", selected)
@@ -266,19 +271,15 @@ func TestHomeUnauthorizedRefreshUpdatesRetainedSelection(t *testing.T) {
 		cliproxyexecutor.PinnedAuthMetadataKey:       "home-refresh-auth",
 	}}
 
-	for range 2 {
-		if _, errExecute := manager.Execute(ctx, []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts); errExecute != nil {
-			t.Fatalf("Execute() error = %v", errExecute)
-		}
+	_, errExecute := manager.Execute(ctx, []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, opts)
+	if errExecute == nil || errExecute.Error() != "access token expired" {
+		t.Fatalf("Execute() error = %v, want original upstream error", errExecute)
 	}
-	if got := dispatcher.calls.Load(); got != 1 {
-		t.Fatalf("Home dispatch calls = %d, want one retained selection", got)
+	if got := executor.refreshCalls.Load(); got != 0 {
+		t.Fatalf("refresh calls = %d, want 0", got)
 	}
-	if got := executor.refreshCalls.Load(); got != 1 {
-		t.Fatalf("refresh calls = %d, want refreshed token reused by retained selection", got)
-	}
-	if got := executor.executeCalls.Load(); got != 3 {
-		t.Fatalf("execute calls = %d, want stale attempt, retry, and retained reuse", got)
+	if got := executor.executeCalls.Load(); got != 1 {
+		t.Fatalf("execute calls = %d, want 1", got)
 	}
 }
 
@@ -301,7 +302,7 @@ func TestRefreshHomeSelectionReusesConcurrentNewerToken(t *testing.T) {
 	}
 }
 
-func TestHomeUnauthorizedRefreshIsAttemptedAtMostOnce(t *testing.T) {
+func TestHomeUnauthorizedDoesNotRefreshOrReplay(t *testing.T) {
 	dispatcher := &homeUnauthorizedRefreshDispatcher{}
 	executor := &homeUnauthorizedRefreshExecutor{keepStale: true}
 	manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
@@ -310,23 +311,23 @@ func TestHomeUnauthorizedRefreshIsAttemptedAtMostOnce(t *testing.T) {
 	if statusCodeFromError(errExecute) != http.StatusUnauthorized {
 		t.Fatalf("Execute() error = %v, want original 401", errExecute)
 	}
-	if got := executor.refreshCalls.Load(); got != 1 {
-		t.Fatalf("refresh calls = %d, want exactly 1", got)
+	if got := executor.refreshCalls.Load(); got != 0 {
+		t.Fatalf("refresh calls = %d, want 0", got)
 	}
-	if got := executor.executeCalls.Load(); got != 2 {
-		t.Fatalf("execute calls = %d, want initial attempt and one retry", got)
+	if got := executor.executeCalls.Load(); got != 1 {
+		t.Fatalf("execute calls = %d, want 1", got)
 	}
 }
 
-func TestHomeNoCandidateAfterRefreshFailurePreservesRefreshError(t *testing.T) {
-	refreshErr := &Error{Code: "refresh_temporarily_unavailable", HTTPStatus: http.StatusServiceUnavailable, Message: "refresh unavailable"}
+func TestHomeNoCandidatePreservesOriginalUpstreamError(t *testing.T) {
+	upstreamErr := &Error{HTTPStatus: http.StatusUnauthorized, Message: "access token expired"}
 	noCandidate := &Error{Code: "auth_not_found", HTTPStatus: http.StatusServiceUnavailable, Message: "no auth available"}
-	if !shouldReturnLastErrorOnPickFailure(true, refreshErr, noCandidate) {
-		t.Fatal("Home no-candidate error would overwrite the original refresh error")
+	if !shouldReturnLastErrorOnPickFailure(true, upstreamErr, noCandidate) {
+		t.Fatal("Home no-candidate error would overwrite the original upstream error")
 	}
 }
 
-func TestHomeUnauthorizedTransientRefreshFailureIsReturned(t *testing.T) {
+func TestHomeUnauthorizedIgnoresExecutorRefreshFailure(t *testing.T) {
 	dispatcher := &homeUnauthorizedRefreshDispatcher{}
 	executor := &homeUnauthorizedRefreshExecutor{
 		refreshErr: &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "Home refresh temporarily unavailable"},
@@ -334,18 +335,18 @@ func TestHomeUnauthorizedTransientRefreshFailureIsReturned(t *testing.T) {
 	manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
 
 	_, errExecute := manager.Execute(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{})
-	if statusCodeFromError(errExecute) != http.StatusServiceUnavailable {
-		t.Fatalf("Execute() error = %v, want transient 503", errExecute)
+	if statusCodeFromError(errExecute) != http.StatusUnauthorized || errExecute.Error() != "access token expired" {
+		t.Fatalf("Execute() error = %v, want original 401", errExecute)
 	}
 	if got := executor.executeCalls.Load(); got != 1 {
 		t.Fatalf("execute calls = %d, want 1", got)
 	}
-	if got := executor.refreshCalls.Load(); got != 1 {
-		t.Fatalf("refresh calls = %d, want 1", got)
+	if got := executor.refreshCalls.Load(); got != 0 {
+		t.Fatalf("refresh calls = %d, want 0", got)
 	}
 }
 
-func TestHomeUnauthorizedStreamRefreshesAtMostOnceAcrossRedispatch(t *testing.T) {
+func TestHomeUnauthorizedStreamDoesNotRefreshOrReplay(t *testing.T) {
 	dispatcher := &homeUnauthorizedRefreshDispatcher{}
 	executor := &homeUnauthorizedRefreshExecutor{keepStale: true}
 	manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
@@ -354,11 +355,11 @@ func TestHomeUnauthorizedStreamRefreshesAtMostOnceAcrossRedispatch(t *testing.T)
 	if statusCodeFromError(errStream) != http.StatusUnauthorized {
 		t.Fatalf("ExecuteStream() error = %v, want original 401", errStream)
 	}
-	if got := executor.refreshCalls.Load(); got != 1 {
-		t.Fatalf("refresh calls = %d, want exactly 1", got)
+	if got := executor.refreshCalls.Load(); got != 0 {
+		t.Fatalf("refresh calls = %d, want 0", got)
 	}
-	if got := executor.streamCalls.Load(); got != 2 {
-		t.Fatalf("stream calls = %d, want initial attempt and one retry", got)
+	if got := executor.streamCalls.Load(); got != 1 {
+		t.Fatalf("stream calls = %d, want 1", got)
 	}
 }
 
@@ -392,7 +393,7 @@ func TestHomeUnauthorizedStartedStreamDoesNotReplay(t *testing.T) {
 	}
 }
 
-func TestHomeUnauthorizedStreamRefreshesBeforeRedispatch(t *testing.T) {
+func TestHomeUnauthorizedStreamReturnsOriginalErrorWithoutRefresh(t *testing.T) {
 	for _, mode := range []string{"synchronous", "bootstrap"} {
 		t.Run(mode, func(t *testing.T) {
 			dispatcher := &homeUnauthorizedRefreshDispatcher{}
@@ -400,27 +401,24 @@ func TestHomeUnauthorizedStreamRefreshesBeforeRedispatch(t *testing.T) {
 			manager := newHomeUnauthorizedRefreshManager(dispatcher, executor)
 
 			result, errStream := manager.ExecuteStream(context.Background(), []string{homeUnauthorizedRefreshProvider}, cliproxyexecutor.Request{Model: "model-a"}, cliproxyexecutor.Options{Stream: true})
-			if errStream != nil {
-				t.Fatalf("ExecuteStream() error = %v", errStream)
-			}
-			var payload string
-			for chunk := range result.Chunks {
-				if chunk.Err != nil {
-					t.Fatalf("stream chunk error = %v", chunk.Err)
+			if mode == "synchronous" {
+				if errStream == nil || errStream.Error() != "access token expired" || statusCodeFromError(errStream) != http.StatusUnauthorized {
+					t.Fatalf("ExecuteStream() error = %v, want original 401", errStream)
 				}
-				payload += string(chunk.Payload)
+			} else {
+				if errStream != nil {
+					t.Fatalf("ExecuteStream() error = %v", errStream)
+				}
+				chunk, ok := <-result.Chunks
+				if !ok || chunk.Err == nil || chunk.Err.Error() != "access token expired" || statusCodeFromError(chunk.Err) != http.StatusUnauthorized {
+					t.Fatalf("stream chunk = %#v, open=%v; want original 401", chunk, ok)
+				}
 			}
-			if payload != "ok" {
-				t.Fatalf("stream payload = %q, want ok", payload)
+			if got := executor.refreshCalls.Load(); got != 0 {
+				t.Fatalf("refresh calls = %d, want 0", got)
 			}
-			if got := dispatcher.calls.Load(); got != 1 {
-				t.Fatalf("Home dispatch calls = %d, want 1", got)
-			}
-			if got := executor.refreshCalls.Load(); got != 1 {
-				t.Fatalf("refresh calls = %d, want 1", got)
-			}
-			if got := executor.streamCalls.Load(); got != 2 {
-				t.Fatalf("stream calls = %d, want 2", got)
+			if got := executor.streamCalls.Load(); got != 1 {
+				t.Fatalf("stream calls = %d, want 1", got)
 			}
 		})
 	}

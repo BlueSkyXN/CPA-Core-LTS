@@ -32,7 +32,10 @@ func readCodexAlphaSearchBody(reader io.Reader, maxBytes int64) ([]byte, bool, e
 	}
 	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil {
-		return nil, false, err
+		if int64(len(body)) > maxBytes {
+			body = body[:maxBytes]
+		}
+		return body, false, err
 	}
 	if int64(len(body)) > maxBytes {
 		return nil, true, nil

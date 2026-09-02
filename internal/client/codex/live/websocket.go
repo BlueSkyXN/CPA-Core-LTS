@@ -141,40 +141,54 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 	}
 
 	activeAttempt, upstream, handshakeResponse, errDial := dialUpstream(selected, selection == nil)
-	if errDial != nil && selection != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
-		h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel)
-		if activeAttempt != nil {
-			activeAttempt.body = sidebandHandshakeBody(handshakeResponse)
-			activeAttempt.err = errDial
-			activeAttempt.finalize(ctx, h.authManager, resultCtx, selectionModel, false)
-			activeAttempt = nil
-		}
-		closeHandshakeBody(handshakeResponse, "direct websocket unauthorized")
-		refreshed, didRefresh, errRefresh := h.authManager.RefreshHomeSelectionAfterUnauthorized(ctx, selection, selected)
-		if errRefresh != nil {
-			writeSelectionError(c, errRefresh)
-			return
-		}
-		if didRefresh && refreshed != nil {
-			selected = refreshed
-			logging.SetGinCPATraceID(c, selected.EnsureIndex())
-			activeAttempt, upstream, handshakeResponse, errDial = dialUpstream(selected, false)
-		}
-	}
 	if activeAttempt != nil {
 		activeAttempt.body = sidebandHandshakeBody(handshakeResponse)
 		activeAttempt.err = errDial
+		if selection != nil && handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
+			activeAttempt.reporter = nil
+		}
 		activeAttempt.finalize(ctx, h.authManager, resultCtx, selectionModel, selection == nil)
 		activeAttempt = nil
 	}
 	if errDial != nil {
 		status := clienterror.HTTPStatusFromErrorOr(errDial, http.StatusBadGateway)
+		helpConfig := h.currentConfig()
+		var responseBody []byte
 		if handshakeResponse != nil && handshakeResponse.StatusCode > 0 {
 			status = handshakeResponse.StatusCode
 			copyRealtimeHandshakeHeaders(c.Writer.Header(), handshakeResponse.Header)
+			helps.RecordAPIWebsocketHandshake(ctx, helpConfig, handshakeResponse.StatusCode, callResponseHeaders(handshakeResponse.Header))
+			if handshakeResponse.Body != nil {
+				var errRead error
+				responseBody, errRead = readLimitedBody(handshakeResponse.Body)
+				if errRead != nil {
+					log.Errorf("codex realtime: read rejected handshake body error: %v", errRead)
+				}
+				helps.AppendAPIWebsocketResponse(ctx, helpConfig, responseBody)
+			}
 		}
 		closeHandshakeBody(handshakeResponse, "direct websocket rejected")
-		helpConfig := h.currentConfig()
+		if selection != nil && status == http.StatusUnauthorized {
+			diagnosticBody := responseBody
+			if len(diagnosticBody) == 0 {
+				diagnosticBody = []byte(errDial.Error())
+			}
+			h.authManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, diagnosticBody)
+			log.WithField("status", status).Warnf("codex realtime websocket upstream handshake failed: %s", logging.SafeDiagnosticForLog(string(diagnosticBody)))
+		}
+		helps.RecordAPIWebsocketError(ctx, helpConfig, "dial", errDial)
+		if handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
+			if contentType := handshakeResponse.Header.Get("Content-Type"); contentType != "" {
+				c.Header("Content-Type", contentType)
+			}
+			c.Status(handshakeResponse.StatusCode)
+			if len(responseBody) > 0 {
+				if _, errWrite := c.Writer.Write(responseBody); errWrite != nil {
+					log.WithError(errWrite).Warn("codex realtime: write rejected handshake body failed")
+				}
+			}
+			return
+		}
 		helpDetails := "Codex Realtime WebSocket upstream unavailable"
 		helpType := "api_error"
 		if status == http.StatusNotFound || status == http.StatusNotImplemented {
@@ -189,7 +203,6 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 			helpType = "authentication_error"
 			helpCode = "realtime_upstream_unauthorized"
 		}
-		helps.RecordAPIWebsocketError(ctx, helpConfig, "dial", errDial)
 		writeRealtimeError(c, status, helpDetails, helpType, helpCode)
 		return
 	}

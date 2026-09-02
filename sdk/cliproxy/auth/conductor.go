@@ -78,6 +78,8 @@ type Result struct {
 	Provider string
 	// Model is the upstream model identifier used for the request.
 	Model string
+	// RouteModel is the requested logical route model before alias resolution.
+	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
@@ -153,6 +155,7 @@ type Manager struct {
 	auths                     map[string]*Auth
 	// authGeneration is allocated under mu and never persisted.
 	authGeneration uint64
+	authEpochs     map[string]uint64
 	scheduler      *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
@@ -236,6 +239,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeRuntimeAuths:         make(map[string]map[string]*Auth),
 		homeRuntimeAuthOwners:    make(map[string]map[string]*HomeDispatchSelection),
 		homeSessionSelections:    make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
+		authEpochs:               make(map[string]uint64),
 		providerOffsets:          make(map[string]int),
 		modelPoolOffsets:         make(map[string]int),
 		codexRateLimitContinuity: newCodexRateLimitContinuityStore(),

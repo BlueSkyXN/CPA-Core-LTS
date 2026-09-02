@@ -334,6 +334,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
+	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	budget := codexModelFallbackBudget(opts, false)
 	retryWithoutPenaltyCounts := budget.retryCounts
@@ -352,6 +353,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
+		}
+		if hasUpstreamExecutionAttempt(errExec) {
+			preferredUpstreamErr = errExec
 		}
 		lastErr = errExec
 		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
@@ -378,6 +382,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				}
 				if outcome.err == nil {
 					return outcome.response, nil
+				}
+				if hasUpstreamExecutionAttempt(outcome.err) {
+					preferredUpstreamErr = outcome.err
 				}
 				if isRequestStopError(outcome.err) {
 					return cliproxyexecutor.Response{}, outcome.err
@@ -441,7 +448,13 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		attempt++
 	}
 	if lastErr != nil {
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if ctx != nil {
+			if errCtx := ctx.Err(); errCtx != nil {
+				return cliproxyexecutor.Response{}, errCtx
+			}
+		}
+		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
+		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, unwrapExecutionBoundaryError(lastErr), normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -462,6 +475,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
+	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	budget := codexModelFallbackBudget(opts, true)
 	retryWithoutPenaltyCounts := budget.retryCounts
@@ -480,6 +494,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				return fallbackResult, nil
 			}
 			return result, nil
+		}
+		if hasUpstreamExecutionAttempt(errStream) {
+			preferredUpstreamErr = errStream
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(retryRound-1, homeRetryLimit) {
@@ -523,6 +540,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				}
 				if outcome.err == nil {
 					return outcome.stream, nil
+				}
+				if hasUpstreamExecutionAttempt(outcome.err) {
+					preferredUpstreamErr = outcome.err
 				}
 				if isRequestStopError(outcome.err) {
 					return nil, outcome.err
@@ -588,7 +608,15 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		attempt++
 	}
 	if lastErr != nil {
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if ctx != nil {
+			if errCtx := ctx.Err(); errCtx != nil {
+				return nil, errCtx
+			}
+		}
+		if preferredUpstreamErr != nil && (!m.HomeEnabled() || isHomeRetryRoundExhausted(lastErr)) {
+			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
+		}
+		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, unwrapExecutionBoundaryError(lastErr), normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
