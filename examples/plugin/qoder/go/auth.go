@@ -36,9 +36,7 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 	auth.Type = pluginIdentifier
 	auth.AuthMode = strings.ToLower(strings.TrimSpace(auth.AuthMode))
 	auth.Transport = strings.ToLower(strings.TrimSpace(auth.Transport))
-	auth.PAT = strings.TrimSpace(auth.PAT)
 	auth.Label = strings.TrimSpace(auth.Label)
-	auth.AccessToken = strings.TrimSpace(auth.AccessToken)
 	auth.AccountID = strings.TrimSpace(auth.AccountID)
 	auth.ProfileID = strings.TrimSpace(auth.ProfileID)
 	auth.ConfigDir = strings.TrimSpace(auth.ConfigDir)
@@ -47,6 +45,9 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 	}
 	if strings.ContainsAny(auth.PAT, "\r\n\x00") || strings.ContainsAny(auth.AccessToken, "\r\n\x00") || strings.ContainsAny(auth.Label, "\r\n\x00") || strings.ContainsAny(auth.AccountID, "\r\n\x00") || strings.ContainsAny(auth.ProfileID, "\r\n\x00") || strings.ContainsAny(auth.ConfigDir, "\r\n\x00") {
 		return qoderAuth{}, fmt.Errorf("Qoder auth contains invalid characters")
+	}
+	if strings.TrimSpace(auth.PAT) != auth.PAT || strings.TrimSpace(auth.AccessToken) != auth.AccessToken {
+		return qoderAuth{}, fmt.Errorf("Qoder pat or access_token must not contain surrounding whitespace")
 	}
 	if auth.PAT != "" && auth.AccessToken != "" && auth.PAT != auth.AccessToken {
 		return qoderAuth{}, fmt.Errorf("Qoder pat and access_token must match when both are present")
@@ -69,8 +70,8 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 		if auth.Transport == "direct_openai" {
 			return qoderAuth{}, fmt.Errorf("Qoder local_cli auth cannot use direct_openai transport")
 		}
-		if auth.PAT != "" || auth.AccessToken != "" || auth.AccountID != "" {
-			return qoderAuth{}, fmt.Errorf("Qoder local_cli cannot include PAT or access_token fields")
+		if auth.PAT != "" {
+			return qoderAuth{}, fmt.Errorf("Qoder local_cli cannot include the new pat field")
 		}
 		if auth.ProfileID == "" {
 			return qoderAuth{}, fmt.Errorf("Qoder local_cli profile_id is required")
@@ -78,6 +79,10 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 		if auth.ConfigDir == "" || !filepath.IsAbs(auth.ConfigDir) || strings.ContainsRune(auth.ConfigDir, '\x00') {
 			return qoderAuth{}, fmt.Errorf("Qoder local_cli config_dir must be an absolute path so profiles remain isolated")
 		}
+		// The released parser ignored legacy token/account fields on local_cli
+		// profiles. Keep accepting that stored shape, but never forward them.
+		auth.AccessToken = ""
+		auth.AccountID = ""
 	default:
 		return qoderAuth{}, fmt.Errorf("Qoder auth_mode must be pat or local_cli")
 	}

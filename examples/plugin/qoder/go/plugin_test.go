@@ -31,8 +31,8 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if errLegacy != nil || legacy.tokenSource() != "pt-legacy" || legacy.AccountID != "legacy-account" {
 		t.Fatalf("legacy access_token = %#v, err=%v", legacy, errLegacy)
 	}
-	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn","label":"Qoder CN"}`))
-	if errLocal != nil || local.AuthMode != "local_cli" || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" {
+	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","access_token":"legacy-ignored","account_id":"legacy-account","profile_id":"cn-main","config_dir":"/tmp/qoder-cn","label":"Qoder CN"}`))
+	if errLocal != nil || local.AuthMode != "local_cli" || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" || local.AccessToken != "" || local.AccountID != "" {
 		t.Fatalf("local_cli auth = %#v, err=%v", local, errLocal)
 	}
 	localRunnerAuth := local.runnerAuth()
@@ -42,8 +42,14 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if _, errLocalDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","transport":"direct_openai","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalDirect == nil {
 		t.Fatal("local_cli direct transport was accepted")
 	}
-	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":" bad "}`)); errWhitespace == nil {
+	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":" pt-valid "}`)); errWhitespace == nil {
 		t.Fatal("PAT with surrounding whitespace was accepted")
+	}
+	if _, errLegacyWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":" pt-legacy "}`)); errLegacyWhitespace == nil {
+		t.Fatal("legacy access_token with surrounding whitespace was accepted")
+	}
+	if _, errLocalPAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","pat":"pt-invalid-mix","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalPAT == nil {
+		t.Fatal("local_cli with the new pat field was accepted")
 	}
 	safe := string(errorEnvelope(newPluginCallError("invalid_auth", "Qoder authentication failed", 401, false)))
 	if strings.Contains(safe, secret) {
