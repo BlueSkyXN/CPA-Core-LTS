@@ -26,7 +26,7 @@ import (
 )
 
 func TestAuthDispatchRequestIncludesCount(t *testing.T) {
-	req := newAuthDispatchRequest("gpt-5.4", "session-1", http.Header{"Authorization": {"Bearer test"}}, 2, "", nil, "")
+	req := newAuthDispatchRequest("gpt-5.4", "session-1", "", http.Header{"Authorization": {"Bearer test"}}, 2, "", nil, "")
 
 	raw, err := json.Marshal(&req)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestAuthDispatchRequestIncludesCount(t *testing.T) {
 }
 
 func TestAuthDispatchRequestDefaultsCountToOne(t *testing.T) {
-	req := newAuthDispatchRequest("gpt-5.4", "", nil, 0, "", nil, "")
+	req := newAuthDispatchRequest("gpt-5.4", "", "", nil, 0, "", nil, "")
 
 	if req.Count != 1 {
 		t.Fatalf("count = %d, want 1", req.Count)
@@ -60,7 +60,7 @@ func TestAuthDispatchRequestDefaultsCountToOne(t *testing.T) {
 }
 
 func TestAuthDispatchRequestIncludesCredentialPolicy(t *testing.T) {
-	req := newAuthDispatchRequest("gpt-5.4", "", nil, 1, "codex_alpha_search_v1", nil, "")
+	req := newAuthDispatchRequest("gpt-5.4", "", "", nil, 1, "codex_alpha_search_v1", nil, "")
 	raw, errMarshal := json.Marshal(&req)
 	if errMarshal != nil {
 		t.Fatalf("marshal auth dispatch request: %v", errMarshal)
@@ -76,7 +76,7 @@ func TestAuthDispatchRequestIncludesCredentialPolicy(t *testing.T) {
 
 func TestAuthDispatchRequestIncludesExcludedAuthIDs(t *testing.T) {
 	excludedAuthIDs := []string{"auth-a", "auth-b"}
-	req := newAuthDispatchRequest("gpt-5.4", "", nil, 2, "", &excludedAuthIDs, "")
+	req := newAuthDispatchRequest("gpt-5.4", "", "", nil, 2, "", &excludedAuthIDs, "")
 	if req.Count != 1 {
 		t.Fatalf("new retry-contract count = %d, want 1 for legacy Home compatibility", req.Count)
 	}
@@ -96,7 +96,7 @@ func TestAuthDispatchRequestIncludesExcludedAuthIDs(t *testing.T) {
 
 func TestAuthDispatchRequestIncludesEmptyExcludedAuthIDs(t *testing.T) {
 	excludedAuthIDs := []string{}
-	req := newAuthDispatchRequest("gpt-5.4", "", nil, 2, "", &excludedAuthIDs, "")
+	req := newAuthDispatchRequest("gpt-5.4", "", "", nil, 2, "", &excludedAuthIDs, "")
 	if req.Count != 1 {
 		t.Fatalf("new retry-contract count = %d, want 1 for legacy Home compatibility", req.Count)
 	}
@@ -116,7 +116,7 @@ func TestAuthDispatchRequestIncludesEmptyExcludedAuthIDs(t *testing.T) {
 
 func TestAuthDispatchRequestIncludesPinnedAuthID(t *testing.T) {
 	excludedAuthIDs := []string{}
-	req := newAuthDispatchRequest("gpt-5.4", "", nil, 2, "", &excludedAuthIDs, " auth-pinned ")
+	req := newAuthDispatchRequest("gpt-5.4", "", "", nil, 2, "", &excludedAuthIDs, " auth-pinned ")
 
 	raw, errMarshal := json.Marshal(&req)
 	if errMarshal != nil {
@@ -133,7 +133,7 @@ func TestAuthDispatchRequestIncludesPinnedAuthID(t *testing.T) {
 
 func TestAuthDispatchRequestDistinguishesLegacyAndRetryRoundProtocol(t *testing.T) {
 	excludedAuthIDs := []string{"auth-a"}
-	legacy := newAuthDispatchRequest("gpt-5.4", "", nil, 3, "", &excludedAuthIDs, "")
+	legacy := newAuthDispatchRequest("gpt-5.4", "", "", nil, 3, "", &excludedAuthIDs, "")
 	legacyRaw, errMarshal := json.Marshal(&legacy)
 	if errMarshal != nil {
 		t.Fatalf("marshal legacy auth dispatch request: %v", errMarshal)
@@ -146,7 +146,7 @@ func TestAuthDispatchRequestDistinguishesLegacyAndRetryRoundProtocol(t *testing.
 		t.Fatalf("legacy request unexpectedly included retry_round: %#v", legacyPayload["retry_round"])
 	}
 
-	initial := newAuthDispatchRequestWithRetryRound("gpt-5.4", "", nil, 3, "", 0, &excludedAuthIDs, "")
+	initial := newAuthDispatchRequestWithRetryRound("gpt-5.4", "", "", nil, 3, "", 0, &excludedAuthIDs, "")
 	initialRaw, errMarshal := json.Marshal(&initial)
 	if errMarshal != nil {
 		t.Fatalf("marshal initial auth dispatch request: %v", errMarshal)
@@ -162,7 +162,7 @@ func TestAuthDispatchRequestDistinguishesLegacyAndRetryRoundProtocol(t *testing.
 		t.Fatalf("initial retry-contract count = %d, want 1", got)
 	}
 
-	additional := newAuthDispatchRequestWithRetryRound("gpt-5.4", "", nil, 3, "", 2, &excludedAuthIDs, "")
+	additional := newAuthDispatchRequestWithRetryRound("gpt-5.4", "", "", nil, 3, "", 2, &excludedAuthIDs, "")
 	additionalRaw, errMarshal := json.Marshal(&additional)
 	if errMarshal != nil {
 		t.Fatalf("marshal additional auth dispatch request: %v", errMarshal)
@@ -176,6 +176,31 @@ func TestAuthDispatchRequestDistinguishesLegacyAndRetryRoundProtocol(t *testing.
 	}
 	if got := additionalPayload["excluded_auth_ids"].([]any); len(got) != 1 || got[0] != "auth-a" {
 		t.Fatalf("excluded_auth_ids = %#v, want [auth-a]", additionalPayload["excluded_auth_ids"])
+	}
+}
+
+func TestAuthDispatchRequestIncludesParentSessionID(t *testing.T) {
+	req := newAuthDispatchRequest("gpt-5.4", "slot:pi-sub1", "slot:pi-main", nil, 1, "", nil, "")
+	if req.SessionID != "slot:pi-sub1" {
+		t.Fatalf("session_id = %q, want slot:pi-sub1", req.SessionID)
+	}
+	if req.ParentSessionID != "slot:pi-main" {
+		t.Fatalf("parent_session_id = %q, want slot:pi-main", req.ParentSessionID)
+	}
+
+	raw, errMarshal := json.Marshal(&req)
+	if errMarshal != nil {
+		t.Fatalf("marshal auth dispatch request: %v", errMarshal)
+	}
+	var payload map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal auth dispatch request: %v", errUnmarshal)
+	}
+	if got := payload["session_id"]; got != "slot:pi-sub1" {
+		t.Fatalf("session_id = %#v, want slot:pi-sub1", got)
+	}
+	if got := payload["parent_session_id"]; got != "slot:pi-main" {
+		t.Fatalf("parent_session_id = %#v, want slot:pi-main", got)
 	}
 }
 
@@ -1246,6 +1271,7 @@ func newRedisCommandTestClient(t *testing.T, handler func([]string) string) (*Cl
 		Port:                    port,
 		DisableClusterDiscovery: true,
 	})
+	client.testOperationTimeout = homeRedisTestOperationTimeout
 	options := &redis.Options{
 		Addr:                  listener.Addr().String(),
 		Protocol:              2,
@@ -1258,6 +1284,7 @@ func newRedisCommandTestClient(t *testing.T, handler func([]string) string) (*Cl
 	}
 	client.cmdOptions = cloneRedisOptions(options)
 	client.cmd = redis.NewClient(options)
+	client.sub = redis.NewClient(cloneRedisOptions(options))
 	t.Cleanup(func() {
 		client.Close()
 	})
@@ -1648,8 +1675,10 @@ func TestRunConfigSubscriberLifetimeRejectsInvalidSubscriptionACK(t *testing.T) 
 				switch {
 				case len(args) >= 1 && strings.EqualFold(args[0], "HELLO"):
 					return "%6\r\n$6\r\nserver\r\n$5\r\nredis\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n"
+				case len(args) >= 2 && strings.EqualFold(args[0], "CLUSTER") && strings.EqualFold(args[1], "NODES"):
+					return "-ERR unknown command 'CLUSTER'\r\n"
 				case len(args) >= 2 && strings.EqualFold(args[0], "GET") && args[1] == redisKeyConfig:
-					return "$16\r\nhost: 127.0.0.1\r\n"
+					return "$15\r\nhost: 127.0.0.1\r\n"
 				case len(args) >= 2 && strings.EqualFold(args[0], "SUBSCRIBE") && args[1] == redisChannelConfig:
 					return ack
 				default:
@@ -2264,6 +2293,30 @@ func TestRunConfigSubscriberLifetimePreservesTakeoverWhenFreshCommandProbeFails(
 	args, _ := next.subscriptionParameters()
 	if !reflect.DeepEqual(args, []string{"config", "9", "takeover", client.MembershipInstanceID()}) {
 		t.Fatalf("replacement SUBSCRIBE args = %#v, want takeover", args)
+	}
+}
+
+func TestDefaultProductionClientTimeouts(t *testing.T) {
+	client := New(config.HomeConfig{Enabled: true, Host: "127.0.0.1", Port: 6379})
+	if client.testOperationTimeout != 0 {
+		t.Fatalf("default testOperationTimeout = %v, want 0", client.testOperationTimeout)
+	}
+	options, err := client.redisOptionsLocked("127.0.0.1:6379")
+	if err != nil {
+		t.Fatalf("redisOptionsLocked() error = %v", err)
+	}
+	if options.DialTimeout != homeRedisOperationTimeout {
+		t.Fatalf("DialTimeout = %v, want %v", options.DialTimeout, homeRedisOperationTimeout)
+	}
+	if options.ReadTimeout != homeRedisOperationTimeout {
+		t.Fatalf("ReadTimeout = %v, want %v", options.ReadTimeout, homeRedisOperationTimeout)
+	}
+	if options.WriteTimeout != homeRedisOperationTimeout {
+		t.Fatalf("WriteTimeout = %v, want %v", options.WriteTimeout, homeRedisOperationTimeout)
+	}
+	_, timeout := client.subscriptionParameters()
+	if timeout != 3*time.Second {
+		t.Fatalf("subscriptionParameters timeout = %v, want 3s", timeout)
 	}
 }
 

@@ -1434,7 +1434,7 @@ func (m *Manager) useSchedulerFastPath() bool {
 	if m == nil || m.scheduler == nil {
 		return false
 	}
-	return isBuiltInSelector(m.selector)
+	return isBuiltInSelector(m.Selector())
 }
 
 func shouldRetrySchedulerPick(err error) bool {
@@ -1467,13 +1467,13 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	opts.EnsureMetadata()
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
-	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(m.selector, model)
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 
 	m.mu.RLock()
 	selector := m.selector
+	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
 	pluginScheduler := m.pluginScheduler
 	executor, okExecutor := m.executors[provider]
 	if !okExecutor {
@@ -1785,7 +1785,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	opts.EnsureMetadata()
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
-	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(m.selector, model)
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -1804,6 +1803,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	m.mu.RLock()
 	selector := m.selector
+	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
 	pluginScheduler := m.pluginScheduler
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
