@@ -2361,6 +2361,30 @@ func TestUsageAdapterPreservesServiceTierMetadata(t *testing.T) {
 	}
 }
 
+func TestUsageAdapterPreservesSemanticTimingMetadata(t *testing.T) {
+	var got pluginapi.UsageRecord
+	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
+		got = record
+	})
+	host := newHostWithRecords(capabilityRecord{
+		id: "usage-timing",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			UsagePlugin: plugin,
+		}},
+	})
+	adapter := &usageAdapter{host: host, pluginID: "usage-timing"}
+	adapter.HandleUsage(context.Background(), coreusage.Record{
+		Provider:      "codex",
+		TimingVersion: coreusage.TimingVersionV1,
+		TTFB:          120 * time.Millisecond,
+		TTFT:          480 * time.Millisecond,
+		TTFA:          920 * time.Millisecond,
+	})
+	if got.TimingVersion != coreusage.TimingVersionV1 || got.TTFB != 120*time.Millisecond || got.TTFT != 480*time.Millisecond || got.TTFA != 920*time.Millisecond {
+		t.Fatalf("plugin timing = version:%d ttfb:%v ttft:%v ttfa:%v, want 1/120ms/480ms/920ms", got.TimingVersion, got.TTFB, got.TTFT, got.TTFA)
+	}
+}
+
 func TestUsageAdapterDetachesContext(t *testing.T) {
 	var receivedCtx context.Context
 	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {

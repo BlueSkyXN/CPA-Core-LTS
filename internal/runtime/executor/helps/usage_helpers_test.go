@@ -774,7 +774,7 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 }
 
-func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
+func TestUsageReporterTrackHTTPClientStartsTTFBBeforeRoundTrip(t *testing.T) {
 	delay := 40 * time.Millisecond
 	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
@@ -805,11 +805,69 @@ func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
 	if errClose := resp.Body.Close(); errClose != nil {
 		t.Fatalf("response body close error = %v", errClose)
 	}
-	if got := reporter.ttftDuration(); got < delay {
-		t.Fatalf("ttft = %v, want >= %v", got, delay)
+	if got := reporter.timingSnapshot().TTFB; got < delay {
+		t.Fatalf("ttfb = %v, want >= %v", got, delay)
+	}
+}
+
+func TestUsageReporterTrackedStreamCapturesSemanticTiming(t *testing.T) {
+	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.6", nil)
+	reporter.EnableSemanticTiming("openai-response")
+	client := reporter.TrackHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\n" +
+						"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",
+				)),
+				Request: req,
+			}, nil
+		}),
+	})
+	req, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.invalid/v1/responses", strings.NewReader("{}"))
+	if errNewRequest != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", errNewRequest)
+	}
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		t.Fatalf("Do() error = %v", errDo)
+	}
+	if _, errRead := io.ReadAll(resp.Body); errRead != nil {
+		t.Fatalf("ReadAll() error = %v", errRead)
+	}
+	record := reporter.buildRecord(usage.Detail{}, false)
+	if record.TimingVersion != UsageTimingVersionV1 || record.TTFB <= 0 || record.TTFT <= 0 || record.TTFA <= 0 {
+		t.Fatalf("record timing = version:%d ttfb:%v ttft:%v ttfa:%v, want all populated", record.TimingVersion, record.TTFB, record.TTFT, record.TTFA)
 	}
 	if !cliproxyexecutor.UpstreamAttempted(ctx) {
 		t.Fatal("HTTP RoundTrip did not mark an upstream attempt")
+	}
+}
+
+func TestUsageReporterCanonicalTTFTDoesNotUseEffectiveAssistantToken(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", nil)
+	reporter.EnableSemanticTiming("openai-response")
+	reporter.StartResponseTiming()
+	time.Sleep(time.Millisecond)
+
+	payload := []byte(`{"type":"response.output_text.delta","delta":"answer"}`)
+	reporter.MarkFirstResponseByte()
+	reporter.ObserveTimingPayload("openai-response", payload)
+	ObserveResponsesTokenEvent(reporter, payload)
+
+	if !reporter.IsTTFTSet() {
+		t.Fatal("effective-token compatibility timing was not recorded")
+	}
+	record := reporter.buildRecord(usage.Detail{}, false)
+	if record.TTFT != 0 {
+		t.Fatalf("canonical reasoning TTFT = %v, want missing for assistant-only stream", record.TTFT)
+	}
+	if record.TTFA <= 0 {
+		t.Fatalf("canonical assistant TTFA = %v, want positive", record.TTFA)
 	}
 }
 
@@ -950,6 +1008,18 @@ func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	}
 	if record.Alias != "client-gpt" {
 		t.Fatalf("alias = %q, want %q", record.Alias, "client-gpt")
+	}
+}
+
+func TestUsageReporterBuildRecordVersionsUnobservedTiming(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.TimingVersion != UsageTimingVersionV1 {
+		t.Fatalf("record timing version = %d, want %d", record.TimingVersion, UsageTimingVersionV1)
+	}
+	if record.TTFB != 0 || record.TTFT != 0 || record.TTFA != 0 {
+		t.Fatalf("unobserved timing = ttfb:%v ttft:%v ttfa:%v, want all missing", record.TTFB, record.TTFT, record.TTFA)
 	}
 }
 

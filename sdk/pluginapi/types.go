@@ -1572,8 +1572,18 @@ type UsageRecord struct {
 	RequestedAt time.Time
 	// Latency is the total request latency.
 	Latency time.Duration
-	// TTFT is the time to first token for streaming requests.
-	TTFT time.Duration
+	// TimingVersion identifies the semantic timing contract used by the
+	// duration fields below. Zero means that no timing fields are trusted.
+	TimingVersion uint32 `json:"TimingVersion,omitempty"`
+	// TTFB is the time from the upstream attempt start to the first non-empty
+	// response byte or payload.
+	TTFB time.Duration `json:"TTFB,omitempty"`
+	// TTFT is the time from the upstream attempt start to the first non-empty
+	// reasoning content event.
+	TTFT time.Duration `json:"TTFT,omitempty"`
+	// TTFA is the time from the upstream attempt start to the first non-empty
+	// user-visible assistant text event.
+	TTFA time.Duration `json:"TTFA,omitempty"`
 	// Failed reports whether the request failed.
 	Failed bool
 	// Failure contains failure details when Failed is true.

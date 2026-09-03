@@ -27,6 +27,8 @@ features:
     core_files:
       - internal/usage/
       - internal/runtime/executor/helps/usage_helpers.go
+      - internal/runtime/executor/helps/usage_timing.go
+      - sdk/cliproxy/usage/manager.go
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/usage_contract_test.go
       - internal/api/server_management.go
@@ -38,6 +40,9 @@ features:
       - auth_index
       - latency_ms
       - ttfb_ms
+      - timing_version
+      - ttft_ms
+      - ttfa_ms
       - reasoning_effort
       - service_tier
       - request_service_tier
@@ -58,7 +63,7 @@ features:
     support: protected
     owner: cpa-core-lts
     upstream_relation: removed-upstream
-    reason: CPA-Panel-LTS and TUI depend on the retained Management usage routes and response fields, including canonical version 2 exports, lossless version 1 migration where semantics are provable, stable import error codes, migration receipts, and atomic rejection without partial merges.
+    reason: CPA-Panel-LTS and TUI depend on the retained Management usage routes and response fields, including canonical version 3 exports, lossless version 1/version 2 migration where semantics are provable, semantic timing fields, stable import error codes, migration receipts, and atomic rejection without partial merges.
     routes:
       - /v0/management/usage
       - /v0/management/usage/export
@@ -71,7 +76,10 @@ features:
       - internal/api/handlers/management/usage_contract_test.go
       - internal/tui/client.go
       - internal/tui/usage_tab.go
+      - sdk/cliproxy/usage/manager.go
+      - internal/runtime/executor/helps/usage_timing.go
       - docs/lts/change-control/CHG-20260722-USAGE-SCHEMA-V2.md
+      - docs/lts/change-control/CHG-20260902-USAGE-SCHEMA-V3.md
     required_markers:
       - 'mgmt.GET("/usage"'
       - 'mgmt.GET("/usage/export"'
@@ -92,19 +100,30 @@ features:
       - effective_service_tier
       - generate
       - CanonicalExportVersion
+      - TimingVersionV1
+      - timing_version
+      - ttfb_ms
+      - ttft_ms
+      - ttfa_ms
       - uncached_input_tokens
       - schema_version
       - migrated_from_version
+      - migrations
       - v1_uncached_input_tokens_to_v2
+      - v2_timing_contract_to_v3
       - usage_version_unsupported
       - usage_shape_invalid
       - usage_v1_token_contract_invalid
       - usage_v1_cache_semantics_ambiguous
       - usage_v2_token_contract_invalid
+      - usage_v1_timing_semantics_ambiguous
+      - usage_v2_timing_semantics_ambiguous
+      - usage_v3_token_contract_invalid
+      - usage_v3_timing_contract_invalid
       - usage_aggregate_overflow
     validation:
       - go test ./internal/api/handlers/management -run 'Usage|usage'
-      - go test ./internal/usage ./internal/api/handlers/management -run 'MigrateV1|CanonicalV2|UsageManagementImport'
+      - go test ./internal/usage ./internal/api/handlers/management -run 'MigrateV1|CanonicalV2|CanonicalV3|UsageManagementImport'
       - go test ./test -run 'Usage|usage'
 
   - id: panel-release-asset
@@ -394,6 +413,10 @@ features:
       - usage-queue
       - redisqueue
       - latency_ms
+      - timing_version
+      - ttfb_ms
+      - ttft_ms
+      - ttfa_ms
       - auth_index
       - outbound_service_tier
       - effective_service_tier

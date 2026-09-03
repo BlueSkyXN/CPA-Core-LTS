@@ -60,20 +60,33 @@ type Record struct {
 	Stream      bool
 	RequestedAt time.Time
 	Latency     time.Duration
-	TTFT        time.Duration
-	Failed      bool
-	Fail        Failure
-	Detail      Detail
+	// TimingVersion identifies the semantic timing contract used by the
+	// duration fields below. Zero means that no timing fields are trusted.
+	TimingVersion uint32
+	// TTFB is the time from the upstream attempt start to the first non-empty
+	// response byte or payload.
+	TTFB time.Duration
+	// TTFT is the time from the upstream attempt start to the first non-empty
+	// reasoning content event.
+	TTFT time.Duration
+	// TTFA is the time from the upstream attempt start to the first non-empty
+	// user-visible assistant text event.
+	TTFA   time.Duration
+	Failed bool
+	Fail   Failure
+	Detail Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }
 
 const (
-	UsageProvenanceExact                      = "exact"
-	UsageProvenanceProviderReportedUnverified = "provider_reported_unverified"
-	UsageProvenanceEstimated                  = "estimated"
-	UsageProvenanceUnavailable                = "unavailable"
-	UsageProvenanceQuotaSnapshot              = "quota_snapshot"
+	// TimingVersionV1 is the semantic timing contract used by TTFB/TTFT/TTFA.
+	TimingVersionV1                           uint32 = 1
+	UsageProvenanceExact                             = "exact"
+	UsageProvenanceProviderReportedUnverified        = "provider_reported_unverified"
+	UsageProvenanceEstimated                         = "estimated"
+	UsageProvenanceUnavailable                       = "unavailable"
+	UsageProvenanceQuotaSnapshot                     = "quota_snapshot"
 )
 
 // CanonicalUsageProvenance accepts only stable values used by usage sinks.

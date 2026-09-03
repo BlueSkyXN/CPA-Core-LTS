@@ -156,7 +156,7 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 			selected:   current,
 			dispatched: true,
 		}
-		attempt.reporter.StartResponseTTFT()
+		attempt.reporter.StartResponseTiming()
 		response, errRequest := h.authManager.HttpRequest(ctx, current, request)
 		if response != nil {
 			attempt.statusCode = response.StatusCode

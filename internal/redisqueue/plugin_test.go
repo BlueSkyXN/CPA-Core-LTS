@@ -104,6 +104,34 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	})
 }
 
+func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider:      "openai",
+			Model:         "gpt-5.6-sol",
+			TimingVersion: coreusage.TimingVersionV1,
+			TTFB:          120 * time.Millisecond,
+			TTFT:          480 * time.Millisecond,
+			TTFA:          920 * time.Millisecond,
+			Latency:       1500 * time.Millisecond,
+			Detail: coreusage.Detail{
+				InputTokens:  10,
+				OutputTokens: 20,
+				TotalTokens:  30,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireIntField(t, payload, "timing_version", int(coreusage.TimingVersionV1))
+		requireIntField(t, payload, "ttfb_ms", 120)
+		requireIntField(t, payload, "ttft_ms", 480)
+		requireIntField(t, payload, "ttfa_ms", 920)
+	})
+}
+
 func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithResponseStatusHolder(context.Background())

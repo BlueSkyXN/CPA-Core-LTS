@@ -71,10 +71,16 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 		defer close(out)
 		var usageBuffer helps.StreamUsageBuffer
 		sawPayload := false
+		firstPayload := true
 		var lineBuffer []byte
 		const maxLineBufferSize = 64 * 1024
 
 		observePayload := func(payload []byte) {
+			if firstPayload {
+				reporter.MarkFirstResponseByte()
+				firstPayload = false
+			}
+			reporter.ObserveTimingPayload(format.String(), payload)
 			helps.ObservePluginExecutorStreamTTFT(format.String(), reporter, payload)
 			lineBuffer = append(lineBuffer, payload...)
 			for {

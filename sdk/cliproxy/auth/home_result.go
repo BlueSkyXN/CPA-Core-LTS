@@ -59,6 +59,7 @@ func (m *Manager) reportHomeUnauthorized(ctx context.Context, auth *Auth, provid
 		ServiceTier:       coreusage.ServiceTierFromContext(ctx),
 		Generate:          coreusage.GenerateFlag(false),
 		RequestedAt:       time.Now(),
+		TimingVersion:     coreusage.TimingVersionV1,
 		Failed:            true,
 		Fail: coreusage.Failure{
 			StatusCode: http.StatusUnauthorized,

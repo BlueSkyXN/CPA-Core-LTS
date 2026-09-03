@@ -26,11 +26,16 @@ type usageImportPayload struct {
 
 const (
 	usageV1MigrationName               = "v1_uncached_input_tokens_to_v2"
+	usageV2TimingMigrationName         = "v2_timing_contract_to_v3"
 	usageCodeVersionUnsupported        = "usage_version_unsupported"
 	usageCodeShapeInvalid              = "usage_shape_invalid"
 	usageCodeV1TokenContractInvalid    = "usage_v1_token_contract_invalid"
 	usageCodeV1CacheSemanticsAmbiguous = "usage_v1_cache_semantics_ambiguous"
 	usageCodeV2TokenContractInvalid    = "usage_v2_token_contract_invalid"
+	usageCodeV3TokenContractInvalid    = "usage_v3_token_contract_invalid"
+	usageCodeV1TimingAmbiguous         = "usage_v1_timing_semantics_ambiguous"
+	usageCodeV2TimingAmbiguous         = "usage_v2_timing_semantics_ambiguous"
+	usageCodeV3TimingInvalid           = "usage_v3_timing_contract_invalid"
 	usageCodeAggregateOverflow         = "usage_aggregate_overflow"
 )
 
@@ -77,12 +82,21 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		writeUsageImportError(c, usageCodeShapeInvalid, "invalid json")
 		return
 	}
-	if version != 1 && version != usage.CanonicalExportVersion {
+	if version != 1 && version != 2 && version != usage.CanonicalExportVersion {
 		writeUsageImportError(c, usageCodeVersionUnsupported, "unsupported version")
 		return
 	}
-	if err := validateUsageImportRawShape(data); err != nil {
-		writeUsageImportError(c, usageCodeShapeInvalid, "invalid usage shape")
+	if err := validateUsageImportRawShape(data, version); err != nil {
+		switch {
+		case errors.Is(err, errUsageV1TimingSemanticsAmbiguous):
+			writeUsageImportError(c, usageCodeV1TimingAmbiguous, err.Error())
+		case errors.Is(err, errUsageV2TimingSemanticsAmbiguous):
+			writeUsageImportError(c, usageCodeV2TimingAmbiguous, err.Error())
+		case errors.Is(err, errUsageV3TimingContractInvalid):
+			writeUsageImportError(c, usageCodeV3TimingInvalid, err.Error())
+		default:
+			writeUsageImportError(c, usageCodeShapeInvalid, "invalid usage shape")
+		}
 		return
 	}
 
@@ -119,7 +133,7 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 			return
 		}
 		migratedFromVersion = 1
-	} else {
+	} else if version == 2 {
 		if payload.Usage.HasLegacyUncachedInputTokens() {
 			writeUsageImportError(c, usageCodeV2TokenContractInvalid, "canonical usage payload must not contain uncached_input_tokens")
 			return
@@ -128,12 +142,32 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 			writeUsageImportError(c, usageCodeV2TokenContractInvalid, usage.ErrInvalidCanonicalTokenStats.Error())
 			return
 		}
+		migratedFromVersion = 2
+	} else {
+		if payload.Usage.HasLegacyUncachedInputTokens() {
+			writeUsageImportError(c, usageCodeV3TokenContractInvalid, "canonical usage payload must not contain uncached_input_tokens")
+			return
+		}
+		if err := payload.Usage.ValidateCanonicalV3TokenStats(); err != nil {
+			writeUsageImportError(c, usageCodeV3TokenContractInvalid, usage.ErrInvalidCanonicalTokenStats.Error())
+			return
+		}
+	}
+	if version == usage.CanonicalExportVersion {
+		if err := payload.Usage.ValidateCanonicalTimingStats(); err != nil {
+			writeUsageImportError(c, usageCodeV3TimingInvalid, err.Error())
+			return
+		}
 	}
 
 	result, err := h.usageStats.MergeSnapshot(payload.Usage)
 	if err != nil {
 		if errors.Is(err, usage.ErrUsageAggregateOverflow) {
 			writeUsageImportError(c, usageCodeAggregateOverflow, usage.ErrUsageAggregateOverflow.Error())
+			return
+		}
+		if errors.Is(err, usage.ErrInvalidCanonicalTimingStats) {
+			writeUsageImportError(c, usageCodeV3TimingInvalid, err.Error())
 			return
 		}
 		writeUsageImportError(c, usageCodeShapeInvalid, "failed to merge usage statistics")
@@ -149,12 +183,22 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 	}
 	if migratedFromVersion != 0 {
 		response["migrated_from_version"] = migratedFromVersion
-		response["migration"] = usageV1MigrationName
+		migrations := []string{usageV2TimingMigrationName}
+		if migratedFromVersion == 1 {
+			migrations = []string{usageV1MigrationName, usageV2TimingMigrationName}
+		}
+		response["migrations"] = migrations
 	}
 	c.JSON(http.StatusOK, response)
 }
 
-func validateUsageImportRawShape(data []byte) error {
+var (
+	errUsageV1TimingSemanticsAmbiguous = errors.New("version 1 timing semantics are ambiguous")
+	errUsageV2TimingSemanticsAmbiguous = errors.New("version 2 timing semantics are ambiguous")
+	errUsageV3TimingContractInvalid    = errors.New("version 3 timing contract is invalid")
+)
+
+func validateUsageImportRawShape(data []byte, version int) error {
 	root, err := unmarshalUsageObject(data)
 	if err != nil {
 		return err
@@ -235,7 +279,13 @@ func validateUsageImportRawShape(data []byte) error {
 					"generate",
 					"failure_reason",
 					"failure_status",
+					"timing_version",
+					"ttft_ms",
+					"ttfa_ms",
 				); err != nil {
+					return err
+				}
+				if err := validateUsageTimingRawShape(detailObject, version); err != nil {
 					return err
 				}
 				rawTokens, exists := detailObject["tokens"]
@@ -270,6 +320,104 @@ func validateUsageImportRawShape(data []byte) error {
 		}
 	}
 	return nil
+}
+
+func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int) error {
+	_, hasTimingVersion := detail["timing_version"]
+	_, hasTTFB := detail["ttfb_ms"]
+	_, hasTTFT := detail["ttft_ms"]
+	_, hasTTFA := detail["ttfa_ms"]
+	if rawLatency, hasLatency := detail["latency_ms"]; hasLatency {
+		if _, ok := rawNonNegativeInt64(rawLatency); !ok {
+			if version == 3 {
+				return errUsageV3TimingContractInvalid
+			}
+			return errors.New("legacy latency_ms must be a non-negative integer")
+		}
+	}
+
+	if version == 1 || version == 2 {
+		if hasTimingVersion || hasTTFT || hasTTFA {
+			if version == 1 {
+				return errUsageV1TimingSemanticsAmbiguous
+			}
+			return errUsageV2TimingSemanticsAmbiguous
+		}
+		if !hasTTFB {
+			return nil
+		}
+		ttfb, ok := rawNonNegativeInt64(detail["ttfb_ms"])
+		if !ok {
+			return errors.New("legacy ttfb_ms must be a non-negative integer")
+		}
+		latency, latencyOK := rawNonNegativeInt64(detail["latency_ms"])
+		if !latencyOK || ttfb > latency {
+			return errors.New("legacy ttfb_ms must not exceed latency_ms")
+		}
+		return nil
+	}
+
+	if hasTimingVersion {
+		var timingVersion uint32
+		if !rawInteger(detail["timing_version"]) || json.Unmarshal(detail["timing_version"], &timingVersion) != nil || timingVersion != 1 {
+			return errUsageV3TimingContractInvalid
+		}
+	}
+
+	var ttfb, ttft, ttfa int64
+	if hasTTFB {
+		var ok bool
+		ttfb, ok = rawNonNegativeInt64(detail["ttfb_ms"])
+		if !ok {
+			return errUsageV3TimingContractInvalid
+		}
+	}
+	if hasTTFT {
+		var ok bool
+		ttft, ok = rawNonNegativeInt64(detail["ttft_ms"])
+		if !ok {
+			return errUsageV3TimingContractInvalid
+		}
+	}
+	if hasTTFA {
+		var ok bool
+		ttfa, ok = rawNonNegativeInt64(detail["ttfa_ms"])
+		if !ok {
+			return errUsageV3TimingContractInvalid
+		}
+	}
+	if !hasTTFB && (hasTTFT || hasTTFA) {
+		return errUsageV3TimingContractInvalid
+	}
+	if hasTTFB || hasTTFT || hasTTFA {
+		latency, ok := rawNonNegativeInt64(detail["latency_ms"])
+		if !ok || ttfb > latency || ttft > latency || ttfa > latency {
+			return errUsageV3TimingContractInvalid
+		}
+		if (hasTTFT || hasTTFA) && !hasTimingVersion {
+			return errUsageV3TimingContractInvalid
+		}
+	}
+	return nil
+}
+
+func rawInteger(raw json.RawMessage) bool {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var value int64
+	return json.Unmarshal(raw, &value) == nil
+}
+
+func rawNonNegativeInt64(raw json.RawMessage) (int64, bool) {
+	if !rawInteger(raw) {
+		return 0, false
+	}
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 func rejectUsageFieldAliases(object map[string]json.RawMessage, fields ...string) error {
@@ -421,6 +569,10 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 func writeUsageImportTokenContractError(c *gin.Context, version int) {
 	if version == 1 {
 		writeUsageImportError(c, usageCodeV1TokenContractInvalid, usage.ErrInvalidLegacyTokenStats.Error())
+		return
+	}
+	if version == usage.CanonicalExportVersion {
+		writeUsageImportError(c, usageCodeV3TokenContractInvalid, usage.ErrInvalidCanonicalTokenStats.Error())
 		return
 	}
 	writeUsageImportError(c, usageCodeV2TokenContractInvalid, usage.ErrInvalidCanonicalTokenStats.Error())

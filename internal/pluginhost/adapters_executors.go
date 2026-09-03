@@ -1279,7 +1279,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	defer stopCancellationWatch()
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	if reporter != nil {
-		reporter.StartResponseTTFT()
+		reporter.StartResponseTiming()
 	}
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
@@ -1296,7 +1296,10 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
 	if reporter != nil {
-		reporter.RecordFirstPacket()
+		if len(pluginResp.Payload) > 0 {
+			reporter.MarkFirstResponseByte()
+			reporter.RecordFirstPacket()
+		}
 		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
 		}
@@ -1347,7 +1350,8 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	defer stopBootstrapCancellationWatch()
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	if reporter != nil {
-		reporter.StartResponseTTFT()
+		reporter.EnableSemanticTiming(prepared.outputFormat.String())
+		reporter.StartResponseTiming()
 	}
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
@@ -1389,6 +1393,9 @@ func (a *executorAdapter) watchExecutorStreamCancellation(ctx context.Context, r
 				return
 			case chunk, ok := <-in:
 				if !ok {
+					if ctx.Err() != nil {
+						a.cancelExecutionAsync(req, executionCancelReason(ctx))
+					}
 					return
 				}
 				select {

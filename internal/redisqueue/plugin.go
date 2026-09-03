@@ -105,7 +105,6 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	detail := requestDetail{
 		Timestamp:       timestamp,
 		LatencyMs:       record.Latency.Milliseconds(),
-		TTFTMs:          record.TTFT.Milliseconds(),
 		Source:          record.Source,
 		UsageProvenance: coreusage.CanonicalUsageProvenance(record.UsageProvenance),
 		AuthIndex:       record.AuthIndex,
@@ -119,6 +118,12 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Stream:          stream,
 		Fail:            fail,
 		ResponseHeaders: usageResponseHeaders(record.ResponseHeaders),
+	}
+	if record.TimingVersion == coreusage.TimingVersionV1 {
+		detail.TimingVersion = record.TimingVersion
+		detail.TTFBMs = record.TTFB.Milliseconds()
+		detail.TTFTMs = record.TTFT.Milliseconds()
+		detail.TTFAMs = record.TTFA.Milliseconds()
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
@@ -169,7 +174,10 @@ type queuedUsageDetail struct {
 type requestDetail struct {
 	Timestamp       time.Time   `json:"timestamp"`
 	LatencyMs       int64       `json:"latency_ms"`
-	TTFTMs          int64       `json:"ttft_ms"`
+	TimingVersion   uint32      `json:"timing_version,omitempty"`
+	TTFBMs          int64       `json:"ttfb_ms,omitempty"`
+	TTFTMs          int64       `json:"ttft_ms,omitempty"`
+	TTFAMs          int64       `json:"ttfa_ms,omitempty"`
 	Source          string      `json:"source"`
 	UsageProvenance string      `json:"usage_provenance,omitempty"`
 	AuthIndex       string      `json:"auth_index"`
