@@ -11,7 +11,7 @@ Key files: `handler.go`, `config_*.go`, `auth_files*.go`, `oauth_sessions.go`, `
 - Management availability, route registration, remote-access policy, and credential validation are separate concerns. Home mode keeps the Management surface unavailable.
 - Config writes must preserve comments/order through existing config helpers and must trigger the established generation-ordered reload path.
 - Auth file upload/download/delete/patch must preserve safe filename/path handling, private-file permissions, registered-record synchronization, plugin-virtual-source rules, and the rollback behavior implemented by each flow.
-- Usage export/import follows the canonical v2 contract in `internal/usage/AGENTS.md`; malformed, unsupported, ambiguous, or overflowing imports fail atomically with stable error codes.
+- Usage export/import follows the canonical v3 contract in `internal/usage/AGENTS.md`; released v1/v2 payloads migrate only when their token and timing semantics are provable, while malformed, unsupported, ambiguous, or overflowing imports fail atomically with stable error codes.
 - Plugin routes must remain namespaced and must not collide with built-in method/path pairs.
 
 ## Do not

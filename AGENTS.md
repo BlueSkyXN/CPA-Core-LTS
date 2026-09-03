@@ -33,6 +33,16 @@
 
 如果 upstream diff 触碰 request lifecycle、auth identity、model resolution、token accounting、logging metadata、Management usage response shape、config hot reload、panel release source、plugin runtime 或 usage queue，即使没有文本冲突，也必须写 `Protected delta review`。
 
+## Source lookup priority
+
+源码查找和 GitHub 远程状态核验是两类操作，不要混用：
+
+- **当前项目代码**：先读取当前 worktree 以及本地 `main` / `origin/main`；优先使用 `rg`、`git show`、`git diff`、`git log`。不要仅因任务出现“当前”“最新”或“原作者”就调用 `gh api`。
+- **原作者 upstream 代码**：先读取本地 `upstream/main` 及其他 remote-tracking refs。只有本地 ref 缺失或明显过旧，且确实需要最新 upstream 源码时，才说明原因并执行只读目的的 `git fetch upstream`（需要网络，会更新本地 remote-tracking refs），随后核对 fetch 前后的 SHA。
+- **GitHub 远程状态**：PR、CI、Release、Issue、远程分支状态等元数据才使用 `gh` / `gh api`；本地 refs 尚未包含的源码优先通过上面的 `git fetch upstream` 获取，不用 `gh api` 代替 Git 历史。调用 `gh` 时必须显式指定目标仓库（LTS 使用 `-R BlueSkyXN/CPA-Core-LTS`，upstream 使用 `-R router-for-me/CLIProxyAPI`）。
+- **部署和运行态**：部署版本、runtime、UAT 和外部服务状态必须单独核验，不能用本地源码、GitHub 源码或 PR 状态替代。
+- 如果确实需要远程查询，先写明本地检查过的 ref、远程查询要解决的问题及预期证据；不得用远程内容覆盖 dirty worktree 或替代本地未提交改动。
+
 ## Directory map
 
 | Path | Responsibility | Local AGENTS.md | Read when |
