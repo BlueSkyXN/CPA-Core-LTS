@@ -170,6 +170,7 @@ require_grep "ttfb_ms" internal/usage internal/api/handlers/management
 require_grep "timing_version" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttft_ms" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttfa_ms" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "ttfr_ms" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "UserEndpoint" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep "UserEndpointUserAgent" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep 'case "amd64"' internal/auth/xai/types.go

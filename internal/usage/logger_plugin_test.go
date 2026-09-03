@@ -45,19 +45,39 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	if details[0].TTFTMs != 700 || details[0].TTFAMs != 900 || details[0].TimingVersion != 1 {
 		t.Fatalf("semantic timing = version:%d ttft:%d ttfa:%d, want 1/700/900", details[0].TimingVersion, details[0].TTFTMs, details[0].TTFAMs)
 	}
+	if details[0].TTFRMs != 700 {
+		t.Fatalf("ttfr_ms = %d, want 700 (reasoning-only)", details[0].TTFRMs)
+	}
+	// MarshalJSON should re-compute "ttft_ms" to the backward-compat value.
+	encoded, err := json.Marshal(details[0])
+	if err != nil {
+		t.Fatalf("marshal detail: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"ttft_ms":700`)) {
+		t.Fatalf("backward-compat ttft_ms missing in marshalled detail: %s", encoded)
+	}
+	if !bytes.Contains(encoded, []byte(`"ttfr_ms":700`)) {
+		t.Fatalf("canonical ttfr_ms missing in marshalled detail: %s", encoded)
+	}
 }
 
 func TestRequestDetailTimingPresencePreservesMeasuredZeroAndMissingFields(t *testing.T) {
+	// Pre-split v3 export: has ttft_ms but no ttfr_ms. UnmarshalJSON should
+	// migrate ttft_ms → TTFRMs so the canonical internal state is populated.
 	data := []byte(`{"timestamp":"2026-03-20T12:00:00Z","latency_ms":10,"timing_version":1,"ttfb_ms":0,"ttft_ms":0,"tokens":{"input_tokens":1,"output_tokens":1,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":2},"failed":false,"generate":true}`)
 	var detail RequestDetail
 	if err := json.Unmarshal(data, &detail); err != nil {
 		t.Fatalf("unmarshal explicit zero timing detail: %v", err)
 	}
+	// Migration should copy ttft_ms to TTFRMs.
+	if detail.TTFRMs != 0 {
+		t.Fatalf("migrated TTFRMs = %d, want 0", detail.TTFRMs)
+	}
 	encoded, err := json.Marshal(detail)
 	if err != nil {
 		t.Fatalf("marshal explicit zero timing detail: %v", err)
 	}
-	for _, field := range []string{`"timing_version":1`, `"ttfb_ms":0`, `"ttft_ms":0`} {
+	for _, field := range []string{`"timing_version":1`, `"ttfb_ms":0`, `"ttft_ms":0`, `"ttfr_ms":0`} {
 		if !bytes.Contains(encoded, []byte(field)) {
 			t.Fatalf("round-tripped detail missing %s: %s", field, encoded)
 		}
@@ -80,7 +100,7 @@ func TestRequestDetailTimingPresencePreservesMeasuredZeroAndMissingFields(t *tes
 	if !bytes.Contains(generated, []byte(`"timing_version":1`)) {
 		t.Fatalf("generated detail missing timing_version: %s", generated)
 	}
-	for _, field := range []string{`"ttfb_ms"`, `"ttft_ms"`, `"ttfa_ms"`} {
+	for _, field := range []string{`"ttfb_ms"`, `"ttft_ms"`, `"ttfa_ms"`, `"ttfr_ms"`} {
 		if bytes.Contains(generated, []byte(field)) {
 			t.Fatalf("generated detail emitted unobserved %s: %s", field, generated)
 		}

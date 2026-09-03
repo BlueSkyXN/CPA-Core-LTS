@@ -110,8 +110,14 @@ type RequestDetail struct {
 	TimingVersion uint32 `json:"timing_version,omitempty"`
 	// TTFBMs records the first upstream response byte/payload latency.
 	TTFBMs int64 `json:"ttfb_ms,omitempty"`
-	// TTFTMs records the first non-empty reasoning content latency.
+	// TTFTMs stores the canonical first-reasoning-token latency internally.
+	// MarshalJSON re-computes the output "ttft_ms" value to preserve the
+	// legacy "first meaningful token" semantic for backward compatibility.
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
+	// TTFRMs stores the canonical v3 first-reasoning-token latency. It is
+	// zero when the upstream response contains no reasoning content.
+	// New downstream consumers should prefer this field over ttft_ms.
+	TTFRMs int64 `json:"ttfr_ms,omitempty"`
 	// TTFAMs records the first non-empty assistant text latency.
 	TTFAMs               int64      `json:"ttfa_ms,omitempty"`
 	Source               string     `json:"source"`
@@ -140,11 +146,15 @@ const (
 	timingTTFBPresent
 	timingTTFTPresent
 	timingTTFAPresent
+	timingTTFRPresent
 )
 
 // MarshalJSON preserves explicit zero timing values. The scalar fields remain
 // source-compatible for existing callers, while the private presence mask
 // keeps an omitted field distinct from a measured zero after import/export.
+// The output "ttft_ms" is re-computed as the earlier of TTFTMs/TTFRMs and
+// TTFAMs to retain the legacy "first meaningful token" semantic for
+// downstream consumers that pre-date the v3 reasoning/assistant split.
 func (d RequestDetail) MarshalJSON() ([]byte, error) {
 	type requestDetailAlias RequestDetail
 	encoded, err := json.Marshal(requestDetailAlias(d))
@@ -172,17 +182,30 @@ func (d RequestDetail) MarshalJSON() ([]byte, error) {
 	if err := setField("ttfb_ms", d.TTFBMs, d.timingFieldPresent(timingTTFBPresent)); err != nil {
 		return nil, err
 	}
-	if err := setField("ttft_ms", d.TTFTMs, d.timingFieldPresent(timingTTFTPresent)); err != nil {
+	// ttfr_ms: canonical reasoning-only latency.
+	if err := setField("ttfr_ms", d.TTFRMs, d.timingFieldPresent(timingTTFRPresent)); err != nil {
 		return nil, err
 	}
 	if err := setField("ttfa_ms", d.TTFAMs, d.timingFieldPresent(timingTTFAPresent)); err != nil {
 		return nil, err
+	}
+	// ttft_ms: backward-compatible "first meaningful token" (earlier of reasoning/assistant).
+	if d.timingFieldPresent(timingTTFTPresent) || d.timingFieldPresent(timingTTFAPresent) || d.timingFieldPresent(timingTTFRPresent) {
+		compatTTFT := firstMeaningfulTokenMsCompat(d.TTFTMs, d.TTFAMs)
+		raw, err := json.Marshal(compatTTFT)
+		if err != nil {
+			return nil, err
+		}
+		fields["ttft_ms"] = raw
 	}
 	return json.Marshal(fields)
 }
 
 // UnmarshalJSON keeps legacy usage exports compatible with the generate field.
 // Missing or null values mean generation was enabled; only an explicit false disables it.
+// When a v3 payload contains "ttfr_ms" the value is stored in TTFRMs; when a legacy
+// v3 export only carries "ttft_ms" (pre-split) it is migrated to TTFRMs so the
+// canonical internal representation always holds the reasoning latency.
 func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 	type requestDetailAlias RequestDetail
 	var decoded requestDetailAlias
@@ -200,7 +223,7 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
-	for _, field := range []string{"timing_version", "ttfb_ms", "ttft_ms", "ttfa_ms"} {
+	for _, field := range []string{"timing_version", "ttfb_ms", "ttft_ms", "ttfa_ms", "ttfr_ms"} {
 		if rawValue, ok := fields[field]; ok && strings.EqualFold(strings.TrimSpace(string(rawValue)), "null") {
 			return fmt.Errorf("%w: %s must be an integer", ErrInvalidCanonicalTimingStats, field)
 		}
@@ -208,6 +231,18 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 
 	*d = RequestDetail(decoded)
 	d.Generate = generate
+
+	// Read ttfr_ms if present in the JSON.
+	var ttfrMsRaw int64
+	var hasTTFR bool
+	if rawTTFR, ok := fields["ttfr_ms"]; ok {
+		hasTTFR = true
+		if err := json.Unmarshal(rawTTFR, &ttfrMsRaw); err != nil {
+			return fmt.Errorf("%w: ttfr_ms: %v", ErrInvalidCanonicalTimingStats, err)
+		}
+		d.TTFRMs = ttfrMsRaw
+	}
+
 	var timingFields timingFieldPresence
 	if _, ok := fields["timing_version"]; ok {
 		timingFields |= timingVersionPresent
@@ -221,6 +256,20 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 	if _, ok := fields["ttfa_ms"]; ok {
 		timingFields |= timingTTFAPresent
 	}
+	if hasTTFR {
+		timingFields |= timingTTFRPresent
+	}
+
+	// Migration: if ttfr_ms was absent but ttft_ms was present (pre-split v3
+	// export), treat the legacy ttft_ms as the reasoning value so the
+	// canonical internal representation is always populated.
+	if !hasTTFR {
+		if _, hasLegacyTTFT := fields["ttft_ms"]; hasLegacyTTFT {
+			d.TTFRMs = d.TTFTMs
+			timingFields |= timingTTFRPresent
+		}
+	}
+
 	d.timingFieldsPresent = timingFields
 	return nil
 }
@@ -238,8 +287,28 @@ func (d RequestDetail) timingFieldPresent(field timingFieldPresence) bool {
 		return d.TTFTMs != 0
 	case timingTTFAPresent:
 		return d.TTFAMs != 0
+	case timingTTFRPresent:
+		return d.TTFRMs != 0
 	default:
 		return false
+	}
+}
+
+// firstMeaningfulTokenMsCompat returns the earlier non-zero latency between
+// the reasoning (stored in TTFTMs) and assistant (TTFAMs) measurements. It
+// preserves the pre-v3 "first meaningful token" semantic for backward
+// compatible JSON output.
+func firstMeaningfulTokenMsCompat(reasoningMs, assistantMs int64) int64 {
+	switch {
+	case reasoningMs > 0 && assistantMs > 0:
+		if reasoningMs < assistantMs {
+			return reasoningMs
+		}
+		return assistantMs
+	case reasoningMs > 0:
+		return reasoningMs
+	default:
+		return assistantMs
 	}
 }
 
@@ -474,22 +543,23 @@ func validCanonicalTimingDetail(detail RequestDetail) bool {
 	hasTTFB := detail.timingFieldPresent(timingTTFBPresent)
 	hasTTFT := detail.timingFieldPresent(timingTTFTPresent)
 	hasTTFA := detail.timingFieldPresent(timingTTFAPresent)
+	hasTTFR := detail.timingFieldPresent(timingTTFRPresent)
 	if hasTimingVersion && detail.TimingVersion == 0 {
 		return false
 	}
-	if (hasTTFT || hasTTFA) && !hasTTFB {
+	if (hasTTFT || hasTTFA || hasTTFR) && !hasTTFB {
 		return false
 	}
-	if detail.LatencyMs < 0 || detail.TTFBMs < 0 || detail.TTFTMs < 0 || detail.TTFAMs < 0 {
+	if detail.LatencyMs < 0 || detail.TTFBMs < 0 || detail.TTFTMs < 0 || detail.TTFAMs < 0 || detail.TTFRMs < 0 {
 		return false
 	}
-	if detail.TTFBMs > detail.LatencyMs || detail.TTFTMs > detail.LatencyMs || detail.TTFAMs > detail.LatencyMs {
+	if detail.TTFBMs > detail.LatencyMs || detail.TTFTMs > detail.LatencyMs || detail.TTFAMs > detail.LatencyMs || detail.TTFRMs > detail.LatencyMs {
 		return false
 	}
-	if (hasTTFT && detail.TTFTMs < detail.TTFBMs) || (hasTTFA && detail.TTFAMs < detail.TTFBMs) {
+	if (hasTTFT && detail.TTFTMs < detail.TTFBMs) || (hasTTFA && detail.TTFAMs < detail.TTFBMs) || (hasTTFR && detail.TTFRMs < detail.TTFBMs) {
 		return false
 	}
-	if detail.TimingVersion == 0 && (hasTTFT || hasTTFA) {
+	if detail.TimingVersion == 0 && (hasTTFT || hasTTFA || hasTTFR) {
 		return false
 	}
 	return true
@@ -641,13 +711,17 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		requestDetail.TimingVersion = usageTimingVersion
 		requestDetail.timingFieldsPresent |= timingVersionPresent
 		requestDetail.TTFBMs = normaliseLatency(record.TTFB)
+		// TTFTMs stores the reasoning latency internally; MarshalJSON
+		// re-computes the output "ttft_ms" for backward compatibility.
 		requestDetail.TTFTMs = normaliseLatency(record.TTFT)
+		requestDetail.TTFRMs = normaliseLatency(record.TTFT)
 		requestDetail.TTFAMs = normaliseLatency(record.TTFA)
 		if record.TTFB > 0 {
 			requestDetail.timingFieldsPresent |= timingTTFBPresent
 		}
 		if record.TTFT > 0 {
 			requestDetail.timingFieldsPresent |= timingTTFTPresent
+			requestDetail.timingFieldsPresent |= timingTTFRPresent
 		}
 		if record.TTFA > 0 {
 			requestDetail.timingFieldsPresent |= timingTTFAPresent
@@ -658,6 +732,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 			requestDetail.TimingVersion = 0
 			requestDetail.TTFBMs = 0
 			requestDetail.TTFTMs = 0
+			requestDetail.TTFRMs = 0
 			requestDetail.TTFAMs = 0
 			requestDetail.timingFieldsPresent = 0
 		}

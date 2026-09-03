@@ -42,6 +42,7 @@ retained_capabilities:
       - timing_version
       - ttfb_ms
       - ttft_ms
+      - ttfr_ms
       - ttfa_ms
       - uncached_input_tokens
       - schema_version
@@ -162,6 +163,7 @@ lts_owned_features:
       - timing_version
       - ttfb_ms
       - ttft_ms
+      - ttfr_ms
       - ttfa_ms
     validation:
       - redis-usage-queue-contract-tests

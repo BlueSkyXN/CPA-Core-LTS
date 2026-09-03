@@ -281,6 +281,7 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"failure_status",
 					"timing_version",
 					"ttft_ms",
+					"ttfr_ms",
 					"ttfa_ms",
 				); err != nil {
 					return err
@@ -327,6 +328,7 @@ func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int)
 	_, hasTTFB := detail["ttfb_ms"]
 	_, hasTTFT := detail["ttft_ms"]
 	_, hasTTFA := detail["ttfa_ms"]
+	_, hasTTFR := detail["ttfr_ms"]
 	if rawLatency, hasLatency := detail["latency_ms"]; hasLatency {
 		if _, ok := rawNonNegativeInt64(rawLatency); !ok {
 			if version == 3 {
@@ -337,7 +339,7 @@ func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int)
 	}
 
 	if version == 1 || version == 2 {
-		if hasTimingVersion || hasTTFT || hasTTFA {
+		if hasTimingVersion || hasTTFT || hasTTFA || hasTTFR {
 			if version == 1 {
 				return errUsageV1TimingSemanticsAmbiguous
 			}
@@ -364,7 +366,7 @@ func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int)
 		}
 	}
 
-	var ttfb, ttft, ttfa int64
+	var ttfb, ttft, ttfa, ttfr int64
 	if hasTTFB {
 		var ok bool
 		ttfb, ok = rawNonNegativeInt64(detail["ttfb_ms"])
@@ -386,15 +388,22 @@ func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int)
 			return errUsageV3TimingContractInvalid
 		}
 	}
-	if !hasTTFB && (hasTTFT || hasTTFA) {
-		return errUsageV3TimingContractInvalid
-	}
-	if hasTTFB || hasTTFT || hasTTFA {
-		latency, ok := rawNonNegativeInt64(detail["latency_ms"])
-		if !ok || ttfb > latency || ttft > latency || ttfa > latency {
+	if hasTTFR {
+		var ok bool
+		ttfr, ok = rawNonNegativeInt64(detail["ttfr_ms"])
+		if !ok {
 			return errUsageV3TimingContractInvalid
 		}
-		if (hasTTFT || hasTTFA) && !hasTimingVersion {
+	}
+	if !hasTTFB && (hasTTFT || hasTTFA || hasTTFR) {
+		return errUsageV3TimingContractInvalid
+	}
+	if hasTTFB || hasTTFT || hasTTFA || hasTTFR {
+		latency, ok := rawNonNegativeInt64(detail["latency_ms"])
+		if !ok || ttfb > latency || ttft > latency || ttfa > latency || ttfr > latency {
+			return errUsageV3TimingContractInvalid
+		}
+		if (hasTTFT || hasTTFA || hasTTFR) && !hasTimingVersion {
 			return errUsageV3TimingContractInvalid
 		}
 	}
