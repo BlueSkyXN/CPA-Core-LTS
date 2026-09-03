@@ -1393,6 +1393,9 @@ func (a *executorAdapter) watchExecutorStreamCancellation(ctx context.Context, r
 				return
 			case chunk, ok := <-in:
 				if !ok {
+					if ctx.Err() != nil {
+						a.cancelExecutionAsync(req, executionCancelReason(ctx))
+					}
 					return
 				}
 				select {
