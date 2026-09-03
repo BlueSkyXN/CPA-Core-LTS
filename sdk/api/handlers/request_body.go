@@ -11,9 +11,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
-const defaultMaxRequestBodyBytes int64 = 16 << 20
+const defaultMaxRequestBodyBytes int64 = sdkconfig.DefaultAPIRequestBodyMaxBytes
 
 // ErrRequestBodyTooLarge reports that either the encoded request body or one
 // decoded Content-Encoding layer exceeded the API request body limit.
@@ -22,11 +23,29 @@ var ErrRequestBodyTooLarge = errors.New("request body too large")
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
 func ReadRequestBody(c *gin.Context) ([]byte, error) {
+	return readRequestBodyWithLimit(c, defaultMaxRequestBodyBytes)
+}
+
+// ReadRequestBody reads an incoming request using this handler instance's
+// hot-reloadable request body limit.
+func (h *BaseAPIHandler) ReadRequestBody(c *gin.Context) ([]byte, error) {
+	limit := defaultMaxRequestBodyBytes
+	if h != nil {
+		limit = h.Cfg.EffectiveAPIRequestBodyMaxBytes()
+	}
+	return readRequestBodyWithLimit(c, limit)
+}
+
+func readRequestBodyWithLimit(c *gin.Context, limit int64) ([]byte, error) {
 	if c == nil || c.Request == nil || c.Request.Body == nil {
 		return nil, nil
 	}
 
-	raw, err := readAllRequestBodyWithLimit(c.Request.Body, defaultMaxRequestBodyBytes)
+	if limit <= 0 {
+		limit = defaultMaxRequestBodyBytes
+	}
+
+	raw, err := readAllRequestBodyWithLimit(c.Request.Body, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +58,7 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 		return raw, nil
 	}
 
-	decoded, err := decodeRequestBodyWithLimit(raw, encoding, defaultMaxRequestBodyBytes)
+	decoded, err := decodeRequestBodyWithLimit(raw, encoding, limit)
 	if err != nil {
 		if !errors.Is(err, ErrRequestBodyTooLarge) && json.Valid(raw) {
 			return raw, nil
@@ -112,7 +131,11 @@ func readAllRequestBodyWithLimit(reader io.Reader, limit int64) ([]byte, error) 
 		limit = 0
 	}
 
-	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	readLimit := limit
+	if readLimit < 1<<63-1 {
+		readLimit++
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, readLimit))
 	if err != nil {
 		return nil, err
 	}

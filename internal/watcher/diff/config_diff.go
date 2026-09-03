@@ -67,6 +67,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.RequestLog != newCfg.RequestLog {
 		changes = append(changes, fmt.Sprintf("request-log: %t -> %t", oldCfg.RequestLog, newCfg.RequestLog))
 	}
+	if oldCfg.EffectiveAPIRequestBodyMaxBytes() != newCfg.EffectiveAPIRequestBodyMaxBytes() {
+		changes = append(changes, fmt.Sprintf("api-request-body-max-bytes: %d -> %d", oldCfg.EffectiveAPIRequestBodyMaxBytes(), newCfg.EffectiveAPIRequestBodyMaxBytes()))
+	}
 	if oldCfg.LogsMaxTotalSizeMB != newCfg.LogsMaxTotalSizeMB {
 		changes = append(changes, fmt.Sprintf("logs-max-total-size-mb: %d -> %d", oldCfg.LogsMaxTotalSizeMB, newCfg.LogsMaxTotalSizeMB))
 	}
