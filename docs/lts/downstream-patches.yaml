@@ -583,6 +583,7 @@ patches:
       - sdk/api/handlers/openai/openai_handlers.go
       - sdk/api/handlers/openai/openai_images_handlers.go
       - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_responses_request_body_limit_test.go
       - sdk/api/handlers/openai/openai_videos_handlers.go
     regression_tests:
       - TestReadRequestBodyRejectsIdentityBodyOverLimit
@@ -593,9 +594,10 @@ patches:
       - TestBaseAPIHandlerReadRequestBodyAppliesConfiguredLimitAfterZstdDecode
       - TestSDKConfigEffectiveAPIRequestBodyMaxBytes
       - TestParseConfigBytesAPIRequestBodyMaxBytes
+      - TestOpenAIResponsesUsesHotReloadedRequestBodyLimit
     upstream_issue_or_pr: BlueSkyXN/CPA-Core-LTS#237
     state: required
-    retire_when: Upstream bounds encoded public API request bodies and every decoded Content-Encoding layer, provides an operator-controlled bounded override with a safe default, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.
+    retire_when: Upstream bounds encoded standard protocol-handler JSON request bodies and every decoded Content-Encoding layer, provides an operator-controlled bounded override with a safe default, returns 413 for limit violations without bypassing the limit through raw-JSON fallback, routes all affected handlers through the shared bounded reader, and all listed regressions pass after removing the downstream implementation.
 
   - id: object-store-auth-path-containment
     reason: Object-store auth persistence must never create, overwrite, upload, delete, or render credential files outside its managed private roots, including traversal, sibling-prefix, absolute-path, pre-existing or dangling symlinks, junctions, initialized-root replacement, check/write path-swap races, and crash-persistent global-temp copies.

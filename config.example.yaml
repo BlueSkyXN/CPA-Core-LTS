@@ -5,9 +5,9 @@ host: ""
 # Server port
 port: 8317
 
-# Maximum size in bytes for public API JSON request bodies and every decoded
-# Content-Encoding layer. The safe default is 16 MiB. Set a positive value to
-# allow larger bounded multimodal requests; 0 or negative values use the default.
+# Maximum size in bytes for standard protocol-handler JSON request bodies and
+# every decoded Content-Encoding layer. The safe default is 16 MiB. Set a positive
+# value to allow larger bounded multimodal requests; 0 or negative values use the default.
 api-request-body-max-bytes: 16777216
 
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.

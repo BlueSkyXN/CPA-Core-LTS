@@ -42,8 +42,8 @@ type SDKConfig struct {
 	// RequestLog enables or disables detailed request logging functionality.
 	RequestLog bool `yaml:"request-log" json:"request-log"`
 
-	// APIRequestBodyMaxBytes limits encoded public API request bodies and each
-	// decoded Content-Encoding layer. Non-positive values use the safe default.
+	// APIRequestBodyMaxBytes limits encoded standard protocol-handler JSON request
+	// bodies and each decoded Content-Encoding layer. Non-positive values use the safe default.
 	APIRequestBodyMaxBytes int64 `yaml:"api-request-body-max-bytes,omitempty" json:"api-request-body-max-bytes,omitempty"`
 
 	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
