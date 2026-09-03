@@ -1343,10 +1343,10 @@ func TestManager_MarkResult_CloudflareChallenge_On403(t *testing.T) {
 		t.Fatalf("expected StatusMessage to be 'cloudflare challenge', got %s", state.StatusMessage)
 	}
 
-	// Because Cloudflare Challenge is treated as transient (no suspension),
-	// the model should NOT be suspended in the global registry, so count > 0.
-	if count := reg.GetModelCount(model); count <= 0 {
-		t.Fatalf("expected model count > 0 for cloudflare challenge transient cooldown, got %d", count)
+	// Cloudflare challenges use a short manager/scheduler cooldown but keep the
+	// route visible so another healthy credential can still serve the model.
+	if reg.IsModelSuspendedForClient(auth.ID, model) {
+		t.Fatalf("expected model to remain available in registry during cloudflare challenge cooldown")
 	}
 }
 

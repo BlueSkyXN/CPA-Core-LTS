@@ -77,7 +77,22 @@ const (
 	// passthrough or incremental previous_response_id requests.
 	CodexModelFallbackContextResetReplayMetadataKey = "codex_model_fallback_context_reset_replay"
 	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
+	// It may be used to derive a provider session identity.
 	DerivedSessionIDMetadataKey = "derived_session_id"
+	// LCPAffinitySessionIDMetadataKey stores an LCP-only routing identity. Executors
+	// must not use it as a provider conversation or execution-session identity. The
+	// current phase also keeps it out of SessionTree topology until downstream wiring exists.
+	LCPAffinitySessionIDMetadataKey = "lcp_affinity_session_id"
+	// CanonicalSessionIDMetadataKey stores the single unified session identity reconciled
+	// across explicit harness headers, body fields, execution sessions, LCP inference,
+	// and fallback context derivation for unified debugging and cross-subsystem tracing.
+	CanonicalSessionIDMetadataKey = "canonical_session_id"
+	// LCPFingerprintMetadataKey stores bounded request-scoped turn fingerprints so
+	// SessionAffinitySelector.OnResult can avoid reparsing the original payload.
+	LCPFingerprintMetadataKey = "lcp_fingerprints"
+	// LCPMinPrefixLengthMetadataKey stores the minimum eligible prefix boundary for
+	// the bounded LCP fingerprint sequence.
+	LCPMinPrefixLengthMetadataKey = "lcp_min_prefix_length"
 	// CallerScopeMetadataKey isolates inferred session identities between downstream callers.
 	CallerScopeMetadataKey = "caller_scope"
 	// WorkspaceIdentityMetadataKey stores an opaque, secret-safe workspace namespace

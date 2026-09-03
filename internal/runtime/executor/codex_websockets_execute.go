@@ -156,21 +156,29 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var closer *websocketConnectionCloser
 	var respHS *http.Response
 	var errDial error
+	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		connection, closer = existingCodexWebsocketSessionConnection(sess, connectionKey)
 		if connection.conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
 	} else {
-		connection, closer, respHS, errDial = e.ensureUpstreamConn(ctx, auth, sess, connectionKey, wsHeaders)
+		dialCtx = cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
+		connection, closer, respHS, errDial = e.ensureUpstreamConn(dialCtx, auth, sess, connectionKey, wsHeaders)
 	}
 	if errDial != nil {
 		status, handshakeErr := codexWebsocketHandshakeFailure(ctx, e.cfg, wsReqLog, respHS, errDial, "dial")
 		if status == http.StatusUpgradeRequired {
 			if opts.ExecutionLifecycle != nil || cliproxyexecutor.DownstreamWebsocket(ctx) {
+				if cliproxyexecutor.UpstreamAttempted(dialCtx) {
+					cliproxyexecutor.MarkUpstreamAttempt(ctx)
+				}
 				return resp, handshakeErr
 			}
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
+		}
+		if cliproxyexecutor.UpstreamAttempted(dialCtx) {
+			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 		}
 		return resp, handshakeErr
 	}
@@ -208,6 +216,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, connection.conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, connection.conn, errSend)
 		if sess != nil {
@@ -258,6 +267,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				connection = connectionRetry
 				requestSignal = retrySignal
 				restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
+				cliproxyexecutor.MarkUpstreamAttempt(ctx)
 				if errSendRetry := writeCodexWebsocketMessage(sess, connection.conn, wsReqBodyRetry); errSendRetry == nil {
 					wsReqBody = wsReqBodyRetry
 				} else {
@@ -311,7 +321,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if len(payload) == 0 {
 			continue
 		}
-		reporter.MarkFirstResponseByte()
+		observeCodexTokenEvent(reporter, payload)
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
@@ -343,11 +353,15 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		switch eventType {
 		case "response.output_item.done":
 			collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-		case "response.completed":
+		case "response.completed", "response.done", "response.incomplete":
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
-			cacheCodexReasoningReplayFromCompleted(replayScope, payload)
+			if eventType != "response.incomplete" {
+				cacheCodexReasoningReplayFromCompleted(replayScope, payload)
+			}
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
 				reporter.Publish(ctx, detail)
+			} else {
+				reporter.EnsurePublished(ctx)
 			}
 			var param any
 			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
