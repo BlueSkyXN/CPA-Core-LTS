@@ -218,12 +218,12 @@ git diff --check
 
 ## Release note contract
 
-正式发版使用 annotated `v*-tls-*` tag。tag subject 是用户可见摘要，tag body 必须包含且只能包含一条显式配套版本：
+正式发版使用 annotated `v*-lts-*` tag。tag subject 是用户可见摘要，tag body 必须包含且只能包含一条显式配套版本：
 
 ```text
 Core LTS: upstream full-sync through ..., retained LTS fixes
 
-Companion-Panel: v1-tls-0.0.13
+Companion-Panel: v1-lts-0.0.13
 ```
 
 `scripts/generate-lts-release-notes.sh` 不按发布时间猜测 Panel 版本，也不从 PR 顺序合成摘要。`workflow_dispatch` 重跑已有 Release 时默认保留人工修订过的标题和正文；只有明确启用 `rewrite_release_notes` 才重新生成。发版前运行 `scripts/generate-lts-release-notes_test.sh`，并在发布后回读配套链接、资产和 Latest 状态。

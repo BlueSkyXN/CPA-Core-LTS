@@ -13,12 +13,12 @@ in-memory snapshot unchanged.
 
 ## Released evidence
 
-- `v1-tls-0.0.13` (`6f9533491aec6cced1661a7bbcf7187582e588b8`)
+- `v1-lts-0.0.13` (`6f9533491aec6cced1661a7bbcf7187582e588b8`)
   exported `version: 1` before `uncached_input_tokens` existed. Its required
   token fields were `input_tokens`, `output_tokens`, `reasoning_tokens`,
   `cached_tokens`, and `total_tokens`; zero cache read/creation fields were
   omitted.
-- `v1-tls-0.0.15` (`e37e61aadb2e57883df54eef9d24af932fd1aa63`)
+- `v1-lts-0.0.15` (`e37e61aadb2e57883df54eef9d24af932fd1aa63`)
   added optional `uncached_input_tokens`. The marker is present only when the
   runtime knew the provider-specific uncached input contribution.
 
@@ -38,7 +38,7 @@ legacy token field must still be a non-null, non-negative integer.
 | Version 1 detail | Decision | Canonical result or error |
 |---|---|---|
 | `uncached_input_tokens` is present, integral, non-negative, and no greater than the released `input_tokens` | Migrate | `input_tokens = uncached + cache_read + cache_creation`; `cached_tokens` mirrors canonical `cache_read_tokens`. |
-| Marker is absent and `cached_tokens`, `cache_read_tokens`, and `cache_creation_tokens` are all zero | Migrate | Preserve `input_tokens`; all cache categories remain zero. This covers released `v1-tls-0.0.13` no-cache exports and markerless no-cache `v1-tls-0.0.15` exports. |
+| Marker is absent and `cached_tokens`, `cache_read_tokens`, and `cache_creation_tokens` are all zero | Migrate | Preserve `input_tokens`; all cache categories remain zero. This covers released `v1-lts-0.0.13` no-cache exports and markerless no-cache `v1-lts-0.0.15` exports. |
 | Marker is absent and any cache category is non-zero | Reject | `code: usage_v1_cache_semantics_ambiguous`. OpenAI-inclusive and Claude-uncached input semantics cannot be distinguished from the snapshot alone. |
 | `input_tokens`, `output_tokens`, or `total_tokens` is missing; an optional legacy zero field is explicitly null/mistyped; the marker is invalid; or another version 1 token rule is invalid | Reject | `code: usage_v1_token_contract_invalid`. |
 

@@ -659,7 +659,7 @@ func TestMigrateV1TokenStatsReleasedFixtureMatrix(t *testing.T) {
 		wantErr   error
 	}{
 		{
-			name:      "v1-tls-0.0.13 markerless no-cache",
+			name:      "v1-lts-0.0.13 markerless no-cache",
 			tokens:    `{"input_tokens":4,"output_tokens":5,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":9}`,
 			wantInput: 4,
 		},
@@ -669,26 +669,26 @@ func TestMigrateV1TokenStatsReleasedFixtureMatrix(t *testing.T) {
 			wantInput: 4,
 		},
 		{
-			name:      "v1-tls-0.0.15 marker-bearing cache read",
+			name:      "v1-lts-0.0.15 marker-bearing cache read",
 			tokens:    `{"input_tokens":100,"uncached_input_tokens":80,"output_tokens":10,"reasoning_tokens":0,"cached_tokens":20,"cache_read_tokens":20,"total_tokens":110}`,
 			wantInput: 100,
 			wantRead:  20,
 		},
 		{
-			name:      "v1-tls-0.0.15 marker-bearing cache creation alias",
+			name:      "v1-lts-0.0.15 marker-bearing cache creation alias",
 			tokens:    `{"input_tokens":1200,"uncached_input_tokens":176,"output_tokens":10,"reasoning_tokens":0,"cached_tokens":1024,"cache_creation_tokens":1024,"total_tokens":1210}`,
 			wantInput: 1200,
 			wantWrite: 1024,
 		},
 		{
-			name:      "v1-tls-0.0.15 marker-bearing read and creation",
+			name:      "v1-lts-0.0.15 marker-bearing read and creation",
 			tokens:    `{"input_tokens":3085,"uncached_input_tokens":3085,"output_tokens":253,"reasoning_tokens":0,"cached_tokens":7,"cache_read_tokens":7,"cache_creation_tokens":19514,"total_tokens":22859}`,
 			wantInput: 22606,
 			wantRead:  7,
 			wantWrite: 19514,
 		},
 		{
-			name:      "v1-tls-0.0.15 marker-bearing known zero",
+			name:      "v1-lts-0.0.15 marker-bearing known zero",
 			tokens:    `{"input_tokens":0,"uncached_input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":0}`,
 			wantInput: 0,
 		},

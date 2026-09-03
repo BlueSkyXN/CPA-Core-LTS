@@ -3,11 +3,11 @@ name: release
 on:
   push:
     tags:
-      - 'v*-tls-*'
+      - 'v*-lts-*'
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to build and publish, for example v1-tls-0.0.3'
+        description: 'Release tag to build and publish, for example v1-lts-0.0.3'
         required: true
         type: string
       rewrite_release_notes:
@@ -69,8 +69,8 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --force --tags
-          if [[ "${RELEASE_TAG}" != v*-tls-* ]]; then
-            echo "Only Core LTS release tags matching v*-tls-* are supported."
+          if [[ "${RELEASE_TAG}" != v*-lts-* ]]; then
+            echo "Only Core LTS release tags matching v*-lts-* are supported."
             exit 1
           fi
           if ! git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then

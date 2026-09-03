@@ -512,7 +512,7 @@ auto compact 使用 `compact_prompt` override，缺省回退到内置 `SUMMARIZA
 | V3 quality hedge + reasoning-fold | 2026-07-03 | PR `#134` / merge `809acd08`；`c73d5610`、`4e954156` | 新增 `hedged-retry.mode: speed/quality`；quality 等待后按最大 `output_tokens` 选胜者；新增 `client-usage-aggregation: reasoning-fold/sum`；修复 streaming quality usage 折算。 | 第一版质量优先算法，但 `reasoning-fold` 后证明与 Codex CLI usage 语义冲突。 |
 | V4 default quality + longest fallback | 2026-07-03 | PR `#135` / merge `c16b22a8`; `b7546294` | `hedged-retry.mode` 默认和非法值归一改为 `quality`；pass-through 时选 `output_tokens` 最大的 abnormal fallback。 | 质量优先成为默认；耗尽时尽量返回最长可用 fallback。 |
 | V5 separated client usage | 2026-07-04 | PR `#136` / `c269724d`; PR `#137` / `c63986f8`; `0390c13c`、`dc11b24b` | `client-usage-aggregation` 收敛为三模式，默认 `delivered-only`；删除旧 `reasoning-fold`；`total_tokens` 缺失时仅用 `input + output` 兜底。 | client usage 防线定型：真实成本进 internal usage，context pressure 默认只看 delivered attempt。 |
-| V6 delivery/fallback policy | 2026-07-05 | PR `#138` / `961d2a2c`; `0fb2d0cb`、`a4b25cc6`、`8cf93478`; tag `v1-tls-0.0.8` | 新增 `action`、`delivery-policy`、`fallback-policy`；delivery 只管 mixed pool；`hedged-retry.mode` 只保留调度语义；修复 observe-only streaming 不应缓冲到 completed。 | 当前主线：best-non-special 阻止 516/1034 凭长度反杀，best-special 为全 special 提供兜底。 |
+| V6 delivery/fallback policy | 2026-07-05 | PR `#138` / `961d2a2c`; `0fb2d0cb`、`a4b25cc6`、`8cf93478`; tag `v1-lts-0.0.8` | 新增 `action`、`delivery-policy`、`fallback-policy`；delivery 只管 mixed pool；`hedged-retry.mode` 只保留调度语义；修复 observe-only streaming 不应缓冲到 completed。 | 当前主线：best-non-special 阻止 516/1034 凭长度反杀，best-special 为全 special 提供兜底。 |
 
 #### 不计入当前主线的线索
 
