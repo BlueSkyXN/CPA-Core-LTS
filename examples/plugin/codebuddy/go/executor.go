@@ -21,15 +21,15 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 		return rpcStreamResponse{}, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
 	}
 	model := strings.TrimSpace(req.Model)
-	if !isCodeBuddyModel(model) {
-		return rpcStreamResponse{}, newPluginCallError("unsupported_model", "CodeBuddy G1 supports only exact model IDs returned by the selected-auth catalog", http.StatusBadRequest, false)
-	}
 	if strings.TrimSpace(req.HostCallbackID) == "" {
 		return rpcStreamResponse{}, newPluginCallError("invalid_stream", "CodeBuddy stream requires a host callback context", http.StatusBadRequest, false)
 	}
 	auth, errAuth := parseStoredAuth(req.StorageJSON)
 	if errAuth != nil {
 		return rpcStreamResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusUnauthorized, false)
+	}
+	if errModel := r.codeBuddyModelAllowed(auth, model, req.HostCallbackID); errModel != nil {
+		return rpcStreamResponse{}, errModel
 	}
 	body, errPayload := codeBuddyRequestPayload(req.Payload, model)
 	if errPayload != nil {
@@ -88,8 +88,8 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 
 func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
 	model = strings.TrimSpace(model)
-	if !isCodeBuddyModel(model) {
-		return nil, newPluginCallError("unsupported_model", "CodeBuddy G1 supports only exact model IDs returned by the selected-auth catalog", http.StatusBadRequest, false)
+	if model == "" {
+		return nil, newPluginCallError("unsupported_model", "CodeBuddy model is required", http.StatusBadRequest, false)
 	}
 	var body map[string]any
 	if errDecode := json.Unmarshal(raw, &body); errDecode != nil || body == nil {
@@ -104,6 +104,9 @@ func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
 			return nil, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
 		}
 	}
+	if errToolChoice := normalizeCodeBuddyToolChoice(body); errToolChoice != nil {
+		return nil, errToolChoice
+	}
 	body["model"] = model
 	body["stream"] = true
 	out, errMarshal := json.Marshal(body)
@@ -111,6 +114,48 @@ func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
 		return nil, newPluginCallError("invalid_request", "CodeBuddy request body could not be encoded", http.StatusBadRequest, false)
 	}
 	return out, nil
+}
+
+// CodeBuddy's chat request schema accepts a string tool_choice. Core's OpenAI
+// translator may use the standard object form for an explicitly selected
+// function, so normalize that representation at the provider boundary while
+// preserving auto/none/required string choices.
+func normalizeCodeBuddyToolChoice(body map[string]any) error {
+	raw, exists := body["tool_choice"]
+	if !exists || raw == nil {
+		delete(body, "tool_choice")
+		return nil
+	}
+	if choice, ok := raw.(string); ok {
+		if strings.TrimSpace(choice) == "" {
+			delete(body, "tool_choice")
+		}
+		return nil
+	}
+	choice, ok := raw.(map[string]any)
+	if !ok {
+		return newPluginCallError("invalid_request", "CodeBuddy tool_choice must be a string or function object", http.StatusBadRequest, false)
+	}
+	typeName, _ := choice["type"].(string)
+	typeName = strings.ToLower(strings.TrimSpace(typeName))
+	if typeName == "auto" || typeName == "none" || typeName == "required" {
+		body["tool_choice"] = typeName
+		return nil
+	}
+	if typeName != "function" {
+		return newPluginCallError("invalid_request", "CodeBuddy tool_choice function type is required", http.StatusBadRequest, false)
+	}
+	function, ok := choice["function"].(map[string]any)
+	if !ok {
+		return newPluginCallError("invalid_request", "CodeBuddy tool_choice function is required", http.StatusBadRequest, false)
+	}
+	name, _ := function["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return newPluginCallError("invalid_request", "CodeBuddy tool_choice function name is required", http.StatusBadRequest, false)
+	}
+	body["tool_choice"] = name
+	return nil
 }
 
 func (r *pluginRuntime) forwardStream(execution *activeExecution) {

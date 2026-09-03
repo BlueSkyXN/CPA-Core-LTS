@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,10 @@ func testAuthJSON() []byte {
 	return []byte(`{"type":"codebuddy","auth_mode":"api_key","api_key":"` + testSecret + `"}`)
 }
 
+func testPATAuthJSON() []byte {
+	return []byte(`{"type":"codebuddy","auth_mode":"pat","pat":"` + testSecret + `","label":"CodeBuddy Test PAT"}`)
+}
+
 func TestRegistrationDeclaresCodeBuddyG1Capabilities(t *testing.T) {
 	got := pluginRegistration()
 	if got.SchemaVersion != pluginabi.SchemaVersionExecutionLifecycle {
@@ -28,7 +33,7 @@ func TestRegistrationDeclaresCodeBuddyG1Capabilities(t *testing.T) {
 	if got.Metadata.Name == "" || got.Metadata.Version == "" || got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" {
 		t.Fatalf("required host metadata is incomplete: %#v", got.Metadata)
 	}
-	if !got.Capabilities.AuthProvider || !got.Capabilities.ModelProvider || !got.Capabilities.Executor || !got.Capabilities.ExecutionCanceller || !got.Capabilities.ProviderReadiness {
+	if !got.Capabilities.AuthProvider || !got.Capabilities.ModelProvider || !got.Capabilities.Executor || !got.Capabilities.ExecutionCanceller || !got.Capabilities.ProviderReadiness || !got.Capabilities.ManagementAPI {
 		t.Fatalf("required capabilities are missing: %#v", got.Capabilities)
 	}
 	if got.Capabilities.ExecutionSessionCloser {
@@ -63,11 +68,18 @@ func TestParseAuthRecognizesOnlyValidCodeBuddyAPIKeys(t *testing.T) {
 	if _, errMissing := parseAuthRequest(missingRaw); errMissing == nil || strings.Contains(errMissing.Error(), testSecret) {
 		t.Fatalf("missing-key error = %v", errMissing)
 	}
+	patRaw, _ := json.Marshal(pluginapi.AuthParseRequest{FileName: "codebuddy-pat.json", RawJSON: testPATAuthJSON()})
+	pat, errPAT := parseAuthRequest(patRaw)
+	if errPAT != nil || !pat.Handled || pat.Auth.Label != "CodeBuddy Test PAT" {
+		t.Fatalf("PAT auth = %#v, err=%v", pat, errPAT)
+	}
 }
 
 func TestModelsForAuthReturnsVerifiedExactModels(t *testing.T) {
-	raw, _ := json.Marshal(rpcAuthModelRequest{AuthModelRequest: pluginapi.AuthModelRequest{StorageJSON: testAuthJSON()}})
-	resp, errModels := modelsForAuth(raw)
+	host := newFakeHost()
+	runtime := newPluginRuntime(host)
+	raw, _ := json.Marshal(rpcAuthModelRequest{AuthModelRequest: pluginapi.AuthModelRequest{StorageJSON: testAuthJSON()}, HostCallbackID: "catalog"})
+	resp, errModels := runtime.modelsForAuth(raw)
 	if errModels != nil {
 		t.Fatalf("modelsForAuth() error = %v", errModels)
 	}
@@ -78,6 +90,80 @@ func TestModelsForAuthReturnsVerifiedExactModels(t *testing.T) {
 		if got := strings.Join(model.SupportedInputModalities, ","); got != "text" {
 			t.Fatalf("model %s input modalities = %q, want text", model.ID, got)
 		}
+	}
+}
+
+func TestParseCodeBuddyCatalogSupportsCurrentAndCLIAgentShapes(t *testing.T) {
+	current := []byte(`{"code":0,"data":{"enterpriseId":"enterprise-1","models":[{"id":"auto","name":"Auto"},{"id":"hy3","name":"Hy3","supportsImages":true,"supportsReasoning":true,"onlyReasoning":true,"maxInputTokens":192000,"maxOutputTokens":64000},{"id":"codewise-completions"}],"agents":[{"name":"craft","models":["auto","hy3"]},{"name":"ask","models":["hy3"]},{"name":"CodeCompletion","models":["codewise-completions"]}]}}`)
+	catalog, errCurrent := parseCodeBuddyCatalog(current)
+	if errCurrent != nil || len(catalog.Models) != 2 || catalog.Models[0].ID != "auto" || catalog.Models[1].ID != "hy3" || catalog.EnterpriseID != "enterprise-1" {
+		t.Fatalf("current catalog = %#v, err=%v", catalog, errCurrent)
+	}
+	if got := strings.Join(catalog.Models[1].SupportedInputModalities, ","); got != "text,image" {
+		t.Fatalf("hy3 modalities = %q", got)
+	}
+	if _, exposed := catalog.Allowed["codewise-completions"]; exposed {
+		t.Fatal("completion-only model was exposed through the Chat provider")
+	}
+	cli := []byte(`{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3"},{"id":"blocked","name":"Blocked"}],"agents":[{"name":"cli","models":["hy3"]}]}}`)
+	filtered, errFiltered := parseCodeBuddyCatalog(cli)
+	if errFiltered != nil || len(filtered.Models) != 1 || filtered.Models[0].ID != "hy3" {
+		t.Fatalf("CLI catalog = %#v, err=%v", filtered, errFiltered)
+	}
+	if _, errUnsupportedShape := parseCodeBuddyCatalog([]byte(`{"code":0,"data":{"models":[{"id":"hy3"}],"agents":[{"name":"CodeCompletion","models":["hy3"]}]}}`)); errUnsupportedShape == nil {
+		t.Fatal("catalog without a CLI or craft agent was treated as a Chat catalog")
+	}
+}
+
+func TestCodeBuddyQuotaParsesPrecisePackagesAndEmptyResponse(t *testing.T) {
+	if _, errMissing := parseCodeBuddyQuota([]byte(`{"code":0,"data":{}}`)); errMissing == nil {
+		t.Fatal("billing response without an Accounts field was treated as zero quota")
+	}
+	empty, errEmpty := parseCodeBuddyQuota([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":null,"TotalCount":0,"TotalDosage":0}}}}`))
+	if errEmpty != nil || empty.Status != "available" || empty.TotalExact != "0" || empty.Remaining == nil || *empty.Remaining != 0 {
+		t.Fatalf("empty quota = %#v, err=%v", empty, errEmpty)
+	}
+	packages := []byte(`{"code":0,"data":{"Accounts":[{"PackageName":"base","Status":"active","CapacitySizePrecise":"1000.5000","CapacityUsedPrecise":"250.2500","CapacityRemainPrecise":"750.2500"},{"PackageName":"addon","Status":"active","CapacitySizePrecise":"2.25","CapacityUsedPrecise":"1.25","CapacityRemainPrecise":"1.00"}]}}`)
+	quota, errPackages := parseCodeBuddyQuota(packages)
+	if errPackages != nil || quota.Status != "available" || quota.TotalExact != "1002.75" || quota.UsedExact != "251.5" || quota.RemainingExact != "751.25" {
+		t.Fatalf("package quota = %#v, err=%v", quota, errPackages)
+	}
+}
+
+func TestCodeBuddyManagementSummaryUsesAuthIndexAndDoesNotExposeSecret(t *testing.T) {
+	host := newFakeHost()
+	runtime := newPluginRuntime(host)
+	raw, errMarshal := json.Marshal(rpcManagementRequest{
+		ManagementRequest: pluginapi.ManagementRequest{
+			Method: http.MethodGet,
+			Path:   "/v0/management/plugins/codebuddy/summary",
+			Query:  url.Values{"auth_index": {"1"}},
+		},
+		HostCallbackID: "management-callback",
+	})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	response, errHandle := runtime.handleManagement(raw)
+	if errHandle != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("management response = %#v, err=%v", response, errHandle)
+	}
+	if strings.Contains(string(response.Body), testSecret) {
+		t.Fatal("management response leaked secret")
+	}
+	var summary codeBuddySummary
+	if errDecode := json.Unmarshal(response.Body, &summary); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if summary.Provider != pluginIdentifier || summary.AuthIndex != "1" || summary.Quota.Status != "available" || summary.Credential.Fingerprint == "" {
+		t.Fatalf("summary = %#v", summary)
+	}
+	second, errSecond := runtime.handleManagement(raw)
+	if errSecond != nil || !strings.Contains(string(second.Body), `"cached":true`) {
+		t.Fatalf("cached summary = %s, err=%v", second.Body, errSecond)
+	}
+	if codeBuddySummaryCacheKey(codeBuddyAuth{APIKey: "same"}, pluginConfig{}, "1") == codeBuddySummaryCacheKey(codeBuddyAuth{APIKey: "same"}, pluginConfig{}, "2") {
+		t.Fatal("summary cache key ignored auth index")
 	}
 }
 
@@ -116,8 +202,8 @@ func TestRequestPayloadPreservesToolsImagesAndConversationContext(t *testing.T) 
 	if image["url"] != "data:image/png;base64,AA==" || image["detail"] != "high" {
 		t.Fatalf("image content changed: %#v", image)
 	}
-	choice := body["tool_choice"].(map[string]any)["function"].(map[string]any)
-	if choice["name"] != "lookup" || body["model"] != codeBuddyModel || body["stream"] != true {
+	choice, okChoice := body["tool_choice"].(string)
+	if !okChoice || choice != "lookup" || body["model"] != codeBuddyModel || body["stream"] != true {
 		t.Fatalf("tool choice or enforced fields changed: %s", payload)
 	}
 	if _, errMismatch := codeBuddyRequestPayload(raw, codeBuddyPreviewModel); errMismatch == nil {
@@ -133,6 +219,35 @@ func TestRequestPayloadPreservesToolsImagesAndConversationContext(t *testing.T) 
 	var previewBody map[string]any
 	if errDecode := json.Unmarshal(previewPayload, &previewBody); errDecode != nil || previewBody["model"] != codeBuddyPreviewModel {
 		t.Fatalf("preview payload = %s, err=%v", previewPayload, errDecode)
+	}
+}
+
+func TestRequestPayloadNormalizesCodeBuddyToolChoice(t *testing.T) {
+	raw := []byte(`{"model":"hy3","messages":[{"role":"user","content":"call lookup"}],"tools":[{"type":"function","function":{"name":"lookup"}}],"tool_choice":{"type":"function","function":{"name":"lookup"}},"stream":true}`)
+	payload, errPayload := codeBuddyRequestPayload(raw, codeBuddyModel)
+	if errPayload != nil {
+		t.Fatal(errPayload)
+	}
+	var body map[string]any
+	if errDecode := json.Unmarshal(payload, &body); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if choice, ok := body["tool_choice"].(string); !ok || choice != "lookup" {
+		t.Fatalf("tool_choice = %#v, want vendor function name string", body["tool_choice"])
+	}
+
+	for _, choice := range []string{"auto", "none", "required"} {
+		payload, errPayload = codeBuddyRequestPayload([]byte(`{"model":"hy3","messages":[{"role":"user","content":"hello"}],"tool_choice":"`+choice+`","stream":true}`), codeBuddyModel)
+		if errPayload != nil {
+			t.Fatalf("string choice %q: %v", choice, errPayload)
+		}
+		if errDecode := json.Unmarshal(payload, &body); errDecode != nil || body["tool_choice"] != choice {
+			t.Fatalf("string tool_choice = %#v, want %q", body["tool_choice"], choice)
+		}
+	}
+
+	if _, errInvalid := codeBuddyRequestPayload([]byte(`{"model":"hy3","messages":[{"role":"user","content":"hello"}],"tool_choice":{"type":"function"},"stream":true}`), codeBuddyModel); errInvalid == nil {
+		t.Fatal("invalid function tool_choice was accepted")
 	}
 }
 
@@ -422,6 +537,9 @@ type fakeHost struct {
 	mu                 sync.Mutex
 	openResponse       hostHTTPStreamResponse
 	openRequests       []hostHTTPRequest
+	httpRequests       []hostHTTPRequest
+	catalogResponse    hostHTTPResponse
+	billingResponse    hostHTTPResponse
 	reads              []hostHTTPStreamReadResponse
 	readIndex          int
 	emitted            [][]byte
@@ -441,6 +559,16 @@ func newFakeHost() *fakeHost {
 			Headers:    http.Header{"Content-Type": {"text/event-stream"}},
 			StreamID:   "upstream-1",
 		},
+		catalogResponse: hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3"},{"id":"hy3-preview-agent","name":"Hy3 Preview Agent"}],"agents":[{"name":"craft","models":["hy3","hy3-preview-agent"]}]}}`),
+		},
+		billingResponse: hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[],"TotalCount":0,"TotalDosage":0}}}}`),
+		},
 		upstreamClosed: make(chan struct{}),
 		pluginClosed:   make(chan struct{}),
 	}
@@ -448,6 +576,23 @@ func newFakeHost() *fakeHost {
 
 func (h *fakeHost) Call(method string, payload any) (json.RawMessage, error) {
 	switch method {
+	case pluginabi.MethodHostHTTPDo:
+		req, ok := payload.(hostHTTPRequest)
+		if !ok {
+			return nil, errors.New("unexpected HTTP request")
+		}
+		h.mu.Lock()
+		h.httpRequests = append(h.httpRequests, req)
+		response := h.catalogResponse
+		if strings.Contains(req.URL, "/v2/billing/") {
+			response = h.billingResponse
+		}
+		h.mu.Unlock()
+		return marshalFakeResult(response)
+	case pluginabi.MethodHostAuthGet:
+		return marshalFakeResult(pluginapi.HostAuthGetResponse{AuthIndex: "1", Name: "codebuddy.json", JSON: testAuthJSON()})
+	case pluginabi.MethodHostAuthGetRuntime:
+		return marshalFakeResult(pluginapi.HostAuthGetRuntimeResponse{Auth: pluginapi.HostAuthFileEntry{AuthIndex: "1", Name: "codebuddy.json", Label: "CodeBuddy Test"}})
 	case pluginabi.MethodHostHTTPDoStream:
 		req, ok := payload.(hostHTTPRequest)
 		if !ok {

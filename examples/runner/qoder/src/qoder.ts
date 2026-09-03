@@ -1,7 +1,10 @@
+import { spawn } from "node:child_process";
+import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { access, constants as fsConstants } from "node:fs/promises";
 
 import {
   accessTokenFromEnv,
+  jobToken,
   ProcessTransport,
   qodercliAuth,
   query,
@@ -10,8 +13,11 @@ import {
   type Query,
   type SDKMessage,
   type SDKUserMessage,
+  type SpawnedProcess,
+  type SpawnOptions,
 } from "@qoder-ai/qoder-agent-sdk";
 
+import { isSupportedEndpoint, QoderTokenManager } from "./direct.js";
 import { ProtocolError, redactStderr, safeError } from "./protocol.js";
 import type {
   ActiveTurn,
@@ -38,6 +44,21 @@ type TurnState = {
   permissionFailure?: "permission_denied" | "permission_unsupported";
   toolIndexes: Set<number>;
 };
+
+type QoderSDKOptions = {
+  openAPIEndpoint?: string;
+  openAPIUserAgent?: string;
+  requestTimeoutMs?: number;
+  fetchImpl?: typeof fetch;
+};
+
+type SDKAuthentication = {
+  auth: ReturnType<typeof accessTokenFromEnv> | ReturnType<typeof qodercliAuth> | ReturnType<typeof jobToken>;
+  spawnQoderCLIProcess?: (options: SpawnOptions) => SpawnedProcess;
+};
+
+const SDK_AUTH_PAYLOAD_ENV = "QODER_SDK_AUTH_PAYLOAD_FILE";
+const MAX_SDK_AUTH_PAYLOAD_BYTES = 4 * 1024;
 
 class PromptQueue implements AsyncIterable<SDKUserMessage> {
   private values: SDKUserMessage[] = [];
@@ -89,6 +110,7 @@ class SDKSession {
     stderr: (chunk: string) => void,
     canUseTool: CanUseTool,
     onAuthExpired: () => void,
+    authentication: SDKAuthentication,
   ) {
     this.model = params.model;
     this.systemPrompt = params.system_prompt?.trim() || "";
@@ -96,7 +118,7 @@ class SDKSession {
     this.query = query({
       prompt: this.input,
       options: {
-        auth: params.auth.mode === "pat" ? accessTokenFromEnv(params.auth.env_var) : qodercliAuth(),
+        auth: authentication.auth,
         transport: ProcessTransport.default,
         pathToQoderCLIExecutable: cliPath,
         cwd,
@@ -108,11 +130,12 @@ class SDKSession {
         mcpServers: params.mcp_servers,
         strictMcpConfig: Boolean(params.mcp_servers && Object.keys(params.mcp_servers).length > 0),
         permissionMode: "dontAsk",
-        settingSources: params.setting_sources ?? [],
+        settingSources: params.setting_sources && params.setting_sources.length > 0 ? params.setting_sources : undefined,
         systemPrompt: this.systemPrompt || undefined,
         includePartialMessages: true,
         canUseTool,
         stderr,
+        spawnQoderCLIProcess: authentication.spawnQoderCLIProcess,
         onAuthExpired,
       },
     });
@@ -124,12 +147,27 @@ export class QoderSDKAdapter implements QoderAdapter {
   readonly transport: QoderTransport = "sdk_cli";
   private readonly sessions = new Map<string, SDKSession>();
   private readonly modelCache = new Map<string, { expires: number; models: ModelRecord[] }>();
+  private readonly tokenManager?: QoderTokenManager;
 
   constructor(
     private readonly cliPath: string,
     private readonly cwd: string,
+    options: QoderSDKOptions = {},
   ) {
     if (!cliPath) throw new ProtocolError("cli_path_required", "an explicit Qoder CLI path is required");
+    const endpoint = options.openAPIEndpoint?.trim().replace(/\/+$/, "");
+    if (endpoint && !isSupportedEndpoint(endpoint)) {
+      throw new ProtocolError("sdk_auth_config", "Qoder SDK OpenAPI endpoint must use HTTPS or loopback HTTP");
+    }
+    if (endpoint) {
+      this.tokenManager = new QoderTokenManager(
+        endpoint,
+        "pat_exchange",
+        options.openAPIUserAgent?.trim() || "qoder/1.1.40",
+        options.fetchImpl ?? fetch,
+        Math.max(1000, options.requestTimeoutMs ?? 30_000),
+      );
+    }
   }
 
   async readiness(auth?: AuthSpec): Promise<{ auth_ready: boolean; message: string }> {
@@ -139,33 +177,42 @@ export class QoderSDKAdapter implements QoderAdapter {
       throw new ProtocolError("cli_unavailable", "configured Qoder CLI is not executable");
     }
     if (!auth) return { auth_ready: false, message: "selected Qoder auth was not supplied" };
-    if (auth.mode === "pat") {
+    if (auth.mode === "pat" || auth.mode === "access_token") {
       if (!auth.env_var || !process.env[auth.env_var]) {
-        return { auth_ready: false, message: "configured Qoder PAT environment source is unavailable" };
+        return { auth_ready: false, message: "configured Qoder token environment source is unavailable" };
       }
-      return { auth_ready: true, message: "Qoder PAT source is configured; remote acceptance is checked on execution" };
+      if (auth.mode === "pat" && !this.tokenManager) {
+        return { auth_ready: false, message: "Qoder OpenAPI endpoint is required for SDK PAT exchange" };
+      }
+      const source = auth.mode === "pat" ? "PAT" : "legacy access token";
+      return { auth_ready: true, message: `Qoder ${source} source is configured; remote acceptance is checked on execution` };
     }
     return { auth_ready: true, message: "Qoder local CLI profile reuse is configured; remote acceptance is checked on execution" };
   }
 
   async models(params: ModelsParams): Promise<ModelRecord[]> {
-    const cacheKey = params.auth.mode === "pat" ? `pat:${params.auth.env_var}` : `local:${params.auth.profile_id ?? "default"}`;
+    const cacheKey = params.auth.mode === "local_cli"
+      ? `local:${params.auth.profile_id ?? "default"}`
+      : `${params.auth.mode}:${params.auth.env_var}`;
     const cached = this.modelCache.get(cacheKey);
     if (cached && cached.expires > Date.now()) return cached.models.map((model) => ({ ...model }));
 
     const input = new PromptQueue();
     const secrets = this.authSecrets(params.auth);
+    const stderr = (chunk: string) => this.writeSafeStderr(chunk, secrets);
+    const authentication = this.sdkAuthentication(params.auth, stderr);
     const q = query({
       prompt: input,
       options: {
-        auth: params.auth.mode === "pat" ? accessTokenFromEnv(params.auth.env_var) : qodercliAuth(),
+        auth: authentication.auth,
         transport: ProcessTransport.default,
         pathToQoderCLIExecutable: this.cliPath,
         cwd: this.cwd,
         tools: [],
         permissionMode: "dontAsk",
-        settingSources: [],
-        stderr: (chunk) => this.writeSafeStderr(chunk, secrets),
+        settingSources: undefined,
+        stderr,
+        spawnQoderCLIProcess: authentication.spawnQoderCLIProcess,
       },
     });
     try {
@@ -211,6 +258,13 @@ export class QoderSDKAdapter implements QoderAdapter {
         if (!active) return { behavior: "deny", interrupt: true, message: "No active Qoder turn" };
         return this.resolvePermission(active, toolName, input, options.toolUseID);
       };
+      const authentication = this.sdkAuthentication(
+        params.auth,
+        (chunk) => this.writeSafeStderr(chunk, secrets),
+        () => {
+          created.authExpired = true;
+        },
+      );
       created = new SDKSession(
         params.execution_session_id,
         params,
@@ -221,6 +275,7 @@ export class QoderSDKAdapter implements QoderAdapter {
         () => {
           created.authExpired = true;
         },
+        authentication,
       );
       session = created;
       session.current = state;
@@ -278,6 +333,25 @@ export class QoderSDKAdapter implements QoderAdapter {
 
   async shutdown(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((id) => this.close(id)));
+  }
+
+  private sdkAuthentication(
+    auth: AuthSpec,
+    stderr: (chunk: string) => void,
+    onAuthExpired?: () => void,
+  ): SDKAuthentication {
+    if (auth.mode === "local_cli") return { auth: qodercliAuth() };
+    if (auth.mode === "access_token") return { auth: accessTokenFromEnv(auth.env_var) };
+    if (!this.tokenManager) {
+      throw new ProtocolError("sdk_auth_config", "Qoder OpenAPI endpoint is required for SDK PAT exchange");
+    }
+    const tokenManager = this.tokenManager;
+    return {
+      auth: jobToken(async (request, options) => ({
+        token: await tokenManager.getAccessToken(auth, request.reason, options.signal),
+      })),
+      spawnQoderCLIProcess: createQoderJobTokenSpawner(stderr, onAuthExpired),
+    };
   }
 
   private async pumpSession(session: SDKSession): Promise<void> {
@@ -478,12 +552,72 @@ export class QoderSDKAdapter implements QoderAdapter {
   }
 
   private authSecrets(auth: AuthSpec): string[] {
-    return auth.mode === "pat" ? [process.env[auth.env_var] ?? ""] : [];
+    return auth.mode === "local_cli" ? [] : [process.env[auth.env_var] ?? ""];
   }
 
   private writeSafeStderr(chunk: string, secrets: string[]): void {
     const safe = redactStderr(chunk, secrets).trim();
     if (safe) process.stderr.write(`[qodercli] ${safe}\n`);
+  }
+}
+
+function createQoderJobTokenSpawner(
+  stderr: (chunk: string) => void,
+  onAuthExpired?: () => void,
+): (options: SpawnOptions) => SpawnedProcess {
+  let authExpiredFired = false;
+  return (options) => {
+    patchQoderSDKJobTokenPayload(options.env[SDK_AUTH_PAYLOAD_ENV]);
+    const child = spawn(options.command, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      signal: options.signal,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => stderr(String(chunk)));
+    child.once("exit", (code) => {
+      if (code === 41 && !authExpiredFired) {
+        authExpiredFired = true;
+        onAuthExpired?.();
+      }
+    });
+    return child;
+  };
+}
+
+export function patchQoderSDKJobTokenPayload(payloadPath: string | undefined): void {
+  if (!payloadPath) {
+    throw new ProtocolError("sdk_auth_payload_incompatible", "Qoder SDK did not create a host job-token payload");
+  }
+  let raw: string;
+  try {
+    const stat = lstatSync(payloadPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_SDK_AUTH_PAYLOAD_BYTES) {
+      throw new Error("invalid payload file");
+    }
+    raw = readFileSync(payloadPath, "utf8");
+  } catch {
+    throw new ProtocolError("sdk_auth_payload_incompatible", "Qoder SDK host job-token payload is unavailable");
+  }
+  let payload: Record<string, unknown>;
+  try {
+    const value = JSON.parse(raw);
+    if (!isRecord(value)) throw new Error("object required");
+    payload = value;
+  } catch {
+    throw new ProtocolError("sdk_auth_payload_incompatible", "Qoder SDK host job-token payload is invalid");
+  }
+  if (payload.type === "jobToken" && payload.jobTokenProvider === "host") return;
+  if (payload.type !== "jobToken" || payload.hostTokenCallback !== true) {
+    throw new ProtocolError("sdk_auth_payload_incompatible", "Qoder SDK host job-token payload shape is unsupported");
+  }
+  try {
+    writeFileSync(payloadPath, JSON.stringify({ type: "jobToken", jobTokenProvider: "host" }), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  } catch {
+    throw new ProtocolError("sdk_auth_payload_incompatible", "Qoder SDK host job-token payload could not be adapted");
   }
 }
 

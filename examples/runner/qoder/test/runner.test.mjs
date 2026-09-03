@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 
 import { BoundedFrameWriter, ProtocolError, redactStderr } from "../dist/protocol.js";
-import { DirectOpenAIAdapter } from "../dist/direct.js";
-import { toModelRecord, userMessage } from "../dist/qoder.js";
+import { DirectOpenAIAdapter, QoderTokenManager } from "../dist/direct.js";
+import { patchQoderSDKJobTokenPayload, QoderSDKAdapter, toModelRecord, userMessage } from "../dist/qoder.js";
 import { RunnerServer } from "../dist/server.js";
 
 class FakeAdapter {
@@ -95,8 +98,8 @@ test("protocol handshake, model IDs, event correlation, cancel, close and shutdo
   const server = new RunnerServer(adapter, output, 16);
 
   assert.equal(await server.handle(request("h", "handshake")), true);
-  assert.equal(await server.handle(request("r", "readiness", { auth: { mode: "local_cli", profile_id: "default" } })), true);
-  assert.equal(await server.handle(request("m", "models", { auth: { mode: "local_cli" } })), true);
+  assert.equal(await server.handle(request("r", "readiness", { auth: { mode: "pat", env_var: "CPA_QODER_PAT" } })), true);
+  assert.equal(await server.handle(request("m", "models", { auth: { mode: "pat", env_var: "CPA_QODER_PAT" } })), true);
   assert.equal(await server.handle(request("s", "start", startParams())), true);
   assert.equal(await server.handle(request("c", "cancel", { request_id: "request-1", execution_session_id: "session-1" })), true);
   assert.equal(await server.handle(request("x", "close", { execution_session_id: "session-1" })), true);
@@ -193,6 +196,109 @@ test("live model metadata preserves vision, reasoning, and context capabilities"
   assert.equal(model.default_context_window, 128000);
 });
 
+test("SDK PAT auth adapts the one-shot host job-token payload without storing a token", async () => {
+  const root = await mkdtemp(join(tmpdir(), "qoder-sdk-auth-test-"));
+  const payloadPath = join(root, "payload.json");
+  try {
+    await writeFile(payloadPath, JSON.stringify({ type: "jobToken", hostTokenCallback: true }), { mode: 0o600 });
+    patchQoderSDKJobTokenPayload(payloadPath);
+    assert.deepEqual(JSON.parse(await readFile(payloadPath, "utf8")), {
+      type: "jobToken",
+      jobTokenProvider: "host",
+    });
+    assert.equal((await stat(payloadPath)).mode & 0o777, 0o600);
+
+    await writeFile(payloadPath, JSON.stringify({ type: "accessToken", accessToken: "must-not-be-read" }), { mode: 0o600 });
+    assert.throws(
+      () => patchQoderSDKJobTokenPayload(payloadPath),
+      (error) => error instanceof ProtocolError && error.code === "sdk_auth_payload_incompatible",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SDK auth keeps opaque legacy access tokens on the released direct selector", () => {
+  const adapter = new QoderSDKAdapter("/bin/true", "/tmp", {
+    openAPIEndpoint: "https://openapi.example.test",
+  });
+  const legacy = adapter.sdkAuthentication(
+    { mode: "access_token", env_var: "CPA_QODER_LEGACY_ACCESS_TOKEN" },
+    () => {},
+  );
+  assert.deepEqual(legacy.auth, {
+    type: "accessToken",
+    accessToken: { envVar: "CPA_QODER_LEGACY_ACCESS_TOKEN" },
+  });
+  assert.equal(legacy.spawnQoderCLIProcess, undefined);
+
+  const pat = adapter.sdkAuthentication(
+    { mode: "pat", env_var: "CPA_QODER_PAT" },
+    () => {},
+  );
+  assert.equal(pat.auth.type, "jobToken");
+  assert.equal(typeof pat.spawnQoderCLIProcess, "function");
+});
+
+test("shared Qoder token manager exchanges PAT and refreshes an unauthorized SDK job token", async () => {
+  const envVar = "CPA_QODER_SDK_TOKEN_MANAGER_TEST";
+  const previous = process.env[envVar];
+  process.env[envVar] = "pt-fixture";
+  const paths = [];
+  const manager = new QoderTokenManager(
+    "https://openapi.example.test",
+    "pat_exchange",
+    "qoder/test",
+    async (url, init) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path.endsWith("/exchange")) {
+        assert.deepEqual(JSON.parse(init.body), { personal_token: "pt-fixture" });
+        return new Response(JSON.stringify({ token: "job-initial", refresh_token: "refresh-fixture", expires_in: 3600 }), { status: 200 });
+      }
+      assert.deepEqual(JSON.parse(init.body), { refresh_token: "refresh-fixture" });
+      return new Response(JSON.stringify({ token: "job-refreshed", refresh_token: "refresh-next", expires_in: 3600 }), { status: 200 });
+    },
+    1000,
+  );
+  try {
+    const auth = { mode: "pat", env_var: envVar };
+    assert.equal(await manager.getAccessToken(auth, "initial"), "job-initial");
+    assert.equal(await manager.getAccessToken(auth, "unauthorized"), "job-refreshed");
+    assert.deepEqual(paths, ["/api/v1/jobToken/exchange", "/api/v1/jobToken/refresh"]);
+  } finally {
+    if (previous === undefined) delete process.env[envVar];
+    else process.env[envVar] = previous;
+  }
+});
+
+test("legacy access-token mode never exchanges an opaque bearer even when it has a pt- prefix", async () => {
+  const envVar = "CPA_QODER_LEGACY_BEARER_TEST";
+  const previous = process.env[envVar];
+  process.env[envVar] = "pt-opaque-access-token";
+  let exchangeCalls = 0;
+  const manager = new QoderTokenManager(
+    "https://openapi.example.test",
+    "pat_exchange",
+    "qoder/test",
+    async () => {
+      exchangeCalls += 1;
+      throw new Error("legacy access token must not be exchanged");
+    },
+    1000,
+  );
+  try {
+    assert.equal(
+      await manager.getAccessToken({ mode: "access_token", env_var: envVar }),
+      "pt-opaque-access-token",
+    );
+    assert.equal(exchangeCalls, 0);
+  } finally {
+    if (previous === undefined) delete process.env[envVar];
+    else process.env[envVar] = previous;
+  }
+});
+
 test("terminal during start does not leave a stale active session", async () => {
   const output = new PassThrough();
   const adapter = new FakeAdapter();
@@ -280,6 +386,7 @@ test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
     modelsEndpoint: "https://direct.example.test/model/v1/models",
+    authEndpoint: "https://openapi.example.test",
     tokenMode: "bearer",
     models: [],
     fetchImpl: async (url, init = {}) => {
@@ -327,6 +434,7 @@ test("direct OpenAI transport preserves exact model, tools, usage, and lifecycle
     const inference = calls.find((call) => call.url.endsWith("/chat/completions"));
     assert.ok(inference);
     assert.equal(inference.init.headers.Authorization, "Bearer jt-fixture");
+    assert.equal(calls.some((call) => call.url.endsWith("/jobToken/exchange")), false);
     const body = JSON.parse(inference.init.body);
     assert.equal(body.model, "qfmodel");
     assert.equal(body.stream, true);
@@ -363,8 +471,7 @@ test("direct OpenAI transport exchanges PAT and retries one unauthorized respons
   let inferenceCalls = 0;
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    authEndpoint: "https://openapi.example.test",
-    tokenMode: "auto",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel", display_name: "Qwen3.8-Flash" }],
     fetchImpl: async (url, init = {}) => {
       calls.push({ url: String(url), init });
@@ -409,14 +516,19 @@ test("direct OpenAI transport exchanges PAT and retries one unauthorized respons
 
 test("direct OpenAI transport aborts the upstream request on cancel", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_CANCEL_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel" }],
-    fetchImpl: async (_url, init = {}) => await new Promise((_resolve, reject) => {
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).endsWith("/jobToken/exchange")) {
+        return new Response(JSON.stringify({ token: "jt-cancel", expires_in: 86400 }), { status: 200 });
+      }
+      return await new Promise((_resolve, reject) => {
       init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-    }),
+      });
+    },
   });
   try {
     const params = {
@@ -443,16 +555,21 @@ test("direct OpenAI transport aborts the upstream request on cancel", async () =
 
 test("direct OpenAI transport projects client tool-call deltas into AgentEventV1", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_TOOL_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel" }],
-    fetchImpl: async () => new Response([
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"probe","arguments":"{\\"x\\":1}"}}]}}]}',
-      "data: [DONE]",
-      "",
-    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/jobToken/exchange")) {
+        return new Response(JSON.stringify({ token: "jt-tool", expires_in: 86400 }), { status: 200 });
+      }
+      return new Response([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"probe","arguments":"{\\"x\\":1}"}}]}}]}',
+        "data: [DONE]",
+        "",
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
   });
   try {
     const params = {
@@ -480,10 +597,10 @@ test("direct OpenAI transport projects client tool-call deltas into AgentEventV1
 
 test("direct OpenAI transport rejects a display-name or guessed model alias", async () => {
   const envVar = "CPA_TEST_QODER_DIRECT_MODEL_TOKEN";
-  process.env[envVar] = "jt-fixture";
+  process.env[envVar] = "pt-fixture";
   const adapter = new DirectOpenAIAdapter({
     endpoint: "https://direct.example.test/model/v1/chat/completions",
-    tokenMode: "bearer",
+    openAPIEndpoint: "https://openapi.example.test",
     models: [{ id: "qfmodel", display_name: "Qwen3.8-Flash" }],
     fetchImpl: async () => { throw new Error("network must not be called for an unknown model"); },
   });

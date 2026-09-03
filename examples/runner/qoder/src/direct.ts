@@ -15,13 +15,15 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_ERROR_BYTES = 8 * 1024;
 
-type DirectTokenMode = "auto" | "bearer" | "pat_exchange";
+export type DirectTokenMode = "auto" | "bearer" | "pat_exchange";
 
 type DirectOptions = {
   endpoint: string;
   modelsEndpoint?: string;
   authEndpoint?: string;
-  tokenMode: DirectTokenMode;
+  tokenMode?: DirectTokenMode;
+  openAPIEndpoint?: string;
+  openAPIUserAgent?: string;
   models: ModelRecord[];
   requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
@@ -61,16 +63,25 @@ type DirectChunk = {
 export class DirectOpenAIAdapter implements QoderAdapter {
   readonly transport: QoderTransport = "direct_openai";
   private readonly sessions = new Map<string, DirectSession>();
-  private readonly tokenManager: DirectTokenManager;
+  private readonly tokenManager: QoderTokenManager;
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
   private readonly modelsConfig: ModelRecord[];
   private discoveredModels?: ModelRecord[];
   private readonly authEndpoint?: string;
+  private readonly tokenMode: DirectTokenMode;
+  private readonly openAPIUserAgent: string;
 
   constructor(private readonly options: DirectOptions) {
-    const authEndpoint = options.authEndpoint?.replace(/\/+$/, "");
+    const openAPIEndpoint = options.openAPIEndpoint?.replace(/\/+$/, "");
+    const legacyAuthEndpoint = options.authEndpoint?.replace(/\/+$/, "");
+    if (openAPIEndpoint && legacyAuthEndpoint && openAPIEndpoint !== legacyAuthEndpoint) {
+      throw new ProtocolError("direct_auth_config", "openapi endpoint and direct auth endpoint must match");
+    }
+    const authEndpoint = openAPIEndpoint || legacyAuthEndpoint;
     this.authEndpoint = authEndpoint;
+    this.tokenMode = options.tokenMode ?? "auto";
+    this.openAPIUserAgent = options.openAPIUserAgent?.trim() || "qoder/1.1.40";
     if (!isSupportedEndpoint(options.endpoint)) {
       throw new ProtocolError("direct_endpoint_invalid", "direct endpoint must use HTTPS or loopback HTTP");
     }
@@ -80,15 +91,19 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     if (options.authEndpoint && !isSupportedEndpoint(options.authEndpoint)) {
       throw new ProtocolError("direct_endpoint_invalid", "direct auth endpoint must use HTTPS or loopback HTTP");
     }
-    if (options.tokenMode === "pat_exchange" && !authEndpoint) {
+    if (options.openAPIEndpoint && !isSupportedEndpoint(options.openAPIEndpoint)) {
+      throw new ProtocolError("direct_endpoint_invalid", "openapi endpoint must use HTTPS or loopback HTTP");
+    }
+    if (this.tokenMode === "pat_exchange" && !authEndpoint) {
       throw new ProtocolError("direct_auth_config", "direct PAT exchange requires an auth endpoint");
     }
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.requestTimeoutMs = Math.max(1000, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
     this.modelsConfig = validateModelRecords(options.models);
-    this.tokenManager = new DirectTokenManager(
+    this.tokenManager = new QoderTokenManager(
       authEndpoint,
-      options.tokenMode,
+      this.tokenMode,
+      this.openAPIUserAgent,
       this.fetchImpl,
       this.requestTimeoutMs,
     );
@@ -99,14 +114,13 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       throw new ProtocolError("direct_endpoint_invalid", "direct endpoint is invalid");
     }
     if (!auth) return { auth_ready: false, message: "selected Qoder direct auth was not supplied" };
-    if (auth.mode !== "pat") {
+    if (auth.mode === "local_cli") {
       return { auth_ready: false, message: "direct_openai requires a PAT or bearer access-token auth" };
     }
     const source = process.env[auth.env_var] ?? "";
     if (!source) return { auth_ready: false, message: "configured Qoder direct token source is unavailable" };
-    if ((this.options.tokenMode === "pat_exchange" || this.options.tokenMode === "auto" && source.startsWith("pt-")) && !this.authEndpoint) {
-      return { auth_ready: false, message: "direct PAT exchange endpoint is not configured" };
-    }
+    const requiresExchange = auth.mode === "pat" && (this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-"));
+    if (requiresExchange && !this.authEndpoint) return { auth_ready: false, message: "Qoder OpenAPI endpoint is not configured" };
     return { auth_ready: true, message: "Qoder direct OpenAI transport is configured; remote acceptance is checked on execution" };
   }
 
@@ -463,12 +477,13 @@ export class DirectOpenAIAdapter implements QoderAdapter {
   }
 }
 
-class DirectTokenManager {
+export class QoderTokenManager {
   private state?: TokenState;
 
   constructor(
     private readonly authEndpoint: string | undefined,
     private readonly tokenMode: DirectTokenMode,
+    private readonly openAPIUserAgent: string,
     private readonly fetchImpl: typeof fetch,
     private readonly requestTimeoutMs: number,
   ) {}
@@ -490,17 +505,29 @@ class DirectTokenManager {
     return response;
   }
 
+  async getAccessToken(
+    auth: AuthSpec,
+    reason: "initial" | "unauthorized" = "initial",
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const state = await this.ensure(auth, signal);
+    if (reason === "unauthorized" && state.patExchange) {
+      return (await this.refreshOrExchange(state, signal)).accessToken;
+    }
+    return state.accessToken;
+  }
+
   private async ensure(auth: AuthSpec, signal?: AbortSignal): Promise<TokenState> {
-    if (auth.mode !== "pat") throw new ProtocolError("direct_auth_invalid", "direct_openai requires PAT or bearer token auth");
+    if (auth.mode === "local_cli") throw new ProtocolError("direct_auth_invalid", "direct_openai requires PAT or bearer token auth");
     const source = String(process.env[auth.env_var] ?? "");
     if (!source) throw new ProtocolError("auth_not_configured", "Qoder direct token environment source is not configured");
-    const patExchange = this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-");
+    const patExchange = auth.mode === "pat" && (this.tokenMode === "pat_exchange" || this.tokenMode === "auto" && source.startsWith("pt-"));
     if (!patExchange) {
       this.state = { source, accessToken: source, expiresAt: Number.POSITIVE_INFINITY, patExchange: false };
       return this.state;
     }
-    if (!this.authEndpoint) throw new ProtocolError("direct_auth_config", "direct PAT exchange endpoint is not configured");
-    if (this.state?.source === source && this.state.expiresAt > Date.now() + 30_000) return this.state;
+    if (!this.authEndpoint) throw new ProtocolError("direct_auth_config", "Qoder OpenAPI endpoint is not configured");
+    if (this.state?.source === source && this.state.patExchange === patExchange && this.state.expiresAt > Date.now() + 30_000) return this.state;
     this.state = await this.exchange(source, signal);
     return this.state;
   }
@@ -536,7 +563,11 @@ class DirectTokenManager {
     try {
       const response = await this.fetchImpl(`${this.authEndpoint}${path}`, {
         method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": this.openAPIUserAgent,
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -704,7 +735,7 @@ function expiryFromTokenRecord(record: Record<string, unknown>): number {
   return Date.now() + Math.max(60_000, expiresIn ?? 86_400_000);
 }
 
-function isSupportedEndpoint(raw: string): boolean {
+export function isSupportedEndpoint(raw: string): boolean {
   try {
     const url = new URL(raw);
     if (url.username || url.password || url.search || url.hash || !url.hostname) return false;

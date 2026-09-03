@@ -29,6 +29,40 @@ jobs:
           go build -o test-output ./cmd/server
           rm -f test-output
 
+  provider-connectors:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: examples/runner/qoder/package-lock.json
+      - name: Test CodeBuddy plugin
+        working-directory: examples/plugin/codebuddy/go
+        run: |
+          go test -race -count=1 ./...
+          go vet ./...
+          go build -buildmode=c-shared -o /tmp/cpa-provider-codebuddy.so .
+      - name: Test Qoder plugin
+        working-directory: examples/plugin/qoder/go
+        run: |
+          go test -race -count=1 ./...
+          go vet ./...
+          go build -buildmode=c-shared -o /tmp/cpa-provider-qoder.so .
+      - name: Test Qoder runner
+        working-directory: examples/runner/qoder
+        run: |
+          npm ci --ignore-scripts
+          npm test
+
   credential-permissions-windows:
     runs-on: windows-latest
     steps:
