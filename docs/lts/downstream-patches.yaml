@@ -4,7 +4,7 @@ patches:
   - id: codex-model-fallback
     reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, including a confirmed-usage-cooldown-only global target list when source mappings cannot deliver, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
     introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ca601db0 adds passive quota-signal observation, 7bc16ee3 preserves round-robin successor fairness, and fcea738f retains typed WebSocket handshake status. LTS absorbs those shared improvements, but they do not add typed ordered cross-model fallback, target-model auth reselection, reasoning-continuity reset gates, failure rollback, or post-delivery replay safety, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds passive quota-signal observation, 7bc16ee3 preserves round-robin successor fairness, fcea738f retains typed WebSocket handshake status, and 12b88f3a adds shared auth/registry epochs and state projection. LTS absorbs those shared improvements, but they do not add typed ordered cross-model fallback, target-model auth reselection, reasoning-continuity reset gates, failure rollback, or post-delivery replay safety, so the patch remains required.
     files:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
@@ -84,7 +84,7 @@ patches:
   - id: codex-rate-limit-continuity
     reason: A fresh Codex session can receive usage_limit_reached while previously successful sessions on the same auth/model are still allowed to finish, so Core needs a bounded observation state instead of immediately suspending the auth/model for every session.
     introduced_in: 6ee281422e460ac7d5db8d69ef3fe6b49560e96a
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ca601db0 adds passive quota-signal observation and 7bc16ee3 preserves round-robin successor fairness. Those signals remain observational and do not add Healthy/FreshBlocked/ConfirmedCooldown phases, established lease plus incumbent evidence, single-canary confirmation, lifecycle invalidation, or a continuity generation guard, so LTS keeps the patch required while composing the new observation fields with delayed final-auth publication. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds passive quota-signal observation, 7bc16ee3 preserves round-robin successor fairness, and 12b88f3a adds auth/registry epoch projection. Those shared signals still do not add Healthy/FreshBlocked/ConfirmedCooldown phases, established lease plus incumbent evidence, single-canary confirmation, scoped lifecycle invalidation, or a continuity generation guard, so LTS keeps the patch required while composing the new projection with delayed final-auth publication and transient-rate-limit exceptions.
     files:
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
@@ -143,7 +143,7 @@ patches:
   - id: codex-interactions-service-tier-response
     reason: Codex Interactions requests can send priority service, but the shared response translator hardcodes streaming completion metadata to standard and omits the non-streaming tier instead of reporting the effective outbound or upstream tier.
     introduced_in: be649f04a4a66b952d5210c7cdf74e1d90a12b76
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); f8c45c30 maps Claude output_config into Codex request text format and 4b5f1eab exposes plugin WebSocket response events, but neither makes the separate Codex Interactions response translator report effective service_tier for streaming, non-streaming, and DONE-fallback responses, so router-for-me/CLIProxyAPI#4189 remains only partially relevant. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); f8c45c30 maps Claude output_config into Codex request text format and 4b5f1eab exposes plugin WebSocket response events, but neither makes the separate Codex Interactions response translator report effective service_tier for streaming, non-streaming, and DONE-fallback responses, so router-for-me/CLIProxyAPI#4189 remains only partially relevant.
     files:
       - internal/translator/codex/interactions/interactions_codex_response.go
       - internal/translator/codex/interactions/interactions_codex_test.go
@@ -174,7 +174,7 @@ patches:
   - id: plugin-configured-enable-default
     reason: A configured plugin without an explicit enabled field must inherit the enabled plugin subsystem default instead of being silently disabled during YAML parsing or runtime config synthesis.
     introduced_in: f3ff2f889026c6a28dc2d14f602c4fef108a0347
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ba510f85 adds plugin quiesce and safe rollback during hot reload, but it does not define the configured-plugin enable default through YAML parsing and runtime host synthesis. An omitted per-plugin enabled field must still inherit true while the subsystem-level switch remains authoritative, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ba510f85 adds plugin quiesce and safe rollback during hot reload, but it does not define the configured-plugin enable default through YAML parsing and runtime host synthesis. An omitted per-plugin enabled field must still inherit true while the subsystem-level switch remains authoritative, so the patch remains required.
     files:
       - internal/config/config.go
       - internal/config/plugin_config_test.go
@@ -191,7 +191,7 @@ patches:
   - id: home-plugin-sync-cancellation
     reason: Canceling a dedicated Home plugin-sync request must close its one-command Redis connection so a client-installed two-minute read deadline cannot overwrite an earlier cancellation deadline and stall shutdown or request cleanup.
     introduced_in: 125cd6c244f1c723781680c23e61edaa88aac5ef
-    affected_upstream_range: introduced by b651a1a8fd8ea1a43d061a08b42cef8fa3160179 and still required through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 1502ac82 changes and 3e20d662 restores Home port precedence, while neither touches Home plugin synchronization or Redis cancellation. Upstream can still install its long read deadline after the immediate cancellation deadline, which reproduced as a full two-minute stall on Linux CI. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: introduced by b651a1a8fd8ea1a43d061a08b42cef8fa3160179 and upstream-equivalent at ed37aa035cc9aa499e4c9fe75682f31bd733e5c8 (upstream PR #5374), included through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01). Upstream now unwraps Home dispatch and TLS connections and closes the underlying dedicated transport on cancellation, preventing a later Redis read deadline from restoring the full plugin-sync timeout. LTS keeps the regression coverage in this sync baseline and marks the patch removable for the required follow-up retirement stage.
     files:
       - internal/home/client.go
       - internal/home/client_test.go
@@ -199,14 +199,14 @@ patches:
       - TestGetPluginSyncCancellationInterruptsRead
       - TestPluginSyncCancelableConnCancellationClosesConnection
       - TestProcessPluginSyncCommandCancellationInterruptsTLSHandshake
-    upstream_issue_or_pr: not-filed
-    state: required
-    retire_when: Upstream closes or otherwise irrevocably interrupts the dedicated plugin-sync connection when the request context is canceled, remains safe during TLS handshake and concurrent client close, and all listed regressions pass without the downstream implementation.
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#5374
+    state: removable
+    retire_when: After this upstream-equivalent baseline is merged, remove the downstream-only cancellation comment and direct wrapper regression in a separate merge-commit PR, retain the upstream cancellation and TLS coverage, and record the removal commit in retired_in.
 
   - id: codex-gpt56-ultra-level
     reason: Upstream now publishes and remotely refreshes Codex client metadata with logical Sol/Terra Ultra and Luna max-only, but it still does not provide the CPA-Core-LTS server-side capability overlay, custom-model policy, payload-override-safe wire canonicalization, usage/retry alignment, or HTTP/WebSocket enforcement. CPA-Core-LTS therefore validates the refreshed client catalog as an LTS prerequisite while retaining the downstream runtime patch.
     introduced_in: 6e12fb1dd6d522ca80a02644d286d765d7a649bd
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 1cc72b9d correctly filters max and ultra for older Codex clients and centralizes the SDK catalog builder. That client compatibility improvement does not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket enforcement, so the runtime patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 1cc72b9d correctly filters max and ultra for older Codex clients and centralizes the SDK catalog builder, while 02e3d33c refreshes the embedded client model definitions. Those catalog changes do not replace the downstream provider lookup/tier overlay, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, or HTTP/WebSocket enforcement, so the runtime patch remains required.
     files:
       - .github/scripts/refresh-model-catalogs.sh
       - .github/workflows/docker-image.yml
@@ -295,7 +295,7 @@ patches:
   - id: codex-model-header-provider-snapshot
     reason: Codex model override headers must be resolved from the Codex provider and captured once so the real handshake and connection key cannot disagree or be shadowed by another provider registration.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 1cc72b9d changes Codex client catalog shaping and fcea738f preserves typed WebSocket handshake status, but upstream still lacks a provider-owned immutable model-header snapshot and does not include its digest and resolved model in reusable WebSocket connection identity, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 1cc72b9d changes Codex client catalog shaping and fcea738f preserves typed WebSocket handshake status, but upstream still lacks a provider-owned immutable model-header snapshot and does not include its digest and resolved model in reusable WebSocket connection identity, so the patch remains required.
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_openai_images.go
@@ -316,7 +316,7 @@ patches:
   - id: codex-oauth-client-identity-finalization
     reason: Codex OAuth requests must finalize the official Originator, User-Agent, optional Version floor, and macOS Session_id after model-specific header overrides; otherwise the backend can reject a valid model route with a misleading 404 Model not found response.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 1cc72b9d changes Codex client catalog shaping and fcea738f changes WebSocket handshake error construction, but neither adds an equivalent final OAuth client-identity pass shared by HTTP, compact, streaming, WebSocket, and image paths after model-specific overrides, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 1cc72b9d changes Codex client catalog shaping and fcea738f changes WebSocket handshake error construction, but neither adds an equivalent final OAuth client-identity pass shared by HTTP, compact, streaming, WebSocket, and image paths after model-specific overrides, so the patch remains required.
     files:
       - config.example.yaml
       - internal/runtime/executor/codex_client_identity.go
@@ -336,7 +336,7 @@ patches:
   - id: codex-client-metadata-privacy
     reason: Current Codex clients transport one canonical x-codex-turn-metadata snapshot plus flat body and direct header compatibility projections. Core must use its stable session before auth selection and rate-limit continuity while preserving explicit execution-session priority; when xAI is an eligible provider, project that canonical session into the existing execution-session contract before enrichment so credential affinity and the native prompt_cache_key / x-grok-conv-id chain share one identity without overriding a caller execution_session_id or parsing ordinary non-Codex xAI client_metadata; keep off-mode bodies byte-identical, make a body canonical source suppress conflicting direct canonical headers, and project the canonical Session_id over random client fallbacks; keep image conversion from collapsing duplicate metadata carriers or reversing default/override/filter precedence; reject unsafe header projection values; fail closed on unknown startup, SDK builder, and hot-reload config values without losing the last good config; keep projections coherent after credential selection; avoid the legacy identity-confuse partial rewrite on canonical requests; offer explicit workspace passthrough/redact/drop privacy policies; strip Git remote credentials even in passthrough mode; emit only hashed session identity plus auth_index in affinity diagnostics; and prevent workspace enrichment or derived identity headers from entering downstream, upstream, deferred-error, or WebSocket request logs.
     introduced_in: dcb424d4a5d666322c641151a3e37fd3b0dcc864
-    affected_upstream_range: "through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); upstream PR #4554 / 02f15e3c recognizes native client session signals, while 2555cde2 and 9b88808f broaden Codex App schema normalization, fold namespaces, and restore dispatcher tool calls. Those are compatible with the LTS metadata chain but do not parse canonical Codex turn metadata before xAI auth selection or project its stable session into prompt_cache_key and x-grok-conv-id. Upstream still lacks body/direct-header conflict handling, stable pre-auth continuity, canonical-to-xAI projection, selectable workspace privacy, unconditional Git credential stripping, and workspace-aware log sanitization. LTS absorbs the useful schema and namespace work while retaining explicit execution-session priority, canonical session affinity, and privacy behavior, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion."
+    affected_upstream_range: "through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); upstream PR #4554 / 02f15e3c recognizes native client session signals, while 2555cde2 and 9b88808f broaden Codex App schema normalization, fold namespaces, and restore dispatcher tool calls. The 82113889..dc0f7a59 Merkle LCP/session series adds useful canonical identity, nested payload, bounded cache, and subagent isolation behavior. LTS absorbs that series while retaining explicit execution-session and canonical Codex priority, hashed session/auth diagnostics, and admission-gated publication of cold, rebound, LCP, and inherited-subagent affinity. Upstream still lacks body/direct-header conflict handling, stable pre-auth continuity, canonical-to-xAI projection, selectable workspace privacy, unconditional Git credential stripping, and workspace-aware log sanitization, so the patch remains required."
     files:
       - config.example.yaml
       - internal/api/middleware/request_logging.go
@@ -373,6 +373,8 @@ patches:
       - sdk/cliproxy/auth/conductor_execution.go
       - sdk/cliproxy/auth/conductor_lts.go
       - sdk/cliproxy/auth/selector.go
+      - sdk/cliproxy/auth/selector_test.go
+      - sdk/cliproxy/auth/selector_lcp_test.go
       - sdk/cliproxy/auth/xai_session_affinity_test.go
       - sdk/cliproxy/builder.go
       - sdk/cliproxy/builder_codex_client_metadata_test.go
@@ -411,6 +413,9 @@ patches:
       - TestPreflightXAIOnlyParsesCodexMetadataCarrier
       - TestSessionLogIdentityHashesOpaqueValue
       - TestSessionAffinityAuthLogIDUsesStableIndex
+      - TestSessionAffinityPreDispatchSelectionsRemainPrivateUntilCommit
+      - TestSessionAffinitySubagentPreDispatchBindingRemainsPrivateUntilCommit
+      - TestSessionAffinitySelectorLCPRejectedPreDispatchDoesNotPublishBinding
       - TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse
       - TestCodexExecutorCacheHelperOffModeProjectsCanonicalSessionWithoutMutatingBody
       - TestCodexExecutorCacheHelperOffModePreservesSDKHeaderOnlyCanonical
@@ -441,7 +446,7 @@ patches:
   - id: codex-model-not-found-request-scope
     reason: An OpenAI-style 404 with error.type invalid_request_error and error.param model is a request/model routing failure, not evidence of unhealthy Codex credentials; retrying every auth or applying the generic 12-hour model cooldown can suspend the entire model pool.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); fcea738f converts Codex WebSocket handshake rejections into typed status errors, but regular Codex execution still does not recognize the OpenAI-style invalid_request_error model 404. The narrower LTS request-scope classifier and its cooldown regression therefore remain required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); fcea738f converts Codex WebSocket handshake rejections into typed status errors, but regular Codex execution still does not recognize the OpenAI-style invalid_request_error model 404. The narrower LTS request-scope classifier and its cooldown regression therefore remain required.
     files:
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/conductor_overrides_test.go
@@ -457,7 +462,7 @@ patches:
   - id: codex-websocket-reader-generation
     reason: Reusable Codex WebSocket sessions need generation ownership so a stale reader or shutdown race cannot deliver to, clear, close, or deadlock a newer request, and a disconnect signal must not preempt a response already queued for the current request.
     introduced_in: 0877a26d333a3be918f5e48aadf0e4d71709ab2f
-    affected_upstream_range: "through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); fcea738f improves typed WebSocket handshake failures but does not add generation-safe reader/request ownership. LTS composes the upstream handshake path with replacement, detach, invalidation, session-close, request-owned cancellation, retry-rebinding, and stale-reader guards, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion."
+    affected_upstream_range: "through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); fcea738f improves typed WebSocket handshake failures but does not add generation-safe reader/request ownership. LTS composes the upstream handshake path with replacement, detach, invalidation, session-close, request-owned cancellation, retry-rebinding, and stale-reader guards, so the patch remains required."
     files:
       - internal/runtime/executor/codex_websockets_connection.go
       - internal/runtime/executor/codex_websockets_executor.go
@@ -483,7 +488,7 @@ patches:
   - id: codex-spark-reasoning-summary-compat
     reason: GPT-5.3-Codex-Spark needs reasoning effort enabled but its upstream rejects reasoning.summary, so Core must remove only that unsupported field after final payload shaping across HTTP and WebSocket transports.
     introduced_in: 37e306f939e8ef363254a49cdc7f924a6ceceff5
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 1cc72b9d filters extended client reasoning levels by client version, but it does not sanitize reasoning.summary for gpt-5.3-codex-spark after request overrides. Upstream still has no equivalent post-override HTTP/WebSocket sanitizer, so LTS keeps applying it after optimized model mutation on every transport. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 1cc72b9d filters extended client reasoning levels by client version, but it does not sanitize reasoning.summary for gpt-5.3-codex-spark after request overrides. Upstream still has no equivalent post-override HTTP/WebSocket sanitizer, so LTS keeps applying it after optimized model mutation on every transport.
     files:
       - internal/runtime/executor/codex_executor.go
       - internal/runtime/executor/codex_websockets_executor.go
@@ -508,7 +513,7 @@ patches:
   - id: xai-explicit-tool-choice-none
     reason: xAI request preparation must not grant native x_search when the client declared no tools or a restricted allowlist; explicit tool_choice none must remain intact, an orphaned restriction must fail closed instead of reverting to auto, parallel_tool_calls must be removed when no tools survive, and custom declarations and choices must be canonicalized together before orphan pruning.
     introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 3faf7095 corrects required image_generation tool choices, while 2555cde2 and 9b88808f improve Codex App schema and namespace normalization. Those changes do not replace the broader xAI authorization policy; LTS still preserves explicit none, fail-closed restricted allowlists, client-declared tool ownership, and canonicalized choices before any optional x_search injection, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 3faf7095 corrects required image_generation tool choices, while 2555cde2 and 9b88808f improve Codex App schema and namespace normalization. Those changes do not replace the broader xAI authorization policy; LTS still preserves explicit none, fail-closed restricted allowlists, client-declared tool ownership, and canonicalized choices before any optional x_search injection, so the patch remains required.
     files:
       - internal/runtime/executor/xai_executor.go
       - internal/runtime/executor/xai_executor_test.go
@@ -526,7 +531,7 @@ patches:
   - id: kimi-claude-delegated-auth-immutability
     reason: Kimi delegates Claude-format requests to the Claude executor, but the selected Auth attributes are shared immutable credential configuration and must not be mutated per request to install the Kimi messages base URL.
     introduced_in: 772915acb699d8c6b6f6d8f9c51c1b4f3a61cf34
-    affected_upstream_range: 'introduced by 70c4bd78b2bc347bf988f74f2d2d7da85de5aa13 and still required through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); the v7.2.141-v7.2.145 Claude translator and rate-limit fixes do not make the delegated Kimi credential request-local. Upstream still writes auth.Attributes["base_url"] directly in Execute, ExecuteStream, and CountTokens, which can panic for a nil map, race across concurrent requests, and persist a request-local route into shared auth state. LTS retains the cloned auth view. The f0de1d00 delta is README-only and does not affect this conclusion.'
+    affected_upstream_range: 'introduced by 70c4bd78b2bc347bf988f74f2d2d7da85de5aa13 and still required through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); the v7.2.141-v7.2.145 Claude translator and rate-limit fixes do not make the delegated Kimi credential request-local. Upstream still writes auth.Attributes["base_url"] directly in Execute, ExecuteStream, and CountTokens, which can panic for a nil map, race across concurrent requests, and persist a request-local route into shared auth state. LTS retains the cloned auth view.'
     files:
       - internal/runtime/executor/kimi_executor.go
       - internal/runtime/executor/kimi_executor_test.go
@@ -539,7 +544,7 @@ patches:
   - id: request-body-panic-tempfile-cleanup
     reason: This historical patch originally closed a panic-path temporary-file leak in error-only request logging. CPA-Core-LTS now removes that request-body tempfile spool entirely, keeps only bounded in-memory request/response/upstream previews, and still requires middleware-owned unwind cleanup so panic and http.ErrAbortHandler paths close the original body and release retained buffers.
     introduced_in: ad7244752d324a5b179c3e30a628acf976fa995c
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); b7f6c15f detaches plugin usage handling context and 8dd78042 improves HTTPS proxy dialing, but neither alters request-log body ownership. Upstream still spools large error-only bodies to temporary files, retains larger deferred upstream bodies, and performs cleanup only from the response finalizer, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); b7f6c15f detaches plugin usage handling context and 8dd78042 improves HTTPS proxy dialing, but neither alters request-log body ownership. Upstream still spools large error-only bodies to temporary files, retains larger deferred upstream bodies, and performs cleanup only from the response finalizer, so the patch remains required.
     files:
       - internal/api/middleware/request_logging.go
       - internal/api/middleware/request_logging_test.go
@@ -561,7 +566,7 @@ patches:
   - id: api-request-body-size-limit
     reason: Public Claude, Gemini, OpenAI, Responses, image, and video JSON handlers previously used unbounded body reads and unbounded zstd expansion, so a small number of concurrent oversized requests could consume container memory before provider routing or normal validation ran.
     introduced_in: b2b593fad3f18bfe700fe5f11d4e88e10bbc7f16
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); the new Gemini schema, translator, WebSocket, and proxy fixes do not add a decoded-body limit. Upstream handlers still use unbounded GetRawData/io.ReadAll behavior and do not enforce the same limit on every decoded Content-Encoding layer, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); the new Gemini schema, translator, WebSocket, and proxy fixes do not add a decoded-body limit. Upstream handlers still use unbounded GetRawData/io.ReadAll behavior and do not enforce the same limit on every decoded Content-Encoding layer, so the patch remains required.
     files:
       - sdk/api/handlers/request_body.go
       - sdk/api/handlers/request_body_test.go
@@ -583,7 +588,7 @@ patches:
   - id: object-store-auth-path-containment
     reason: Object-store auth persistence must never create, overwrite, upload, delete, or render credential files outside its managed private roots, including traversal, sibling-prefix, absolute-path, pre-existing or dangling symlinks, junctions, initialized-root replacement, check/write path-swap races, and crash-persistent global-temp copies.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); e1bf8939 changes GitHub token resolution and 3db0a86c changes Management auth post-persist hooks, but neither touches object-store path containment. Upstream still accepts caller-provided absolute auth paths and computes object keys from unchecked filepath.Rel results, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); e1bf8939 changes GitHub token resolution and 3db0a86c changes Management auth post-persist hooks, but neither touches object-store path containment. Upstream still accepts caller-provided absolute auth paths and computes object keys from unchecked filepath.Rel results, so the patch remains required.
     files:
       - .github/workflows/pr-test-build.yml
       - internal/store/objectstore.go
@@ -629,7 +634,7 @@ patches:
   - id: auth-token-private-file-permissions
     reason: OAuth tokens and service-account credentials must be created with owner-only permissions and must tighten pre-existing wider files before replacing their contents.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 1f53b2eb and 7bc16ee3 improve auth rotation fairness, while 3db0a86c improves post-persist hook input. None alters token file creation or permission hardening; upstream token writers still follow umask for new files and preserve wider permissions on existing files, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 1f53b2eb and 7bc16ee3 improve auth rotation fairness, while 3db0a86c improves post-persist hook input. None alters token file creation or permission hardening; upstream token writers still follow umask for new files and preserve wider permissions on existing files, so the patch remains required.
     files:
       - .github/workflows/pr-test-build.yml
       - internal/misc/credential_file.go
@@ -657,7 +662,7 @@ patches:
   - id: auth-store-list-error-propagation
     reason: A damaged or unreadable auth JSON file must fail Store.List instead of silently removing that credential from routing, fallback, and usage attribution while startup reports success.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 3db0a86c synthesizes a persisted auth record before the post-persist hook, but it does not make damaged JSON, plugin parser failures, or invalid weights fail closed. LTS retains list error propagation so a credential cannot silently disappear from routing and attribution, and the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 3db0a86c synthesizes a persisted auth record before the post-persist hook, and upstream PR #5356 hardens Git worktree recovery without changing list error semantics. Upstream GitTokenStore.List still returns success after an auth-file read failure and the File/plugin paths still need the shared fail-closed behavior, so LTS retains contextual list error propagation and the patch remains required.
     files:
       - internal/store/gitstore.go
       - internal/store/gitstore_test.go
@@ -680,7 +685,7 @@ patches:
   - id: auth-store-metadata-hydration
     reason: Initial File, Git, Object, and Postgres store loading must hydrate the same normalized auth prefix, custom headers, and disabled state as watcher synthesis so prefixed model routing and Management auth-file output do not change after a reload event.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 3db0a86c usefully supplies a synthesized persisted auth record to post-persist hooks, but it does not replace LTS typed hydration of normalized prefix, custom headers, and disabled state or Management Auth.Prefix consistency, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 3db0a86c usefully supplies a synthesized persisted auth record to post-persist hooks, and upstream PR #5356 hardens Git recovery, but Git loading still applies only selected metadata fields and does not provide shared typed hydration. LTS retains HydrateAuthFromMetadata across File, Git, Object, and Postgres stores so normalized prefix, custom headers, disabled state, and Management Auth.Prefix remain consistent; the patch remains required.
     files:
       - sdk/cliproxy/auth/metadata_hydrate.go
       - sdk/cliproxy/auth/metadata_hydrate_test.go
@@ -713,7 +718,7 @@ patches:
   - id: panel-release-token-isolation
     reason: Management panel release lookups must authorize only exact HTTPS GitHub release URLs and should use a dedicated panel token while retaining a guarded legacy GitStore fallback.
     introduced_in: 177978c4a9fbaf3669c6b2f0c2d5faad19682bf8
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); e1bf8939 introduces generic GitHub token resolution for release checks and asset updates. LTS intentionally does not send a generic GITHUB_TOKEN to the CPA-Panel-LTS release endpoint and retains CLIPROXYAPI_PANEL_GITHUB_TOKEN plus its constrained legacy GitStore compatibility, so the isolation patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); e1bf8939 introduces generic GitHub token resolution for release checks and asset updates. LTS intentionally does not send a generic GITHUB_TOKEN to the CPA-Panel-LTS release endpoint and retains CLIPROXYAPI_PANEL_GITHUB_TOKEN plus its constrained legacy GitStore compatibility, so the isolation patch remains required.
     files:
       - .env.example
       - internal/managementasset/updater.go
@@ -730,7 +735,7 @@ patches:
   - id: gemini-unknown-method-not-found
     reason: Gemini-compatible routes must reject unknown RPC method suffixes with a stable 404 invalid_request_error before reading the request body, instead of consuming the body and falling through to generateContent behavior.
     introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); adac1e58 and b5cde4ba improve Gemini schema normalization and array defaults, while 06997df4 improves thought-signature caching. None changes Gemini route dispatch; upstream still sends every non-stream and non-count suffix through generateContent without a method allowlist before body decoding, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); adac1e58 and b5cde4ba improve Gemini schema normalization and array defaults, while 06997df4 improves thought-signature caching. None changes Gemini route dispatch; upstream still sends every non-stream and non-count suffix through generateContent without a method allowlist before body decoding, so the patch remains required.
     files:
       - sdk/api/handlers/gemini/gemini_handlers.go
       - sdk/api/handlers/gemini/gemini_handlers_test.go
@@ -743,7 +748,7 @@ patches:
   - id: count-tokens-not-found-no-cooldown
     reason: A provider-specific count_tokens endpoint can be absent even when normal generation works, so its 404 must still record the failed request and publish hooks while remaining request-scoped and allowing another credential to serve the count request.
     introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ca601db0 adds passive provider quota observation, which LTS deliberately bypasses for CountTokens, but it does not add the generic-route-404 versus explicit-model-miss scope, failure publication, and credential-fallback combination. The earlier upstream equivalents remain partial, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds passive provider quota observation, which LTS deliberately bypasses for CountTokens, but it does not add the generic-route-404 versus explicit-model-miss scope, failure publication, and credential-fallback combination. The earlier upstream equivalents remain partial, so the patch remains required.
     files:
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/conductor_overrides_test.go
@@ -759,7 +764,7 @@ patches:
   - id: management-logs-bounded-response
     reason: Management log reads need a bounded default and maximum response size without breaking Panel and TUI limits or silently skipping legacy after deltas that exceed one page.
     introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 3db0a86c changes Management auth post-persist hooks and b7f6c15f changes plugin usage error handling, but neither changes Management log reads. Upstream still leaves an omitted limit unbounded and does not clamp oversized limits or provide lossless bounded pagination for legacy after reads, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 3db0a86c changes Management auth post-persist hooks and b7f6c15f changes plugin usage error handling, but neither changes Management log reads. Upstream still leaves an omitted limit unbounded and does not clamp oversized limits or provide lossless bounded pagination for legacy after reads, so the patch remains required.
     files:
       - internal/api/handlers/management/logs.go
       - internal/api/handlers/management/logs_test.go
@@ -776,7 +781,7 @@ patches:
   - id: transient-eof-cooldown
     reason: Transport EOF and unexpected EOF failures before successful completion indicate a transient upstream path failure and need a bounded 502 cooldown, including stream bootstrap, post-payload accounting, and wsrelay errors that have lost the standard-library sentinel identity.
     introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); fcea738f improves typed Codex WebSocket handshake rejection errors but does not replace auth cooldown classification for terminal EOF/UnexpectedEOF across transports. LTS keeps context cancellation and normal closes cooldown-free while preserving transient 502 cooldown for terminal EOF paths, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); fcea738f improves typed Codex WebSocket handshake rejection errors but does not replace auth cooldown classification for terminal EOF/UnexpectedEOF across transports. LTS keeps context cancellation and normal closes cooldown-free while preserving transient 502 cooldown for terminal EOF paths, so the patch remains required.
     files:
       - internal/runtime/executor/aistudio_executor.go
       - sdk/cliproxy/auth/conductor.go
@@ -792,7 +797,7 @@ patches:
   - id: expired-availability-pruning
     reason: Expired auth and model cooldown state must be pruned before Management availability is displayed so runtime routing, registry state, scheduler state, and persisted cooldown snapshots converge, while future, zero-deadline, disabled, Cloudflare, and independent auth-level warnings remain intact.
     introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ca601db0 adds observed quota signals and 7bc16ee3 preserves round-robin successor fairness, but neither prunes expired availability across manager, model registry, scheduler, and cooldown-store state while separating independent auth-level warnings from model aggregates. The patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds observed quota signals, 7bc16ee3 preserves round-robin successor fairness, and 12b88f3a projects auth lifecycle state into the registry. The projection does not prune only expired resettable availability across manager, registry, scheduler, and cooldown-store state or preserve the LTS Cloudflare/transient exceptions and independent auth-level warnings, so the patch remains required.
     files:
       - internal/api/handlers/management/auth_files.go
       - internal/api/handlers/management/auth_files_recent_requests_test.go
@@ -813,7 +818,7 @@ patches:
   - id: responses-chat-tool-call-turn-grouping
     reason: Reasoning, assistant text, or omitted assistant-side Responses items interleaved between consecutive function_call/custom_tool_call items must not split one assistant turn into adjacent assistant(tool_calls) messages. Kimi-style strict Chat Completions upstreams reject that shape with HTTP 400 ("assistant message with 'tool_calls' must be followed by tool messages"), permanently blocking affected Codex multi-agent histories routed through those upstreams. The related closed report focused on id pairing while the remaining defect is turn grouping, so LTS keeps the fix as a downstream patch.
     introduced_in: 12b542a201b1f8d083ada591cdb7687a7281b0a8
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 9d0a60bf and f2b1996b improve Gemini/Antigravity tool-result preservation and ordering, while f8c45c30 maps a Claude output format. None changes the Responses-to-Chat request converter, which still splits calls across reasoning, assistant text, or ignored assistant-side items, so LTS retains output-boundary grouping and user/developer turn boundaries. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 9d0a60bf and f2b1996b improve Gemini/Antigravity tool-result preservation and ordering, while f8c45c30 maps a Claude output format. None changes the Responses-to-Chat request converter, which still splits calls across reasoning, assistant text, or ignored assistant-side items, so LTS retains output-boundary grouping and user/developer turn boundaries.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/translator/openai/openai/responses/openai_openai-responses_request.go
@@ -834,7 +839,7 @@ patches:
   - id: codex-desktop-tool-overlay
     reason: Codex Desktop registers deferred codex_app handlers that are not present in the Direct tool surface sent to third-party Responses models, so those models cannot read or coordinate existing Desktop tasks even though the app already owns the handlers. LTS therefore provides a default-off, fixed-version projection that adds only explicitly configured codex_app children after auth selection, only for provable root Desktop turns on non-GPT models, and preserves the existing provider namespace round trip without executing any app operation inside CPA.
     introduced_in: b052097362ef63bd35329c8b18d73c651078e85d
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 2555cde2 and 9b88808f broaden Codex App schema normalization, fold namespaces, and restore dispatcher tool calls. They do not project missing codex_app children into eligible third-party Direct requests, so LTS still needs its model, UA, root-turn, tool-surface, configuration, GPT, and subagent isolation gates and the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f broaden Codex App schema normalization, fold namespaces, and restore dispatcher tool calls. They do not project missing codex_app children into eligible third-party Direct requests, so LTS still needs its model, UA, root-turn, tool-surface, configuration, GPT, and subagent isolation gates and the patch remains required.
     files:
       - config.example.yaml
       - docs/lts/downstream-patches.yaml
@@ -883,7 +888,7 @@ patches:
   - id: codex-multi-agent-plaintext-contract
     reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex and provider paths, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces.
     introduced_in: 798ad1854064361461225fe766db9b2f54a7653d
-    affected_upstream_range: "through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 2555cde2 and 9b88808f inline local schema refs, broaden Codex App normalization, fold namespaces, and restore dispatcher calls. They improve tool-shape continuity but do not prove plaintext provenance: upstream still treats string encrypted_content as portable, recursively matches unrelated short tool names, and removes message.encrypted without requiring JSON boolean true. LTS absorbs the namespace work while retaining proven-plaintext, confirmed-namespace, boolean-marker, and opaque/mixed-content fail-closed rules, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion."
+    affected_upstream_range: "through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f inline local schema refs, broaden Codex App normalization, fold namespaces, and restore dispatcher calls. They improve tool-shape continuity but do not prove plaintext provenance: upstream still treats string encrypted_content as portable, recursively matches unrelated short tool names, and removes message.encrypted without requiring JSON boolean true. LTS absorbs the namespace work while retaining proven-plaintext, confirmed-namespace, boolean-marker, and opaque/mixed-content fail-closed rules, so the patch remains required."
     files:
       - config.example.yaml
       - docs/lts/downstream-patches.yaml
@@ -917,7 +922,7 @@ patches:
   - id: xai-multi-agent-plaintext-provenance
     reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS therefore records the exact root or additional_tools function declarations whose boolean-true marker was removed, restores namespace and short name first, then adds encrypted_function_args as an empty array only for response calls matching that request provenance across HTTP non-stream, SSE, and WebSocket.
     introduced_in: 23caefe8b2495856c2c8df50b63823846ad6b910
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 2555cde2 and 9b88808f add the useful namespace restorer and dispatcher-call restoration used by xAI. They do not derive before/after plaintext provenance from the Multi-Agent schema rewrite or safely restore encrypted_function_args on HTTP, SSE, and WebSocket responses, so LTS composes them with its provenance layer and keeps the patch required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f add the useful namespace restorer and dispatcher-call restoration used by xAI. They do not derive before/after plaintext provenance from the Multi-Agent schema rewrite or safely restore encrypted_function_args on HTTP, SSE, and WebSocket responses, so LTS composes them with its provenance layer and keeps the patch required.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/xai_executor_execute.go
@@ -941,7 +946,7 @@ patches:
   - id: provider-runtime-state-isolation
     reason: Runtime state belongs to one concrete auth provider generation and must not leak across same-ID provider replacement. Codex transient rate limits must remain distinct from quota exhaustion, non-buffering streams must not fail after delivering visible deltas merely because optional completion reconstruction exceeds its cap, and thinking-suffix cooldown reconciliation must restore only the intended concrete registry IDs without racing a newer success.
     introduced_in: e97ccfb8b41e0874745d807d6c1434bcf572840f
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ca601db0 adds ObservedAt and Signals for passive quota observation and 7bc16ee3 preserves round-robin successor fairness. Neither protects non-buffering delivered streams, distinguishes transient rate limits from quota for LTS scheduling, or isolates runtime state across same-ID provider replacement. LTS keeps observation data separate from cooldown fields and retains generation-aware reconciliation, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds ObservedAt and Signals, 7bc16ee3 preserves round-robin successor fairness, and 12b88f3a adds public registration epochs plus atomic registry projection. LTS absorbs the epoch/projection machinery but retains a different provider-generation boundary, generation-aware reconciliation, non-buffering post-delivery protection, and exceptions that keep Codex transient rate limits and Cloudflare challenges out of global quota suspension. The patch remains required.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
@@ -985,7 +990,7 @@ patches:
   - id: auth-provider-generation-fence
     reason: Auth IDs are stable across watcher refreshes and can be reused after provider replacement or remove-and-register. An execution, stream, token count, request-auth preparation, or credential refresh that started on the previous lifecycle could therefore write quota, health, token, runtime, scheduler, registry, or persisted cooldown state into the replacement auth. LTS assigns a process-local, non-persisted generation to each auth lifecycle, carries it through every managed request path, and accepts writebacks only when both generation and provider still match.
     introduced_in: 7db4a30d3c7b489503873df855146ad911bec117
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); ca601db0 and 7bc16ee3 change quota observation and scheduler rotation, while 3db0a86c changes persisted auth hook inputs. None carries a per-auth lifecycle generation or rejects stale provider writeback. LTS threads its generation fence through the adapted observation, retry, scheduler, and persistence paths, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 12b88f3a adds public RegistrationEpoch and Generation values for scheduler/registry snapshot ordering. Those values do not replace the downstream process-local, non-persisted lifecycle generation carried through execute, stream, count, request-auth preparation, refresh, fallback, and Home paths, nor do they reject every stale provider writeback before hooks and persistence. LTS composes both scopes and keeps the patch required.
     files:
       - docs/lts/downstream-patches.yaml
       - sdk/cliproxy/auth/conductor.go
@@ -1019,7 +1024,7 @@ patches:
   - id: codex-live-bootstrap-accounting-and-egress
     reason: Codex Live bootstrap SDP carries short-lived ICE credentials that must never enter request logs, while every actual bootstrap dispatch still needs zero-token usage attribution and local auth outcome tracking. Live and sideband also require model-scoped OAuth selection for models intentionally absent from the general proxy catalog, confirm/mark/abandon lifecycle coverage, Home retry attempt accounting without duplicate 401 records, in-memory config validation parity, and fail-closed sideband proxy handling.
     introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); fcea738f changes ordinary Codex WebSocket handshake errors and 4b5f1eab adds plugin WebSocket event observation, but neither touches the Realtime Live client. Live and sideband still rely on the LTS adaptation for uncatalogued-model continuity, confirm/mark/abandon lifecycle, zero-token usage reporting, SDP-safe logging, Home retry accounting, config validation parity, and fail-closed proxy behavior. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); upstream PR #5331 / c1f3b489 changes Home-owned OAuth unauthorized handling and error diagnostics across the Live paths. LTS adapts that boundary by forbidding local refresh or replay for Home credentials, forwarding the original upstream status, headers, and body, and preventing duplicate 401 usage records while preserving zero-token attribution, local auth lifecycle, SDP/ICE-safe logging, uncatalogued-model continuity, config validation parity, and fail-closed proxy behavior. The remaining LTS behavior is not upstream-equivalent, so the patch remains required.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/client/codex/live/live.go
@@ -1037,7 +1042,10 @@ patches:
       - TestHandlerRewritesLiveCallAndSchedulesOAuth
       - TestHandlerLogsLiveBootstrapMetadataWithoutSDPCredentials
       - TestHandlerPublishesZeroTokenUsageAndMarksLocalAuthResult
-      - TestHandlerRefreshesUnauthorizedHomeSelectionOnce
+      - TestHandlerForwardsUnauthorizedHomeResponseWithoutRefresh
+      - TestHandlerReportsUnauthorizedBeforeEarlyReturn
+      - TestHandleSidebandForwardsUnauthorizedHomeHandshakeWithoutRefresh
+      - TestHandleDirectWebsocketForwardsUnauthorizedHomeHandshakeWithoutRefresh
       - TestNewSidebandDialerRejectsInvalidProxyWithoutFallback
       - TestParseConfigBytesValidatesCodexLiveMediaRelay
       - TestHandleSidebandPinsAuthAndRelaysBidirectionally
@@ -1050,7 +1058,7 @@ patches:
   - id: xai-implicit-responses-message-token-accounting
     reason: OpenAI Responses permits message-shaped input items with role/content and no explicit type, and xAI local token estimation must include their content instead of silently undercounting the request.
     introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 2555cde2 and 9b88808f change xAI tool schema normalization and dispatcher restoration, not token collection. Upstream still dispatches token collection only on an explicit input item type and ignores ordinary untyped role/content messages, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f change xAI tool schema normalization and dispatcher restoration, not token collection. Upstream still dispatches token collection only on an explicit input item type and ignores ordinary untyped role/content messages, so the patch remains required.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/xai_executor_test.go
@@ -1064,7 +1072,7 @@ patches:
   - id: xai-websocket-saturated-reader-invalidation
     reason: A terminal xAI WebSocket reader cannot enqueue its error when the active request channel is full; invalidation must cancel the active reader before the terminal sender waits, otherwise the reader and request can deadlock indefinitely.
     introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 2555cde2 and 9b88808f change xAI tool schema and response restoration, not shared WebSocket connection read ownership. Upstream still does not cancel the active read lifecycle when invalidating a saturated shared xAI WebSocket connection, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f change xAI tool schema and response restoration, not shared WebSocket connection read ownership. Upstream still does not cancel the active read lifecycle when invalidating a saturated shared xAI WebSocket connection, so the patch remains required.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/codex_websockets_session.go
@@ -1079,7 +1087,7 @@ patches:
   - id: xai-model-bad-credentials-auth-normalization
     reason: xAI model-scoped 403 bad-credentials failures normalize the model error to unauthorized, and the auth-level LastError snapshot must use the same code so refresh and availability decisions do not continue treating the credential as an ordinary 403.
     introduced_in: 4534eed92ef5cd639b377a17dd56dad2d9e41f70
-    affected_upstream_range: through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); 2555cde2 and 9b88808f affect xAI tool shaping and fcea738f affects Codex handshake errors. The earlier dd67f56f remains only a partial equivalent; upstream still does not guarantee that the auth-level LastError snapshot uses the same normalized code as the xAI model state, so the patch remains required. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f affect xAI tool shaping and fcea738f affects Codex handshake errors. The earlier dd67f56f remains only a partial equivalent; upstream still does not guarantee that the auth-level LastError snapshot uses the same normalized code as the xAI model state, so the patch remains required.
     files:
       - docs/lts/downstream-patches.yaml
       - sdk/cliproxy/auth/conductor_cooldown.go
@@ -1094,7 +1102,7 @@ patches:
   - id: dynamic-custom-header-transport-coverage
     reason: Configured custom header values that reference downstream headers must resolve on every documented transport; otherwise Claude caller-owned requests and Codex direct image requests silently omit the configured header while other Claude and Codex paths forward it.
     introduced_in: 49c4771ff6404c20678979a3a7d76730c38a4434
-    affected_upstream_range: introduced by e424bfad00a6a2c3c8a501cf4951d9849fd1c10c and still required through f0de1d008fe8881dcb7431cf97b147295874c2b2 (upstream main after v7.2.145, 2026-08-29); f8c45c30 and 8ee9add7 change Claude output formatting and trailing prefill, not configured custom-header resolution. Both Codex direct image call sites still need the LTS incoming-header propagation, so the upstream equivalent remains partial and the patch cannot become removable or retired. The f0de1d00 delta is README-only and does not affect this conclusion.
+    affected_upstream_range: introduced by e424bfad00a6a2c3c8a501cf4951d9849fd1c10c and still required through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); f8c45c30 and 8ee9add7 change Claude output formatting and trailing prefill, not configured custom-header resolution. Both Codex direct image call sites still need the LTS incoming-header propagation, so the upstream equivalent remains partial and the patch cannot become removable or retired.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/claude_executor_request.go

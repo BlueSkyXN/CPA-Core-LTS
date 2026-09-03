@@ -7,6 +7,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -214,6 +215,83 @@ func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 
 func (m *Manager) selectionModelKeyForAuth(auth *Auth, routeModel string) string {
 	return canonicalModelKey(m.selectionModelForAuth(auth, routeModel))
+}
+
+func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, now time.Time) registry.ClientModelProjection {
+	targetModel := strings.TrimSpace(routeModel)
+	if targetModel == "" {
+		return registry.ClientModelProjection{}
+	}
+	if auth == nil {
+		return registry.ClientModelProjection{ModelID: targetModel}
+	}
+
+	targetKey := ""
+	if m != nil {
+		targetKey = m.selectionModelKeyForAuth(auth, targetModel)
+	}
+	if targetKey == "" {
+		targetKey = canonicalModelKey(targetModel)
+	}
+
+	routeStateKey := modelStateKey(auth.Provider, targetModel)
+	state := auth.ModelStates[routeStateKey]
+	if state == nil {
+		state = auth.ModelStates[targetKey]
+	}
+	if state == nil && strings.EqualFold(strings.TrimSpace(targetModel), targetKey) {
+		// A previously selected suffix can outlive a registry refresh that now
+		// advertises only the canonical Codex model. Preserve that active cooldown
+		// for the canonical route without spreading it to separately registered
+		// suffix routes, which are handled by the exact lookup above.
+		for stateKey, candidate := range auth.ModelStates {
+			if candidate == nil || canonicalModelKey(stateKey) != targetKey {
+				continue
+			}
+			if isModelStateActiveCooldown(candidate, now) {
+				state = candidate
+				break
+			}
+			if state == nil && !modelStateIsClean(candidate) {
+				state = candidate
+			}
+		}
+	}
+	isSuspended := auth.Disabled || auth.Status == StatusDisabled
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+		isSuspended = true
+	}
+	isQuotaExceeded := false
+	var suspendReason string
+	if state != nil {
+		if state.Status == StatusDisabled {
+			isSuspended = true
+			suspendReason = "disabled"
+		} else if isModelStateActiveCooldown(state, now) {
+			// Codex's transient rate-limit signal and Cloudflare challenges use the
+			// manager/scheduler cooldown without removing the route from the global
+			// registry. Confirmed quota and other active failures are projected.
+			if !isCodexTransientRateLimitResultError(auth.Provider, state.LastError) && !isCloudflareChallengeResultError(state.LastError) {
+				isSuspended = true
+				reason, _, _ := registrySuspensionForModelState(state)
+				isQuotaExceeded = state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now))
+				suspendReason = reason
+				if suspendReason == "" {
+					suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+				}
+			}
+		}
+	}
+	if isSuspended && suspendReason == "" {
+		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+	}
+
+	return registry.ClientModelProjection{
+		ModelID:       targetModel,
+		Suspended:     isSuspended,
+		SuspendReason: suspendReason,
+		QuotaExceeded: isQuotaExceeded,
+	}
 }
 
 func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel string, pooled bool) string {
