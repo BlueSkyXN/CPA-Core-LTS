@@ -38,6 +38,8 @@ type pluginConfig struct {
 	DirectModelsEndpoint string                     `yaml:"direct_models_endpoint"`
 	DirectAuthEndpoint   string                     `yaml:"direct_auth_endpoint"`
 	DirectTokenMode      string                     `yaml:"direct_token_mode"`
+	OpenAPIEndpoint      string                     `yaml:"openapi_endpoint"`
+	OpenAPIUserAgent     string                     `yaml:"openapi_user_agent"`
 	DirectModels         []directModelConfig        `yaml:"direct_models"`
 	WorkingDirectory     string                     `yaml:"working_directory"`
 	MaxQueueFrames       int                        `yaml:"max_queue_frames"`
@@ -79,6 +81,7 @@ func defaultPluginConfig() pluginConfig {
 		ModelCacheTTL:     time.Minute,
 		PermissionDefault: "deny",
 		DirectTokenMode:   "auto",
+		OpenAPIUserAgent:  "qoder/1.1.40",
 	}
 }
 
@@ -96,17 +99,25 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	cfg.DirectModelsEndpoint = strings.TrimSpace(cfg.DirectModelsEndpoint)
 	cfg.DirectAuthEndpoint = strings.TrimRight(strings.TrimSpace(cfg.DirectAuthEndpoint), "/")
 	cfg.DirectTokenMode = strings.ToLower(strings.TrimSpace(cfg.DirectTokenMode))
+	cfg.OpenAPIEndpoint = strings.TrimRight(strings.TrimSpace(cfg.OpenAPIEndpoint), "/")
+	cfg.OpenAPIUserAgent = strings.TrimSpace(cfg.OpenAPIUserAgent)
 	if cfg.Transport == "" {
 		cfg.Transport = "sdk_cli"
-	}
-	if cfg.DirectTokenMode == "" {
-		cfg.DirectTokenMode = "auto"
 	}
 	if cfg.Transport != "sdk_cli" && cfg.Transport != "direct_openai" {
 		return pluginConfig{}, fmt.Errorf("transport must be sdk_cli or direct_openai")
 	}
+	if cfg.DirectTokenMode == "" {
+		cfg.DirectTokenMode = "auto"
+	}
 	if cfg.DirectTokenMode != "auto" && cfg.DirectTokenMode != "bearer" && cfg.DirectTokenMode != "pat_exchange" {
 		return pluginConfig{}, fmt.Errorf("direct_token_mode must be auto, bearer, or pat_exchange")
+	}
+	if cfg.OpenAPIUserAgent == "" {
+		cfg.OpenAPIUserAgent = "qoder/1.1.40"
+	}
+	if len(cfg.OpenAPIUserAgent) > 256 || strings.ContainsAny(cfg.OpenAPIUserAgent, "\r\n") {
+		return pluginConfig{}, fmt.Errorf("openapi_user_agent must be a single line of at most 256 bytes")
 	}
 	cfg.WorkingDirectory = strings.TrimSpace(cfg.WorkingDirectory)
 	if cfg.RunnerCommand == "" || strings.ContainsRune(cfg.RunnerCommand, '\x00') {
@@ -116,7 +127,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		if strings.ContainsRune(arg, '\x00') {
 			return pluginConfig{}, fmt.Errorf("runner_args contains an invalid argument")
 		}
-		for _, owned := range []string{"--stdio", "--cli-path", "--cwd", "--max-queue-frames", "--version", "--transport", "--direct-endpoint", "--direct-models-endpoint", "--direct-auth-endpoint", "--direct-token-mode", "--direct-models-json"} {
+		for _, owned := range []string{"--stdio", "--cli-path", "--cwd", "--max-queue-frames", "--version", "--transport", "--direct-endpoint", "--direct-models-endpoint", "--direct-auth-endpoint", "--direct-token-mode", "--openapi-endpoint", "--openapi-user-agent", "--direct-models-json"} {
 			if arg == owned || strings.HasPrefix(arg, owned+"=") {
 				return pluginConfig{}, fmt.Errorf("runner_args must not override plugin-owned runner arguments")
 			}
@@ -138,13 +149,27 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 			return pluginConfig{}, errEndpoint
 		}
 	}
+	if cfg.OpenAPIEndpoint != "" {
+		if errEndpoint := validateDirectURL(cfg.OpenAPIEndpoint, "openapi_endpoint"); errEndpoint != nil {
+			return pluginConfig{}, errEndpoint
+		}
+	}
 	if cfg.DirectAuthEndpoint != "" {
 		if errEndpoint := validateDirectURL(cfg.DirectAuthEndpoint, "direct_auth_endpoint"); errEndpoint != nil {
 			return pluginConfig{}, errEndpoint
 		}
 	}
+	if cfg.OpenAPIEndpoint != "" && cfg.DirectAuthEndpoint != "" && cfg.OpenAPIEndpoint != cfg.DirectAuthEndpoint {
+		return pluginConfig{}, fmt.Errorf("openapi_endpoint and direct_auth_endpoint must match when both are configured")
+	}
+	if cfg.OpenAPIEndpoint == "" {
+		cfg.OpenAPIEndpoint = cfg.DirectAuthEndpoint
+	}
+	if cfg.DirectAuthEndpoint == "" {
+		cfg.DirectAuthEndpoint = cfg.OpenAPIEndpoint
+	}
 	if cfg.DirectTokenMode == "pat_exchange" && cfg.DirectAuthEndpoint == "" {
-		return pluginConfig{}, fmt.Errorf("direct_auth_endpoint is required when direct_token_mode is pat_exchange")
+		return pluginConfig{}, fmt.Errorf("direct_auth_endpoint or openapi_endpoint is required when direct_token_mode is pat_exchange")
 	}
 	if cfg.DirectModels != nil && len(cfg.DirectModels) > 256 {
 		return pluginConfig{}, fmt.Errorf("direct_models supports at most 256 entries")

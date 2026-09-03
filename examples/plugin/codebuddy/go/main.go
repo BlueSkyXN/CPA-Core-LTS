@@ -192,7 +192,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(resp)
 	case pluginabi.MethodAuthLoginStart, pluginabi.MethodAuthLoginPoll:
-		return nil, newPluginCallError("unsupported_auth_flow", "CodeBuddy G1 accepts preconfigured API keys only", http.StatusNotImplemented, false)
+		return nil, newPluginCallError("unsupported_auth_flow", "CodeBuddy G1 accepts preconfigured PAT/API keys only", http.StatusNotImplemented, false)
 	case pluginabi.MethodAuthRefresh:
 		resp, errRefresh := refreshAuthRequest(raw)
 		if errRefresh != nil {
@@ -202,9 +202,20 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 	case pluginabi.MethodModelStatic:
 		return okEnvelope(pluginapi.ModelResponse{Provider: pluginIdentifier})
 	case pluginabi.MethodModelForAuth:
-		resp, errModels := modelsForAuth(raw)
+		resp, errModels := globalRuntime.modelsForAuth(raw)
 		if errModels != nil {
 			return nil, errModels
+		}
+		return okEnvelope(resp)
+	case pluginabi.MethodManagementRegister:
+		return okEnvelope(managementRegistrationResponse{Routes: []managementRoute{{
+			Method: http.MethodGet,
+			Path:   "/plugins/codebuddy/summary",
+		}}})
+	case pluginabi.MethodManagementHandle:
+		resp, errManagement := globalRuntime.handleManagement(raw)
+		if errManagement != nil {
+			return nil, errManagement
 		}
 		return okEnvelope(resp)
 	case pluginabi.MethodExecutorExecute:
@@ -248,6 +259,10 @@ func pluginRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "CodeBuddy Chat Completions endpoint. HTTPS is required except for loopback test fixtures."},
 				{Name: "user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "Non-secret User-Agent sent to CodeBuddy."},
+				{Name: "catalog_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "CodeBuddy model catalog endpoint used for selected-PAT discovery."},
+				{Name: "catalog_user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "Client User-Agent required by the CodeBuddy catalog service."},
+				{Name: "billing_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CodeBuddy billing meter endpoint."},
+				{Name: "account_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CodeBuddy account endpoint; failure falls back to the auth label and fingerprint."},
 			},
 		},
 		Capabilities: registrationCapabilities{
@@ -260,6 +275,7 @@ func pluginRegistration() registration {
 			ExecutorModelScope:     pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:   []string{"chat-completions"},
 			ExecutorOutputFormats:  []string{"chat-completions"},
+			ManagementAPI:          true,
 		},
 	}
 }

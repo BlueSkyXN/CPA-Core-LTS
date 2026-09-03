@@ -18,24 +18,48 @@ import (
 
 func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	secret := "pt-test-secret-never-log"
-	patJSON := []byte(`{"type":"qoder","auth_mode":"pat","account_id":"acct","access_token":"` + secret + `"}`)
+	patJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"` + secret + `"}`)
 	pat, errPAT := parseStoredAuth(patJSON)
-	if errPAT != nil || pat.AuthMode != "pat" || pat.AccessToken != secret {
+	if errPAT != nil || pat.AuthMode != "pat" || pat.PAT != secret {
 		t.Fatalf("parse PAT = %#v, %v", pat, errPAT)
 	}
-	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`))
-	if errLocal != nil || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" {
-		t.Fatalf("parse local = %#v, %v", local, errLocal)
-	}
-	direct, errDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"direct_openai","access_token":"jt-fixture"}`))
+	direct, errDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"direct_openai","pat":"pt-fixture"}`))
 	if errDirect != nil || direct.Transport != "direct_openai" || direct.AuthMode != "pat" {
 		t.Fatalf("parse direct = %#v, %v", direct, errDirect)
+	}
+	legacy, errLegacy := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"pt-legacy","account_id":"legacy-account"}`))
+	if errLegacy != nil || legacy.tokenSource() != "pt-legacy" || legacy.AccountID != "legacy-account" {
+		t.Fatalf("legacy access_token = %#v, err=%v", legacy, errLegacy)
+	}
+	if legacy.runnerAuth()["mode"] != "pat" {
+		t.Fatalf("legacy pt- access_token runner auth = %#v", legacy.runnerAuth())
+	}
+	legacyBearer, errLegacyBearer := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"legacy-bearer","account_id":"legacy-account"}`))
+	if errLegacyBearer != nil || legacyBearer.runnerAuth()["mode"] != "access_token" {
+		t.Fatalf("legacy bearer access_token runner auth = %#v, err=%v", legacyBearer.runnerAuth(), errLegacyBearer)
+	}
+	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","access_token":"legacy-ignored","account_id":"legacy-account","profile_id":"cn-main","config_dir":"/tmp/qoder-cn","label":"Qoder CN"}`))
+	if errLocal != nil || local.AuthMode != "local_cli" || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" || local.AccessToken != "" || local.AccountID != "" {
+		t.Fatalf("local_cli auth = %#v, err=%v", local, errLocal)
+	}
+	localRunnerAuth := local.runnerAuth()
+	if localRunnerAuth["mode"] != "local_cli" || localRunnerAuth["profile_id"] != "cn-main" {
+		t.Fatalf("local_cli runner auth = %#v", localRunnerAuth)
 	}
 	if _, errLocalDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","transport":"direct_openai","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalDirect == nil {
 		t.Fatal("local_cli direct transport was accepted")
 	}
-	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":" bad "}`)); errWhitespace == nil {
+	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":" pt-valid "}`)); errWhitespace == nil {
 		t.Fatal("PAT with surrounding whitespace was accepted")
+	}
+	if _, errLegacyWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":" pt-legacy "}`)); errLegacyWhitespace == nil {
+		t.Fatal("legacy access_token with surrounding whitespace was accepted")
+	}
+	if _, errExplicitOpaquePAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":"opaque","access_token":"opaque"}`)); errExplicitOpaquePAT == nil {
+		t.Fatal("explicit non-pt PAT was accepted through the legacy access_token field")
+	}
+	if _, errLocalPAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","pat":"pt-invalid-mix","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalPAT == nil {
+		t.Fatal("local_cli with the new pat field was accepted")
 	}
 	safe := string(errorEnvelope(newPluginCallError("invalid_auth", "Qoder authentication failed", 401, false)))
 	if strings.Contains(safe, secret) {
@@ -176,12 +200,12 @@ transport: direct_openai
 runner_command: /usr/local/bin/cpa-qoder-runner
 working_directory: /tmp
 direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
-direct_auth_endpoint: https://openapi.example.test
+openapi_endpoint: https://openapi.example.test
 direct_models:
   - id: qfmodel
     display_name: Qwen3.8-Flash
 `))
-	if errDirect != nil || direct.Transport != "direct_openai" || len(direct.DirectModels) != 1 {
+	if errDirect != nil || direct.Transport != "direct_openai" || len(direct.DirectModels) != 1 || direct.DirectAuthEndpoint != "https://openapi.example.test" {
 		t.Fatalf("direct config = %#v, %v", direct, errDirect)
 	}
 	if _, errNoModels := decodePluginConfig([]byte(`
@@ -191,6 +215,40 @@ working_directory: /tmp
 direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
 `)); errNoModels == nil {
 		t.Fatal("direct config without model source was accepted")
+	}
+	if _, errNoOpenAPI := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+direct_models:
+  - id: qfmodel
+`)); errNoOpenAPI != nil {
+		t.Fatalf("direct config without an auth endpoint was rejected: %v", errNoOpenAPI)
+	}
+	bearer, errBearer := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+direct_token_mode: bearer
+direct_auth_endpoint: https://openapi.example.test
+direct_models:
+  - id: qfmodel
+`))
+	if errBearer != nil || bearer.DirectTokenMode != "bearer" || bearer.OpenAPIEndpoint != "https://openapi.example.test" || bearer.DirectAuthEndpoint != bearer.OpenAPIEndpoint {
+		t.Fatalf("legacy bearer config = %#v, %v", bearer, errBearer)
+	}
+	if _, errMissingAuth := decodePluginConfig([]byte(`
+transport: direct_openai
+runner_command: /usr/local/bin/cpa-qoder-runner
+working_directory: /tmp
+direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
+direct_token_mode: pat_exchange
+direct_models:
+  - id: qfmodel
+`)); errMissingAuth == nil {
+		t.Fatal("pat_exchange config without an auth endpoint was accepted")
 	}
 	if _, errOwnedArg := decodePluginConfig([]byte(`
 runner_command: /usr/local/bin/cpa-qoder-runner
@@ -208,6 +266,8 @@ func TestRunnerCapabilityValidationErrorsRemainClientErrors(t *testing.T) {
 		"invalid_configuration":         http.StatusBadRequest,
 		"content_required":              http.StatusBadRequest,
 		"session_configuration_changed": http.StatusConflict,
+		"sdk_auth_config":               http.StatusServiceUnavailable,
+		"sdk_auth_payload_incompatible": http.StatusServiceUnavailable,
 	} {
 		errMapped, ok := runnerCallError(&runnerError{Code: code, Message: "bounded test error"}).(*pluginCallError)
 		if !ok || errMapped.statusCode != status {
@@ -223,7 +283,7 @@ func TestRegistrationDeclaresSchema5LifecycleCapabilities(t *testing.T) {
 	}
 	capabilities := registration.Capabilities
 	if !capabilities.AuthProvider || !capabilities.ModelProvider || !capabilities.Executor ||
-		!capabilities.ExecutionCanceller || !capabilities.ExecutionSessionCloser || !capabilities.ProviderReadiness {
+		!capabilities.ExecutionCanceller || !capabilities.ExecutionSessionCloser || !capabilities.ProviderReadiness || !capabilities.ManagementAPI {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 	if registration.Metadata.GitHubRepository != "https://github.com/BlueSkyXN/CPA-Core-LTS" {
@@ -232,7 +292,7 @@ func TestRegistrationDeclaresSchema5LifecycleCapabilities(t *testing.T) {
 }
 
 func TestSessionKeyIncludesAllOwnershipDimensions(t *testing.T) {
-	auth := qoderAuth{Type: "qoder", AuthMode: "local_cli", ProfileID: "profile-1", ConfigDir: "/tmp/qoder-1"}
+	auth := qoderAuth{Type: "qoder", AuthMode: "pat", PAT: "pt-profile-test"}
 	base := pluginapi.ExecutorRequest{
 		RequestID: "request-1", ExecutionSessionID: "session-1", CallerScope: "caller-1", WorkspaceIdentity: "workspace-1",
 		AuthID: "auth-1", AuthIndex: "index-1",
@@ -302,7 +362,7 @@ func TestAuthScopeCloseRequiresEverySuppliedIdentity(t *testing.T) {
 
 func TestRunnerEnvironmentIsolatesPATHomeAndTemporaryFiles(t *testing.T) {
 	runtimeRoot := t.TempDir()
-	env := runnerEnvironment(qoderAuth{AuthMode: "pat", AccessToken: "pt-test-secret"}, nil, runtimeRoot)
+	env := runnerEnvironment(qoderAuth{AuthMode: "pat", PAT: "pt-test-secret"}, nil, runtimeRoot)
 	values := make(map[string]string, len(env))
 	for _, item := range env {
 		key, value, ok := strings.Cut(item, "=")
@@ -320,6 +380,17 @@ func TestRunnerEnvironmentIsolatesPATHomeAndTemporaryFiles(t *testing.T) {
 	}
 	if values[runnerPATEnv] != "pt-test-secret" {
 		t.Fatal("runner PAT was not placed in the dedicated process environment")
+	}
+	localEnv := runnerEnvironment(qoderAuth{AuthMode: "local_cli", ProfileID: "cn-main", ConfigDir: "/tmp/qoder-cn"}, nil, runtimeRoot)
+	localValues := make(map[string]string, len(localEnv))
+	for _, item := range localEnv {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			localValues[key] = value
+		}
+	}
+	if localValues["QODER_CONFIG_DIR"] != "/tmp/qoder-cn" || localValues[runnerPATEnv] != "" {
+		t.Fatalf("local_cli environment = %#v", localValues)
 	}
 }
 
@@ -458,7 +529,7 @@ func TestProjectionPreservesDirectTerminalErrorClassification(t *testing.T) {
 
 func TestFakeRunnerProtocolModelsCancelCloseAndSecretIsolation(t *testing.T) {
 	cfg := fakeRunnerConfig(t)
-	auth := qoderAuth{Type: "qoder", AuthMode: "pat", AccountID: "acct", AccessToken: "pt-test-secret"}
+	auth := qoderAuth{Type: "qoder", AuthMode: "pat", PAT: "pt-test-secret"}
 	client := startFakeRunner(t, cfg, auth, "cancel")
 	defer client.shutdown()
 	runtimeRoot := client.runtimeRoot
@@ -501,7 +572,7 @@ func TestFakeRunnerProtocolModelsCancelCloseAndSecretIsolation(t *testing.T) {
 
 func TestRunnerVersionMismatchAndBoundedEventQueue(t *testing.T) {
 	cfg := fakeRunnerConfig(t)
-	auth := qoderAuth{Type: "qoder", AuthMode: "local_cli", ProfileID: "test"}
+	auth := qoderAuth{Type: "qoder", AuthMode: "pat", PAT: "pt-test-secret"}
 	client, errStart := newRunnerClient(cfg, auth, map[string]string{
 		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "version-mismatch",
 	})
@@ -535,7 +606,7 @@ func TestDirectTransportNegotiatesWithRunner(t *testing.T) {
 	cfg := fakeRunnerConfig(t)
 	cfg.DirectEndpoint = "https://api2-v2.example.test/model/v1/chat/completions"
 	cfg.DirectModels = []directModelConfig{{ID: "qfmodel", DisplayName: "Qwen3.8-Flash"}}
-	auth := qoderAuth{Type: "qoder", AuthMode: "pat", Transport: "direct_openai", AccessToken: "jt-fixture"}
+	auth := qoderAuth{Type: "qoder", AuthMode: "pat", Transport: "direct_openai", PAT: "pt-fixture"}
 	client, errStart := newRunnerClient(cfg, auth, map[string]string{
 		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success", "QODER_FAKE_TRANSPORT": "direct_openai",
 	}, "direct_openai")
@@ -573,7 +644,7 @@ func TestRunnerCrashIsRestartableWithFreshSession(t *testing.T) {
 	runtime := newPluginRuntime(nil)
 	runtime.config = fakeRunnerConfig(t)
 	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "crash"}
-	authJSON := []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"test","config_dir":"/tmp/qoder-test"}`)
+	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`)
 	req := pluginapi.ExecutorRequest{
 		RequestID: "request-restart", ExecutionSessionID: "session-restart", CallerScope: "caller", WorkspaceIdentity: "workspace",
 		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
@@ -601,7 +672,7 @@ func TestNonStreamRunnerCrashReturnsConnectionLifecycleAndRecovers(t *testing.T)
 		RequestID: "request-nonstream-crash", ExecutionSessionID: "session-nonstream-crash", CallerScope: "caller", WorkspaceIdentity: "workspace",
 		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
 		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
-		StorageJSON: []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"test","config_dir":"/tmp/qoder-test"}`),
+		StorageJSON: []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`),
 	}}
 	raw, errMarshal := json.Marshal(req)
 	if errMarshal != nil {
@@ -632,7 +703,7 @@ func TestIdleRunnerExitIsReplacedBeforeNextTurn(t *testing.T) {
 	runtime := newPluginRuntime(nil)
 	runtime.config = fakeRunnerConfig(t)
 	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "exit-after-success"}
-	authJSON := []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"test","config_dir":"/tmp/qoder-test"}`)
+	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`)
 	request := func(requestID string) []byte {
 		req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
 			RequestID: requestID, ExecutionSessionID: "session-idle-restart", CallerScope: "caller", WorkspaceIdentity: "workspace",
@@ -648,7 +719,7 @@ func TestIdleRunnerExitIsReplacedBeforeNextTurn(t *testing.T) {
 	key := executionSessionKey(pluginapi.ExecutorRequest{
 		ExecutionSessionID: "session-idle-restart", CallerScope: "caller", WorkspaceIdentity: "workspace",
 		AuthID: "auth-1", AuthIndex: "index-1",
-	}, qoderAuth{Type: "qoder", AuthMode: "local_cli", ProfileID: "test", ConfigDir: "/tmp/qoder-test"})
+	}, qoderAuth{Type: "qoder", AuthMode: "pat", PAT: "pt-test-secret"})
 	runtime.mu.Lock()
 	firstSession := runtime.sessions[key]
 	runtime.mu.Unlock()
@@ -679,7 +750,7 @@ func TestExecutorUsesRunnerAndProjectsChat(t *testing.T) {
 	runtime := newPluginRuntime(nil)
 	runtime.config = fakeRunnerConfig(t)
 	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success"}
-	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","account_id":"acct","access_token":"pt-test-secret"}`)
+	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`)
 	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
 		RequestID: "request-1", ExecutionSessionID: "session-1", CallerScope: "caller", WorkspaceIdentity: "workspace",
 		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
@@ -698,6 +769,29 @@ func TestExecutorUsesRunnerAndProjectsChat(t *testing.T) {
 		Scope: pluginapi.ExecutionSessionCloseScopeSession, ExecutionSessionID: "session-1", CallerScope: "caller", WorkspaceIdentity: "workspace",
 	}); errClose != nil {
 		t.Fatal(errClose)
+	}
+}
+
+func TestExecutorRetainsLegacyLocalCLIAuthPath(t *testing.T) {
+	runtime := newPluginRuntime(nil)
+	runtime.config = fakeRunnerConfig(t)
+	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success"}
+	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
+		RequestID: "request-local", ExecutionSessionID: "session-local", CallerScope: "caller", WorkspaceIdentity: "workspace",
+		AuthID: "auth-local", AuthIndex: "index-local", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
+		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
+		StorageJSON: []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`),
+	}}
+	raw, errMarshal := json.Marshal(req)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	response, errExecute := runtime.execute(raw)
+	if errExecute != nil {
+		t.Fatal(errExecute)
+	}
+	if !strings.Contains(string(response.Payload), `"content":"OK"`) {
+		t.Fatalf("local_cli response = %s", response.Payload)
 	}
 }
 
@@ -722,7 +816,7 @@ func fakeRunnerConfig(t *testing.T) pluginConfig {
 func startFakeRunner(t *testing.T, cfg pluginConfig, auth qoderAuth, mode string) *runnerClient {
 	t.Helper()
 	client, errStart := newRunnerClient(cfg, auth, map[string]string{
-		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": mode, "QODER_FAKE_SECRET": auth.AccessToken,
+		"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": mode, "QODER_FAKE_SECRET": auth.tokenSource(),
 	})
 	if errStart != nil {
 		t.Fatal(errStart)

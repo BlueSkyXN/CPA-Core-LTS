@@ -24,6 +24,8 @@ type pluginRuntime struct {
 	sessions       map[string]*runnerSession
 	requestSession map[string]*runnerSession
 	modelCache     map[string]cachedModels
+	summaryCache   map[string]qoderSummaryCacheEntry
+	tokenCache     map[string]qoderTokenCacheEntry
 	runnerExtraEnv map[string]string
 }
 
@@ -48,7 +50,9 @@ func newPluginRuntime(caller hostCaller) *pluginRuntime {
 	return &pluginRuntime{
 		caller: caller, config: defaultPluginConfig(), accepting: true,
 		sessions: make(map[string]*runnerSession), requestSession: make(map[string]*runnerSession),
-		modelCache: make(map[string]cachedModels),
+		modelCache:   make(map[string]cachedModels),
+		summaryCache: make(map[string]qoderSummaryCacheEntry),
+		tokenCache:   make(map[string]qoderTokenCacheEntry),
 	}
 }
 
@@ -65,6 +69,9 @@ func (r *pluginRuntime) configure(raw []byte) error {
 	}
 	r.mu.Lock()
 	r.config = cfg
+	r.modelCache = make(map[string]cachedModels)
+	r.summaryCache = make(map[string]qoderSummaryCacheEntry)
+	r.tokenCache = make(map[string]qoderTokenCacheEntry)
 	if len(r.sessions) == 0 {
 		r.accepting = true
 	}
@@ -375,6 +382,9 @@ func (r *pluginRuntime) shutdown() {
 	}
 	r.sessions = make(map[string]*runnerSession)
 	r.requestSession = make(map[string]*runnerSession)
+	r.modelCache = make(map[string]cachedModels)
+	r.summaryCache = make(map[string]qoderSummaryCacheEntry)
+	r.tokenCache = make(map[string]qoderTokenCacheEntry)
 	r.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -406,7 +416,7 @@ func executionSessionKey(req pluginapi.ExecutorRequest, auth qoderAuth, requeste
 	}
 	return sessionDigest([]string{
 		pluginIdentifier, strings.TrimSpace(req.AuthID), strings.TrimSpace(req.AuthIndex), effectiveExecutionSessionID(req),
-		strings.TrimSpace(req.CallerScope), strings.TrimSpace(req.WorkspaceIdentity), auth.AuthMode, transport, auth.AccountID, auth.ProfileID, auth.ConfigDir,
+		strings.TrimSpace(req.CallerScope), strings.TrimSpace(req.WorkspaceIdentity), auth.AuthMode, transport, auth.AccountID, auth.tokenSource(), auth.ProfileID, auth.ConfigDir,
 	})
 }
 

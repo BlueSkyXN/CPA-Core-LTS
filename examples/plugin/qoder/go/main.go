@@ -205,6 +205,17 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 			return nil, errModels
 		}
 		return okEnvelope(resp)
+	case pluginabi.MethodManagementRegister:
+		return okEnvelope(managementRegistrationResponse{Routes: []managementRoute{{
+			Method: http.MethodGet,
+			Path:   "/plugins/qoder/summary",
+		}}})
+	case pluginabi.MethodManagementHandle:
+		resp, errManagement := r.handleManagement(raw)
+		if errManagement != nil {
+			return nil, errManagement
+		}
+		return okEnvelope(resp)
 	case pluginabi.MethodExecutorExecute:
 		resp, errExecute := r.execute(raw)
 		if errExecute != nil {
@@ -263,8 +274,10 @@ func pluginRegistration() registration {
 				{Name: "qoder_cli_path", Type: pluginapi.ConfigFieldTypeString, Description: "Required external Qoder CLI absolute path. SDK bundled CLI fallback is disabled."},
 				{Name: "direct_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Explicit HTTPS OpenAI-compatible Qoder endpoint for direct_openai; loopback HTTP is allowed only for local tests."},
 				{Name: "direct_models_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional OpenAI-compatible model catalog endpoint for direct_openai; otherwise direct_models must be configured."},
-				{Name: "direct_auth_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Qoder OpenAPI base used for PAT-to-job-token exchange; never put a token in this URL."},
-				{Name: "direct_token_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"auto", "bearer", "pat_exchange"}, Description: "Direct credential interpretation: auto detects pt- PATs, bearer uses the supplied access token, pat_exchange exchanges a PAT before inference."},
+				{Name: "direct_auth_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Legacy alias for the Qoder OpenAPI base used by direct PAT exchange; retained for existing configurations."},
+				{Name: "direct_token_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"auto", "bearer", "pat_exchange"}, Description: "Legacy direct credential mode; auto exchanges pt- PATs and bearer passes opaque access_token values through."},
+				{Name: "openapi_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Qoder OpenAPI base used for PAT exchange and account/plan/quota queries; never put a token in this URL."},
+				{Name: "openapi_user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "Non-secret User-Agent sent to the Qoder OpenAPI base."},
 				{Name: "direct_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional administrator-supplied exact direct model records; no guessed aliases or silent auto fallback."},
 				{Name: "working_directory", Type: pluginapi.ConfigFieldTypeString, Description: "Fixed runner workspace root."},
 				{Name: "max_queue_frames", Type: pluginapi.ConfigFieldTypeInteger, Description: "Bounded runner event queue capacity."},
@@ -279,6 +292,7 @@ func pluginRegistration() registration {
 			ExecutionCanceller: true, ProviderReadiness: true, ExecutionSessionCloser: true,
 			ExecutorModelScope:   pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats: []string{"chat-completions"}, ExecutorOutputFormats: []string{"chat-completions"},
+			ManagementAPI: true,
 		},
 	}
 }

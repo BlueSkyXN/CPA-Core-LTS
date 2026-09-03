@@ -109,6 +109,12 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 	}
 	args := append([]string(nil), cfg.RunnerArgs...)
 	args = append(args, "--stdio", "--transport", transport, "--cwd", cfg.WorkingDirectory, "--max-queue-frames", strconv.Itoa(cfg.MaxQueueFrames))
+	if cfg.OpenAPIEndpoint != "" {
+		args = append(args, "--openapi-endpoint", cfg.OpenAPIEndpoint)
+	}
+	if cfg.OpenAPIUserAgent != "" {
+		args = append(args, "--openapi-user-agent", cfg.OpenAPIUserAgent)
+	}
 	if transport == "sdk_cli" {
 		args = append(args, "--cli-path", cfg.QoderCLIPath)
 	} else {
@@ -121,7 +127,9 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 		if cfg.DirectAuthEndpoint != "" {
 			args = append(args, "--direct-auth-endpoint", cfg.DirectAuthEndpoint)
 		}
-		args = append(args, "--direct-token-mode", cfg.DirectTokenMode)
+		if cfg.DirectTokenMode != "" {
+			args = append(args, "--direct-token-mode", cfg.DirectTokenMode)
+		}
 		if modelsJSON, errModels := directModelsJSON(cfg.DirectModels); errModels != nil {
 			return nil, newPluginCallError("invalid_config", errModels.Error(), http.StatusInternalServerError, false)
 		} else if modelsJSON != "" {
@@ -151,7 +159,7 @@ func newRunnerClient(cfg pluginConfig, auth qoderAuth, extraEnv map[string]strin
 		return nil, newPluginCallError("runner_unavailable", "Qoder runner could not be started", http.StatusServiceUnavailable, true)
 	}
 	go client.readLoop(stdout)
-	go client.drainStderr(stderr, auth.AccessToken)
+	go client.drainStderr(stderr, auth.tokenSource())
 	go client.waitLoop()
 	cleanupRuntimeRoot = false
 	return client, nil
@@ -360,7 +368,7 @@ func runnerCallError(value *runnerError) error {
 		status = http.StatusBadRequest
 	case "turn_conflict", "session_configuration_changed":
 		status = http.StatusConflict
-	case "runner_quiescing", "cli_unavailable", "cli_path_required", "sdk_cli_version_mismatch", "direct_endpoint_required", "direct_endpoint_invalid", "direct_auth_config", "models_unavailable", "models_schema_invalid":
+	case "runner_quiescing", "cli_unavailable", "cli_path_required", "sdk_cli_version_mismatch", "sdk_auth_config", "sdk_auth_payload_incompatible", "direct_endpoint_required", "direct_endpoint_invalid", "direct_auth_config", "models_unavailable", "models_schema_invalid":
 		status = http.StatusServiceUnavailable
 	}
 	message := strings.TrimSpace(value.Message)
@@ -395,7 +403,7 @@ func runnerEnvironment(auth qoderAuth, extra map[string]string, runtimeRoot stri
 	if auth.AuthMode == "pat" {
 		env = append(env,
 			"HOME="+filepath.Join(runtimeRoot, "home"),
-			runnerPATEnv+"="+auth.AccessToken,
+			runnerPATEnv+"="+auth.tokenSource(),
 		)
 	} else if auth.ConfigDir != "" {
 		env = append(env, "QODER_CONFIG_DIR="+auth.ConfigDir)
