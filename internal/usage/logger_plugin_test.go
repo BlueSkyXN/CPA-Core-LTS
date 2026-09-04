@@ -47,6 +47,74 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	}
 }
 
+func TestRequestStatisticsRecordPreservesCanonicalSemanticTiming(t *testing.T) {
+	tests := []struct {
+		name     string
+		ttft     time.Duration
+		ttfa     time.Duration
+		wantTTFT int64
+		hasTTFT  bool
+		wantTTFA int64
+	}{
+		{
+			name:     "non-reasoning keeps reasoning timing absent",
+			ttfa:     1200 * time.Millisecond,
+			wantTTFA: 1200,
+		},
+		{
+			name:     "assistant before reasoning keeps independent fields",
+			ttft:     900 * time.Millisecond,
+			ttfa:     500 * time.Millisecond,
+			wantTTFT: 900,
+			hasTTFT:  true,
+			wantTTFA: 500,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := NewRequestStatistics()
+			stats.Record(context.Background(), coreusage.Record{
+				APIKey:        "canonical-timing-key",
+				Model:         "gpt-5.6-luna",
+				Latency:       2 * time.Second,
+				TimingVersion: coreusage.TimingVersionV1,
+				TTFB:          200 * time.Millisecond,
+				TTFT:          tt.ttft,
+				TTFA:          tt.ttfa,
+				Detail:        coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+			})
+
+			detail := stats.Snapshot().APIs["canonical-timing-key"].Models["gpt-5.6-luna"].Details[0]
+			encoded, err := json.Marshal(detail)
+			if err != nil {
+				t.Fatalf("marshal detail: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err = json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatalf("decode detail fields: %v", err)
+			}
+			if _, exists := fields["ttfr_ms"]; exists {
+				t.Fatalf("canonical v3 detail invented ttfr_ms: %s", encoded)
+			}
+			rawTTFT, hasTTFT := fields["ttft_ms"]
+			if hasTTFT != tt.hasTTFT {
+				t.Fatalf("ttft_ms presence = %t, want %t: %s", hasTTFT, tt.hasTTFT, encoded)
+			}
+			if tt.hasTTFT {
+				var gotTTFT int64
+				if err = json.Unmarshal(rawTTFT, &gotTTFT); err != nil || gotTTFT != tt.wantTTFT {
+					t.Fatalf("ttft_ms = %d err=%v, want %d", gotTTFT, err, tt.wantTTFT)
+				}
+			}
+			var gotTTFA int64
+			if err = json.Unmarshal(fields["ttfa_ms"], &gotTTFA); err != nil || gotTTFA != tt.wantTTFA {
+				t.Fatalf("ttfa_ms = %d err=%v, want %d", gotTTFA, err, tt.wantTTFA)
+			}
+		})
+	}
+}
+
 func TestRequestDetailTimingPresencePreservesMeasuredZeroAndMissingFields(t *testing.T) {
 	data := []byte(`{"timestamp":"2026-03-20T12:00:00Z","latency_ms":10,"timing_version":1,"ttfb_ms":0,"ttft_ms":0,"tokens":{"input_tokens":1,"output_tokens":1,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":2},"failed":false,"generate":true}`)
 	var detail RequestDetail
