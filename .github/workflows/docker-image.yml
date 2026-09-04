@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - 'v*-lts-*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing v*-lts-* tag to build and publish'
+        required: true
+        type: string
+      update_latest:
+        description: 'Move latest aliases to this tag after both architectures succeed'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -12,20 +23,96 @@ permissions:
 env:
   APP_NAME: CPA-Core-LTS
   IMAGE_NAME: ghcr.io/blueskyxn/cpa-core-lts
+  RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+  UPDATE_LATEST: ${{ github.event_name == 'push' || inputs.update_latest }}
 
 jobs:
+  validate-release-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Checkout current release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: _release_tools
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Verify release source
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_TAG}" != v*-lts-* ]]; then
+            echo "Only Core LTS image tags matching v*-lts-* are supported." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
+          echo "Verified ${RELEASE_TAG} at ${tag_commit}."
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: _release_tools/go.mod
+          cache: true
+          cache-dependency-path: _release_tools/go.sum
+      - name: Refresh models catalog
+        run: |
+          (
+            cd _release_tools
+            MODEL_CATALOG_DIR="$GITHUB_WORKSPACE/internal/registry/models" \
+              bash .github/scripts/refresh-model-catalogs.sh
+          )
+      - name: Upload validated models catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-models-catalog
+          path: |
+            internal/registry/models/models.json
+            internal/registry/models/codex_client_models.json
+          if-no-files-found: error
+          retention-days: 1
+
   docker_amd64:
+    needs: validate-release-catalog
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Verify release source
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_TAG}" != v*-lts-* ]]; then
+            echo "Only Core LTS image tags matching v*-lts-* are supported." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
+          {
+            echo "VERSION=${RELEASE_TAG}"
+            echo "COMMIT=$(git rev-parse --short "$tag_commit")"
+            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_ENV"
+      - name: Download validated models catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-models-catalog
+          path: internal/registry/models
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
@@ -34,13 +121,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          {
-            echo "VERSION=${GITHUB_REF_NAME}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
-            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } >> "$GITHUB_ENV"
       - name: Build and push (amd64)
         uses: docker/build-push-action@v6
         with:
@@ -51,22 +131,41 @@ jobs:
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest-amd64
-            ${{ env.IMAGE_NAME }}:${{ env.VERSION }}-amd64
+          tags: ${{ env.IMAGE_NAME }}:${{ env.VERSION }}-amd64
 
   docker_arm64:
+    needs: validate-release-catalog
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Verify release source
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_TAG}" != v*-lts-* ]]; then
+            echo "Only Core LTS image tags matching v*-lts-* are supported." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
+          {
+            echo "VERSION=${RELEASE_TAG}"
+            echo "COMMIT=$(git rev-parse --short "$tag_commit")"
+            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_ENV"
+      - name: Download validated models catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-models-catalog
+          path: internal/registry/models
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
@@ -75,13 +174,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          {
-            echo "VERSION=${GITHUB_REF_NAME}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
-            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } >> "$GITHUB_ENV"
       - name: Build and push (arm64)
         uses: docker/build-push-action@v6
         with:
@@ -92,9 +184,7 @@ jobs:
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest-arm64
-            ${{ env.IMAGE_NAME }}:${{ env.VERSION }}-arm64
+          tags: ${{ env.IMAGE_NAME }}:${{ env.VERSION }}-arm64
 
   docker_manifest:
     runs-on: ubuntu-latest
@@ -102,8 +192,6 @@ jobs:
       - docker_amd64
       - docker_arm64
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
@@ -112,20 +200,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          {
-            echo "VERSION=${GITHUB_REF_NAME}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
-            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } >> "$GITHUB_ENV"
       - name: Create and push multi-arch manifests
         run: |
+          set -euo pipefail
+          version="${RELEASE_TAG}"
           docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:latest" \
-            "${IMAGE_NAME}:latest-amd64" \
-            "${IMAGE_NAME}:latest-arm64"
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${VERSION}" \
-            "${IMAGE_NAME}:${VERSION}-amd64" \
-            "${IMAGE_NAME}:${VERSION}-arm64"
+            --tag "${IMAGE_NAME}:${version}" \
+            "${IMAGE_NAME}:${version}-amd64" \
+            "${IMAGE_NAME}:${version}-arm64"
+          docker buildx imagetools inspect "${IMAGE_NAME}:${version}"
+
+          if [[ "${UPDATE_LATEST}" == "true" ]]; then
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest-amd64" \
+              "${IMAGE_NAME}:${version}-amd64"
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest-arm64" \
+              "${IMAGE_NAME}:${version}-arm64"
+            docker buildx imagetools create \
+              --tag "${IMAGE_NAME}:latest" \
+              "${IMAGE_NAME}:${version}-amd64" \
+              "${IMAGE_NAME}:${version}-arm64"
+            docker buildx imagetools inspect "${IMAGE_NAME}:latest"
+          else
+            echo "Preserving latest aliases for manual backfill of ${version}."
+          fi

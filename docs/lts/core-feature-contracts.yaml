@@ -152,6 +152,27 @@ features:
       - go test ./internal/managementasset
       - go build -o test-output ./cmd/server && rm -f test-output
 
+  - id: release-artifact-provenance
+    kind: retained-capability
+    support: protected
+    owner: cpa-core-lts
+    upstream_relation: divergent
+    reason: Release archives and GHCR images must be built from the exact requested annotated tag, while current tooling may be checked out separately for historical repair.
+    core_files:
+      - .github/workflows/release.yaml
+      - .github/workflows/docker-image.yml
+      - scripts/migrate-tags-lts.sh
+      - scripts/cleanup-ghcr-tls-images.sh
+    required_markers:
+      - RELEASE_TAG
+      - Checkout current release tooling
+      - Release source mismatch
+      - publish-release-assets
+      - update_latest
+    validation:
+      - scripts/check-lts-contract.sh
+      - actionlint .github/workflows/release.yaml .github/workflows/docker-image.yml
+
   - id: auth-identity-attribution
     kind: retained-capability
     support: protected
