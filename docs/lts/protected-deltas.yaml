@@ -77,6 +77,20 @@ retained_capabilities:
       - go test ./internal/managementasset
     conflict_policy: preserve_panel_compatibility
 
+  - id: release-artifact-provenance
+    registry_feature: release-artifact-provenance
+    must_keep: true
+    markers:
+      - exact-tag release source checkout
+      - separate current release tooling checkout
+      - release source mismatch guard
+      - publish assets only after every platform build succeeds
+      - manual GHCR backfill preserves latest aliases by default
+    validation:
+      - scripts/check-lts-contract.sh
+      - actionlint release workflows
+    conflict_policy: preserve_exact_tag_artifact_provenance
+
   - id: auth-identity-attribution
     registry_feature: auth-identity-attribution
     must_keep: true

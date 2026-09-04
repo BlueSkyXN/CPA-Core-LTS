@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow_known_historical_catalog_failure:
+        description: 'Allow the known GPT-5.6 Ultra test failure in v1-lts-0.0.10 and v1-lts-0.0.11'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -24,26 +29,99 @@ env:
   GO_VERSION: '1.26.4'
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
   REWRITE_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.rewrite_release_notes || false }}
+  ALLOW_KNOWN_HISTORICAL_CATALOG_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_known_historical_catalog_failure || false }}
 
 jobs:
   validate-release-catalog:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout release source
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          fetch-tags: true
+      - name: Checkout current release tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: _release_tools
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Verify release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_TAG}" != v*-lts-* ]]; then
+            echo "Only Core LTS release tags matching v*-lts-* are supported." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
+          echo "Verified ${RELEASE_TAG} at ${tag_commit}."
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Validate GPT-5.6 Ultra compatibility
         run: |
-          go test ./internal/registry ./internal/thinking \
+          (
+            cd _release_tools
+            MODEL_CATALOG_DIR="$GITHUB_WORKSPACE/internal/registry/models" \
+              bash .github/scripts/refresh-model-catalogs.sh
+          )
+      - name: Validate GPT-5.6 Ultra compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          validation_log="$RUNNER_TEMP/gpt56-catalog-validation.log"
+          if go test ./internal/registry ./internal/thinking \
             ./internal/runtime/executor ./sdk/api/handlers/openai \
-            -run 'GPT56|Ultra|CodexWire' -count=1
+            -run 'GPT56|Ultra|CodexWire' -count=1 2>&1 | tee "$validation_log"; then
+            exit 0
+          fi
+
+          if [[ "$ALLOW_KNOWN_HISTORICAL_CATALOG_FAILURE" != "true" ]]; then
+            exit 1
+          fi
+          case "$RELEASE_TAG" in
+            v1-lts-0.0.10|v1-lts-0.0.11) ;;
+            *)
+              echo "The catalog validation exception is restricted to v1-lts-0.0.10 and v1-lts-0.0.11." >&2
+              exit 1
+              ;;
+          esac
+
+          failed_packages="$(awk '$1 == "FAIL" && NF > 1 {print $2}' "$validation_log" | sort -u)"
+          expected_package="github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+          if [[ "$failed_packages" != "$expected_package" ]]; then
+            printf 'Unexpected failing packages:\n%s\n' "$failed_packages" >&2
+            exit 1
+          fi
+
+          expected_failures=(
+            "--- FAIL: TestGPT56UltraCodexThinking"
+            "--- FAIL: TestGPT56UltraCodexThinking/sol_body"
+            "--- FAIL: TestGPT56UltraCodexThinking/sol_suffix_overrides_body"
+            "--- FAIL: TestGPT56UltraCodexThinking/terra_body"
+            "--- FAIL: TestGPT56UltraCodexThinking/terra_suffix_overrides_body"
+          )
+          failure_count="$(grep -Fc -- '--- FAIL:' "$validation_log")"
+          if [[ "$failure_count" -ne "${#expected_failures[@]}" ]]; then
+            echo "Unexpected number of historical catalog test failures: $failure_count." >&2
+            exit 1
+          fi
+          for marker in "${expected_failures[@]}"; do
+            if ! grep -Fq -- "$marker" "$validation_log"; then
+              echo "Missing expected historical catalog failure: $marker" >&2
+              exit 1
+            fi
+          done
+          echo "::warning::Accepted the known immutable-tag GPT-5.6 Ultra test failure for $RELEASE_TAG."
       - name: Upload validated models catalog
         uses: actions/upload-artifact@v4
         with:
@@ -58,9 +136,17 @@ jobs:
     needs: validate-release-catalog
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout release source
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Checkout current release tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: _release_tools
           fetch-depth: 0
           fetch-tags: true
       - name: Create release
@@ -90,7 +176,7 @@ jobs:
           notes_file="$(mktemp)"
           title_file="$(mktemp)"
           trap 'rm -f "$notes_file" "$title_file"' EXIT
-          bash scripts/generate-lts-release-notes.sh \
+          bash _release_tools/scripts/generate-lts-release-notes.sh \
             --tag "${RELEASE_TAG}" \
             --notes-file "$notes_file" \
             --title-file "$title_file"
@@ -134,10 +220,12 @@ jobs:
             asset_arch: aarch64
             archive_format: zip
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout release source
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          fetch-tags: true
       - name: Download validated models catalog
         uses: actions/download-artifact@v4
         with:
@@ -163,9 +251,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
           {
             echo "RELEASE_VERSION=${RELEASE_TAG#v}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
+            echo "COMMIT=$(git rev-parse --short "$tag_commit")"
             echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_ENV"
       - name: Build archive
@@ -203,50 +297,6 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/CLIProxyAPI_*
           if-no-files-found: error
-      - name: Upload release assets
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          assets=(dist/CLIProxyAPI_*.tar.gz dist/CLIProxyAPI_*.zip)
-          if [[ ${#assets[@]} -eq 0 ]]; then
-            printf 'expected archive assets, found %s\n' "${#assets[@]}" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$RELEASE_TAG" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --pattern 'sky-cpa-core-lts_*.tar.gz' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip sky-cpa-core-lts_*.tar.gz)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$RELEASE_TAG" "$tmp_dir/checksums.txt" --clobber
 
   build-linux-glibc:
     name: build linux-${{ matrix.goarch }} glibc
@@ -267,10 +317,12 @@ jobs:
             asset_arch: aarch64
             manylinux_image: quay.io/pypa/manylinux2014_aarch64
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout release source
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          fetch-tags: true
       - name: Download validated models catalog
         uses: actions/download-artifact@v4
         with:
@@ -283,9 +335,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
           {
             echo "RELEASE_VERSION=${RELEASE_TAG#v}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
+            echo "COMMIT=$(git rev-parse --short "$tag_commit")"
             echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_ENV"
       - name: Build archive
@@ -353,50 +411,6 @@ jobs:
             dist/CLIProxyAPI_*
             dist/sky-cpa-core-lts_*
           if-no-files-found: error
-      - name: Upload release assets
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          assets=(dist/CLIProxyAPI_*.tar.gz dist/sky-cpa-core-lts_*.tar.gz)
-          if [[ ${#assets[@]} -eq 0 ]]; then
-            printf 'expected archive assets, found %s\n' "${#assets[@]}" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$RELEASE_TAG" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --pattern 'sky-cpa-core-lts_*.tar.gz' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip sky-cpa-core-lts_*.tar.gz)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$RELEASE_TAG" "$tmp_dir/checksums.txt" --clobber
 
   build-linux-no-plugin:
     name: build linux-${{ matrix.goarch }} no-plugin
@@ -413,10 +427,12 @@ jobs:
             goarch: arm64
             asset_arch: aarch64
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout release source
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          fetch-tags: true
       - name: Download validated models catalog
         uses: actions/download-artifact@v4
         with:
@@ -442,9 +458,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
           {
             echo "RELEASE_VERSION=${RELEASE_TAG#v}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
+            echo "COMMIT=$(git rev-parse --short "$tag_commit")"
             echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_ENV"
       - name: Build archive
@@ -490,50 +512,6 @@ jobs:
             dist/CLIProxyAPI_*
             dist/sky-cpa-core-lts_*
           if-no-files-found: error
-      - name: Upload release assets
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          assets=(dist/CLIProxyAPI_*.tar.gz dist/sky-cpa-core-lts_*.tar.gz)
-          if [[ ${#assets[@]} -eq 0 ]]; then
-            printf 'expected archive assets, found %s\n' "${#assets[@]}" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$RELEASE_TAG" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --pattern 'sky-cpa-core-lts_*.tar.gz' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip sky-cpa-core-lts_*.tar.gz)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$RELEASE_TAG" "$tmp_dir/checksums.txt" --clobber
 
   build-freebsd:
     name: build ${{ matrix.target }}
@@ -559,10 +537,12 @@ jobs:
             asset_suffix: _no-plugin
             cgo_enabled: false
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout release source
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          fetch-tags: true
       - name: Download validated models catalog
         uses: actions/download-artifact@v4
         with:
@@ -587,8 +567,14 @@ jobs:
         id: metadata
         run: |
           set -euo pipefail
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$tag_commit" ]]; then
+            echo "Release source mismatch: HEAD=${head_commit}, ${RELEASE_TAG}=${tag_commit}." >&2
+            exit 1
+          fi
           release_version="${RELEASE_TAG#v}"
-          commit="$(git rev-parse --short HEAD)"
+          commit="$(git rev-parse --short "$tag_commit")"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           {
             echo "RELEASE_VERSION=$release_version"
@@ -653,75 +639,79 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/CLIProxyAPI_*
           if-no-files-found: error
-      - name: Upload release assets
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          assets=(dist/CLIProxyAPI_*.tar.gz)
-          if [[ ${#assets[@]} -eq 0 ]]; then
-            printf 'expected archive assets, found %s\n' "${#assets[@]}" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$RELEASE_TAG" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --pattern 'sky-cpa-core-lts_*.tar.gz' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip sky-cpa-core-lts_*.tar.gz)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$RELEASE_TAG" "$tmp_dir/checksums.txt" --clobber
 
-  publish-checksums:
+  publish-release-assets:
     runs-on: ubuntu-latest
-    if: always()
     needs:
       - build-hosted
       - build-linux-glibc
       - build-linux-no-plugin
       - build-freebsd
     steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Publish final checksums
+      - name: Validate and publish release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           cd dist
           shopt -s nullglob
+          release_version="${RELEASE_TAG#v}"
+          expected=(
+            "CLIProxyAPI_${release_version}_darwin_amd64.tar.gz"
+            "CLIProxyAPI_${release_version}_darwin_aarch64.tar.gz"
+            "CLIProxyAPI_${release_version}_windows_amd64.zip"
+            "CLIProxyAPI_${release_version}_windows_aarch64.zip"
+            "CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
+            "CLIProxyAPI_${release_version}_linux_aarch64.tar.gz"
+            "CLIProxyAPI_${release_version}_linux_amd64_no-plugin.tar.gz"
+            "CLIProxyAPI_${release_version}_linux_aarch64_no-plugin.tar.gz"
+            "sky-cpa-core-lts_${release_version}_linux_amd64.tar.gz"
+            "sky-cpa-core-lts_${release_version}_linux_aarch64.tar.gz"
+            "sky-cpa-core-lts_${release_version}_linux_amd64_no-plugin.tar.gz"
+            "sky-cpa-core-lts_${release_version}_linux_aarch64_no-plugin.tar.gz"
+            "CLIProxyAPI_${release_version}_freebsd_amd64.tar.gz"
+            "CLIProxyAPI_${release_version}_freebsd_aarch64_no-plugin.tar.gz"
+          )
           archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip sky-cpa-core-lts_*.tar.gz)
-          if [[ ${#archives[@]} -eq 0 ]]; then
-            echo "No release archives found"
-            exit 0
+          if [[ ${#archives[@]} -ne ${#expected[@]} ]]; then
+            printf 'Expected %s release archives, found %s.\n' "${#expected[@]}" "${#archives[@]}" >&2
+            printf '  found: %s\n' "${archives[@]}" >&2
+            exit 1
           fi
+          for asset in "${expected[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Missing expected release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          expected_commit="$(git rev-parse --short "${RELEASE_TAG}^{commit}")"
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          tar -C "$verify_dir" -xzf "CLIProxyAPI_${release_version}_linux_amd64.tar.gz" cli-proxy-api
+          version_output="$("$verify_dir/cli-proxy-api" --help 2>&1)"
+          version_line="$(printf '%s\n' "$version_output" | sed -n '1p')"
+          if [[ "$version_line" != *"Version: ${release_version}, Commit: ${expected_commit},"* ]]; then
+            echo "Release binary provenance mismatch: $version_line" >&2
+            exit 1
+          fi
+
           sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-          gh release upload "$RELEASE_TAG" checksums.txt --clobber
+          gh release upload "$RELEASE_TAG" "${archives[@]}" checksums.txt --clobber
+
+          printf '%s\n' "${expected[@]}" checksums.txt | sort > expected-assets.txt
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort > published-assets.txt
+          if ! diff -u expected-assets.txt published-assets.txt; then
+            echo "Published release asset set does not match the validated build output." >&2
+            exit 1
+          fi

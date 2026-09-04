@@ -163,6 +163,24 @@ require_grep "ResolveCodexReasoningReplaySessionKey" internal/cache/codex_reason
 require_grep "ValidateCodexClientModelsLTSCompatibility" internal/registry/codex_client_models.go internal/registry/codex_client_models_test.go cmd/validate_codex_models/main.go
 require_grep "refresh-model-catalogs.sh" .github/workflows/pr-test-build.yml .github/workflows/release.yaml .github/workflows/docker-image.yml
 require_grep "codex_client_models.json" .github/scripts/refresh-model-catalogs.sh
+require_grep "ref: \${{ env.RELEASE_TAG }}" .github/workflows/release.yaml .github/workflows/docker-image.yml
+require_grep "Checkout current release tooling" .github/workflows/release.yaml
+require_grep "Release source mismatch" .github/workflows/release.yaml .github/workflows/docker-image.yml
+require_grep "publish-release-assets" .github/workflows/release.yaml
+require_grep "workflow_dispatch:" .github/workflows/docker-image.yml
+require_grep "update_latest:" .github/workflows/docker-image.yml
+require_grep "release-artifact-provenance" docs/lts/core-feature-contracts.yaml docs/lts/protected-deltas.yaml
+require_grep "read:packages" scripts/cleanup-ghcr-tls-images.sh
+require_grep "delete:packages" scripts/cleanup-ghcr-tls-images.sh
+if grep -Fq "ref: \${{ github.ref }}" .github/workflows/release.yaml .github/workflows/docker-image.yml; then
+  echo "release workflows must not build github.ref when RELEASE_TAG can name another tag" >&2
+  exit 1
+fi
+release_upload_count="$(grep -Fc "gh release upload \"\$RELEASE_TAG\"" .github/workflows/release.yaml)"
+if [ "$release_upload_count" -ne 1 ]; then
+  echo "release assets and checksums must be uploaded together after all build jobs succeed" >&2
+  exit 1
+fi
 require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/openai_responses_websocket.go sdk/api/handlers/openai/openai_responses_websocket_test.go
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
