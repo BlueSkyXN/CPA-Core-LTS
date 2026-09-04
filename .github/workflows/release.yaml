@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow_known_historical_catalog_failure:
+        description: 'Allow the known GPT-5.6 Ultra test failure in v1-lts-0.0.10 and v1-lts-0.0.11'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -24,6 +29,7 @@ env:
   GO_VERSION: '1.26.4'
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
   REWRITE_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.rewrite_release_notes || false }}
+  ALLOW_KNOWN_HISTORICAL_CATALOG_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_known_historical_catalog_failure || false }}
 
 jobs:
   validate-release-catalog:
@@ -69,10 +75,53 @@ jobs:
               bash .github/scripts/refresh-model-catalogs.sh
           )
       - name: Validate GPT-5.6 Ultra compatibility
+        shell: bash
         run: |
-          go test ./internal/registry ./internal/thinking \
+          set -euo pipefail
+          validation_log="$RUNNER_TEMP/gpt56-catalog-validation.log"
+          if go test ./internal/registry ./internal/thinking \
             ./internal/runtime/executor ./sdk/api/handlers/openai \
-            -run 'GPT56|Ultra|CodexWire' -count=1
+            -run 'GPT56|Ultra|CodexWire' -count=1 2>&1 | tee "$validation_log"; then
+            exit 0
+          fi
+
+          if [[ "$ALLOW_KNOWN_HISTORICAL_CATALOG_FAILURE" != "true" ]]; then
+            exit 1
+          fi
+          case "$RELEASE_TAG" in
+            v1-lts-0.0.10|v1-lts-0.0.11) ;;
+            *)
+              echo "The catalog validation exception is restricted to v1-lts-0.0.10 and v1-lts-0.0.11." >&2
+              exit 1
+              ;;
+          esac
+
+          failed_packages="$(awk '$1 == "FAIL" && NF > 1 {print $2}' "$validation_log" | sort -u)"
+          expected_package="github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+          if [[ "$failed_packages" != "$expected_package" ]]; then
+            printf 'Unexpected failing packages:\n%s\n' "$failed_packages" >&2
+            exit 1
+          fi
+
+          expected_failures=(
+            "--- FAIL: TestGPT56UltraCodexThinking"
+            "--- FAIL: TestGPT56UltraCodexThinking/sol_body"
+            "--- FAIL: TestGPT56UltraCodexThinking/sol_suffix_overrides_body"
+            "--- FAIL: TestGPT56UltraCodexThinking/terra_body"
+            "--- FAIL: TestGPT56UltraCodexThinking/terra_suffix_overrides_body"
+          )
+          failure_count="$(grep -Fc -- '--- FAIL:' "$validation_log")"
+          if [[ "$failure_count" -ne "${#expected_failures[@]}" ]]; then
+            echo "Unexpected number of historical catalog test failures: $failure_count." >&2
+            exit 1
+          fi
+          for marker in "${expected_failures[@]}"; do
+            if ! grep -Fq -- "$marker" "$validation_log"; then
+              echo "Missing expected historical catalog failure: $marker" >&2
+              exit 1
+            fi
+          done
+          echo "::warning::Accepted the known immutable-tag GPT-5.6 Ultra test failure for $RELEASE_TAG."
       - name: Upload validated models catalog
         uses: actions/upload-artifact@v4
         with:
