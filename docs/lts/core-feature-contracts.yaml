@@ -42,7 +42,6 @@ features:
       - ttfb_ms
       - timing_version
       - ttft_ms
-      - ttfr_ms
       - ttfa_ms
       - reasoning_effort
       - service_tier
@@ -105,7 +104,6 @@ features:
       - timing_version
       - ttfb_ms
       - ttft_ms
-      - ttfr_ms
       - ttfa_ms
       - uncached_input_tokens
       - schema_version

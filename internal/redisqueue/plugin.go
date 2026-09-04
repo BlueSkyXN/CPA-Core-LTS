@@ -122,13 +122,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if record.TimingVersion == coreusage.TimingVersionV1 {
 		detail.TimingVersion = record.TimingVersion
 		detail.TTFBMs = record.TTFB.Milliseconds()
-		// TTFRMs stores the canonical first-reasoning-token latency.
-		detail.TTFRMs = record.TTFT.Milliseconds()
+		detail.TTFTMs = record.TTFT.Milliseconds()
 		detail.TTFAMs = record.TTFA.Milliseconds()
-		// TTFTMs retains the legacy "first meaningful token" semantic so
-		// downstream consumers that pre-date the v3 timing split continue
-		// to see a useful value even for non-reasoning models.
-		detail.TTFTMs = firstMeaningfulTokenMs(record.TTFT, record.TTFA)
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
@@ -177,18 +172,12 @@ type queuedUsageDetail struct {
 }
 
 type requestDetail struct {
-	Timestamp     time.Time `json:"timestamp"`
-	LatencyMs     int64     `json:"latency_ms"`
-	TimingVersion uint32    `json:"timing_version"`
-	TTFBMs        int64     `json:"ttfb_ms"`
-	// TTFTMs retains the legacy "first meaningful token" semantic (the earlier
-	// of TTFR/TTFA) so downstream consumers that pre-date the v3 timing split
-	// always see a populated field.
-	TTFTMs int64 `json:"ttft_ms"`
-	// TTFRMs is the canonical v3 first-reasoning-token latency. It is zero
-	// when the upstream response contains no reasoning content.
-	TTFRMs          int64       `json:"ttfr_ms"`
-	TTFAMs          int64       `json:"ttfa_ms"`
+	Timestamp       time.Time   `json:"timestamp"`
+	LatencyMs       int64       `json:"latency_ms"`
+	TimingVersion   uint32      `json:"timing_version,omitempty"`
+	TTFBMs          int64       `json:"ttfb_ms,omitempty"`
+	TTFTMs          int64       `json:"ttft_ms,omitempty"`
+	TTFAMs          int64       `json:"ttfa_ms,omitempty"`
 	Source          string      `json:"source"`
 	UsageProvenance string      `json:"usage_provenance,omitempty"`
 	AuthIndex       string      `json:"auth_index"`
@@ -202,24 +191,6 @@ type requestDetail struct {
 	Stream          bool        `json:"stream"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
-}
-
-// firstMeaningfulTokenMs returns the earlier non-zero latency between the
-// reasoning and assistant timing measurements. It preserves the pre-v3
-// "first meaningful token" semantic used by legacy downstream consumers.
-func firstMeaningfulTokenMs(reasoning, assistant time.Duration) int64 {
-	r, a := reasoning.Milliseconds(), assistant.Milliseconds()
-	switch {
-	case r > 0 && a > 0:
-		if r < a {
-			return r
-		}
-		return a
-	case r > 0:
-		return r
-	default:
-		return a
-	}
 }
 
 type tokenStats struct {

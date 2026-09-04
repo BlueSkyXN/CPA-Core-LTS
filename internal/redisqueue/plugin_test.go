@@ -127,20 +127,17 @@ func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 		payload := popSinglePayload(t)
 		requireIntField(t, payload, "timing_version", int(coreusage.TimingVersionV1))
 		requireIntField(t, payload, "ttfb_ms", 120)
-		// ttfr_ms: canonical reasoning-only latency.
-		requireIntField(t, payload, "ttfr_ms", 480)
-		// ttft_ms: backward-compat "first meaningful token" = min(reasoning, assistant).
 		requireIntField(t, payload, "ttft_ms", 480)
 		requireIntField(t, payload, "ttfa_ms", 920)
+		requireMissingField(t, payload, "ttfr_ms")
 	})
 }
 
-func TestUsageQueuePluginBackwardCompatTTFTForNonReasoningModel(t *testing.T) {
+func TestUsageQueuePluginKeepsReasoningTimingAbsentForNonReasoningModel(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithResponseStatusHolder(context.Background())
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
 
-		// Non-reasoning model: TTFT (reasoning) = 0, TTFA (assistant) = 1200ms.
 		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
 			Provider:      "openai",
 			Model:         "gpt-5.6-luna",
@@ -159,12 +156,62 @@ func TestUsageQueuePluginBackwardCompatTTFTForNonReasoningModel(t *testing.T) {
 		payload := popSinglePayload(t)
 		requireIntField(t, payload, "timing_version", int(coreusage.TimingVersionV1))
 		requireIntField(t, payload, "ttfb_ms", 200)
-		// ttfr_ms: no reasoning → zero.
-		requireIntField(t, payload, "ttfr_ms", 0)
-		// ttft_ms: backward-compat = first meaningful = TTFA (since TTFR=0).
-		requireIntField(t, payload, "ttft_ms", 1200)
+		requireMissingField(t, payload, "ttft_ms")
+		requireMissingField(t, payload, "ttfr_ms")
 		requireIntField(t, payload, "ttfa_ms", 1200)
 	})
+}
+
+func TestUsageQueuePluginKeepsUnobservedCanonicalTimingAbsent(t *testing.T) {
+	tests := []struct {
+		name   string
+		record coreusage.Record
+	}{
+		{
+			name: "unversioned record",
+			record: coreusage.Record{
+				Provider: "openai",
+				Model:    "gpt-5.6-luna",
+				Latency:  2 * time.Second,
+				Detail:   coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+			},
+		},
+		{
+			name: "versioned non-reasoning record",
+			record: coreusage.Record{
+				Provider:      "openai",
+				Model:         "gpt-5.6-luna",
+				TimingVersion: coreusage.TimingVersionV1,
+				TTFB:          200 * time.Millisecond,
+				TTFA:          1200 * time.Millisecond,
+				Latency:       2 * time.Second,
+				Detail:        coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withEnabledQueue(t, func() {
+				ctx := internallogging.WithResponseStatusHolder(context.Background())
+				internallogging.SetResponseStatus(ctx, http.StatusOK)
+				(&usageQueuePlugin{}).HandleUsage(ctx, tt.record)
+
+				payload := popSinglePayload(t)
+				requireMissingField(t, payload, "ttfr_ms")
+				if tt.record.TimingVersion == 0 {
+					for _, field := range []string{"timing_version", "ttfb_ms", "ttft_ms", "ttfa_ms"} {
+						requireMissingField(t, payload, field)
+					}
+					return
+				}
+				requireIntField(t, payload, "timing_version", int(coreusage.TimingVersionV1))
+				requireIntField(t, payload, "ttfb_ms", 200)
+				requireMissingField(t, payload, "ttft_ms")
+				requireIntField(t, payload, "ttfa_ms", 1200)
+			})
+		})
+	}
 }
 
 func TestUsageQueuePluginKeepsCacheCreationSeparateFromCachedTokens(t *testing.T) {

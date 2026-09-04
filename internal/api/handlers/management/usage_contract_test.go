@@ -70,7 +70,6 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("exported usage missing ttfb_ms: %s", exportedJSON)
 	}
 	if !bytes.Contains(exportedJSON, []byte(`"timing_version":1`)) ||
-		!bytes.Contains(exportedJSON, []byte(`"ttfr_ms":900`)) ||
 		!bytes.Contains(exportedJSON, []byte(`"ttft_ms":900`)) ||
 		!bytes.Contains(exportedJSON, []byte(`"ttfa_ms":1500`)) {
 		t.Fatalf("exported usage missing canonical semantic timing: %s", exportedJSON)
@@ -135,7 +134,6 @@ func TestUsageManagementTimingV3MatrixAndAtomicRejection(t *testing.T) {
 								"timing_version": 1,
 								"ttfb_ms":        500,
 								"ttft_ms":        900,
-								"ttfr_ms":        900,
 								"ttfa_ms":        1500,
 								"tokens": map[string]any{
 									"input_tokens":          10,
@@ -210,7 +208,6 @@ func TestUsageManagementTimingV3MatrixAndAtomicRejection(t *testing.T) {
 		}
 		delete(legacyDetail, "timing_version")
 		delete(legacyDetail, "ttft_ms")
-		delete(legacyDetail, "ttfr_ms")
 		delete(legacyDetail, "ttfa_ms")
 		legacyDetail["latency_ms"] = -1
 		negativeLatencyResult := performUsageImport(h, mustMarshalUsagePayload(t, legacy))
@@ -1550,8 +1547,8 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	if detail.TTFBMs != 500 {
 		t.Fatalf("detail.ttfb_ms = %d, want 500", detail.TTFBMs)
 	}
-	if detail.TimingVersion != 1 || detail.TTFTMs != 900 || detail.TTFRMs != 900 || detail.TTFAMs != 1500 {
-		t.Fatalf("detail semantic timing = version:%d ttft:%d ttfr:%d ttfa:%d, want 1/900/900/1500", detail.TimingVersion, detail.TTFTMs, detail.TTFRMs, detail.TTFAMs)
+	if detail.TimingVersion != 1 || detail.TTFTMs != 900 || detail.TTFAMs != 1500 {
+		t.Fatalf("detail semantic timing = version:%d ttft:%d ttfa:%d, want 1/900/1500", detail.TimingVersion, detail.TTFTMs, detail.TTFAMs)
 	}
 	if detail.Failed {
 		t.Fatalf("detail.failed = true, want false")
