@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -108,6 +109,19 @@ func TestResponseTimingTrackerHandlesSplitSSEAndStopsAfterBothSemanticMarks(t *t
 	tracker.observeBytes([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"late\"}\n\n"))
 	if got := tracker.snapshot().TTFA; got != snapshot.TTFA {
 		t.Fatalf("TTFA changed after semantic observer stopped: before=%v after=%v", snapshot.TTFA, got)
+	}
+}
+
+func TestResponseTimingTrackerOversizedMessageDoesNotPoisonLaterMessages(t *testing.T) {
+	tracker := newResponseTimingTracker(sdktranslator.FormatOpenAIResponse, true)
+	tracker.start(time.Now().Add(-10 * time.Millisecond))
+	tracker.observeMessage(bytes.Repeat([]byte{'x'}, responseTimingFrameMaxBytes+1))
+	tracker.observeMessage([]byte(`{"type":"response.reasoning_summary_text.delta","delta":"think"}`))
+	tracker.observeMessage([]byte(`{"type":"response.output_text.delta","delta":"answer"}`))
+
+	snapshot := tracker.snapshot()
+	if snapshot.TTFT <= 0 || snapshot.TTFA <= 0 {
+		t.Fatalf("semantic timing after oversized message = ttft:%v ttfa:%v, want both positive", snapshot.TTFT, snapshot.TTFA)
 	}
 }
 

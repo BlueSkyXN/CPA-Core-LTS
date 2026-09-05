@@ -187,6 +187,28 @@ func (t *responseTimingTracker) observeBytes(data []byte) {
 	}
 }
 
+// observeMessage classifies one complete WebSocket or other message-bounded
+// payload. Oversized messages are discarded without poisoning later messages.
+func (t *responseTimingTracker) observeMessage(data []byte) {
+	if t == nil || len(data) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.semanticEnabled || t.semanticDisabled || t.format == "" || len(data) > responseTimingFrameMaxBytes {
+		return
+	}
+
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("data:")) {
+		trimmed = bytes.TrimSpace(trimmed[len("data:"):])
+	}
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) || !gjson.ValidBytes(trimmed) {
+		return
+	}
+	t.classifyLocked(trimmed)
+}
+
 func (t *responseTimingTracker) bufferSizeLocked() int {
 	return len(t.lineBuffer) + len(t.frameData)
 }

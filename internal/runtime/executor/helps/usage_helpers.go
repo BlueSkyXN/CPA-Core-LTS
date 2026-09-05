@@ -227,6 +227,27 @@ func (r *UsageReporter) ObserveTimingPayload(format string, payload []byte) {
 	tracker.observeBytes(payload)
 }
 
+// ObserveTimingMessage classifies one complete upstream WebSocket or other
+// message-bounded payload. It keeps an oversized message from suppressing
+// semantic timing carried by later messages in the same request.
+func (r *UsageReporter) ObserveTimingMessage(format string, payload []byte) {
+	if r == nil || len(payload) == 0 {
+		return
+	}
+	r.timingMu.Lock()
+	if format != "" {
+		r.timingFormat = sdktranslator.FromString(format)
+	}
+	tracker := r.timing
+	if tracker == nil {
+		tracker = newResponseTimingTracker(r.timingFormat, r.timingEnabled)
+		r.timing = tracker
+	}
+	tracker.configure(r.timingFormat, r.timingEnabled)
+	r.timingMu.Unlock()
+	tracker.observeMessage(payload)
+}
+
 // SetOutboundServiceTier records the trimmed raw top-level service_tier from
 // the final payload sent by this provider attempt. The payload itself is not
 // retained with usage metadata.
