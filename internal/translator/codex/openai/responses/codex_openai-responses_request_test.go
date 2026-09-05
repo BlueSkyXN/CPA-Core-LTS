@@ -286,8 +286,8 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 	if store := gjson.GetBytes(output, "store"); store.Type != gjson.False {
 		t.Fatalf("store = %s, want false", store.Raw)
 	}
-	if parallel := gjson.GetBytes(output, "parallel_tool_calls"); parallel.Type != gjson.True {
-		t.Fatalf("parallel_tool_calls = %s, want true", parallel.Raw)
+	if parallel := gjson.GetBytes(output, "parallel_tool_calls"); parallel.Type != gjson.False {
+		t.Fatalf("parallel_tool_calls = %s, want explicit false preserved", parallel.Raw)
 	}
 	include := gjson.GetBytes(output, "include").Array()
 	if len(include) != 1 || include[0].Type != gjson.String || include[0].String() != "reasoning.encrypted_content" {

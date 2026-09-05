@@ -23,10 +23,14 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 
 	rawJSON = setCodexRequiredBool(rawJSON, "stream", true)
 	rawJSON = setCodexRequiredBool(rawJSON, "store", false)
-	rawJSON = setCodexRequiredBool(rawJSON, "parallel_tool_calls", true)
+	// Preserve an explicit false: async tools and client-managed serial tools
+	// must not become parallel merely because the request crosses the proxy.
+	if parallel := gjson.GetBytes(rawJSON, "parallel_tool_calls"); parallel.Type != gjson.False {
+		rawJSON = setCodexRequiredBool(rawJSON, "parallel_tool_calls", true)
+	}
 	rawJSON = setCodexRequiredInclude(rawJSON)
 	// Codex Responses rejects token limit fields, so strip them out before forwarding.
-	rawJSON = deleteCodexRequestFields(rawJSON, "max_output_tokens", "max_completion_tokens", "temperature", "top_p")
+	rawJSON = deleteCodexRequestFields(rawJSON, "max_output_tokens", "max_completion_tokens", "temperature", "top_p", "top_logprobs")
 	if serviceTier := gjson.GetBytes(rawJSON, "service_tier"); serviceTier.Exists() && serviceTier.String() != "priority" {
 		rawJSON = deleteCodexRequestFields(rawJSON, "service_tier")
 	}

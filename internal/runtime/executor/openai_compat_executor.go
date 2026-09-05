@@ -90,6 +90,13 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
 
+	if opts.Alt != "responses/compact" && (opts.SourceFormat.String() == "openai-response" || opts.SourceFormat.String() == "codex") {
+		if controlErr := util.RequireChatRepresentableResponses(req.Payload); controlErr != nil {
+			err = statusErr{code: http.StatusBadRequest, msg: controlErr.Error()}
+			return resp, err
+		}
+	}
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
@@ -307,6 +314,13 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImagesStream(ctx, auth, req, opts, endpointPath)
+	}
+
+	if opts.Alt != "responses/compact" && (opts.SourceFormat.String() == "openai-response" || opts.SourceFormat.String() == "codex") {
+		if controlErr := util.RequireChatRepresentableResponses(req.Payload); controlErr != nil {
+			err = statusErr{code: http.StatusBadRequest, msg: controlErr.Error()}
+			return nil, err
+		}
 	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -581,6 +582,12 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 // setting as a canonical reasoning_effort label for usage logging.
 func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "codex" || provider == "openai-response" || provider == "openai" {
+		if controls, err := util.InspectResponsesControls(body); err == nil && controls.ConfigurationEffort != "" {
+			return controls.ConfigurationEffort
+		}
+	}
+
 	config := extractThinkingConfig(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
