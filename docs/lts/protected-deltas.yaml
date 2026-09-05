@@ -117,6 +117,27 @@ retained_capabilities:
       - watcher-diff-tests
     conflict_policy: preserve_config_compatibility
 
+  - id: astra-native-responses-controls
+    registry_feature: astra-native-responses-controls
+    must_keep: true
+    markers:
+      - configuration_update
+      - compaction_trigger
+      - parallel_tool_calls
+    validation:
+      - go test ./internal/util ./internal/thinking ./internal/translator/codex/openai/responses -run 'ResponsesControl|AstraControls|CodexParallel|TranslatedEffort'
+    conflict_policy: retain_ordered_native_controls_and_explicit_parallel_false
+
+  - id: astra-catalog-tool-availability
+    registry_feature: astra-catalog-tool-availability
+    must_keep: true
+    markers:
+      - gpt-6-astra
+      - When available
+    validation:
+      - go test ./internal/registry -run 'Astra|CatalogRefresh'
+    conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
+
 lts_owned_features:
   - id: codex-model-fallback
     registry_feature: codex-model-fallback

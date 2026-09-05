@@ -472,6 +472,43 @@ features:
     validation:
       - scripts/check-lts-contract.sh
 
+  - id: astra-native-responses-controls
+    kind: retained-capability
+    support: protected
+    owner: cpa-core-lts
+    upstream_relation: divergent
+    reason: Preserve positioned reasoning updates and explicit serial tool intent on native Responses paths, and reject lossy Chat Completions conversion instead of silently changing request meaning.
+    core_files:
+      - internal/util/responses_controls.go
+      - internal/thinking/apply.go
+      - internal/translator/codex/openai/responses/codex_openai-responses_request.go
+      - internal/runtime/executor/openai_compat_executor.go
+      - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+    required_markers:
+      - configuration_update
+      - compaction_trigger
+      - parallel_tool_calls
+      - top_logprobs
+    validation:
+      - go test ./internal/util ./internal/thinking ./internal/translator/codex/openai/responses ./sdk/api/handlers/openai ./internal/runtime/executor -run 'ResponsesControl|AstraControls|CodexParallel|TranslatedEffort|ChatExecutorRejects'
+
+  - id: astra-catalog-tool-availability
+    kind: retained-capability
+    support: protected
+    owner: cpa-core-lts
+    upstream_relation: divergent
+    reason: Retain the official Codex async-question availability correction across embedded and refreshed Astra catalogs without replacing other model records.
+    core_files:
+      - internal/registry/codex_client_models.go
+      - internal/registry/codex_astra_guidance.go
+      - internal/registry/models/codex_client_models.json
+    required_markers:
+      - gpt-6-astra
+      - When available
+    validation:
+      - go test ./internal/registry -run 'Astra|CatalogRefresh|CodexClientModels'
+
 review_seams:
   - id: provider-runtime-usage-seams
     support: upstream-shared

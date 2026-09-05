@@ -41,6 +41,12 @@ jobs:
             ./internal/registry ./internal/client/codex/models \
             ./sdk/pluginapi ./sdk/pluginabi ./internal/runtime/executor/helps ./internal/thinking
 
+      - name: Test native Responses control compatibility
+        run: |
+          go test -count=1 ./internal/util ./internal/translator/codex/openai/responses \
+            ./sdk/api/handlers/openai ./internal/runtime/executor \
+            -run 'ResponsesControl|AstraControls|CodexParallel|ChatExecutorRejects'
+
       - name: Build server
         run: |
           go build -o test-output ./cmd/server

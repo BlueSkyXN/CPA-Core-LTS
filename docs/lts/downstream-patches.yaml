@@ -1128,3 +1128,47 @@ patches:
     upstream_issue_or_pr: "router-for-me/CLIProxyAPI#5053; upstream dev 5fef17e2 partially fixes Claude only"
     state: required
     retire_when: Upstream main resolves configured downstream-header references in Claude caller-owned requests and both non-streaming and streaming Codex direct image transports, and both listed regressions pass after removing the downstream implementation.
+
+  - id: astra-native-responses-controls
+    reason: Native configuration updates and async tools cannot be silently reduced to Chat messages; explicit parallel_tool_calls false must survive conversion.
+    introduced_in: d333c64582f3ff21acc89adc4a9f3caa25bdebc3
+    affected_upstream_range: reviewed through 5208aec703b5ce7e3445f6e9d91cc13b3e78003a; this is a selective local correction, not a full upstream merge.
+    files:
+      - internal/util/responses_controls.go
+      - internal/util/responses_controls_test.go
+      - internal/thinking/apply.go
+      - internal/translator/codex/openai/responses/codex_openai-responses_request.go
+      - internal/runtime/executor/openai_compat_executor.go
+      - internal/runtime/executor/openai_compat_responses_controls_test.go
+      - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+      - sdk/api/handlers/openai/openai_responses_controls_test.go
+      - internal/translator/codex/openai/responses/codex_responses_controls_test.go
+    regression_tests:
+      - TestCodexAstraControlsSurviveNativeTranslation
+      - TestResponsesControlsRejectLossyChatFallback
+      - TestResponsesControlErrorsAreReturnedBeforeExecution
+      - TestChatExecutorRejectsNativeOnlyControlsBeforeNetwork
+    conflict_policy: preserve_input_order_and_base_effort_do_not_synthesize_trusted_controls
+    state: required
+    upstream_issue_or_pr: "CPA-Core-LTS local selective correction; upstream not-filed"
+    retire_when: Upstream main natively preserves positioned reasoning updates, serial tool intent, and rejects lossy Chat Completions conversion on native Responses paths.
+
+  - id: astra-async-guidance-hotfix
+    reason: OpenAI Codex 0.153.4 qualifies async-question guidance by registered tool availability; older catalog refreshes must not restore the known incorrect sentence.
+    introduced_in: 2397c94e9db0dd4f3c22fe515267e9985d14d33e
+    affected_upstream_range: router-for-me/CLIProxyAPI through 5208aec7; adapted from openai/codex 6ae07812e2db307def2b709962fb5963cf567dac (rhan-oai, 2026-09-04T22:39:08Z).
+    files:
+      - internal/registry/models/codex_client_models.json
+      - internal/registry/codex_client_models.go
+      - internal/registry/codex_astra_guidance.go
+      - internal/registry/codex_astra_guidance_test.go
+      - internal/registry/codex_astra_availability_test.go
+    regression_tests:
+      - TestAstraGuidanceRefreshOnlyChangesKnownSentence
+      - TestAstraGuidanceFutureCatalogIsNotRewritten
+      - TestAstraAsyncQuestionInstructionsRequireAvailableTool
+    conflict_policy: remove_legacy_wording_patch_only_after_all_catalog_sources_deliver_equivalent_official_guidance
+    state: required
+    upstream_issue_or_pr: "CPA-Core-LTS local selective correction adapted from openai/codex 6ae07812; upstream not-filed"
+    retire_when: All embedded and refreshed catalog sources deliver equivalent official async-question availability guidance.

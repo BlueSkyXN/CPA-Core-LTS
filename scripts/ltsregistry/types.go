@@ -140,6 +140,7 @@ type downstreamPatch struct {
 	RegressionTests       []string `yaml:"regression_tests"`
 	UpstreamIssueOrPR     string   `yaml:"upstream_issue_or_pr"`
 	State                 string   `yaml:"state"`
+	ConflictPolicy        string   `yaml:"conflict_policy,omitempty"`
 	RetireWhen            string   `yaml:"retire_when"`
 	RetiredIn             string   `yaml:"retired_in,omitempty"`
 }
