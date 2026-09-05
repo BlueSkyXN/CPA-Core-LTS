@@ -19,7 +19,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Test release notes contract
-        run: scripts/generate-lts-release-notes_test.sh
+        run: |
+          scripts/generate-lts-release-notes_test.sh
+          python3 .github/scripts/test_publish_lts_assets.py -v
 
       - name: Check LTS protected sentinels
         run: scripts/check-lts-contract.sh
@@ -32,6 +34,12 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$packages" | xargs go test -run 'Usage|usage'
+
+      - name: Test lifecycle, credential and model regressions
+        run: |
+          go test -race -count=1 ./internal/pluginhost ./sdk/cliproxy/auth \
+            ./internal/registry ./internal/client/codex/models \
+            ./sdk/pluginapi ./sdk/pluginabi ./internal/runtime/executor/helps ./internal/thinking
 
       - name: Build server
         run: |

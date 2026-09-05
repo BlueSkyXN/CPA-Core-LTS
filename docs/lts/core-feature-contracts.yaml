@@ -157,20 +157,29 @@ features:
     support: protected
     owner: cpa-core-lts
     upstream_relation: divergent
-    reason: Release archives and GHCR images must be built from the exact requested annotated tag, while current tooling may be checked out separately for historical repair.
+    reason: Release archives and GHCR images must be built from the exact requested annotated tag; manual historical repair pins tooling from the default branch, and a new Release remains draft until every asset is validated; existing assets are reused only when identical and never overwritten.
     core_files:
+      - .github/scripts/publish-lts-assets.py
+      - .github/scripts/test_publish_lts_assets.py
       - .github/workflows/release.yaml
       - .github/workflows/docker-image.yml
       - scripts/migrate-tags-lts.sh
       - scripts/cleanup-ghcr-tls-images.sh
     required_markers:
       - RELEASE_TAG
+      - RELEASE_TOOLING_REF
+      - release_tooling_sha
+      - Verify manual workflow source
       - Checkout current release tooling
       - Release source mismatch
       - publish-release-assets
+      - --draft
+      - --verify-tag
+      - --draft=false
       - update_latest
     validation:
       - scripts/check-lts-contract.sh
+      - python3 .github/scripts/test_publish_lts_assets.py -v
       - actionlint .github/workflows/release.yaml .github/workflows/docker-image.yml
 
   - id: auth-identity-attribution
