@@ -59,6 +59,11 @@ func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
 		return false, fmt.Errorf("%s: %w", source, err)
 	}
 
+	data, err := qualifyAstraAsyncGuidance(data)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", source, err)
+	}
+
 	cloned := append([]byte(nil), data...)
 	codexClientCatalogStore.mu.Lock()
 	defer codexClientCatalogStore.mu.Unlock()
