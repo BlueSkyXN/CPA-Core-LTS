@@ -24,12 +24,24 @@ env:
   APP_NAME: CPA-Core-LTS
   IMAGE_NAME: ghcr.io/blueskyxn/cpa-core-lts
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+  RELEASE_TOOLING_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.sha }}
   UPDATE_LATEST: ${{ github.event_name == 'push' || inputs.update_latest }}
 
 jobs:
   validate-release-catalog:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify manual workflow source
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            echo "Manual release repair must run from the default branch ${DEFAULT_BRANCH}; select the historical product tag through release_tag." >&2
+            exit 1
+          fi
       - name: Checkout release source
         uses: actions/checkout@v4
         with:
@@ -39,7 +51,7 @@ jobs:
       - name: Checkout current release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.RELEASE_TOOLING_REF }}
           path: _release_tools
           fetch-depth: 0
           fetch-tags: true
