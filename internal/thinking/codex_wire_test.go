@@ -62,6 +62,8 @@ func TestNormalizeCodexReasoningEffortForWire(t *testing.T) {
 		wantEffort string
 		wantErr    thinking.ErrorCode
 	}{
+		{name: "astra ultra becomes max", model: "gpt-6-astra", body: `{"reasoning":{"effort":"ultra"}}`, wantEffort: "max"},
+		{name: "astra max remains max", model: "gpt-6-astra", body: `{"reasoning":{"effort":"max"}}`, wantEffort: "max"},
 		{name: "sol ultra becomes max", model: "gpt-5.6-sol", body: `{"reasoning":{"effort":"ultra"}}`, wantEffort: "max"},
 		{name: "terra ultra becomes max", model: "gpt-5.6-terra", body: `{"reasoning":{"effort":"ULTRA"}}`, wantEffort: "max"},
 		{name: "luna ultra remains unsupported", model: "gpt-5.6-luna", body: `{"reasoning":{"effort":"ultra"}}`, wantEffort: "ultra", wantErr: thinking.ErrLevelNotSupported},
