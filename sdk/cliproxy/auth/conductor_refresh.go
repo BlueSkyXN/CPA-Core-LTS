@@ -450,7 +450,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	defer lock.mu.Unlock()
 
 	m.mu.RLock()
-	auth := m.auths[id]
+	auth := m.auths[id].Clone()
 	var exec ProviderExecutor
 	if auth != nil {
 		// Use the same effective provider key as request execution so OpenAI-compat
@@ -485,7 +485,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		unauthorized := isUnauthorizedError(err)
 		shouldReschedule := false
 		m.mu.Lock()
-		if current := m.auths[id]; current != nil && current.generation == expectedGeneration {
+		if current := m.auths[id]; current != nil && current.generation == expectedGeneration && current.Generation == auth.Generation {
 			current.Generation++
 			current.UpdatedAt = now
 			current.LastError = refreshErrorFromError(err)
@@ -533,7 +533,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
 	}
-	saved, applied, errUpdate := m.updateIfGeneration(ctx, updated, expectedGeneration)
+	saved, applied, errUpdate := m.updateFromAsync(ctx, auth, updated)
+	if errUpdate != nil {
+		return nil, errUpdate
+	}
 	if !applied {
 		return nil, nil
 	}

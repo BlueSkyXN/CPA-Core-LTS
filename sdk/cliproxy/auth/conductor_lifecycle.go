@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -139,6 +140,22 @@ func (m *Manager) updateIfGeneration(ctx context.Context, auth *Auth, expectedGe
 }
 
 func (m *Manager) update(ctx context.Context, auth *Auth, expectedGeneration uint64, requireGeneration bool) (*Auth, bool, error) {
+	return m.updateWithBase(ctx, auth, expectedGeneration, requireGeneration, nil)
+}
+
+// updateFromAsync applies only changes made by refresh/preparation since base.
+// The private lifecycle generation and public registration epoch remain fences.
+func (m *Manager) updateFromAsync(ctx context.Context, base, updated *Auth) (*Auth, bool, error) {
+	if base == nil || updated == nil {
+		return nil, false, nil
+	}
+	if base.ID != updated.ID || base.Provider != updated.Provider {
+		return nil, false, authLifecycleChangedError()
+	}
+	return m.updateWithBase(ctx, updated, base.generation, true, base)
+}
+
+func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGeneration uint64, requireGeneration bool, base *Auth) (*Auth, bool, error) {
 	if auth == nil || auth.ID == "" {
 		return nil, false, nil
 	}
@@ -155,6 +172,13 @@ func (m *Manager) update(ctx context.Context, auth *Auth, expectedGeneration uin
 	if requireGeneration && existing.generation != expectedGeneration {
 		m.mu.Unlock()
 		return nil, false, nil
+	}
+	if base != nil {
+		if existing.RegistrationEpoch != base.RegistrationEpoch {
+			m.mu.Unlock()
+			return nil, false, authLifecycleChangedError()
+		}
+		auth = mergeAsyncAuth(base, existing, auth)
 	}
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
@@ -383,9 +407,23 @@ func (m *Manager) Load(ctx context.Context) error {
 // Load resets manager state from the backing store.
 
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {
-	if m.store == nil || auth == nil {
+	if m.store == nil || auth == nil || shouldSkipPersist(ctx) {
 		return nil
 	}
+	value, _ := m.persistLocks.LoadOrStore(auth.ID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	// A newer update may have reached persistence first. Save the latest
+	// snapshot for this lifecycle rather than overwriting it with an old copy.
+	m.mu.RLock()
+	current := m.auths[auth.ID]
+	if current == nil || current.generation != auth.generation || current.RegistrationEpoch != auth.RegistrationEpoch {
+		m.mu.RUnlock()
+		return nil
+	}
+	auth = current.Clone()
+	m.mu.RUnlock()
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return fmt.Errorf("persist auth: %w", errWeight)
 	}
