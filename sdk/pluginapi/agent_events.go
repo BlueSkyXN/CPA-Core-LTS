@@ -68,10 +68,14 @@ type AgentTextDeltaV1 struct {
 }
 
 type AgentTerminalPayloadV1 struct {
-	State     AgentTerminalState `json:"state"`
-	Code      string             `json:"code,omitempty"`
-	Message   string             `json:"message,omitempty"`
-	Retryable bool               `json:"retryable,omitempty"`
+	// FinishReason preserves a model's stop/length/content_filter/tool_calls
+	// result when an adapter represents a model completion as an agent turn.
+	// It is optional; older runners keep the existing inferred behavior.
+	FinishReason string             `json:"finish_reason,omitempty"`
+	State        AgentTerminalState `json:"state"`
+	Code         string             `json:"code,omitempty"`
+	Message      string             `json:"message,omitempty"`
+	Retryable    bool               `json:"retryable,omitempty"`
 }
 
 type AgentUsageV1 struct {

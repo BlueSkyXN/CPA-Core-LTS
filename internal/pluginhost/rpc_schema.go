@@ -19,6 +19,7 @@ type rpcRegistration struct {
 }
 
 type rpcCapabilities struct {
+	StreamChunkHistoryOmitted     bool                         `json:"stream_chunk_history_omitted,omitempty"`
 	ModelRegistrar                bool                         `json:"model_registrar"`
 	ModelProvider                 bool                         `json:"model_provider"`
 	AuthProvider                  bool                         `json:"auth_provider"`
@@ -139,6 +140,7 @@ type rpcEmptyResponse struct{}
 func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 	caps := plugin.Capabilities
 	return rpcCapabilities{
+		StreamChunkHistoryOmitted:     caps.StreamChunkHistoryOmitted,
 		ModelRegistrar:                caps.ModelRegistrar != nil,
 		ModelProvider:                 caps.ModelProvider != nil,
 		AuthProvider:                  caps.AuthProvider != nil,

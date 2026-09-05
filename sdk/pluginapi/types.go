@@ -118,6 +118,11 @@ type Capabilities struct {
 	ResponseInterceptor ResponseInterceptor
 	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
 	StreamChunkInterceptor StreamChunkInterceptor
+	// StreamChunkHistoryOmitted explicitly opts out of HistoryChunks on payload
+	// callbacks. The initialization callback still receives history. This is a
+	// capability, not a numeric schema threshold: LTS schema 5 means execution
+	// lifecycle support, whereas upstream schema 5 has a different meaning.
+	StreamChunkHistoryOmitted bool
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
 	WebSocketResponseObserver WebSocketResponseObserver
 	// ThinkingApplier applies validated thinking configuration to provider payloads.

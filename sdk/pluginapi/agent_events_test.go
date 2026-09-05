@@ -116,3 +116,23 @@ func newAgentEventForTest(sequence uint64, eventType AgentEventType, payload any
 		Payload:            raw,
 	}
 }
+
+func TestAgentTerminalFinishReasonIsOptionalAndRoundTrips(t *testing.T) {
+	for _, reason := range []string{"", "length", "content_filter", "tool_calls"} {
+		value := AgentTerminalPayloadV1{State: AgentTerminalCompleted, FinishReason: reason}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got AgentTerminalPayloadV1
+		if err = json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.FinishReason != reason {
+			t.Fatalf("finish reason lost: %s", raw)
+		}
+		if reason == "" && strings.Contains(string(raw), "finish_reason") {
+			t.Fatal("optional field changed legacy payload")
+		}
+	}
+}

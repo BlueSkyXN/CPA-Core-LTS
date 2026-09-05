@@ -275,7 +275,13 @@ func (h *Host) InterceptStreamChunkExcept(ctx context.Context, req pluginapi.Str
 			nextReq.RequestBody = bytes.Clone(req.RequestBody)
 		}
 		nextReq.Body = bytes.Clone(current.Body)
-		nextReq.HistoryChunks = cloneByteSlices(req.HistoryChunks)
+		// Do not infer this opt-out from schema 5: its meaning differs between
+		// LTS and upstream. Missing capability preserves all legacy behavior.
+		if req.ChunkIndex != pluginapi.StreamChunkHeaderInitIndex && record.plugin.Capabilities.StreamChunkHistoryOmitted {
+			nextReq.HistoryChunks = nil
+		} else {
+			nextReq.HistoryChunks = cloneByteSlices(req.HistoryChunks)
+		}
 		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
 		if resp, ok := h.callStreamChunkInterceptor(ctx, record, interceptor, nextReq); ok {
 			current.Headers = mergeHeaders(current.Headers, resp.Headers, resp.ClearHeaders)

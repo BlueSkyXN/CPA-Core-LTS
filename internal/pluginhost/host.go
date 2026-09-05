@@ -277,6 +277,12 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			h.mu.Lock()
 			if _, loading := h.loading[file.ID]; loading {
 				h.mu.Unlock()
+				if replaced != nil {
+					if record, loadedFile, okRecord := h.snapshotPluginRecord(replaced); okRecord {
+						records = append(records, record)
+						loadedFiles = append(loadedFiles, loadedFile)
+					}
+				}
 				continue
 			}
 			h.loading[file.ID] = request
@@ -294,10 +300,8 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 
 			loadResult, completed := h.waitForPluginLoad(ctx, request)
 			if !completed {
-				if replaced == nil {
-					h.cleanupCanceledPluginLoad(file.ID, request)
-				} else {
-					h.cleanupCanceledPluginLoadAndWait(file.ID, request)
+				h.cleanupCanceledPluginLoad(file.ID, request)
+				if replaced != nil {
 					_, _, _ = h.rollbackReplacement(replaced, item)
 				}
 				return
@@ -306,7 +310,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 				if replaced == nil {
 					h.cleanupPluginLoad(file.ID, request, loadResult.loaded)
 				} else {
-					h.cleanupPluginLoadAndWait(file.ID, request, loadResult.loaded)
+					h.cleanupPluginLoadAndWait(ctx, file.ID, request, loadResult.loaded)
 					if rollbackRecord, rollbackFile, okRollback := h.rollbackReplacement(replaced, item); okRollback {
 						records = append(records, rollbackRecord)
 						loadedFiles = append(loadedFiles, rollbackFile)
@@ -332,7 +336,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 				if replaced == nil {
 					h.cleanupPluginLoad(file.ID, request, loadResult.loaded)
 				} else {
-					h.cleanupPluginLoadAndWait(file.ID, request, loadResult.loaded)
+					h.cleanupPluginLoadAndWait(ctx, file.ID, request, loadResult.loaded)
 					_, _, _ = h.rollbackReplacement(replaced, item)
 				}
 				return
@@ -471,23 +475,6 @@ func (h *Host) cleanupCanceledPluginLoad(id string, request *pluginLoadRequest) 
 	}()
 }
 
-func (h *Host) cleanupCanceledPluginLoadAndWait(id string, request *pluginLoadRequest) {
-	if h == nil || request == nil || request.result == nil {
-		return
-	}
-	h.mu.Lock()
-	if h.loading[id] != request || request.cleanupStarted {
-		h.mu.Unlock()
-		return
-	}
-	request.cleanupStarted = true
-	h.mu.Unlock()
-
-	result := <-request.result
-	h.discardLoadedPlugin(result.loaded)
-	h.clearLoadingRequest(id, request)
-}
-
 // cleanupPluginLoad retains the matching load token until the client has physically
 // shut down, preventing a replacement ApplyConfig from opening a second client.
 func (h *Host) cleanupPluginLoad(id string, request *pluginLoadRequest, loaded *loadedPlugin) {
@@ -505,7 +492,10 @@ func (h *Host) cleanupPluginLoad(id string, request *pluginLoadRequest, loaded *
 	h.finishPluginLoadCleanup(id, request, loaded)
 }
 
-func (h *Host) cleanupPluginLoadAndWait(id string, request *pluginLoadRequest, loaded *loadedPlugin) {
+// cleanupPluginLoadAndWait preserves the normal shutdown-before-resume order,
+// but never lets an unresponsive native shutdown hold the global apply lock.
+// The loading token is cleared only by physical cleanup, not by cancellation.
+func (h *Host) cleanupPluginLoadAndWait(ctx context.Context, id string, request *pluginLoadRequest, loaded *loadedPlugin) {
 	if h == nil || request == nil {
 		return
 	}
@@ -517,8 +507,21 @@ func (h *Host) cleanupPluginLoadAndWait(id string, request *pluginLoadRequest, l
 	request.cleanupStarted = true
 	h.mu.Unlock()
 
-	h.discardLoadedPlugin(loaded)
-	h.clearLoadingRequest(id, request)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.discardLoadedPlugin(loaded)
+		h.clearLoadingRequest(id, request)
+	}()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, pluginExecutionLifecycleTimeout)
+	defer cancel()
+	select {
+	case <-done:
+	case <-waitCtx.Done():
+	}
 }
 
 func (h *Host) finishPluginLoadCleanup(id string, request *pluginLoadRequest, loaded *loadedPlugin) {
@@ -794,6 +797,29 @@ func (h *Host) pluginIdentityCurrent(id string, path string, version string) boo
 	return h.activePluginVersions[id] == version
 }
 
+func (h *Host) snapshotPluginRecord(lp *loadedPlugin) (capabilityRecord, pluginFile, bool) {
+	if h == nil || lp == nil {
+		return capabilityRecord{}, pluginFile{}, false
+	}
+	id := strings.TrimSpace(lp.id)
+	path := cleanPluginPath(lp.path)
+	version := strings.TrimSpace(lp.version)
+	if id == "" || path == "" {
+		return capabilityRecord{}, pluginFile{}, false
+	}
+	for _, record := range h.Snapshot().records {
+		if record.id != id || cleanPluginPath(record.path) != path || strings.TrimSpace(record.version) != version {
+			continue
+		}
+		return record, pluginFile{
+			ID:      record.id,
+			Path:    record.path,
+			Version: record.version,
+		}, true
+	}
+	return capabilityRecord{}, pluginFile{}, false
+}
+
 func (h *Host) snapshotWithoutPluginLocked(id string) ([]capabilityRecord, bool) {
 	raw := h.snapshot.Load()
 	snap, _ := raw.(*Snapshot)
@@ -906,19 +932,30 @@ func quiesceUnsupported(errQuiesce error) bool {
 	return false
 }
 
+// rollbackReplacement bounds the resume attempt because the quiesced plugin
+// may itself be unresponsive after a failed or canceled replacement load.
 func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (capabilityRecord, pluginFile, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), pluginExecutionLifecycleTimeout)
+	defer cancel()
+	return h.rollbackReplacementContext(ctx, lp, item)
+}
+
+func (h *Host) rollbackReplacementContext(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (capabilityRecord, pluginFile, bool) {
 	if h == nil || lp == nil {
 		return capabilityRecord{}, pluginFile{}, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	h.mu.Lock()
 	configYAML := bytes.Clone(lp.configYAML)
 	previousPlugin := lp.plugin
 	h.mu.Unlock()
-	if len(configYAML) > 0 {
-		item.ConfigYAML = configYAML
-	}
+	// An empty previous config is also a valid rollback target. Do not pass the
+	// rejected replacement config back into the old instance.
+	item.ConfigYAML = configYAML
 
-	plugin, okCall := h.callRegister(context.Background(), lp, item)
+	plugin, okCall := h.callRegister(ctx, lp, item)
 	if okCall {
 		h.mu.Lock()
 		delete(h.fused, lp.id)
@@ -930,17 +967,18 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-		id:       lp.id,
-		path:     lp.path,
-		version:  lp.version,
-		priority: item.Priority,
-		meta:     plugin.Metadata,
-		plugin:   plugin,
-	}, pluginFile{
-		ID:      lp.id,
-		Path:    lp.path,
-		Version: lp.version,
-	}, true
+			id:          lp.id,
+			path:        lp.path,
+			version:     lp.version,
+			priority:    item.Priority,
+			permissions: item.Permissions,
+			meta:        plugin.Metadata,
+			plugin:      plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

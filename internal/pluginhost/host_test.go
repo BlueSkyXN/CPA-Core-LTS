@@ -909,9 +909,22 @@ func TestHostApplyConfigRollsBackQuiescedPluginWhenReplacementFails(t *testing.T
 	t.Cleanup(h.ShutdownAll)
 	pluginsDir, paths := makeVersionedPluginDir(t, "alpha", "1.0.0")
 
-	h.ApplyConfig(context.Background(), versionedPluginHostConfig(t, pluginsDir, "1.0.0"))
+	withCallbacks := func(version string) *config.Config {
+		cfg := versionedPluginHostConfig(t, pluginsDir, version)
+		item := cfg.Plugins.Configs["alpha"]
+		item.Permissions = config.PluginPermissions{AuthList: true, AuthRead: true, AuthWrite: true, ModelExecute: true}
+		cfg.Plugins.Configs["alpha"] = item
+		return cfg
+	}
+	h.ApplyConfig(context.Background(), withCallbacks("1.0.0"))
 	writeVersionedPluginFile(t, pluginsDir, "alpha", "2.0.0")
-	h.ApplyConfig(context.Background(), versionedPluginHostConfig(t, pluginsDir, "2.0.0"))
+	h.ApplyConfig(context.Background(), withCallbacks("2.0.0"))
+	callbackCtx := withHostCallbackPluginID(context.Background(), "alpha")
+	for _, permission := range []pluginHostPermission{pluginPermissionAuthList, pluginPermissionAuthRead, pluginPermissionAuthWrite, pluginPermissionModelExecute} {
+		if err := h.requirePluginPermission(callbackCtx, permission); err != nil {
+			t.Errorf("restored plugin lost configured callback %s: %v", permission, err)
+		}
+	}
 
 	if got, want := events.snapshot(), []string{
 		"old." + pluginabi.MethodPluginRegister,
@@ -1195,14 +1208,20 @@ func TestHostApplyConfigRollsBackQuiescedPluginWhenContextCanceled(t *testing.T)
 	cancel()
 	waitForHostTestSignal(t, applyDone, "canceled hot reload")
 
-	if got, want := events.snapshot(), []string{
+	// Physical disposal may finish after rollback when cancellation wins.
+	deadline := time.Now().Add(time.Second)
+	for replacementClient.shutdownCalls.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := slices.DeleteFunc(events.snapshot(), func(event string) bool { return event == "replacement.shutdown" })
+	want := []string{
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
-		"replacement.shutdown",
 		"old." + pluginabi.MethodPluginReconfigure,
-	}; !slices.Equal(got, want) {
-		t.Fatalf("lifecycle events = %v, want %v", got, want)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("lifecycle events without asynchronous cleanup = %v, want %v", got, want)
 	}
 	if !h.pluginIdentityCurrent("alpha", paths["1.0.0"], "1.0.0") {
 		t.Fatal("old plugin did not remain active after canceled hot reload")
@@ -1212,7 +1231,120 @@ func TestHostApplyConfigRollsBackQuiescedPluginWhenContextCanceled(t *testing.T)
 	}
 }
 
-func TestHostApplyConfigShutsDownSuccessfulReplacementBeforeCanceledRollback(t *testing.T) {
+func TestHostApplyConfigCanceledBlockedReplacementReturnsAndPreservesCurrentPlugin(t *testing.T) {
+	events := &lifecycleEventRecorder{}
+	oldClient := &lifecycleTestClient{call: func(_ context.Context, method string, _ []byte) ([]byte, error) {
+		events.add("old." + method)
+		switch method {
+		case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+			return lifecycleRegistrationResult(validTestPlugin("alpha"))
+		case pluginabi.MethodPluginQuiesce:
+			return marshalRPCResult(rpcEmptyResponse{})
+		default:
+			return nil, fmt.Errorf("unexpected old plugin method %s", method)
+		}
+	}}
+	replacementClient := &lateLoadClient{registration: validTestPlugin("alpha")}
+	replacementStarted := make(chan struct{})
+	replacementRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReplacement := func() { releaseOnce.Do(func() { close(replacementRelease) }) }
+	loader := &blockingReplacementPluginLoader{
+		initial:            oldClient,
+		replacement:        replacementClient,
+		replacementStarted: replacementStarted,
+		replacementRelease: replacementRelease,
+	}
+	h := NewForTest(loader)
+	t.Cleanup(func() {
+		releaseReplacement()
+		h.ShutdownAll()
+	})
+	pluginsDir, paths := makeVersionedPluginDir(t, "alpha", "1.0.0")
+	h.ApplyConfig(context.Background(), versionedPluginHostConfig(t, pluginsDir, "1.0.0"))
+	writeVersionedPluginFile(t, pluginsDir, "alpha", "2.0.0")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	applyDone := make(chan struct{})
+	go func() {
+		h.ApplyConfig(ctx, versionedPluginHostConfig(t, pluginsDir, "2.0.0"))
+		close(applyDone)
+	}()
+	waitForHostTestSignal(t, replacementStarted, "blocked replacement load")
+	cancel()
+	waitForHostTestSignal(t, applyDone, "canceled blocked replacement")
+
+	if !h.pluginIdentityCurrent("alpha", paths["1.0.0"], "1.0.0") || !h.PluginRegistered("alpha") {
+		t.Fatal("old plugin did not remain active after canceling a blocked replacement")
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		h.ApplyConfig(context.Background(), versionedPluginHostConfig(t, pluginsDir, "2.0.0"))
+		close(secondDone)
+	}()
+	waitForHostTestSignal(t, secondDone, "follow-up apply while replacement cleanup is pending")
+	if !h.pluginIdentityCurrent("alpha", paths["1.0.0"], "1.0.0") || !h.PluginRegistered("alpha") {
+		t.Fatal("follow-up apply dropped the active plugin while replacement cleanup was pending")
+	}
+	if got := loader.calls.Load(); got != 2 {
+		t.Fatalf("Open calls = %d, want initial load plus one blocked replacement", got)
+	}
+
+	releaseReplacement()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		_, loading := h.loading["alpha"]
+		h.mu.Unlock()
+		if !loading && replacementClient.shutdown.Load() == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.mu.Lock()
+	_, loading := h.loading["alpha"]
+	h.mu.Unlock()
+	if loading || replacementClient.shutdown.Load() != 1 {
+		t.Fatalf("late replacement cleanup = loading:%v shutdown:%d, want false/1", loading, replacementClient.shutdown.Load())
+	}
+}
+
+func TestHostRollbackReplacementContextReturnsWhenReconfigureBlocks(t *testing.T) {
+	previousPlugin := validTestPlugin("alpha")
+	client := &lifecycleTestClient{call: func(ctx context.Context, method string, _ []byte) ([]byte, error) {
+		if method != pluginabi.MethodPluginReconfigure {
+			return nil, fmt.Errorf("unexpected plugin method %s", method)
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	lp := &loadedPlugin{
+		id:         "alpha",
+		path:       "/plugins/alpha-1.0.0.so",
+		version:    "1.0.0",
+		plugin:     previousPlugin,
+		registered: true,
+		client:     newGuardedPluginClient(client),
+	}
+	h := NewForTest(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	record, file, okRollback := h.rollbackReplacementContext(ctx, lp, defaultRuntimeItemConfig("alpha"))
+	if !okRollback {
+		t.Fatal("rollbackReplacementContext() = false, want previous plugin fallback")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("rollbackReplacementContext() took %v, want bounded return", elapsed)
+	}
+	if record.id != "alpha" || file.ID != "alpha" || record.plugin.Metadata.Name != previousPlugin.Metadata.Name {
+		t.Fatalf("rollback fallback = record:%+v file:%+v, want previous alpha plugin", record, file)
+	}
+	shutdownPluginClient(context.Background(), lp.client)
+}
+
+func TestHostApplyConfigDisposesSuccessfulReplacementAfterCancellation(t *testing.T) {
 	events := &lifecycleEventRecorder{}
 	oldClient := &lifecycleTestClient{call: func(_ context.Context, method string, _ []byte) ([]byte, error) {
 		events.add("old." + method)
@@ -1248,14 +1380,20 @@ func TestHostApplyConfigShutsDownSuccessfulReplacementBeforeCanceledRollback(t *
 	}
 	h.ApplyConfig(ctx, versionedPluginHostConfig(t, pluginsDir, "2.0.0"))
 
-	if got, want := events.snapshot(), []string{
+	// Physical disposal may finish after rollback when cancellation wins.
+	deadline := time.Now().Add(time.Second)
+	for replacementClient.shutdownCalls.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := slices.DeleteFunc(events.snapshot(), func(event string) bool { return event == "replacement.shutdown" })
+	want := []string{
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
-		"replacement.shutdown",
 		"old." + pluginabi.MethodPluginReconfigure,
-	}; !slices.Equal(got, want) {
-		t.Fatalf("lifecycle events = %v, want %v", got, want)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("lifecycle events without asynchronous cleanup = %v, want %v", got, want)
 	}
 	if replacementClient.shutdownCalls.Load() != 1 {
 		t.Fatalf("replacement shutdown calls = %d, want 1", replacementClient.shutdownCalls.Load())
@@ -2085,6 +2223,24 @@ func (c *blockingInitializationClient) Shutdown() {
 	}
 }
 
+type blockingReplacementPluginLoader struct {
+	initial            pluginClient
+	replacement        pluginClient
+	replacementStarted chan struct{}
+	replacementRelease <-chan struct{}
+	startOnce          sync.Once
+	calls              atomic.Int32
+}
+
+func (l *blockingReplacementPluginLoader) Open(pluginFile, *Host) (pluginClient, error) {
+	if l.calls.Add(1) == 1 {
+		return l.initial, nil
+	}
+	l.startOnce.Do(func() { close(l.replacementStarted) })
+	<-l.replacementRelease
+	return l.replacement, nil
+}
+
 type lateLoadPluginLoader struct {
 	first         pluginClient
 	second        pluginClient
@@ -2370,4 +2526,67 @@ func TestHostCanceledRegisterRetainsLoadTokenUntilShutdownReturns(t *testing.T) 
 	if h.PluginBusy("alpha") {
 		t.Fatal("PluginBusy(alpha) = true after physical shutdown returned")
 	}
+}
+
+func TestHostReplacementCleanupDoesNotBlockOnNativeShutdown(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	client := &lifecycleTestClient{shutdown: func() { close(started); <-release }}
+	h := NewForTest(nil)
+	request := &pluginLoadRequest{result: make(chan pluginLoadResult, 1)}
+	h.loading["alpha"] = request
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		h.cleanupPluginLoadAndWait(ctx, "alpha", request, &loadedPlugin{client: newGuardedPluginClient(client)})
+		close(done)
+	}()
+	waitForHostTestSignal(t, started, "native shutdown started")
+	cancel()
+	waitForHostTestSignal(t, done, "cleanup wait canceled")
+	h.mu.Lock()
+	pending := h.loading["alpha"] == request
+	h.mu.Unlock()
+	if !pending {
+		t.Fatal("load token cleared before native shutdown completed")
+	}
+	unblock()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		_, pending = h.loading["alpha"]
+		h.mu.Unlock()
+		if !pending {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("load token was not cleared after physical cleanup")
+}
+
+func TestHostRollbackRestoresEmptyConfig(t *testing.T) {
+	var got []byte
+	client := &lifecycleTestClient{call: func(_ context.Context, _ string, raw []byte) ([]byte, error) {
+		var req rpcLifecycleRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		got = req.ConfigYAML
+		return lifecycleRegistrationResult(validTestPlugin("alpha"))
+	}}
+	lp := &loadedPlugin{id: "alpha", path: "/plugins/alpha.so", version: "1.0.0", registered: true,
+		plugin: validTestPlugin("alpha"), client: newGuardedPluginClient(client)}
+	h := NewForTest(nil)
+	item := defaultRuntimeItemConfig("alpha")
+	item.ConfigYAML = []byte("rejected: true")
+	if _, _, ok := h.rollbackReplacement(lp, item); !ok {
+		t.Fatal("rollback failed")
+	}
+	if len(got) != 0 {
+		t.Fatalf("rollback config = %q, want empty previous config", got)
+	}
+	shutdownPluginClient(context.Background(), lp.client)
 }
