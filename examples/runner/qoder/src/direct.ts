@@ -52,6 +52,7 @@ type DirectTurn = {
   sequence: number;
   canceled: boolean;
   terminal: boolean;
+  finishReason?: string;
   toolCalls: Map<number, { id?: string; name?: string }>;
 };
 
@@ -124,7 +125,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     return { auth_ready: true, message: "Qoder direct OpenAI transport is configured; remote acceptance is checked on execution" };
   }
 
-  async models(params: ModelsParams): Promise<ModelRecord[]> {
+  async models(params: ModelsParams, signal?: AbortSignal): Promise<ModelRecord[]> {
     const configured = parseModelJSON(params.models_json);
     if (configured.length > 0) {
       this.discoveredModels = cloneModels(configured);
@@ -145,12 +146,13 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     const response = await this.tokenManager.fetchWithAuth(auth, async (token) => {
       return this.fetchWithTimeout(endpoint, {
         method: "GET",
+        signal,
         headers: {
           Accept: "application/json",
           Authorization: `Bearer ${token}`,
         },
       });
-    });
+    }, signal);
     if (!response.ok) throw await directHTTPError(response, "direct model discovery");
     const raw = await readResponseText(response, MAX_RESPONSE_BYTES);
     const models = parseModelResponse(raw);
@@ -161,6 +163,11 @@ export class DirectOpenAIAdapter implements QoderAdapter {
   async start(params: StartParams, emit: (event: AgentEventV1) => Promise<void>): Promise<ActiveTurn> {
     if (!params.chat_request || !isRecord(params.chat_request)) {
       throw new ProtocolError("direct_request_missing", "direct_openai requires the original Chat request");
+    }
+    // The event protocol projects exactly one assistant choice. Reject n>1
+    // before creating a session rather than merging independent completions.
+    if (params.chat_request.n != null && params.chat_request.n !== 1) {
+      throw new ProtocolError("invalid_request", "Qoder direct transport supports only n=1");
     }
     const existing = this.sessions.get(params.execution_session_id);
     const session = existing ?? {
@@ -219,8 +226,9 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       turn.controller.abort();
     }, this.requestTimeoutMs);
     try {
-      await this.ensureModel(turn.params);
+      await this.ensureModel(turn.params, turn.controller.signal);
       if (turn.canceled || turn.session.closed || turn.controller.signal.aborted) {
+        if (timedOut) throw new ProtocolError("direct_timeout", "Qoder direct turn exceeded the configured timeout", true);
         await this.emitTerminal(turn, "turn.cancelled", "cancelled", "request_cancelled", "Qoder direct turn was cancelled");
         return;
       }
@@ -276,8 +284,8 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     }
   }
 
-  private async ensureModel(params: StartParams): Promise<void> {
-    const catalog = this.discoveredModels ?? (this.modelsConfig.length > 0 ? this.modelsConfig : await this.models({ auth: params.auth }));
+  private async ensureModel(params: StartParams, signal: AbortSignal): Promise<void> {
+    const catalog = this.discoveredModels ?? (this.modelsConfig.length > 0 ? this.modelsConfig : await this.models({ auth: params.auth }, signal));
     if (!catalog.some((model) => model.id === params.model)) {
       throw new ProtocolError("unsupported_model", "Qoder direct model must match an exact catalog ID");
     }
@@ -316,6 +324,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
         doneReceived = await this.consumeDataLine(turn, buffer.trim().slice(5).trim());
       }
     } finally {
+      await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
     if (!doneReceived && !turn.canceled && !turn.session.closed) {
@@ -359,6 +368,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     }
     let chunk: Record<string, unknown> = value;
     if (typeof value.body === "string") {
+      if (value.body.trim() === "[DONE]") return this.consumeDataLine(turn, "[DONE]");
       try {
         const nested = JSON.parse(value.body);
         if (isRecord(nested)) chunk = nested;
@@ -391,6 +401,12 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     if (!Array.isArray(chunk.choices)) return;
     for (const rawChoice of chunk.choices) {
       if (!isRecord(rawChoice)) continue;
+      if (rawChoice.index !== undefined && rawChoice.index !== 0) {
+        throw new ProtocolError("invalid_upstream_response", "Qoder direct transport received multiple choices");
+      }
+      if (typeof rawChoice.finish_reason === "string" && rawChoice.finish_reason.trim()) {
+        turn.finishReason = rawChoice.finish_reason;
+      }
       const delta = isRecord(rawChoice.delta) ? rawChoice.delta : isRecord(rawChoice.message) ? rawChoice.message : {};
       const content = typeof delta.content === "string" ? delta.content : "";
       const reasoning = typeof delta.reasoning_content === "string"
@@ -416,12 +432,20 @@ export class DirectOpenAIAdapter implements QoderAdapter {
         const entry = { id: stringOrUndefined(rawCall.id), name: stringOrUndefined(fn.name) };
         turn.toolCalls.set(index, entry);
         await this.emit(turn, "tool.started", { index, tool_call_id: entry.id, name: entry.name });
-      } else {
-        if (!previous.id) previous.id = stringOrUndefined(rawCall.id);
-        if (!previous.name) previous.name = stringOrUndefined(fn.name);
       }
-      const argumentsPart = stringOrUndefined(fn.arguments);
-      if (argumentsPart) await this.emit(turn, "tool.updated", { index, partial_json: argumentsPart });
+      // IDs/names may arrive after the first delta. Forward their first value
+      // exactly once; otherwise OpenAI stream clients concatenate repeated names.
+      const newID = previous && !previous.id ? stringOrUndefined(rawCall.id) : undefined;
+      const newName = previous && !previous.name ? stringOrUndefined(fn.name) : undefined;
+      if (previous) {
+        if (newID) previous.id = newID;
+        if (newName) previous.name = newName;
+      }
+      // Fragments can end inside a JSON string. Trimming changes tool arguments.
+      const argumentsPart = typeof fn.arguments === "string" ? fn.arguments : undefined;
+      if (argumentsPart || newID || newName) await this.emit(turn, "tool.updated", {
+        index, partial_json: argumentsPart ?? "", tool_call_id: newID, name: newName,
+      });
     }
   }
 
@@ -456,7 +480,7 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       for (const [index] of turn.toolCalls) await this.emit(turn, "tool.completed", { index });
       turn.terminal = true;
       if (turn.session.current === turn) turn.session.current = undefined;
-      await this.emit(turn, type, { state: "completed" });
+      await this.emit(turn, type, { state: "completed", finish_reason: turn.finishReason });
       return;
     }
     turn.terminal = true;
@@ -464,16 +488,58 @@ export class DirectOpenAIAdapter implements QoderAdapter {
     await this.emit(turn, type, { state, code, message, retryable });
   }
 
-  private fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     const signal = init.signal;
-    const onAbort = () => controller.abort();
-    signal?.addEventListener("abort", onAbort, { once: true });
-    return this.fetchImpl(url, { ...init, signal: controller.signal }).finally(() => {
+    const onAbort = () => controller.abort(signal?.reason);
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-    });
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      if (signal?.aborted) onAbort();
+      controller.signal.throwIfAborted();
+      const response = await this.fetchImpl(url, { ...init, signal: controller.signal });
+      if (controller.signal.aborted) {
+        await response.body?.cancel().catch(() => undefined);
+        controller.signal.throwIfAborted();
+      }
+      if (!response.body) {
+        cleanup();
+        return response;
+      }
+      const reader = response.body.getReader();
+      // fetch resolves at headers. Keep cancellation and the deadline connected
+      // until the body is consumed or explicitly canceled by its owner.
+      const body = new ReadableStream<Uint8Array>({
+        async pull(output) {
+          try {
+            const next = await reader.read();
+            if (next.done) {
+              cleanup();
+              reader.releaseLock();
+              output.close();
+            } else {
+              output.enqueue(next.value);
+            }
+          } catch (error) {
+            cleanup();
+            reader.releaseLock();
+            output.error(error);
+          }
+        },
+        async cancel(reason) {
+          cleanup();
+          try { await reader.cancel(reason); } finally { reader.releaseLock(); }
+        },
+      });
+      return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
   }
 }
 
@@ -539,7 +605,8 @@ export class QoderTokenManager {
         this.state.source = state.source;
         this.state.patExchange = true;
         return this.state;
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
         // A short-lived refresh token can expire before the long-lived PAT.
       }
     }
@@ -561,6 +628,8 @@ export class QoderTokenManager {
     const onAbort = () => controller.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
+      if (signal?.aborted) controller.abort(signal.reason);
+      controller.signal.throwIfAborted();
       const response = await this.fetchImpl(`${this.authEndpoint}${path}`, {
         method: "POST",
         headers: {
@@ -571,7 +640,10 @@ export class QoderTokenManager {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      if (!response.ok) throw new ProtocolError("direct_auth_failed", `Qoder direct auth endpoint returned HTTP ${response.status}`, response.status >= 500);
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new ProtocolError("direct_auth_failed", `Qoder direct auth endpoint returned HTTP ${response.status}`, response.status >= 500);
+      }
       const raw = await readResponseText(response, MAX_ERROR_BYTES);
       let value: unknown;
       try {
@@ -644,6 +716,7 @@ async function readResponseText(response: Response, maxBytes: number): Promise<s
       chunks.push(next.value);
     }
   } finally {
+    await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
   const merged = new Uint8Array(total);

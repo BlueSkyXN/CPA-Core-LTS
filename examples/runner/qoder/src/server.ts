@@ -50,7 +50,7 @@ export class RunnerServer {
       }
     } catch (error) {
       const safe = safeError(error);
-      await this.respond(request.id || "unknown", false, undefined, safe);
+      await this.respond(request?.id || "unknown", false, undefined, safe);
     }
     return keepRunning;
   }
@@ -158,6 +158,10 @@ export class RunnerServer {
     }
   }
 
+  async rejectFrame(id: string, error: ProtocolError): Promise<void> {
+    await this.respond(id || "unknown", false, undefined, error);
+  }
+
   private async respond(id: string, ok: boolean, result?: unknown, error?: ProtocolError): Promise<void> {
     const response: RunnerResponse = {
       protocol_version: RUNNER_PROTOCOL_VERSION,
@@ -180,16 +184,24 @@ export async function runJSONLServer(
   let chain = Promise.resolve(true);
   let running = true;
 
+  const rejectOversizedFrame = (line: Buffer) => {
+    if (!running) return;
+    const requestID = requestIDFromOversizedFrame(line);
+    chain = chain.then(async (keepRunning) => {
+      if (!keepRunning) return false;
+      await server.rejectFrame(
+        requestID,
+        new ProtocolError("frame_too_large", "runner input frame exceeds the configured limit"),
+      );
+      return false;
+    });
+    running = false;
+  };
+
   const processLine = (line: Buffer) => {
     if (!running || line.length === 0) return;
     if (line.length > maxFrameBytes) {
-      chain = chain.then(() => server.handle({
-        protocol_version: RUNNER_PROTOCOL_VERSION,
-        id: "oversized",
-        method: "handshake",
-        params: {},
-      })).then(() => false);
-      running = false;
+      rejectOversizedFrame(line);
       return;
     }
     let request: RunnerRequest;
@@ -218,24 +230,98 @@ export async function runJSONLServer(
     for await (const chunk of input) {
       if (!running) break;
       buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-      if (buffer.length > maxFrameBytes && !buffer.includes(0x0a)) throw new ProtocolError("frame_too_large", "runner input frame exceeds the configured limit");
+      if (buffer.length > maxFrameBytes && !buffer.includes(0x0a)) {
+        rejectOversizedFrame(buffer);
+        buffer = Buffer.alloc(0);
+        break;
+      }
       for (;;) {
         const newline = buffer.indexOf(0x0a);
         if (newline < 0) break;
         const line = buffer.subarray(0, newline);
         buffer = buffer.subarray(newline + 1);
         processLine(line);
+        if (!running) {
+          buffer = Buffer.alloc(0);
+          break;
+        }
       }
+      // Do not wait for another IPC chunk after a rejected, newline-terminated
+      // oversized frame; a long-lived stdin pipe may otherwise never close.
+      if (!running) break;
     }
   } catch (error) {
     if (running) throw error;
   }
-  if (buffer.length > 0) processLine(buffer);
+  if (running && buffer.length > 0) processLine(buffer);
   await chain;
   await server.close();
 }
 
+function requestIDFromOversizedFrame(line: Buffer): string {
+  const prefix = line.subarray(0, Math.min(line.length, 64 * 1024)).toString("utf8");
+  let depth = 0;
+  for (let index = 0; index < prefix.length; index += 1) {
+    const char = prefix[index];
+    if (char === '"') {
+      const keyToken = readJSONStringToken(prefix, index);
+      if (!keyToken) return "oversized";
+      index = keyToken.end - 1;
+      if (depth !== 1) continue;
+      let cursor = skipJSONWhitespace(prefix, keyToken.end);
+      if (prefix[cursor] !== ":") continue;
+      let key: unknown;
+      try {
+        key = JSON.parse(keyToken.raw);
+      } catch {
+        return "oversized";
+      }
+      if (key !== "id") continue;
+      cursor = skipJSONWhitespace(prefix, cursor + 1);
+      const valueToken = readJSONStringToken(prefix, cursor);
+      if (!valueToken) return "oversized";
+      try {
+        const value: unknown = JSON.parse(valueToken.raw);
+        if (typeof value === "string" && value.trim() !== "") return value;
+      } catch {
+        return "oversized";
+      }
+      return "oversized";
+    }
+    if (char === "{" || char === "[") depth += 1;
+    else if (char === "}" || char === "]") depth = Math.max(0, depth - 1);
+  }
+  return "oversized";
+}
+
+function readJSONStringToken(text: string, start: number): { raw: string; end: number } | undefined {
+  if (text[start] !== '"') return undefined;
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') return { raw: text.slice(start, index + 1), end: index + 1 };
+  }
+  return undefined;
+}
+
+function skipJSONWhitespace(text: string, start: number): number {
+  let index = start;
+  while (index < text.length && /\s/.test(text[index])) index += 1;
+  return index;
+}
+
 function validateRequest(request: RunnerRequest): void {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    throw new ProtocolError("invalid_request", "runner request must be a JSON object");
+  }
   if (request.protocol_version !== RUNNER_PROTOCOL_VERSION) {
     throw new ProtocolError("protocol_version_mismatch", `runner protocol ${request.protocol_version} is unsupported`);
   }
