@@ -406,6 +406,9 @@ func (m *Manager) Load(ctx context.Context) error {
 
 // Load resets manager state from the backing store.
 
+// persist saves the latest snapshot for this lifecycle. It re-reads m.auths
+// under m.mu, so callers must not hold m.mu: capture a clone inside the
+// critical section and persist after unlocking.
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if m.store == nil || auth == nil || shouldSkipPersist(ctx) {
 		return nil

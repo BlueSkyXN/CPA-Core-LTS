@@ -548,8 +548,10 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 	}
-	errPersist := m.persist(ctx, auth)
 	m.mu.Unlock()
+	// persist re-reads m.auths under m.mu, so it must run outside this critical
+	// section; snapshot already carries the post-reset credential state.
+	errPersist := m.persist(ctx, snapshot)
 
 	defer func() {
 		if cooldownStateChanged {
@@ -775,6 +777,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := modelStateKey(result.Provider, result.Model)
 
 	var authSnapshot *Auth
+	var pendingPersist *Auth
 	cooldownStateChanged := false
 	now := time.Now()
 
@@ -1014,14 +1017,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
+		pendingPersist = authSnapshot
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 		}
 	}
 	m.mu.Unlock()
+	if pendingPersist != nil {
+		_ = m.persist(ctx, pendingPersist)
+	}
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
 	}
@@ -1107,6 +1113,7 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	}
 
 	var authSnapshot *Auth
+	var pendingPersist *Auth
 	m.mu.Lock()
 	auth := m.auths[result.AuthID]
 	if !resultMatchesAuthGeneration(ctx, result, auth) {
@@ -1123,10 +1130,13 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		}
 		auth.Generation++
 		auth.UpdatedAt = now
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
+		pendingPersist = authSnapshot
 	}
 	m.mu.Unlock()
+	if pendingPersist != nil {
+		_ = m.persist(ctx, pendingPersist)
+	}
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)

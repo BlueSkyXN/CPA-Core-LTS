@@ -223,6 +223,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		regEpoch             uint64
 		now                  time.Time
 		cooldownStateChanged bool
+		needsPersist         bool
 	)
 
 	m.mu.Lock()
@@ -380,9 +381,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 					}
 					auth.Generation++
 					auth.UpdatedAt = now
-					if errPersist := m.persist(context.Background(), auth); errPersist != nil {
-						logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
-					}
+					needsPersist = true
 				} else {
 					auth.UpdatedAt = previousUpdatedAt
 				}
@@ -403,6 +402,12 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 
 	if snapshot == nil {
 		return
+	}
+	if needsPersist {
+		// persist re-reads m.auths under m.mu, so it runs after the critical section.
+		if errPersist := m.persist(context.Background(), snapshot); errPersist != nil {
+			logEntryWithRequestID(ctx).WithField("auth_id", snapshot.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
+		}
 	}
 
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))

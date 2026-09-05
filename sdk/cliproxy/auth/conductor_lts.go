@@ -73,6 +73,7 @@ func (m *Manager) PruneExpiredAvailability(ctx context.Context, now time.Time) i
 
 	changedAuthCount := 0
 	persistCooldownState := false
+	pendingPersist := make([]*Auth, 0)
 	reg := registry.GetGlobalRegistry()
 
 	m.mu.Lock()
@@ -107,9 +108,7 @@ func (m *Manager) PruneExpiredAvailability(ctx context.Context, now time.Time) i
 			reconcileAuthErrorFromModelStates(auth, now)
 		}
 		auth.UpdatedAt = now
-		if errPersist := m.persist(ctx, auth); errPersist != nil {
-			logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during expired availability pruning: %v", errPersist)
-		}
+		pendingPersist = append(pendingPersist, auth.Clone())
 		if m.scheduler != nil {
 
 			m.scheduler.upsertAuth(auth)
@@ -118,6 +117,13 @@ func (m *Manager) PruneExpiredAvailability(ctx context.Context, now time.Time) i
 		persistCooldownState = persistCooldownState || m.cooldownStore != nil
 	}
 	m.mu.Unlock()
+
+	// persist re-reads m.auths under m.mu, so it runs after the critical section.
+	for _, snapshot := range pendingPersist {
+		if errPersist := m.persist(ctx, snapshot); errPersist != nil {
+			logEntryWithRequestID(ctx).WithField("auth_id", snapshot.ID).Warnf("failed to persist auth changes during expired availability pruning: %v", errPersist)
+		}
+	}
 
 	if persistCooldownState {
 		m.persistCooldownStates(ctx)
