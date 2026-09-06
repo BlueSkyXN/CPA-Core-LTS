@@ -32,6 +32,10 @@ func forEachSourceFile(t *testing.T, root string, visit func(rel string, data []
 			switch d.Name() {
 			case "vendor", "node_modules", "testdata":
 				return filepath.SkipDir
+			case "local":
+				// local/ is a gitignored local-only audit area that may hold
+				// full source copies of other trees; it is never product code.
+				return filepath.SkipDir
 			}
 			return nil
 		}
