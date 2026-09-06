@@ -1178,12 +1178,42 @@ patches:
     introduced_in: cd0468dbe8d76d57c9d7d9c654bc0da0f97fa0ba
     affected_upstream_range: inspected router-for-me/CLIProxyAPI main 5208aec703b5ce7e3445f6e9d91cc13b3e78003a on 2026-09-05; Home concurrency and the optional request-lifecycle example do not supply this native local multi-scope policy.
     files:
-      - sdk/cliproxy/flowcontrol/
+      - sdk/cliproxy/flowcontrol/config.go
+      - sdk/cliproxy/flowcontrol/engine.go
+      - sdk/cliproxy/flowcontrol/engine_test.go
+      - sdk/cliproxy/flowcontrol/events.go
+      - sdk/cliproxy/flowcontrol/joint.go
+      - sdk/cliproxy/flowcontrol/migration.go
+      - sdk/cliproxy/flowcontrol/observation_config.go
+      - sdk/cliproxy/flowcontrol/observation_v3_test.go
+      - sdk/cliproxy/flowcontrol/reference_test.go
+      - sdk/cliproxy/flowcontrol/refinement_test.go
+      - sdk/cliproxy/flowcontrol/resources.go
+      - sdk/cliproxy/flowcontrol/resources_darwin.go
+      - sdk/cliproxy/flowcontrol/resources_linux.go
+      - sdk/cliproxy/flowcontrol/resources_other.go
+      - sdk/cliproxy/flowcontrol/scenario_v2_test.go
+      - sdk/cliproxy/flowcontrol/serialization.go
+      - sdk/cliproxy/flowcontrol/sets_joint_test.go
+      - sdk/cliproxy/flowcontrol/sets_reference_test.go
+      - sdk/cliproxy/flowcontrol/snapshot.go
+      - sdk/cliproxy/flowcontrol/status.go
+      - sdk/cliproxy/flowcontrol/stream.go
+      - sdk/cliproxy/flowcontrol/stream_test.go
+      - sdk/cliproxy/flowcontrol/summary.go
       - sdk/cliproxy/auth/flow_control.go
       - sdk/cliproxy/auth/flow_control_test.go
       - sdk/cliproxy/auth/flow_control_models.go
       - sdk/cliproxy/auth/flow_control_refinement_test.go
       - internal/api/handlers/management/flow_control_refinement_test.go
+      - sdk/cliproxy/flowcontrol/sets_joint_test.go
+      - sdk/cliproxy/flowcontrol/observation_v3_test.go
+      - sdk/cliproxy/flowcontrol/engine_test.go
+      - sdk/cliproxy/flowcontrol/reference_test.go
+      - sdk/cliproxy/flowcontrol/stream_test.go
+      - sdk/cliproxy/flowcontrol/refinement_test.go
+      - sdk/cliproxy/auth/flow_control_rebase_test.go
+      - internal/config/flow_control_rebase_test.go
       - sdk/cliproxy/auth/conductor_execution.go
       - sdk/cliproxy/auth/conductor_stream.go
       - sdk/cliproxy/auth/conductor_home.go
