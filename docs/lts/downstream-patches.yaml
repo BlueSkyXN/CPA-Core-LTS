@@ -1172,3 +1172,39 @@ patches:
     state: required
     upstream_issue_or_pr: "CPA-Core-LTS local selective correction adapted from openai/codex 6ae07812; upstream not-filed"
     retire_when: All embedded and refreshed catalog sources deliver equivalent official async-question availability guidance.
+
+  - id: local-flow-control
+    reason: Rebased on released Core 664644517cb827f987dd98cae5815fe633746b65 without the standalone Identity batch. Local opt-in flow control needs conjunctive caller/model/Auth-record model sets, atomic first request-attempt admission, bounded waits and independently switched shared observations; legacy policies require explicit migration, separate from Home and upstream quota errors.
+    introduced_in: cd0468dbe8d76d57c9d7d9c654bc0da0f97fa0ba
+    affected_upstream_range: inspected router-for-me/CLIProxyAPI main 5208aec703b5ce7e3445f6e9d91cc13b3e78003a on 2026-09-05; Home concurrency and the optional request-lifecycle example do not supply this native local multi-scope policy.
+    files:
+      - sdk/cliproxy/flowcontrol/
+      - sdk/cliproxy/auth/flow_control.go
+      - sdk/cliproxy/auth/flow_control_test.go
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/conductor_stream.go
+      - sdk/cliproxy/auth/conductor_home.go
+      - internal/config/flow_control.go
+      - internal/api/handlers/management/flow_control.go
+      - docs/lts/flow-control.md
+      - docs/lts/flow-control-v3.md
+      - internal/api/server_management.go
+    regression_tests:
+      - TestFlowRebasePreparationRetainsConcurrentOperatorEdit
+      - TestFlowRebasePreservesClientMetadata
+      - TestFlowRebaseInvalidConfigDoesNotPersist
+      - TestV3EightProjectionCombinations
+      - TestV3IntersectingModelSets
+      - TestV3JointFirstWaitDoesNotHoldRequest
+      - TestV3JointConcurrentAtomicity
+      - TestV3ObserversShareEncodedSummary
+      - TestV3MigrationDuringExecutionIsAtomic
+      - TestV3ExplicitEmptySelectionJSONCannotBecomeAll
+      - TestAllMatchingDimensionsAreConjunctive
+      - TestSevenDimensionsAgainstReferenceScheduler
+      - TestHoldChannelReleasesOnlyAtProducerEnd
+      - TestFlowManagerStreamingHoldsAccountAndCanceledQueueDoesNotCooldown
+      - TestFlowContinuityReservationDoesNotEnterAttemptQueue
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream provides equivalent opt-in local request/executor-invocation accounting with all scopes, bounded queue and rolling windows, streaming release, unchanged disabled behavior, and local-busy errors that do not mutate upstream quota state; run the listed tests before removing this implementation.
