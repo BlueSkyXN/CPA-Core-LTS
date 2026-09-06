@@ -1181,6 +1181,9 @@ patches:
       - sdk/cliproxy/flowcontrol/
       - sdk/cliproxy/auth/flow_control.go
       - sdk/cliproxy/auth/flow_control_test.go
+      - sdk/cliproxy/auth/flow_control_models.go
+      - sdk/cliproxy/auth/flow_control_refinement_test.go
+      - internal/api/handlers/management/flow_control_refinement_test.go
       - sdk/cliproxy/auth/conductor_execution.go
       - sdk/cliproxy/auth/conductor_stream.go
       - sdk/cliproxy/auth/conductor_home.go
@@ -1190,6 +1193,12 @@ patches:
       - docs/lts/flow-control-v3.md
       - internal/api/server_management.go
     regression_tests:
+      - TestFlowRejectedConfigKeepsLastGoodManagerPolicyAndRequests
+      - TestFlowResolvedModelDirectoryDoesNotExposeAliasesAsTargetsOrRotatePool
+      - TestFlowSequentialStreamCleanupUsesActualProducerCompletion
+      - TestFlowConfigSaveRejectsInapplicableHistoryBeforeWriting
+      - TestDisabledDraftExplainAndPreviewNeverPanic
+      - TestBatchAdmissionCostAndCompletion
       - TestFlowRebasePreparationRetainsConcurrentOperatorEdit
       - TestFlowRebasePreservesClientMetadata
       - TestFlowRebaseInvalidConfigDoesNotPersist

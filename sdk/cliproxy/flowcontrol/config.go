@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,23 +35,26 @@ type QueueConfig struct {
 // Thus scope=key, key="*" creates one bucket PER key, not one shared key bucket.
 // Every matching rule applies; a specific rule never silently overrides another.
 type Rule struct {
-	ID             string   `yaml:"id" json:"id"`
-	Label          string   `yaml:"label,omitempty" json:"label,omitempty"`
-	Stage          string   `yaml:"stage" json:"stage"`
-	Scope          string   `yaml:"scope" json:"scope"`
-	GroupBy        []string `yaml:"group-by,omitempty" json:"group-by,omitempty"`
-	Keys           []string `yaml:"keys,omitempty" json:"keys,omitempty"`
-	Models         []string `yaml:"models,omitempty" json:"models,omitempty"`
-	Accounts       []string `yaml:"accounts,omitempty" json:"accounts,omitempty"`
-	qualifiedModel bool
-	Key            string   `yaml:"key,omitempty" json:"key,omitempty"`
-	Model          string   `yaml:"model,omitempty" json:"model,omitempty"`
-	Provider       string   `yaml:"provider,omitempty" json:"provider,omitempty"`
-	Account        string   `yaml:"account,omitempty" json:"account,omitempty"`
-	Credential     string   `yaml:"credential,omitempty" json:"credential,omitempty"`
-	AuthKind       string   `yaml:"auth-kind,omitempty" json:"auth-kind,omitempty"`
-	MaxConcurrent  int      `yaml:"max-concurrent" json:"max-concurrent"`
-	Windows        []Window `yaml:"windows,omitempty" json:"windows,omitempty"`
+	ID                string   `yaml:"id" json:"id"`
+	Label             string   `yaml:"label,omitempty" json:"label,omitempty"`
+	Stage             string   `yaml:"stage" json:"stage"`
+	Scope             string   `yaml:"scope" json:"scope"`
+	GroupBy           []string `yaml:"group-by,omitempty" json:"group-by,omitempty"`
+	Keys              []string `yaml:"keys,omitempty" json:"keys,omitempty"`
+	Models            []string `yaml:"models,omitempty" json:"models,omitempty"`
+	Accounts          []string `yaml:"accounts,omitempty" json:"accounts,omitempty"`
+	qualifiedModel    bool
+	compiledDims      []string
+	compiledPrefix    string
+	compiledRetention time.Duration
+	Key               string   `yaml:"key,omitempty" json:"key,omitempty"`
+	Model             string   `yaml:"model,omitempty" json:"model,omitempty"`
+	Provider          string   `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Account           string   `yaml:"account,omitempty" json:"account,omitempty"`
+	Credential        string   `yaml:"credential,omitempty" json:"credential,omitempty"`
+	AuthKind          string   `yaml:"auth-kind,omitempty" json:"auth-kind,omitempty"`
+	MaxConcurrent     int      `yaml:"max-concurrent" json:"max-concurrent"`
+	Windows           []Window `yaml:"windows,omitempty" json:"windows,omitempty"`
 }
 
 type Config struct {
@@ -77,6 +81,7 @@ func (c Config) Effective() Config {
 		c.Rules[i].Accounts = normalizeSelection(c.Rules[i].Accounts, false)
 		c.Rules[i].Models = normalizeSelection(c.Rules[i].Models, true)
 		c.Rules[i].qualifiedModel = c.Version >= 3
+		c.Rules[i].compileGrouping()
 	}
 	c.Observation = c.Observation.Effective()
 	if c.MaxBuckets == 0 {
@@ -405,30 +410,50 @@ func (r Rule) retention() time.Duration {
 	}
 	return time.Duration(ms) * time.Millisecond
 }
-func (r Rule) bucketID(d Identity) string {
-	// Length prefixes prevent ambiguous key/model tuples and delimiter collisions.
-	fields := []string{r.ID, r.Stage, r.Scope}
+
+// compileGrouping resolves dimensions once per policy snapshot. Public Rule
+// values remain declarative; parsing and sorting never belong in queue scans.
+func (r *Rule) compileGrouping() {
 	dims, _ := r.Dimensions()
 	if r.qualifiedModel {
-		// v3 aliases of the same projection share stable counters. A UI change
-		// from key-model to custom[key,model] must not reset frequency history.
-		fields = []string{"v3", r.ID, r.Stage}
-		dims = append([]string(nil), dims...)
 		sort.Strings(dims)
 	}
-	for _, dim := range dims {
-		if r.Scope == "custom" || r.qualifiedModel {
-			fields = append(fields, dim)
-		}
-		fields = append(fields, d.dimension(dim))
-		if r.qualifiedModel && dim == "model" && d.Stage == Attempt {
-			// Same spelling at different providers is not automatically one model.
-			fields = append(fields, d.Provider)
-		}
+	r.compiledDims = dims
+	fields := []string{r.ID, r.Stage, r.Scope}
+	if r.qualifiedModel {
+		fields = []string{"v3", r.ID, r.Stage}
 	}
 	var b strings.Builder
-	for _, v := range fields {
-		fmt.Fprintf(&b, "%d:%s", len(v), v)
+	for _, value := range fields {
+		appendGroupField(&b, value)
+	}
+	r.compiledPrefix = b.String()
+	r.compiledRetention = r.retention()
+}
+
+func appendGroupField(b *strings.Builder, value string) {
+	b.WriteString(strconv.Itoa(len(value)))
+	b.WriteByte(':')
+	b.WriteString(value)
+}
+
+func (r Rule) bucketID(d Identity) string {
+	// Raw Rule helpers are also used by migrations/tests. Compiled runtime rules
+	// take the allocation-light path without changing legacy counter identities.
+	if r.compiledPrefix == "" {
+		r.compileGrouping()
+	}
+	var b strings.Builder
+	b.Grow(len(r.compiledPrefix) + len(d.Key) + len(d.Account) + len(d.Model) + 64)
+	b.WriteString(r.compiledPrefix)
+	for _, dim := range r.compiledDims {
+		if r.Scope == "custom" || r.qualifiedModel {
+			appendGroupField(&b, dim)
+		}
+		appendGroupField(&b, d.dimension(dim))
+		if r.qualifiedModel && dim == "model" && d.Stage == Attempt {
+			appendGroupField(&b, d.Provider)
+		}
 	}
 	return b.String()
 }

@@ -130,3 +130,61 @@ func (e *Engine) endOperation(op *operation) {
 	e.dispatchLocked(n)
 	e.scheduleLocked(n)
 }
+
+// WaitForProducer lets a sequential retry wait for an already-dispatched stream
+// to terminate. It never releases that producer's slots or marks a hedge as
+// sequential. Cleanup time shares the logical call's cumulative queue budget.
+func (e *Engine) WaitForProducer(ctx context.Context, request *Permit, done <-chan struct{}) error {
+	if done == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	if e == nil {
+		return &Error{Code: "flow_control_busy"}
+	}
+	e.mu.Lock()
+	budget := time.Duration(e.cfg.Queue.MaxWaitMS) * time.Millisecond
+	var op *operation
+	if request != nil && request.operation != nil {
+		if request.e != e {
+			e.mu.Unlock()
+			return &Error{Code: "flow_control_configuration"}
+		}
+		op = request.operation
+		budget -= op.waitUsed
+	}
+	start := e.now()
+	e.mu.Unlock()
+	if budget <= 0 {
+		return &Error{Code: "flow_control_wait_timeout"}
+	}
+	defer func() {
+		if op != nil {
+			e.mu.Lock()
+			if spent := e.now().Sub(start); spent > 0 {
+				op.waitUsed += spent
+			}
+			e.mu.Unlock()
+		}
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return &Error{Code: "flow_control_wait_timeout"}
+	}
+}

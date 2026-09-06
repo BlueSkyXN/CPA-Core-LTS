@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -21,21 +22,90 @@ type flowRequestContextKey struct{}
 type flowAttemptContextKey struct{}
 type flowKeepAccountContextKey struct{}
 
+// FlowControlUpdateFailure describes a rejected desired policy. It is not an
+// upstream failure and never becomes a global request rejection latch.
+type FlowControlUpdateFailure struct {
+	Code       string    `json:"code"`
+	Rule       string    `json:"rule,omitempty"`
+	Message    string    `json:"message"`
+	RejectedAt time.Time `json:"rejected-at"`
+}
+
+func flowControlUpdateFailure(err error) *FlowControlUpdateFailure {
+	failure := &FlowControlUpdateFailure{Code: "flow_control_configuration", Message: err.Error(), RejectedAt: time.Now().UTC()}
+	var local *flowcontrol.Error
+	if errors.As(err, &local) {
+		failure.Code, failure.Rule = local.Code, local.Rule
+		switch local.Code {
+		case "flow_control_migration_busy":
+			failure.Message = "Wait for active and queued work to finish before switching policy versions."
+		case "flow_control_rate_domain_change":
+			failure.Message = "Retained frequency history cannot be assigned to a different model set or grouping. Keep the domain or wait for its history to expire."
+		case "flow_control_state_full":
+			failure.Message = "The proposed state limits are below currently retained work or history."
+		}
+	}
+	return failure
+}
+
+// Called with configCooldownMu held and a private config clone. Rejection keeps
+// the effective Flow fields in the runtime snapshot while other valid settings
+// can still update. Desired file contents remain visible through management.
 func (m *Manager) configureFlowControl(cfg *internalconfig.Config) {
 	if m.flowControl == nil {
 		return
 	}
 	var err error
-	if cfg.Home.Enabled && cfg.FlowControl.Enabled {
-		err = errors.New("local flow-control does not run alongside Home account admission")
+	if cfg.Home.Enabled && (cfg.FlowControl.Enabled || m.flowControl.Enabled()) {
+		// Transition out of active local policy first; do not combine two admission
+		// systems in one half-applied reload.
+		err = errors.New("disable local flow-control before enabling Home account admission")
 	} else {
 		err = m.flowControl.Update(cfg.FlowControl)
 	}
 	if err != nil {
-		m.flowControlError.Store(&flowcontrol.Error{Code: "flow_control_configuration"})
-	} else {
-		m.flowControlError.Store(nil)
+		m.flowControlError.Store(flowControlUpdateFailure(err))
+		cfg.FlowControl = m.flowControl.Policy()
+		if previous, ok := m.runtimeConfig.Load().(*internalconfig.Config); ok && previous != nil {
+			cfg.Home = previous.Home
+		}
+		return
 	}
+	m.flowControlError.Store(nil)
+}
+
+// CheckFlowControlConfig lets the existing YAML save path reject an inapplicable
+// policy before writing. Activity can change afterwards; Update still rechecks
+// and retains the previous policy if the watcher encounters a concurrent change.
+func (m *Manager) CheckFlowControlConfig(cfg *internalconfig.Config) error {
+	if m == nil || m.flowControl == nil || cfg == nil {
+		return nil
+	}
+	m.configCooldownMu.Lock()
+	defer m.configCooldownMu.Unlock()
+	if cfg.Home.Enabled && (cfg.FlowControl.Enabled || m.flowControl.Enabled()) {
+		return errors.New("disable local flow-control before enabling Home account admission")
+	}
+	if err := m.flowControl.CheckUpdate(cfg.FlowControl); err != nil {
+		var local *flowcontrol.Error
+		if errors.As(err, &local) {
+			return fmt.Errorf("%s: %w", flowControlUpdateFailure(err).Message, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) FlowControlLastUpdateFailure() *FlowControlUpdateFailure {
+	if m == nil {
+		return nil
+	}
+	value := m.flowControlError.Load()
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // legacyFlowAccountReference is only for an unmigrated version <= 2 policy.
@@ -121,9 +191,6 @@ func (m *Manager) flowRequest(ctx context.Context, req cliproxyexecutor.Request,
 	if m == nil || m.flowControl == nil {
 		return ctx, nil, nil
 	}
-	if err := m.flowControlError.Load(); err != nil {
-		return ctx, nil, err
-	}
 	if ctx.Value(flowRequestContextKey{}) != nil || !m.flowControl.Enabled() {
 		return ctx, nil, nil
 	}
@@ -192,9 +259,6 @@ func (m *Manager) admitFlowExecution(ctx context.Context, executor ProviderExecu
 			return ctx, wrapRequestStopError(&flowcontrol.Error{Code: "flow_control_target_changed"})
 		}
 		return admitExecutorExecution(ctx, executor, auth, req, opts)
-	}
-	if err := m.flowControlError.Load(); err != nil {
-		return ctx, err
 	}
 	if auth == nil {
 		return ctx, wrapRequestStopError(&flowcontrol.Error{Code: "flow_control_target_changed"})
@@ -468,4 +532,25 @@ func (m *Manager) PreviewFlowControl(cfg *flowcontrol.Config, targets []flowcont
 		}
 	}
 	return rows, nil
+}
+
+// discardFlowStreamBeforeRetry preserves legacy behavior when disabled. A
+// sequential Flow retry waits for the old wrapped source to close, which occurs
+// only after its permit has been released. Parallel branches keep no-wait rules.
+func (m *Manager) discardFlowStreamBeforeRetry(ctx context.Context, chunks <-chan cliproxyexecutor.StreamChunk) error {
+	if chunks == nil {
+		return nil
+	}
+	if m == nil || m.flowControl == nil || !m.flowControl.Enabled() {
+		discardStreamChunks(chunks)
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range chunks {
+		}
+	}()
+	request, _ := ctx.Value(flowRequestContextKey{}).(*flowcontrol.Permit)
+	return flowAdmissionError(m.flowControl.WaitForProducer(ctx, request, done))
 }

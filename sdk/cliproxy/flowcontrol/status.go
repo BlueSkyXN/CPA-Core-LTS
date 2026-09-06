@@ -107,18 +107,19 @@ type RuleEvaluation struct {
 	BlockedBy  []string           `json:"blocked-by"`
 }
 type Explanation struct {
-	Identity        Identity         `json:"identity"`
-	Enabled         bool             `json:"enabled"`
-	Complete        bool             `json:"complete"`
-	Unresolved      []string         `json:"unresolved"`
-	CanStart        bool             `json:"can-start"`
-	AdditionalSlots *int             `json:"additional-slots"`
-	Matches         []RuleEvaluation `json:"matches"`
-	BlockingRules   []string         `json:"blocking-rules"`
-	SampledAt       time.Time        `json:"sampled-at"`
-	PolicyRevision  uint64           `json:"policy-revision"`
-	Draft           bool             `json:"draft"`
-	AdvisoryOnly    bool             `json:"advisory-only"`
+	Identity           Identity         `json:"identity"`
+	Enabled            bool             `json:"enabled"`
+	Complete           bool             `json:"complete"`
+	Unresolved         []string         `json:"unresolved"`
+	CanStart           bool             `json:"can-start"`
+	AdditionalSlots    *int             `json:"additional-slots"`
+	Matches            []RuleEvaluation `json:"matches"`
+	BlockingRules      []string         `json:"blocking-rules"`
+	SampledAt          time.Time        `json:"sampled-at"`
+	PolicyRevision     uint64           `json:"policy-revision"`
+	Draft              bool             `json:"draft"`
+	AdvisoryOnly       bool             `json:"advisory-only"`
+	ConfigurationError string           `json:"configuration-error,omitempty"`
 }
 
 // Explain reads the SAME matching/grouping code used by Acquire. It never creates
@@ -142,6 +143,21 @@ func (e *Engine) explainLocked(d Identity, now time.Time, partial bool) Explanat
 func (e *Engine) explainPolicyLocked(d Identity, now time.Time, partial bool, cfg Config, draft bool) Explanation {
 
 	x := Explanation{Identity: d, Enabled: cfg.Enabled, CanStart: !e.closed, SampledAt: now, AdvisoryOnly: true, Matches: []RuleEvaluation{}, BlockingRules: []string{}, Complete: true, Unresolved: []string{}}
+	// Disabled configurations may contain an unfinished draft. No reader may
+	// index history using a zero/negative window accepted only for that draft.
+	if !cfg.Enabled {
+		check := cfg
+		check.Enabled = true
+		if err := check.Validate(); err != nil {
+			x.CanStart = false
+			x.Complete = false
+			x.Unresolved = []string{"invalid-policy"}
+			x.ConfigurationError = err.Error()
+			x.PolicyRevision = e.policyRevision
+			x.Draft = draft
+			return x
+		}
+	}
 	for _, r := range cfg.Rules {
 		possible, missing := r.matches(d), []string(nil)
 		if partial {

@@ -382,7 +382,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				alreadyTried := didRefreshOnUnauthorized
 				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried)
 				if okRefresh {
-					discardStreamChunks(streamResult.Chunks)
+					if errDrain := m.discardFlowStreamBeforeRetry(ctx, streamResult.Chunks); errDrain != nil {
+						return nil, errDrain
+					}
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
 					didRefreshOnUnauthorized = true
@@ -486,11 +488,14 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					result.CredentialScope = true
 				}
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
 				if result.CredentialScope {
+					discardStreamChunks(streamResult.Chunks)
 					currentErr := newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 					return nil, preferredExecutionAttemptError(currentErr, upstreamErr)
+				}
+				if errDrain := m.discardFlowStreamBeforeRetry(ctx, streamResult.Chunks); errDrain != nil {
+					return nil, errDrain
 				}
 				continue
 			}

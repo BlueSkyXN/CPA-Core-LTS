@@ -1,6 +1,7 @@
 package flowcontrol
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,17 +68,19 @@ type active struct {
 	phase     string
 }
 type waiter struct {
-	request  *Permit
-	identity Identity
-	id       uint64
-	enqueued time.Time
-	bytes    int64
-	deadline time.Time
-	ctx      context.Context
-	done     chan struct{}
-	permit   *Permit
-	err      error
-	blocked  string
+	request   *Permit
+	identity  Identity
+	id        uint64
+	enqueued  time.Time
+	bytes     int64
+	deadline  time.Time
+	ctx       context.Context
+	done      chan struct{}
+	permit    *Permit
+	err       error
+	blocked   string
+	nextCheck time.Time
+	finished  bool
 }
 
 // Engine has no worker goroutine. Releases/config updates trigger dispatch;
@@ -94,6 +97,7 @@ type Engine struct {
 	lastServed         map[string]uint64
 	timer              *time.Timer
 	timerGeneration    uint64
+	dispatchPending    bool
 	closed             bool
 	now                func() time.Time
 	admitted           uint64
@@ -213,13 +217,18 @@ func (e *Engine) acquireWork(ctx context.Context, request *Permit, d Identity, p
 	}
 	// Give existing eligible waiters the first chance, instead of queue jumping.
 	e.dispatchLocked(now)
+	if e.dispatchPending {
+		e.scheduleLocked(now)
+	}
 	members, next, blocked, stateErr := e.checkWorkLocked(request, d, now)
 	if stateErr != nil {
 		e.rejected++
 		e.mu.Unlock()
 		return nil, stateErr
 	}
-	if blocked == "" {
+	// A bounded batch may leave eligible older work behind. New arrivals join
+	// the queue until that batch completes instead of using its remaining slots.
+	if blocked == "" && !e.dispatchPending {
 		p := e.grantWorkLocked(request, d, members, now)
 		e.scheduleLocked(now)
 		e.mu.Unlock()
@@ -265,7 +274,7 @@ func (e *Engine) acquireWork(ctx context.Context, request *Permit, d Identity, p
 		deadline = parent
 	}
 	e.activitySequence++
-	w := &waiter{request: request, id: e.activitySequence, enqueued: now, identity: d, bytes: payloadBytes, deadline: deadline, ctx: ctx, done: make(chan struct{}), blocked: blocked}
+	w := &waiter{request: request, id: e.activitySequence, enqueued: now, identity: d, bytes: payloadBytes, deadline: deadline, ctx: ctx, done: make(chan struct{}), blocked: blocked, nextCheck: next}
 	if request != nil && request.operation != nil {
 		request.operation.waiting = true
 	}
@@ -356,12 +365,12 @@ func (e *Engine) checkLocked(d Identity, now time.Time, withoutModel ...bool) ([
 			if len(e.buckets) >= e.cfg.MaxBuckets {
 				return nil, next, r.ID, &Error{Code: "flow_control_state_full", Rule: r.ID}
 			}
-			b = &bucket{rule: r, identity: d, retention: r.retention()}
+			b = &bucket{rule: r, identity: d, retention: r.compiledRetention}
 			e.buckets[id] = b
 		}
 		b.rule = r
-		if r.retention() > b.retention {
-			b.retention = r.retention()
+		if r.compiledRetention > b.retention {
+			b.retention = r.compiledRetention
 		}
 		members = append(members, member{id, b})
 		if r.MaxConcurrent > 0 && b.active >= r.MaxConcurrent {
@@ -481,12 +490,76 @@ func (e *Engine) finishWaiterLocked(w *waiter, p *Permit, err error) {
 	w.err = err
 	close(w.done)
 }
+
+// dispatchGrantBatch bounds successful admissions per lock hold. Remaining
+// work resumes through the existing single timer; there is no polling goroutine.
+const dispatchGrantBatch = 64
+
+type dispatchKey struct {
+	rank   uint64
+	items  []*waiter
+	cursor int
+}
+type dispatchKeys []*dispatchKey
+
+func (h dispatchKeys) Len() int { return len(h) }
+func (h dispatchKeys) Less(i, j int) bool {
+	if h[i].rank != h[j].rank {
+		return h[i].rank < h[j].rank
+	}
+	return h[i].items[h[i].cursor].id < h[j].items[h[j].cursor].id
+}
+func (h dispatchKeys) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *dispatchKeys) Push(v any)   { *h = append(*h, v.(*dispatchKey)) }
+func (h *dispatchKeys) Pop() any {
+	a := *h
+	n := len(a) - 1
+	v := a[n]
+	a[n] = nil
+	*h = a[:n]
+	return v
+}
+
+func (e *Engine) settleWaiterLocked(w *waiter, p *Permit, err error, now time.Time) {
+	if w.finished {
+		return
+	}
+	w.finished = true
+	e.queueBytes -= w.bytes
+	if w.request != nil && w.request.operation != nil {
+		op := w.request.operation
+		op.waiting = false
+		if spent := now.Sub(w.enqueued); spent > 0 {
+			op.waitUsed += spent
+		}
+	}
+	w.permit, w.err = p, err
+	close(w.done)
+}
+
 func (e *Engine) dispatchLocked(now time.Time) {
-	for i := 0; i < len(e.queue); {
-		w := e.queue[i]
+	e.dispatchPending = false
+	if len(e.queue) == 0 {
+		return
+	}
+	// Compact once after the batch rather than shifting the whole slice for
+	// every grant. Each waiter is tested at most once during this batch.
+	defer func() {
+		kept := e.queue[:0]
+		for _, w := range e.queue {
+			if !w.finished {
+				kept = append(kept, w)
+			}
+		}
+		clear(e.queue[len(kept):])
+		e.queue = kept
+	}()
+	byKey := make(map[string]*dispatchKey)
+	keys := dispatchKeys{}
+	for _, w := range e.queue {
 		if err := w.ctx.Err(); err != nil {
 			e.canceled++
-			e.finishWaiterLocked(w, nil, err)
+			e.settleWaiterLocked(w, nil, err, now)
 			continue
 		}
 		if !now.Before(w.deadline) {
@@ -495,51 +568,57 @@ func (e *Engine) dispatchLocked(now time.Time) {
 			if parent, ok := w.ctx.Deadline(); ok && !now.Before(parent) {
 				err = context.DeadlineExceeded
 			}
-			e.finishWaiterLocked(w, nil, err)
+			e.settleWaiterLocked(w, nil, err, now)
 			continue
 		}
-		i++
-	}
-	for len(e.queue) > 0 {
-		var chosen *waiter
-		var slots workMembers
-		// Choose the eligible key least recently served, then its oldest eligible
-		// waiter. Empty keys do not reset another key's place in the rotation.
-		var bestRank uint64
-		eligibleKeys := make(map[string]bool)
-		for _, w := range e.queue {
-			if eligibleKeys[w.identity.Key] {
-				continue
-			}
-			if !e.cfg.Enabled {
-				chosen = w
-				break
-			}
-			m, _, blocked, err := e.checkWorkLocked(w.request, w.identity, now)
-			if err != nil {
-				w.blocked = err.Code
-				continue
-			}
-			w.blocked = blocked
-			if blocked != "" {
-				continue
-			}
-			eligibleKeys[w.identity.Key] = true
-			rank := e.lastServed[w.identity.Key]
-			if chosen == nil || rank < bestRank {
-				chosen = w
-				slots = m
-				bestRank = rank
-			}
+		k := byKey[w.identity.Key]
+		if k == nil {
+			k = &dispatchKey{rank: e.lastServed[w.identity.Key]}
+			byKey[w.identity.Key] = k
+			keys = append(keys, k)
 		}
-		if chosen == nil {
+		k.items = append(k.items, w)
+	}
+	heap.Init(&keys)
+	grants := 0
+	for len(keys) > 0 {
+		k := heap.Pop(&keys).(*dispatchKey)
+		for k.cursor < len(k.items) {
+			w := k.items[k.cursor]
+			k.cursor++
+			if err := w.ctx.Err(); err != nil {
+				e.canceled++
+				e.settleWaiterLocked(w, nil, err, now)
+				continue
+			}
+			p := &Permit{}
+			if e.cfg.Enabled {
+				mm, next, blocked, err := e.checkWorkLocked(w.request, w.identity, now)
+				w.nextCheck = next
+				w.blocked = blocked
+				if err != nil {
+					w.blocked = err.Code
+					continue
+				}
+				if blocked != "" {
+					continue
+				}
+				// Recheck shared counters at grant time. Earlier grants only consume
+				// capacity; blocked candidates cannot become eligible within this batch.
+				p = e.grantWorkLocked(w.request, w.identity, mm, now)
+			}
+			e.settleWaiterLocked(w, p, nil, now)
+			grants++
+			k.rank = e.lastServed[w.identity.Key]
+			if k.cursor < len(k.items) {
+				heap.Push(&keys, k)
+			}
 			break
 		}
-		p := &Permit{}
-		if e.cfg.Enabled {
-			p = e.grantWorkLocked(chosen.request, chosen.identity, slots, now)
+		if grants >= dispatchGrantBatch && len(keys) > 0 {
+			e.dispatchPending = true
+			break
 		}
-		e.finishWaiterLocked(chosen, p, nil)
 	}
 }
 func (e *Engine) cleanupLocked(now time.Time) {
@@ -585,11 +664,10 @@ func (e *Engine) scheduleLocked(now time.Time) {
 		if w.deadline.Before(earliest) {
 			earliest = w.deadline
 		}
-		if e.cfg.Enabled {
-			_, next, _, _ := e.checkWorkLocked(w.request, w.identity, now)
-			if next.After(now) && next.Before(earliest) {
-				earliest = next
-			}
+		// nextCheck was computed at the latest admission check. Capacity
+		// changes wake dispatch directly; rate expiry needs only this timestamp.
+		if e.cfg.Enabled && w.nextCheck.After(now) && w.nextCheck.Before(earliest) {
+			earliest = w.nextCheck
 		}
 	}
 	// If history capacity is the blocker, expiration must also wake the queue.
@@ -600,6 +678,9 @@ func (e *Engine) scheduleLocked(now time.Time) {
 				earliest = at
 			}
 		}
+	}
+	if e.dispatchPending && now.Add(time.Millisecond).Before(earliest) {
+		earliest = now.Add(time.Millisecond)
 	}
 	delay := earliest.Sub(now)
 	if delay < time.Millisecond {
@@ -629,49 +710,11 @@ func (e *Engine) Update(cfg Config) error {
 	cfg = cfg.Effective()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.closed {
-		return &Error{Code: "flow_control_closed"}
-	}
-	if (cfg.Version >= 3) != (e.cfg.Version >= 3) && (len(e.active) > 0 || len(e.queue) > 0) {
-		return &Error{Code: "flow_control_migration_busy"}
-	}
-	// Preflight projected buckets before publishing; a too-small resource cap
-	// must not partially replace the running configuration or discard rate state.
 	now := e.now()
+	if err := e.checkUpdateLocked(cfg, now); err != nil {
+		return err
+	}
 	e.cleanupLocked(now)
-	// Retained rate timestamps lack full historical identities. Do not silently
-	// reinterpret another model set's rate history under the same rule ID.
-	// Concurrency-only regrouping remains fully hot-reloadable.
-	if cfg.Version >= 3 {
-		for _, b := range e.buckets {
-			if len(b.history) == 0 {
-				continue
-			}
-			for _, r := range cfg.Rules {
-				if len(r.Windows) > 0 && r.ID == b.rule.ID && !sameRuleDomain(b.rule, r) {
-					return &Error{Code: "flow_control_rate_domain_change", Rule: r.ID}
-				}
-			}
-		}
-	}
-	needed := make(map[string]bool, len(e.buckets))
-	for id, b := range e.buckets {
-		if len(b.history) > 0 {
-			needed[id] = true
-		}
-	}
-	if cfg.Enabled {
-		for _, a := range e.active {
-			for _, r := range cfg.Rules {
-				if r.matches(a.identity) {
-					needed[r.bucketID(a.identity)] = true
-				}
-			}
-		}
-		if len(needed) > cfg.MaxBuckets || e.historyCount > cfg.MaxHistory {
-			return &Error{Code: "flow_control_state_full"}
-		}
-	}
 	e.cfg = cfg
 	e.policyRevision++
 	close(e.observationChanged)
@@ -691,7 +734,7 @@ func (e *Engine) Update(cfg Config) error {
 			id := r.bucketID(a.identity)
 			b := e.buckets[id]
 			if b == nil {
-				b = &bucket{rule: r, identity: a.identity, retention: r.retention()}
+				b = &bucket{rule: r, identity: a.identity, retention: r.compiledRetention}
 				e.buckets[id] = b
 			}
 			b.rule = r
@@ -727,4 +770,66 @@ func (e *Engine) Close() {
 		e.timer.Stop()
 	}
 	e.timerGeneration++
+}
+
+// CheckUpdate is a read-only preflight against currently retained work/history.
+// It does not reserve a future commit: Update repeats this check under the lock.
+func (e *Engine) CheckUpdate(cfg Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	cfg = cfg.Effective()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.checkUpdateLocked(cfg, e.now())
+}
+func (e *Engine) checkUpdateLocked(cfg Config, now time.Time) error {
+	if e.closed {
+		return &Error{Code: "flow_control_closed"}
+	}
+	if (cfg.Version >= 3) != (e.cfg.Version >= 3) && (len(e.active) > 0 || len(e.queue) > 0) {
+		return &Error{Code: "flow_control_migration_busy"}
+	}
+	// Preflight projected buckets before publishing; a too-small resource cap
+	// must not partially replace the running configuration or discard rate state.
+	// Retained rate timestamps lack full historical identities. Do not silently
+	// reinterpret another model set's rate history under the same rule ID.
+	// Concurrency-only regrouping remains fully hot-reloadable.
+	if cfg.Enabled && cfg.Version >= 3 {
+		for _, b := range e.buckets {
+			if len(b.history) == 0 || !b.history[len(b.history)-1].at.After(now.Add(-b.retention)) {
+				continue
+			}
+			for _, r := range cfg.Rules {
+				if len(r.Windows) > 0 && r.ID == b.rule.ID && !sameRuleDomain(b.rule, r) {
+					return &Error{Code: "flow_control_rate_domain_change", Rule: r.ID}
+				}
+			}
+		}
+	}
+	liveHistory := 0
+	for _, b := range e.buckets {
+		cut := now.Add(-b.retention)
+		first := sort.Search(len(b.history), func(i int) bool { return b.history[i].at.After(cut) })
+		liveHistory += len(b.history) - first
+	}
+	needed := make(map[string]bool, len(e.buckets))
+	for id, b := range e.buckets {
+		if len(b.history) > 0 && b.history[len(b.history)-1].at.After(now.Add(-b.retention)) {
+			needed[id] = true
+		}
+	}
+	if cfg.Enabled {
+		for _, a := range e.active {
+			for _, r := range cfg.Rules {
+				if r.matches(a.identity) {
+					needed[r.bucketID(a.identity)] = true
+				}
+			}
+		}
+		if len(needed) > cfg.MaxBuckets || liveHistory > cfg.MaxHistory {
+			return &Error{Code: "flow_control_state_full"}
+		}
+	}
+	return nil
 }

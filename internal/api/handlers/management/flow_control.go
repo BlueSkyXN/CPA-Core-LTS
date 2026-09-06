@@ -68,30 +68,34 @@ func (h *Handler) GetFlowControl(c *gin.Context) {
 	state := flowcontrol.Summary{}
 	applied := cfg
 	configError := false
+	var updateFailure *coreauth.FlowControlUpdateFailure
 	if h.authManager != nil {
 		state = h.authManager.FlowControlSummary()
 		applied = h.authManager.FlowControlPolicy()
 		configError = h.authManager.FlowControlConfigurationError()
+		updateFailure = h.authManager.FlowControlLastUpdateFailure()
 	}
 	models := []string{}
-	modelOptions := []map[string]string{}
+	modelOptions := []coreauth.FlowModelOption{}
+	modelOptionsTruncated := false
+	if h.authManager != nil {
+		modelOptions, modelOptionsTruncated = h.authManager.FlowControlModelOptions()
+	}
 	for _, row := range registry.GetGlobalRegistry().GetAvailableModels("openai") {
 		if id, ok := row["id"].(string); ok {
 			models = append(models, id)
-			for _, provider := range registry.GetGlobalRegistry().GetModelProviders(id) {
-				modelOptions = append(modelOptions, map[string]string{"ref": provider + "::" + id, "provider": provider, "model": id})
-			}
 		}
 	}
 	sort.Strings(models)
-	sort.Slice(modelOptions, func(i, j int) bool { return modelOptions[i]["ref"] < modelOptions[j]["ref"] })
+
 	c.JSON(http.StatusOK, gin.H{
 		"schema-version": 3, "supported": !home && h.authManager != nil,
 		"single-process": true, "home-supported": false,
 		"stages":              []string{flowcontrol.Request, flowcontrol.Attempt},
 		"scopes":              []string{"global", "key", "model", "key-model", "provider", "account", "account-model", "key-account", "key-account-model", "custom"},
-		"configuration-error": configError, "configured-enabled": cfg.Enabled,
-		"queue": cfg.Queue, "state": state, "keys": keyRefs, "accounts": accountRefs, "policy": applied, "features": []string{"model-sets", "single-account", "joint-first-admission", "shared-summary", "paged-details", "draft-preview"}, "models": models, "model-options": modelOptions,
+		"configuration-error": configError, "configuration-failure": updateFailure, "configured-enabled": cfg.Enabled,
+		"configured-policy": cfg,
+		"queue":             applied.Queue, "state": state, "keys": keyRefs, "accounts": accountRefs, "policy": applied, "features": []string{"model-sets", "single-account", "joint-first-admission", "shared-summary", "paged-details", "draft-preview", "resolved-model-options", "last-good-policy"}, "models": models, "model-options": modelOptions, "model-options-truncated": modelOptionsTruncated,
 		"events-supported": true, "events-enabled": applied.Observation.Realtime, "events-interval-ms": applied.Observation.IntervalMS, "explain-supported": true,
 	})
 }

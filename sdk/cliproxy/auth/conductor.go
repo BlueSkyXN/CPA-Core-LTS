@@ -145,7 +145,7 @@ func (NoopHook) OnResult(context.Context, Result) {}
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
 	flowControl               *flowcontrol.Engine
-	flowControlError          atomic.Pointer[flowcontrol.Error]
+	flowControlError          atomic.Pointer[FlowControlUpdateFailure]
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
