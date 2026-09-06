@@ -153,6 +153,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	} else {
 		cfg = cfg.CloneForRuntime()
 	}
+	m.configureFlowControl(cfg)
 	// Publish policy and invalidate old absolute deadlines atomically with
 	// respect to begin/MarkResult, preserving manager -> continuity lock order.
 	m.mu.Lock()

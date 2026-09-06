@@ -39,3 +39,6 @@ bin
 .bmad
 _bmad
 _bmad-output
+
+# Handoff documentation and Git objects are not build inputs.
+local/

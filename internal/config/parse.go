@@ -41,6 +41,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
+	if flowErr := cfg.ValidateFlowControl(); flowErr != nil {
+		return nil, flowErr
+	}
 	if err := cfg.Codex.ClientMetadata.Validate(); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}

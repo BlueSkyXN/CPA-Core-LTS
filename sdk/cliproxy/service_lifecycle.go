@@ -230,6 +230,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	var shutdownErr error
 	s.shutdownOnce.Do(func() {
+		if s.coreManager != nil {
+			s.coreManager.CloseFlowControl()
+		}
 		if ctx == nil {
 			ctx = context.Background()
 		}

@@ -271,6 +271,13 @@ require_grep "response_service_tier" internal/api/handlers/management/usage_cont
 require_grep "effective_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep '"generate"' internal/api/handlers/management/usage_contract_test.go
 
+# Optional local admission surface; behavior is exercised by Flow tests.
+require_path sdk/cliproxy/flowcontrol
+require_path docs/lts/flow-control.md
+require_grep 'yaml:"flow-control' internal/config/config.go
+require_grep '"/flow-control"' internal/api/server_management.go
+require_grep 'local_flow_control' sdk/cliproxy/flowcontrol/engine.go
+
 go test ./scripts/ltsregistry -count=1
 
 validator_args=(--root .)

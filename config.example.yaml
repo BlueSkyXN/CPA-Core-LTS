@@ -1029,3 +1029,123 @@ nonstream-keepalive-interval: 0
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
+
+# Optional single-process concurrency and rolling request windows. Missing/false
+# preserves old behavior. This does not replace Home admission or upstream quotas.
+# All matching rules compose (AND); no rule overrides another. See
+# docs/lts/flow-control.md for logical requests vs executor attempts.
+# flow-control:
+#   enabled: false
+#   queue:
+#     max-waiting: 32
+#     max-waiting-per-key: 8
+#     max-wait-ms: 15000
+#     max-bytes: 67108864
+#   max-buckets: 10000
+#   max-history: 200000
+#   rules:
+#     - id: request-total
+#       stage: request
+#       scope: global
+#       max-concurrent: 16
+#     - id: caller
+#       stage: request
+#       scope: key
+#       max-concurrent: 4
+#     - id: caller-model
+#       stage: request
+#       scope: key-model
+#       model: "*"
+#       max-concurrent: 2
+#       windows:
+#         - {requests: 20, period-ms: 60000}
+#         - {requests: 200, period-ms: 3600000}
+#     - id: upstream-total
+#       stage: attempt
+#       scope: global
+#       max-concurrent: 8
+#     - id: account
+#       stage: attempt
+#       scope: account
+#       max-concurrent: 2
+#     - id: account-model
+#       stage: attempt
+#       scope: account-model
+#       max-concurrent: 1
+# Examples above are operator choices, NOT published provider limits.
+# key/account selectors use opaque references from GET /v0/management/flow-control.
+# model supports exact text or one trailing *; provider supports exact text or *.
+
+# Flow-control V2 adds credential and custom scopes without changing old defaults.
+# See docs/lts/flow-control-v2.md. Keep disabled until local integration tests pass.
+# Example rule under the EXISTING flow-control.rules list (not a second root):
+# - id: caller-model-credential
+#   label: Caller x model x individual upstream credential
+#   stage: attempt
+#   scope: custom
+#   group-by: [key, model, credential]
+#   auth-kind: oauth
+#   max-concurrent: 2
+# No windows are needed for in-flight concurrency or a bounded waiting queue.
+
+# V3 explicit opt-in: one upstream Auth record, model sets, joint first admission.
+# This is a replacement/merge example, NOT a second flow-control root.
+# See docs/lts/flow-control-v3.md and preview migration before editing old policies.
+# # Generic example only: model-a/b/c must be replaced with actual model IDs.
+# # Merge into ONE existing flow-control root; do not append duplicate YAML roots.
+# # Use migration preview before changing an existing V1/V2 policy to version 3.
+# flow-control:
+#   version: 3
+#   enabled: false
+#   observation:
+#     realtime: false
+#     resources: false
+#     interval-ms: 2000
+#     max-observers: 4
+#   queue:
+#     max-waiting: 16
+#     max-waiting-per-key: 4
+#     max-wait-ms: 15000
+#     max-bytes: 33554432
+#   max-buckets: 10000
+#   max-history: 200000
+#   rules:
+#     - id: caller-total
+#       label: All models per caller
+#       stage: request
+#       scope: custom
+#       group-by: [key]
+#       max-concurrent: 4
+#     - id: account-total
+#       label: Every Auth record independently
+#       stage: attempt
+#       scope: custom
+#       group-by: [account]
+#       max-concurrent: 5
+#     - id: shared-ab
+#       label: Models A and B share per caller and account
+#       stage: attempt
+#       scope: custom
+#       group-by: [key, account]
+#       models: [codex::model-a, codex::model-b]
+#       max-concurrent: 3
+#     - id: shared-bc
+#       label: Models B and C share per caller and account
+#       stage: attempt
+#       scope: custom
+#       group-by: [key, account]
+#       models: [codex::model-b, codex::model-c]
+#       max-concurrent: 3
+#     - id: independent-model
+#       label: Each caller-account-model combination
+#       stage: attempt
+#       scope: custom
+#       group-by: [key, account, model]
+#       models: [codex::model-a, codex::model-b, codex::model-c]
+#       max-concurrent: 2
+# # Optional fields inside one rule:
+# # keys: ["<opaque caller ref from Core>"]
+# # accounts: ["<opaque Auth ref from Core>"]
+# # windows: [{requests: 30, period-ms: 60000}]
+# # Omitted selector = all; [] = invalid when enabled, NOT all.
+# # group-by: [] = all selected requests share one limit.

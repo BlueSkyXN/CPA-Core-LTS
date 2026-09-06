@@ -139,6 +139,18 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: local-flow-control
+    registry_feature: local-flow-control
+    maintenance_policy: opt-in-single-process
+    markers:
+      - flow-control
+      - local_flow_control
+      - /v0/management/flow-control
+    validation:
+      - go test -race ./sdk/cliproxy/flowcontrol
+      - go test ./sdk/cliproxy/auth -run Flow
+    conflict_policy: preserve_disabled_default_and_adapt_to_current_execution_lifecycles
+
   - id: codex-model-fallback
     registry_feature: codex-model-fallback
     maintenance_policy: long-term-maintained
