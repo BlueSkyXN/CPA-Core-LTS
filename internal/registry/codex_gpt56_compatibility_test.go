@@ -20,7 +20,7 @@ func TestCodexGPT56UltraCompatibilityCoversStaticTierModels(t *testing.T) {
 				continue
 			}
 			switch model.ID {
-			case "gpt-5.6-sol", "gpt-5.6-terra":
+			case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra":
 				seen[model.ID] = true
 				if !modelHasThinkingLevel(model, "ultra") {
 					t.Errorf("%s tier %s levels = %v, want logical ultra compatibility", tier, model.ID, thinkingLevels(model))
@@ -34,7 +34,7 @@ func TestCodexGPT56UltraCompatibilityCoversStaticTierModels(t *testing.T) {
 		}
 	}
 
-	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"} {
 		if !seen[modelID] {
 			t.Fatalf("Codex tier models missing %s", modelID)
 		}
@@ -48,6 +48,7 @@ func TestLookupModelInfoAppliesCodexGPT56UltraCompatibility(t *testing.T) {
 	}{
 		{modelID: "gpt-5.6-sol", wantUltra: true},
 		{modelID: "gpt-5.6-terra", wantUltra: true},
+		{modelID: "gpt-6-astra", wantUltra: true},
 		{modelID: "gpt-5.6-luna", wantUltra: false},
 	}
 
@@ -70,6 +71,7 @@ func TestLookupModelInfoAppliesCodexGPT56UltraCompatibilityToDynamicProviderInfo
 	registryRef.RegisterClient(clientID, "codex", []*ModelInfo{
 		maxOnlyGPT56Model("gpt-5.6-sol"),
 		maxOnlyGPT56Model("gpt-5.6-terra"),
+		maxOnlyGPT56Model("gpt-6-astra"),
 		maxOnlyGPT56Model("gpt-5.6-luna"),
 	})
 	t.Cleanup(func() { registryRef.UnregisterClient(clientID) })
@@ -80,6 +82,7 @@ func TestLookupModelInfoAppliesCodexGPT56UltraCompatibilityToDynamicProviderInfo
 	}{
 		{modelID: "gpt-5.6-sol", wantUltra: true},
 		{modelID: "gpt-5.6-terra", wantUltra: true},
+		{modelID: "gpt-6-astra", wantUltra: true},
 		{modelID: "gpt-5.6-luna", wantUltra: false},
 	} {
 		info := LookupModelInfo(tt.modelID, "codex")
@@ -130,4 +133,13 @@ func thinkingLevels(model *ModelInfo) []string {
 		return nil
 	}
 	return model.Thinking.Levels
+}
+
+func TestCodexAstraCompatibilityPreservesUserDefinedModel(t *testing.T) {
+	model := maxOnlyGPT56Model("gpt-6-astra")
+	model.UserDefined = true
+	applyCodexCompatibility(model)
+	if modelHasThinkingLevel(model, "ultra") {
+		t.Fatal("custom Astra model must retain its own reasoning levels")
+	}
 }

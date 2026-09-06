@@ -748,7 +748,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				continue
 			}
 			reporter.MarkFirstResponseByte()
-			reporter.ObserveTimingPayload("openai-response", payload)
+			reporter.ObserveTimingMessage("openai-response", payload)
 			helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 

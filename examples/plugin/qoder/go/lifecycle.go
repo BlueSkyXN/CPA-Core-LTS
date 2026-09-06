@@ -72,9 +72,7 @@ func (r *pluginRuntime) configure(raw []byte) error {
 	r.modelCache = make(map[string]cachedModels)
 	r.summaryCache = make(map[string]qoderSummaryCacheEntry)
 	r.tokenCache = make(map[string]qoderTokenCacheEntry)
-	if len(r.sessions) == 0 {
-		r.accepting = true
-	}
+	r.accepting = true
 	r.mu.Unlock()
 	return nil
 }

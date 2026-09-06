@@ -60,9 +60,7 @@ func (r *pluginRuntime) configure(raw []byte) error {
 	r.config = cfg
 	r.catalogCache = make(map[string]codeBuddyCatalogCacheEntry)
 	r.summaryCache = make(map[string]codeBuddySummaryCacheEntry)
-	if len(r.active) == 0 {
-		r.accepting = true
-	}
+	r.accepting = true
 	r.mu.Unlock()
 	return nil
 }

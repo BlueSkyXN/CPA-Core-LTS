@@ -20,7 +20,7 @@ func applyCodexCompatibility(model *ModelInfo) *ModelInfo {
 	if model == nil || model.UserDefined {
 		return model
 	}
-	if model.ID != "gpt-5.6-sol" && model.ID != "gpt-5.6-terra" {
+	if model.ID != "gpt-5.6-sol" && model.ID != "gpt-5.6-terra" && model.ID != "gpt-6-astra" {
 		return model
 	}
 

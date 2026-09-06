@@ -383,6 +383,15 @@ func TestSSERejectsOversizedTerminatedLine(t *testing.T) {
 	}
 }
 
+func TestSSERejectsOversizedUnterminatedTailAfterShortLine(t *testing.T) {
+	validator := &sseValidator{}
+	payload := append([]byte(": keepalive\n"), bytes.Repeat([]byte{'x'}, maxSSELineBytes+1)...)
+	_, errConsume := validator.consume(payload)
+	if errConsume == nil || !strings.Contains(errConsume.Error(), "bounded limit") {
+		t.Fatalf("consume() error = %v", errConsume)
+	}
+}
+
 func TestSSENormalizesNonTerminalFinishReasonAndEmptyFunctionCall(t *testing.T) {
 	validator := &sseValidator{}
 	frames, errConsume := validator.consume([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\",\"function_call\":{\"name\":\"\",\"arguments\":\"\"},\"tool_calls\":[],\"reasoning_content\":\"\",\"refusal\":\"\",\"extra_fields\":null},\"finish_reason\":\"\"}]}\n\n"))
@@ -479,6 +488,21 @@ func TestQuiesceCancelsAndDrainsActiveStream(t *testing.T) {
 	}
 	if _, errExecute := runtime.executeStream(executorRequestJSON(t, "req-after-quiesce")); errExecute == nil {
 		t.Fatal("quiescing runtime accepted a new stream")
+	}
+}
+
+func TestConfigureResumesQuiescedRuntimeWithRetainedExecution(t *testing.T) {
+	runtime := newPluginRuntime(nil)
+	runtime.active["persisted"] = &activeExecution{done: make(chan struct{})}
+	runtime.quiesce()
+	if errConfigure := runtime.configure(nil); errConfigure != nil {
+		t.Fatalf("configure() error = %v", errConfigure)
+	}
+	runtime.mu.Lock()
+	accepting := runtime.accepting
+	runtime.mu.Unlock()
+	if !accepting {
+		t.Fatal("successful reconfigure did not resume a quiesced runtime with a retained execution")
 	}
 }
 

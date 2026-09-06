@@ -1569,18 +1569,20 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 		return target, nil
 	}
 
-	updated, errPrepare := preparer.PrepareRequestAuth(ctx, target)
+	base := target.Clone()
+	prepared := target.Clone()
+	updated, errPrepare := preparer.PrepareRequestAuth(ctx, prepared)
 	if errPrepare != nil {
 		return auth, errPrepare
 	}
 	if updated == nil {
-		return target, nil
+		updated = prepared
 	}
 
 	if !managed {
 		return updated, nil
 	}
-	saved, applied, errUpdate := m.updateIfGeneration(ctx, updated, target.generation)
+	saved, applied, errUpdate := m.updateFromAsync(ctx, base, updated)
 	if errUpdate != nil {
 		return updated, errUpdate
 	}

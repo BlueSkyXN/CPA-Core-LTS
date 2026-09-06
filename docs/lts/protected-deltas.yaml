@@ -82,8 +82,11 @@ retained_capabilities:
     must_keep: true
     markers:
       - exact-tag release source checkout
-      - separate current release tooling checkout
+      - manual workflow and repair tooling pinned from the default branch
+      - immutable release tooling SHA passed between jobs
       - release source mismatch guard
+      - new Release remains draft until the validated asset set is uploaded
+      - published same-name assets are never overwritten; different bytes require a new tag
       - publish assets only after every platform build succeeds
       - manual GHCR backfill preserves latest aliases by default
     validation:
@@ -113,6 +116,27 @@ retained_capabilities:
       - config-compatibility-tests
       - watcher-diff-tests
     conflict_policy: preserve_config_compatibility
+
+  - id: astra-native-responses-controls
+    registry_feature: astra-native-responses-controls
+    must_keep: true
+    markers:
+      - configuration_update
+      - compaction_trigger
+      - parallel_tool_calls
+    validation:
+      - go test ./internal/util ./internal/thinking ./internal/translator/codex/openai/responses -run 'ResponsesControl|AstraControls|CodexParallel|TranslatedEffort'
+    conflict_policy: retain_ordered_native_controls_and_explicit_parallel_false
+
+  - id: astra-catalog-tool-availability
+    registry_feature: astra-catalog-tool-availability
+    must_keep: true
+    markers:
+      - gpt-6-astra
+      - When available
+    validation:
+      - go test ./internal/registry -run 'Astra|CatalogRefresh'
+    conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
   - id: codex-model-fallback

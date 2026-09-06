@@ -81,6 +81,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		Metadata:      resp.Metadata,
 		SchemaVersion: schemaVersion,
 		Capabilities: pluginapi.Capabilities{
+			StreamChunkHistoryOmitted:     resp.Capabilities.StreamChunkHistoryOmitted,
 			FrontendAuthProviderExclusive: resp.Capabilities.FrontendAuthProvider && resp.Capabilities.FrontendAuthProviderExclusive,
 			ExecutorModelScope:            resp.Capabilities.ExecutorModelScope,
 			ExecutorInputFormats:          append([]string(nil), resp.Capabilities.ExecutorInputFormats...),

@@ -364,8 +364,10 @@ func runnerCallError(value *runnerError) error {
 		status = http.StatusTooManyRequests
 	case "direct_timeout":
 		status = http.StatusGatewayTimeout
-	case "invalid_params", "invalid_content", "invalid_configuration", "prompt_required", "content_required", "model_required", "invalid_permission_policy", "unsupported_model", "direct_invalid_request", "direct_models_invalid", "direct_request_missing", "direct_request_too_large":
+	case "invalid_request", "invalid_params", "invalid_content", "invalid_configuration", "prompt_required", "content_required", "model_required", "invalid_permission_policy", "unsupported_model", "direct_invalid_request", "direct_models_invalid", "direct_request_missing":
 		status = http.StatusBadRequest
+	case "frame_too_large", "direct_request_too_large":
+		status = http.StatusRequestEntityTooLarge
 	case "turn_conflict", "session_configuration_changed":
 		status = http.StatusConflict
 	case "runner_quiescing", "cli_unavailable", "cli_path_required", "sdk_cli_version_mismatch", "sdk_auth_config", "sdk_auth_payload_incompatible", "direct_endpoint_required", "direct_endpoint_invalid", "direct_auth_config", "models_unavailable", "models_schema_invalid":

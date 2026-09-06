@@ -22,6 +22,7 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -530,6 +531,11 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	if err := util.ValidateResponsesControls(rawJSON, false); err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: err.Error(), Type: "invalid_request_error"}})
+		return
+	}
+
 	rawJSON = h.prepareCodexMultiAgentV2Tools(c, rawJSON)
 
 	// Check if the client requested a streaming response.
@@ -551,6 +557,11 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 				Type:    "invalid_request_error",
 			},
 		})
+		return
+	}
+
+	if err := util.ValidateResponsesControls(rawJSON, true); err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{Error: handlers.ErrorDetail{Message: err.Error(), Type: "invalid_request_error"}})
 		return
 	}
 

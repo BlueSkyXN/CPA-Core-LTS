@@ -196,7 +196,7 @@ type QuotaState struct {
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q
-	if len(q.Signals) > 0 {
+	if q.Signals != nil {
 		copyQuota.Signals = make(map[string]string, len(q.Signals))
 		for key, value := range q.Signals {
 			copyQuota.Signals[key] = value
@@ -291,30 +291,34 @@ func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
 	return out
 }
 
-// Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.
+// Clone copies mutable credential data; opaque Storage and Runtime handles retain identity.
 func (a *Auth) Clone() *Auth {
 	if a == nil {
 		return nil
 	}
 	copyAuth := *a
 	copyAuth.Quota = a.Quota.Clone()
-	if len(a.Attributes) > 0 {
+	if a.Attributes != nil {
 		copyAuth.Attributes = make(map[string]string, len(a.Attributes))
 		for key, value := range a.Attributes {
 			copyAuth.Attributes[key] = value
 		}
 	}
-	if len(a.Metadata) > 0 {
+	if a.Metadata != nil {
 		copyAuth.Metadata = make(map[string]any, len(a.Metadata))
 		for key, value := range a.Metadata {
-			copyAuth.Metadata[key] = value
+			copyAuth.Metadata[key] = cloneAuthJSONValue(value)
 		}
 	}
-	if len(a.ModelStates) > 0 {
+	if a.ModelStates != nil {
 		copyAuth.ModelStates = make(map[string]*ModelState, len(a.ModelStates))
 		for key, state := range a.ModelStates {
 			copyAuth.ModelStates[key] = state.Clone()
 		}
+	}
+	if a.LastError != nil {
+		copiedError := *a.LastError
+		copyAuth.LastError = &copiedError
 	}
 	copyAuth.Runtime = a.Runtime
 	return &copyAuth

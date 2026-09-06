@@ -28,13 +28,27 @@ env:
   GH_REPO: ${{ github.repository }}
   GO_VERSION: '1.26.4'
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+  RELEASE_TOOLING_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.sha }}
   REWRITE_RELEASE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.rewrite_release_notes || false }}
   ALLOW_KNOWN_HISTORICAL_CATALOG_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_known_historical_catalog_failure || false }}
 
 jobs:
   validate-release-catalog:
     runs-on: ubuntu-latest
+    outputs:
+      release_tooling_sha: ${{ steps.release_tooling.outputs.sha }}
     steps:
+      - name: Verify manual workflow source
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            echo "Manual release repair must run from the default branch ${DEFAULT_BRANCH}; select the historical product tag through release_tag." >&2
+            exit 1
+          fi
       - name: Checkout release source
         uses: actions/checkout@v6
         with:
@@ -44,10 +58,14 @@ jobs:
       - name: Checkout current release tooling
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.RELEASE_TOOLING_REF }}
           path: _release_tools
           fetch-depth: 0
           fetch-tags: true
+      - name: Pin release tooling commit
+        id: release_tooling
+        shell: bash
+        run: echo "sha=$(git -C _release_tools rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Verify release source
         shell: bash
         run: |
@@ -145,47 +163,48 @@ jobs:
       - name: Checkout current release tooling
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.validate-release-catalog.outputs.release_tooling_sha }}
           path: _release_tools
           fetch-depth: 0
           fetch-tags: true
-      - name: Create release
+      - name: Generate release metadata when required
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git fetch --force --tags
           if [[ "${RELEASE_TAG}" != v*-lts-* ]]; then
-            echo "Only Core LTS release tags matching v*-lts-* are supported."
+            echo "Only Core LTS release tags matching v*-lts-* are supported." >&2
             exit 1
           fi
           if ! git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
-            echo "Release tag ${RELEASE_TAG} does not exist."
+            echo "Release tag ${RELEASE_TAG} does not exist." >&2
             exit 1
           fi
-
-          release_exists=false
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            release_exists=true
-          fi
-          if [[ "$release_exists" == "true" && "$REWRITE_RELEASE_NOTES" != "true" ]]; then
-            echo "Release ${RELEASE_TAG} already exists; preserving its title and notes."
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1 && [[ "$REWRITE_RELEASE_NOTES" != "true" ]]; then
+            echo "Release ${RELEASE_TAG} already exists; its title and notes will be preserved."
             exit 0
           fi
 
-          notes_file="$(mktemp)"
-          title_file="$(mktemp)"
-          trap 'rm -f "$notes_file" "$title_file"' EXIT
           bash _release_tools/scripts/generate-lts-release-notes.sh \
             --tag "${RELEASE_TAG}" \
-            --notes-file "$notes_file" \
-            --title-file "$title_file"
-          title="$(tr -d '\n' < "$title_file")"
-          if [[ "$release_exists" == "true" ]]; then
-            gh release edit "$RELEASE_TAG" --title "$title" --notes-file "$notes_file"
-          else
-            gh release create "$RELEASE_TAG" --title "$title" --notes-file "$notes_file"
+            --notes-file release-notes.md \
+            --title-file release-title.txt
+          title="$(tr -d '\r\n' < release-title.txt)"
+          if [[ -z "$title" || ! -s release-notes.md ]]; then
+            echo "Generated release metadata is empty." >&2
+            exit 1
           fi
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            release-notes.md
+            release-title.txt
+          if-no-files-found: ignore
+          retention-days: 1
 
   build-hosted:
     name: build ${{ matrix.target }}
@@ -643,6 +662,7 @@ jobs:
   publish-release-assets:
     runs-on: ubuntu-latest
     needs:
+      - validate-release-catalog
       - build-hosted
       - build-linux-glibc
       - build-linux-no-plugin
@@ -654,6 +674,11 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
           fetch-tags: true
+      - name: Checkout pinned release tooling
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-release-catalog.outputs.release_tooling_sha }}
+          path: _release_tools
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -707,11 +732,10 @@ jobs:
           fi
 
           sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-          gh release upload "$RELEASE_TAG" "${archives[@]}" checksums.txt --clobber
-
           printf '%s\n' "${expected[@]}" checksums.txt | sort > expected-assets.txt
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort > published-assets.txt
-          if ! diff -u expected-assets.txt published-assets.txt; then
-            echo "Published release asset set does not match the validated build output." >&2
-            exit 1
-          fi
+
+          python3 ../_release_tools/.github/scripts/publish-lts-assets.py \
+            --repo "$GH_REPO" --tag "$RELEASE_TAG" \
+            --assets "$PWD/expected-assets.txt" \
+            --title-file "$PWD/release-title.txt" --notes "$PWD/release-notes.md" \
+            --rewrite-notes "$REWRITE_RELEASE_NOTES"

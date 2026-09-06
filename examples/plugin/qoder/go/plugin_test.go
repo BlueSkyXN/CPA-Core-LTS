@@ -71,6 +71,21 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	}
 }
 
+func TestConfigureResumesQuiescedRuntimeWithRetainedSession(t *testing.T) {
+	runtime := newPluginRuntime(nil)
+	runtime.sessions["persisted"] = &runnerSession{}
+	runtime.quiesce()
+	if errConfigure := runtime.configure(nil); errConfigure != nil {
+		t.Fatalf("configure() error = %v", errConfigure)
+	}
+	runtime.mu.Lock()
+	accepting := runtime.accepting
+	runtime.mu.Unlock()
+	if !accepting {
+		t.Fatal("successful reconfigure did not resume a quiesced runtime with a retained session")
+	}
+}
+
 func TestCanonicalModelsPreserveExactIDs(t *testing.T) {
 	models := canonicalQoderModels()
 	if len(models) != len(canonicalQoderModelIDs) {

@@ -348,7 +348,7 @@ func applyCodexClientInputModalitiesMetadata(entry map[string]any, modalities []
 }
 
 func applyCodexClientThinkingMetadata(entry map[string]any, thinking *registry.ThinkingSupport, clientVersion string) {
-	if thinking == nil || len(thinking.Levels) == 0 {
+	if thinking == nil {
 		return
 	}
 
@@ -372,6 +372,8 @@ func applyCodexClientThinkingMetadata(entry map[string]any, thinking *registry.T
 		})
 	}
 	if len(levels) == 0 {
+		entry["supported_reasoning_levels"] = levels
+		delete(entry, "default_reasoning_level")
 		return
 	}
 	if defaultLevel == "" {
@@ -406,7 +408,7 @@ func sanitizeCodexClientReasoningMetadata(entry map[string]any, clientVersion st
 	}
 
 	if len(levels) == 0 {
-		delete(entry, "supported_reasoning_levels")
+		entry["supported_reasoning_levels"] = levels
 		delete(entry, "default_reasoning_level")
 		return
 	}

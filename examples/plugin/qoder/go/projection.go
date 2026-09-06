@@ -17,6 +17,7 @@ type eventProjection struct {
 	created   int64
 	sequence  uint64
 	text      strings.Builder
+	reasoning strings.Builder
 	usage     pluginapi.AgentUsageV1
 	terminal  *pluginapi.AgentTerminalPayloadV1
 	toolCalls map[int]*projectedToolCall
@@ -48,6 +49,12 @@ func (p *eventProjection) consume(event pluginapi.AgentEventV1) error {
 			return fmt.Errorf("invalid Qoder text event")
 		}
 		p.text.WriteString(payload.Text)
+	case pluginapi.AgentEventReasoningDelta:
+		var payload pluginapi.AgentTextDeltaV1
+		if errDecode := json.Unmarshal(event.Payload, &payload); errDecode != nil {
+			return fmt.Errorf("invalid Qoder reasoning event")
+		}
+		p.reasoning.WriteString(payload.Text)
 	case pluginapi.AgentEventUsageUpdated:
 		if errDecode := json.Unmarshal(event.Payload, &p.usage); errDecode != nil {
 			return fmt.Errorf("invalid Qoder usage event")
@@ -81,13 +88,18 @@ func (p *eventProjection) nonStreamResponse() (pluginapi.ExecutorResponse, error
 		"choices": []any{map[string]any{
 			"index":         0,
 			"message":       map[string]any{"role": "assistant", "content": p.text.String()},
-			"finish_reason": "stop",
+			"finish_reason": p.finishReason(),
 		}},
 	}
+	message := body["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if p.reasoning.Len() > 0 {
+		message["reasoning_content"] = p.reasoning.String()
+	}
 	if tools := p.toolCallPayload(); len(tools) > 0 {
-		choice := body["choices"].([]any)[0].(map[string]any)
-		choice["message"] = map[string]any{"role": "assistant", "content": nil, "tool_calls": tools}
-		choice["finish_reason"] = "tool_calls"
+		message["tool_calls"] = tools
+		if p.text.Len() == 0 {
+			message["content"] = nil
+		}
 	}
 	if usage := chatUsage(p.usage); usage != nil {
 		body["usage"] = usage
@@ -112,6 +124,10 @@ func (p *eventProjection) streamChunk(event pluginapi.AgentEventV1) ([]byte, boo
 		var payload pluginapi.AgentTextDeltaV1
 		_ = json.Unmarshal(event.Payload, &payload)
 		return chatChunk(p.requestID, p.model, p.created, map[string]any{"content": payload.Text}, nil, nil), false, nil
+	case pluginapi.AgentEventReasoningDelta:
+		var payload pluginapi.AgentTextDeltaV1
+		_ = json.Unmarshal(event.Payload, &payload)
+		return chatChunk(p.requestID, p.model, p.created, map[string]any{"reasoning_content": payload.Text}, nil, nil), false, nil
 	case pluginapi.AgentEventToolStarted:
 		if tool := p.latestTool(event.Payload); tool != nil {
 			return chatChunk(p.requestID, p.model, p.created, map[string]any{"tool_calls": []any{map[string]any{
@@ -120,20 +136,24 @@ func (p *eventProjection) streamChunk(event pluginapi.AgentEventV1) ([]byte, boo
 		}
 	case pluginapi.AgentEventToolUpdated:
 		var payload struct {
-			Index       int    `json:"index"`
+			Index       *int   `json:"index"`
 			PartialJSON string `json:"partial_json"`
+			ToolCallID  string `json:"tool_call_id"`
+			Name        string `json:"name"`
 		}
-		if json.Unmarshal(event.Payload, &payload) == nil && p.toolCalls[payload.Index] != nil {
-			return chatChunk(p.requestID, p.model, p.created, map[string]any{"tool_calls": []any{map[string]any{
-				"index": payload.Index, "function": map[string]any{"arguments": payload.PartialJSON},
-			}}}, nil, nil), false, nil
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Index != nil && p.toolCalls[*payload.Index] != nil {
+			function := map[string]any{"arguments": payload.PartialJSON}
+			call := map[string]any{"index": *payload.Index, "function": function}
+			if payload.ToolCallID != "" {
+				call["id"] = payload.ToolCallID
+			}
+			if payload.Name != "" {
+				function["name"] = payload.Name
+			}
+			return chatChunk(p.requestID, p.model, p.created, map[string]any{"tool_calls": []any{call}}, nil, nil), false, nil
 		}
 	case pluginapi.AgentEventTurnCompleted:
-		finishReason := any("stop")
-		if len(p.toolCalls) > 0 {
-			finishReason = "tool_calls"
-		}
-		return chatChunk(p.requestID, p.model, p.created, map[string]any{}, finishReason, chatUsage(p.usage)), true, nil
+		return chatChunk(p.requestID, p.model, p.created, map[string]any{}, p.finishReason(), chatUsage(p.usage)), true, nil
 	case pluginapi.AgentEventTurnFailed, pluginapi.AgentEventTurnCancelled, pluginapi.AgentEventSessionClosed:
 		return nil, true, p.terminalError()
 	}
@@ -158,8 +178,10 @@ func (p *eventProjection) terminalError() error {
 		status = http.StatusUnauthorized
 	case "sdk_auth_config", "sdk_auth_payload_incompatible":
 		status = http.StatusServiceUnavailable
-	case "direct_invalid_request", "direct_request_missing", "direct_request_too_large", "unsupported_model":
+	case "invalid_request", "direct_invalid_request", "direct_request_missing", "unsupported_model":
 		status = http.StatusBadRequest
+	case "frame_too_large", "direct_request_too_large":
+		status = http.StatusRequestEntityTooLarge
 	case "quota_or_rate_limit":
 		status = http.StatusTooManyRequests
 	case "direct_timeout":
@@ -198,15 +220,33 @@ func (p *eventProjection) consumeToolStarted(raw []byte) {
 
 func (p *eventProjection) consumeToolUpdated(raw []byte) {
 	var payload struct {
-		Index       int    `json:"index"`
+		Index       *int   `json:"index"`
 		PartialJSON string `json:"partial_json"`
+		ToolCallID  string `json:"tool_call_id"`
+		Name        string `json:"name"`
 	}
-	if json.Unmarshal(raw, &payload) != nil {
+	if json.Unmarshal(raw, &payload) != nil || payload.Index == nil {
 		return
 	}
-	if tool := p.toolCalls[payload.Index]; tool != nil {
+	if tool := p.toolCalls[*payload.Index]; tool != nil {
+		if payload.ToolCallID != "" {
+			tool.ID = payload.ToolCallID
+		}
+		if payload.Name != "" {
+			tool.Name = payload.Name
+		}
 		tool.Arguments.WriteString(payload.PartialJSON)
 	}
+}
+
+func (p *eventProjection) finishReason() string {
+	if p.terminal != nil && p.terminal.FinishReason != "" {
+		return p.terminal.FinishReason
+	}
+	if len(p.toolCalls) > 0 {
+		return "tool_calls"
+	}
+	return "stop"
 }
 
 func (p *eventProjection) latestTool(raw []byte) *projectedToolCall {

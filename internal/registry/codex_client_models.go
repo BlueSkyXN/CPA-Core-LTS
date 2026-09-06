@@ -59,6 +59,11 @@ func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
 		return false, fmt.Errorf("%s: %w", source, err)
 	}
 
+	data, err := qualifyAstraAsyncGuidance(data)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", source, err)
+	}
+
 	cloned := append([]byte(nil), data...)
 	codexClientCatalogStore.mu.Lock()
 	defer codexClientCatalogStore.mu.Unlock()
@@ -138,6 +143,7 @@ func ValidateCodexClientModelsLTSCompatibility(data []byte) error {
 		{slug: "gpt-5.6-sol", required: []string{"max", "ultra"}},
 		{slug: "gpt-5.6-terra", required: []string{"max", "ultra"}},
 		{slug: "gpt-5.6-luna", required: []string{"max"}, forbidden: []string{"ultra"}},
+		{slug: "gpt-6-astra", required: []string{"max", "ultra"}},
 	}
 	for _, requirement := range requirements {
 		model, ok := models[requirement.slug]

@@ -8,7 +8,7 @@ import test from "node:test";
 import { BoundedFrameWriter, ProtocolError, redactStderr } from "../dist/protocol.js";
 import { DirectOpenAIAdapter, QoderTokenManager } from "../dist/direct.js";
 import { patchQoderSDKJobTokenPayload, QoderSDKAdapter, toModelRecord, userMessage } from "../dist/qoder.js";
-import { RunnerServer } from "../dist/server.js";
+import { RunnerServer, runJSONLServer } from "../dist/server.js";
 
 class FakeAdapter {
   events = [];
@@ -331,6 +331,28 @@ test("cancel requires matching request and execution session", async () => {
   assert.equal(all.find((frame) => frame.id === "right").result.cancelled, true);
   assert.equal(adapter.cancelCount, 1);
   await server.close();
+});
+
+test("stdio oversized input returns a typed error for the original request", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const adapter = new FakeAdapter();
+  const server = new RunnerServer(adapter, output);
+  const running = runJSONLServer(server, input, 256);
+  input.end(`${JSON.stringify({
+    protocol_version: 1,
+    params: { id: "nested-id", padding: "x".repeat(512) },
+    id: "oversized-request",
+    method: "handshake",
+  })}\n`);
+  await running;
+
+  const all = frames(output);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].id, "oversized-request");
+  assert.equal(all[0].ok, false);
+  assert.equal(all[0].error.code, "frame_too_large");
+  assert.equal(adapter.shutdownCount, 1);
 });
 
 test("bounded writer rejects oversized frames", async () => {

@@ -322,6 +322,7 @@ func testLTSCodexClientModelsWithout(excluded string) []map[string]any {
 		testCodexClientModelWithEfforts("gpt-5.6-sol", 2, "medium", "max", "ultra"),
 		testCodexClientModelWithEfforts("gpt-5.6-terra", 3, "medium", "max", "ultra"),
 		testCodexClientModelWithEfforts("gpt-5.6-luna", 4, "medium", "max"),
+		testCodexClientModelWithEfforts("gpt-6-astra", 5, "medium", "max", "ultra"),
 	}
 	if excluded == "" {
 		return models

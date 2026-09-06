@@ -245,6 +245,9 @@ func (v *sseValidator) consume(payload []byte) ([][]byte, error) {
 	for {
 		lineEnd := bytes.IndexByte(v.buffer, '\n')
 		if lineEnd < 0 {
+			if len(v.buffer) > maxSSELineBytes {
+				return nil, fmt.Errorf("CodeBuddy upstream SSE line exceeds the bounded limit")
+			}
 			return frames, nil
 		}
 		if lineEnd > maxSSELineBytes {
@@ -336,8 +339,12 @@ func normalizeCodeBuddyFrame(frame map[string]any) ([]byte, error) {
 
 func (v *sseValidator) finish() ([][]byte, error) {
 	var frames [][]byte
-	if len(bytes.TrimSpace(v.buffer)) > 0 {
-		frame, errLine := v.consumeLine(bytes.TrimSpace(v.buffer))
+	trimmed := bytes.TrimSpace(v.buffer)
+	if len(trimmed) > maxSSELineBytes {
+		return nil, fmt.Errorf("CodeBuddy upstream SSE line exceeds the bounded limit")
+	}
+	if len(trimmed) > 0 {
+		frame, errLine := v.consumeLine(trimmed)
 		if errLine != nil {
 			return nil, errLine
 		}

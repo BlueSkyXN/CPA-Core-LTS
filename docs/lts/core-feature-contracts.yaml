@@ -157,20 +157,29 @@ features:
     support: protected
     owner: cpa-core-lts
     upstream_relation: divergent
-    reason: Release archives and GHCR images must be built from the exact requested annotated tag, while current tooling may be checked out separately for historical repair.
+    reason: Release archives and GHCR images must be built from the exact requested annotated tag; manual historical repair pins tooling from the default branch, and a new Release remains draft until every asset is validated; existing assets are reused only when identical and never overwritten.
     core_files:
+      - .github/scripts/publish-lts-assets.py
+      - .github/scripts/test_publish_lts_assets.py
       - .github/workflows/release.yaml
       - .github/workflows/docker-image.yml
       - scripts/migrate-tags-lts.sh
       - scripts/cleanup-ghcr-tls-images.sh
     required_markers:
       - RELEASE_TAG
+      - RELEASE_TOOLING_REF
+      - release_tooling_sha
+      - Verify manual workflow source
       - Checkout current release tooling
       - Release source mismatch
       - publish-release-assets
+      - --draft
+      - --verify-tag
+      - --draft=false
       - update_latest
     validation:
       - scripts/check-lts-contract.sh
+      - python3 .github/scripts/test_publish_lts_assets.py -v
       - actionlint .github/workflows/release.yaml .github/workflows/docker-image.yml
 
   - id: auth-identity-attribution
@@ -462,6 +471,43 @@ features:
       - promotional_asset
     validation:
       - scripts/check-lts-contract.sh
+
+  - id: astra-native-responses-controls
+    kind: retained-capability
+    support: protected
+    owner: cpa-core-lts
+    upstream_relation: divergent
+    reason: Preserve positioned reasoning updates and explicit serial tool intent on native Responses paths, and reject lossy Chat Completions conversion instead of silently changing request meaning.
+    core_files:
+      - internal/util/responses_controls.go
+      - internal/thinking/apply.go
+      - internal/translator/codex/openai/responses/codex_openai-responses_request.go
+      - internal/runtime/executor/openai_compat_executor.go
+      - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+    required_markers:
+      - configuration_update
+      - compaction_trigger
+      - parallel_tool_calls
+      - top_logprobs
+    validation:
+      - go test ./internal/util ./internal/thinking ./internal/translator/codex/openai/responses ./sdk/api/handlers/openai ./internal/runtime/executor -run 'ResponsesControl|AstraControls|CodexParallel|TranslatedEffort|ChatExecutorRejects'
+
+  - id: astra-catalog-tool-availability
+    kind: retained-capability
+    support: protected
+    owner: cpa-core-lts
+    upstream_relation: divergent
+    reason: Retain the official Codex async-question availability correction across embedded and refreshed Astra catalogs without replacing other model records.
+    core_files:
+      - internal/registry/codex_client_models.go
+      - internal/registry/codex_astra_guidance.go
+      - internal/registry/models/codex_client_models.json
+    required_markers:
+      - gpt-6-astra
+      - When available
+    validation:
+      - go test ./internal/registry -run 'Astra|CatalogRefresh|CodexClientModels'
 
 review_seams:
   - id: provider-runtime-usage-seams
