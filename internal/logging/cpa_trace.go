@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -115,6 +116,10 @@ type cpaTraceResponseWriter struct {
 	gin.ResponseWriter
 	state *cpaTraceState
 }
+
+// Unwrap lets net/http.ResponseController reach the real writer for stream
+// deadlines without bypassing trace-header injection on ordinary writes.
+func (w *cpaTraceResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *cpaTraceResponseWriter) WriteHeader(statusCode int) {
 	w.applyTraceHeader()

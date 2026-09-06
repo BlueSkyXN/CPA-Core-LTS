@@ -168,7 +168,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
-func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
@@ -194,7 +194,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 }
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
-func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
@@ -271,7 +271,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
-func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
 	if errPreflight != nil {
@@ -546,7 +546,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if !restoreExecutionModel {
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
-			admittedCtx, errAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+			admittedCtx, errAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 			if errAdmission != nil {
 				m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -566,7 +566,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			markCodexModelFallbackDispatch(execOpts, auth.ID)
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -588,7 +588,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
-					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 						if errCtx := execCtx.Err(); errCtx != nil {
@@ -604,7 +604,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.commitPreDispatchSelection(auth, execOpts)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					resp, errExec = executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -793,7 +793,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if !restoreExecutionModel {
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
-			admittedCtx, errAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+			admittedCtx, errAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 			if errAdmission != nil {
 				m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -812,7 +812,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				selectedPublished = true
 			}
 			startExec := time.Now()
-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
+			resp, errExec := countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -831,7 +831,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
-					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(execCtx, executor, auth, execReq, execOpts)
+					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 						if errCtx := execCtx.Err(); errCtx != nil {
@@ -846,7 +846,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = admittedRetryCtx
 					m.commitPreDispatchSelection(auth, execOpts)
 					startRetry := time.Now()
-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					resp, errExec = countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1196,6 +1196,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
 		if errStream != nil {
+			if isLocalFlowControlError(errStream) {
+				return nil, wrapRequestStopError(errStream)
+			}
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
 			}

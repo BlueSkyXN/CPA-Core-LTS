@@ -1290,7 +1290,7 @@ func hasAntigravityProvider(providers []string) bool {
 }
 
 func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string) bool {
-	if isRequestTerminatedError(lastErr) {
+	if isRequestTerminatedError(lastErr) || isLocalFlowControlError(lastErr) {
 		return false
 	}
 	status := statusCodeFromError(lastErr)
@@ -1364,7 +1364,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			execReq := req
 			execReq.Model = upstreamModel
 			execCtx := newUpstreamAttemptContext(creditsCtx)
-			admittedCtx, errAdmission := admitExecutorExecution(execCtx, c.executor, c.auth, execReq, creditsOpts)
+			admittedCtx, errAdmission := m.admitFlowExecution(execCtx, c.executor, c.auth, execReq, creditsOpts)
 			if errAdmission != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, false, errCtx
@@ -1380,7 +1380,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 				selectedPublished = true
 			}
-			resp, errExec := c.executor.Execute(admittedCtx, c.auth, execReq, creditsOpts)
+			resp, errExec := executeWithFlowSlot(admittedCtx, c.executor, c.auth, execReq, creditsOpts)
 			result := resultForAuthWithOptions(c.auth, c.provider, resultModel, errExec == nil, nil, creditsOpts)
 			result.RouteModel = routeModel
 			if errExec != nil {

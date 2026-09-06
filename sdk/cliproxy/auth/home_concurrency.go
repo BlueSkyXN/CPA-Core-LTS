@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
 )
 
 const (
@@ -277,6 +278,10 @@ func verifyAccountedHomeConcurrencyIdentity(tuple homeConcurrencyTuple, auth *Au
 // SafeResponseHeaders returns trusted response headers only for concrete
 // retry/cooldown errors.
 func SafeResponseHeaders(err error) http.Header {
+	var local *flowcontrol.Error
+	if errors.As(err, &local) && local != nil {
+		return local.Headers()
+	}
 	var busy *HomeConcurrencyBusyError
 	if errors.As(err, &busy) && busy != nil {
 		return busy.SafeResponseHeaders()

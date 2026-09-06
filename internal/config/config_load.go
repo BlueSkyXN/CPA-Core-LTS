@@ -87,6 +87,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	if flowErr := cfg.ValidateFlowControl(); flowErr != nil {
+		return nil, flowErr
+	}
 	if err = cfg.Codex.ClientMetadata.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

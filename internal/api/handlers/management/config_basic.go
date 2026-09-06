@@ -148,13 +148,19 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	defer func() {
 		_ = os.Remove(tempFile)
 	}()
-	_, err = config.LoadConfigOptional(tempFile, false)
+	validatedCfg, err := config.LoadConfigOptional(tempFile, false)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.authManager != nil {
+		if err := h.authManager.CheckFlowControlConfig(validatedCfg); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "flow_control_update_rejected", "message": err.Error()})
+			return
+		}
+	}
 	if WriteConfig(h.configFilePath, body) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
 		return

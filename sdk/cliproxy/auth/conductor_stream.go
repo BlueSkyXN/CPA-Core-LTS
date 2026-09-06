@@ -246,7 +246,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}
-		admittedCtx, errAdmission := admitExecutorExecution(ctx, executor, auth, execReq, execOpts)
+		admittedCtx, errAdmission := m.admitFlowExecution(ctx, executor, auth, execReq, execOpts)
 		if errAdmission != nil {
 			m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 			if errCtx := ctx.Err(); errCtx != nil {
@@ -263,7 +263,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			selectedPublished = true
 		}
 		markCodexModelFallbackDispatch(execOpts, auth.ID)
-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+		streamResult, errStream := streamWithFlowSlot(ctx, executor, auth, execReq, execOpts)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
@@ -287,7 +287,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					ctx = contextWithAuthGeneration(ctx, auth)
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
-					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(ctx, executor, auth, execReq, execOpts)
+					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(ctx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 						if errCtx := ctx.Err(); errCtx != nil {
@@ -300,7 +300,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					startRetry := time.Now()
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
-					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					streamResult, errStream = streamWithFlowSlot(ctx, executor, auth, execReq, execOpts)
 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 					if hasUpstreamExecutionAttempt(errStream) {
 						upstreamErr = errStream
@@ -382,12 +382,14 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				alreadyTried := didRefreshOnUnauthorized
 				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried)
 				if okRefresh {
-					discardStreamChunks(streamResult.Chunks)
+					if errDrain := m.discardFlowStreamBeforeRetry(ctx, streamResult.Chunks); errDrain != nil {
+						return nil, errDrain
+					}
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
 					didRefreshOnUnauthorized = true
 					ctx = newUpstreamAttemptContext(ctx)
-					admittedRetryCtx, errRetryAdmission := admitExecutorExecution(ctx, executor, auth, execReq, execOpts)
+					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(ctx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
 						if errCtx := ctx.Err(); errCtx != nil {
@@ -400,7 +402,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					startRetry := time.Now()
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
-					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					retryStream, retryErr := streamWithFlowSlot(ctx, executor, auth, execReq, execOpts)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
@@ -486,11 +488,14 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					result.CredentialScope = true
 				}
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
 				if result.CredentialScope {
+					discardStreamChunks(streamResult.Chunks)
 					currentErr := newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 					return nil, preferredExecutionAttemptError(currentErr, upstreamErr)
+				}
+				if errDrain := m.discardFlowStreamBeforeRetry(ctx, streamResult.Chunks); errDrain != nil {
+					return nil, errDrain
 				}
 				continue
 			}

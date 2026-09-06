@@ -509,6 +509,41 @@ features:
     validation:
       - go test ./internal/registry -run 'Astra|CatalogRefresh|CodexClientModels'
 
+  - id: local-flow-control
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Explicit opt-in single-process request and executor-invocation admission with conjunctive key/model/account limits; local backpressure must not mutate upstream quota state.
+    config_keys:
+      - flow-control
+    routes:
+      - /v0/management/flow-control
+      - /v0/management/flow-control/events
+      - /v0/management/flow-control/explain
+      - /v0/management/flow-control/summary
+      - /v0/management/flow-control/details
+      - /v0/management/flow-control/preview
+      - /v0/management/flow-control/migration-preview
+    core_files:
+      - sdk/cliproxy/flowcontrol/
+      - sdk/cliproxy/auth/flow_control.go
+      - sdk/cliproxy/auth/flow_control_test.go
+      - internal/config/flow_control.go
+      - internal/api/handlers/management/flow_control.go
+      - internal/api/server_management.go
+      - docs/lts/flow-control.md
+    required_markers:
+      - local_flow_control
+      - key-model
+      - account-model
+      - AcquireImmediately
+      - single-process
+    validation:
+      - go test -race ./sdk/cliproxy/flowcontrol
+      - go test ./sdk/cliproxy/auth ./internal/config ./internal/api/handlers/management -run Flow
+      - scripts/check-lts-contract.sh
+
 review_seams:
   - id: provider-runtime-usage-seams
     support: upstream-shared

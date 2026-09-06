@@ -769,6 +769,18 @@ func (m *Manager) filterCodexRateLimitContinuityCandidates(candidates []*Auth, r
 }
 
 func (m *Manager) beginCodexRateLimitContinuityAttempt(ctx context.Context, auth *Auth, provider, routeModel string, opts cliproxyexecutor.Options) (context.Context, bool) {
+	if m != nil && m.flowControl != nil && m.flowControl.Enabled() {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return context.WithValue(ctx, flowContinuityContextKey{}, &flowDeferredContinuity{provider: provider, routeModel: routeModel, opts: opts}), true
+	}
+	return m.beginCodexRateLimitContinuityNow(ctx, auth, provider, routeModel, opts)
+}
+
+// beginCodexRateLimitContinuityNow is the pre-existing continuity admission.
+// Flow-control delays only its timing; the state machine and decisions stay here.
+func (m *Manager) beginCodexRateLimitContinuityNow(ctx context.Context, auth *Auth, provider, routeModel string, opts cliproxyexecutor.Options) (context.Context, bool) {
 	if auth == nil || strings.ToLower(strings.TrimSpace(provider)) != "codex" || m.codexRateLimitContinuity == nil {
 		return ctx, true
 	}
@@ -840,6 +852,14 @@ func codexRateLimitContinuityAttemptFromContext(ctx context.Context) (codexRateL
 		return codexRateLimitContinuityAttempt{}, false
 	}
 	attempt, ok := ctx.Value(codexRateLimitContinuityAttemptContextKey{}).(codexRateLimitContinuityAttempt)
+	if !ok {
+		if deferred, found := ctx.Value(flowContinuityContextKey{}).(*flowDeferredContinuity); found {
+			deferred.mu.Lock()
+			attempt = deferred.attempt
+			ok = deferred.activated
+			deferred.mu.Unlock()
+		}
+	}
 	return attempt, ok && attempt.key.authID != "" && attempt.key.model != "" && attempt.sessionID != ""
 }
 
