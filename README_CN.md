@@ -56,6 +56,10 @@ CPA Core LTS 是基于 `router-for-me/CLIProxyAPI` 的长期维护分支。
 
 ## 新手入门
 
+### 可选本地流控（Flow V3）
+
+支持调用方、模型和单条上游 Auth 记录的联合并发/滑动窗口限制、有界排队与按需观察。执行、实时观察和资源采样默认关闭；不替代上游额度、Home 或完整 usage。配置保存失败保留最后有效策略，已有流按真实生产端结束释放。配套版本、迁移和回退见 [流控指南](docs/lts/flow-control.md)。
+
 CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-for.me/cn/)
 
 ## 管理 API 文档

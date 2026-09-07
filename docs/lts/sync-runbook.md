@@ -50,7 +50,17 @@ Panel 的实践证明，单靠“这几个文件不能删”的文字规则不�
 - 每次新增 registry feature，都要写清为什么它是 LTS 产品边界，而不是单次 sync 的临时关注点。
 - 每个 active downstream patch 都必须有 affected upstream range、真实存在的 regression tests 和明确的 `retire_when`。
 
-## 禁止操作
+## Flow V3 审查与发布补充
+
+`local-flow-control` 是默认关闭的 LTS 可选维护面，不替换 Home、上游 quota 或完整 usage。同步涉及 Manager 入口、auth 选择、模型解析、重试或 stream 结束时，即使没有文本冲突，也必须核对首次 request/attempt 联合申请、真实生产端结束释放、取消排队、目标重检、本地错误不写 quota cooldown、失败配置保留最后有效策略。Panel 的 schema3、三个开关、模型目录与显式迁移同步核对。
+
+运行 Flow engine race 测试、Manager Flow 回归、config/Management/watcher Flow 测试及 LTS guard；配套 Panel 运行 validate:lts 和真实临时 Core smoke。详细边界以 [流控指南](flow-control.md) 为准。
+
+2026-09-07 发布复查修正了 Astra 两项 `introduced_in`：旧登记 `d333c64582f3ff21acc89adc4a9f3caa25bdebc3`、`2397c94e9db0dd4f3c22fe515267e9985d14d33e` 不是主线可用提交，分别更正为实际引入的 `5c894b6c49ab317004900ff0f54e8a066c8728b2`、`e2763b6ff82bf10701a1ca48a1c85fad32850967`。这是错误来源登记修复，不是补丁重写；正常维护仍禁止随意修改有效引入历史。浅克隆可能跳过 SHA 可达性检查，发布门禁必须在完整历史上运行。
+
+新 tag 必须带有有意义的用户变更摘要和唯一 `Companion-Panel` trailer。已存在 tag 不移动；成功推送不等于 Release 成功，要回读 Actions、全部资产及二进制版本/commit。
+
+## 禁止操作清单
 
 - 不使用 GitHub `Sync fork`。
 - 不在 `main` 上直接执行 `git pull upstream main`。

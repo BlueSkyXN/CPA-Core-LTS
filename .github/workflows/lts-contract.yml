@@ -47,6 +47,11 @@ jobs:
             ./sdk/api/handlers/openai ./internal/runtime/executor \
             -run 'ResponsesControl|AstraControls|CodexParallel|ChatExecutorRejects'
 
+      - name: Test local Flow V3 contracts
+        run: |
+          go test -race -count=1 ./sdk/cliproxy/flowcontrol
+          go test -count=1 ./internal/config ./internal/api/handlers/management ./internal/watcher/diff -run Flow
+
       - name: Build server
         run: |
           go build -o test-output ./cmd/server

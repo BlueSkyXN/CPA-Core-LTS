@@ -1131,7 +1131,7 @@ patches:
 
   - id: astra-native-responses-controls
     reason: Native configuration updates and async tools cannot be silently reduced to Chat messages; explicit parallel_tool_calls false must survive conversion.
-    introduced_in: d333c64582f3ff21acc89adc4a9f3caa25bdebc3
+    introduced_in: 5c894b6c49ab317004900ff0f54e8a066c8728b2
     affected_upstream_range: reviewed through 5208aec703b5ce7e3445f6e9d91cc13b3e78003a; this is a selective local correction, not a full upstream merge.
     files:
       - internal/util/responses_controls.go
@@ -1156,7 +1156,7 @@ patches:
 
   - id: astra-async-guidance-hotfix
     reason: OpenAI Codex 0.153.4 qualifies async-question guidance by registered tool availability; older catalog refreshes must not restore the known incorrect sentence.
-    introduced_in: 2397c94e9db0dd4f3c22fe515267e9985d14d33e
+    introduced_in: e2763b6ff82bf10701a1ca48a1c85fad32850967
     affected_upstream_range: router-for-me/CLIProxyAPI through 5208aec7; adapted from openai/codex 6ae07812e2db307def2b709962fb5963cf567dac (rhan-oai, 2026-09-04T22:39:08Z).
     files:
       - internal/registry/models/codex_client_models.json
@@ -1174,7 +1174,7 @@ patches:
     retire_when: All embedded and refreshed catalog sources deliver equivalent official async-question availability guidance.
 
   - id: local-flow-control
-    reason: Rebased on released Core 664644517cb827f987dd98cae5815fe633746b65 without the standalone Identity batch. Local opt-in flow control needs conjunctive caller/model/Auth-record model sets, atomic first request-attempt admission, bounded waits and independently switched shared observations; legacy policies require explicit migration, separate from Home and upstream quota errors.
+    reason: Ported onto tagged Core 664644517cb827f987dd98cae5815fe633746b65 without the standalone Identity batch. Local opt-in flow control needs conjunctive caller/model/Auth-record model sets, atomic first request-attempt admission, bounded waits and independently switched shared observations; legacy policies require explicit migration, separate from Home and upstream quota errors.
     introduced_in: cd0468dbe8d76d57c9d7d9c654bc0da0f97fa0ba
     affected_upstream_range: inspected router-for-me/CLIProxyAPI main 5208aec703b5ce7e3445f6e9d91cc13b3e78003a on 2026-09-05; Home concurrency and the optional request-lifecycle example do not supply this native local multi-scope policy.
     files:
@@ -1206,12 +1206,6 @@ patches:
       - sdk/cliproxy/auth/flow_control_models.go
       - sdk/cliproxy/auth/flow_control_refinement_test.go
       - internal/api/handlers/management/flow_control_refinement_test.go
-      - sdk/cliproxy/flowcontrol/sets_joint_test.go
-      - sdk/cliproxy/flowcontrol/observation_v3_test.go
-      - sdk/cliproxy/flowcontrol/engine_test.go
-      - sdk/cliproxy/flowcontrol/reference_test.go
-      - sdk/cliproxy/flowcontrol/stream_test.go
-      - sdk/cliproxy/flowcontrol/refinement_test.go
       - sdk/cliproxy/auth/flow_control_rebase_test.go
       - internal/config/flow_control_rebase_test.go
       - sdk/cliproxy/auth/conductor_execution.go

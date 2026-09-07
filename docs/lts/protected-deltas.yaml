@@ -150,6 +150,8 @@ lts_owned_features:
       - go test -race ./sdk/cliproxy/flowcontrol
       - go test ./sdk/cliproxy/auth -run Flow
     conflict_policy: preserve_disabled_default_and_adapt_to_current_execution_lifecycles
+    # V3 review must retain joint admission, real producer lifetime, last-good
+    # policy, explicit migration and observation switches without changing usage.
 
   - id: codex-model-fallback
     registry_feature: codex-model-fallback

@@ -57,6 +57,10 @@ So you can use local or multi-account CLI access with OpenAI(include Responses)/
 
 ## Getting Started
 
+### Optional local admission control (Flow V3)
+
+Flow V3 combines caller, model and individual upstream Auth-record concurrency/rolling-window limits with bounded queues and on-demand observation. Admission, realtime updates and resource sampling default to off. It does not replace provider quotas, Home or full usage statistics. Rejected policy updates retain the last good policy; streams release capacity only when the actual producer ends. See the [Flow guide](docs/lts/flow-control.md) for paired versions, migration and rollback.
+
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
 ## Management API

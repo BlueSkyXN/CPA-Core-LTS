@@ -4,6 +4,14 @@
 
 功能是默认关闭的 LTS 定制扩展，运行在单个 CPA 进程中。不增加数据库、Redis、依赖或监控历史存储，不修改 Codex UA、`codexmetadata`、usage 统计、模型目录文件或已有 Provider 协议。
 
+## 配套发布与升级
+
+本次 Flow V3 的首个配套发布目标为 Core `v1-lts-0.0.24`、Panel `v1-lts-0.0.16`。Core `v1-lts-0.0.23` 是移植基线 tag，不含新流控，其 Release 任务也未成功。不要把 tag、构建成功、运行实例版本和开关已生效混为一谈。
+
+Panel 按管理接口 `schema-version: 3`、`supported` 和 `resolved-model-options` 判断能力，不按版本字符串猜测。升级不会自动开启流控或改写旧策略；旧 schema 的观察程序需要升级到新的共享摘要结构。界面操作见 [Panel 指南](https://github.com/BlueSkyXN/CPA-Panel-LTS/blob/main/docs/lts/flow-control.md)。
+
+升级前备份配置。需要回退旧 Core 时，先停止新增调用、排空活动与等待项，再恢复旧版配置；旧 Core 不支持本模块，不能假设其继续执行 V3 限制。回退 Panel 不会停用 Core 策略。频率历史与队列只在内存中，重启不会恢复。
+
 ## 1. 先分清三个对象
 
 | 对象 | 含义 |

@@ -539,6 +539,11 @@ features:
       - account-model
       - AcquireImmediately
       - single-process
+      - joint-first-admission
+      - last-good-policy
+      - resolved-model-options
+      - configured-policy
+      - configuration-failure
     validation:
       - go test -race ./sdk/cliproxy/flowcontrol
       - go test ./sdk/cliproxy/auth ./internal/config ./internal/api/handlers/management -run Flow

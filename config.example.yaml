@@ -1030,70 +1030,12 @@ nonstream-keepalive-interval: 0
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
 
-# Optional single-process concurrency and rolling request windows. Missing/false
-# preserves old behavior. This does not replace Home admission or upstream quotas.
-# All matching rules compose (AND); no rule overrides another. See
-# docs/lts/flow-control.md for logical requests vs executor attempts.
-# flow-control:
-#   enabled: false
-#   queue:
-#     max-waiting: 32
-#     max-waiting-per-key: 8
-#     max-wait-ms: 15000
-#     max-bytes: 67108864
-#   max-buckets: 10000
-#   max-history: 200000
-#   rules:
-#     - id: request-total
-#       stage: request
-#       scope: global
-#       max-concurrent: 16
-#     - id: caller
-#       stage: request
-#       scope: key
-#       max-concurrent: 4
-#     - id: caller-model
-#       stage: request
-#       scope: key-model
-#       model: "*"
-#       max-concurrent: 2
-#       windows:
-#         - {requests: 20, period-ms: 60000}
-#         - {requests: 200, period-ms: 3600000}
-#     - id: upstream-total
-#       stage: attempt
-#       scope: global
-#       max-concurrent: 8
-#     - id: account
-#       stage: attempt
-#       scope: account
-#       max-concurrent: 2
-#     - id: account-model
-#       stage: attempt
-#       scope: account-model
-#       max-concurrent: 1
-# Examples above are operator choices, NOT published provider limits.
-# key/account selectors use opaque references from GET /v0/management/flow-control.
-# model supports exact text or one trailing *; provider supports exact text or *.
-
-# Flow-control V2 adds credential and custom scopes without changing old defaults.
-# See docs/lts/flow-control-v2.md. Keep disabled until local integration tests pass.
-# Example rule under the EXISTING flow-control.rules list (not a second root):
-# - id: caller-model-credential
-#   label: Caller x model x individual upstream credential
-#   stage: attempt
-#   scope: custom
-#   group-by: [key, model, credential]
-#   auth-kind: oauth
-#   max-concurrent: 2
-# No windows are needed for in-flight concurrency or a bounded waiting queue.
-
-# V3 explicit opt-in: one upstream Auth record, model sets, joint first admission.
-# This is a replacement/merge example, NOT a second flow-control root.
-# See docs/lts/flow-control-v3.md and preview migration before editing old policies.
-# # Generic example only: model-a/b/c must be replaced with actual model IDs.
-# # Merge into ONE existing flow-control root; do not append duplicate YAML roots.
-# # Use migration preview before changing an existing V1/V2 policy to version 3.
+# Optional Flow V3: single-process conjunctive request/attempt admission.
+# All three switches default to false. This does not replace Home or provider quotas.
+# See docs/lts/flow-control.md. Values below are examples, NOT official provider limits.
+# Merge into ONE flow-control root. For existing V1/V2 policies use migration-preview
+# before explicitly changing version; account means one Auth record, not a remote account group.
+# Replace model-a/b/c with resolved model IDs from GET /v0/management/flow-control.
 # flow-control:
 #   version: 3
 #   enabled: false

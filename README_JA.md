@@ -57,6 +57,10 @@ OAuth経由でOpenAI Codex（GPTモデル）およびClaude Codeもサポート�
 
 ## はじめに
 
+### 任意のローカル流量制御（Flow V3）
+
+呼び出し元、モデル、個別の上流 Auth レコードに対する同時実行数とスライディングウィンドウ制限、有界キュー、オンデマンド監視を提供します。実行制御、リアルタイム更新、リソース採取は既定で無効です。Home、上流 quota、完全な usage 統計を置き換えません。設定適用に失敗した場合は最後の有効なポリシーを維持します。対応バージョン、移行、ロールバックは [Flow ガイド](docs/lts/flow-control.md) を参照してください。
+
 CLIProxyAPIガイド：[https://help.router-for.me/](https://help.router-for.me/)
 
 ## 管理API
