@@ -36,7 +36,12 @@ class GitHub:
 
     def release(self, tag: str):
         raw = self.run("api", f"repos/{self.repo}/releases/tags/{quote(tag, safe='')}", missing_ok=True)
-        return None if raw is None else json.loads(raw)
+        if raw is not None:
+            return json.loads(raw)
+        # GitHub's tag lookup can return 404 for a draft that is visible in the
+        # authenticated release list. Do not create a duplicate or lose readback.
+        pages = json.loads(self.run("api", "--paginate", "--slurp", f"repos/{self.repo}/releases?per_page=100"))
+        return next((release for page in pages for release in page if release.get("tag_name") == tag), None)
 
     def assets(self, release_id: int):
         pages = json.loads(self.run("api", "--paginate", "--slurp", f"repos/{self.repo}/releases/{release_id}/assets?per_page=100"))

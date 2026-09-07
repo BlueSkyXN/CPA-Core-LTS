@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import importlib.util
 import tempfile
 import unittest
@@ -66,8 +67,24 @@ class PublishTests(unittest.TestCase):
         for stderr in ["HTTP 500", "gh: Requires authentication (HTTP 401)"]:
             with patch.object(pub.subprocess,"run",return_value=subprocess.CompletedProcess([],1,"",stderr)):
                 with self.assertRaises(pub.PublicationError):api.release("v1-lts-0.0.22")
-        with patch.object(pub.subprocess,"run",return_value=subprocess.CompletedProcess([],1,"","gh: Not Found (HTTP 404)")):
+        with patch.object(pub.subprocess,"run",side_effect=[
+            subprocess.CompletedProcess([],1,"","gh: Not Found (HTTP 404)"),
+            subprocess.CompletedProcess([],0,"[[]]","")]):
             self.assertIsNone(api.release("v1-lts-0.0.22"))
+    def test_draft_release_is_found_after_tag_lookup_404(self):
+        api=pub.GitHub("owner/repo")
+        draft={"id":42,"tag_name":"v1-lts-0.0.25","draft":True}
+        with patch.object(pub.subprocess,"run",side_effect=[
+            subprocess.CompletedProcess([],1,"","gh: Not Found (HTTP 404)"),
+            subprocess.CompletedProcess([],0,json.dumps([[{"tag_name":"older"}],[draft]]),"")]) as run:
+            self.assertEqual(api.release(draft["tag_name"]),draft)
+            self.assertIn("--paginate",run.call_args.args[0])
+    def test_draft_list_failure_is_not_interpreted_as_absent_release(self):
+        api=pub.GitHub("owner/repo")
+        with patch.object(pub.subprocess,"run",side_effect=[
+            subprocess.CompletedProcess([],1,"","gh: Not Found (HTTP 404)"),
+            subprocess.CompletedProcess([],1,"","gh: Server Error (HTTP 500)")]):
+            with self.assertRaises(pub.PublicationError):api.release("v1-lts-0.0.25")
     def test_upload_command_never_clobbers(self):
         api=pub.GitHub("owner/repo")
         with patch.object(pub.subprocess,"run",return_value=subprocess.CompletedProcess([],0,"","")) as run:
