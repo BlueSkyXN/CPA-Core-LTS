@@ -1711,10 +1711,6 @@ func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
 	go func() {
 		select {
 		case <-ctx.Done():
-			// The Redis client may install its read deadline after this goroutine
-			// observes cancellation. Closing the dedicated one-command connection
-			// at its underlying transport guarantees that a later deadline cannot
-			// turn cancellation into the full plugin-sync timeout.
 			_ = closeUnderlyingTransport(conn)
 		case <-wrapped.done:
 		}
