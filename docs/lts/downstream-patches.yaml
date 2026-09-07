@@ -851,7 +851,7 @@ patches:
     retire_when: Upstream merges an equivalent turn-grouping fix that keeps one assistant turn of parallel function/custom tool calls grouped across reasoning and assistant-text items, preserves turn boundaries at user/developer messages, and a protected full-sync absorbs it with all listed regressions passing after removing the downstream implementation.
 
   - id: codex-desktop-tool-overlay
-    reason: Codex Desktop registers deferred codex_app handlers that are not present in the Direct tool surface sent to third-party Responses models, so those models cannot read or coordinate existing Desktop tasks even though the app already owns the handlers. LTS therefore provides a default-off, fixed-version projection that adds only explicitly configured codex_app children after auth selection, only for provable root Desktop turns on non-GPT models, and preserves the existing provider namespace round trip without executing any app operation inside CPA.
+    reason: Codex Desktop registers deferred codex_app handlers that are not present in the Direct tool surface sent to third-party Responses models, so those models cannot read or coordinate existing Desktop tasks even though the app already owns the handlers. LTS therefore provides a default-off, fixed-version projection that adds only explicitly configured codex_app children after auth selection, only for provable root Desktop turns on non-GPT models, including selected Codex API key credentials on the Codex wire path but not newly enabling Codex OAuth, and preserves the existing provider namespace round trip without executing any app operation inside CPA.
     introduced_in: b052097362ef63bd35329c8b18d73c651078e85d
     affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f broaden Codex App schema normalization, fold namespaces, and restore dispatcher tool calls. They do not project missing codex_app children into eligible third-party Direct requests, so LTS still needs its model, UA, root-turn, tool-surface, configuration, GPT, and subagent isolation gates and the patch remains required.
     files:
@@ -875,6 +875,7 @@ patches:
       - sdk/cliproxy/auth/conductor_stream.go
       - sdk/cliproxy/auth/desktop_tool_overlay.go
       - sdk/cliproxy/auth/desktop_tool_overlay_test.go
+      - sdk/cliproxy/auth/desktop_tool_overlay_codex_apikey_test.go
     regression_tests:
       - TestRegistryDefinitionsAndFingerprint
       - TestNormalizeSelection
@@ -893,6 +894,12 @@ patches:
       - TestManagerApplyRequestAfterAuthInterceptorOverlayPluginOrder
       - TestManagerDesktopToolOverlayHotReload
       - TestManagerDesktopToolOverlayExecutionPaths
+      - TestDesktopToolOverlayCodexAPIKeyTarget
+      - TestBuildCodexAPIKeyDesktopToolOverlayEligibility
+      - TestBuildCodexAPIKeyDesktopToolOverlayOnlyMissing
+      - TestManagerCodexAPIKeyDesktopToolOverlayCredentialAndReload
+      - TestManagerCodexAPIKeyDesktopToolOverlayExecutionPaths
+      - TestManagerCodexAPIKeyDesktopToolOverlayEmptyConfig
       - TestCodexDesktopToolOverlayOpenAIChatRoundTrip
       - TestXAIExecutorCodexDesktopToolOverlayRoundTrip
     upstream_issue_or_pr: not-filed
