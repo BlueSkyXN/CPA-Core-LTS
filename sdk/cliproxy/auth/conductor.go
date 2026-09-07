@@ -223,7 +223,8 @@ type Manager struct {
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
 	refreshLocks sync.Map
-	// persistLocks orders writes for each credential without holding Manager.mu during I/O.
+	// persistLocks serializes disk persistence per auth ID, orders writes, and
+	// keeps Manager.mu out of store I/O.
 	persistLocks sync.Map
 }
 

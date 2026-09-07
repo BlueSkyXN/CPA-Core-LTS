@@ -129,6 +129,20 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	return auth.Clone(), nil
 }
 
+// UpdatePreparedAuth atomically merges request preparation results into the latest runtime auth
+// under the manager lock, preserving concurrent modifications without modifying refresh lifecycle fields.
+func (m *Manager) UpdatePreparedAuth(ctx context.Context, base, updated *Auth) (*Auth, error) {
+	saved, _, err := m.updateFromAsync(ctx, base, updated)
+	return saved, err
+}
+
+// UpdateRefreshedAuth atomically merges refresh results into the latest runtime auth
+// under the manager lock, preserving concurrent modifications (proxy_url, notes, weights, etc.).
+func (m *Manager) UpdateRefreshedAuth(ctx context.Context, base, updated *Auth) (*Auth, error) {
+	saved, _, err := m.updateFromAsync(ctx, base, updated)
+	return saved, err
+}
+
 // Update replaces an existing auth entry and notifies hooks.
 func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	saved, _, err := m.update(ctx, auth, 0, false)
@@ -404,7 +418,11 @@ func (m *Manager) Load(ctx context.Context) error {
 	return nil
 }
 
-// Load resets manager state from the backing store.
+type authPersistLock struct {
+	mu             sync.Mutex
+	lastEpoch      uint64
+	lastGeneration uint64
+}
 
 // persist saves the latest snapshot for this lifecycle. It re-reads m.auths
 // under m.mu, so callers must not hold m.mu: capture a clone inside the
@@ -413,10 +431,14 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if m.store == nil || auth == nil || shouldSkipPersist(ctx) {
 		return nil
 	}
-	value, _ := m.persistLocks.LoadOrStore(auth.ID, &sync.Mutex{})
-	lock := value.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	lockValue, _ := m.persistLocks.LoadOrStore(auth.ID, &authPersistLock{})
+	lock, _ := lockValue.(*authPersistLock)
+	if lock == nil {
+		lock = &authPersistLock{}
+		m.persistLocks.Store(auth.ID, lock)
+	}
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
 	// A newer update may have reached persistence first. Save the latest
 	// snapshot for this lifecycle rather than overwriting it with an old copy.
 	m.mu.RLock()
@@ -429,9 +451,6 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	m.mu.RUnlock()
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return fmt.Errorf("persist auth: %w", errWeight)
-	}
-	if shouldSkipPersist(ctx) {
-		return nil
 	}
 	if IsConfigAPIKeyAuth(auth) {
 		return nil
@@ -446,6 +465,15 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	}
 	// Skip persistence when metadata is absent (e.g., runtime-only auths).
 	if auth.Metadata == nil {
+		return nil
+	}
+
+	if auth.RegistrationEpoch < lock.lastEpoch || (auth.RegistrationEpoch == lock.lastEpoch && auth.Generation < lock.lastGeneration) {
+		return nil
+	}
+	lock.lastEpoch = auth.RegistrationEpoch
+	lock.lastGeneration = auth.Generation
+	if shouldSkipPersist(ctx) {
 		return nil
 	}
 	_, err := m.store.Save(ctx, auth)

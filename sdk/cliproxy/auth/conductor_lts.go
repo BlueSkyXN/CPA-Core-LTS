@@ -350,6 +350,8 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	retryRound := 0
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
+		roundAttempted := make(map[string]struct{})
+		attemptOpts = withAttemptedAuthTracker(attemptOpts, roundAttempted)
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials, retryRound, defaultRequestRetry)
 		if errExec == nil {
 			if fallbackResp, ok := retryWithoutPenaltyMaybeSelectFallbackResponse(resp, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
@@ -378,7 +380,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				break
 			}
 			if limited && remaining > 0 {
-				outcome := m.executeRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState, retryWithoutPenaltyFallback)
+				outcome := m.executeRetryWithoutPenaltyHedged(ctx, normalized, req, attemptOpts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState, retryWithoutPenaltyFallback)
 				if outcome.disableSecondLane {
 					retryWithoutPenaltyHedgeState.secondLaneDisabled = true
 				}
@@ -408,7 +410,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				if !isRetryWithoutPenaltyError(outcome.err) {
 					policyRound = attempt
 				}
-				wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, outcome.err, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts)
+				wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx, attemptOpts, outcome.err, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts, roundAttempted)
 				if terminalErr != nil {
 					if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 						return resp, nil
@@ -435,7 +437,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		if !isRetryWithoutPenaltyError(errExec) {
 			policyRound = attempt
 		}
-		wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, errExec, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts)
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx, attemptOpts, errExec, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts, roundAttempted)
 		if terminalErr != nil {
 			if resp, ok := retryWithoutPenaltyCandidateFallbackResponse(retryWithoutPenaltyFallback.Err(errExec), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return resp, nil
@@ -494,6 +496,8 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	retryRoundWaited := false
 	for attempt := 0; ; {
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
+		roundAttempted := make(map[string]struct{})
+		attemptOpts = withAttemptedAuthTracker(attemptOpts, roundAttempted)
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials, &homeRetryLimit, retryRound, defaultRequestRetry)
 		if errStream == nil {
 			if fallbackResult, ok := retryWithoutPenaltyMaybeSelectFallbackStreamResult(result, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
@@ -536,7 +540,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				break
 			}
 			if limited && remaining > 0 {
-				outcome := m.executeStreamRetryWithoutPenaltyHedged(ctx, normalized, req, opts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState, retryWithoutPenaltyFallback)
+				outcome := m.executeStreamRetryWithoutPenaltyHedged(ctx, normalized, req, attemptOpts, maxRetryCredentials, class, policy, remaining, retryWithoutPenaltyUsage, retryWithoutPenaltyHedgeState, retryWithoutPenaltyFallback)
 				if outcome.disableSecondLane {
 					retryWithoutPenaltyHedgeState.secondLaneDisabled = true
 				}
@@ -566,7 +570,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				if !isRetryWithoutPenaltyError(outcome.err) && !m.HomeEnabled() {
 					policyRound = attempt
 				}
-				wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, outcome.err, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts)
+				wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx, attemptOpts, outcome.err, policyRound, normalized, retryModel, maxWait, -1, defaultRequestRetry, retryWithoutPenaltyCounts, roundAttempted)
 				if terminalErr != nil {
 					if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(outcome.err), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 						return result, nil
@@ -593,7 +597,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		if !isRetryWithoutPenaltyError(errStream) && !m.HomeEnabled() {
 			policyRound = attempt
 		}
-		wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithRetryPolicy(ctx, opts, errStream, policyRound, normalized, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, retryWithoutPenaltyCounts)
+		wait, shouldRetry, terminalErr := m.shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx, attemptOpts, errStream, policyRound, normalized, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, retryWithoutPenaltyCounts, roundAttempted)
 		if terminalErr != nil {
 			if result, ok := retryWithoutPenaltyCandidateFallbackStreamResult(retryWithoutPenaltyFallback.Err(errStream), retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return result, nil

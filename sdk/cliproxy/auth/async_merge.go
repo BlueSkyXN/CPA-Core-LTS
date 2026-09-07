@@ -28,7 +28,10 @@ func mergeAsyncAuth(base, current, updated *Auth) *Auth {
 	// refresh token. A concurrent credential edit wins the entire token update.
 	materialChanged := credentialMaterialChanged(base.Metadata, current.Metadata)
 	if materialChanged {
-		out.Metadata = current.Clone().Metadata
+		// Preserve the current credential material, but still apply independent
+		// provider-discovered fields (for example project_id) from the in-flight
+		// preparation. Replacing the entire map would lose those non-secret deltas.
+		out.Metadata = mergeAuthMetadataPreservingCredentialMaterial(base.Metadata, current.Metadata, updated.Metadata)
 	}
 	if !materialChanged && reflect.DeepEqual(base.Storage, current.Storage) {
 		out.Storage = updated.Storage
@@ -56,6 +59,35 @@ func mergeAsyncAuth(base, current, updated *Auth) *Auth {
 	}
 	out.ModelStates = mergeAuthMap(base.ModelStates, current.ModelStates, updated.ModelStates)
 	return out.Clone()
+}
+
+func mergeAuthMetadataPreservingCredentialMaterial(base, current, updated map[string]any) map[string]any {
+	out := mergeAuthMetadata(base, current, updated)
+	if out == nil {
+		return nil
+	}
+	for key := range out {
+		if isCredentialMetadataKey(key) {
+			if currentValue, ok := current[key]; ok {
+				out[key] = cloneAuthJSONValue(currentValue)
+			} else {
+				delete(out, key)
+			}
+			continue
+		}
+		baseMap, baseOK := base[key].(map[string]any)
+		currentMap, currentOK := current[key].(map[string]any)
+		updatedMap, updatedOK := updated[key].(map[string]any)
+		if baseOK && currentOK && updatedOK && credentialMaterialChanged(baseMap, currentMap) {
+			out[key] = mergeAuthMetadataPreservingCredentialMaterial(baseMap, currentMap, updatedMap)
+		}
+	}
+	return out
+}
+
+func isCredentialMetadataKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return IsAuthTokenPayloadKey(key) || strings.Contains(key, "token") || strings.Contains(key, "secret") || key == "api_key" || key == "api-key" || key == "cookie" || key == "password"
 }
 
 func mergeAuthMap[T any](base, current, updated map[string]T) map[string]T {

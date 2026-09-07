@@ -1796,6 +1796,100 @@ func TestStreamChunkRequestBodyPolicyBySchemaVersion(t *testing.T) {
 	}
 }
 
+func TestStreamChunkHistoryPolicyByCapability(t *testing.T) {
+	var legacyGot, modernGot pluginapi.StreamChunkInterceptRequest
+	host := newHostWithRecords(
+		capabilityRecord{
+			id: "legacy",
+			plugin: pluginapi.Plugin{
+				SchemaVersion: 4,
+				Capabilities: pluginapi.Capabilities{
+					StreamChunkInterceptor: responseInterceptorFunc{
+						interceptStreamChunk: func(ctx context.Context, req pluginapi.StreamChunkInterceptRequest) (pluginapi.StreamChunkInterceptResponse, error) {
+							legacyGot = req
+							return pluginapi.StreamChunkInterceptResponse{Body: req.Body}, nil
+						},
+					},
+				},
+			},
+		},
+		capabilityRecord{
+			id: "modern",
+			plugin: pluginapi.Plugin{
+				SchemaVersion: pluginabi.SchemaVersionStreamChunkOmitHistory,
+				Capabilities: pluginapi.Capabilities{
+					StreamChunkHistoryOmitted: true,
+					StreamChunkInterceptor: responseInterceptorFunc{
+						interceptStreamChunk: func(ctx context.Context, req pluginapi.StreamChunkInterceptRequest) (pluginapi.StreamChunkInterceptResponse, error) {
+							modernGot = req
+							return pluginapi.StreamChunkInterceptResponse{Body: req.Body}, nil
+						},
+					},
+				},
+			},
+		},
+	)
+	if !host.StreamChunkPayloadIncludesHistory() {
+		t.Fatal("StreamChunkPayloadIncludesHistory() = false, want true when legacy stream interceptor is active")
+	}
+
+	_ = host.InterceptStreamChunk(context.Background(), pluginapi.StreamChunkInterceptRequest{
+		HistoryChunks: [][]byte{[]byte("first")},
+		Body:          []byte("chunk"),
+		ChunkIndex:    0,
+	})
+	if len(legacyGot.HistoryChunks) != 1 || string(legacyGot.HistoryChunks[0]) != "first" {
+		t.Fatalf("legacy payload history = %#v, want preserved", legacyGot.HistoryChunks)
+	}
+	if len(modernGot.HistoryChunks) != 0 {
+		t.Fatalf("modern payload history = %#v, want omitted", modernGot.HistoryChunks)
+	}
+
+	legacyGot = pluginapi.StreamChunkInterceptRequest{}
+	modernGot = pluginapi.StreamChunkInterceptRequest{}
+	_ = host.InterceptStreamChunk(context.Background(), pluginapi.StreamChunkInterceptRequest{
+		HistoryChunks: [][]byte{[]byte("first")},
+		Body:          []byte("chunk"),
+		ChunkIndex:    pluginapi.StreamChunkHeaderInitIndex,
+	})
+	if len(legacyGot.HistoryChunks) != 1 || string(legacyGot.HistoryChunks[0]) != "first" {
+		t.Fatalf("legacy init history = %#v, want preserved", legacyGot.HistoryChunks)
+	}
+	if len(modernGot.HistoryChunks) != 1 || string(modernGot.HistoryChunks[0]) != "first" {
+		t.Fatalf("modern init history = %#v, want preserved", modernGot.HistoryChunks)
+	}
+
+	modernOnly := newHostWithRecords(capabilityRecord{
+		id: "modern-only",
+		plugin: pluginapi.Plugin{
+			SchemaVersion: pluginabi.SchemaVersionStreamChunkOmitHistory,
+			Capabilities: pluginapi.Capabilities{
+				StreamChunkHistoryOmitted: true,
+				StreamChunkInterceptor: responseInterceptorFunc{
+					interceptStreamChunk: func(ctx context.Context, req pluginapi.StreamChunkInterceptRequest) (pluginapi.StreamChunkInterceptResponse, error) {
+						return pluginapi.StreamChunkInterceptResponse{}, nil
+					},
+				},
+			},
+		},
+	})
+	if modernOnly.StreamChunkPayloadIncludesHistory() {
+		t.Fatal("StreamChunkPayloadIncludesHistory() = true, want false when all interceptors opt out")
+	}
+	legacyV5 := newHostWithRecords(capabilityRecord{
+		id: "legacy-v5",
+		plugin: pluginapi.Plugin{
+			SchemaVersion: 5,
+			Capabilities: pluginapi.Capabilities{
+				StreamChunkInterceptor: responseInterceptorFunc{},
+			},
+		},
+	})
+	if !legacyV5.StreamChunkPayloadIncludesHistory() {
+		t.Fatal("schema 5 without explicit capability must retain history")
+	}
+}
+
 func TestHasRequestInterceptorsReflectsActiveRequestInterceptors(t *testing.T) {
 	responseOnly := newHostWithRecords(capabilityRecord{
 		id: "response",
