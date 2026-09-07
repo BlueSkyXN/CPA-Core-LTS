@@ -173,4 +173,8 @@
 - catalog 吸收上游新增及下架条目，Astra 保留 LTS async guidance；Ultra capability 继续由兼容层维护。
 - watcher rescan revision、plugin HTTP wire profile 与 Antigravity compaction 按独立上游功能吸收；HTTP profile 不改默认 transport，保留 proxy 错误失败关闭与 streaming 零总超时。
 
-第二段完整验证和合并状态待追加；本文件不声称发布或部署。
+第二段本地 `go test ./...` 已通过：99 packages pass、30 packages 无测试、零失败。Auth 全包及 quota/cooldown/scheduler/session/Flow/generation/continuity/retry 定向 race 通过；watcher、pluginhost、redisqueue、session、httpwire race 通过。
+
+验证适配还包括：更新跟随 upstream catalog 的 Codex 0.153.3 identity 断言；同凭据模型 fallback 的聚合测试改用 model-scoped capacity 错误，账户 quota 耗尽不再假设切换同凭据模型可绕过。新上游 quota 跨模型回归继续保留。
+
+第二段尚待 GitHub exact-head CI 与合并回读；本文件不声称发布或部署。

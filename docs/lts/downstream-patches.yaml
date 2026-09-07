@@ -1,6 +1,24 @@
 version: 1
 
 patches:
+  - id: responses-effort-summary-independence
+    reason: Responses reasoning effort controls computation and must not implicitly enable visible summaries. Explicit summary and generate_summary remain independent, including null disabling; only OpenAI Chat has the documented effort compatibility exception.
+    introduced_in: dc27264665b9c7a142aadf1f65e59d7971d9a727
+    affected_upstream_range: Through 934fb7928c42a8dd0aeaf39a321bef6601b55eb6; e92f6cf55700fad073e241aad439fd4f0c46d114 enables Antigravity summary from effort alone and conflicts with the existing LTS summary-intent contract.
+    files:
+      - internal/translator/antigravity/openai/responses/antigravity_openai-responses_request.go
+      - internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go
+      - test/summary_intent_translation_test.go
+      - test/thinking_conversion_test.go
+    regression_tests:
+      - TestConvertOpenAIResponsesRequestToAntigravity_ReasoningSummaries
+      - TestSummaryIntentTranslation
+      - TestSummaryIntentFinalPipeline
+      - TestThinkingE2EMatrix_Body
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#5508
+    state: required
+    retire_when: Upstream preserves independent Responses effort and summary intent, including explicit enabled and null-disabled summary through the final pipeline, and all regressions pass without this delta.
+
   - id: codex-model-fallback
     reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, including a confirmed-usage-cooldown-only global target list when source mappings cannot deliver, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
     introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
