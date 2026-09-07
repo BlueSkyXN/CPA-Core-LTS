@@ -1178,6 +1178,23 @@ patches:
     introduced_in: cd0468dbe8d76d57c9d7d9c654bc0da0f97fa0ba
     affected_upstream_range: inspected router-for-me/CLIProxyAPI main 5208aec703b5ce7e3445f6e9d91cc13b3e78003a on 2026-09-05; Home concurrency and the optional request-lifecycle example do not supply this native local multi-scope policy.
     files:
+      - config.example.yaml
+      - internal/config/config.go
+      - internal/config/config_load.go
+      - internal/config/parse.go
+      - internal/config/flow_control_test.go
+      - internal/api/handlers/management/config_basic.go
+      - internal/api/handlers/management/flow_control_test.go
+      - internal/logging/cpa_trace.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/flow_control_test.go
+      - sdk/cliproxy/service_lifecycle.go
+      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_cooldown.go
+      - sdk/cliproxy/auth/conductor_selection.go
+      - sdk/cliproxy/auth/codex_rate_limit_continuity.go
+      - sdk/cliproxy/auth/flow_control_continuity.go
+      - sdk/cliproxy/auth/home_concurrency.go
       - sdk/cliproxy/flowcontrol/config.go
       - sdk/cliproxy/flowcontrol/engine.go
       - sdk/cliproxy/flowcontrol/engine_test.go
