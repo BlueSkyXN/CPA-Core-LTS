@@ -34,7 +34,7 @@
 | `codex-rate-limit-continuity` | patch-still-required | quota floor 与 model/credential 区分不是 incumbent/fresh/canary 状态机，保留连续性策略。 |
 | `codex-interactions-service-tier-response` | patch-still-required | 本轮未修改 Codex → Interactions 的 tier 修正入口。 |
 | `plugin-configured-enable-default` | patch-still-required | 插件 history 性能优化不改变默认 enabled 的 YAML/runtime 语义。 |
-| `home-plugin-sync-cancellation` | upstream-equivalent (removable) | #5374 已进入旧基线；本轮上游未再改该处，仍为 removable，后续单独删除重复注释和直接 wrapper 测试。 |
+| `home-plugin-sync-cancellation` | retired | #5374 已进入旧基线；删除提交 `5384ca6d` 只移除重复注释与直接 wrapper 测试，保留实际 cancellation/TLS 回归。 |
 | `codex-gpt56-ultra-level` | patch-still-required | 模型目录更新只更新客户端能力，不替代最终 wire Ultra/Max 转换及自定义模型隔离。 |
 | `codex-model-header-provider-snapshot` | patch-still-required | UA/catalog 更新不替代 provider-specific header 快照与连接 key 绑定。 |
 | `codex-oauth-client-identity-finalization` | patch-still-required | 默认 UA 更新不替代模型覆盖后最终 OAuth identity/header 归一化。 |
@@ -72,6 +72,8 @@
 | `local-flow-control` | patch-still-required | upstream quota/scheduler 是服务商可用性，不是本地联合 admission；保留默认关闭和最后有效配置。 |
 
 ## 上游 first-parent 提交清单
+
+本轮新增登记：`openai-claude-cache-write-accounting`、`plugin-stream-history-capability-negotiation` 为 required；`wsrelay-terminal-frame-preservation`、`codex-dotted-collaboration-tool-restoration` 为 upstreamed（仅 dev 已有等价实现）。对应实际引入或既有实现提交均保持可达，不提前越级退休。
 
 普通维护提交由 merge 统一吸收；表中的“适配”指保留前述 LTS 不同解法，不是丢弃整个提交。
 
