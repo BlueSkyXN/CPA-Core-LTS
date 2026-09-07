@@ -6,7 +6,7 @@
 
 ## 配套发布与升级
 
-本次 Flow V3 的首个配套发布目标为 Core `v1-lts-0.0.24`、Panel `v1-lts-0.0.16`。Core `v1-lts-0.0.23` 是移植基线 tag，不含新流控，其 Release 任务也未成功。不要把 tag、构建成功、运行实例版本和开关已生效混为一谈。
+本次 Flow V3 的首个配套发布目标为 Core `v1-lts-0.0.25`、Panel `v1-lts-0.0.17`，包含 Panel 恢复实时观察时重新加载最新策略的修复。Core `v1-lts-0.0.23` 是移植基线 tag，不含新流控，其 Release 任务也未成功。不要把 tag、构建成功、运行实例版本和开关已生效混为一谈。
 
 Panel 按管理接口 `schema-version: 3`、`supported` 和 `resolved-model-options` 判断能力，不按版本字符串猜测。升级不会自动开启流控或改写旧策略；旧 schema 的观察程序需要升级到新的共享摘要结构。界面操作见 [Panel 指南](https://github.com/BlueSkyXN/CPA-Panel-LTS/blob/main/docs/lts/flow-control.md)。
 
