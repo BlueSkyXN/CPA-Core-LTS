@@ -14,7 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestBuildCodexDesktopToolOverlayInjectsStableSchemas(t *testing.T) {
@@ -557,6 +556,27 @@ func desktopOverlayChildByName(t *testing.T, children []map[string]any, name str
 }
 
 func desktopOverlayHasChild(body []byte, name string) bool {
-	return len(gjson.GetBytes(body, `tools.#(name=="codex_app")#.tools.#(name=="`+name+`")#`).Array()) > 0 ||
-		len(gjson.GetBytes(body, `input.#(type=="additional_tools")#.tools.#(name=="codex_app")#.tools.#(name=="`+name+`")#`).Array()) > 0
+	var root map[string]any
+	if json.Unmarshal(body, &root) != nil {
+		return false
+	}
+	collections, ok := desktopOverlayToolCollections(root)
+	if !ok {
+		return false
+	}
+	for _, tools := range collections {
+		for _, raw := range tools {
+			namespace, ok := raw.(map[string]any)
+			if !ok || namespace["type"] != "namespace" || namespace["name"] != "codex_app" {
+				continue
+			}
+			children, _ := namespace["tools"].([]any)
+			for _, rawChild := range children {
+				if child, ok := rawChild.(map[string]any); ok && child["name"] == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
