@@ -273,6 +273,8 @@ codex:
   # Project selected Codex Desktop codex_app tools into eligible non-GPT root
   # requests after credential selection. Disabled by default; Desktop GPT/Code
   # Mode requests and subagent requests are always left unchanged.
+  # Also applies to codex-api-key non-GPT models when the upstream accepts the
+  # existing codex_app namespace format. Codex OAuth is not newly enabled.
   desktop-tool-overlay:
     enabled: false
     tools:

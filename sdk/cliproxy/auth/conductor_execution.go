@@ -326,9 +326,9 @@ func isRequestTerminatedError(err error) bool {
 	return errors.As(err, &terminated) && terminated != nil
 }
 
-func (m *Manager) applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+func (m *Manager) applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
 	toFormat := requestToFormat(provider, executor, req, opts)
-	req, opts = m.applyCodexDesktopToolOverlay(provider, toFormat, req, opts, requestedModel)
+	req, opts = m.applyCodexDesktopToolOverlay(auth, provider, toFormat, req, opts, requestedModel)
 	if opts.RequestAfterAuthInterceptor == nil {
 		return req, opts, nil
 	}
@@ -534,7 +534,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execOpts := opts
 			var errIntercept error
-			execReq, execOpts, errIntercept = m.applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, errIntercept = m.applyRequestAfterAuthInterceptor(execCtx, executor, auth, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
 			}
@@ -785,7 +785,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			execOpts := opts
 			var errIntercept error
-			execReq, execOpts, errIntercept = m.applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, errIntercept = m.applyRequestAfterAuthInterceptor(execCtx, executor, auth, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
 			}
