@@ -177,4 +177,4 @@
 
 验证适配还包括：更新跟随 upstream catalog 的 Codex 0.153.3 identity 断言；同凭据模型 fallback 的聚合测试改用 model-scoped capacity 错误，账户 quota 耗尽不再假设切换同凭据模型可绕过。新上游 quota 跨模型回归继续保留。
 
-第二段尚待 GitHub exact-head CI 与合并回读；本文件不声称发布或部署。
+第二段 server build、LTS contract guard 与 registry lifecycle validator（相对 origin/main）均通过。本报告记录合并候选的本地验证；GitHub exact-head CI 与最终合并证据见 [PR #251](https://github.com/BlueSkyXN/CPA-Core-LTS/pull/251)。本文件不声称发布或部署。
