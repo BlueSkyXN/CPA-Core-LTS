@@ -39,6 +39,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	if SchemaVersionExecutionLifecycle != 5 {
 		t.Fatalf("SchemaVersionExecutionLifecycle = %d, want 5", SchemaVersionExecutionLifecycle)
 	}
+	if SchemaVersionStreamChunkOmitHistory != 5 {
+		t.Fatalf("SchemaVersionStreamChunkOmitHistory = %d, want 5", SchemaVersionStreamChunkOmitHistory)
+	}
 	if MethodPluginRegister != "plugin.register" {
 		t.Fatalf("MethodPluginRegister = %q", MethodPluginRegister)
 	}

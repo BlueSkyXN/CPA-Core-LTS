@@ -1462,9 +1462,14 @@ func TestManagerExecute_HedgedRetryCanceledLoserRemainsNeutral(t *testing.T) {
 }
 
 func TestManagerExecute_HedgedRetryOrdinaryErrorDoesNotAmplifyRequestRetryBudget(t *testing.T) {
+	barrier := newHedgedRetryBarrier(2)
 	executor := &hedgedRetryTestExecutor{
 		behaviors: map[string][]hedgedRetryBehavior{
-			"auth-a": {{kind: "retry"}, {kind: "rate_limit"}, {kind: "rate_limit"}},
+			"auth-a": {
+				{kind: "retry"},
+				{kind: "rate_limit", barrier: barrier},
+				{kind: "rate_limit", barrier: barrier},
+			},
 		},
 		maxRetries:      2,
 		hedgeDelay:      0,

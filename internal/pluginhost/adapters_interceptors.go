@@ -333,6 +333,24 @@ func streamChunkOmitsRequestBodies(schemaVersion uint32) bool {
 	return schemaVersion >= pluginabi.SchemaVersionStreamChunkOmitRequestBody
 }
 
+// StreamChunkPayloadIncludesHistory reports whether any active stream chunk
+// interceptor still requires HistoryChunks on payload chunks. LTS negotiates
+// omission explicitly because its schema 5 also carries execution lifecycle APIs.
+func (h *Host) StreamChunkPayloadIncludesHistory() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if h.isPluginFused(record.id) || record.plugin.Capabilities.StreamChunkInterceptor == nil {
+			continue
+		}
+		if !record.plugin.Capabilities.StreamChunkHistoryOmitted {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Host) HasRequestInterceptors() bool {
 	if h == nil {
 		return false

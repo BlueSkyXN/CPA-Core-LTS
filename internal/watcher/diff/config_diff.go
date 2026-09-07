@@ -144,6 +144,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			len(newCfg.Codex.DesktopToolOverlay.Tools),
 		))
 	}
+	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
+		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}

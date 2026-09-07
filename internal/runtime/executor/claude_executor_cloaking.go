@@ -203,7 +203,7 @@ func claudeCCHFallbackBillingHeader(ctx context.Context, cfg *config.Config, pay
 const claudeCodeCLIIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
 
 func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
-	return checkSystemInstructionsWithSigningMode(payload, strictMode, false, "2.1.220", "cli", "")
+	return checkSystemInstructionsWithSigningMode(payload, strictMode, false, "2.1.258", "cli", "")
 }
 
 // checkSystemInstructionsWithSigningMode keeps the top-level system in Claude

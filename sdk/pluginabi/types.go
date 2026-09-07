@@ -24,6 +24,9 @@ const (
 	// SchemaVersionExecutionLifecycle is the first schema version that supports
 	// typed executor correlation and the optional execution lifecycle methods.
 	SchemaVersionExecutionLifecycle uint32 = 5
+	// SchemaVersionStreamChunkOmitHistory names the upstream schema boundary.
+	// LTS requires StreamChunkHistoryOmitted; schema 5 alone is not an opt-out.
+	SchemaVersionStreamChunkOmitHistory uint32 = 5
 )
 
 const (

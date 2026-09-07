@@ -1107,8 +1107,8 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithImages(t *t
 	}
 
 	parts := userContent.Get("parts").Array()
-	if len(parts) < 2 {
-		t.Fatalf("expected at least 2 parts (functionResponse + inline_data), got %d; raw: %s", len(parts), userContent.Raw)
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part (functionResponse with nested inlineData), got %d; raw: %s", len(parts), userContent.Raw)
 	}
 
 	fr := parts[0].Get("functionResponse")
@@ -1125,12 +1125,12 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithImages(t *t
 		t.Fatalf("expected functionResponse.response.result = %q, got %q", "Read image file [image/png]", got)
 	}
 
-	img := parts[1].Get("inline_data")
+	img := fr.Get("parts.0.inlineData")
 	if !img.Exists() {
-		t.Fatalf("expected second part to have inline_data, got %s", parts[1].Raw)
+		t.Fatalf("expected functionResponse.parts.0 to have inlineData, got %s", fr.Raw)
 	}
-	if got := img.Get("mime_type").String(); got != "image/png" {
-		t.Fatalf("expected mime_type = %q, got %q", "image/png", got)
+	if got := img.Get("mimeType").String(); got != "image/png" {
+		t.Fatalf("expected mimeType = %q, got %q", "image/png", got)
 	}
 	if got := img.Get("data").String(); got != "iVBORw0KGgoAAAANSUhEUg==" {
 		t.Fatalf("expected data = %q, got %q", "iVBORw0KGgoAAAANSUhEUg==", got)
@@ -1344,16 +1344,171 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputVariations(t *t
 		output := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
 		userContent := gjson.GetBytes(output, "contents.1")
 		parts := userContent.Get("parts").Array()
-		if len(parts) != 2 {
-			t.Fatalf("expected 2 parts (functionResponse + inline_data), got %d; raw: %s", len(parts), userContent.Raw)
+		if len(parts) != 1 {
+			t.Fatalf("expected 1 part (functionResponse with nested inlineData), got %d; raw: %s", len(parts), userContent.Raw)
 		}
-		if got := parts[1].Get("inline_data.mime_type").String(); got != "image/png" {
-			t.Fatalf("expected mime_type 'image/png', got %q", got)
+		fr := parts[0].Get("functionResponse")
+		if !fr.Exists() {
+			t.Fatalf("expected functionResponse part, got %s", parts[0].Raw)
 		}
-		if got := parts[1].Get("inline_data.data").String(); got != "iVBORw0KGgoAAAANSUhEUg==" {
+		img := fr.Get("parts.0.inlineData")
+		if !img.Exists() {
+			t.Fatalf("expected functionResponse.parts.0 to have inlineData, got %s", fr.Raw)
+		}
+		if got := img.Get("mimeType").String(); got != "image/png" {
+			t.Fatalf("expected mimeType 'image/png', got %q", got)
+		}
+		if got := img.Get("data").String(); got != "iVBORw0KGgoAAAANSUhEUg==" {
 			t.Fatalf("expected data 'iVBORw0KGgoAAAANSUhEUg==', got %q", got)
 		}
 	})
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ParallelFunctionCallOutputsWithImages(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.7-flash-high",
+		"input": [
+			{
+				"role": "user",
+				"content": [{"type": "input_text", "text": "read both images"}]
+			},
+			{
+				"type": "function_call",
+				"id": "fc_a",
+				"call_id": "call_a",
+				"name": "read_a",
+				"arguments": "{}"
+			},
+			{
+				"type": "function_call",
+				"id": "fc_b",
+				"call_id": "call_b",
+				"name": "read_b",
+				"arguments": "{}"
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "call_a",
+				"output": [
+					{"type": "input_text", "text": "file A"},
+					{"type": "input_image", "image_url": "data:image/png;base64,QUJD"}
+				]
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "call_b",
+				"output": [
+					{"type": "input_text", "text": "file B"},
+					{"type": "input_image", "image_url": "data:image/jpeg;base64,REVm"}
+				]
+			}
+		]
+	}`
+
+	output := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
+	userContent := gjson.GetBytes(output, "contents.2")
+	if userContent.Get("role").String() != "user" {
+		t.Fatalf("expected role user in tool response content, got %s", userContent.Raw)
+	}
+
+	parts := userContent.Get("parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 functionResponse parts, got %d; raw: %s", len(parts), userContent.Raw)
+	}
+
+	gotByID := make(map[string]gjson.Result)
+	for _, part := range parts {
+		fr := part.Get("functionResponse")
+		if !fr.Exists() {
+			t.Fatalf("expected each part to be functionResponse, got %s", part.Raw)
+		}
+		gotByID[fr.Get("id").String()] = fr
+	}
+
+	frA, okA := gotByID["call_a"]
+	if !okA {
+		t.Fatalf("missing functionResponse for call_a; raw: %s", userContent.Raw)
+	}
+	if got := frA.Get("parts.0.inlineData.mimeType").String(); got != "image/png" {
+		t.Fatalf("expected call_a mimeType image/png, got %q", got)
+	}
+	if got := frA.Get("parts.0.inlineData.data").String(); got != "QUJD" {
+		t.Fatalf("expected call_a data QUJD, got %q", got)
+	}
+
+	frB, okB := gotByID["call_b"]
+	if !okB {
+		t.Fatalf("missing functionResponse for call_b; raw: %s", userContent.Raw)
+	}
+	if got := frB.Get("parts.0.inlineData.mimeType").String(); got != "image/jpeg" {
+		t.Fatalf("expected call_b mimeType image/jpeg, got %q", got)
+	}
+	if got := frB.Get("parts.0.inlineData.data").String(); got != "REVm" {
+		t.Fatalf("expected call_b data REVm, got %q", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithMultipleImages(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.7-flash-high",
+		"input": [
+			{
+				"role": "user",
+				"content": [{"type": "input_text", "text": "show two screenshots"}]
+			},
+			{
+				"type": "function_call",
+				"id": "fc_multi",
+				"call_id": "call_multi",
+				"name": "take_screenshots",
+				"arguments": "{}"
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "call_multi",
+				"output": [
+					{"type": "input_text", "text": "captured 2 images"},
+					{"type": "input_image", "image_url": "data:image/png;base64,QUJD"},
+					{"type": "input_image", "image_url": "data:image/jpeg;base64,REVm"}
+				]
+			}
+		]
+	}`
+
+	output := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
+	userContent := gjson.GetBytes(output, "contents.2")
+	parts := userContent.Get("parts").Array()
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 functionResponse part, got %d; raw: %s", len(parts), userContent.Raw)
+	}
+
+	fr := parts[0].Get("functionResponse")
+	if !fr.Exists() {
+		t.Fatalf("expected functionResponse, got %s", parts[0].Raw)
+	}
+	if got := fr.Get("id").String(); got != "call_multi" {
+		t.Fatalf("expected id call_multi, got %q", got)
+	}
+	if got := fr.Get("response.result").String(); got != "captured 2 images" {
+		t.Fatalf("expected result 'captured 2 images', got %q", got)
+	}
+
+	imageParts := fr.Get("parts").Array()
+	if len(imageParts) != 2 {
+		t.Fatalf("expected 2 nested inlineData parts, got %d; raw: %s", len(imageParts), fr.Raw)
+	}
+	if got := imageParts[0].Get("inlineData.mimeType").String(); got != "image/png" {
+		t.Fatalf("expected first image mimeType image/png, got %q", got)
+	}
+	if got := imageParts[0].Get("inlineData.data").String(); got != "QUJD" {
+		t.Fatalf("expected first image data QUJD, got %q", got)
+	}
+	if got := imageParts[1].Get("inlineData.mimeType").String(); got != "image/jpeg" {
+		t.Fatalf("expected second image mimeType image/jpeg, got %q", got)
+	}
+	if got := imageParts[1].Get("inlineData.data").String(); got != "REVm" {
+		t.Fatalf("expected second image data REVm, got %q", got)
+	}
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_AdditionalToolsNamespaceAndCustom(t *testing.T) {

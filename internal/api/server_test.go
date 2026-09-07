@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3086,7 +3087,13 @@ func TestDecodeHomeModelsKeepsTokenMetadata(t *testing.T) {
 			{
 				"name": "models/gemini-3-pro",
 				"inputTokenLimit": 1048576,
-				"outputTokenLimit": 65536
+				"outputTokenLimit": 65536,
+				"thinking": {
+					"min": 128,
+					"max": 65535,
+					"dynamic_allowed": true,
+					"levels": ["low", "medium", "high"]
+				}
 			}
 		]
 	}`))
@@ -3111,6 +3118,17 @@ func TestDecodeHomeModelsKeepsTokenMetadata(t *testing.T) {
 	}
 	if geminiEntry.contextLength != 1048576 || geminiEntry.maxCompletionTokens != 65536 {
 		t.Fatalf("gemini token metadata = %d/%d, want 1048576/65536", geminiEntry.contextLength, geminiEntry.maxCompletionTokens)
+	}
+	if geminiEntry.thinking == nil || !reflect.DeepEqual(geminiEntry.thinking.Levels, []string{"low", "medium", "high"}) {
+		t.Fatalf("gemini thinking metadata = %#v, want low/medium/high", geminiEntry.thinking)
+	}
+
+	formatted := formatHomeCodexModel(geminiEntry)
+	if got := homeModelInt64Value(formatted, "context_length"); got != 1048576 {
+		t.Fatalf("formatted Gemini context_length = %d, want 1048576", got)
+	}
+	if got, ok := formatted["thinking"].(*registry.ThinkingSupport); !ok || !reflect.DeepEqual(got.Levels, []string{"low", "medium", "high"}) {
+		t.Fatalf("formatted Gemini thinking metadata = %#v, want low/medium/high", formatted["thinking"])
 	}
 }
 

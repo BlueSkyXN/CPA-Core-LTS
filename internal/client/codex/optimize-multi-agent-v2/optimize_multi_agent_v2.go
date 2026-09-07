@@ -27,6 +27,7 @@ const (
 	codexCollaborationNamespace           = "collaboration"
 	codexOptimizedCollaborationNamespace  = "collaboration-optimize"
 	codexOptimizedCollaborationNamePrefix = codexOptimizedCollaborationNamespace + "__"
+	codexOptimizedCollaborationDotPrefix  = codexOptimizedCollaborationNamespace + "."
 	// CodexMultiAgentV2ToolsPreparedContextKey marks a request whose collaboration
 	// tool definitions were prepared at the Responses API boundary.
 	CodexMultiAgentV2ToolsPreparedContextKey = "codex_multi_agent_v2_tools_prepared"
@@ -86,13 +87,22 @@ func RewriteCodexMultiAgentV2MessageEncryption(ctx context.Context, headers http
 	return rewriteCodexMultiAgentMessageEncryption(payload)
 }
 
+// RewriteCodexOrphanDelegationInputForConfig applies RewriteCodexOrphanDelegationInput
+// based on cfg.Codex.OrphanDelegationCompatibility and the X-Openai-Subagent header.
+func RewriteCodexOrphanDelegationInputForConfig(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
+	if cfg == nil || !cfg.Codex.OrphanDelegationCompatibility {
+		return payload
+	}
+	return RewriteCodexOrphanDelegationInput(ctx, headers, payload, true)
+}
+
 // TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
-	if from == sdktranslator.FormatOpenAIResponse && to != sdktranslator.FormatCodex && to != sdktranslator.FormatOpenAIResponse {
-		if codexMultiAgentV2Enabled(ctx, headers, cfg) {
-			// Non-Responses targets need a request-turn boundary. Only proven
-			// plaintext is converted; opaque or mixed content remains untouched.
+	if from == sdktranslator.FormatOpenAIResponse {
+		payload = RewriteCodexOrphanDelegationInputForConfig(ctx, headers, payload, cfg)
+		if to != sdktranslator.FormatCodex && to != sdktranslator.FormatOpenAIResponse && codexMultiAgentV2Enabled(ctx, headers, cfg) {
+			// 保留非 Responses 目标的用户轮次边界。
 			payload = rewriteCodexAgentMessageInput(payload, "user", "input_text")
 		}
 	}
@@ -662,7 +672,7 @@ func codexToolsHaveOptimizedCollaborationConflict(tools gjson.Result) bool {
 	}
 	for _, tool := range tools.Array() {
 		name := strings.TrimSpace(tool.Get("name").String())
-		if name == codexOptimizedCollaborationNamespace || strings.HasPrefix(name, codexOptimizedCollaborationNamePrefix) {
+		if name == codexOptimizedCollaborationNamespace || strings.HasPrefix(name, codexOptimizedCollaborationNamePrefix) || strings.HasPrefix(name, codexOptimizedCollaborationDotPrefix) {
 			return true
 		}
 		if strings.TrimSpace(tool.Get("type").String()) == "namespace" && codexToolsHaveOptimizedCollaborationConflict(tool.Get("tools")) {
@@ -741,6 +751,13 @@ func restoreCodexCollaborationValue(value any) bool {
 			case name == codexOptimizedCollaborationNamespace && itemType == "namespace":
 				typed["name"] = codexCollaborationNamespace
 				changed = true
+			case isToolCall && strings.HasPrefix(name, codexOptimizedCollaborationDotPrefix):
+				toolName := strings.TrimPrefix(name, codexOptimizedCollaborationDotPrefix)
+				if toolName != "" {
+					typed["namespace"] = codexCollaborationNamespace
+					typed["name"] = toolName
+					changed = true
+				}
 			case isToolCall && strings.HasPrefix(name, codexOptimizedCollaborationNamePrefix):
 				typed["name"] = codexCollaborationNamespace + "__" + strings.TrimPrefix(name, codexOptimizedCollaborationNamePrefix)
 				changed = true

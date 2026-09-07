@@ -898,10 +898,13 @@ func buildOpenAIResponsesFunctionResponseParts(item gjson.Result, functionNamesB
 		functionResponse, _ = sjson.SetBytes(functionResponse, "functionResponse.response.result", outputResult.String())
 	}
 
-	parts := make([][]byte, 0, 1+len(imageParts))
-	parts = append(parts, functionResponse)
-	parts = append(parts, imageParts...)
-	return parts
+	for _, imagePart := range imageParts {
+		inlineData := []byte(`{"inlineData":{"mimeType":"","data":""}}`)
+		inlineData, _ = sjson.SetBytes(inlineData, "inlineData.mimeType", gjson.GetBytes(imagePart, "inline_data.mime_type").String())
+		inlineData, _ = sjson.SetBytes(inlineData, "inlineData.data", gjson.GetBytes(imagePart, "inline_data.data").String())
+		functionResponse, _ = sjson.SetRawBytes(functionResponse, "functionResponse.parts.-1", inlineData)
+	}
+	return [][]byte{functionResponse}
 }
 
 func collectOpenAIResponsesFunctionCallOutputs(items []gjson.Result, start int, pendingCallIDs []string) ([]gjson.Result, map[int]bool, []string) {
