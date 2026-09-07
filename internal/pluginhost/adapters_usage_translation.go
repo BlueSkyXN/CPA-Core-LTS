@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -146,6 +147,21 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			a.host.fusePlugin(a.pluginID, "UsagePlugin.HandleUsage", recovered)
 		}
 	}()
+	sessionID := strings.TrimSpace(record.SessionID)
+	parentSessionID := strings.TrimSpace(record.ParentSessionID)
+	if sessionID == "" {
+		clientMeta := logging.GetClientRequestMetadata(ctx)
+		sessionID = strings.TrimSpace(clientMeta.SessionID)
+		parentSessionID = strings.TrimSpace(clientMeta.ParentSessionID)
+	} else if parentSessionID == "" {
+		clientMeta := logging.GetClientRequestMetadata(ctx)
+		if sessionID == strings.TrimSpace(clientMeta.SessionID) {
+			parentSessionID = strings.TrimSpace(clientMeta.ParentSessionID)
+		}
+	}
+	if sessionID == "" || sessionID == parentSessionID {
+		parentSessionID = ""
+	}
 	plugin.HandleUsage(ctx, pluginapi.UsageRecord{
 		Provider:             record.Provider,
 		ExecutorType:         record.ExecutorType,
@@ -171,6 +187,8 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		TTFT:                 record.TTFT,
 		TTFA:                 record.TTFA,
 		Failed:               record.Failed,
+		SessionID:            sessionID,
+		ParentSessionID:      parentSessionID,
 		Failure: pluginapi.UsageFailure{
 			StatusCode: record.Fail.StatusCode,
 			Body:       record.Fail.Body,

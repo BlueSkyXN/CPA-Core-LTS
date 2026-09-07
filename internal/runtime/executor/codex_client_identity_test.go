@@ -52,15 +52,15 @@ func TestCodexExecutorFinalizesLunaClientIdentityVersion(t *testing.T) {
 
 	select {
 	case headers := <-capturedHeaders:
-		const wantUA = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+		const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
 		if got := headers.Get("User-Agent"); got != wantUA {
 			t.Fatalf("User-Agent = %q, want %q", got, wantUA)
 		}
 		if got := headers.Get("Originator"); got != "codex-tui" {
 			t.Fatalf("Originator = %q, want codex-tui", got)
 		}
-		if got := headers.Get("Version"); got != "0.144.0" {
-			t.Fatalf("Version = %q, want 0.144.0", got)
+		if got := headers.Get("Version"); got != "0.153.3" {
+			t.Fatalf("Version = %q, want 0.153.3", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Codex HTTP request")
@@ -208,7 +208,7 @@ func TestFinalizeCodexClientIdentityHeaders(t *testing.T) {
 			version:        "0.1.0",
 			wantOriginator: codexOriginator,
 			wantUserAgent:  codexUserAgent,
-			wantVersion:    "0.146.0",
+			wantVersion:    "0.153.3",
 			wantSession:    true,
 		},
 		{
@@ -219,7 +219,7 @@ func TestFinalizeCodexClientIdentityHeaders(t *testing.T) {
 			version:        "0.1.0",
 			wantOriginator: codexOriginator,
 			wantUserAgent:  codexUserAgent,
-			wantVersion:    "0.146.0",
+			wantVersion:    "0.153.3",
 			wantSession:    true,
 		},
 		{
@@ -317,8 +317,8 @@ func TestCodexDirectImageOAuthFinalizesClientIdentity(t *testing.T) {
 		if got := headers.Get("Originator"); got != codexOriginator {
 			t.Fatalf("Originator = %q, want %q", got, codexOriginator)
 		}
-		if got := headers.Get("Version"); got != "0.146.0" {
-			t.Fatalf("Version = %q, want 0.146.0", got)
+		if got := headers.Get("Version"); got != "0.153.3" {
+			t.Fatalf("Version = %q, want 0.153.3", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for direct image request")

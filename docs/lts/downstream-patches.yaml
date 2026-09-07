@@ -908,7 +908,7 @@ patches:
     retire_when: Upstream or the official client path gives non-GPT Direct models an equivalent explicitly bounded codex_app child surface, preserves byte-for-byte no-op behavior for GPT, Code Mode, subagents, malformed or ambiguous metadata, and forbidden tool surfaces, retains provider request and response namespace round trips, and all listed regressions pass after removing the downstream overlay.
 
   - id: codex-multi-agent-plaintext-contract
-    reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex and provider paths, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces.
+    reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex and provider paths, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces. The 2026-09-07 baseline through 934fb792 adds Claude Responses normalization in d2f71220; it is adapted to the same proven-plaintext rule instead of exposing encrypted_content as text.
     introduced_in: 798ad1854064361461225fe766db9b2f54a7653d
     affected_upstream_range: "through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f inline local schema refs, broaden Codex App normalization, fold namespaces, and restore dispatcher calls. They improve tool-shape continuity but do not prove plaintext provenance: upstream still treats string encrypted_content as portable, recursively matches unrelated short tool names, and removes message.encrypted without requiring JSON boolean true. LTS absorbs the namespace work while retaining proven-plaintext, confirmed-namespace, boolean-marker, and opaque/mixed-content fail-closed rules, so the patch remains required."
     files:
@@ -920,6 +920,8 @@ patches:
       - internal/runtime/executor/codex_websockets_spawn_agent_test.go
       - internal/runtime/executor/helps/codex_multi_agent_v2.go
       - internal/runtime/executor/xai_executor_test.go
+      - internal/translator/claude/openai/responses/claude_openai-responses_request.go
+      - internal/translator/claude/openai/responses/claude_openai-responses_request_test.go
     regression_tests:
       - TestRewriteCodexMultiAgentV2MessageEncryptionNamespacesAndToolNames
       - TestRewriteCodexMultiAgentV2MessageEncryptionAdditionalToolsAndGates
@@ -937,6 +939,8 @@ patches:
       - TestCodexWebsocketsExecutorOptimizeMultiAgentV2
       - TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage
       - TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage
+      - TestConvertOpenAIResponsesRequestToClaudeKeepsAgentMessageText
+      - TestNormalizeCodexAgentMessagesPreservesUnprovenContent
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4748
     state: required
     retire_when: Upstream converts only fully proven plaintext agent_message content, preserves opaque, encrypted, mixed, empty, and malformed history, limits spawn/message rewrites to equivalent positively identified Multi-Agent namespaces, removes only boolean-true message.encrypted markers without changing ordinary, MCP, custom, top-level, or incomplete agents tools, preserves native Codex HTTP and WebSocket history, and all listed regressions pass after removing the downstream implementation.

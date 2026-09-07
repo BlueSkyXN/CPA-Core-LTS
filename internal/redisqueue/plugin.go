@@ -72,6 +72,17 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
+	sessionID := strings.TrimSpace(record.SessionID)
+	parentSessionID := strings.TrimSpace(record.ParentSessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(clientRequestMetadata.SessionID)
+		parentSessionID = strings.TrimSpace(clientRequestMetadata.ParentSessionID)
+	} else if parentSessionID == "" && sessionID == strings.TrimSpace(clientRequestMetadata.SessionID) {
+		parentSessionID = strings.TrimSpace(clientRequestMetadata.ParentSessionID)
+	}
+	if sessionID == "" || sessionID == parentSessionID {
+		parentSessionID = ""
+	}
 
 	usageDetail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
 	tokens := tokenStats{
@@ -144,6 +155,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		OutboundServiceTier:  outboundServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
+		SessionID:            sessionID,
+		ParentSessionID:      parentSessionID,
 	})
 	if err != nil {
 		return
@@ -169,6 +182,8 @@ type queuedUsageDetail struct {
 	OutboundServiceTier  string                   `json:"outbound_service_tier,omitempty"`
 	ResponseServiceTier  string                   `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string                   `json:"effective_service_tier,omitempty"`
+	SessionID            string                   `json:"session_id,omitempty"`
+	ParentSessionID      string                   `json:"parent_session_id,omitempty"`
 }
 
 type requestDetail struct {

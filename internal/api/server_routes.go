@@ -344,6 +344,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		selectionHeaders.Set("X-Session-ID", sessionID)
 	}
 	selectionCtx := context.WithValue(c.Request.Context(), "gin", c)
+	selectionCtx = handlers.EnrichContextWithSessionHierarchy(selectionCtx, selectionHeaders, body, nil)
 	selectionModel, errRoute := s.codexAlphaSearchSelectionModel(selectionCtx, c, body, strings.TrimSpace(routing.Model))
 	if errRoute != nil {
 		log.WithError(errRoute).Warn("codex alpha search: model router returned an unsupported target")
@@ -385,6 +386,19 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Codex auth unavailable"})
 		return
+	}
+	if selection != nil && selection.CanonicalSessionID != "" {
+		meta := logging.GetClientRequestMetadata(ctx)
+		meta.SessionID = selection.CanonicalSessionID
+		if selection.ParentSessionID != "" {
+			meta.ParentSessionID = selection.ParentSessionID
+		} else {
+			meta.ParentSessionID = ""
+		}
+		if meta.SessionID == meta.ParentSessionID {
+			meta.ParentSessionID = ""
+		}
+		ctx = logging.WithClientRequestMetadata(ctx, meta)
 	}
 	var releaseAttempt func()
 	if selection != nil {
