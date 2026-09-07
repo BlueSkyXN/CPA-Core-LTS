@@ -189,8 +189,8 @@ jobs:
 
           bash _release_tools/scripts/generate-lts-release-notes.sh \
             --tag "${RELEASE_TAG}" \
-            --notes-file release-notes.md \
-            --title-file release-title.txt
+            --notes-file "$GITHUB_WORKSPACE/release-notes.md" \
+            --title-file "$GITHUB_WORKSPACE/release-title.txt"
           title="$(tr -d '\r\n' < release-title.txt)"
           if [[ -z "$title" || ! -s release-notes.md ]]; then
             echo "Generated release metadata is empty." >&2

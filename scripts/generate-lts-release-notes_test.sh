@@ -43,6 +43,11 @@ expect_failure() {
   assert_contains "$stderr_file" "$expected"
 }
 
+# The generator changes directory to its own checkout. The workflow must write
+# metadata into the product workspace, not the nested tooling checkout.
+assert_contains "$ROOT_DIR/.github/workflows/release.yaml" '--notes-file "$GITHUB_WORKSPACE/release-notes.md"'
+assert_contains "$ROOT_DIR/.github/workflows/release.yaml" '--title-file "$GITHUB_WORKSPACE/release-title.txt"'
+
 FIXTURE_DIR=$(mktemp -d)
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
 MOCK_BIN="$FIXTURE_DIR/bin"
