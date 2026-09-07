@@ -160,4 +160,6 @@
 | `bf20b999` | 暂不吸收 | 同时改写复杂工具 schema 并改变零输出 incomplete 的错误分类，跨 HTTP/WebSocket 和 LTS abnormal retry，留待稳定基线审查。 |
 | `4f038099` | 暂不吸收 | 通过 system prompt 模拟 structured output 不是协议级强约束，会改变 prompt/cache 行为；不默认当作等价支持。 |
 
-第一段、第二段的实际测试与合并结果完成后追加；本文件不声称发布或部署。
+第一段本地验证完成：`go test ./...` 为 99 packages pass、30 packages 无测试，零失败；server build、LTS guard、registry lifecycle validator、Usage/Management 契约测试均通过。Auth hedge 测试使用 barrier 固定两条 lane 已 dispatch 的前提，不改变生产 cooldown；定向重复及 race 测试通过。wsrelay、session/Flow 的定向 race 通过。
+
+第二段尚待实施与验证；本文件不声称发布或部署。
