@@ -933,6 +933,16 @@ type HostAuthSaveResponse struct {
 	Path string `json:"path"`
 }
 
+// HTTPWireProfile configures transport-level wire representation for plugin HTTP requests.
+type HTTPWireProfile struct {
+	// HTTP1Only forces the transport to use HTTP/1.1 and disables HTTP/2 negotiation.
+	HTTP1Only bool `json:"http1_only,omitempty"`
+	// DisableAutoCompression prevents transparent decompression and automatic Accept-Encoding injection.
+	DisableAutoCompression bool `json:"disable_auto_compression,omitempty"`
+	// HeaderProfile defines desired header-name order and exact casing on the wire.
+	HeaderProfile []string `json:"header_profile,omitempty"`
+}
+
 // HTTPRequest describes an upstream HTTP request issued through the host.
 type HTTPRequest struct {
 	// Method is the HTTP method.
@@ -943,6 +953,8 @@ type HTTPRequest struct {
 	Headers http.Header
 	// Body contains the raw request body.
 	Body []byte
+	// WireProfile specifies optional outbound HTTP wire profile settings.
+	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`
 }
 
 // HTTPResponse describes a non-streaming host HTTP response.
@@ -1550,6 +1562,10 @@ type UsageRecord struct {
 	Alias string
 	// APIKey is the client API key identifier when available.
 	APIKey string
+	// SessionID identifies the session when present.
+	SessionID string
+	// ParentSessionID identifies the parent session in a hierarchy or fork.
+	ParentSessionID string
 	// AuthID identifies the selected credential.
 	AuthID string
 	// AuthIndex identifies the credential index when applicable.

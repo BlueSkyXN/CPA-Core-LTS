@@ -998,6 +998,14 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 	}
 
 	sessionID, parentSessionID := m.homeDispatchSessionIDs(opts)
+	if sessionID != "" && opts.Metadata != nil {
+		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = sessionID
+		if parentSessionID != "" {
+			opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = parentSessionID
+		} else {
+			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+		}
+	}
 	dispatchHeaders := homeDispatchHeaders(ctx, opts.Headers)
 	credentialPolicy := credentialPolicyFromContext(ctx)
 	var raw []byte
@@ -1200,6 +1208,8 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 			return nil, errEnd
 		}
 	}
+	selection.CanonicalSessionID = sessionID
+	selection.ParentSessionID = parentSessionID
 	return selection, nil
 }
 
@@ -1394,6 +1404,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			execReq := req
 			execReq.Model = upstreamModel
 			execCtx := newUpstreamAttemptContext(creditsCtx)
+			execCtx = syncMetadataSessionToContext(execCtx, creditsOpts.Metadata)
 			admittedCtx, errAdmission := m.admitFlowExecution(execCtx, c.executor, c.auth, execReq, creditsOpts)
 			if errAdmission != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -1471,6 +1482,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if len(models) == 0 {
 			continue
 		}
+		creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
 		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false)
 		if errStream != nil {
 			if isRequestInvalidError(errStream) {

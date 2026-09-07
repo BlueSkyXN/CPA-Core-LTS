@@ -43,7 +43,7 @@ func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJ
 }
 
 func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) []byte {
-	rawJSON := inputRawJSON
+	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
 
 	userID := common.DeriveClaudeUserID(rawJSON)
 
@@ -1287,4 +1287,47 @@ func isUnsupportedOpenAIBuiltinToolType(toolType string) bool {
 	default:
 		return false
 	}
+}
+
+// 仅转换完整可证的明文；opaque 或混合内容不能被推断成委派任务文本。
+func normalizeCodexAgentMessages(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return payload
+	}
+	updated := payload
+	changed := false
+	for itemIndex, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) != "agent_message" {
+			continue
+		}
+		itemPath := "input." + strconv.Itoa(itemIndex)
+		var errSet error
+		content := item.Get("content")
+		if !content.IsArray() || len(content.Array()) == 0 {
+			continue
+		}
+		plaintext := true
+		for _, part := range content.Array() {
+			value := part.Get("text")
+			if strings.TrimSpace(part.Get("type").String()) != "input_text" || value.Type != gjson.String || strings.TrimSpace(value.String()) == "" {
+				plaintext = false
+				break
+			}
+		}
+		if !plaintext {
+			continue
+		}
+		if updated, errSet = sjson.SetBytes(updated, itemPath+".role", "user"); errSet != nil {
+			return payload
+		}
+		if updated, errSet = sjson.SetBytes(updated, itemPath+".type", "message"); errSet != nil {
+			return payload
+		}
+		changed = true
+	}
+	if !changed {
+		return payload
+	}
+	return updated
 }

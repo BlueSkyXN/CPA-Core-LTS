@@ -326,9 +326,21 @@ func isRequestTerminatedError(err error) bool {
 	return errors.As(err, &terminated) && terminated != nil
 }
 
+// applyRequestAfterAuthInterceptor preserves the upstream package-level helper
+// used by auth package integrations that do not have a Manager instance.
+func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+	return applyRequestAfterAuthInterceptorWithManager(nil, ctx, executor, nil, provider, req, opts, requestedModel)
+}
+
 func (m *Manager) applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+	return applyRequestAfterAuthInterceptorWithManager(m, ctx, executor, auth, provider, req, opts, requestedModel)
+}
+
+func applyRequestAfterAuthInterceptorWithManager(m *Manager, ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
 	toFormat := requestToFormat(provider, executor, req, opts)
-	req, opts = m.applyCodexDesktopToolOverlay(auth, provider, toFormat, req, opts, requestedModel)
+	if m != nil {
+		req, opts = m.applyCodexDesktopToolOverlay(auth, provider, toFormat, req, opts, requestedModel)
+	}
 	if opts.RequestAfterAuthInterceptor == nil {
 		return req, opts, nil
 	}
@@ -352,6 +364,38 @@ func (m *Manager) applyRequestAfterAuthInterceptor(ctx context.Context, executor
 			HTTPStatus: resp.StatusCode,
 			Header:     cloneRequestHeaders(resp.ResponseHeaders),
 			Body:       bytes.Clone(resp.ResponseBody),
+		}
+	}
+	if len(resp.ClearHeaders) > 0 || len(resp.Body) > 0 {
+		evalPayload := opts.OriginalRequest
+		if len(evalPayload) == 0 {
+			evalPayload = req.Payload
+		}
+		info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata)
+		if ok && info.SessionID != "" {
+			if opts.Metadata == nil {
+				opts.Metadata = make(map[string]any, 2)
+			}
+			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
+			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
+				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
+			} else {
+				delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+			}
+		} else {
+			delete(opts.Metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey)
+			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+			delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
+		}
+	} else if len(resp.Headers) > 0 {
+		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
+			if opts.Metadata == nil {
+				opts.Metadata = make(map[string]any, 2)
+			}
+			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
+			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
+				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
+			}
 		}
 	}
 	return req, opts, nil
@@ -411,6 +455,11 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 	}
 	for _, key := range clear {
 		out.Del(key)
+		for existingKey := range out {
+			if strings.EqualFold(existingKey, key) {
+				delete(out, existingKey)
+			}
+		}
 	}
 	for key, values := range updates {
 		out.Del(key)
@@ -533,6 +582,21 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				execReq.Model = executionModel
 			}
 			execOpts := opts
+			if pickOpts.Metadata != nil {
+				if canonicalID, ok := pickOpts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; ok {
+					meta := make(map[string]any, len(execOpts.Metadata)+2)
+					for k, v := range execOpts.Metadata {
+						meta[k] = v
+					}
+					meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+					if parentID, okParent := pickOpts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey]; okParent && parentID != canonicalID {
+						meta[cliproxyexecutor.ParentSessionIDMetadataKey] = parentID
+					} else {
+						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+					}
+					execOpts.Metadata = meta
+				}
+			}
 			var errIntercept error
 			execReq, execOpts, errIntercept = m.applyRequestAfterAuthInterceptor(execCtx, executor, auth, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
@@ -561,6 +625,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				break
 			}
 			execCtx = admittedCtx
+			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			m.commitPreDispatchSelection(auth, execOpts)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
@@ -603,6 +668,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						break
 					}
 					execCtx = admittedRetryCtx
+					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					m.commitPreDispatchSelection(auth, execOpts)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					startRetry := time.Now()
@@ -784,6 +850,21 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				execReq.Model = executionModel
 			}
 			execOpts := opts
+			if pickOpts.Metadata != nil {
+				if canonicalID, ok := pickOpts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; ok {
+					meta := make(map[string]any, len(execOpts.Metadata)+2)
+					for k, v := range execOpts.Metadata {
+						meta[k] = v
+					}
+					meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+					if parentID, okParent := pickOpts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey]; okParent && parentID != canonicalID {
+						meta[cliproxyexecutor.ParentSessionIDMetadataKey] = parentID
+					} else {
+						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+					}
+					execOpts.Metadata = meta
+				}
+			}
 			var errIntercept error
 			execReq, execOpts, errIntercept = m.applyRequestAfterAuthInterceptor(execCtx, executor, auth, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 			if errIntercept != nil {
@@ -808,6 +889,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				break
 			}
 			execCtx = admittedCtx
+			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			m.commitPreDispatchSelection(auth, execOpts)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
@@ -846,6 +928,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						break
 					}
 					execCtx = admittedRetryCtx
+					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					m.commitPreDispatchSelection(auth, execOpts)
 					startRetry := time.Now()
 					resp, errExec = countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
@@ -1194,7 +1277,35 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execOpts := opts
 		if selection != nil {
 			execOpts.ExecutionLifecycle = selection
+			if selection.CanonicalSessionID != "" {
+				meta := make(map[string]any, len(execOpts.Metadata)+2)
+				for k, v := range execOpts.Metadata {
+					meta[k] = v
+				}
+				meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] = selection.CanonicalSessionID
+				if selection.ParentSessionID != "" && selection.ParentSessionID != selection.CanonicalSessionID {
+					meta[cliproxyexecutor.ParentSessionIDMetadataKey] = selection.ParentSessionID
+				} else {
+					delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+				}
+				execOpts.Metadata = meta
+			}
+		} else if pickOpts.Metadata != nil {
+			if canonicalID, ok := pickOpts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; ok {
+				meta := make(map[string]any, len(execOpts.Metadata)+2)
+				for k, v := range execOpts.Metadata {
+					meta[k] = v
+				}
+				meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+				if parentID, okParent := pickOpts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey]; okParent && parentID != canonicalID {
+					meta[cliproxyexecutor.ParentSessionIDMetadataKey] = parentID
+				} else {
+					delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+				}
+				execOpts.Metadata = meta
+			}
 		}
+		execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 		if homeMode && len(models) > 1 {
 			models = models[:1]
 			pooled = false
@@ -2095,4 +2206,58 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	return exec.HttpRequest(ctx, auth, req)
+}
+
+func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	canonicalID := ""
+	if len(metadata) > 0 {
+		canonicalID, _ = metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
+		if canonicalID == "" {
+			canonicalID, _ = metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey].(string)
+		}
+		if canonicalID == "" {
+			if execID, _ := metadata[cliproxyexecutor.ExecutionSessionMetadataKey].(string); execID != "" {
+				execID = strings.TrimSpace(execID)
+				if !strings.HasPrefix(execID, "execution:") {
+					canonicalID = "execution:" + execID
+				} else {
+					canonicalID = execID
+				}
+			}
+		}
+		if canonicalID == "" {
+			if derivedID, _ := metadata[cliproxyexecutor.DerivedSessionIDMetadataKey].(string); derivedID != "" {
+				derivedID = strings.TrimSpace(derivedID)
+				if !strings.HasPrefix(derivedID, "derived:") {
+					canonicalID = "derived:" + derivedID
+				} else {
+					canonicalID = derivedID
+				}
+			}
+		}
+	}
+	canonicalID = strings.TrimSpace(canonicalID)
+	if canonicalID == "" {
+		clientMeta := logging.GetClientRequestMetadata(ctx)
+		if clientMeta.SessionID != "" || clientMeta.ParentSessionID != "" {
+			clientMeta.SessionID = ""
+			clientMeta.ParentSessionID = ""
+			return logging.WithClientRequestMetadata(ctx, clientMeta)
+		}
+		return ctx
+	}
+	clientMeta := logging.GetClientRequestMetadata(ctx)
+	clientMeta.SessionID = cliproxysession.BoundSessionIdentity(canonicalID)
+	if parentID, ok := metadata[cliproxyexecutor.ParentSessionIDMetadataKey].(string); ok && strings.TrimSpace(parentID) != "" {
+		clientMeta.ParentSessionID = cliproxysession.BoundSessionIdentity(strings.TrimSpace(parentID))
+	} else {
+		clientMeta.ParentSessionID = ""
+	}
+	if clientMeta.SessionID == clientMeta.ParentSessionID {
+		clientMeta.ParentSessionID = ""
+	}
+	return logging.WithClientRequestMetadata(ctx, clientMeta)
 }

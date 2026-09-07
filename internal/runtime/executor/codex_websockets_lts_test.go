@@ -576,7 +576,7 @@ func TestCodexWebsocketsEnsureUpstreamConnRedialsForLunaHeaderProfile(t *testing
 		normalModel = "gpt-5.4"
 		lunaModel   = "gpt-5.6-luna"
 		normalUA    = "codex-tui/test-normal"
-		lunaUA      = "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)"
+		lunaUA      = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
 	)
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

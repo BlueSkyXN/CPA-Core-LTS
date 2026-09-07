@@ -257,6 +257,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		ctx = admittedCtx
 		m.commitPreDispatchSelection(auth, execOpts)
 		entry := logEntryWithRequestID(ctx)
+		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 		startStream := time.Now()
 		if !selectedPublished {
 			publishSelectedAuthMetadata(execOpts.Metadata, auth)
@@ -296,6 +297,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 						return nil, errRetryAdmission
 					}
 					ctx = admittedRetryCtx
+					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 					m.commitPreDispatchSelection(auth, execOpts)
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					startRetry := time.Now()

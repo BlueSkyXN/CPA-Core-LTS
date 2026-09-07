@@ -657,7 +657,8 @@ func TestCodexExecutorModelFallbackPreservesSourceAbnormalPolicyAndUsageAggregat
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached","message":"source quota","resets_in_seconds":60}}`))
+			// 同凭据模型 fallback 使用 model-scoped capacity；账户额度耗尽应阻止该凭据的所有模型。
+			_, _ = w.Write([]byte(`{"error":{"message":"Selected model is at capacity. Please try a different model."}}`))
 		case "gpt-target":
 			targetCalls++
 			w.Header().Set("Content-Type", "text/event-stream")

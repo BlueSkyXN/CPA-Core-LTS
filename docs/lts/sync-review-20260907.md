@@ -162,4 +162,19 @@
 
 第一段本地验证完成：`go test ./...` 为 99 packages pass、30 packages 无测试，零失败；server build、LTS guard、registry lifecycle validator、Usage/Management 契约测试均通过。Auth hedge 测试使用 barrier 固定两条 lane 已 dispatch 的前提，不改变生产 cooldown；定向重复及 race 测试通过。wsrelay、session/Flow 的定向 race 通过。
 
-第二段尚待实施与验证；本文件不声称发布或部署。
+第一段已通过 #250 合入主线（`872c8431ad1445ad79c9638928568e092dd7faf1`），exact-head 的 7 项 CI 全部成功，无未解决 review conversation。
+
+第二段适配说明：
+
+- `5ab0bca0` 的 credential quota scope 作为独立错误能力加入 LTS statusErr，保留既有 classifier、model fallback reason 与 transient rate-limit class。
+- `580df364` 的 session/parent session 为 SDK、插件、queue 的加法字段；保留 canonical v3、timing v1、service tier 与 provenance。Live/Alpha Search 保留 request-scoped selection cleanup，再合入 session hierarchy。
+- `e92f6cf5` 保留 ancestry，但不采用 effort 自动开启 summary 的行为；保留其新增的显式 summary、generate_summary、null summary 回归。现有 Responses effort/summary 独立语义继续有效。
+- `d2f71220` 仅吸收明文 agent_message 转换；opaque、mixed、空数组及非 string 内容保持原状，复用既有 plaintext contract 的生命周期，不把 encrypted_content 当明文。
+- catalog 吸收上游新增及下架条目，Astra 保留 LTS async guidance；Ultra capability 继续由兼容层维护。
+- watcher rescan revision、plugin HTTP wire profile 与 Antigravity compaction 按独立上游功能吸收；HTTP profile 不改默认 transport，保留 proxy 错误失败关闭与 streaming 零总超时。
+
+第二段本地 `go test ./...` 已通过：99 packages pass、30 packages 无测试、零失败。Auth 全包及 quota/cooldown/scheduler/session/Flow/generation/continuity/retry 定向 race 通过；watcher、pluginhost、redisqueue、session、httpwire race 通过。
+
+验证适配还包括：更新跟随 upstream catalog 的 Codex 0.153.3 identity 断言；同凭据模型 fallback 的聚合测试改用 model-scoped capacity 错误，账户 quota 耗尽不再假设切换同凭据模型可绕过。新上游 quota 跨模型回归继续保留。
+
+第二段 server build、LTS contract guard 与 registry lifecycle validator（相对 origin/main）均通过。本报告记录合并候选的本地验证；GitHub exact-head CI 与最终合并证据见 [PR #251](https://github.com/BlueSkyXN/CPA-Core-LTS/pull/251)。本文件不声称发布或部署。
