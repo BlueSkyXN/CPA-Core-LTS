@@ -21,6 +21,7 @@ func TestBuildCodexDesktopToolOverlayInjectsStableSchemas(t *testing.T) {
 	body := desktopOverlayRootBody("user", nil, desktopOverlayTopLevelNamespace())
 	configured := []string{"read_thread", "automation_update", "create_thread", "handoff_thread", "wait_threads"}
 	result := buildCodexDesktopToolOverlay(
+		nil,
 		"kimi",
 		sdktranslator.FormatOpenAI,
 		"kimi-k3",
@@ -123,7 +124,7 @@ func TestBuildCodexDesktopToolOverlayEligibility(t *testing.T) {
 	}{
 		{name: "Kimi Chat", provider: "kimi", to: sdktranslator.FormatOpenAI, selectedModel: "kimi-k3", requestedModel: "kimi-k3", source: sdktranslator.FormatOpenAIResponse, headers: desktopOverlayHeaders(), body: validBody, wantCount: 1, wantReason: "applied"},
 		{name: "xAI Codex wire", provider: "XAI", to: sdktranslator.FormatCodex, selectedModel: "grok-4.5", requestedModel: "grok-4.5", source: sdktranslator.FormatOpenAIResponse, headers: desktopOverlayHeaders(), body: validBody, wantCount: 1, wantReason: "applied"},
-		{name: "non xAI Codex wire", provider: "codex", to: sdktranslator.FormatCodex, selectedModel: "third-party", requestedModel: "third-party", source: sdktranslator.FormatOpenAIResponse, headers: desktopOverlayHeaders(), body: validBody, wantReason: "unsupported_target"},
+		{name: "Codex wire without selected auth", provider: "codex", to: sdktranslator.FormatCodex, selectedModel: "third-party", requestedModel: "third-party", source: sdktranslator.FormatOpenAIResponse, headers: desktopOverlayHeaders(), body: validBody, wantReason: "unsupported_target"},
 		{name: "unsupported source", provider: "kimi", to: sdktranslator.FormatOpenAI, selectedModel: "kimi-k3", requestedModel: "kimi-k3", source: sdktranslator.FormatOpenAI, headers: desktopOverlayHeaders(), body: validBody, wantReason: "unsupported_source"},
 		{name: "unsupported target", provider: "claude", to: sdktranslator.FormatClaude, selectedModel: "claude-sonnet", requestedModel: "claude-sonnet", source: sdktranslator.FormatOpenAIResponse, headers: desktopOverlayHeaders(), body: validBody, wantReason: "unsupported_target"},
 		{name: "UA case insensitive", provider: "kimi", to: sdktranslator.FormatOpenAI, selectedModel: "kimi-k3", requestedModel: "kimi-k3", source: sdktranslator.FormatOpenAIResponse, headers: http.Header{"User-Agent": {"client CODEX DESKTOP build"}}, body: validBody, wantCount: 1, wantReason: "applied"},
@@ -143,7 +144,7 @@ func TestBuildCodexDesktopToolOverlayEligibility(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := buildCodexDesktopToolOverlay(test.provider, test.to, test.selectedModel, test.requestedModel, test.source, test.headers, test.body, []string{"read_thread"})
+			result := buildCodexDesktopToolOverlay(nil, test.provider, test.to, test.selectedModel, test.requestedModel, test.source, test.headers, test.body, []string{"read_thread"})
 			if result.injectedCount != test.wantCount || result.skipReason != test.wantReason {
 				t.Fatalf("result count=%d reason=%q, want count=%d reason=%q", result.injectedCount, result.skipReason, test.wantCount, test.wantReason)
 			}
@@ -159,7 +160,7 @@ func TestBuildCodexDesktopToolOverlayHandlesPartialDuplicateAndAdditionalTools(t
 	additionalNamespace := desktopOverlayNamespace(map[string]any{"type": "custom", "name": "read_thread"})
 	body := desktopOverlayRootBodyWithAdditional("user", []any{topNamespace}, []any{additionalNamespace})
 
-	result := buildCodexDesktopToolOverlay("kimi", sdktranslator.FormatOpenAI, "kimi-k3", "kimi-k3", sdktranslator.FormatOpenAIResponse, desktopOverlayHeaders(), body, []string{"read_thread", "wait_threads"})
+	result := buildCodexDesktopToolOverlay(nil, "kimi", sdktranslator.FormatOpenAI, "kimi-k3", "kimi-k3", sdktranslator.FormatOpenAIResponse, desktopOverlayHeaders(), body, []string{"read_thread", "wait_threads"})
 	if result.injectedCount != 1 || result.skipReason != "applied" {
 		t.Fatalf("result = %+v", result)
 	}
@@ -174,7 +175,7 @@ func TestBuildCodexDesktopToolOverlayHandlesPartialDuplicateAndAdditionalTools(t
 		t.Fatalf("additional children = %v", got)
 	}
 
-	second := buildCodexDesktopToolOverlay("kimi", sdktranslator.FormatOpenAI, "kimi-k3", "kimi-k3", sdktranslator.FormatOpenAIResponse, desktopOverlayHeaders(), result.body, []string{"read_thread", "wait_threads"})
+	second := buildCodexDesktopToolOverlay(nil, "kimi", sdktranslator.FormatOpenAI, "kimi-k3", "kimi-k3", sdktranslator.FormatOpenAIResponse, desktopOverlayHeaders(), result.body, []string{"read_thread", "wait_threads"})
 	if second.injectedCount != 0 || second.skipReason != "no_new_tools" {
 		t.Fatalf("second result = %+v", second)
 	}
@@ -185,7 +186,7 @@ func TestBuildCodexDesktopToolOverlayHandlesPartialDuplicateAndAdditionalTools(t
 
 func TestBuildCodexDesktopToolOverlayInjectsAdditionalToolsOnly(t *testing.T) {
 	body := desktopOverlayRootBodyWithAdditional("user", nil, []any{desktopOverlayNamespace()})
-	result := buildCodexDesktopToolOverlay("kimi", sdktranslator.FormatOpenAI, "kimi-k3", "kimi-k3", sdktranslator.FormatOpenAIResponse, desktopOverlayHeaders(), body, []string{"read_thread"})
+	result := buildCodexDesktopToolOverlay(nil, "kimi", sdktranslator.FormatOpenAI, "kimi-k3", "kimi-k3", sdktranslator.FormatOpenAIResponse, desktopOverlayHeaders(), body, []string{"read_thread"})
 	if result.injectedCount != 1 || result.skipReason != "applied" {
 		t.Fatalf("result = %+v", result)
 	}
@@ -205,7 +206,7 @@ func TestManagerApplyRequestAfterAuthInterceptorOverlayPluginOrder(t *testing.T)
 		OriginalRequest: []byte(`{"stale":true}`),
 	}
 
-	gotReq, gotOpts, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, "kimi", req, opts, "kimi-k3")
+	gotReq, gotOpts, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, nil, "kimi", req, opts, "kimi-k3")
 	if err != nil {
 		t.Fatalf("nil plugin error = %v", err)
 	}
@@ -224,7 +225,7 @@ func TestManagerApplyRequestAfterAuthInterceptorOverlayPluginOrder(t *testing.T)
 		}
 		return cliproxyexecutor.RequestAfterAuthInterceptResponse{Body: []byte(`{"plugin":true}`)}
 	}
-	gotReq, gotOpts, err = manager.applyRequestAfterAuthInterceptor(context.Background(), nil, "kimi", req, opts, "kimi-k3")
+	gotReq, gotOpts, err = manager.applyRequestAfterAuthInterceptor(context.Background(), nil, nil, "kimi", req, opts, "kimi-k3")
 	if err != nil {
 		t.Fatalf("plugin override error = %v", err)
 	}
@@ -245,7 +246,7 @@ func TestManagerApplyRequestAfterAuthInterceptorOverlayPluginOrder(t *testing.T)
 			ResponseBody: []byte("stopped"),
 		}
 	}
-	_, _, err = manager.applyRequestAfterAuthInterceptor(context.Background(), nil, "kimi", req, opts, "kimi-k3")
+	_, _, err = manager.applyRequestAfterAuthInterceptor(context.Background(), nil, nil, "kimi", req, opts, "kimi-k3")
 	terminated, ok := err.(*cliproxyexecutor.RequestTerminatedError)
 	if !ok || terminated.HTTPStatus != http.StatusTeapot || string(terminated.Body) != "stopped" {
 		t.Fatalf("terminate error = %#v", err)
@@ -259,17 +260,17 @@ func TestManagerDesktopToolOverlayHotReload(t *testing.T) {
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Headers: desktopOverlayHeaders()}
 
 	manager.SetConfig(&internalconfig.Config{})
-	disabledReq, _, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, "kimi", req, opts, "kimi-k3")
+	disabledReq, _, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, nil, "kimi", req, opts, "kimi-k3")
 	if err != nil || !bytes.Equal(disabledReq.Payload, body) {
 		t.Fatalf("disabled overlay changed body or errored: %v", err)
 	}
 	manager.SetConfig(desktopOverlayConfig(false))
-	enabledReq, _, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, "kimi", req, opts, "kimi-k3")
+	enabledReq, _, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, nil, "kimi", req, opts, "kimi-k3")
 	if err != nil || !desktopOverlayHasChild(enabledReq.Payload, "read_thread") {
 		t.Fatalf("hot-enabled overlay not applied: %v", err)
 	}
 	manager.SetConfig(&internalconfig.Config{})
-	disabledAgainReq, _, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, "kimi", req, opts, "kimi-k3")
+	disabledAgainReq, _, err := manager.applyRequestAfterAuthInterceptor(context.Background(), nil, nil, "kimi", req, opts, "kimi-k3")
 	if err != nil || !bytes.Equal(disabledAgainReq.Payload, body) {
 		t.Fatalf("hot-disabled overlay changed body or errored: %v", err)
 	}

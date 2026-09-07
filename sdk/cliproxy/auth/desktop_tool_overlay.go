@@ -23,13 +23,14 @@ type desktopToolOverlayResult struct {
 	skipReason    string
 }
 
-func (m *Manager) applyCodexDesktopToolOverlay(provider string, toFormat sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+func (m *Manager) applyCodexDesktopToolOverlay(auth *Auth, provider string, toFormat sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil || !cfg.Codex.DesktopToolOverlay.Enabled {
 		return req, opts
 	}
 
 	result := buildCodexDesktopToolOverlay(
+		auth,
 		provider,
 		toFormat,
 		req.Model,
@@ -52,13 +53,13 @@ func (m *Manager) applyCodexDesktopToolOverlay(provider string, toFormat sdktran
 	return req, opts
 }
 
-func buildCodexDesktopToolOverlay(provider string, toFormat sdktranslator.Format, selectedModel, requestedModel string, sourceFormat sdktranslator.Format, headers http.Header, body []byte, configuredTools []string) desktopToolOverlayResult {
+func buildCodexDesktopToolOverlay(auth *Auth, provider string, toFormat sdktranslator.Format, selectedModel, requestedModel string, sourceFormat sdktranslator.Format, headers http.Header, body []byte, configuredTools []string) desktopToolOverlayResult {
 	result := desktopToolOverlayResult{body: body, skipReason: "not_applied"}
 	if sourceFormat != sdktranslator.FormatOpenAIResponse {
 		result.skipReason = "unsupported_source"
 		return result
 	}
-	if !desktopToolOverlayTargetSupported(provider, toFormat) {
+	if !desktopToolOverlayTargetSupported(auth, provider, toFormat) {
 		result.skipReason = "unsupported_target"
 		return result
 	}
@@ -144,11 +145,21 @@ func buildCodexDesktopToolOverlay(provider string, toFormat sdktranslator.Format
 	return result
 }
 
-func desktopToolOverlayTargetSupported(provider string, toFormat sdktranslator.Format) bool {
+func desktopToolOverlayTargetSupported(auth *Auth, provider string, toFormat sdktranslator.Format) bool {
 	if toFormat == sdktranslator.FormatOpenAIResponse || toFormat == sdktranslator.FormatOpenAI {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(provider), "xai") && toFormat == sdktranslator.FormatCodex
+	if toFormat != sdktranslator.FormatCodex {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "xai") {
+		return true
+	}
+	// Use the credential selected for this attempt, not an inbound API key or
+	// request metadata. Do not extend the native Codex OAuth path.
+	return strings.EqualFold(strings.TrimSpace(provider), "codex") &&
+		auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") &&
+		auth.AuthKind() == AuthKindAPIKey
 }
 
 func containsFold(value, needle string) bool {
