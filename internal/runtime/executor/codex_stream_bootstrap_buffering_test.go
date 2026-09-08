@@ -30,18 +30,39 @@ func codexBufferingConfig(enabled bool) *config.Config {
 	return &config.Config{Codex: config.CodexConfig{StreamBootstrapBuffering: enabled}}
 }
 
+func TestCodexHTTPBootstrapEmptyIncompleteIsRequestScoped(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent,
+		`{"type":"response.incomplete","response":{"status":"incomplete","output":[],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}}}`)
+	defer server.Close()
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	if result != nil {
+		for range result.Chunks {
+		}
+		t.Fatal("empty bootstrap must fail before returning a stream")
+	}
+	scoped, ok := err.(interface{ IsRequestScoped() bool })
+	if !ok || !scoped.IsRequestScoped() {
+		t.Fatalf("expected request-scoped bootstrap error, got %v", err)
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %v", err)
+	}
+}
+
 func codexTestAuth(baseURL string) *cliproxyauth.Auth {
 	return &cliproxyauth.Auth{Attributes: map[string]string{"base_url": baseURL, "api_key": "test"}}
 }
 
 func codexTestRequest() (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	return cliproxyexecutor.Request{
-			Model:   "gpt-5.6-terra",
-			Payload: []byte(`{"model":"gpt-5.6-terra","input":"hello"}`),
-		}, cliproxyexecutor.Options{
-			SourceFormat: sdktranslator.FromString("openai-response"),
-			Stream:       true,
-		}
+		Model:   "gpt-5.6-terra",
+		Payload: []byte(`{"model":"gpt-5.6-terra","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	}
 }
 
 // codexSSEServer streams the supplied event payloads as an HTTP 200 SSE response.
@@ -82,11 +103,11 @@ func codexWebsocketServer(t *testing.T, frames ...string) *httptest.Server {
 
 func codexWebsocketRequest() (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	return cliproxyexecutor.Request{
-			Model:   "gpt-5.6-terra",
-			Payload: []byte(`{"model":"gpt-5.6-terra","input":[{"type":"message","role":"user","content":"hello"}]}`),
-		}, cliproxyexecutor.Options{
-			SourceFormat: sdktranslator.FromString("openai-response"),
-		}
+		Model:   "gpt-5.6-terra",
+		Payload: []byte(`{"model":"gpt-5.6-terra","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+	}
 }
 
 // drainChunks collects every payload and the first error from a stream result.
@@ -375,6 +396,7 @@ func TestIsCodexOverloadBootstrapFailureRejectsRequestFaults(t *testing.T) {
 		`{"error":{"type":"invalid_request_error","code":"invalid_value"}}`,
 		`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`,
 		`{"error":{"type":"upstream_error","code":"unknown"}}`,
+		`{"error":{"type":"server_error","code":"server_error","message":"An internal error occurred without retry advice"}}`,
 	}
 	for _, body := range notOverload {
 		if isCodexOverloadBootstrapFailure([]byte(body)) {
@@ -383,6 +405,14 @@ func TestIsCodexOverloadBootstrapFailureRejectsRequestFaults(t *testing.T) {
 	}
 	if !isCodexOverloadBootstrapFailure([]byte(`{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}`)) {
 		t.Fatal("rate limit rejections should be eligible for bootstrap failover")
+	}
+	serverErrorFull := `{"error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID 2f5014c9-7cfe-4fb7-813e-ecb447da3edd in your message."}}`
+	if !isCodexOverloadBootstrapFailure([]byte(serverErrorFull)) {
+		t.Fatal("server_error with 'You can retry your request' should be eligible for bootstrap failover")
+	}
+	serverErrorShort := `{"error":{"type":"server_error","code":"server_error","message":"You can retry your request"}}`
+	if !isCodexOverloadBootstrapFailure([]byte(serverErrorShort)) {
+		t.Fatal("short server_error with 'You can retry your request' should be eligible for bootstrap failover")
 	}
 }
 
