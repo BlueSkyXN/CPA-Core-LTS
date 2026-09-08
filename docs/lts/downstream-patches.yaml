@@ -1342,7 +1342,7 @@ patches:
   - id: codex-dotted-collaboration-tool-restoration
     reason: Codex may return collaboration-optimize dot-prefixed tools; restore the original namespace and short name while rejecting input prefix conflicts, without weakening LTS plaintext provenance checks.
     introduced_in: 4e176c699e36401718f9d5755dea2341b0c09461
-    affected_upstream_range: Main baseline 4c1bebe837a6e624215a97dddee5db11f0eeb8bf; equivalent fix is on upstream dev at 82f4f370df45f7a5a4be52f8101d4294f656ff02, not yet main.
+    affected_upstream_range: Equivalent 82f4f370df45f7a5a4be52f8101d4294f656ff02 is included in the merged f19d6da0 baseline; existing LTS namespace and plaintext gates remain distinct and protected.
     files:
       - internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2.go
       - internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2_test.go
@@ -1352,5 +1352,61 @@ patches:
       - TestRestoreCodexMultiAgentV2ResponseRestoresDottedFlatToolName
       - TestCodexExecutorOptimizeMultiAgentV2RestoresDottedFlatToolName
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@82f4f370df45f7a5a4be52f8101d4294f656ff02
-    state: upstreamed
+    state: removable
     retire_when: The equivalent fix is part of the merged main baseline and the listed namespace conflict and HTTP/stream round-trip regressions pass, then follow the removable-to-retired lifecycle.
+
+  - id: session-dispatch-context-after-selection
+    reason: Session affinity selection can finalize the canonical LCP identity; copy metadata into execution context after committing selection so execution, count, stream refresh retries and usage attribution agree.
+    introduced_in: 219812ef
+    affected_upstream_range: Required through f19d6da0; upstream copies session metadata before selection finalization on affected dispatch paths.
+    files:
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/conductor_stream.go
+      - sdk/cliproxy/auth/conductor_session_identity_test.go
+    regression_tests:
+      - TestManagerSessionDispatchIdentity
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream preserves canonical and parent session identity across all three dispatch paths and unauthorized refresh, and the regression passes without this ordering correction.
+
+  - id: antigravity-compaction-completion-validation
+    reason: A translated completed response does not prove the upstream summary completed. Preserve the original finish reason and reject truncated, blocked, missing-terminal or empty summaries before sealing a compaction capsule.
+    introduced_in: d3f275eb
+    affected_upstream_range: Required after 70f45604 through f19d6da0; the new transport lifecycle is independent of summary integrity.
+    files:
+      - internal/runtime/executor/antigravity_executor_execute.go
+      - internal/runtime/executor/antigravity_executor_stream.go
+      - internal/runtime/executor/antigravity_compaction_completion_test.go
+    regression_tests:
+      - TestAntigravityCompactionRequiresCompleteSummary
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream validates the original terminal reason and nonempty summary across Gemini and Claude stream, nonstream and compact endpoints without mutating caller history.
+
+  - id: gemini-explicit-text-signature-carriers
+    reason: Retain explicit text signature carriers rather than making replay depend on a model/message-ID cache that can expire, be evicted, or be absent on another worker. Preserve the existing portable request-carried replay contract.
+    introduced_in: f703f995
+    affected_upstream_range: Deliberately diverges from 510c9c8f in the f19d6da0 merge; output timeline cosmetics do not justify losing replay after a cache miss.
+    files:
+      - internal/translator/gemini/openai/responses/gemini_openai-responses_request.go
+      - internal/translator/gemini/openai/responses/gemini_openai-responses_response.go
+      - internal/translator/gemini/openai/responses/gemini_openai-responses_response_test.go
+    regression_tests:
+      - TestConvertGeminiResponseToOpenAIResponses_TrailingCarrierDirectionSurvivesStrippedIDs
+      - TestConvertGeminiResponseToOpenAIResponses_SignedTextAndTrailingSignatureRoundTripInOrder
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@510c9c8fa529038a685210fc8012834be28708b9
+    state: required
+    retire_when: An equivalent implementation preserves text signature replay without depending on successful retention in a process or optional shared cache, with sequential output and explicit carrier round-trip tests passing.
+
+  - id: antigravity-pool-settings-cache-key
+    reason: Config reload may race an old request repopulating a purged transport cache; key transports by resolved pooling settings so new requests cannot reuse old connection policy.
+    introduced_in: a715ad97
+    affected_upstream_range: Narrow backport of dev 68dd99d5 onto the f19d6da0 main baseline; not a merge of upstream dev.
+    files:
+      - internal/runtime/executor/antigravity_executor.go
+      - internal/runtime/executor/antigravity_executor_transport_test.go
+    regression_tests:
+      - TestAntigravityTransportKeySeparatesPoolSettingsAcrossReload
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@68dd99d56f6867062547f80acf6e2b22f0766b58
+    state: upstreamed
+    retire_when: The equivalent settings-key fix reaches the merged main baseline; validate direct/proxy pooling and reload regressions before the removable and retired stages.
