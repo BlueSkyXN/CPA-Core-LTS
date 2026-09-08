@@ -294,7 +294,8 @@ func chatChunk(requestID, model string, created int64, delta map[string]any, fin
 }
 
 func chatUsage(usage pluginapi.AgentUsageV1) map[string]any {
-	if usage.InputTokens == nil && usage.OutputTokens == nil && usage.TotalTokens == nil {
+	if usage.InputTokens == nil && usage.OutputTokens == nil && usage.TotalTokens == nil &&
+		usage.CacheReadTokens == nil && usage.CacheCreationTokens == nil && usage.ReasoningTokens == nil {
 		return nil
 	}
 	result := map[string]any{}
@@ -306,6 +307,19 @@ func chatUsage(usage pluginapi.AgentUsageV1) map[string]any {
 	}
 	if usage.TotalTokens != nil {
 		result["total_tokens"] = *usage.TotalTokens
+	}
+	inputDetails := map[string]any{}
+	if usage.CacheReadTokens != nil {
+		inputDetails["cached_tokens"] = *usage.CacheReadTokens
+	}
+	if usage.CacheCreationTokens != nil {
+		inputDetails["cache_creation_tokens"] = *usage.CacheCreationTokens
+	}
+	if len(inputDetails) > 0 {
+		result["prompt_tokens_details"] = inputDetails
+	}
+	if usage.ReasoningTokens != nil {
+		result["completion_tokens_details"] = map[string]any{"reasoning_tokens": *usage.ReasoningTokens}
 	}
 	return result
 }

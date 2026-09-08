@@ -182,3 +182,21 @@ test('tool identity supplied in a later delta is emitted once', async (t) => {
   assert.equal(updates[0].payload.tool_call_id, 'late');
   assert.equal(updates[0].payload.name, 'lookup');
 });
+
+for (const [name, usage] of Object.entries({
+  chat: { prompt_tokens: 120, completion_tokens: 12, total_tokens: 132,
+    prompt_tokens_details: { cached_tokens: 90, cache_creation_tokens: 20 }, completion_tokens_details: { reasoning_tokens: 7 } },
+  responses: { input_tokens: 120, output_tokens: 12, total_tokens: 132,
+    input_tokens_details: { cached_tokens: 90, cache_write_tokens: 20 }, output_tokens_details: { reasoning_tokens: 7 } },
+})) {
+  test(`direct ${name} usage retains token details without adding subsets to totals`, async (t) => {
+    const body = 'data: ' + JSON.stringify({ choices: [], usage }) + '\n\ndata: [DONE]\n\n';
+    const run = await start(setup(t, async () => new Response(body)));
+    await within(run.terminal);
+    assert.deepEqual(run.events.find((e) => e.type === 'usage.updated').payload, {
+      input_tokens: 120, output_tokens: 12, total_tokens: 132,
+      cache_read_tokens: 90, cache_creation_tokens: 20, reasoning_tokens: 7,
+      provenance: 'provider_reported_unverified',
+    });
+  });
+}

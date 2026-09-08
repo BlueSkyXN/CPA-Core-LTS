@@ -38,7 +38,8 @@ type TurnState = {
   emit: (event: AgentEventV1) => Promise<void>;
   sequence: number;
   started: boolean;
-  sawPartial: boolean;
+  hasTextOutput: boolean;
+  partialContent: Map<string, string>;
   canceled: boolean;
   terminal: boolean;
   permissionFailure?: "permission_denied" | "permission_unsupported";
@@ -245,7 +246,8 @@ export class QoderSDKAdapter implements QoderAdapter {
       emit,
       sequence: 0,
       started: false,
-      sawPartial: false,
+      hasTextOutput: false,
+      partialContent: new Map(),
       canceled: false,
       terminal: false,
       toolIndexes: new Set<number>(),
@@ -404,7 +406,6 @@ export class QoderSDKAdapter implements QoderAdapter {
       current.started = true;
     }
     if (message.type === "stream_event") {
-      current.sawPartial = true;
       await this.handleStreamEvent(current, message.event);
       return;
     }
@@ -414,9 +415,10 @@ export class QoderSDKAdapter implements QoderAdapter {
         await this.emitTerminal(current, "turn.failed", "failed", "auth_expired", "Qoder authentication was rejected");
         return;
       }
-      if (!current.sawPartial) {
-        for (const block of message.message.content) await this.handleContentBlock(current, block);
+      for (const [index, block] of message.message.content.entries()) {
+        await this.handleContentBlock(current, block, index);
       }
+      current.partialContent.clear();
       return;
     }
     if (message.type === "system" && message.subtype === "permission_denied") {
@@ -426,13 +428,19 @@ export class QoderSDKAdapter implements QoderAdapter {
     }
     if (message.type === "result") {
       session.current = undefined;
-      const input = numberOrUndefined(message.usage?.input_tokens);
+      const uncachedInput = numberOrUndefined(message.usage?.input_tokens);
+      const cacheRead = numberOrUndefined(message.usage?.cache_read_input_tokens);
+      const cacheCreation = numberOrUndefined(message.usage?.cache_creation_input_tokens);
+      // SDK cache buckets are independent; the host Chat boundary uses inclusive input.
+      const input = uncachedInput !== undefined ? uncachedInput + (cacheRead ?? 0) + (cacheCreation ?? 0) : undefined;
       const output = numberOrUndefined(message.usage?.output_tokens);
-      if (input !== undefined || output !== undefined) {
+      if (input !== undefined || output !== undefined || cacheRead !== undefined || cacheCreation !== undefined) {
         await this.emit(current, "usage.updated", {
           input_tokens: input,
           output_tokens: output,
           total_tokens: input !== undefined && output !== undefined ? input + output : undefined,
+          ...(cacheRead !== undefined ? { cache_read_tokens: cacheRead } : {}),
+          ...(cacheCreation !== undefined ? { cache_creation_tokens: cacheCreation } : {}),
           provenance: "provider_reported_unverified",
         });
       }
@@ -441,7 +449,7 @@ export class QoderSDKAdapter implements QoderAdapter {
       } else if (current.permissionFailure) {
         await this.emitTerminal(current, "turn.failed", current.permissionFailure, current.permissionFailure, "Qoder tool permission was denied");
       } else if (message.subtype === "success" && !message.is_error) {
-        if (!current.sawPartial && message.result) await this.emit(current, "message.delta", { text: message.result });
+        if (!current.hasTextOutput && message.result) await this.emit(current, "message.delta", { text: message.result });
         await this.emitTerminal(current, "turn.completed", "completed");
       } else {
         await this.emitTerminal(current, "turn.failed", "failed", String(message.error_code ?? message.subtype), "Qoder turn failed");
@@ -451,14 +459,20 @@ export class QoderSDKAdapter implements QoderAdapter {
 
   private async handleStreamEvent(current: TurnState, event: Record<string, unknown>): Promise<void> {
     const eventType = String(event.type ?? "");
+    if (eventType === "message_start") {
+      current.partialContent.clear();
+      current.toolIndexes.clear();
+      return;
+    }
+    const index = typeof event.index === "number" ? event.index : 0;
     const delta = isRecord(event.delta) ? event.delta : {};
     if (eventType === "content_block_delta") {
       const deltaType = String(delta.type ?? "");
       if (deltaType === "text_delta" && typeof delta.text === "string") {
-        await this.emit(current, "message.delta", { text: delta.text });
+        await this.emitPartialContent(current, index, "text", delta.text);
       } else if (deltaType === "thinking_delta" || deltaType === "reasoning_delta") {
         const text = typeof delta.thinking === "string" ? delta.thinking : typeof delta.text === "string" ? delta.text : "";
-        if (text) await this.emit(current, "reasoning.delta", { text });
+        await this.emitPartialContent(current, index, "reasoning", text);
       } else if (deltaType === "input_json_delta") {
         await this.emit(current, "tool.updated", { index: event.index, partial_json: delta.partial_json ?? "" });
       }
@@ -467,8 +481,14 @@ export class QoderSDKAdapter implements QoderAdapter {
     if (eventType === "content_block_start" && isRecord(event.content_block)) {
       const block = event.content_block;
       if (block.type === "tool_use") {
+        current.partialContent.set(`tool:${index}`, "");
         if (typeof event.index === "number") current.toolIndexes.add(event.index);
         await this.emit(current, "tool.started", { tool_call_id: block.id, name: block.name, input: block.input });
+      } else if (block.type === "text" && typeof block.text === "string") {
+        await this.emitPartialContent(current, index, "text", block.text);
+      } else if (block.type === "thinking" || block.type === "reasoning") {
+        const text = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
+        await this.emitPartialContent(current, index, "reasoning", text);
       }
       return;
     }
@@ -479,12 +499,27 @@ export class QoderSDKAdapter implements QoderAdapter {
     }
   }
 
-  private async handleContentBlock(current: TurnState, block: Record<string, unknown>): Promise<void> {
+  private async emitPartialContent(current: TurnState, index: number, kind: "text" | "reasoning", text: string): Promise<void> {
+    if (!text) return;
+    const key = `${kind}:${index}`;
+    current.partialContent.set(key, (current.partialContent.get(key) ?? "") + text);
+    await this.emit(current, kind === "text" ? "message.delta" : "reasoning.delta", { text });
+  }
+
+  private async handleContentBlock(current: TurnState, block: Record<string, unknown>, index: number): Promise<void> {
+    const remaining = (kind: string, text: string) => {
+      const streamed = current.partialContent.get(`${kind}:${index}`) ?? "";
+      // Already emitted deltas cannot be replaced; only append a matching suffix.
+      return text.startsWith(streamed) ? text.slice(streamed.length) : "";
+    };
     if (block.type === "text" && typeof block.text === "string") {
-      await this.emit(current, "message.delta", { text: block.text });
-    } else if ((block.type === "thinking" || block.type === "reasoning") && typeof block.text === "string") {
-      await this.emit(current, "reasoning.delta", { text: block.text });
+      const text = remaining("text", block.text);
+      if (text) await this.emit(current, "message.delta", { text });
+    } else if (block.type === "thinking" || block.type === "reasoning") {
+      const text = remaining("reasoning", typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "");
+      if (text) await this.emit(current, "reasoning.delta", { text });
     } else if (block.type === "tool_use") {
+      if (current.partialContent.has(`tool:${index}`)) return;
       await this.emit(current, "tool.started", { tool_call_id: block.id, name: block.name, input: block.input });
       await this.emit(current, "tool.completed", { tool_call_id: block.id });
     } else if (block.type === "tool_result") {
@@ -522,6 +557,9 @@ export class QoderSDKAdapter implements QoderAdapter {
 
   private async emit(state: TurnState, type: AgentEventType, payload?: unknown): Promise<void> {
     if (state.terminal && !isTerminalEvent(type)) return;
+    if (type === "message.delta" && isRecord(payload) && typeof payload.text === "string" && payload.text.length > 0) {
+      state.hasTextOutput = true;
+    }
     state.sequence += 1;
     await state.emit({
       schema_version: 1,

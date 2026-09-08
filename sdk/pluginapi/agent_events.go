@@ -79,9 +79,14 @@ type AgentTerminalPayloadV1 struct {
 }
 
 type AgentUsageV1 struct {
-	InputTokens  *int64 `json:"input_tokens,omitempty"`
-	OutputTokens *int64 `json:"output_tokens,omitempty"`
-	TotalTokens  *int64 `json:"total_tokens,omitempty"`
+	// InputTokens includes cache reads/writes; OutputTokens includes reasoning.
+	// Optional breakdown fields are subsets, not additional billable totals.
+	InputTokens         *int64 `json:"input_tokens,omitempty"`
+	OutputTokens        *int64 `json:"output_tokens,omitempty"`
+	TotalTokens         *int64 `json:"total_tokens,omitempty"`
+	CacheReadTokens     *int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens *int64 `json:"cache_creation_tokens,omitempty"`
+	ReasoningTokens     *int64 `json:"reasoning_tokens,omitempty"`
 	// Provenance distinguishes provider-reported values from estimates. The
 	// exact values are intentionally open strings so the usage/LTS layer can
 	// evolve additively without changing this event envelope.

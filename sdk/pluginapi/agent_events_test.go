@@ -3,6 +3,7 @@ package pluginapi
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,33 @@ func TestAgentTerminalFinishReasonIsOptionalAndRoundTrips(t *testing.T) {
 		}
 		if reason == "" && strings.Contains(string(raw), "finish_reason") {
 			t.Fatal("optional field changed legacy payload")
+		}
+	}
+}
+
+func TestAgentUsageOptionalTokenDetailsRoundTrip(t *testing.T) {
+	for _, raw := range []string{
+		`{"input_tokens":120,"output_tokens":12,"total_tokens":132}`,
+		`{"input_tokens":120,"output_tokens":12,"total_tokens":132,"cache_read_tokens":90,"cache_creation_tokens":20,"reasoning_tokens":7}`,
+		`{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_tokens":0}`,
+	} {
+		var usage AgentUsageV1
+		if err := json.Unmarshal([]byte(raw), &usage); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(usage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want, got map[string]any
+		if err = json.Unmarshal([]byte(raw), &want); err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(encoded, &got); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("token details or absence changed: got %s, want %s", encoded, raw)
 		}
 	}
 }

@@ -353,6 +353,47 @@ func TestExecuteStreamMapsHTTPErrorWithoutLeakingBody(t *testing.T) {
 	}
 }
 
+type doneBeforeEOFHost struct {
+	*fakeHost
+	delivered     bool
+	readAfterDone chan struct{}
+}
+
+func (h *doneBeforeEOFHost) Call(method string, payload any) (json.RawMessage, error) {
+	if method == pluginabi.MethodHostHTTPStreamRead {
+		if !h.delivered {
+			h.delivered = true
+			return marshalFakeResult(hostHTTPStreamReadResponse{Payload: []byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"complete\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")})
+		}
+		close(h.readAfterDone)
+		<-h.upstreamClosed
+		return marshalFakeResult(hostHTTPStreamReadResponse{Done: true})
+	}
+	return h.fakeHost.Call(method, payload)
+}
+
+func TestExecuteStreamCompletesAtDoneWithoutEOF(t *testing.T) {
+	host := &doneBeforeEOFHost{fakeHost: newFakeHost(), readAfterDone: make(chan struct{})}
+	runtime := newPluginRuntime(host)
+	defer runtime.shutdown()
+	if _, err := runtime.executeStream(executorRequestJSON(t, "done-without-eof")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-host.pluginClosed:
+	case <-host.readAfterDone:
+		t.Fatal("received [DONE], but attempted another blocking upstream read")
+	case <-time.After(time.Second):
+		t.Fatal("stream did not complete at [DONE]")
+	}
+	if event := host.waitPluginClose(t); event.Error != "" {
+		t.Fatalf("successful stream closed with error: %s", event.Error)
+	}
+	if host.httpCloseCount() != 1 || len(host.emittedPayloads()) != 1 {
+		t.Fatal("completion must preserve the answer and close upstream exactly once")
+	}
+}
+
 func TestMalformedSSEClosesStreamWithBoundedError(t *testing.T) {
 	host := newFakeHost()
 	host.reads = []hostHTTPStreamReadResponse{{Payload: []byte("data: not-json\n\n"), Done: true}}
