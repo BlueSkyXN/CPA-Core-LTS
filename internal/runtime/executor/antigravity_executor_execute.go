@@ -22,6 +22,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const antigravityFinishReasonMetadataKey = "antigravity_finish_reason"
+
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if helps.HasResponsesCompactionItem(req.Payload) {
@@ -186,12 +188,13 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 	bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
 	reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
+	finishReason := antigravityResponseFinishReason(bodyBytes)
 	var param any
 	converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bodyBytes, &param)
 	if responseFormat == sdktranslator.FormatOpenAIResponse {
 		converted = helps.EnsureResponsesUsageDetails(converted)
 	}
-	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
+	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone(), Metadata: map[string]any{antigravityFinishReasonMetadataKey: finishReason}}
 	reporter.EnsurePublished(ctx)
 	return resp, nil
 }
@@ -221,9 +224,9 @@ func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *clipr
 		return resp, errSummary
 	}
 
-	summaryText, errExtract := helps.ExtractAntigravitySummaryText(summaryResp.Payload)
+	summaryText, errExtract := antigravityCompactionSummaryText(summaryResp)
 	if errExtract != nil {
-		return resp, fmt.Errorf("extract summary: %w", errExtract)
+		return resp, errExtract
 	}
 	capsule, errSeal := helps.SealAntigravityCompaction(summaryText, baseModel)
 	if errSeal != nil {
@@ -245,6 +248,26 @@ func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *clipr
 		Payload: respBytes,
 		Headers: summaryResp.Headers,
 	}, nil
+}
+
+func antigravityResponseFinishReason(payload []byte) string {
+	reason := gjson.GetBytes(payload, "response.candidates.0.finishReason")
+	if !reason.Exists() {
+		reason = gjson.GetBytes(payload, "candidates.0.finishReason")
+	}
+	return reason.String()
+}
+
+func antigravityCompactionSummaryText(resp cliproxyexecutor.Response) (string, error) {
+	// 转换后的 completed 不能证明摘要完整；只信任转换前保留的上游结束原因。
+	if reason, _ := resp.Metadata[antigravityFinishReasonMetadataKey].(string); reason != "STOP" {
+		return "", statusErr{code: http.StatusBadGateway, msg: "antigravity compaction summary did not complete"}
+	}
+	summary, err := helps.ExtractAntigravitySummaryText(resp.Payload)
+	if err != nil || strings.TrimSpace(summary) == "" {
+		return "", statusErr{code: http.StatusBadGateway, msg: "antigravity compaction summary is empty"}
+	}
+	return summary, nil
 }
 
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
@@ -450,12 +473,13 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 
 	resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
 	reporter.Publish(ctx, helps.ParseAntigravityUsage(resp.Payload))
+	finishReason := antigravityResponseFinishReason(resp.Payload)
 	var param any
 	converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, resp.Payload, &param)
 	if responseFormat == sdktranslator.FormatOpenAIResponse {
 		converted = helps.EnsureResponsesUsageDetails(converted)
 	}
-	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
+	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone(), Metadata: map[string]any{antigravityFinishReasonMetadataKey: finishReason}}
 	reporter.EnsurePublished(ctx)
 
 	return resp, nil

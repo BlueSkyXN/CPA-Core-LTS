@@ -285,9 +285,9 @@ func (e *AntigravityExecutor) executeCompactionStream(ctx context.Context, auth 
 		return nil, errSummary
 	}
 
-	summaryText, errExtract := helps.ExtractAntigravitySummaryText(summaryResp.Payload)
+	summaryText, errExtract := antigravityCompactionSummaryText(summaryResp)
 	if errExtract != nil {
-		return nil, fmt.Errorf("extract summary: %w", errExtract)
+		return nil, errExtract
 	}
 	capsule, errSeal := helps.SealAntigravityCompaction(summaryText, baseModel)
 	if errSeal != nil {

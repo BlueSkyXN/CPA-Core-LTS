@@ -33,7 +33,7 @@ func TestAntigravityCompactionTriggerStreamGemini(t *testing.T) {
 
 		// When summary is requested with user turn at the end:
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Summary of previous conversation"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`))
+		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Summary of previous conversation"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`))
 	}))
 	defer server.Close()
 
@@ -112,7 +112,7 @@ func TestAntigravityCompactionTriggerStreamClaude(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Claude summary of previous conversation\"}],\"role\":\"model\"}}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":10,\"totalTokenCount\":30}}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Claude summary of previous conversation\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":10,\"totalTokenCount\":30}}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -186,7 +186,7 @@ func TestAntigravityCompactionAltResponsesCompact(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Summary of previous conversation"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`))
+		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Summary of previous conversation"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`))
 	}))
 	defer server.Close()
 
@@ -247,7 +247,7 @@ func TestAntigravityCompactionReplayNextTurn(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Turn completed"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`))
+		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Turn completed"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`))
 	}))
 	defer server.Close()
 
@@ -367,7 +367,7 @@ func TestAntigravityCompactionSequentialCompactionPreservesContext(t *testing.T)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Updated summary including earlier context"}],"role":"model"}}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":8,"totalTokenCount":23}}}`))
+		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"Updated summary including earlier context"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":8,"totalTokenCount":23}}}`))
 	}))
 	defer server.Close()
 
