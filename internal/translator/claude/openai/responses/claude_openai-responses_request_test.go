@@ -1792,3 +1792,112 @@ func TestNormalizeCodexAgentMessagesPreservesUnprovenContent(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToClaude_TextFormatStructuredOutput(t *testing.T) {
+	t.Run("json_schema", func(t *testing.T) {
+		input := []byte(`{
+			"model": "claude-sonnet-4-6",
+			"input": "Extract facts.",
+			"text": {
+				"format": {
+					"type": "json_schema",
+					"name": "extracted_facts",
+					"schema": {
+						"type": "object",
+						"properties": {
+							"facts": {
+								"type": "array",
+								"items": {"type": "string"}
+							}
+						},
+						"required": ["facts"]
+					}
+				}
+			}
+		}`)
+		out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
+		system := gjson.GetBytes(out, "system")
+		if !system.Exists() || len(system.Array()) == 0 {
+			t.Fatalf("system blocks missing. Output: %s", string(out))
+		}
+		found := false
+		for _, block := range system.Array() {
+			if strings.Contains(block.Get("text").String(), "facts") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected structured schema instruction in system prompt. Output: %s", string(out))
+		}
+	})
+
+	t.Run("json_object", func(t *testing.T) {
+		input := []byte(`{
+			"model": "claude-sonnet-4-6",
+			"input": "Return JSON.",
+			"text": {
+				"format": {
+					"type": "json_object"
+				}
+			}
+		}`)
+		out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
+		system := gjson.GetBytes(out, "system")
+		if !system.Exists() || len(system.Array()) == 0 {
+			t.Fatalf("system blocks missing. Output: %s", string(out))
+		}
+		found := false
+		for _, block := range system.Array() {
+			if strings.Contains(block.Get("text").String(), "JSON object") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected JSON object instruction in system prompt. Output: %s", string(out))
+		}
+	})
+
+	t.Run("preserves_existing_instructions_and_precedence", func(t *testing.T) {
+		input := []byte(`{
+			"model": "claude-sonnet-4-6",
+			"instructions": "Be concise.",
+			"input": "Extract facts.",
+			"text": {
+				"format": {
+					"type": "json_schema",
+					"name": "winning_schema",
+					"description": "Primary facts",
+					"schema": {"type": "object", "properties": {"item": {"type": "string"}}}
+				}
+			},
+			"response_format": {
+				"type": "json_object"
+			}
+		}`)
+		out := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-6", input, false)
+		system := gjson.GetBytes(out, "system")
+		if !system.Exists() || len(system.Array()) < 2 {
+			t.Fatalf("expected at least 2 system blocks. Output: %s", string(out))
+		}
+		hasInstructions := false
+		hasWinningSchema := false
+		hasFallbackObject := false
+		for _, block := range system.Array() {
+			text := block.Get("text").String()
+			if strings.Contains(text, "Be concise.") {
+				hasInstructions = true
+			}
+			if strings.Contains(text, "winning_schema") && strings.Contains(text, "Primary facts") && strings.Contains(text, "item") {
+				hasWinningSchema = true
+			}
+			if strings.Contains(text, "valid JSON object") {
+				hasFallbackObject = true
+			}
+		}
+		if !hasInstructions || !hasWinningSchema || hasFallbackObject {
+			t.Fatalf("expected instructions and winning schema without fallback. Output: %s", string(out))
+		}
+	})
+}

@@ -1327,7 +1327,7 @@ patches:
   - id: wsrelay-terminal-frame-preservation
     reason: A terminal frame must not evict an already queued stream frame to make room. Use cancelable backpressure for terminal delivery and preserve explicit cancellation/session-close outcomes.
     introduced_in: 4e176c699e36401718f9d5755dea2341b0c09461
-    affected_upstream_range: Main baseline 4c1bebe837a6e624215a97dddee5db11f0eeb8bf; equivalent fix is on upstream dev at 7871a5a978d5753f926c565d28997503497da8b0, not yet main.
+    affected_upstream_range: Equivalent 7871a5a978d5753f926c565d28997503497da8b0 is included in the d198db54 main baseline. Production session.go is byte-identical to upstream; preserve frame-order and cancellation tests.
     files:
       - internal/wsrelay/session.go
       - internal/wsrelay/session_test.go
@@ -1336,7 +1336,7 @@ patches:
       - TestSession_SlowConsumer_Terminal_UnblocksOnContextCancel
       - TestSession_SlowConsumer_Terminal_UnblocksOnSessionClose
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@7871a5a978d5753f926c565d28997503497da8b0
-    state: upstreamed
+    state: removable
     retire_when: The equivalent dev fix enters the merged main baseline; first mark removable and verify frame order plus cancellation under race before retiring the local delta.
 
   - id: codex-dotted-collaboration-tool-restoration
@@ -1410,3 +1410,16 @@ patches:
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@68dd99d56f6867062547f80acf6e2b22f0766b58
     state: upstreamed
     retire_when: The equivalent settings-key fix reaches the merged main baseline; validate direct/proxy pooling and reload regressions before the removable and retired stages.
+
+  - id: claude-missing-tool-schema-default
+    reason: Missing or null Claude input_schema must not produce a function without parameters at the OpenAI boundary. Preserve supplied schemas and default only the absent cases to an empty object schema.
+    introduced_in: 5671c350e0f527410121b647a78e44f4afaed49b
+    affected_upstream_range: Narrow backport of dev 6e1f9ec4 onto main d198db54; independent of Claude helper fingerprint and Kimi protocol changes.
+    files:
+      - internal/translator/openai/claude/openai_claude_request.go
+      - internal/translator/openai/claude/openai_claude_request_test.go
+    regression_tests:
+      - TestConvertClaudeRequestToOpenAI_ToolWithoutInputSchemaDefaultsParameters
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@6e1f9ec4e0b6380c5bf531abc98da9188e10127a
+    state: upstreamed
+    retire_when: The equivalent missing and null schema fix reaches the merged main baseline and regression tests pass before entering removable and retired.
