@@ -297,8 +297,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 						return nil, errRetryAdmission
 					}
 					ctx = admittedRetryCtx
-					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 					m.commitPreDispatchSelection(auth, execOpts)
+					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					startRetry := time.Now()
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
