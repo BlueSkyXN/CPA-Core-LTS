@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -94,5 +95,35 @@ func TestQoderProjectionRequestErrorsHaveClientStatus(t *testing.T) {
 		if !ok || err.statusCode != want {
 			t.Fatalf("%s: %#v", code, err)
 		}
+	}
+}
+
+func TestQoderProjectionRetainsTokenBreakdownInStreamAndNonStream(t *testing.T) {
+	p := newEventProjection("regression", "fixture")
+	if err := p.consume(projectionEvent(1, pluginapi.AgentEventUsageUpdated, map[string]any{
+		"input_tokens": 120, "output_tokens": 12, "total_tokens": 132,
+		"cache_read_tokens": 90, "cache_creation_tokens": 20, "reasoning_tokens": 7,
+		"provenance": "provider_reported_unverified",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	chunk, done, err := p.streamChunk(projectionEvent(2, pluginapi.AgentEventTurnCompleted, map[string]any{"state": "completed"}))
+	if err != nil || !done {
+		t.Fatalf("stream terminal: done=%v err=%v", done, err)
+	}
+	response, err := p.nonStreamResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range [][]byte{chunk, response.Payload} {
+		detail := helps.ParseOpenAIUsage(payload)
+		if detail.InputTokens != 120 || detail.OutputTokens != 12 || detail.TotalTokens != 132 ||
+			detail.CacheReadTokens != 90 || detail.CacheCreationTokens != 20 || detail.ReasoningTokens != 7 ||
+			!detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Input.UncachedTokens != 10 || detail.TokenBreakdown.Output.NonReasoningTokens != 5 {
+			t.Fatalf("token breakdown lost in host usage parsing: %s", payload)
+		}
+	}
+	if response.Metadata["usage_provenance"] != "provider_reported_unverified" {
+		t.Fatal("usage provenance changed")
 	}
 }

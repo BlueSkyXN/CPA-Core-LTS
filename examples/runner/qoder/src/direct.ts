@@ -389,11 +389,19 @@ export class DirectOpenAIAdapter implements QoderAdapter {
       const input = numberOrUndefined(usage.input_tokens ?? usage.prompt_tokens);
       const output = numberOrUndefined(usage.output_tokens ?? usage.completion_tokens);
       const total = numberOrUndefined(usage.total_tokens) ?? (input !== undefined && output !== undefined ? input + output : undefined);
-      if (input !== undefined || output !== undefined || total !== undefined) {
+      const inputDetails = usage.prompt_tokens_details ?? usage.input_tokens_details;
+      const outputDetails = usage.completion_tokens_details ?? usage.output_tokens_details;
+      const cacheRead = numberOrUndefined(inputDetails?.cached_tokens);
+      const cacheCreation = numberOrUndefined(inputDetails?.cache_creation_tokens ?? inputDetails?.cache_write_tokens);
+      const reasoning = numberOrUndefined(outputDetails?.reasoning_tokens);
+      if (input !== undefined || output !== undefined || total !== undefined || cacheRead !== undefined || cacheCreation !== undefined || reasoning !== undefined) {
         await this.emit(turn, "usage.updated", {
           input_tokens: input,
           output_tokens: output,
           total_tokens: total,
+          ...(cacheRead !== undefined ? { cache_read_tokens: cacheRead } : {}),
+          ...(cacheCreation !== undefined ? { cache_creation_tokens: cacheCreation } : {}),
+          ...(reasoning !== undefined ? { reasoning_tokens: reasoning } : {}),
           provenance: "provider_reported_unverified",
         });
       }

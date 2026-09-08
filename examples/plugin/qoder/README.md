@@ -172,6 +172,13 @@ streaming request. It projects both stream and non-stream responses through the
 shared AgentEvent lifecycle and marks upstream usage as
 `provider_reported_unverified`.
 
+Usage events retain reported cache-read, cache-creation, and reasoning counts
+through optional `cache_read_tokens`, `cache_creation_tokens`, and
+`reasoning_tokens` fields. SDK cache buckets are added to its uncached input
+count before projecting inclusive Chat `prompt_tokens`; Direct Chat cache and
+reasoning counts remain subsets of the reported input/output totals. Missing
+details stay absent rather than being inferred from text or filled with zero.
+
 Both transports require an exact executable model ID and preserve explicit
 cancel, close, downstream disconnect, and SSE `[DONE]` handling. The plugin does
 not implement the reverse-engineered legacy COSY/QoderEncoding protocol.

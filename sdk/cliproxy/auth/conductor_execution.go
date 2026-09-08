@@ -625,8 +625,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				break
 			}
 			execCtx = admittedCtx
-			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			m.commitPreDispatchSelection(auth, execOpts)
+			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
@@ -668,8 +668,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						break
 					}
 					execCtx = admittedRetryCtx
-					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					m.commitPreDispatchSelection(auth, execOpts)
+					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
 					startRetry := time.Now()
 					resp, errExec = executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
@@ -889,8 +889,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				break
 			}
 			execCtx = admittedCtx
-			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			m.commitPreDispatchSelection(auth, execOpts)
+			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
@@ -928,8 +928,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						break
 					}
 					execCtx = admittedRetryCtx
-					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					m.commitPreDispatchSelection(auth, execOpts)
+					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
 					resp, errExec = countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)

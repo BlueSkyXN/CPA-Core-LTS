@@ -207,7 +207,7 @@ func (r *pluginRuntime) forwardStream(execution *activeExecution) {
 				}
 			}
 		}
-		if chunk.Done {
+		if validator.doneReceived || chunk.Done {
 			if execution.canceled() {
 				markConnectionLifecycle("CodeBuddy stream canceled")
 			} else {
