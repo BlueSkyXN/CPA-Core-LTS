@@ -72,7 +72,9 @@ func StatisticsEnabled() bool { return statisticsEnabled.Load() }
 
 // RequestStatistics maintains aggregated request metrics in memory.
 type RequestStatistics struct {
-	mu sync.RWMutex
+	mu              sync.RWMutex
+	queryGeneration string
+	querySequence   uint64
 
 	totalRequests int64
 	successCount  int64
@@ -131,6 +133,7 @@ type RequestDetail struct {
 	FailureStatus        int        `json:"failure_status,omitempty"`
 
 	timingFieldsPresent timingFieldPresence
+	querySequence       uint64
 }
 
 type timingFieldPresence uint8
@@ -147,38 +150,26 @@ const (
 // keeps an omitted field distinct from a measured zero after import/export.
 func (d RequestDetail) MarshalJSON() ([]byte, error) {
 	type requestDetailAlias RequestDetail
-	encoded, err := json.Marshal(requestDetailAlias(d))
-	if err != nil {
-		return nil, err
+	wire := struct {
+		requestDetailAlias
+		TimingVersion *uint32 `json:"timing_version,omitempty"`
+		TTFBMs        *int64  `json:"ttfb_ms,omitempty"`
+		TTFTMs        *int64  `json:"ttft_ms,omitempty"`
+		TTFAMs        *int64  `json:"ttfa_ms,omitempty"`
+	}{requestDetailAlias: requestDetailAlias(d)}
+	if d.TimingVersion != 0 || d.timingFieldPresent(timingVersionPresent) {
+		wire.TimingVersion = &d.TimingVersion
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
-		return nil, err
+	if d.TTFBMs != 0 || d.timingFieldPresent(timingTTFBPresent) {
+		wire.TTFBMs = &d.TTFBMs
 	}
-	setField := func(name string, value any, present bool) error {
-		if !present {
-			return nil
-		}
-		raw, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		fields[name] = raw
-		return nil
+	if d.TTFTMs != 0 || d.timingFieldPresent(timingTTFTPresent) {
+		wire.TTFTMs = &d.TTFTMs
 	}
-	if err := setField("timing_version", d.TimingVersion, d.timingFieldPresent(timingVersionPresent)); err != nil {
-		return nil, err
+	if d.TTFAMs != 0 || d.timingFieldPresent(timingTTFAPresent) {
+		wire.TTFAMs = &d.TTFAMs
 	}
-	if err := setField("ttfb_ms", d.TTFBMs, d.timingFieldPresent(timingTTFBPresent)); err != nil {
-		return nil, err
-	}
-	if err := setField("ttft_ms", d.TTFTMs, d.timingFieldPresent(timingTTFTPresent)); err != nil {
-		return nil, err
-	}
-	if err := setField("ttfa_ms", d.TTFAMs, d.timingFieldPresent(timingTTFAPresent)); err != nil {
-		return nil, err
-	}
-	return json.Marshal(fields)
+	return json.Marshal(wire)
 }
 
 // UnmarshalJSON keeps legacy usage exports compatible with the generate field.
@@ -574,11 +565,12 @@ func GetRequestStatistics() *RequestStatistics { return defaultRequestStatistics
 // NewRequestStatistics constructs an empty statistics store.
 func NewRequestStatistics() *RequestStatistics {
 	return &RequestStatistics{
-		apis:           make(map[string]*apiStats),
-		requestsByDay:  make(map[string]int64),
-		requestsByHour: make(map[int]int64),
-		tokensByDay:    make(map[string]int64),
-		tokensByHour:   make(map[int]int64),
+		queryGeneration: newQueryGeneration(),
+		apis:            make(map[string]*apiStats),
+		requestsByDay:   make(map[string]int64),
+		requestsByHour:  make(map[int]int64),
+		tokensByDay:     make(map[string]int64),
+		tokensByHour:    make(map[int]int64),
 	}
 }
 
@@ -697,6 +689,16 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	modelStatsValue.Details = append(modelStatsValue.Details, detail)
 }
 
+// Counts reads the import receipt counters atomically without copying details.
+func (s *RequestStatistics) Counts() (total, failed int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.totalRequests, s.failureCount
+}
+
 // Snapshot returns a copy of the aggregated metrics for external consumption.
 func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 	result := StatisticsSnapshot{}
@@ -723,6 +725,7 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 			requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
 			for i := range modelStatsValue.Details {
 				requestDetails[i] = cloneRequestDetail(modelStatsValue.Details[i])
+				requestDetails[i].querySequence = 0
 			}
 			apiSnapshot.Models[modelName] = ModelSnapshot{
 				TotalRequests: modelStatsValue.TotalRequests,
@@ -995,6 +998,8 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 }
 
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
+	s.querySequence++
+	detail.querySequence = s.querySequence
 	totalTokens := detail.Tokens.TotalTokens
 	if totalTokens < 0 {
 		totalTokens = 0
