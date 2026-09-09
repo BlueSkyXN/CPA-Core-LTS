@@ -68,10 +68,19 @@ features:
       - /v0/management/usage
       - /v0/management/usage/export
       - /v0/management/usage/import
+      - /v0/management/usage/query/capabilities
+      - /v0/management/usage/query/summary
+      - /v0/management/usage/query/details
+      - /v0/management/usage/query/pricing
       - /v0/management/usage-statistics-enabled
     core_files:
       - internal/api/server_management.go
       - internal/api/handlers/management/usage.go
+      - internal/api/handlers/management/usage_query.go
+      - internal/api/handlers/management/usage_query_test.go
+      - internal/usage/query.go
+      - internal/usage/query_test.go
+      - docs/lts/usage-query-v1.md
       - internal/api/handlers/management/config_basic.go
       - internal/api/handlers/management/usage_contract_test.go
       - internal/tui/client.go
@@ -84,6 +93,10 @@ features:
       - 'mgmt.GET("/usage"'
       - 'mgmt.GET("/usage/export"'
       - 'mgmt.POST("/usage/import"'
+      - 'mgmt.GET("/usage/query/capabilities"'
+      - 'mgmt.POST("/usage/query/summary"'
+      - 'mgmt.POST("/usage/query/details"'
+      - 'mgmt.POST("/usage/query/pricing"'
       - 'mgmt.GET("/usage-statistics-enabled"'
       - total_requests
       - success_count

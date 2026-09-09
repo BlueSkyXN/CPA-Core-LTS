@@ -137,6 +137,13 @@ require_path .github/scripts/refresh-model-catalogs.sh
 require_grep "mgmt.GET(\"/usage\"" internal/api/server_management.go
 require_grep "mgmt.GET(\"/usage/export\"" internal/api/server_management.go
 require_grep "mgmt.POST(\"/usage/import\"" internal/api/server_management.go
+require_path internal/usage/query.go
+require_path internal/api/handlers/management/usage_query.go
+require_path docs/lts/usage-query-v1.md
+require_grep "mgmt.GET(\"/usage/query/capabilities\"" internal/api/server_management.go
+require_grep "mgmt.POST(\"/usage/query/summary\"" internal/api/server_management.go
+require_grep "mgmt.POST(\"/usage/query/details\"" internal/api/server_management.go
+require_grep "mgmt.POST(\"/usage/query/pricing\"" internal/api/server_management.go
 require_grep "mgmt.GET(\"/usage-queue\"" internal/api/server_management.go
 require_grep "mgmt.GET(\"/usage-statistics-enabled\"" internal/api/server_management.go
 require_grep "DefaultPanelGitHubRepository" internal/config/config_defaults.go

@@ -173,12 +173,12 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		writeUsageImportError(c, usageCodeShapeInvalid, "failed to merge usage statistics")
 		return
 	}
-	snapshot := h.usageStats.Snapshot()
+	total, failed := h.usageStats.Counts()
 	response := gin.H{
 		"added":           result.Added,
 		"skipped":         result.Skipped,
-		"total_requests":  snapshot.TotalRequests,
-		"failed_requests": snapshot.FailureCount,
+		"total_requests":  total,
+		"failed_requests": failed,
 		"schema_version":  usage.CanonicalExportVersion,
 	}
 	if migratedFromVersion != 0 {
