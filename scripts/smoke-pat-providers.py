@@ -72,16 +72,23 @@ plugins:
                 return json.load(response)
 
         def wait_plugins(base):
+            last = "no response"
             for _ in range(40):
                 try:
                     response = request(base, "/plugins")
+                    last = json.dumps({"plugins_enabled": response.get("plugins_enabled"), "plugins": [
+                        {field: item.get(field) for field in ("id", "registered", "effective_enabled")}
+                        for item in response.get("plugins", [])
+                    ]})
                     active = {p["id"] for p in response["plugins"] if p.get("registered") and p.get("effective_enabled")}
                     if {"cpa-provider-codebuddy", "cpa-provider-qoder"} <= active:
                         return
-                except (OSError, urllib.error.URLError, KeyError):
-                    pass
+                except (OSError, urllib.error.URLError, KeyError) as error:
+                    last = type(error).__name__ + ":" + str(getattr(error, "code", ""))
                 time.sleep(0.5)
-            raise RuntimeError("PAT plugins did not register; inspect the local container separately")
+            logs = subprocess.run(["docker", "logs", "--tail", "30", name], capture_output=True, text=True)
+            print((logs.stdout + logs.stderr).replace(key, "[fixture-key]"))
+            raise RuntimeError("PAT plugins did not register: " + last)
 
         try:
             base = start()
