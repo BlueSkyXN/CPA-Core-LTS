@@ -180,7 +180,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		model.ID = strings.TrimSpace(model.ID)
 		model.DisplayName = strings.TrimSpace(model.DisplayName)
 		model.Description = strings.TrimSpace(model.Description)
-		if model.ID == "" || len(model.ID) > 512 || strings.ContainsAny(model.ID, "\\x00\\r\\n") {
+		if model.ID == "" || len(model.ID) > 512 || strings.ContainsAny(model.ID, "\x00\r\n") {
 			return pluginConfig{}, fmt.Errorf("direct_models contains an invalid id")
 		}
 		if _, exists := seenDirectModels[model.ID]; exists {
