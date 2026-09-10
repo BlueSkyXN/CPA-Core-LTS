@@ -1148,8 +1148,11 @@ func TestManagerExecute_HedgedRetryQualityWaitsForAbnormalAndFinalizesWinnerUsag
 	if len(gotCallbacks) == 0 || gotCallbacks[len(gotCallbacks)-1] != "auth-a" {
 		t.Fatalf("selected auth callbacks = %#v, want final winner auth-a", gotCallbacks)
 	}
-	if got := executor.callsSnapshot(); len(got) != 3 || got[0] != "auth-a" || got[1] != "auth-b" || got[2] != "auth-a" {
-		t.Fatalf("calls = %#v, want auth-a trigger, auth-b abnormal, auth-a winner", got)
+	got := executor.callsSnapshot()
+	// 零延迟的两个 lane 并发执行，记录顺序不属于契约；上面仍严格验证 winner 与完整 usage。
+	if len(got) != 3 || got[0] != "auth-a" ||
+		!((got[1] == "auth-b" && got[2] == "auth-a") || (got[1] == "auth-a" && got[2] == "auth-b")) {
+		t.Fatalf("calls = %#v, want auth-a trigger and one attempt per auth in the quality wave", got)
 	}
 }
 
