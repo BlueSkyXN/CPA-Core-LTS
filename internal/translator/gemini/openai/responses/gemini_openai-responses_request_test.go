@@ -2283,3 +2283,36 @@ func TestConvertOpenAIResponsesRequestToGemini_AllPendingCallsReservedByFutureEx
 		}
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithFCOItemID(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.7-flash-high",
+		"input": [
+			{"role":"user","content":"run command"},
+			{"type":"function_call","call_id":"call_1788961125480214178_817","name":"Bash","arguments":"{\"command\":\"pwd\"}"},
+			{"type":"function_call_output","id":"fco_01a08664-2d16-7a91-8ab2-2eccd49e4c3e","output":"/tmp"}
+		]
+	}`
+
+	output := ConvertOpenAIResponsesRequestToGemini("gemini-3.7-flash-high", []byte(inputJSON), false)
+	if errValidate := internalsignature.ValidateGeminiFunctionCallPairing(output); errValidate != nil {
+		t.Fatalf("pairing validation failed: %v; output=%s", errValidate, string(output))
+	}
+
+	contents := gjson.GetBytes(output, "contents").Array()
+	if len(contents) != 3 {
+		t.Fatalf("expected 3 contents, got %d; output=%s", len(contents), string(output))
+	}
+
+	responses := contents[2].Get("parts").Array()
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response part, got %d; output=%s", len(responses), string(output))
+	}
+
+	if gotID := responses[0].Get("functionResponse.id").String(); gotID != "call_1788961125480214178_817" {
+		t.Fatalf("response id = %q, want call_1788961125480214178_817", gotID)
+	}
+	if gotName := responses[0].Get("functionResponse.name").String(); gotName != "Bash" {
+		t.Fatalf("response name = %q, want Bash", gotName)
+	}
+}
