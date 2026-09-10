@@ -1,0 +1,34 @@
+# PAT 扩展镜像配置示例。先设置管理密钥和客户端 API key，再启动。
+host: ""
+port: 8317
+auth-dir: /root/.cli-proxy-api
+remote-management:
+  allow-remote: true
+  secret-key: ""
+  disable-control-panel: false
+  panel-github-repository: https://github.com/BlueSkyXN/CPA-Panel-LTS
+api-keys: []
+usage-statistics-enabled: true
+plugins:
+  enabled: true
+  dir: /opt/cpa-pat-plugins
+  configs:
+    cpa-provider-codebuddy:
+      enabled: true
+      permissions:
+        auth-read: true
+    cpa-provider-qoder:
+      enabled: true
+      permissions:
+        auth-read: true
+      transport: direct_openai
+      runner_command: /usr/local/bin/node
+      runner_args: [/opt/cpa-qoder-runner/dist/index.js]
+      working_directory: /tmp
+      openapi_endpoint: https://openapi.qoder.com.cn
+      direct_endpoint: https://gateway.qoder.com.cn/model/v1/chat/completions
+      # 中国区候选模型，来自现有插件文档；上线前必须以目标账号验证。
+      # 不将 SDK catalog 自动视为 Direct catalog，不提供猜测的模型别名。
+      direct_models:
+        - id: qmodel_38max
+          display_name: Qwen3.8-Max
