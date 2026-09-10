@@ -1,0 +1,23 @@
+# 独立 Compose 文件，不覆盖标准部署。配置文件需要提前存在。
+services:
+  cli-proxy-api:
+    image: ${CPA_PAT_IMAGE:-cpa-core-lts:pat-local}
+    build:
+      context: .
+      dockerfile: Dockerfile.pat-providers
+      target: runtime
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    ports:
+      - "${CPA_BIND_ADDRESS:-127.0.0.1}:8317:8317"
+    volumes:
+      - type: bind
+        source: ${CLI_PROXY_CONFIG_PATH:?Set CLI_PROXY_CONFIG_PATH to an existing PAT config file}
+        target: /CLIProxyAPI/config.yaml
+        bind:
+          create_host_path: false
+      - ${CLI_PROXY_AUTH_PATH:-./auths}:/root/.cli-proxy-api
+      - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
+    restart: unless-stopped

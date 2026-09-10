@@ -1,0 +1,136 @@
+name: pat-provider-delivery
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile.pat-providers'
+      - 'docker-compose.pat-providers.yml'
+      - 'examples/plugin/codebuddy/**'
+      - 'examples/plugin/qoder/**'
+      - 'examples/plugin/pat-providers.config.yaml'
+      - 'examples/runner/qoder/**'
+      - 'scripts/*pat*providers*'
+      - '.github/workflows/pat-provider-delivery.yml'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing Core release tag to build; empty builds the selected branch without publishing'
+        type: string
+        default: ''
+      publish:
+        description: 'Publish PAT image and attach provider artifacts to the existing release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 1
+      - name: Source identity
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -eu
+          if [ "$PUBLISH" = true ]; then
+            printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9][A-Za-z0-9._-]*-lts-[A-Za-z0-9._-]+$'
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          fi
+          echo "CORE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "CORE_VERSION=${RELEASE_TAG:-dev}" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Package layout tests
+        run: python3 -m unittest discover -s scripts -p test_package_pat_providers.py
+      - name: Build optional image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.pat-providers
+          target: runtime
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: cpa-pat:test
+          build-args: |
+            VERSION=${{ env.CORE_VERSION }}
+            COMMIT=${{ env.CORE_SHA }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+          cache-from: type=gha,scope=pat-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=pat-${{ matrix.arch }}
+      - name: Docker fixture smoke
+        run: python3 scripts/smoke-pat-providers.py --image cpa-pat:test
+      - name: Export installable artifacts
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.pat-providers
+          target: artifacts
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=local,dest=provider-artifacts
+          build-args: |
+            VERSION=${{ env.CORE_VERSION }}
+            COMMIT=${{ env.CORE_SHA }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+          cache-from: type=gha,scope=pat-${{ matrix.arch }}
+      - name: Save image and platform metadata
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          docker save cpa-pat:test | gzip > provider-artifacts/image.tar.gz
+          mv provider-artifacts/provider-checksums.txt "provider-artifacts/provider-checksums-${ARCH}.txt"
+          mv provider-artifacts/pat-provider-bundle.json "provider-artifacts/pat-provider-bundle-${ARCH}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pat-provider-${{ matrix.arch }}
+          path: provider-artifacts/
+          retention-days: 7
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      IMAGE: ghcr.io/blueskyxn/cpa-core-lts
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pat-provider-*
+          path: artifacts
+      - name: Publish verified images and packages
+        run: |
+          set -eu
+          gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for arch in amd64 arm64; do
+            dir="artifacts/pat-provider-${arch}"
+            (cd "$dir" && sha256sum -c "provider-checksums-${arch}.txt")
+            docker load -i "$dir/image.tar.gz"
+            tag="${IMAGE}:${RELEASE_TAG}-pat-providers-${arch}"
+            docker tag cpa-pat:test "$tag"
+            docker push "$tag"
+            gh release upload "$RELEASE_TAG" "$dir"/*.zip "$dir"/*.json "$dir"/provider-checksums-*.txt -R "$GITHUB_REPOSITORY"
+          done
+          docker manifest create "${IMAGE}:${RELEASE_TAG}-pat-providers" \
+            "${IMAGE}:${RELEASE_TAG}-pat-providers-amd64" "${IMAGE}:${RELEASE_TAG}-pat-providers-arm64"
+          docker manifest push "${IMAGE}:${RELEASE_TAG}-pat-providers"

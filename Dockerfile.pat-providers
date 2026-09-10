@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+# 可选 PAT 发行版：所有原生组件在目标架构、同一份 Core 源码上构建。
+FROM golang:1.26-bookworm AS native
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential python3 && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+COPY sdk ./sdk
+COPY examples/plugin/codebuddy ./examples/plugin/codebuddy
+COPY examples/plugin/qoder ./examples/plugin/qoder
+COPY scripts/package-pat-providers.py ./scripts/package-pat-providers.py
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+RUN mkdir -p /native && CGO_ENABLED=1 go build -buildvcs=false \
+    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+    -o /native/CLIProxyAPI ./cmd/server
+RUN cd examples/plugin/codebuddy/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-codebuddy.so .
+RUN cd examples/plugin/qoder/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-qoder.so .
+
+FROM node:22-bookworm-slim AS runner
+WORKDIR /runner
+COPY examples/runner/qoder/package.json examples/runner/qoder/package-lock.json examples/runner/qoder/.npmrc ./
+RUN npm ci --ignore-scripts
+COPY examples/runner/qoder/tsconfig.json ./
+COPY examples/runner/qoder/src ./src
+RUN npm run build && npm prune --omit=dev --ignore-scripts
+
+FROM native AS packages
+ARG TARGETARCH
+COPY --from=runner /runner/dist /runner/dist
+COPY --from=runner /runner/node_modules /runner/node_modules
+COPY --from=runner /runner/package.json /runner/package.json
+RUN python3 scripts/package-pat-providers.py --libraries-dir /native --runner-dir /runner \
+    --output /out --arch "${TARGETARCH}" --core-commit "${COMMIT}" --core-version "${VERSION}"
+
+FROM scratch AS artifacts
+COPY --from=packages /out/ /
+
+FROM node:22-bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
+ENV TZ=Asia/Shanghai
+WORKDIR /CLIProxyAPI
+COPY --from=native /native/CLIProxyAPI ./CLIProxyAPI
+# 独立于标准 Compose 的 /CLIProxyAPI/plugins 挂载，避免空目录遮住内置插件。
+COPY --from=native /native/cpa-provider-codebuddy.so /native/cpa-provider-qoder.so /opt/cpa-pat-plugins/
+COPY --from=runner /runner/dist /opt/cpa-qoder-runner/dist
+COPY --from=runner /runner/node_modules /opt/cpa-qoder-runner/node_modules
+COPY --from=runner /runner/package.json /opt/cpa-qoder-runner/package.json
+COPY --from=packages /out/pat-provider-bundle.json /opt/cpa-pat-plugins/bundle.json
+COPY examples/plugin/pat-providers.config.yaml ./config.example.yaml
+EXPOSE 8317
+CMD ["./CLIProxyAPI", "--config", "/CLIProxyAPI/config.yaml"]

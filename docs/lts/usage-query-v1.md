@@ -37,6 +37,14 @@ Panel 规范化当前价格配置一次，并解析每个模型。`rules[model].
 
 Panel 对每类使用原价格算法选取 status、单价和警告，再计算金额及加权覆盖率。单价和历史金额不写入 Core。费用是独立加载状态，不阻塞概览和第一页；金额最终显示前须完成该查询范围的分类汇总。汇总改变浮点求和顺序，应以数值容差及实际金额展示核对，不提前舍入。
 
+## HTTP 响应压缩
+
+上述七个 usage JSON 路由在鉴权之后按 `Accept-Encoding` 协商压缩：同权重时优先 Brotli level 4、Zstandard level 1、gzip level 3。显式 `q=0` 不会被通配符覆盖；显式更高权重的 `identity` 优先。没有可接受编码时返回 406，导入 handler 不会执行。
+
+客户端允许 identity 时，小于 1024 bytes 的响应不压缩；禁止 identity 时，小 JSON 也使用允许的编码。压缩层只保留不足 1024 bytes 的前置缓冲，超过阈值直接写入压缩器，不再复制完整快照。响应携带 `Vary: Accept-Encoding`，压缩后删除旧 `Content-Length`，已编码响应不重复压缩。JSON、状态码、POST 请求体和统计 schema 不变。
+
+不覆盖 `usage-queue`、普通日志、SSE 或 WebSocket。Panel 使用浏览器原生解压，无需选择算法。Nginx wrapper 必须透传 `Accept-Encoding` 和 `Content-Encoding`；旧 Core 可以由 wrapper gzip 兜底。
+
 ## 发布与回滚门槛
 
 先验证临时实例上的旧导出/新导入往返与新旧版本组合，再发布；本地构建或测试不能代表已经部署。
