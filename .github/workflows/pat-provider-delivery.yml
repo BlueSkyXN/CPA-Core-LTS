@@ -21,12 +21,17 @@ on:
         description: 'Publish PAT image and attach provider artifacts to the existing release'
         type: boolean
         default: false
+      resume_run_id:
+        description: 'Reuse this repository run artifact ID source after a partial publish; empty rebuilds'
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: inputs.resume_run_id == ''
     strategy:
       fail-fast: false
       matrix:
@@ -102,34 +107,55 @@ jobs:
           retention-days: 7
 
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish && (needs.build.result == 'success' || inputs.resume_run_id != '')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       IMAGE: ghcr.io/blueskyxn/cpa-core-lts
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
       - uses: actions/download-artifact@v4
         with:
           pattern: pat-provider-*
           path: artifacts
+          run-id: ${{ inputs.resume_run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Publish verified images and packages
         run: |
           set -eu
           gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+          source_commit="$(git rev-parse HEAD)"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           for arch in amd64 arm64; do
             dir="artifacts/pat-provider-${arch}"
+            test "$(jq -r .core_commit "$dir/pat-provider-bundle-${arch}.json")" = "$source_commit"
+            test "$(jq -r .core_version "$dir/pat-provider-bundle-${arch}.json")" = "$RELEASE_TAG"
+            test "$(jq -r .platform "$dir/pat-provider-bundle-${arch}.json")" = "linux/${arch}"
             (cd "$dir" && sha256sum -c "provider-checksums-${arch}.txt")
             docker load -i "$dir/image.tar.gz"
             tag="${IMAGE}:${RELEASE_TAG}-pat-providers-${arch}"
             docker tag cpa-pat:test "$tag"
             docker push "$tag"
-            gh release upload "$RELEASE_TAG" "$dir"/*.zip "$dir"/*.json "$dir"/provider-checksums-*.txt -R "$GITHUB_REPOSITORY"
+            # Buildx 的 provenance.json 不是发行附件；两个架构会生成相同文件名。
+            for asset in "$dir"/*.zip "$dir"/pat-provider-bundle-*.json "$dir"/provider-checksums-*.txt; do
+              name="$(basename "$asset")"
+              expected="sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)"
+              existing="$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                --jq ".assets[] | select(.name == \"${name}\") | .digest")"
+              if [ -n "$existing" ]; then
+                test "$existing" = "$expected" || { echo "Existing asset digest mismatch: $name" >&2; exit 1; }
+              else
+                gh release upload "$RELEASE_TAG" "$asset" -R "$GITHUB_REPOSITORY"
+              fi
+            done
           done
           docker manifest create "${IMAGE}:${RELEASE_TAG}-pat-providers" \
             "${IMAGE}:${RELEASE_TAG}-pat-providers-amd64" "${IMAGE}:${RELEASE_TAG}-pat-providers-arm64"
