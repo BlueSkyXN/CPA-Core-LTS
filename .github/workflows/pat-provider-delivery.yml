@@ -53,6 +53,7 @@ jobs:
           fi
           echo "CORE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "CORE_VERSION=${RELEASE_TAG:-dev}" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
       - name: Package layout tests
         run: python3 -m unittest discover -s scripts -p test_package_pat_providers.py
@@ -68,6 +69,7 @@ jobs:
           build-args: |
             VERSION=${{ env.CORE_VERSION }}
             COMMIT=${{ env.CORE_SHA }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
           cache-from: type=gha,scope=pat-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=pat-${{ matrix.arch }}
       - name: Docker fixture smoke
@@ -83,6 +85,7 @@ jobs:
           build-args: |
             VERSION=${{ env.CORE_VERSION }}
             COMMIT=${{ env.CORE_SHA }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
           cache-from: type=gha,scope=pat-${{ matrix.arch }}
       - name: Save image and platform metadata
         env:

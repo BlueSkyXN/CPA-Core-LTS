@@ -140,6 +140,9 @@ require_grep "mgmt.POST(\"/usage/import\"" internal/api/server_management.go
 require_path internal/usage/query.go
 require_path internal/api/handlers/management/usage_query.go
 require_path docs/lts/usage-query-v1.md
+require_path internal/api/usage_compression.go
+require_grep 'Accept-Encoding' internal/api/usage_compression.go
+require_grep 'Content-Encoding' internal/api/usage_compression.go
 require_grep "mgmt.GET(\"/usage/query/capabilities\"" internal/api/server_management.go
 require_grep "mgmt.POST(\"/usage/query/summary\"" internal/api/server_management.go
 require_grep "mgmt.POST(\"/usage/query/details\"" internal/api/server_management.go

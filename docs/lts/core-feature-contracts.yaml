@@ -78,6 +78,8 @@ features:
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/usage_query.go
       - internal/api/handlers/management/usage_query_test.go
+      - internal/api/usage_compression.go
+      - internal/api/usage_compression_test.go
       - internal/usage/query.go
       - internal/usage/query_test.go
       - docs/lts/usage-query-v1.md
@@ -97,6 +99,8 @@ features:
       - 'mgmt.POST("/usage/query/summary"'
       - 'mgmt.POST("/usage/query/details"'
       - 'mgmt.POST("/usage/query/pricing"'
+      - Accept-Encoding
+      - Content-Encoding
       - 'mgmt.GET("/usage-statistics-enabled"'
       - total_requests
       - success_count
