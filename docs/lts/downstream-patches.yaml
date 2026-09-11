@@ -1401,25 +1401,55 @@ patches:
   - id: antigravity-pool-settings-cache-key
     reason: Config reload may race an old request repopulating a purged transport cache; key transports by resolved pooling settings so new requests cannot reuse old connection policy.
     introduced_in: a715ad97
-    affected_upstream_range: Narrow backport of dev 68dd99d5 onto the f19d6da0 main baseline; not a merge of upstream dev.
+    affected_upstream_range: Equivalent 68dd99d5 is included in the a59b1764 main baseline; direct/proxy/reload regressions pass with the shared implementation.
     files:
       - internal/runtime/executor/antigravity_executor.go
       - internal/runtime/executor/antigravity_executor_transport_test.go
     regression_tests:
       - TestAntigravityTransportKeySeparatesPoolSettingsAcrossReload
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@68dd99d56f6867062547f80acf6e2b22f0766b58
-    state: upstreamed
+    state: removable
     retire_when: The equivalent settings-key fix reaches the merged main baseline; validate direct/proxy pooling and reload regressions before the removable and retired stages.
 
   - id: claude-missing-tool-schema-default
     reason: Missing or null Claude input_schema must not produce a function without parameters at the OpenAI boundary. Preserve supplied schemas and default only the absent cases to an empty object schema.
     introduced_in: 5671c350e0f527410121b647a78e44f4afaed49b
-    affected_upstream_range: Narrow backport of dev 6e1f9ec4 onto main d198db54; independent of Claude helper fingerprint and Kimi protocol changes.
+    affected_upstream_range: Equivalent 6e1f9ec4 is included in the a59b1764 main baseline; omitted, null and explicit schema regressions pass.
     files:
       - internal/translator/openai/claude/openai_claude_request.go
       - internal/translator/openai/claude/openai_claude_request_test.go
     regression_tests:
       - TestConvertClaudeRequestToOpenAI_ToolWithoutInputSchemaDefaultsParameters
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@6e1f9ec4e0b6380c5bf531abc98da9188e10127a
-    state: upstreamed
+    state: removable
     retire_when: The equivalent missing and null schema fix reaches the merged main baseline and regression tests pass before entering removable and retired.
+
+  - id: amp-session-extraction-priority
+    reason: Shared hierarchy extraction must retain the existing Amp thread identity and priority over generic client request and conversation IDs.
+    introduced_in: 4d64b13077c2aa45ad232714ca79b1c977bc8f10
+    affected_upstream_range: Adapted 39058915 through a59b1764; upstream shared ExtractSessionInfo omits X-Amp-Thread-Id while replacing selector extraction.
+    files:
+      - sdk/cliproxy/session/info.go
+      - sdk/cliproxy/auth/selector.go
+      - sdk/cliproxy/auth/selector_test.go
+    regression_tests:
+      - TestExtractSessionID_AmpThreadId
+      - TestExtractSessionID_AmpThreadIdPriority
+      - TestExtractSessionID_AmpThreadIdPriorityOverClientRequestID
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@39058915
+    state: required
+    retire_when: The shared upstream extractor retains the existing Amp identity and precedence, and all three regressions pass without the LTS addition.
+
+  - id: antigravity-response-json-schema-dialect-preservation
+    reason: JSON Schema and responseSchema dialects are not interchangeable; relabeling arbitrary schemas or deleting conflicting declarations silently changes caller constraints.
+    introduced_in: 4d64b13077c2aa45ad232714ca79b1c977bc8f10
+    affected_upstream_range: Deliberately diverges from dc21a426 in the a59b1764 merge; preserve the prior pass-through behavior for camel and snake case keys.
+    files:
+      - internal/translator/antigravity/gemini/antigravity_gemini_request.go
+      - internal/translator/antigravity/gemini/antigravity_gemini_request_test.go
+    regression_tests:
+      - TestConvertGeminiRequestToAntigravity_PreservesResponseJsonSchemaDialect
+      - TestConvertGeminiRequestToAntigravity_PreservesExistingResponseSchema
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@dc21a426
+    state: required
+    retire_when: Upstream preserves the caller schema dialect or provides a validated lossless conversion with explicit conflict handling; both regressions pass under that contract.
