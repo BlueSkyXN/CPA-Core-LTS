@@ -45,7 +45,7 @@
 
 首轮 CI 的嵌套 provider module 测试发现 CodeBuddy/Qoder 把 schema 固定为 5，主模块 `go test ./...` 不包含这些嵌套 module。调整为“等于当前 ABI schema 且不低于 lifecycle 引入版本”，保留所有 capability 断言，单独运行两个 module 的 race/vet/build；不降回 schema 5 或关闭 CI。
 
-## Downstream patch review
+## 阶段一 Downstream patch review
 
 以下逐项对照本阶段 from/to diff 和当前 regression tests；没有等价 upstream 实现的条目继续保留，不因无文本冲突或能构建而退休。
 
@@ -102,3 +102,118 @@
 | `claude-missing-tool-schema-default` | upstream-equivalent | 等价实现已纳入；保留 regression tests，未越级退休。 |
 | `amp-session-extraction-priority` | patch-still-required | 触及相关路径；LTS 行为及所列回归保留，新增上游能力不构成完整等价替代。 |
 | `antigravity-response-json-schema-dialect-preservation` | patch-still-required | 触及相关路径；LTS 行为及所列回归保留，新增上游能力不构成完整等价替代。 |
+
+
+## 阶段二逐提交判断
+
+阶段一 #257 已以 merge commit `e0e8071a` 合入，精确 head `aa531e5f` 的九项 CI 通过，publish 按 PR 条件跳过。阶段二从该主线创建独立工作树，merge `d5940280` 纳入 upstream `09a29bd3`，补齐剩余 15 个非 merge、1 个 merge 提交。
+
+| 上游提交 | 分类与保护边界 |
+|---|---|
+| `b064b832` | adapted：新增默认 false 的 `codex.model-level-cooling`，只改变 usage_limit 的 model/credential 范围。保留 LTS typed fallback/retry-after/continuity，并补齐已有 handshake helper 的同一开关，避免 HTTP/WS 不一致。 |
+| `e56abd56`、`37ce368c` | absorbed：工具 schema 不支持的 Unicode property escapes、patternProperties 键和转义 fast-path，保留嵌套对象及非匹配 pattern。 |
+| `60e5b8bd` | adapted：显式 Management auth refresh 和 TUI 入口，保留原路由鉴权；不把完整 Auth（含 token metadata/attributes）返回给状态请求，成功只返回白名单摘要，失败统一脱敏。批量并发补回 dev worker 修复。file-store 读取不再触发 Antigravity 网络写回；保留 LTS 权限和 metadata hydration。 |
+| `3bf787fc` | adapted：canonical session 自定义头展开与跨 executor 覆盖；保留 post-selection context、generation fence、原客户端 header 解析和 scope，不把派生 session 提前写入错误的执行上下文。 |
+| `aedc9e6a` | absorbed：永久认证失败用 typed terminal error，区分耗尽与可恢复冷却；不把普通取消/网络错误当认证失效。 |
+| `d1a024e9` | absorbed：GPT Image 2.5/Flare/Sunburst 及 provider-scoped capability 更新，保留 client registry epoch、LTS 模型目录字段和 direct images header。 |
+| `6a73f396` | absorbed：显式请求 1h TTL 的 subagent 保留 cache TTL/beta；普通 helper/probe 不擅自提升。 |
+| `bd03aabc` | adapted：prewarm 后续请求恢复未发送给上游的输入，支持 named tool outputs；保留 LTS request lifecycle、上下文控制和 generation-aware WebSocket。 |
+| `25913086` | adapted：nested error、large-number 精度和 sequence 透传；旧客户端使用的顶层 code/message 同时保留，不用替换 JSON shape 的方式破坏已有客户端。native Codex response.failed 路径仍独立。 |
+| `3ae9093d` | adapted：模型容量错误参与 pre-payload bootstrap failover；保留 LTS classifier、原始 frame buffering 和已交付后不重放的限制。 |
+| `dde250f1` | adapted：明确的 model_not_found capability 错误可以模型冷却/轮换；typed request fault 与既有 invalid_request_error/param=model 404 优先，不能全部按字符串归为模型故障。新旧两组回归同时通过。 |
+| `4dce5f3a` | absorbed：忽略 null/空 finish_reason，不提前结束 Gemini 响应。 |
+| `638ed7e1` | absorbed：SSE 跨 chunk 的 CRLF 合并，保留前序合法 frame、终止状态和取消语义。 |
+| `09a29bd3` | upstream-equivalent：删除 RunAPI sponsor，LTS commercial-neutral 文档本已不含这些内容；保留 ancestry，不恢复其他推广。 |
+
+冲突文件：三套 README、`internal/config/codex_websocket_header_defaults_test.go`、Codex HTTP stream/terminal、WebSocket errors/execute/stream、custom headers tests。README 保留商业中立；测试保留双方独立函数；executor 保留 LTS 状态机并适配 model-level cooling，不覆盖整个上游文件。
+
+## dev 观察与窄回补
+
+没有整体 merge dev，也不把尚未合并的工作称为 upstream main 已支持。
+
+| dev 提交 | 决策 |
+|---|---|
+| `5a07045e` → `cadb883b` | narrow backport / upstreamed：fco_ 是 output item ID，不是 call ID；common/Gemini/Antigravity 的配对回归通过。 |
+| `6dce7867` → `f6262181` | narrow backport / upstreamed：refresh-all 使用配置的 worker 上限，取消后不启动剩余请求；补齐本次新增接口的资源边界。 |
+| `fd3e6623` → `6eb672ec` | narrow backport / upstreamed：空文本不提前结束 thinking block，签名接受规则不变。 |
+| `c8ecb4f3` → `902579de` | narrow backport / upstreamed：同 chunk reasoning 先于正文，保留输出序列和完整统计。 |
+| `4edf9d1d` | partial already-equivalent / defer：LTS 已通过 InspectResponsesControls 记录有效的末次 translated effort，并在 compaction 后重置；上游新提取器忽略 compaction、接受相邻/不完整 update。保留 LTS 方案，不复制另一套解释器；请求侧及 xAI 扩展未自动纳入。 |
+| `9fad5055` | defer：5xx/challenge 区分有价值，但同时改变 recoverable RetryAfter 与现有 transient cooldown 规则；尚在 dev，待独立 typed-error/continuity 验证，不把本轮已批准的模型冷却兼容扩成新的暂退算法。 |
+| `b8e6ec0a`、`4cd17293`、`4efcac79`、`5c80a01c` | defer：分别新增中断 tool pairing、tool-result image、incomplete event 与 audio-part 翻译。需要额外跨协议/显式 carrier/terminal 契约核验，本轮只窄回补可独立验证的 ID 与块顺序问题。 |
+| `942bda99`、`54776fb3`、`75ce6352` | defer：未知/服务端工具/CAQS 签名分类涉及 provider-private replay 的信任边界；不以签名可解码或新增测试文件代替兼容证明。 |
+| `d1702fdf` | defer：watcher revision 是另一层迟到更新控制，不能把 LTS 已有 auth generation/reconcile fence 直接删除；等稳定基线逐层适配。 |
+| `fc96a87f` | defer：组织哈希凭据名和 legacy migration 涉及已保存身份/文件兼容，不随 dev 更新自动迁移。 |
+| `2912516c` | defer：插件 execution-result policy 位于 quota/cooldown 写入前，需与 Flow、usage/fallback 的 finalizer 所有权独立审查。 |
+| `c8f723e0` | defer：usage/base_url 新字段需队列、完整统计、脱敏和 Panel 合同一起核对，不先声明数据模型已兼容。 |
+| `8f23ad02`、`8461b4e9`、`377c315f`、`8bd67f33` | defer：alias 元数据/能力收紧、Codex UA、Claude billing fingerprint、Kimi K2.8/temperature 归下一稳定 provider/model 基线；本轮不为这些 dev 能力新增推理调用。 |
+| `e88cd947`、`ae8f1f8b` | reject：README sponsor/图片，继续遵守 commercial-neutral。 |
+
+## 阶段二验证和剩余边界
+
+本地首次预演出现 error-classifier 递归，已把请求作用域的优先检查缩到非递归的 typed/404 条件；修复后无缓存全量通过。并行负载下一个旧 plugin reload timeout，单独原样重跑三次通过，未放宽等待阈值。新增 upstream stream-error fixture 先关 data 再发 err 导致 race 下先报告 missing terminal；改为生产约定的先排入 terminal error 再关闭 data，原 nested error/sequence 断言全部保留，race 连续十次及整个 OpenAI handler 包通过。
+
+阶段二 `go test -count=1 ./...`、auth/session/Flow/executor/registry/handler race、当前 Panel 临时真实 Core smoke、server build、LTS guard、registry lifecycle、Usage/Management 和完整 Responses translator 均已通过；最终精确 head CI 在 PR 中回读。Panel 无需新增表单或修改默认值：新增 Core YAML 字段由既有源码编辑和未知字段保留机制承载。未做真实账号付费生成、发布、部署或 HF Space 变更。
+
+## 阶段二 Downstream patch review
+
+每条非 retired 补丁继续核对到 upstream `09a29bd3`；四个 dev 回补为 upstreamed，不提前宣称已经进入 main。既有 removable 条目保留实现/测试，不为状态标签删除已成为 shared 的代码。
+
+| Patch | Conclusion | 本阶段依据 |
+|---|---|---|
+| `responses-effort-summary-independence` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-model-fallback` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-rate-limit-continuity` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-interactions-service-tier-response` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `plugin-configured-enable-default` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-gpt56-ultra-level` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-model-header-provider-snapshot` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-oauth-client-identity-finalization` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-client-metadata-privacy` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-model-not-found-request-scope` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-websocket-reader-generation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-spark-reasoning-summary-compat` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `xai-explicit-tool-choice-none` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `kimi-claude-delegated-auth-immutability` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `request-body-panic-tempfile-cleanup` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `api-request-body-size-limit` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `object-store-auth-path-containment` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `auth-token-private-file-permissions` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `auth-store-list-error-propagation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `auth-store-metadata-hydration` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `panel-release-token-isolation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `gemini-unknown-method-not-found` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `count-tokens-not-found-no-cooldown` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `management-logs-bounded-response` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `transient-eof-cooldown` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `expired-availability-pruning` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `responses-chat-tool-call-turn-grouping` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-desktop-tool-overlay` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-multi-agent-plaintext-contract` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `xai-multi-agent-plaintext-provenance` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `provider-runtime-state-isolation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `auth-provider-generation-fence` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `codex-live-bootstrap-accounting-and-egress` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `xai-implicit-responses-message-token-accounting` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `xai-websocket-saturated-reader-invalidation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `xai-model-bad-credentials-auth-normalization` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `dynamic-custom-header-transport-coverage` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `astra-native-responses-controls` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `astra-async-guidance-hotfix` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `local-flow-control` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `openai-claude-cache-write-accounting` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `plugin-stream-history-capability-negotiation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `wsrelay-terminal-frame-preservation` | upstream-equivalent | 已合并基线的等价实现与原回归保留；本阶段不退休。 |
+| `codex-dotted-collaboration-tool-restoration` | upstream-equivalent | 已合并基线的等价实现与原回归保留；本阶段不退休。 |
+| `session-dispatch-context-after-selection` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `antigravity-compaction-completion-validation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `gemini-explicit-text-signature-carriers` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `antigravity-pool-settings-cache-key` | upstream-equivalent | 已合并基线的等价实现与原回归保留；本阶段不退休。 |
+| `claude-missing-tool-schema-default` | upstream-equivalent | 已合并基线的等价实现与原回归保留；本阶段不退休。 |
+| `amp-session-extraction-priority` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `antigravity-response-json-schema-dialect-preservation` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `management-auth-refresh-status-redaction` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `responses-stream-error-flat-compatibility` | patch-still-required | 核对受影响路径并保留 LTS 条件、生命周期和回归；不以部分重叠取代完整行为。 |
+| `responses-tool-output-item-id-disambiguation` | adapted | 按记录的 dev SHA 窄回补；尚未进入 upstream main，所列回归通过。 |
+| `bounded-forced-auth-refresh` | adapted | 按记录的 dev SHA 窄回补；尚未进入 upstream main，所列回归通过。 |
+| `antigravity-empty-text-stream-block-lifetime` | adapted | 按记录的 dev SHA 窄回补；尚未进入 upstream main，所列回归通过。 |
+| `responses-same-chunk-reasoning-order` | adapted | 按记录的 dev SHA 窄回补；尚未进入 upstream main，所列回归通过。 |
