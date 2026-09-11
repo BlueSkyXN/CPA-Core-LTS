@@ -27,7 +27,7 @@ func testPATAuthJSON() []byte {
 
 func TestRegistrationDeclaresCodeBuddyG1Capabilities(t *testing.T) {
 	got := pluginRegistration()
-	if got.SchemaVersion != pluginabi.SchemaVersionExecutionLifecycle {
+	if got.SchemaVersion != pluginabi.SchemaVersion || got.SchemaVersion < pluginabi.SchemaVersionExecutionLifecycle {
 		t.Fatalf("schema version = %d", got.SchemaVersion)
 	}
 	if got.Metadata.Name == "" || got.Metadata.Version == "" || got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" {

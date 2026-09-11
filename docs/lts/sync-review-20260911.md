@@ -43,6 +43,8 @@
 
 完整 usage、Management `/usage*`、Panel 下载源、auth/config 兼容保留；Flow/abnormal retry/continuity/fallback 均未由新的 session 或 plugin 能力替代。真实账号生成、Home 部署和 HF Space 未操作。
 
+首轮 CI 的嵌套 provider module 测试发现 CodeBuddy/Qoder 把 schema 固定为 5，主模块 `go test ./...` 不包含这些嵌套 module。调整为“等于当前 ABI schema 且不低于 lifecycle 引入版本”，保留所有 capability 断言，单独运行两个 module 的 race/vet/build；不降回 schema 5 或关闭 CI。
+
 ## Downstream patch review
 
 以下逐项对照本阶段 from/to diff 和当前 regression tests；没有等价 upstream 实现的条目继续保留，不因无文本冲突或能构建而退休。
