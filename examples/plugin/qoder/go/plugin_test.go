@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -293,7 +294,7 @@ func TestRunnerCapabilityValidationErrorsRemainClientErrors(t *testing.T) {
 
 func TestRegistrationDeclaresSchema5LifecycleCapabilities(t *testing.T) {
 	registration := pluginRegistration()
-	if registration.SchemaVersion != 5 {
+	if registration.SchemaVersion != pluginabi.SchemaVersion || registration.SchemaVersion < pluginabi.SchemaVersionExecutionLifecycle {
 		t.Fatalf("schema version = %d", registration.SchemaVersion)
 	}
 	capabilities := registration.Capabilities

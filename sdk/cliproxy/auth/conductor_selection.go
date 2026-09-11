@@ -542,6 +542,72 @@ func (m *Manager) Selector() Selector {
 	return m.selector
 }
 
+// LookupSessionAffinity observes the current session affinity binding without side effects.
+// It returns (auth, status) where status can be "bound", "unbound", "ambiguous", or "unsupported".
+func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Auth, string) {
+	if m == nil {
+		return nil, "unsupported"
+	}
+	m.mu.RLock()
+	if m.pluginScheduler != nil {
+		m.mu.RUnlock()
+		return nil, "unsupported"
+	}
+	sel := m.selector
+	authProviderMap := make(map[string]string, len(m.auths))
+	for id, a := range m.auths {
+		if a != nil {
+			authProviderMap[id] = a.Provider
+		}
+	}
+	m.mu.RUnlock()
+
+	if sel == nil {
+		return nil, "unsupported"
+	}
+
+	authFilter := func(authID string) bool {
+		if provider == "mixed" {
+			return true
+		}
+		p, ok := authProviderMap[authID]
+		return ok && p == provider
+	}
+
+	var authID, status string
+	if observerWithFilter, ok := sel.(interface {
+		LookupAffinity(provider, model, sessionID string, authFilters ...func(authID string) bool) (string, string)
+	}); ok && observerWithFilter != nil {
+		authID, status = observerWithFilter.LookupAffinity(provider, model, sessionID, authFilter)
+	} else if observer, ok := sel.(interface {
+		LookupAffinity(provider, model, sessionID string) (string, string)
+	}); ok && observer != nil {
+		authID, status = observer.LookupAffinity(provider, model, sessionID)
+	} else {
+		return nil, "unsupported"
+	}
+
+	if status != "bound" || authID == "" {
+		return nil, status
+	}
+
+	m.mu.RLock()
+	auth, okAuth := m.auths[authID]
+	if !okAuth || auth == nil {
+		m.mu.RUnlock()
+		return nil, "unbound"
+	}
+	snapshot := auth.Clone()
+	m.mu.RUnlock()
+
+	if provider != "mixed" && snapshot.Provider != provider {
+		return nil, "unbound"
+	}
+	snapshot.EnsureIndex()
+	return snapshot, "bound"
+}
+
+// SetStore swaps the underlying persistence store.
 func (m *Manager) SetStore(store Store) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

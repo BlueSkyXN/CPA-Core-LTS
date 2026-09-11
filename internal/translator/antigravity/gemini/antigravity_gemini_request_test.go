@@ -1177,3 +1177,89 @@ func TestNormalizeRoles_InvalidRoleWithFunctionResponseNormalizesToUser(t *testi
 		}
 	}
 }
+
+func TestConvertGeminiRequestToAntigravity_PreservesResponseJsonSchemaDialect(t *testing.T) {
+	tests := []struct {
+		name      string
+		schemaKey string
+		inputJSON string
+	}{
+		{
+			name:      "camelCase responseJsonSchema",
+			schemaKey: "responseJsonSchema",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+				"generationConfig": {
+					"responseMimeType": "application/json",
+					"responseJsonSchema": {
+						"type": "OBJECT",
+						"properties": {"message": {"type": "STRING"}},
+						"required": ["message"]
+					}
+				}
+			}`,
+		},
+		{
+			name:      "snake_case response_json_schema",
+			schemaKey: "response_json_schema",
+			inputJSON: `{
+				"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+				"generationConfig": {
+					"responseMimeType": "application/json",
+					"response_json_schema": {
+						"type": "OBJECT",
+						"properties": {"message": {"type": "STRING"}},
+						"required": ["message"]
+					}
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ConvertGeminiRequestToAntigravity("gemini-3-flash", []byte(tt.inputJSON), false)
+
+			path := "generationConfig." + tt.schemaKey
+			if got, want := gjson.GetBytes(out, "request."+path).Raw, gjson.Get(tt.inputJSON, path).Raw; got != want {
+				t.Fatalf("JSON Schema changed: got %s, want %s", got, want)
+			}
+			if gjson.GetBytes(out, "request.generationConfig.responseSchema").Exists() {
+				t.Fatal("JSON Schema must not be silently relabeled as a different schema dialect")
+			}
+		})
+	}
+}
+
+func TestConvertGeminiRequestToAntigravity_PreservesExistingResponseSchema(t *testing.T) {
+	inputJSON := []byte(`{
+		"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+		"generationConfig": {
+			"responseMimeType": "application/json",
+			"responseSchema": {
+				"type": "OBJECT",
+				"properties": {"name": {"type": "STRING"}},
+				"required": ["name"]
+			},
+			"responseJsonSchema": {
+				"type": "OBJECT",
+				"properties": {"stale": {"type": "STRING"}}
+			}
+		}
+	}`)
+	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+	schema := gjson.GetBytes(out, "request.generationConfig.responseSchema")
+	if !schema.Exists() {
+		t.Fatalf("request.generationConfig.responseSchema missing. Output: %s", out)
+	}
+	if got := schema.Get("properties.name.type").String(); got != "STRING" {
+		t.Fatalf("responseSchema.properties.name.type = %q, want STRING. Output: %s", got, out)
+	}
+	if schema.Get("properties.stale").Exists() {
+		t.Fatalf("stale properties survived. Output: %s", out)
+	}
+	if got, want := gjson.GetBytes(out, "request.generationConfig.responseJsonSchema").Raw, gjson.GetBytes(inputJSON, "generationConfig.responseJsonSchema").Raw; got != want {
+		t.Fatal("conflicting schema declarations must remain visible to upstream validation")
+	}
+}
