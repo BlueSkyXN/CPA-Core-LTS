@@ -147,6 +147,9 @@ func isHierarchyParent(primary, parent string) bool {
 	if idx1 > 0 && idx2 > 0 && primary[:idx1] == parent[:idx2] {
 		return true
 	}
+	if idx1 == -1 && idx2 == -1 {
+		return true
+	}
 	return false
 }
 
@@ -919,6 +922,16 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 	b.Observe(detail, usageOK || detail.ResponseServiceTier != "")
 }
 
+// ObserveClaudeStream records and merges usage from a Claude SSE line.
+func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+	if b == nil {
+		return
+	}
+	if detail, ok := ParseClaudeStreamUsage(line); ok {
+		ObserveMergedStreamUsage(b, detail)
+	}
+}
+
 // Publish emits the latest observed usage detail, if any.
 func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter) bool {
 	if b == nil || !b.ok || reporter == nil {
@@ -1124,6 +1137,9 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	usageNode := gjson.GetBytes(payload, "usage")
+	if !usageNode.Exists() {
+		usageNode = gjson.GetBytes(payload, "message.usage")
+	}
 	if !usageNode.Exists() {
 		return usage.Detail{}, false
 	}

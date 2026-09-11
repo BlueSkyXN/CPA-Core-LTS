@@ -162,6 +162,8 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 			return nil, errPermission
 		}
 		return h.callHostAuthSave(ctx, request)
+	case pluginabi.MethodHostAffinityLookup:
+		return h.callHostAffinityLookup(ctx, request)
 	default:
 		return nil, fmt.Errorf("unsupported host callback %s", method)
 	}
