@@ -188,8 +188,9 @@ func (s *codexWebsocketSession) detachConnectionRef(connection codexWebsocketCon
 // Websocket upgrade failures are still upstream Codex status responses. Keep
 // both the typed classification (usage_limit/capacity can therefore enter the
 // pre-payload fallback path) and retry headers for downstream error shaping.
-func newCodexWebsocketHandshakeStatusErr(status int, body []byte, headers http.Header) error {
-	classified := newCodexStatusErr(status, body)
+func newCodexWebsocketHandshakeStatusErr(status int, body []byte, headers http.Header, modelLevelCooling ...bool) error {
+	modelScoped := len(modelLevelCooling) > 0 && modelLevelCooling[0]
+	classified := newCodexStatusErrWithCooling(status, body, modelScoped)
 	return statusErrWithHeaders{statusErr: classified, headers: headers.Clone()}
 }
 
@@ -201,7 +202,7 @@ func codexWebsocketHandshakeFailure(ctx context.Context, cfg *config.Config, req
 	body := websocketHandshakeBody(resp)
 	if resp != nil && resp.StatusCode > 0 {
 		helps.RecordAPIWebsocketUpgradeRejection(ctx, cfg, websocketUpgradeRequestLog(requestLog), resp.StatusCode, resp.Header.Clone(), body)
-		return resp.StatusCode, newCodexWebsocketHandshakeStatusErr(resp.StatusCode, body, resp.Header)
+		return resp.StatusCode, newCodexWebsocketHandshakeStatusErr(resp.StatusCode, body, resp.Header, cfg != nil && cfg.Codex.ModelLevelCooling)
 	}
 	if dialErr == nil {
 		dialErr = fmt.Errorf("codex websockets executor: websocket %s failed without a connection or handshake response", stage)

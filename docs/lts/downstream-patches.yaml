@@ -42,6 +42,7 @@ patches:
       - internal/runtime/executor/codex_model_fallback_test.go
       - internal/runtime/executor/codex_websockets_executor.go
       - internal/runtime/executor/codex_websockets_executor_test.go
+      - internal/runtime/executor/codex_websockets_lts.go
       - internal/runtime/executor/codex_websockets_lts_test.go
       - internal/runtime/executor/helps/claude_code_session.go
       - internal/runtime/executor/helps/claude_code_session_test.go
@@ -64,6 +65,7 @@ patches:
       - TestLoadConfigOptionalCodexModelFallback
       - TestCodexModelFallbackEffectiveDefaultsAndNormalizesMappings
       - TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback
+      - TestCodexWebsocketHandshakeRespectsModelLevelCooling
       - TestCodexExecutorModelFallbackSameModelOnlyBlocksClientReasoning
       - TestCodexExecutorModelFallbackSameModelOnlyBlocksSourceReplayCache
       - TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair
@@ -465,7 +467,7 @@ patches:
   - id: codex-model-not-found-request-scope
     reason: An OpenAI-style 404 with error.type invalid_request_error and error.param model is a request/model routing failure, not evidence of unhealthy Codex credentials; retrying every auth or applying the generic 12-hour model cooldown can suspend the entire model pool.
     introduced_in: ded0314d23dc38656e2fb02220504bd98373813c
-    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); fcea738f converts Codex WebSocket handshake rejections into typed status errors, but regular Codex execution still does not recognize the OpenAI-style invalid_request_error model 404. The narrower LTS request-scope classifier and its cooldown regression therefore remain required.
+    affected_upstream_range: Reviewed through 09a29bd3. dde250f1 adds explicit structured model capability cooldowns; preserve the narrower LTS invalid_request_error/param=model 404 and typed request-fault precedence instead of reclassifying them as model capability faults.
     files:
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/conductor_overrides_test.go
@@ -1358,7 +1360,7 @@ patches:
   - id: session-dispatch-context-after-selection
     reason: Session affinity selection can finalize the canonical LCP identity; copy metadata into execution context after committing selection so execution, count, stream refresh retries and usage attribution agree.
     introduced_in: 219812ef
-    affected_upstream_range: Required through f19d6da0; upstream copies session metadata before selection finalization on affected dispatch paths.
+    affected_upstream_range: Required through 09a29bd3. 3bf787fc adds canonical session custom-header expansion but does not replace the LTS post-selection context ordering or generation-aware refresh paths.
     files:
       - sdk/cliproxy/auth/conductor_execution.go
       - sdk/cliproxy/auth/conductor_stream.go
@@ -1453,3 +1455,94 @@ patches:
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@dc21a426
     state: required
     retire_when: Upstream preserves the caller schema dialect or provides a validated lossless conversion with explicit conflict handling; both regressions pass under that contract.
+
+  - id: management-auth-refresh-status-redaction
+    reason: A refresh status operation must not serialize the runtime Auth metadata, attributes or provider error payload containing credentials.
+    introduced_in: d59402803da4e46a2300a4947aba96cd153ab64e
+    affected_upstream_range: Adapted 60e5b8bd through 09a29bd3; upstream returns the full refreshed Auth object and raw refresh errors.
+    files:
+      - internal/api/handlers/management/auth_files_refresh.go
+      - internal/api/handlers/management/auth_files_refresh_test.go
+    regression_tests:
+      - TestRefreshAuthFiles_AllAndSpecific
+      - TestRefreshAuthFilesErrorsDoNotExposeProviderCredentials
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@60e5b8bd
+    state: required
+    retire_when: Upstream returns a bounded non-secret refresh summary and sanitizes both single and batch failures, with the two regressions passing.
+
+  - id: responses-stream-error-flat-compatibility
+    reason: Existing clients consume top-level code and message in Responses error events. Preserve them additively while accepting nested details and exact sequence numbers.
+    introduced_in: d59402803da4e46a2300a4947aba96cd153ab64e
+    affected_upstream_range: Adapted 25913086 through 09a29bd3; the upstream replacement drops the prior flat fields.
+    files:
+      - sdk/api/handlers/openai_responses_stream_error.go
+      - sdk/api/handlers/openai_responses_stream_error_test.go
+    regression_tests:
+      - TestBuildOpenAIResponsesStreamErrorChunk
+      - TestBuildOpenAIResponsesStreamErrorChunkPreservesNestedError
+      - TestBuildOpenAIResponsesStreamErrorChunkPreservesLargeIntPrecision
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@25913086
+    state: required
+    retire_when: Upstream preserves both compatible representations or an explicitly approved client migration removes the flat-field contract.
+
+  - id: responses-tool-output-item-id-disambiguation
+    reason: An fco_ output item ID is not its tool call ID; allow pairing with the pending call without overwriting an explicit call_id.
+    introduced_in: cadb883b1491a70c08c55a1689c878a834ff531d
+    affected_upstream_range: Narrow dev 5a07045e backport onto 09a29bd3; no full dev merge.
+    files:
+      - internal/translator/common/responses.go
+      - internal/translator/common/responses_test.go
+      - internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go
+      - internal/translator/gemini/openai/responses/gemini_openai-responses_request_test.go
+    regression_tests:
+      - TestExtractResponsesCallID
+      - TestNormalizeResponsesToolCallOutputs
+      - TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithFCOItemID
+      - TestConvertOpenAIResponsesRequestToAntigravity_FunctionCallOutputWithFCOItemID
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@5a07045e6d21125b46bf3fa98d058e77900d514d
+    state: upstreamed
+    retire_when: The equivalent fix enters main baseline and all pairing regressions pass before marking removable.
+
+  - id: bounded-forced-auth-refresh
+    reason: The new refresh-all endpoint must not start one simultaneous refresh per credential; honor the configured worker bound and queued cancellation.
+    introduced_in: f62621811f88c93d9777356c76f59e801832ca70
+    affected_upstream_range: Narrow dev 6dce7867 backport onto 09a29bd3, completing the bounded lifecycle of 60e5b8bd.
+    files:
+      - sdk/cliproxy/auth/conductor_refresh.go
+      - sdk/cliproxy/auth/force_refresh_test.go
+    regression_tests:
+      - TestManager_ForceRefreshAll_WorkersBounded
+      - TestManager_ForceRefreshAll_CanceledContextSkipsExecutors
+      - TestManager_ForceRefreshAll_DynamicCancellationSkipsRemaining
+      - TestManager_RefreshWorkersResolution
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@6dce78673fbcb33f5eafafe42a5eb76f0648fa7f
+    state: upstreamed
+    retire_when: Main includes equivalent bounded workers and cancellation, with these regressions passing before marking removable.
+
+  - id: antigravity-empty-text-stream-block-lifetime
+    reason: Empty visible text parts must not close an active thinking block before later thinking or visible content arrives.
+    introduced_in: 6eb672ec3f493b49b3552a841ce422276567079e
+    affected_upstream_range: Narrow dev fd3e6623 backport onto 09a29bd3; signature acceptance and compaction validation are unchanged.
+    files:
+      - internal/translator/antigravity/claude/antigravity_claude_response.go
+      - internal/translator/antigravity/claude/antigravity_claude_response_test.go
+    regression_tests:
+      - TestConvertAntigravityResponseToClaudeStream_EmptyTextPartKeepsThinkingBlockOpen
+      - TestConvertAntigravityResponseToClaudeStream_EmptyTextPartFollowedByThinkingAndText
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@fd3e6623761d0d276f5ee6c5dbaf0996d4c6cd3f
+    state: upstreamed
+    retire_when: The same block lifetime fix enters main baseline and both streaming regressions pass before marking removable.
+
+  - id: responses-same-chunk-reasoning-order
+    reason: When one Chat chunk contains reasoning and visible content, emit reasoning before creating the message that closes its reasoning item.
+    introduced_in: 902579de9a7aed33b61e7ad18c07ca399140cea8
+    affected_upstream_range: Narrow dev c8ecb4f3 backport onto 09a29bd3; output indices, sequence and complete usage are retained.
+    files:
+      - internal/translator/openai/openai/responses/openai_openai-responses_response.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_response_test.go
+    regression_tests:
+      - TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ChunkWithContentAndReasoningContent
+      - TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_SingleChunkWithBothContentAndReasoningContent
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@c8ecb4f3c972664aae802e21c6a6743d5f6bd80a
+    state: upstreamed
+    retire_when: Main includes equivalent mixed-chunk ordering and both regressions pass before marking removable.

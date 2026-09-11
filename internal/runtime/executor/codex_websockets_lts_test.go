@@ -961,3 +961,16 @@ func TestCodexWebsocketHandshakeStatusClassifiesFallbackAndPreservesHeaders(t *t
 		t.Fatalf("bare/transient 429 fallback reason = %q, want empty", got)
 	}
 }
+
+func TestCodexWebsocketHandshakeRespectsModelLevelCooling(t *testing.T) {
+	body := []byte(`{"error":{"type":"usage_limit_reached","message":"quota","resets_in_seconds":7}}`)
+	for _, modelScoped := range []bool{false, true} {
+		err := newCodexWebsocketHandshakeStatusErr(http.StatusTooManyRequests, body, nil, modelScoped)
+		if got := err.(interface{ IsCredentialScoped() bool }).IsCredentialScoped(); got == modelScoped {
+			t.Fatalf("credential scoped = %v with model-level cooling = %v", got, modelScoped)
+		}
+		if got := err.(interface{ ModelFallbackReason() string }).ModelFallbackReason(); got != config.CodexModelFallbackTriggerUsageLimit {
+			t.Fatalf("model-level cooling lost the typed fallback reason: %q", got)
+		}
+	}
+}
