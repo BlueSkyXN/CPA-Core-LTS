@@ -2655,7 +2655,7 @@ func TestClaudeModelListCloakingConfigHotReload(t *testing.T) {
 func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	clientID := "test-client-version-catalog"
-	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{
+	modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{
 		{
 			ID:                  "gpt-5.5",
 			Object:              "model",
@@ -2741,8 +2741,8 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
 	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || len(serviceTiers) != 0 {
-		t.Fatalf("non-Codex provider must not advertise Codex service tiers, got %#v", gpt55["service_tiers"])
+	if !ok || len(serviceTiers) != 1 {
+		t.Fatalf("Codex provider should advertise its priority service tier, got %#v", gpt55["service_tiers"])
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")

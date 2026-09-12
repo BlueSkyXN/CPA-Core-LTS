@@ -233,6 +233,7 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 	} else {
 		auth.Generation++
 	}
+	cooldownStateChanged := false
 	if sameProvider {
 		auth.generation = existing.generation
 		if auth.generation == 0 {
@@ -241,6 +242,21 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 		if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 				auth.ModelStates = existing.ModelStates
+			}
+			credChanged := CredentialsChanged(existing, auth)
+			if credChanged {
+				if hasUnauthorizedAuthFailure(existing) || (auth.LastError != nil && isUnauthorizedError(auth.LastError)) {
+					auth.Unavailable = false
+					auth.LastError = nil
+					auth.NextRetryAfter = time.Time{}
+					auth.StatusMessage = ""
+					auth.Status = StatusActive
+					cooldownStateChanged = true
+				}
+				resumed := clearUnauthorizedModelStates(auth, time.Now())
+				if len(resumed) > 0 {
+					cooldownStateChanged = true
+				}
 			}
 			if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
 				auth.Unavailable = existing.Unavailable
@@ -256,7 +272,7 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 		clearProviderRuntimeState(auth, now)
 	}
 	auth.UpdatedAt = now
-	cooldownStateChanged := normalizeModelStates(auth)
+	cooldownStateChanged = normalizeModelStates(auth) || cooldownStateChanged
 	if !sameProvider {
 		cooldownStateChanged = true
 	}

@@ -275,6 +275,11 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
 	}
+	if h.postAuthPersistHook != nil {
+		if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
+			return errors.New("post-auth persist hook failed")
+		}
+	}
 	return nil
 }
 

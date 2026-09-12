@@ -25,9 +25,11 @@ func GeminiReplaySignatureOrBypass(rawSignature string, blockKind SignatureBlock
 
 // SanitizeGeminiRequestThoughtSignatures applies Gemini replay policy to a
 // Gemini-shaped request. Existing provider signatures stay on their original
-// model parts. Only a missing or incompatible first functionCall gets the bypass
-// sentinel; unsigned sibling calls remain unsigned, matching native Gemini
-// parallel-call history. functionResponse parts never carry signatures.
+// model parts. Server-side tool blocks (toolCall and toolResponse) retain recognized
+// Gemini signatures without accepting unknown or foreign envelopes. Only a missing or incompatible first
+// functionCall gets the bypass sentinel; unsigned sibling calls remain unsigned,
+// matching native Gemini parallel-call history. functionResponse parts never carry
+// signatures.
 func SanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string) []byte {
 	contentsPath = strings.TrimSpace(contentsPath)
 	if contentsPath == "" {

@@ -38,6 +38,8 @@ type Service struct {
 	// configRuntimeMu orders side-effecting runtime application after config commits.
 	configRuntimeMu        sync.Mutex
 	executorRegistrationMu sync.Mutex
+	authUpdateMu           sync.Mutex
+	authRevisions          map[string]uint64
 	configSequence         uint64
 	appliedRoutingState    *routingRuntimeState
 

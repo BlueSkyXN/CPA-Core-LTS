@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1638,5 +1639,111 @@ func TestHandlerWebSocketResponseObserverForwardsToPluginHost(t *testing.T) {
 	}
 	if observed[0].RequestID == "" {
 		t.Fatal("RequestID is empty, want populated request ID")
+	}
+}
+
+func TestWriteModelListResponse_ExposesResponseToPluginInterceptors(t *testing.T) {
+	handler := &BaseAPIHandler{}
+	var intercepted bool
+	var capturedReq pluginapi.ResponseInterceptRequest
+	var completion pluginapi.RequestCompletion
+
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+			intercepted = true
+			capturedReq = req
+			headers := cloneHeader(req.ResponseHeaders)
+			headers.Set("X-Custom-Model-Header", "filtered")
+			return pluginapi.ResponseInterceptResponse{
+				Headers: headers,
+				Body:    []byte(`{"object":"list","data":[{"id":"intercepted-model"}]}`),
+			}
+		},
+		completeRequest: func(_ context.Context, comp pluginapi.RequestCompletion) {
+			completion = comp
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Request.Header.Set("Authorization", "Bearer test-token")
+
+	payload := gin.H{"object": "list", "data": []map[string]any{{"id": "original-model"}}}
+	handler.WriteModelListResponse(ctx, "openai", payload)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !intercepted {
+		t.Fatal("InterceptResponse was not called")
+	}
+	if capturedReq.SourceFormat != "openai" {
+		t.Fatalf("SourceFormat = %q, want openai", capturedReq.SourceFormat)
+	}
+	if capturedReq.RequestHeaders.Get("Authorization") != "Bearer test-token" {
+		t.Fatalf("RequestHeaders missing auth: %#v", capturedReq.RequestHeaders)
+	}
+	if rec.Header().Get("X-Custom-Model-Header") != "filtered" {
+		t.Fatalf("X-Custom-Model-Header = %q, want filtered", rec.Header().Get("X-Custom-Model-Header"))
+	}
+	if !strings.Contains(rec.Body.String(), "intercepted-model") {
+		t.Fatalf("body = %s, want intercepted-model", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "original-model") {
+		t.Fatalf("body should not contain original-model: %s", rec.Body.String())
+	}
+	if completion.Outcome != pluginapi.RequestCompletionSucceeded {
+		t.Fatalf("completion outcome = %v, want succeeded", completion.Outcome)
+	}
+	if apiResp, ok := ctx.Get("API_RESPONSE"); !ok || !strings.Contains(string(apiResp.([]byte)), "intercepted-model") {
+		t.Fatalf("API_RESPONSE not recorded properly: %#v", apiResp)
+	}
+}
+
+type modelListFailingWriter struct{ gin.ResponseWriter }
+
+func (w modelListFailingWriter) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("synthetic write failure")
+}
+
+func TestWriteModelListResponsePreservesHeadersAndWriteOutcome(t *testing.T) {
+	for _, failWrite := range []bool{false, true} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		ctx.Header("X-Cpa-Trace-Id", "owned-trace")
+		if failWrite {
+			ctx.Writer = modelListFailingWriter{ctx.Writer}
+		}
+		completions := 0
+		handler := &BaseAPIHandler{}
+		handler.SetPluginHost(&handlerInterceptorTestHost{
+			interceptResponse: func(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+				return pluginapi.ResponseInterceptResponse{Body: req.Body, Headers: http.Header{
+					"X-Cpa-Trace-Id": {"override"}, "Set-Cookie": {"private=value"},
+					"Connection": {"X-Scoped"}, "X-Scoped": {"private"},
+					"Content-Encoding": {"gzip"}, "X-Plugin": {"allowed"},
+				}}
+			},
+			completeRequest: func(_ context.Context, comp pluginapi.RequestCompletion) {
+				completions++
+				if failWrite && comp.Outcome != pluginapi.RequestCompletionFailed {
+					t.Error("failed write was reported as successful")
+				}
+				if !failWrite && (comp.Outcome != pluginapi.RequestCompletionSucceeded || rec.Body.Len() == 0) {
+					t.Error("completion preceded the response write")
+				}
+			},
+		})
+		handler.WriteModelListResponse(ctx, "openai", gin.H{"data": []any{}})
+		if completions != 1 || rec.Header().Get("X-Cpa-Trace-Id") != "owned-trace" || rec.Header().Get("X-Plugin") != "allowed" {
+			t.Fatal("model-list lifecycle or owned response headers changed")
+		}
+		for _, key := range []string{"Set-Cookie", "Connection", "X-Scoped", "Content-Encoding"} {
+			if rec.Header().Get(key) != "" {
+				t.Errorf("unfiltered response header %s", key)
+			}
+		}
 	}
 }

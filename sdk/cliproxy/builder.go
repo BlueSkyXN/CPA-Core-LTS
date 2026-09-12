@@ -323,10 +323,16 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 			ID:     auth.ID,
 			Auth:   auth,
 		}
-		if s.watcher != nil && s.watcher.DispatchPersistedAuthUpdate(update) {
-			return nil
+		if s.watcher != nil {
+			_, rev := s.watcher.DispatchPersistedAuthUpdateWithRevision(&update)
+			if rev > 0 {
+				update.SetRevision(rev)
+			}
 		}
-		s.handleAuthUpdate(coreauth.WithSkipPersist(ctx), update)
+		// Detach from request cancellation so runtime model registration always completes
+		// once the credential has been persisted to disk.
+		syncCtx := coreauth.WithSkipPersist(context.Background())
+		s.handleAuthUpdate(syncCtx, update)
 		return nil
 	}
 }
