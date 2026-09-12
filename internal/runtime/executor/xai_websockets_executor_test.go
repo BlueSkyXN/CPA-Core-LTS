@@ -2144,12 +2144,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return nil
 		})
 
+		requestRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			requestRead <- errRead
 		}()
 
 		select {
@@ -2172,6 +2170,17 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return
 		}
 
+		// Pong 解除上传屏障后，必须等实际请求体读完，不能提前关闭连接。
+		select {
+		case errRead := <-requestRead:
+			if errRead != nil {
+				t.Errorf("read uploaded request: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out reading request after keepalive pong")
+			return
+		}
 		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
@@ -2240,12 +2249,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		requestRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			requestRead <- errRead
 		}()
 
 		select {
@@ -2268,6 +2275,17 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return
 		}
 
+		// Pong 解除上传屏障后，必须等实际请求体读完，不能提前关闭连接。
+		select {
+		case errRead := <-requestRead:
+			if errRead != nil {
+				t.Errorf("read uploaded request: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out reading request after keepalive pong")
+			return
+		}
 		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))

@@ -79,6 +79,8 @@
 - 既有 91 个不可达 commit 最新为 2026-09-05，未出现上次 09-11 恢复对象核查后的新对象；不恢复已被主线替代的旧集成快照。
 - 未做正式 Release、部署、真实账号生成、Home/HF 操作或浏览器 UAT。该边界不能由本地测试、PR merge 或 CI 成功替代。
 
+第二阶段首次 CI 的新增 sessionless keepalive fixture 在收到 Pong 后立即发 terminal 并关闭 socket，客户端真实 payload 尚未写完，Linux 暴露 `use of closed network connection`。对 Codex/xAI 五个同型测试补入上传完成屏障：先证明写锁持有时 Pong 可达，再等服务端读完完整 payload，最后发送 terminal；不改生产重试或放宽超时/断言。修正后这五项 race 连续 50 次及 executor 整包通过，最终 CI 以修正后的 head 为准。
+
 
 ## Downstream patch 逐项结论
 
