@@ -1171,6 +1171,7 @@ patches:
       - internal/util/responses_controls.go
       - internal/util/responses_controls_test.go
       - internal/thinking/apply.go
+      - internal/thinking/apply_codex_usage_test.go
       - internal/translator/codex/openai/responses/codex_openai-responses_request.go
       - internal/runtime/executor/openai_compat_executor.go
       - internal/runtime/executor/openai_compat_responses_controls_test.go
@@ -1180,6 +1181,7 @@ patches:
       - internal/translator/codex/openai/responses/codex_responses_controls_test.go
     regression_tests:
       - TestCodexAstraControlsSurviveNativeTranslation
+      - TestUsageReasoningEffortHonorsCompactionAndInvalidControlBoundaries
       - TestResponsesControlsRejectLossyChatFallback
       - TestResponsesControlErrorsAreReturnedBeforeExecution
       - TestChatExecutorRejectsNativeOnlyControlsBeforeNetwork
@@ -1611,3 +1613,75 @@ patches:
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@4cd17293
     state: required
     retire_when: Upstream preserves omission markers for text-only targets after moving tool images into user messages.
+
+  - id: gemini-server-tool-signature-validation
+    reason: Native Gemini server-tool envelopes can be retained only after provider validation; naming a part toolCall must not authorize arbitrary opaque cross-provider replay.
+    introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
+    affected_upstream_range: Through 5b278561; protected full-sync review on 2026-09-12.
+    files:
+      - internal/signature/gemini_sanitize.go
+      - internal/signature/gemini_sanitize_test.go
+    regression_tests:
+      - TestSanitizeGeminiRequestThoughtSignatures_PreservesToolCallAndResponseSignatures
+      - TestSanitizeGeminiRequestThoughtSignatures_RejectsUnknownToolCallAndToolResponseSignatures
+      - TestSanitizeGeminiRequestThoughtSignatures_RejectsUnknownSnakeCaseToolCallAndResponseSignatures
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@54776fb3
+    state: required
+    retire_when: Upstream validates server-tool signatures while retaining recognized Gemini envelopes and rejecting unknown or foreign content.
+
+  - id: model-list-response-boundary
+    reason: Model-list response interceptors must preserve filtered and CPA-owned headers and report request completion after the actual response write.
+    introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
+    affected_upstream_range: Through 5b278561; protected full-sync review on 2026-09-12.
+    files:
+      - sdk/api/handlers/handlers_interceptors.go
+      - sdk/api/handlers/handlers_interceptors_test.go
+    regression_tests:
+      - TestWriteModelListResponsePreservesHeadersAndWriteOutcome
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@5b278561
+    state: required
+    retire_when: Upstream uses the shared response-header filtering and write-outcome lifecycle for model-list responses.
+
+  - id: credential-change-unauthorized-recovery
+    reason: Credential replacement must clear the old unauthorized deadline without clearing unrelated model quota merely because its message contains unauthorized.
+    introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
+    affected_upstream_range: Through 5b278561; protected full-sync review on 2026-09-12.
+    files:
+      - sdk/cliproxy/auth/conductor_lifecycle.go
+      - sdk/cliproxy/auth/conductor_refresh.go
+      - sdk/cliproxy/auth/cooldown_state_test.go
+    regression_tests:
+      - TestCredentialChangeClearsUnauthorizedDeadlineButPreservesQuota
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@456d4c37
+    state: required
+    retire_when: Upstream clears the full unauthorized state and keeps unrelated typed quota state during credential replacement.
+
+  - id: management-auth-sync-error-redaction
+    reason: Auth synchronization callbacks may return credential-bearing error text; new status, fields and upload responses must not reflect that text into logs or API bodies.
+    introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
+    affected_upstream_range: Through 5b278561; protected full-sync review on 2026-09-12.
+    files:
+      - internal/api/handlers/management/auth_files_crud.go
+      - internal/api/handlers/management/auth_files_fields.go
+      - internal/api/handlers/management/auth_files_status_sync_test.go
+    regression_tests:
+      - TestPatchAuthFileStatusHookErrorReturns500
+      - TestPatchPluginVirtualSourceStatusHookErrorReturnsError
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@d1702fdf; router-for-me/CLIProxyAPI@456d4c37
+    state: required
+    retire_when: Upstream reports synchronization failure without publishing callback error payloads.
+
+  - id: claude-setup-token-metadata-lock
+    reason: Setup-token boolean metadata reads race concurrent OAuth profile writes even though existing string and device-pool helpers are locked.
+    introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
+    affected_upstream_range: Through 5b278561; protected full-sync review on 2026-09-12.
+    files:
+      - internal/auth/claude/identity.go
+      - internal/runtime/executor/claude_executor_auth.go
+      - internal/runtime/executor/claude_executor_auth_race_test.go
+    regression_tests:
+      - TestClaudeExecutorPrepareRequestAuthIsRaceFreeOnSharedCredential
+      - TestClaudeExecutorSharedCredentialMetadataMixedAccess
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream reads setup-token flags using the same lock as profile and device metadata writers, and shared-credential race tests pass.
