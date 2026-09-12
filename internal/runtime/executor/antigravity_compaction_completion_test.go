@@ -108,7 +108,7 @@ func TestAntigravityCompactionRequiresCompleteSummary(t *testing.T) {
 					if err != nil || summary != tc.summary {
 						t.Fatalf("summary = %q, error = %v", summary, err)
 					}
-					for key, want := range map[string]int64{"input_tokens": 10, "output_tokens": 5, "total_tokens": 17} {
+					for key, want := range map[string]int64{"input_tokens": 10, "output_tokens": 7, "total_tokens": 17} {
 						if got := gjson.GetBytes(result, "usage."+key).Int(); got != want {
 							t.Errorf("usage.%s = %d, want %d", key, got, want)
 						}

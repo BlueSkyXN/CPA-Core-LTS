@@ -566,13 +566,13 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 	}
 
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	config := extractThinkingConfig(body, provider)
+	config := extractThinkingConfigForUsage(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
 		case "openai-response":
-			config = extractCodexConfig(body)
+			config = extractCodexUsageConfig(body)
 		case "openai":
-			config = extractCodexConfig(body)
+			config = extractCodexUsageConfig(body)
 		}
 	}
 	return reasoningEffortFromConfig(config)
@@ -582,23 +582,26 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 // setting as a canonical reasoning_effort label for usage logging.
 func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider == "codex" || provider == "openai-response" || provider == "openai" {
-		if controls, err := util.InspectResponsesControls(body); err == nil && controls.ConfigurationEffort != "" {
-			return controls.ConfigurationEffort
-		}
-	}
-
-	config := extractThinkingConfig(body, provider)
+	config := extractThinkingConfigForUsage(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
 		case "openai", "openai-response":
-			config = extractCodexConfig(body)
+			config = extractCodexUsageConfig(body)
 			if !hasThinkingConfig(config) {
 				config = extractOpenAIConfig(body)
 			}
 		}
 	}
 	return reasoningEffortFromConfig(config)
+}
+
+func extractThinkingConfigForUsage(body []byte, provider string) ThinkingConfig {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex", "xai", "openai-response":
+		return extractCodexUsageConfig(body)
+	default:
+		return extractThinkingConfig(body, provider)
+	}
 }
 
 func reasoningEffortFromSuffix(suffix SuffixResult) string {
@@ -872,4 +875,28 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 	}
 
 	return ThinkingConfig{}
+}
+
+// extractCodexUsageConfig extracts thinking configuration from a Codex format request
+// body for usage reporting. It inspects the input array for the latest applicable
+// configuration_update item with a reasoning.effort setting, falling back to top-level
+// reasoning.effort when no update applies.
+func extractCodexUsageConfig(body []byte) ThinkingConfig {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ThinkingConfig{}
+	}
+
+	// 复用 LTS control parser：compaction 后不沿用旧 effort，畸形/相邻 update 不构成有效证据。
+	if controls, err := util.InspectResponsesControls(body); err == nil && controls.ConfigurationEffort != "" {
+		switch controls.ConfigurationEffort {
+		case "none":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(controls.ConfigurationEffort)}
+		}
+	}
+
+	return extractCodexConfig(body)
 }

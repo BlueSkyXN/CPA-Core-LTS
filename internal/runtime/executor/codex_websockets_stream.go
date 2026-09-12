@@ -120,13 +120,17 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
+	isEphemeralSession := false
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		if sess != nil {
 			sess.reqMu.Lock()
 		}
+	} else {
+		isEphemeralSession = true
+		sess = newEphemeralCodexWebsocketSession()
 	}
-	streamSessionLocked := sess != nil
+	streamSessionLocked := sess != nil && !isEphemeralSession
 	unlockStreamSession := func() {
 		if sess != nil && streamSessionLocked {
 			sess.reqMu.Unlock()
@@ -204,7 +208,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		var errActive error
 		requestSignal, errActive = sess.setActiveConnection(connection, readCh)
 		if errActive != nil {
-			sess.reqMu.Unlock()
+			unlockStreamSession()
 			return nil, errActive
 		}
 	}
@@ -214,7 +218,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if errSend := writeCodexWebsocketMessage(sess, connection.conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, connection.conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
-		if sess != nil {
+		if sess != nil && !isEphemeralSession {
 			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, "send_error", errSend)
 				sess.clearActiveConnection(connection, readCh)
@@ -283,9 +287,17 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			wsReqBody = wsReqBodyRetry
 		} else {
-			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "send_error", errSend)
-			if errClose := closer.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+			if sess != nil {
+				e.invalidateUpstreamConn(sess, connection, "send_error", errSend)
+				sess.clearActiveConnection(connection, readCh)
+				if isEphemeralSession {
+					closeCodexWebsocketSession(sess, "send_error")
+				}
+			} else {
+				logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "send_error", errSend)
+				if closer != nil {
+					_ = closer.Close()
+				}
 			}
 			return nil, errSend
 		}
@@ -317,6 +329,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if sess != nil {
 					sess.clearActiveConnection(connection, readCh)
 					unlockStreamSession()
+					if isEphemeralSession {
+						closeCodexWebsocketSession(sess, "context_done")
+					}
 				} else {
 					_ = closer.Close()
 				}
@@ -329,6 +344,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					e.invalidateUpstreamConn(sess, connection, "read_error", mappedErr)
 					sess.clearActiveConnection(connection, readCh)
 					unlockStreamSession()
+					if isEphemeralSession {
+						closeCodexWebsocketSession(sess, "read_error")
+					}
 				} else {
 					logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "read_error", mappedErr)
 					_ = closer.Close()
@@ -344,6 +362,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 						e.invalidateUpstreamConn(sess, connection, "unexpected_binary", errBinary)
 						sess.clearActiveConnection(connection, readCh)
 						unlockStreamSession()
+						if isEphemeralSession {
+							closeCodexWebsocketSession(sess, "unexpected_binary")
+						}
 					} else {
 						logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "unexpected_binary", errBinary)
 						_ = closer.Close()
@@ -412,6 +433,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
 				reporter.PublishFailure(ctx, streamErr)
 				if failoverPending {
+					if isEphemeralSession {
+						closeCodexWebsocketSession(sess, "bootstrap_overload")
+					}
 					// Fail the attempt before the downstream headers are committed so the
 					// conductor can transparently retry on another credential, and report the
 					// status the upstream refused to put on the wire.
@@ -504,6 +528,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 	}
 	if bootstrapTerminalErr != nil {
+		if isEphemeralSession {
+			closeCodexWebsocketSession(sess, "bootstrap_terminal_error")
+		}
 		// The upstream connection was already invalidated and released in the terminal-failure
 		// branch above, so only the buffered payloads plus the in-stream error remain to emit.
 		out <- cliproxyexecutor.StreamChunk{Err: bootstrapTerminalErr}
@@ -514,6 +541,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		if sess != nil {
 			sess.clearActiveConnection(connection, readCh)
 			unlockStreamSession()
+			if isEphemeralSession {
+				closeCodexWebsocketSession(sess, "completed")
+			}
 		} else {
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "completed", nil)
 			if errClose := closer.Close(); errClose != nil {
@@ -533,6 +563,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if sess != nil {
 				sess.clearActiveConnection(connection, readCh)
 				unlockStreamSession()
+				if isEphemeralSession {
+					closeCodexWebsocketSession(sess, terminateReason)
+				}
 				return
 			}
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, terminateReason, terminateErr)

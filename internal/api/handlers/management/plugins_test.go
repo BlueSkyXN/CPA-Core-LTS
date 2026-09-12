@@ -284,7 +284,6 @@ options:
 
 func TestGetPluginConfigReturnsSynthesizedPermissions(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	enabled := true
 	h := &Handler{
