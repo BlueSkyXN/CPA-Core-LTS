@@ -2284,6 +2284,125 @@ func TestConvertOpenAIResponsesRequestToGemini_AllPendingCallsReservedByFutureEx
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToGemini_InterruptedFunctionCallPreservesPairing(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.8-flash-high",
+		"input": [
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"List the files."}]},
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Stop, do something else instead."}]},
+			{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"pwd\"]}"},
+			{"type":"function_call_output","call_id":"c2","output":"/tmp\n"}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash-high", []byte(inputJSON), false)
+	if err := internalsignature.ValidateGeminiFunctionCallPairing(result); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed on Gemini request: %v; output=%s", err, result)
+	}
+
+	// Verify synthesized response for c1
+	c1Resp := gjson.GetBytes(result, "contents.2.parts.0.functionResponse")
+	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
+		t.Fatalf("unexpected synthesized response for c1: %s", c1Resp.Raw)
+	}
+	// Verify real response for c2
+	c2Resp := gjson.GetBytes(result, "contents.5.parts.0.functionResponse")
+	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
+		t.Fatalf("unexpected real response for c2: %s", c2Resp.Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ParallelInterruptedFunctionCallPreservesPairingAndOrder(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.8-flash-high",
+		"input": [
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"List and print."}]},
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"},
+			{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"pwd\"]}"},
+			{"type":"function_call_output","call_id":"c2","output":"/tmp\n"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Stop, do something else instead."}]},
+			{"type":"function_call","call_id":"c3","name":"shell","arguments":"{\"command\":[\"whoami\"]}"},
+			{"type":"function_call_output","call_id":"c3","output":"root\n"}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash-high", []byte(inputJSON), false)
+	if err := internalsignature.ValidateGeminiFunctionCallPairing(result); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed on parallel interrupted request: %v; output=%s", err, result)
+	}
+
+	// In the response turn for [c1, c2], c1 must be first (synthesized) and c2 must be second (real)
+	c1Resp := gjson.GetBytes(result, "contents.2.parts.0.functionResponse")
+	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
+		t.Fatalf("unexpected response part 0 for c1: %s", c1Resp.Raw)
+	}
+	c2Resp := gjson.GetBytes(result, "contents.2.parts.1.functionResponse")
+	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
+		t.Fatalf("unexpected response part 1 for c2: %s", c2Resp.Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_TrailingPartialParallelCallsPreservesPairingAndOrder(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.8-flash-high",
+		"input": [
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"List and print."}]},
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"},
+			{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"pwd\"]}"},
+			{"type":"function_call_output","call_id":"c2","output":"/tmp\n"}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash-high", []byte(inputJSON), false)
+	if err := internalsignature.ValidateGeminiFunctionCallPairing(result); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed on trailing partial parallel request: %v; output=%s", err, result)
+	}
+
+	// In the response turn for [c1, c2], c1 must be first (synthesized) and c2 must be second (real)
+	c1Resp := gjson.GetBytes(result, "contents.2.parts.0.functionResponse")
+	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
+		t.Fatalf("unexpected response part 0 for c1: %s", c1Resp.Raw)
+	}
+	c2Resp := gjson.GetBytes(result, "contents.2.parts.1.functionResponse")
+	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
+		t.Fatalf("unexpected response part 1 for c2: %s", c2Resp.Raw)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_InterruptedMessageBeforeRealOutputPreservesPairingAndOrder(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.8-flash-high",
+		"input": [
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"List and print."}]},
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"},
+			{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"pwd\"]}"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Stop, do something else instead."}]},
+			{"type":"function_call_output","call_id":"c2","output":"/tmp\n"}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToGemini("gemini-3.8-flash-high", []byte(inputJSON), false)
+	if err := internalsignature.ValidateGeminiFunctionCallPairing(result); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed on interrupted message before real output request: %v; output=%s", err, result)
+	}
+
+	// The user message precedes the completed tool response turn
+	stopText := gjson.GetBytes(result, "contents.2.parts.0.text").String()
+	if stopText != "Stop, do something else instead." {
+		t.Fatalf("unexpected text in contents[2]: %q", stopText)
+	}
+	// In the response turn for [c1, c2], c1 must be first (synthesized) and c2 must be second (real)
+	c1Resp := gjson.GetBytes(result, "contents.3.parts.0.functionResponse")
+	if c1Resp.Get("id").String() != "c1" || c1Resp.Get("name").String() != "shell" || c1Resp.Get("response.result").String() != "call interrupted, no output" {
+		t.Fatalf("unexpected response part 0 for c1: %s", c1Resp.Raw)
+	}
+	c2Resp := gjson.GetBytes(result, "contents.3.parts.1.functionResponse")
+	if c2Resp.Get("id").String() != "c2" || c2Resp.Get("name").String() != "shell" || c2Resp.Get("response.result").String() != "/tmp\n" {
+		t.Fatalf("unexpected response part 1 for c2: %s", c2Resp.Raw)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithFCOItemID(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3.7-flash-high",

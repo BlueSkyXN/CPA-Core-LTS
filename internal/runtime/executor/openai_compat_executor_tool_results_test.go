@@ -84,16 +84,16 @@ func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
 			}
 
 			toolContent := gjson.GetBytes(gotBody, "messages.1.content")
+			if toolContent.Type != gjson.String || toolContent.String() != "image inspected" {
+				t.Fatal("tool result text or OpenAI string content contract changed")
+			}
+			relay := gjson.GetBytes(gotBody, "messages.2.content.1")
 			if tt.wantString {
-				if toolContent.Type != gjson.String {
-					t.Fatalf("tool content type = %s, want string; body=%s", toolContent.Type, string(gotBody))
+				if relay.Get("type").String() != "text" || relay.Get("text").String() != "[image omitted: unsupported by upstream]" {
+					t.Fatal("text-only target received an image or lost omission marker")
 				}
-				want := "image inspected\n\n[image omitted: unsupported by upstream]"
-				if toolContent.String() != want {
-					t.Fatalf("tool content = %q, want %q", toolContent.String(), want)
-				}
-			} else if !toolContent.IsArray() {
-				t.Fatalf("tool content type = %s, want array; body=%s", toolContent.Type, string(gotBody))
+			} else if relay.Get("type").String() != "image_url" || relay.Get("image_url.url").String() != "data:image/png;base64,AA==" {
+				t.Fatal("image-capable target lost relayed tool image")
 			}
 		})
 	}
