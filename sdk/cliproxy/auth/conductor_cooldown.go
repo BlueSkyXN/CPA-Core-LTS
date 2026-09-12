@@ -797,7 +797,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 	if m != nil {
 		if policy := m.ResultPolicy(); policy != nil {
+			originalAuthID, originalProvider := result.AuthID, result.Provider
 			result = policy.ApplyResultPolicy(ctx, result)
+			if result.AuthID != originalAuthID || result.Provider != originalProvider {
+				m.abandonCodexRateLimitContinuityAttempt(ctx)
+			}
 			if result.AuthID == "" {
 				return
 			}

@@ -12,6 +12,28 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
+func TestResultPolicySuppressionReleasesContinuityAttempt(t *testing.T) {
+	m := newCodexContinuityManager(t, &codexContinuityTestExecutor{}, []string{"policy-auth"}, []string{"gpt-5"}, 2)
+	auth, _ := m.GetByID("policy-auth")
+	ctx, allowed := m.beginCodexRateLimitContinuityAttempt(context.Background(), auth, "codex", "gpt-5", codexContinuityOptions("policy-session"))
+	if !allowed {
+		t.Fatal("continuity admission rejected")
+	}
+	if _, ok := codexRateLimitContinuityAttemptFromContext(ctx); !ok {
+		t.Fatal("missing admitted continuity attempt")
+	}
+	m.SetResultPolicy(ResultPolicyFunc(func(_ context.Context, result Result) Result {
+		result.AuthID = ""
+		return result
+	}))
+	m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
+	m.codexRateLimitContinuity.mu.Lock()
+	defer m.codexRateLimitContinuity.mu.Unlock()
+	if len(m.codexRateLimitContinuity.activeAttempts) != 0 {
+		t.Fatal("suppressed result leaked a continuity attempt")
+	}
+}
+
 type recordingHook struct {
 	NoopHook
 	lastResult atomic.Pointer[Result]
