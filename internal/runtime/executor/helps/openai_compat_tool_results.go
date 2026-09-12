@@ -45,6 +45,16 @@ func NormalizeOpenAIToolResultsTextOnly(payload []byte) []byte {
 					out = updated
 				}
 			}
+		} else if message.Get("role").String() == "user" {
+			// 工具图片现在会转交到 user 消息；显式 text-only 目标仍不能收到图片。
+			for partIndex, part := range message.Get("content").Array() {
+				if isOpenAIImageToolResultPart(part) {
+					path := fmt.Sprintf("messages.%d.content.%d", messageIndex, partIndex)
+					if updated, errSet := sjson.SetBytes(out, path, map[string]string{"type": "text", "text": openAIToolResultImageOmittedText}); errSet == nil {
+						out = updated
+					}
+				}
+			}
 		}
 		messageIndex++
 		return true

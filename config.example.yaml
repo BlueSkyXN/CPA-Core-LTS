@@ -177,7 +177,7 @@ disable-cooling: false
 # Default is false; when false, cooldown status is kept in memory only.
 save-cooldown-status: false
 
-# Cooldown duration in seconds for transient upstream errors (408/500/502/503/504).
+# Cooldown duration in seconds for transient upstream errors (408/500/502/503/504/520-526).
 # Default is 30 to align with max-retry-interval; set to 0 for the legacy 60-second cooldown; set to -1 to disable.
 transient-error-cooldown-seconds: 30
 

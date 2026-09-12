@@ -17,7 +17,7 @@ func withCodexCompatibility(models []*ModelInfo) []*ModelInfo {
 
 // applyCodexCompatibility mutates a cloned model definition in place.
 func applyCodexCompatibility(model *ModelInfo) *ModelInfo {
-	if model == nil || model.UserDefined {
+	if model == nil || model.UserDefined || model.ExplicitThinking {
 		return model
 	}
 	if model.ID != "gpt-5.6-sol" && model.ID != "gpt-5.6-terra" && model.ID != "gpt-6-astra" {

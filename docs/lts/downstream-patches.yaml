@@ -119,6 +119,7 @@ patches:
       - sdk/cliproxy/auth/codex_model_fallback_test.go
       - sdk/cliproxy/auth/codex_rate_limit_continuity.go
       - sdk/cliproxy/auth/codex_rate_limit_continuity_test.go
+      - sdk/cliproxy/auth/conductor_result_policy_test.go
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/openai_compat_pool_test.go
       - sdk/cliproxy/auth/selected_auth_metadata_test.go
@@ -126,6 +127,7 @@ patches:
       - sdk/cliproxy/auth/selector_test.go
     regression_tests:
       - TestLoadConfigOptionalCodexRateLimitContinuity
+      - TestResultPolicySuppressionReleasesContinuityAttempt
       - TestSessionAffinitySelector_ExplicitExecutionSessionMetadata
       - TestCodexRateLimitContinuityFirstFreshUsageLimitEntersFreshBlocked
       - TestCodexRateLimitContinuityCanaryFailureWithoutIncumbentConfirms
@@ -1500,7 +1502,7 @@ patches:
       - TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithFCOItemID
       - TestConvertOpenAIResponsesRequestToAntigravity_FunctionCallOutputWithFCOItemID
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@5a07045e6d21125b46bf3fa98d058e77900d514d
-    state: upstreamed
+    state: removable
     retire_when: The equivalent fix enters main baseline and all pairing regressions pass before marking removable.
 
   - id: bounded-forced-auth-refresh
@@ -1516,7 +1518,7 @@ patches:
       - TestManager_ForceRefreshAll_DynamicCancellationSkipsRemaining
       - TestManager_RefreshWorkersResolution
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@6dce78673fbcb33f5eafafe42a5eb76f0648fa7f
-    state: upstreamed
+    state: removable
     retire_when: Main includes equivalent bounded workers and cancellation, with these regressions passing before marking removable.
 
   - id: antigravity-empty-text-stream-block-lifetime
@@ -1530,7 +1532,7 @@ patches:
       - TestConvertAntigravityResponseToClaudeStream_EmptyTextPartKeepsThinkingBlockOpen
       - TestConvertAntigravityResponseToClaudeStream_EmptyTextPartFollowedByThinkingAndText
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@fd3e6623761d0d276f5ee6c5dbaf0996d4c6cd3f
-    state: upstreamed
+    state: removable
     retire_when: The same block lifetime fix enters main baseline and both streaming regressions pass before marking removable.
 
   - id: responses-same-chunk-reasoning-order
@@ -1544,5 +1546,68 @@ patches:
       - TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ChunkWithContentAndReasoningContent
       - TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_SingleChunkWithBothContentAndReasoningContent
     upstream_issue_or_pr: router-for-me/CLIProxyAPI@c8ecb4f3c972664aae802e21c6a6743d5f6bd80a
-    state: upstreamed
+    state: removable
     retire_when: Main includes equivalent mixed-chunk ordering and both regressions pass before marking removable.
+
+  - id: usage-base-url-credential-redaction
+    reason: Configured endpoint URLs can contain userinfo, query credentials and fragments; usage and runtime auth summaries must not expose them.
+    introduced_in: b3afe084aa93edec26ba3d5b9bb9623fc18ec02c
+    affected_upstream_range: Through 5c80a01c; adapted c8f723e0 during protected full-sync.
+    files:
+      - sdk/cliproxy/usage/base_url.go
+      - sdk/cliproxy/usage/base_url_test.go
+      - internal/runtime/executor/helps/usage_helpers.go
+      - internal/runtime/executor/helps/usage_helpers_test.go
+      - internal/pluginhost/adapters_usage_translation.go
+      - internal/pluginhost/adapters_test.go
+      - internal/pluginhost/auth_callbacks.go
+    regression_tests:
+      - TestSafeBaseURL
+      - TestUsageAdapterPropagatesBaseURL
+      - TestUsageReporterPropagatesBaseURL
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@c8f723e0
+    state: required
+    retire_when: Upstream sanitizes endpoint metadata at reporter and plugin boundaries while preserving ordinary endpoint paths.
+
+  - id: claude-legacy-credential-identity-preservation
+    reason: Organization hashing disambiguates new logins, but an existing matching identity keeps its filename and auth index without automatic migration or deletion.
+    introduced_in: b3afe084aa93edec26ba3d5b9bb9623fc18ec02c
+    affected_upstream_range: Through 5c80a01c; adapted fc96a87f during protected full-sync.
+    files:
+      - sdk/auth/manager.go
+      - sdk/auth/manager_test.go
+      - internal/api/handlers/management/auth_files_fields.go
+      - internal/api/handlers/management/auth_files_relogin_preserve_test.go
+    regression_tests:
+      - TestManagerLogin_PreservesMatchingLegacyClaudeCredentialIdentity
+      - TestSaveTokenRecord_PreservesMatchingLegacyClaudeCredentialIdentity
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@fc96a87f
+    state: required
+    retire_when: Upstream preserves matching legacy identity without implicit migration, or a separately approved migration replaces this compatibility contract.
+
+  - id: codex-compat-unknown-signature-rejection
+    reason: Empty-thinking compatibility is not permission to replay unknown opaque provider-private signatures as GPT encrypted content.
+    introduced_in: b3afe084aa93edec26ba3d5b9bb9623fc18ec02c
+    affected_upstream_range: Through 5c80a01c; adapted 942bda99 during protected full-sync.
+    files:
+      - internal/translator/codex/claude/codex_claude_request.go
+      - internal/translator/codex/claude/codex_claude_compat_test.go
+    regression_tests:
+      - TestConvertClaudeRequestToCodexWithCompat_UnknownThinkingSignatures
+      - TestConvertClaudeRequestToCodexWithCompat_RejectsUnknownSignaturePreservingText
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@942bda99
+    state: required
+    retire_when: Upstream requires provider compatibility for unknown nonempty signatures even in empty-thinking compatibility mode.
+
+  - id: text-only-relayed-tool-image-guard
+    reason: Relaying tool images to user messages must not bypass explicit text-only model input restrictions.
+    introduced_in: b3afe084aa93edec26ba3d5b9bb9623fc18ec02c
+    affected_upstream_range: Through 5c80a01c; adapted 4cd17293 during protected full-sync.
+    files:
+      - internal/runtime/executor/helps/openai_compat_tool_results.go
+      - internal/runtime/executor/openai_compat_executor_tool_results_test.go
+    regression_tests:
+      - TestOpenAICompatExecutorToolResultContentByInputModalities
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@4cd17293
+    state: required
+    retire_when: Upstream preserves omission markers for text-only targets after moving tool images into user messages.

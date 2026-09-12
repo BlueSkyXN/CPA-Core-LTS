@@ -13,6 +13,7 @@ import (
 	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -198,6 +199,9 @@ func (h *Host) listAuthFilesFromDisk() ([]pluginapi.HostAuthFileEntry, error) {
 				}
 				if note, ok := metadata["note"].(string); ok {
 					fileEntry.Note = strings.TrimSpace(note)
+				}
+				if baseURL, ok := metadata["base_url"].(string); ok {
+					fileEntry.BaseURL = coreusage.SafeBaseURL(baseURL)
 				}
 				if websockets, okWebsockets := parseWebsocketsValue(metadata["websockets"]); okWebsockets {
 					fileEntry.Websockets = websockets
@@ -472,6 +476,13 @@ func (h *Host) buildHostAuthFileEntry(auth *coreauth.Auth) *pluginapi.HostAuthFi
 	} else if auth.Metadata != nil {
 		if rawNote, ok := auth.Metadata["note"].(string); ok {
 			entry.Note = strings.TrimSpace(rawNote)
+		}
+	}
+	if baseURL := strings.TrimSpace(authAttribute(auth, "base_url")); baseURL != "" {
+		entry.BaseURL = coreusage.SafeBaseURL(baseURL)
+	} else if auth.Metadata != nil {
+		if rawBaseURL, ok := auth.Metadata["base_url"].(string); ok {
+			entry.BaseURL = coreusage.SafeBaseURL(rawBaseURL)
 		}
 	}
 	if websockets, ok := authWebsocketsValue(auth); ok {

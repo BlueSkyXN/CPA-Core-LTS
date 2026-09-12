@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -868,15 +869,27 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
+	legacyClaudeCredential, errLegacy := claudeauth.FindMatchingLegacyCredential(ctx, store, record)
+	if errLegacy != nil {
+		return "", errLegacy
+	}
+	if legacyClaudeCredential != nil {
+		coreauth.MergeExistingAuthMetadata(record, legacyClaudeCredential.Metadata)
+		// 保留既有身份和文件名；组织哈希只用于尚未保存的新凭据。
+		record.ID = legacyClaudeCredential.ID
+		record.FileName = legacyClaudeCredential.FileName
+		record.Index = legacyClaudeCredential.Index
+	}
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
 		}
 	}
-	savedPath, errSave := store.Save(ctx, record)
+	savedPath, errSave := store.Save(coreauth.WithAuthCreationIntent(ctx), record)
 	if errSave != nil {
 		return savedPath, errSave
 	}
+
 	if h.postAuthPersistHook != nil {
 		persistedRecord := record
 		if data, errRead := os.ReadFile(savedPath); errRead == nil && len(data) > 0 {

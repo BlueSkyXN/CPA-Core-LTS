@@ -126,3 +126,19 @@ type Service struct {
 	homePluginDeleteTask         func(context.Context, *config.Config, home.PluginTask) homeplugins.SyncReport
 	antigravityProbeWg           sync.WaitGroup
 }
+
+// SetResultPolicy sets an execution result policy on the underlying core auth manager.
+func (s *Service) SetResultPolicy(policy coreauth.ResultPolicy) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	s.coreManager.SetResultPolicy(policy)
+}
+
+// ResultPolicy returns the execution result policy configured on the core auth manager.
+func (s *Service) ResultPolicy() coreauth.ResultPolicy {
+	if s == nil || s.coreManager == nil {
+		return nil
+	}
+	return s.coreManager.ResultPolicy()
+}

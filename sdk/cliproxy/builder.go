@@ -57,6 +57,9 @@ type Builder struct {
 	// postAuthHook is called after auth record creation and before persistence.
 	postAuthHook coreauth.PostAuthHook
 
+	// resultPolicy intercepts execution results before quota mutation and persistence.
+	resultPolicy coreauth.ResultPolicy
+
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
 }
@@ -186,6 +189,12 @@ func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
 	return b
 }
 
+// WithResultPolicy sets an execution result policy invoked before in-memory quota mutations and persistence.
+func (b *Builder) WithResultPolicy(policy coreauth.ResultPolicy) *Builder {
+	b.resultPolicy = policy
+	return b
+}
+
 // Build validates inputs, applies defaults, and returns a ready-to-run service.
 func (b *Builder) Build() (*Service, error) {
 	if b.cfg == nil {
@@ -265,6 +274,9 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
+	}
+	if b.resultPolicy != nil {
+		coreManager.SetResultPolicy(b.resultPolicy)
 	}
 
 	service := &Service{

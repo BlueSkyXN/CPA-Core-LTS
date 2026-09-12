@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -86,10 +87,22 @@ func (m *Manager) Login(ctx context.Context, provider string, cfg *config.Config
 			}
 		}
 	}
+	legacyClaudeCredential, errLegacy := claudeauth.FindMatchingLegacyCredential(ctx, m.store, record)
+	if errLegacy != nil {
+		return record, "", errLegacy
+	}
+	if legacyClaudeCredential != nil {
+		coreauth.MergeExistingAuthMetadata(record, legacyClaudeCredential.Metadata)
+		// 保留既有身份和文件名；组织哈希只用于尚未保存的新凭据。
+		record.ID = legacyClaudeCredential.ID
+		record.FileName = legacyClaudeCredential.FileName
+		record.Index = legacyClaudeCredential.Index
+	}
 
-	savedPath, err := m.store.Save(ctx, record)
+	savedPath, err := m.store.Save(coreauth.WithAuthCreationIntent(ctx), record)
 	if err != nil {
 		return record, "", err
 	}
+
 	return record, savedPath, nil
 }
