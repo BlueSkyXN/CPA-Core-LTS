@@ -44,3 +44,5 @@
 首次全量测试揭示三类需要适配的断言/行为：旧 UA 固定值、非 Codex provider 的 service_tiers、图片 relay 与 text-only/显式 thinking 约束。已修正生产适配和对应回归，没有删除测试或放宽受保护契约。
 
 修正后 `go test ./...`、过滤 `/tmp` 的无缓存产品全量、Usage/Management 专项、完整 Responses translator、六包 race（auth conductor、SDK auth、store、pluginhost、usage helpers、client models）、server build、LTS guard 通过。复查还补齐 ResultPolicy 丢弃/改写身份时的 continuity attempt 释放，沿用现有 abandon 路径并增加定向回归。最终精确 head CI 在阶段 PR 中回读；不会把后续阶段未执行的验证记为通过。
+
+首轮 CI 的 full-test-observation 发现旧 Antigravity pool fixture 只同时启动 goroutine、未保证请求同时占用连接，Linux 实际观察 9 条连接而断言最多 8 条。为大池和默认小池两项测试加入每波 8 请求的服务端屏障，保留原连接数阈值，不修改生产 transport 或放宽断言。最终 CI 需在这个修正后的精确 head 重新通过。

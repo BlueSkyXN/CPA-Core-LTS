@@ -219,12 +219,33 @@ func TestNewAntigravityHTTPClientKeepsForeignRoundTripper(t *testing.T) {
 // the pool limit: with Go's default of 2 idle connections per host, repeated waves of
 // concurrent requests on one credential keep re-handshaking.
 func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
+	const (
+		waves      = 3
+		perWave    = 8
+		totalConns = waves * perWave
+	)
 	var mu sync.Mutex
 	remotes := map[string]struct{}{}
+	arrived := 0
+	waveReady := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		remotes[r.RemoteAddr] = struct{}{}
+		arrived++
+		ready := waveReady
+		if arrived%perWave == 0 {
+			close(ready)
+			waveReady = make(chan struct{})
+		}
 		mu.Unlock()
+		// 确保每一波真的并发占用 8 条连接，避免调度速度改变池复用断言。
+		select {
+		case <-ready:
+		case <-time.After(5 * time.Second):
+			t.Error("concurrent request wave did not reach the barrier")
+		case <-r.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -242,11 +263,6 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
 	}
 	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport), poolCfg)}
 
-	const (
-		waves      = 3
-		perWave    = 8
-		totalConns = waves * perWave
-	)
 	for wave := 0; wave < waves; wave++ {
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -287,12 +303,33 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
 // TestAntigravityConcurrentRequestsDefaultPoolLimitsToTwo verifies that when pooling is enabled
 // without specifying max-idle-conns-per-host, it defaults to 2 (matching Go's default and official agy).
 func TestAntigravityConcurrentRequestsDefaultPoolLimitsToTwo(t *testing.T) {
+	const (
+		waves      = 3
+		perWave    = 8
+		totalConns = waves * perWave
+	)
 	var mu sync.Mutex
 	remotes := map[string]struct{}{}
+	arrived := 0
+	waveReady := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		remotes[r.RemoteAddr] = struct{}{}
+		arrived++
+		ready := waveReady
+		if arrived%perWave == 0 {
+			close(ready)
+			waveReady = make(chan struct{})
+		}
 		mu.Unlock()
+		// 确保每一波真的并发占用 8 条连接，避免调度速度改变池复用断言。
+		select {
+		case <-ready:
+		case <-time.After(5 * time.Second):
+			t.Error("concurrent request wave did not reach the barrier")
+		case <-r.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -308,11 +345,6 @@ func TestAntigravityConcurrentRequestsDefaultPoolLimitsToTwo(t *testing.T) {
 	}
 	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport), poolCfg)}
 
-	const (
-		waves      = 3
-		perWave    = 8
-		totalConns = waves * perWave
-	)
 	for wave := 0; wave < waves; wave++ {
 		start := make(chan struct{})
 		var wg sync.WaitGroup
