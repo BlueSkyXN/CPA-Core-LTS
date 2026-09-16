@@ -565,7 +565,13 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	if !hasNonZeroTokenUsage(detail) {
 		return usage.Record{}, false
 	}
-	return r.buildRecordForModel(model, detail, false, usage.Failure{}), true
+	record := r.buildRecordForModel(model, detail, false, usage.Failure{})
+	// An additional-model record (currently image-generation tool usage) has a
+	// different model identity from the parent response. The parent's
+	// response.model is not evidence for the additional model, so do not copy it
+	// into a field consumers compare with this record's Model.
+	record.UpstreamModel = ""
+	return record, true
 }
 
 func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
@@ -1022,9 +1028,9 @@ func ParseCodexUsage(data []byte) (usage.Detail, bool) {
 const maxUpstreamModelLength = 256
 
 // CodexUpstreamResponseModel extracts the model identifier carried by a Codex
-// terminal response event (response.model). It returns an empty string when the
-// payload has no model field or the value is not a plausible identifier, so the
-// usage record keeps its request-side Model instead.
+// response event (response.model). It returns an empty string when the payload
+// has no model field or the value is not a plausible identifier, so the usage
+// record keeps its request-side Model instead.
 func CodexUpstreamResponseModel(data []byte) string {
 	result := gjson.GetBytes(data, "response.model")
 	if result.Type != gjson.String {

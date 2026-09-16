@@ -163,6 +163,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		eventData := bytes.TrimSpace(line[5:])
 		eventData = helps.RestoreCodexMultiAgentV2Response(eventData, optimizeMultiAgentV2)
+		reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(eventData))
 		eventType := gjson.GetBytes(eventData, "type").String()
 
 		if helps.HasMeaningfulCodexOutputDelta(eventData) {
@@ -204,7 +205,6 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		var completedUsage usage.Detail
 		var completedUsageOK bool
 		var responseFinalizer cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer
-		reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(eventData))
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			completedUsage = detail
 			completedUsageOK = true

@@ -1594,3 +1594,24 @@ func TestUsageReporterSetUpstreamModelFirstObservationWins(t *testing.T) {
 		t.Fatalf("record.Model = %q, want request-side model preserved", record.Model)
 	}
 }
+
+func TestUsageReporterAdditionalModelDoesNotInheritParentUpstreamModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.4", nil)
+	reporter.SetUpstreamModel("gpt-5.4-2026-0815")
+
+	primary := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+	if primary.UpstreamModel != "gpt-5.4-2026-0815" {
+		t.Fatalf("primary.UpstreamModel = %q, want parent response model", primary.UpstreamModel)
+	}
+
+	additional, ok := reporter.buildAdditionalModelRecord("gpt-image-1.5", usage.Detail{TotalTokens: 9})
+	if !ok {
+		t.Fatal("buildAdditionalModelRecord() ok = false")
+	}
+	if additional.Model != "gpt-image-1.5" {
+		t.Fatalf("additional.Model = %q, want gpt-image-1.5", additional.Model)
+	}
+	if additional.UpstreamModel != "" {
+		t.Fatalf("additional.UpstreamModel = %q, want empty without image-model response evidence", additional.UpstreamModel)
+	}
+}
