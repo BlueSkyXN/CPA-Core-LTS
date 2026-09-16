@@ -168,6 +168,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		ExecutorType:         record.ExecutorType,
 		Model:                record.Model,
 		Alias:                record.Alias,
+		UpstreamModel:        record.UpstreamModel,
 		APIKey:               record.APIKey,
 		AuthID:               record.AuthID,
 		AuthIndex:            record.AuthIndex,

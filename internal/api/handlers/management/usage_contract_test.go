@@ -54,6 +54,9 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 	if !bytes.Contains(exportedJSON, []byte(`"request_service_tier":"priority"`)) {
 		t.Fatalf("exported usage missing request_service_tier: %s", exportedJSON)
 	}
+	if !bytes.Contains(exportedJSON, []byte(`"upstream_model":"gpt-5.4-2026-0806"`)) {
+		t.Fatalf("exported usage missing upstream_model: %s", exportedJSON)
+	}
 	if !bytes.Contains(exportedJSON, []byte(`"outbound_service_tier":"priority"`)) {
 		t.Fatalf("exported usage missing outbound_service_tier: %s", exportedJSON)
 	}
@@ -823,6 +826,16 @@ func TestUsageManagementImportReturnsStableSchemaErrorCodesAtomically(t *testing
 			wantCode: "usage_shape_invalid",
 		},
 		{
+			name: "case-colliding upstream_model alias",
+			payload: `{"version":3,"usage":{"apis":{"client":{"models":{"model":{"details":[{
+				"timestamp":"2026-07-21T12:00:00Z",
+				"tokens":{"input_tokens":1,"output_tokens":0,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":1},
+				"upstream_model":"gpt-test",
+				"Upstream_Model":"gpt-test-alias"
+			}]}}}}}}`,
+			wantCode: "usage_shape_invalid",
+		},
+		{
 			name:     "missing APIs",
 			payload:  `{"version":2,"usage":{}}`,
 			wantCode: "usage_shape_invalid",
@@ -1294,6 +1307,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		Provider:             "openai",
 		Model:                "gpt-5.4",
 		Alias:                "panel-visible-model",
+		UpstreamModel:        "gpt-5.4-2026-0806",
 		Source:               "auths/openai.json",
 		AuthIndex:            "1",
 		ReasoningEffort:      "medium",
@@ -1519,6 +1533,9 @@ func requirePanelUsageShape(t *testing.T, snapshot usage.StatisticsSnapshot) {
 	}
 	if detail.Alias != "panel-visible-model" {
 		t.Fatalf("detail.alias = %q, want panel-visible-model", detail.Alias)
+	}
+	if detail.UpstreamModel != "gpt-5.4-2026-0806" {
+		t.Fatalf("detail.upstream_model = %q, want gpt-5.4-2026-0806", detail.UpstreamModel)
 	}
 	if detail.ReasoningEffort != "medium" {
 		t.Fatalf("detail.reasoning_effort = %q, want medium", detail.ReasoningEffort)

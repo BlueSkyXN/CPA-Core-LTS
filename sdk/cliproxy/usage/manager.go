@@ -24,9 +24,14 @@ type Record struct {
 	// BaseURL stores the configured upstream base URL when available.
 	BaseURL string
 	// ExecutorType stores the concrete executor type that handled the request.
-	ExecutorType    string
-	Model           string
-	Alias           string
+	ExecutorType string
+	Model        string
+	Alias        string
+	// UpstreamModel stores the model identifier reported by the upstream
+	// response (e.g. Codex response.model). It is empty when the provider
+	// response carries no model field or the executor does not extract one;
+	// Model remains the resolved request-side identifier.
+	UpstreamModel   string
 	APIKey          string
 	SessionID       string
 	ParentSessionID string

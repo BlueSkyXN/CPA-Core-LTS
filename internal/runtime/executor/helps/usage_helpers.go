@@ -33,6 +33,8 @@ type UsageReporter struct {
 	executorType    string
 	model           string
 	alias           string
+	upstreamModelMu sync.RWMutex
+	upstreamModel   string
 	authID          string
 	authIndex       string
 	authMu          sync.RWMutex
@@ -133,6 +135,34 @@ func (r *UsageReporter) SetStream(stream bool) {
 		return
 	}
 	r.stream = stream
+}
+
+// SetUpstreamModel records the model identifier reported by the upstream
+// response. It only stores the first non-empty observation so later retry or
+// fallback attempts cannot overwrite the identifier of the response that was
+// actually delivered.
+func (r *UsageReporter) SetUpstreamModel(model string) {
+	if r == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	r.upstreamModelMu.Lock()
+	defer r.upstreamModelMu.Unlock()
+	if r.upstreamModel == "" {
+		r.upstreamModel = model
+	}
+}
+
+func (r *UsageReporter) snapshotUpstreamModel() string {
+	if r == nil {
+		return ""
+	}
+	r.upstreamModelMu.RLock()
+	defer r.upstreamModelMu.RUnlock()
+	return r.upstreamModel
 }
 
 // SetSessionHierarchy sets the explicit session and parent session identifiers.
@@ -654,6 +684,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ExecutorType:        r.executorType,
 		Model:               model,
 		Alias:               r.alias,
+		UpstreamModel:       r.snapshotUpstreamModel(),
 		Source:              r.source,
 		UsageProvenance:     r.usageProvenance,
 		APIKey:              r.apiKey,
@@ -984,6 +1015,31 @@ func ParseCodexUsage(data []byte) (usage.Detail, bool) {
 	detail := parseOpenAIStyleUsageNode(usageNode)
 	detail.ResponseServiceTier = responseServiceTier
 	return detail, true
+}
+
+// maxUpstreamModelLength bounds the upstream-reported model identifier before
+// it is stored in usage records and plain-text request logs.
+const maxUpstreamModelLength = 256
+
+// CodexUpstreamResponseModel extracts the model identifier carried by a Codex
+// terminal response event (response.model). It returns an empty string when the
+// payload has no model field or the value is not a plausible identifier, so the
+// usage record keeps its request-side Model instead.
+func CodexUpstreamResponseModel(data []byte) string {
+	result := gjson.GetBytes(data, "response.model")
+	if result.Type != gjson.String {
+		return ""
+	}
+	value := strings.TrimSpace(result.String())
+	if value == "" || len(value) > maxUpstreamModelLength {
+		return ""
+	}
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return ""
+		}
+	}
+	return value
 }
 
 func ParseCodexImageToolUsage(data []byte) (usage.Detail, bool) {

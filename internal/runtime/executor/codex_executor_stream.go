@@ -433,6 +433,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				case "response.completed", "response.incomplete", "response.done":
 					terminalSuccess = true
 					data = normalizeCodexWebsocketCompletion(data)
+					reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(data))
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						usageDetail = detail
 						usageDetailOK = true

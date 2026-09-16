@@ -1598,6 +1598,9 @@ type UsageRecord struct {
 	Model string
 	// Alias is the user-facing model alias when one was used.
 	Alias string
+	// UpstreamModel is the model identifier reported by the upstream response
+	// when the provider carries one; empty means it was not extracted.
+	UpstreamModel string
 	// APIKey is the client API key identifier when available.
 	APIKey string
 	// SessionID identifies the session when present.

@@ -204,6 +204,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		var completedUsage usage.Detail
 		var completedUsageOK bool
 		var responseFinalizer cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer
+		reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(eventData))
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			completedUsage = detail
 			completedUsageOK = true

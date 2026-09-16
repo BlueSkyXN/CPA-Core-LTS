@@ -120,6 +120,7 @@ type RequestDetail struct {
 	UsageProvenance      string     `json:"usage_provenance,omitempty"`
 	AuthIndex            string     `json:"auth_index"`
 	Alias                string     `json:"alias,omitempty"`
+	UpstreamModel        string     `json:"upstream_model,omitempty"`
 	ReasoningEffort      string     `json:"reasoning_effort,omitempty"`
 	ServiceTier          string     `json:"service_tier,omitempty"`
 	RequestServiceTier   string     `json:"request_service_tier,omitempty"`
@@ -617,6 +618,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		UsageProvenance:      coreusage.CanonicalUsageProvenance(record.UsageProvenance),
 		AuthIndex:            record.AuthIndex,
 		Alias:                strings.TrimSpace(record.Alias),
+		UpstreamModel:        strings.TrimSpace(record.UpstreamModel),
 		ReasoningEffort:      strings.TrimSpace(record.ReasoningEffort),
 		ServiceTier:          requestServiceTier,
 		RequestServiceTier:   requestServiceTier,
