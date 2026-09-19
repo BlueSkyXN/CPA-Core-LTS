@@ -288,6 +288,26 @@ func TestV3MigrationExplicitAndAmbiguous(t *testing.T) {
 		t.Fatal("ambiguous split allowed")
 	}
 }
+func TestUnspecifiedVersionDefaultsToV3(t *testing.T) {
+	c := Config{Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "custom", GroupBy: []string{}, Models: []string{"codex::m"}, MaxConcurrent: 1}}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Effective().Version; got != 3 {
+		t.Fatal(got)
+	}
+	legacy := c
+	legacy.Version = 2
+	if legacy.Validate() == nil {
+		t.Fatal("collections and empty group-by require version 3")
+	}
+	// Migration must keep reading the raw version: an unspecified legacy-style
+	// config still enters the migration path instead of passing as V3.
+	raw := Config{Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "account", MaxConcurrent: 1}}}
+	if m := Migrate(raw, nil); m.Config.Version != 3 {
+		t.Fatalf("migration skipped legacy draft: %+v", m)
+	}
+}
 func TestV3BudgetSurvivesRetry(t *testing.T) {
 	cfg := v3Policy(setRule("a", nil, []string{"account"}, 1))
 	cfg.Queue.MaxWaitMS = 25

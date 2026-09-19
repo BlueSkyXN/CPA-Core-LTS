@@ -8,7 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
 )
 
-func TestFlowControlLegacyDefaultAndRoundtrip(t *testing.T) {
+func TestFlowControlDefaultVersionAndRoundtrip(t *testing.T) {
 	cfg, err := ParseConfigBytes([]byte("port: 8317\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -34,10 +34,20 @@ flow-control:
 	if len(cfg.FlowControl.Rules) != 1 || cfg.FlowControl.Rules[0].Scope != "key-model" {
 		t.Fatal("rule lost")
 	}
+	if cfg.FlowControl.Effective().Version != 3 {
+		t.Fatal("unspecified version must default to schema 3")
+	}
 	clone := cfg.CloneForRuntime()
 	clone.FlowControl.Rules[0].Windows[0].Requests = 99
 	if cfg.FlowControl.Rules[0].Windows[0].Requests != 10 {
 		t.Fatal("config alias")
+	}
+	cfg, err = ParseConfigBytes([]byte("port: 8317\nflow-control:\n  version: 2\n  enabled: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FlowControl.Effective().Version != 2 {
+		t.Fatal("explicit legacy version must be preserved")
 	}
 }
 func TestFlowControlRejectsHomeAndBadDraftOnlyWhenEnabled(t *testing.T) {

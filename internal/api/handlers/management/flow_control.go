@@ -97,6 +97,7 @@ func (h *Handler) GetFlowControl(c *gin.Context) {
 		"configured-policy": cfg,
 		"queue":             applied.Queue, "state": state, "keys": keyRefs, "accounts": accountRefs, "policy": applied, "features": []string{"model-sets", "single-account", "joint-first-admission", "shared-summary", "paged-details", "draft-preview", "resolved-model-options", "last-good-policy"}, "models": models, "model-options": modelOptions, "model-options-truncated": modelOptionsTruncated,
 		"events-supported": true, "events-enabled": applied.Observation.Realtime, "events-interval-ms": applied.Observation.IntervalMS, "explain-supported": true,
+		"legacy-policy": (applied.Version > 0 && applied.Version < 3) || (cfg.Version > 0 && cfg.Version < 3),
 	})
 }
 

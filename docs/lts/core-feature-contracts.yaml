@@ -561,6 +561,8 @@ features:
       - resolved-model-options
       - configured-policy
       - configuration-failure
+      - legacy-policy
+      - normalizeVersion
     validation:
       - go test -race ./sdk/cliproxy/flowcontrol
       - go test ./sdk/cliproxy/auth ./internal/config ./internal/api/handlers/management -run Flow
