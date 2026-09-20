@@ -41,11 +41,19 @@ type CodexAutoExecutor struct {
 	wsExec   *CodexWebsocketsExecutor
 }
 
-func NewCodexAutoExecutor(cfg *config.Config) *CodexAutoExecutor {
-	return &CodexAutoExecutor{
-		httpExec: NewCodexExecutor(cfg),
-		wsExec:   NewCodexWebsocketsExecutor(cfg),
+func NewCodexAutoExecutor(cfg *config.Config, previous ...*CodexAutoExecutor) *CodexAutoExecutor {
+	httpExec := NewCodexExecutor(cfg)
+	if len(previous) > 0 && previous[0] != nil && previous[0].httpExec != nil {
+		old := previous[0].httpExec
+		httpExec.affinity = old.affinityStore()
+		httpExec.affinityGeneration = old.affinityGeneration
+		if codexAffinityStrategy(old.cfg) != codexAffinityStrategy(cfg) {
+			httpExec.affinityGeneration = old.affinity.resetGeneration()
+		}
 	}
+	wsExec := NewCodexWebsocketsExecutor(cfg)
+	wsExec.CodexExecutor = httpExec
+	return &CodexAutoExecutor{httpExec: httpExec, wsExec: wsExec}
 }
 
 func (e *CodexAutoExecutor) Identifier() string { return "codex" }

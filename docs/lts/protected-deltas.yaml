@@ -139,6 +139,17 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: codex-oauth-cache-affinity
+    registry_feature: codex-oauth-cache-affinity
+    maintenance_policy: long-term-maintained
+    markers:
+      - cache-affinity
+      - client-aware
+      - stable-id
+    validation:
+      - codex-oauth-cache-affinity-final-wire-and-lifecycle-tests
+    conflict_policy: preserve_oauth_only_scope_native_cache_routing_and_private_state_isolation
+
   - id: local-flow-control
     registry_feature: local-flow-control
     maintenance_policy: opt-in-single-process

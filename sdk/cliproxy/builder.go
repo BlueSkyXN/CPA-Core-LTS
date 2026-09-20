@@ -203,6 +203,9 @@ func (b *Builder) Build() (*Service, error) {
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
 	}
+	if err := b.cfg.Codex.CacheAffinity.Validate(); err != nil {
+		return nil, fmt.Errorf("cliproxy: %w", err)
+	}
 	if err := b.cfg.Codex.ClientMetadata.Validate(); err != nil {
 		return nil, fmt.Errorf("cliproxy: %w", err)
 	}

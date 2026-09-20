@@ -42,6 +42,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}()
 	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
+	affinityReq := codexAffinityRequestMetadata(req, opts)
+	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
+	if affinityActive {
+		req = affinityReq
+	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("codex")
@@ -94,7 +99,15 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, err
 	}
 
-	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
+	var base codexCacheBase
+	var wsHeaders http.Header
+	var errPromptCache error
+	if affinityActive {
+		base, body, errPromptCache = oauthCacheBase(ctx, from, req, body, codexAffinityHeaders(ctx, opts.Headers))
+		wsHeaders = make(http.Header)
+	} else {
+		body, wsHeaders, errPromptCache = applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
+	}
 	if errPromptCache != nil {
 		return resp, errPromptCache
 	}
@@ -109,11 +122,16 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if err != nil {
 		return resp, err
 	}
+	if affinityActive {
+		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, opts.Headers, base, &identityState)
+	}
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	reporter.SetOutboundServiceTier(upstreamBody)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(wsHeaders, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(wsHeaders, &identityState)
+	identityState.verifyAffinityHeader(wsHeaders)
+	defer identityState.affinity.close()
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -381,6 +399,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			}
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 			if eventType != "response.incomplete" {
+				identityState.affinity.complete(payload)
 				cacheCodexReasoningReplayFromCompleted(replayScope, payload)
 			}
 			if detail, ok := helps.ParseCodexUsage(payload); ok {

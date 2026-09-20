@@ -18,6 +18,33 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: codex-oauth-cache-affinity
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: ChatGPT OAuth requires outbound cache affinity adaptation across ingress protocols while preserving native cache routing, explicit identities, private replay isolation and legacy rollback.
+    config_keys:
+      - codex.cache-affinity.strategy
+    core_files:
+      - internal/config/codex_cache_affinity.go
+      - internal/runtime/executor/codex_cache_affinity.go
+      - internal/runtime/executor/codex_cache_affinity_store.go
+      - internal/runtime/executor/codex_cache_affinity_test.go
+      - internal/runtime/executor/codex_client_metadata.go
+      - sdk/cliproxy/service_executors.go
+      - docs/lts/codex-cache-affinity.md
+      - config.example.yaml
+    required_markers:
+      - cache-affinity
+      - client-aware
+      - stable-id
+      - legacy
+    validation:
+      - go test ./internal/runtime/executor -run '^TestCodexCacheAffinity'
+      - go test ./internal/config ./internal/watcher/... -run CacheAffinity
+      - go test -race ./internal/runtime/executor -run '^TestCodexCacheAffinity'
+
   - id: full-usage-statistics-core
     kind: retained-capability
     support: protected

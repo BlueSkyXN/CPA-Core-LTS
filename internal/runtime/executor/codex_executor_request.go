@@ -92,6 +92,10 @@ type codexIdentityConfuseState struct {
 	promptCacheKey         string
 	turnIDs                []codexIdentityReplacement
 	clientMetadata         codexmetadata.State
+	cacheRoute             string
+	cacheSource            codexCacheSource
+	cachePCK               string
+	affinity               *codexAffinityDecision
 }
 
 type codexIdentityReplacement struct {
@@ -103,6 +107,26 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	var headers http.Header
 	if len(headerSets) > 0 {
 		headers = headerSets[0]
+	}
+	if strings.HasSuffix(url, "/responses") && (codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, req)) {
+		headers = codexAffinityHeaders(ctx, headers)
+		base, body, err := oauthCacheBase(ctx, from, req, rawJSON, headers)
+		if err != nil {
+			return nil, nil, codexIdentityConfuseState{}, err
+		}
+		body = helps.SanitizeCodexInputItemIDs(body)
+		body, state, err := prepareCodexOutboundMetadata(ctx, e.cfg, auth, userPayload, body, headers)
+		if err != nil {
+			return nil, nil, state, err
+		}
+		body, outbound := e.adaptOAuthCache(ctx, auth, req, from, url, userPayload, body, headers, base, &state)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			state.affinity.close()
+			return nil, nil, state, err
+		}
+		request.Header = outbound
+		return request, body, state, nil
 	}
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {

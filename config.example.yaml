@@ -245,6 +245,9 @@ routing:
 
 # Codex provider behavior.
 codex:
+  # ChatGPT OAuth 缓存适配；API key 不受影响。legacy 可恢复旧行为。
+  cache-affinity:
+    strategy: client-aware # legacy | stable-id | client-aware
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,
   # remap Codex prompt_cache_key and installation identity per selected auth.
   # Legacy behavior is skipped for requests that carry the canonical

@@ -44,6 +44,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}()
 	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
+	affinityReq := codexAffinityRequestMetadata(req, opts)
+	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
+	if affinityActive {
+		req = affinityReq
+	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("codex")
@@ -107,6 +112,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
+	identityState.verifyAffinityHeader(httpReq.Header)
+	defer identityState.affinity.close()
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -237,6 +244,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 
 		if eventType == "response.completed" {
+			identityState.affinity.complete(completedData)
 			cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 		}
 
