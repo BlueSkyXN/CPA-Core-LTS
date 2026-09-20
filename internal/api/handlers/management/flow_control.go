@@ -24,6 +24,15 @@ type flowReference struct {
 	AuthKind string   `json:"auth-kind,omitempty"`
 }
 
+func isLegacyFlowPolicy(cfg flowcontrol.Config) bool {
+	if cfg.Version > 0 && cfg.Version < 3 {
+		return true
+	}
+	// Version zero is omitted on released legacy policies. Empty new policies
+	// are normalized to V3, so a populated versionless policy is unambiguous.
+	return cfg.Version == 0 && len(cfg.Rules) > 0
+}
+
 // GetFlowControl is read-only and uses the existing management middleware.
 // Key/account references are opaque namespaces, never raw API/OAuth credentials.
 // Config writes retain the standard config.yaml path and existing reload handling.
@@ -97,7 +106,7 @@ func (h *Handler) GetFlowControl(c *gin.Context) {
 		"configured-policy": cfg,
 		"queue":             applied.Queue, "state": state, "keys": keyRefs, "accounts": accountRefs, "policy": applied, "features": []string{"model-sets", "single-account", "joint-first-admission", "shared-summary", "paged-details", "draft-preview", "resolved-model-options", "last-good-policy"}, "models": models, "model-options": modelOptions, "model-options-truncated": modelOptionsTruncated,
 		"events-supported": true, "events-enabled": applied.Observation.Realtime, "events-interval-ms": applied.Observation.IntervalMS, "explain-supported": true,
-		"legacy-policy": (applied.Version > 0 && applied.Version < 3) || (cfg.Version > 0 && cfg.Version < 3),
+		"legacy-policy": isLegacyFlowPolicy(applied) || isLegacyFlowPolicy(cfg),
 	})
 }
 

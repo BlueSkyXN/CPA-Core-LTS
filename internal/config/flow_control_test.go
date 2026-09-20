@@ -18,6 +18,7 @@ func TestFlowControlDefaultVersionAndRoundtrip(t *testing.T) {
 	}
 	cfg, err = ParseConfigBytes([]byte(`port: 8317
 flow-control:
+  version: 3
   enabled: true
   rules:
     - id: km
@@ -35,7 +36,7 @@ flow-control:
 		t.Fatal("rule lost")
 	}
 	if cfg.FlowControl.Effective().Version != 3 {
-		t.Fatal("unspecified version must default to schema 3")
+		t.Fatal("explicit version 3 must remain schema 3")
 	}
 	clone := cfg.CloneForRuntime()
 	clone.FlowControl.Rules[0].Windows[0].Requests = 99
@@ -48,6 +49,21 @@ flow-control:
 	}
 	if cfg.FlowControl.Effective().Version != 2 {
 		t.Fatal("explicit legacy version must be preserved")
+	}
+	cfg, err = ParseConfigBytes([]byte(`port: 8317
+flow-control:
+  enabled: true
+  rules:
+    - id: legacy
+      stage: attempt
+      scope: credential
+      max-concurrent: 1
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FlowControl.Effective().Version != 0 {
+		t.Fatal("populated versionless policy must retain legacy semantics")
 	}
 }
 func TestFlowControlRejectsHomeAndBadDraftOnlyWhenEnabled(t *testing.T) {

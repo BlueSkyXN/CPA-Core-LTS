@@ -244,8 +244,8 @@ func TestCustomRuleValidationAndClone(t *testing.T) {
 			t.Fatal(dims)
 		}
 	}
-	// Version 3 (the default) treats an empty group-by as "all matched traffic".
-	if c := policy(Rule{ID: "c", Stage: Attempt, Scope: "custom", GroupBy: []string{}, MaxConcurrent: 1}); c.Validate() != nil {
+	// Explicit version 3 treats an empty group-by as "all matched traffic".
+	if c := (Config{Version: 3, Enabled: true, Rules: []Rule{{ID: "c", Stage: Attempt, Scope: "custom", GroupBy: []string{}, MaxConcurrent: 1}}}); c.Validate() != nil {
 		t.Fatal("v3 must allow empty custom group-by")
 	}
 	c := policy(Rule{ID: "c", Stage: Request, Scope: "custom", GroupBy: []string{"credential"}, MaxConcurrent: 1})

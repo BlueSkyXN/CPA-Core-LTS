@@ -1062,10 +1062,11 @@ nonstream-keepalive-interval: 0
 # Optional Flow V3: single-process conjunctive request/attempt admission.
 # All three switches default to false. This does not replace Home or provider quotas.
 # See docs/lts/flow-control.md. Values below are examples, NOT official provider limits.
-# Merge into ONE flow-control root. Omitting version defaults to schema 3; explicit
-# version 1/2 keeps legacy semantics and is reported as legacy-policy. For existing
-# V1/V2 policies use migration-preview before explicitly changing version; account
-# means one Auth record, not a remote account group.
+# Merge into ONE flow-control root. Omitting version defaults to schema 3 for a new
+# empty policy; existing non-empty versionless policies keep legacy semantics and
+# are reported as legacy-policy. Explicit version 1/2 also keeps legacy semantics.
+# For existing V1/V2 policies use migration-preview before explicitly changing
+# version; account means one Auth record, not a remote account group.
 # Replace model-a/b/c with resolved model IDs from GET /v0/management/flow-control.
 # flow-control:
 #   version: 3

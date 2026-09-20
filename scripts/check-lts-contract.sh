@@ -292,7 +292,6 @@ require_grep 'last-good-policy' internal/api/handlers/management/flow_control.go
 require_grep 'resolved-model-options' internal/api/handlers/management/flow_control.go
 require_grep 'configuration-failure' internal/api/handlers/management/flow_control.go
 require_grep 'legacy-policy' internal/api/handlers/management/flow_control.go
-require_grep 'normalizeVersion' sdk/cliproxy/flowcontrol/config.go
 
 go test ./scripts/ltsregistry -count=1
 

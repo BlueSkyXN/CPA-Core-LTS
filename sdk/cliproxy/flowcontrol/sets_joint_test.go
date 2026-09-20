@@ -288,21 +288,35 @@ func TestV3MigrationExplicitAndAmbiguous(t *testing.T) {
 		t.Fatal("ambiguous split allowed")
 	}
 }
-func TestUnspecifiedVersionDefaultsToV3(t *testing.T) {
-	c := Config{Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "custom", GroupBy: []string{}, Models: []string{"codex::m"}, MaxConcurrent: 1}}}
+func TestUnspecifiedVersionDefaultsToV3ForEmptyPolicy(t *testing.T) {
+	var c Config
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Effective().Version; got != 3 {
 		t.Fatal(got)
 	}
+
+	c = Config{Version: 3, Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "custom", GroupBy: []string{}, Models: []string{"codex::m"}, MaxConcurrent: 1}}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Effective().Version; got != 3 {
+		t.Fatal(got)
+	}
+	legacyPolicy := Config{Enabled: true, Rules: []Rule{{ID: "legacy", Stage: Attempt, Scope: "credential", MaxConcurrent: 1}}}
+	if err := legacyPolicy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := legacyPolicy.Effective().Version; got != 0 {
+		t.Fatal("populated versionless policy must retain legacy semantics", got)
+	}
 	legacy := c
 	legacy.Version = 2
 	if legacy.Validate() == nil {
 		t.Fatal("collections and empty group-by require version 3")
 	}
-	// Migration must keep reading the raw version: an unspecified legacy-style
-	// config still enters the migration path instead of passing as V3.
+	// Populated versionless legacy config still enters the migration path.
 	raw := Config{Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "account", MaxConcurrent: 1}}}
 	if m := Migrate(raw, nil); m.Config.Version != 3 {
 		t.Fatalf("migration skipped legacy draft: %+v", m)

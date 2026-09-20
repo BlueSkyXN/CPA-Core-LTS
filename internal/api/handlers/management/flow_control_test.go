@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 )
 
@@ -70,6 +71,29 @@ func TestFlowControlMarksExplicitLegacyVersion(t *testing.T) {
 	}
 	if result["legacy-policy"] != true {
 		t.Fatal("explicit schema 1/2 policy must be marked legacy", result)
+	}
+}
+
+func TestFlowControlMarksPopulatedVersionlessLegacyPolicy(t *testing.T) {
+	cfg := &config.Config{FlowControl: flowcontrol.Config{
+		Enabled: true,
+		Rules:   []flowcontrol.Rule{{ID: "legacy", Stage: flowcontrol.Attempt, Scope: "credential", MaxConcurrent: 1}},
+	}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	defer manager.CloseFlowControl()
+	h := NewHandler(cfg, "", manager)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	h.GetFlowControl(c)
+	if recorder.Code != 200 {
+		t.Fatal(recorder.Code)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["legacy-policy"] != true {
+		t.Fatal("populated versionless policy must be marked legacy", result)
 	}
 }
 
