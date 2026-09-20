@@ -6,16 +6,6 @@
 
 API key、未知凭据、其他 provider、CountTokens、专用 compact 和图片接口保留原行为。Responses 内的普通生成工具不等于图片专用接口。
 
-## SVG 图解
-
-下面先概览默认 `client-aware` 策略，再用四个例子对照修复前后的行为。流程图是决策概览，具体适用条件和严格匹配边界见后文。
-
-![XSID、Session-Id、prompt_cache_key 与前缀匹配的决策关系](images/codex-cache-affinity-decision.drawio.svg)
-
-![XSID 稳定补齐、WS 实际握手、正文摘要与请求回收的修复前后对照](images/codex-cache-affinity-examples.drawio.svg)
-
-可编辑源文件：[决策流程](images/codex-cache-affinity-decision.drawio)、[修复示例](images/codex-cache-affinity-examples.drawio)。SVG 内也嵌入了 draw.io 源数据；图中的效果是代理侧回归结果，不代表已测得上游缓存命中率或费用收益。
-
 ## 配置与升级
 
 ```yaml
