@@ -206,6 +206,7 @@ type codexAffinityFrozen struct {
 	pck          string
 	fieldsFrozen bool
 	live         bool
+	logicalDone  <-chan struct{}
 	coldKey      string
 	group        string
 	adopted      bool
@@ -230,6 +231,7 @@ func newCodexAffinityStore() *codexAffinityStore {
 
 type codexAffinityDecision struct {
 	closed                                      bool
+	publicationBlocked                          bool
 	store                                       *codexAffinityStore
 	generation                                  uint64
 	scope, identity, group, requestKey, coldKey string
@@ -277,7 +279,7 @@ func (s *codexAffinityStore) expire(now time.Time) {
 		}
 	}
 	for k, r := range s.requests {
-		if !r.live && r.refs == 0 && now.Sub(r.touched) > codexAffinityTTL {
+		if r.refs == 0 && (affinityLogicalRequestEnded(r.logicalDone) || (r.logicalDone == nil && !r.live && now.Sub(r.touched) > codexAffinityTTL)) {
 			delete(s.requests, k)
 		}
 	}
@@ -416,7 +418,8 @@ func (s *codexAffinityStore) freeze(d *codexAffinityDecision, now time.Time) *co
 	d.frozen = r
 	if d.requestKey != "" && len(s.requests) < codexAffinityMaxTrajectories {
 		s.requests[d.requestKey] = r
-		if d.ctx.Done() != nil {
+		r.logicalDone = util.LogicalRequestDone(d.ctx)
+		if r.logicalDone == nil && d.ctx.Done() != nil {
 			r.live = true
 			context.AfterFunc(d.ctx, func() { s.mu.Lock(); r.live = false; r.touched = s.now(); s.mu.Unlock() })
 		}
@@ -463,7 +466,7 @@ func (d *codexAffinityDecision) complete(payload []byte) {
 	s := d.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if d.generation != s.generation || d.closed || d.ctx.Err() != nil {
+	if d.generation != s.generation || d.closed || d.publicationBlocked || affinityLogicalRequestEnded(util.LogicalRequestDone(d.ctx)) || d.ctx.Err() != nil {
 		return
 	}
 	now := s.now()
@@ -583,4 +586,28 @@ func (d *codexAffinityDecision) freezeFields(body []byte, pck string) ([]byte, s
 		body, _ = sjson.SetBytes(body, "prompt_cache_key", frozen)
 	}
 	return body, frozen
+}
+
+// 已结束的逻辑请求可回收；尚未结束时即使所有 lane 暂时释放引用也必须冻结。
+func affinityLogicalRequestEnded(done <-chan struct{}) bool {
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *codexAffinityDecision) verifySessionHeader(value string, known bool) {
+	if d == nil {
+		return
+	}
+	d.store.mu.Lock()
+	defer d.store.mu.Unlock()
+	if !known || d.group != value {
+		d.publicationBlocked = true
+	}
 }

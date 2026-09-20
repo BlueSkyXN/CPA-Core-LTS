@@ -14,6 +14,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
 )
@@ -217,6 +218,10 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return cliproxyexecutor.Response{}, err
 	}
 	defer permit.Release()
+	ctx, finish := withCodexCacheLifetime(ctx, providers)
+	if finish != nil {
+		defer finish()
+	}
 	return m.executeRequestUncontrolled(ctx, providers, req, opts)
 }
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -234,20 +239,41 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if err != nil {
 		return nil, err
 	}
+	ctx, finish := withCodexCacheLifetime(ctx, providers)
+	release := func() {
+		if finish != nil {
+			finish()
+		}
+		permit.Release()
+	}
 	handedOff := false
 	defer func() {
 		if !handedOff {
-			permit.Release()
+			release()
 		}
 	}()
 	result, err := m.executeStreamRequestUncontrolled(ctx, providers, req, opts)
-	if permit != nil && err == nil && result != nil && result.Chunks != nil {
+	if (permit != nil || finish != nil) && err == nil && result != nil && result.Chunks != nil {
 		copyResult := *result
-		copyResult.Chunks = flowcontrol.HoldChannel(ctx, result.Chunks, permit.Release, func() { permit.MarkPhase("draining") })
+		copyResult.Chunks = flowcontrol.HoldChannel(ctx, result.Chunks, release, func() {
+			if permit != nil {
+				permit.MarkPhase("draining")
+			}
+		})
 		result = &copyResult
 		handedOff = true
 	}
 	return result, err
+}
+
+// 缓存冻结需要整次 Codex 操作的完成信号；其他 provider 保持原交付路径。
+func withCodexCacheLifetime(ctx context.Context, providers []string) (context.Context, context.CancelFunc) {
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+			return util.WithLogicalRequestLifetime(ctx)
+		}
+	}
+	return ctx, nil
 }
 
 // admitFlowExecution precedes provider admission and selected-auth publication.

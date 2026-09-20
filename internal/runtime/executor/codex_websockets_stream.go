@@ -121,6 +121,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, err
 	}
 	if affinityActive {
+		upstreamBody = helps.SanitizeCodexInputItemIDs(upstreamBody)
 		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, opts.Headers, base, &identityState)
 	}
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
@@ -212,6 +213,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 		return nil, handshakeErr
 	}
+	actualSessionHeader, actualSessionHeaderKnown := sess.affinityHeader(connection)
 	if errBind := sess.bindExecutionLifecycle(opts, connection.conn, closer, req.Model); errBind != nil {
 		unlockStreamSession()
 		closeWebsocketAfterBindFailure(sess, connection.conn, closer)
@@ -297,6 +299,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, errActive
 			}
 			connection = connectionRetry
+			actualSessionHeader, actualSessionHeaderKnown = sess.affinityHeader(connection)
 			requestSignal = retrySignal
 			restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -325,6 +328,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, errSend
 		}
 	}
+
+	identityState.affinity.verifySessionHeader(actualSessionHeader, actualSessionHeaderKnown)
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(connection, optimizeMultiAgentV2 && !multiAgentV2Conflict)

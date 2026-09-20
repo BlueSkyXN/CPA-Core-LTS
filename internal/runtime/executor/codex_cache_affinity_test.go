@@ -514,7 +514,8 @@ func TestCodexCacheAffinityConfigOverrideAndNativeConflict(t *testing.T) {
 	applyCodexHeaders(r, a, "synthetic", true, cfg)
 	applyCodexOutboundMetadataHeaders(r.Header, &state)
 	state.verifyAffinityHeader(r.Header)
-	if r.Header.Get("Session-Id") != "config-session" || state.affinity != nil {
+	defer state.affinity.close()
+	if r.Header.Get("Session-Id") != "config-session" || state.affinity == nil || !state.affinity.publicationBlocked {
 		t.Fatal("config header lost or indexed under wrong group")
 	}
 	raw = []byte(`{"model":"m","input":"x","prompt_cache_key":"P","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\",\"session_id\":\"F\"}"}}`)

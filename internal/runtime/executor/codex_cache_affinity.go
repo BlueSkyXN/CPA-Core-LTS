@@ -279,10 +279,7 @@ func codexAffinityRequestMetadata(req execpkg.Request, opts execpkg.Options) exe
 }
 
 func (s *codexIdentityConfuseState) verifyAffinityHeader(headers http.Header) {
-	if s.affinity != nil && s.affinity.group != codexSessionHeaderValue(headers) {
-		s.affinity.close()
-		s.affinity = nil
-	}
+	s.affinity.verifySessionHeader(codexSessionHeaderValue(headers), true)
 }
 
 func codexUnambiguousCacheRoute(headers http.Header, body []byte, key string) bool {

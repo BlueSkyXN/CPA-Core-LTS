@@ -20,7 +20,7 @@ codex:
 | `stable-id` | 补齐 OAuth 出站身份、保留官方缓存路由语义；不推断前缀缓存组 |
 | `client-aware` | 默认值；包含稳定身份修复、客户端判断和严格前缀匹配 |
 
-缺失或空值在内存中解析成 `client-aware`；加载旧配置不会写回此默认值。无关配置保存也不会插入此前不存在的默认项。非法值导致加载失败，文件热更新保留上一份有效配置。现有配置 JSON/YAML 序列化及 watcher 差异日志包含该字段，不新增 Management endpoint 或 Panel 页面。
+缺失或空值在内存中解析成 `client-aware`；加载旧配置不会写回此默认值。无关配置保存也不会插入此前不存在的默认项。非法值导致加载失败，文件热更新保留上一份有效配置。现有配置 JSON/YAML 序列化及 watcher 差异日志包含该字段，不新增 Management endpoint；配套 Panel 可在现有 Codex 配置区域提供策略选择。
 
 回退时将策略改为 `stable-id` 可关闭推断、保留确定的兼容修复；改为 `legacy` 恢复旧行为。策略切换清空推断索引并推进 generation；旧回调不能发布到新索引。仍在执行的逻辑请求保留已经冻结的自动标识。进程重启后确定性身份可重建，推断组不保证恢复。
 
@@ -42,6 +42,8 @@ codex:
 
 候选索引按 CallerScope、后端入口、已选账号域和请求中实际已知的模型隔离，并从最长前缀向前检索，避免公共短前缀先耗尽候选预算。可靠身份的既有绑定按已隔离 CallerScope 的身份摘要保存，换模型或账号不会改变已确立的亲和标识。小请求复用现有 canonical-turn / fast fingerprint 作为候选提示；超过 64 KiB 的请求直接使用严格摘要索引，避免通用文本规范化的额外大字符串分配。严格判定另外使用完整内容的 SHA-256 链；快速指纹本身不能证明匹配。
 
+HTTP 和 WS 在严格摘要之前均运行现有 input item ID 规范化（包括碰撞、超长 ID 和无效超长 encrypted reasoning item 的既有处理），摘要后不再发生未纳入比较的 input 改写。
+
 严格摘要保留 instructions、tools 及其顺序、消息与工具参数、reasoning、text format、服务设置和内联媒体内容。只排除已知的传输/缓存路由载体。不会删除正文时间戳、UUID 或 thinking 差异。可变媒体 URL、未能验证的 file ID、依赖未知 previous response 的增量正文、重复 JSON 字段和超限内容，返回“无法判断”。
 
 采用规则：
@@ -59,7 +61,7 @@ codex:
 
 索引保存在 executor 实例中，HTTP/WS 共享，无关配置热更新继承。它不写入 `canonical_session_id`、`execution_session_id`，不改变账号 LCP 调度、WS 连接归属、`previous_response_id`、usage 会话或私有 reasoning。
 
-Claude replay scope 在新推断组应用前计算，继续使用原有合法 session、Home KV、签名、TTL 和模型回退规则。新组只参与最终出站亲和字段。若最终 auth/model header 覆盖改变了实际 Session-Id，丢弃该推断轨迹，避免登记到错误组。
+Claude replay scope 在新推断组应用前计算，继续使用原有合法 session、Home KV、签名、TTL 和模型回退规则。新组只参与最终出站亲和字段。若最终 auth/model header 覆盖改变了实际 Session-Id，禁止本次发布轨迹和建立绑定，但保留冻结字段、资源释放及已建立的绑定。WS 以连接 generation 保存的实际握手头为准，取得或重连连接后核验；复用连接不会让本轮准备的 header 自动生效，不为自动亲和变化强制重连或修改 pck。
 
 | 资源 | 上限 |
 | --- | ---: |
@@ -70,7 +72,7 @@ Claude replay scope 在新推断组应用前计算，继续使用原有合法 se
 | 单请求扫描 | 32 MiB |
 | 空闲 TTL | 1 小时 |
 
-同时限制逻辑请求冻结记录、冷组预留和身份绑定。解析深度及节点数也有边界。索引只保存摘要、生成后的缓存组和时间信息，不保留 prompt、媒体、凭据或原始会话身份。
+同时限制逻辑请求冻结记录、冷组预留和身份绑定。Manager 提供整次 Codex 逻辑请求的完成信号，覆盖账号重试和并行 lane；流式调用在通道结束后释放，不能在返回 StreamResult 时释放。已结束且无活跃引用的冻结记录在下一次索引维护时回收，不占用完整 1 小时 TTL；活跃逻辑请求即使暂时没有 attempt 引用、跨 TTL 或策略切换，也继续保留 H/K。直接调用 executor、未经过 Manager 的嵌入方式缺少该完成信号，仍使用有界 TTL 兼容回退。解析深度及节点数也有边界。索引只保存摘要、生成后的缓存组和时间信息，不保留 prompt、媒体、凭据或原始会话身份。
 
 超限停止推断并兼容回退，不拒绝推理、不把截断视为完整匹配、不淘汰活跃决策。仅成功 `response.completed` 发布轨迹；失败、取消、旧 generation 响应不发布。服务重启及多实例之间不共享此内存索引。
 
@@ -85,6 +87,7 @@ Claude replay scope 在新推断组应用前计算，继续使用原有合法 se
 
 ```sh
 go test ./internal/runtime/executor -run '^TestCodexCacheAffinity' -count=1
+go test ./sdk/cliproxy/auth -run 'ManagerLogicalRequestLifetime|CodexCacheLifetime' -count=1
 go test ./internal/config ./internal/watcher/... -run 'CacheAffinity' -count=1
 go test -race ./internal/runtime/executor ./internal/config ./internal/watcher/... ./sdk/cliproxy -run 'CacheAffinity|CodexForceReplace|CodexDoesNotReplace' -count=1
 go test ./internal/runtime/executor -run '^$' -bench '^BenchmarkCodexCacheAffinity' -benchtime=1x -benchmem
@@ -92,6 +95,8 @@ scripts/check-lts-contract.sh
 go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'
 go test ./...
 ```
+
+额外回归覆盖持久 WS 的一致/不一致握手（含 required-existing）、连接 generation 更新、三条执行路径的最终正文摘要、4096 次已结束逻辑请求、lane 取消后的重试冻结，以及实际 Chat Completions 翻译往返的保守输出锚点回退。跨协议接入不保证首轮 output 在下一轮保留完全相同的有效表示，可靠 XSID 的稳定映射不依赖该锚点。
 
 这些合成测试验证代理侧算法、最终字段和状态隔离，**不证明 ChatGPT 后端每次都会命中，也不代表全部历史缓存损失已被解释**。
 
