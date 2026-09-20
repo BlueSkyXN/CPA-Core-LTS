@@ -107,11 +107,12 @@ func webSocketResponseObserversEnabled(host PluginInterceptorHost) bool {
 }
 
 type requestLifecycleTracker struct {
-	once         sync.Once
-	ctx          context.Context
-	host         PluginInterceptorHost
-	skipPluginID string
-	completion   pluginapi.RequestCompletion
+	finishCacheLifetime context.CancelFunc
+	once                sync.Once
+	ctx                 context.Context
+	host                PluginInterceptorHost
+	skipPluginID        string
+	completion          pluginapi.RequestCompletion
 }
 
 func (h *BaseAPIHandler) newRequestLifecycleTracker(ctx context.Context, sourceFormat, model, requestedModel string, stream bool, metadata map[string]any, skipPluginID string) *requestLifecycleTracker {
@@ -149,6 +150,9 @@ func (t *requestLifecycleTracker) complete(outcome pluginapi.RequestCompletionOu
 		return
 	}
 	t.once.Do(func() {
+		if t.finishCacheLifetime != nil {
+			defer t.finishCacheLifetime()
+		}
 		completion := t.completion
 		completion.Outcome = outcome
 		completion.StatusCode = statusCode

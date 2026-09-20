@@ -4,7 +4,7 @@ import "context"
 
 type logicalRequestContextKey struct{}
 
-// WithLogicalRequestLifetime 标记整次 Manager 操作的生命周期。它只传递完成
+// WithLogicalRequestLifetime 标记整次 handler 请求或独立 Manager 操作的生命周期。它只传递完成
 // 信号，不改变 session 归属；attempt/lane 的子 context 取消不会结束该信号。
 // 流式调用必须在交付通道结束后调用 finish，而不是返回 StreamResult 时调用。
 func WithLogicalRequestLifetime(ctx context.Context) (context.Context, context.CancelFunc) {

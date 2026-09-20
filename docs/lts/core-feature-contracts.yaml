@@ -33,6 +33,7 @@ features:
       - internal/runtime/executor/codex_cache_affinity_test.go
       - internal/runtime/executor/codex_cache_affinity_regression_test.go
       - internal/util/logical_request.go
+      - sdk/api/handlers/handlers_cache_lifetime_test.go
       - sdk/cliproxy/auth/conductor_logical_lifetime_test.go
       - internal/runtime/executor/codex_client_metadata.go
       - sdk/cliproxy/service_executors.go
@@ -48,6 +49,7 @@ features:
       - go test ./internal/config ./internal/watcher/... -run CacheAffinity
       - go test -race ./internal/runtime/executor -run '^TestCodexCacheAffinity'
       - go test ./sdk/cliproxy/auth -run 'ManagerLogicalRequestLifetime|CodexCacheLifetime'
+      - go test ./sdk/api/handlers -run CodexCacheLifetime
 
   - id: full-usage-statistics-core
     kind: retained-capability

@@ -268,6 +268,10 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 
 // 缓存冻结需要整次 Codex 操作的完成信号；其他 provider 保持原交付路径。
 func withCodexCacheLifetime(ctx context.Context, providers []string) (context.Context, context.CancelFunc) {
+	// Handler 的 bootstrap 重试可跨多次 Manager 调用，完成权留在外层。
+	if util.LogicalRequestDone(ctx) != nil {
+		return ctx, nil
+	}
 	for _, provider := range providers {
 		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
 			return util.WithLogicalRequestLifetime(ctx)

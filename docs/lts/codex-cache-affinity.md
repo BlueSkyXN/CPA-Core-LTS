@@ -72,7 +72,7 @@ Claude replay scope 在新推断组应用前计算，继续使用原有合法 se
 | 单请求扫描 | 32 MiB |
 | 空闲 TTL | 1 小时 |
 
-同时限制逻辑请求冻结记录、冷组预留和身份绑定。Manager 提供整次 Codex 逻辑请求的完成信号，覆盖账号重试和并行 lane；流式调用在通道结束后释放，不能在返回 StreamResult 时释放。已结束且无活跃引用的冻结记录在下一次索引维护时回收，不占用完整 1 小时 TTL；活跃逻辑请求即使暂时没有 attempt 引用、跨 TTL 或策略切换，也继续保留 H/K。直接调用 executor、未经过 Manager 的嵌入方式缺少该完成信号，仍使用有界 TTL 兼容回退。解析深度及节点数也有边界。索引只保存摘要、生成后的缓存组和时间信息，不保留 prompt、媒体、凭据或原始会话身份。
+同时限制逻辑请求冻结记录、冷组预留和身份绑定。流式 handler 将现有请求生命周期作为最外层完成信号，覆盖多次 Manager 调用之间的 bootstrap 重试；独立调用 Manager 时由 Manager 提供信号，覆盖账号重试和并行 lane；流式调用在通道结束后释放，不能在返回 StreamResult 时释放。已结束且无活跃引用的冻结记录在下一次索引维护时回收，不占用完整 1 小时 TTL；活跃逻辑请求即使暂时没有 attempt 引用、跨 TTL 或策略切换，也继续保留 H/K。直接调用 executor、未经过 Manager 的嵌入方式缺少该完成信号，仍使用有界 TTL 兼容回退。解析深度及节点数也有边界。索引只保存摘要、生成后的缓存组和时间信息，不保留 prompt、媒体、凭据或原始会话身份。
 
 超限停止推断并兼容回退，不拒绝推理、不把截断视为完整匹配、不淘汰活跃决策。仅成功 `response.completed` 发布轨迹；失败、取消、旧 generation 响应不发布。服务重启及多实例之间不共享此内存索引。
 
@@ -88,6 +88,7 @@ Claude replay scope 在新推断组应用前计算，继续使用原有合法 se
 ```sh
 go test ./internal/runtime/executor -run '^TestCodexCacheAffinity' -count=1
 go test ./sdk/cliproxy/auth -run 'ManagerLogicalRequestLifetime|CodexCacheLifetime' -count=1
+go test ./sdk/api/handlers -run CodexCacheLifetime -count=1
 go test ./internal/config ./internal/watcher/... -run 'CacheAffinity' -count=1
 go test -race ./internal/runtime/executor ./internal/config ./internal/watcher/... ./sdk/cliproxy -run 'CacheAffinity|CodexForceReplace|CodexDoesNotReplace' -count=1
 go test ./internal/runtime/executor -run '^$' -bench '^BenchmarkCodexCacheAffinity' -benchtime=1x -benchmem
