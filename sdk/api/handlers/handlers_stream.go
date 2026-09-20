@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -335,6 +337,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	afterAuthCapture := &requestAfterAuthCapture{}
 	lifecycle := h.newRequestLifecycleTracker(ctx, entryProtocol, normalizedModel, originalRequestedModel, true, reqMeta, execOptions.SkipInterceptorPluginID)
+	// 首个可交付片段前的 bootstrap 重试会再次调用 Manager，缓存冻结必须
+	// 跟随已有的整次 handler lifecycle，而不是某一次 Manager 调用。
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+			ctx, lifecycle.finishCacheLifetime = util.WithLogicalRequestLifetime(ctx)
+			break
+		}
+	}
+
 	opts := coreexecutor.Options{
 		Stream:                      true,
 		Alt:                         alt,

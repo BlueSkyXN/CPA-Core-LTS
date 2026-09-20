@@ -184,6 +184,7 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	CacheAffinity          CodexCacheAffinityConfig          `yaml:"cache-affinity" json:"cache-affinity"`
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
 	ClientMetadata         CodexClientMetadataConfig         `yaml:"client-metadata" json:"client-metadata"`
 	DesktopToolOverlay     CodexDesktopToolOverlayConfig     `yaml:"desktop-tool-overlay" json:"desktop-tool-overlay"`

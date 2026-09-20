@@ -255,7 +255,11 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(cfg))
+		var previous *executor.CodexAutoExecutor
+		if existing, ok := s.coreManager.Executor("codex"); ok {
+			previous, _ = existing.(*executor.CodexAutoExecutor)
+		}
+		s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(cfg, previous))
 		return
 	}
 	// Skip disabled auth entries when (re)binding executors.

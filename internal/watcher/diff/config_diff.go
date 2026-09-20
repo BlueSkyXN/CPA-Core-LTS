@@ -144,6 +144,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	if oldCfg.Codex.CacheAffinity.EffectiveStrategy() != newCfg.Codex.CacheAffinity.EffectiveStrategy() {
+		changes = append(changes, fmt.Sprintf("codex.cache-affinity.strategy: %s -> %s", oldCfg.Codex.CacheAffinity.EffectiveStrategy(), newCfg.Codex.CacheAffinity.EffectiveStrategy()))
+	}
 	changes = appendCodexClientMetadataChanges(changes, oldCfg.Codex.ClientMetadata.Effective(), newCfg.Codex.ClientMetadata.Effective())
 	changes = appendCodexModelFallbackChanges(changes, oldCfg.Codex.ModelFallback.Effective(), newCfg.Codex.ModelFallback.Effective())
 	changes = appendCodexRateLimitContinuityChanges(changes, oldCfg.Codex.RateLimitContinuity.Effective(), newCfg.Codex.RateLimitContinuity.Effective())

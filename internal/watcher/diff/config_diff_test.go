@@ -951,3 +951,10 @@ func TestTrimStrings(t *testing.T) {
 		t.Fatalf("unexpected trimmed strings: %v", out)
 	}
 }
+
+func TestBuildConfigChangeDetailsCodexCacheAffinity(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{Codex: config.CodexConfig{CacheAffinity: config.CodexCacheAffinityConfig{Strategy: "legacy"}}}
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "codex.cache-affinity.strategy: client-aware -> legacy")
+}

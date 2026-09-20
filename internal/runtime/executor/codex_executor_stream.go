@@ -46,6 +46,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}()
 	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
+	affinityReq := codexAffinityRequestMetadata(req, opts)
+	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
+	if affinityActive {
+		req = affinityReq
+	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	isGrokClient := grokbuild.IsGrokClientContext(ctx, opts.Headers)
@@ -114,6 +119,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
+	identityState.verifyAffinityHeader(httpReq.Header)
+	affinityTransferred := false
+	defer func() {
+		if !affinityTransferred {
+			identityState.affinity.close()
+		}
+	}()
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -275,7 +287,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		return finalizeCodexAbnormalReasoningRetryStream(headers, chunks, previous, abnormalRetry.clientUsageAggregation)
 	})
+	affinityTransferred = true
 	go func() {
+		defer identityState.affinity.close()
 		defer close(out)
 		defer closeResponseBody()
 		buffering := abnormalStreamBuffering
@@ -494,6 +508,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if len(completedData) > 0 {
 				publishCodexImageToolUsage(ctx, reporter, body, completedData)
 				if cacheReasoningReplay {
+					if !bufferLimitExceeded {
+						identityState.affinity.complete(completedData)
+					}
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 				}
 			}

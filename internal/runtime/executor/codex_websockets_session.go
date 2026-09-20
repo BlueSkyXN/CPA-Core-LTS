@@ -58,6 +58,7 @@ type codexWebsocketSession struct {
 	connCloser               *websocketConnectionCloser
 	connGen                  uint64
 	connKey                  codexWebsocketConnectionKey
+	connSessionHeader        string
 	wsURL                    string
 	authID                   string
 	multiAgentV2OptimizedGen uint64
@@ -716,6 +717,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.conn = conn
 	sess.connCloser = closer
 	sess.connKey = wantedKey
+	sess.connSessionHeader = codexSessionHeaderValue(headers)
 	sess.wsURL = wantedKey.wsURL
 	sess.authID = wantedKey.authID
 	sess.multiAgentV2OptimizedGen = 0
@@ -1050,4 +1052,18 @@ func CloseCodexWebsocketSessionsForAuthID(authID string, reason string) {
 	for i := range toClose {
 		closeCodexWebsocketSession(toClose[i], reason)
 	}
+}
+
+// 握手头属于连接 generation，不属于每轮准备的 headers。读取时同时核对
+// 指针与 generation，避免重连或迟到回调借用另一条连接的身份。
+func (s *codexWebsocketSession) affinityHeader(connection codexWebsocketConnectionRef) (string, bool) {
+	if s == nil || connection.conn == nil {
+		return "", false
+	}
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn != connection.conn || s.connGen != connection.generation {
+		return "", false
+	}
+	return s.connSessionHeader, true
 }

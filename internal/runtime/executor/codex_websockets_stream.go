@@ -43,6 +43,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}()
 	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
+	affinityReq := codexAffinityRequestMetadata(req, opts)
+	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
+	if affinityActive {
+		req = affinityReq
+	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("codex")
@@ -92,7 +97,15 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, err
 	}
 
-	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
+	var base codexCacheBase
+	var wsHeaders http.Header
+	var errPromptCache error
+	if affinityActive {
+		base, body, errPromptCache = oauthCacheBase(ctx, from, req, body, codexAffinityHeaders(ctx, opts.Headers))
+		wsHeaders = make(http.Header)
+	} else {
+		body, wsHeaders, errPromptCache = applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
+	}
 	if errPromptCache != nil {
 		return nil, errPromptCache
 	}
@@ -107,11 +120,22 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if err != nil {
 		return nil, err
 	}
+	if affinityActive {
+		upstreamBody = helps.SanitizeCodexInputItemIDs(upstreamBody)
+		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, opts.Headers, base, &identityState)
+	}
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	reporter.SetOutboundServiceTier(upstreamBody)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, opts.Headers)
 	applyFinalCodexClientHeaders(wsHeaders, modelHeaderProfile, auth)
 	applyCodexOutboundMetadataHeaders(wsHeaders, &identityState)
+	identityState.verifyAffinityHeader(wsHeaders)
+	affinityTransferred := false
+	defer func() {
+		if !affinityTransferred {
+			identityState.affinity.close()
+		}
+	}()
 
 	var authID, authLabel, authType, authValue string
 	authID = auth.ID
@@ -189,6 +213,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 		return nil, handshakeErr
 	}
+	actualSessionHeader, actualSessionHeaderKnown := sess.affinityHeader(connection)
 	if errBind := sess.bindExecutionLifecycle(opts, connection.conn, closer, req.Model); errBind != nil {
 		unlockStreamSession()
 		closeWebsocketAfterBindFailure(sess, connection.conn, closer)
@@ -274,6 +299,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, errActive
 			}
 			connection = connectionRetry
+			actualSessionHeader, actualSessionHeaderKnown = sess.affinityHeader(connection)
 			requestSignal = retrySignal
 			restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -302,6 +328,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, errSend
 		}
 	}
+
+	identityState.affinity.verifySessionHeader(actualSessionHeader, actualSessionHeaderKnown)
 
 	if optimizeMultiAgentV2 || multiAgentV2Conflict {
 		sess.setMultiAgentV2Optimized(connection, optimizeMultiAgentV2 && !multiAgentV2Conflict)
@@ -474,6 +502,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				completedPayload = normalizeCodexWebsocketCompletion(completedPayload)
 				completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
 				if eventType != "response.incomplete" {
+					identityState.affinity.complete(completedPayload)
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				}
 				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {
@@ -555,7 +584,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return &cliproxyexecutor.StreamResult{Headers: upstreamHeaders, Chunks: out}, nil
 	}
 
+	affinityTransferred = true
 	go func() {
+		defer identityState.affinity.close()
 		terminateReason := "completed"
 		var terminateErr error
 
@@ -707,6 +738,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				completedPayload = normalizeCodexWebsocketCompletion(completedPayload)
 				completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
 				if eventType != "response.incomplete" {
+					identityState.affinity.complete(completedPayload)
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				}
 				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {

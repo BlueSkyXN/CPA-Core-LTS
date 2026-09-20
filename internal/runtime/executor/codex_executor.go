@@ -1,17 +1,34 @@
 package executor
 
-import "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+import (
+	"sync"
 
-// CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
-// If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+)
+
+// CodexExecutor handles Codex requests with an instance-scoped OAuth affinity index.
 type CodexExecutor struct {
-	cfg *config.Config
+	cfg                *config.Config
+	affinity           *codexAffinityStore
+	affinityGeneration uint64
+	affinityOnce       sync.Once
 }
 
-func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor{cfg: cfg} }
+func NewCodexExecutor(cfg *config.Config) *CodexExecutor {
+	return &CodexExecutor{cfg: cfg, affinity: newCodexAffinityStore()}
+}
 
 func (e *CodexExecutor) Identifier() string { return "codex" }
 
 func (e *CodexExecutor) modelLevelCooling() bool {
 	return e != nil && e.cfg != nil && e.cfg.Codex.ModelLevelCooling
+}
+
+func (e *CodexExecutor) affinityStore() *codexAffinityStore {
+	e.affinityOnce.Do(func() {
+		if e.affinity == nil {
+			e.affinity = newCodexAffinityStore()
+		}
+	})
+	return e.affinity
 }
