@@ -134,6 +134,79 @@ func TestCodexExecutorRecordsUpstreamResponseModelFromCreatedEvent(t *testing.T)
 	}
 }
 
+func TestCodexExecutorRecordsUpstreamResponseModelOnBootstrapFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event string
+	}{
+		{name: "overload", event: codexOverloadEvent},
+		{name: "empty-incomplete", event: `{"type":"response.incomplete","response":{"status":"incomplete","output":[],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}}}`},
+		{name: "eof"},
+	} {
+		for _, mode := range []struct {
+			name      string
+			buffering bool
+		}{
+			{name: "unbuffered"},
+			{name: "buffered", buffering: true},
+		} {
+			t.Run(tc.name+"/"+mode.name, func(t *testing.T) {
+				recorder := &codexAbnormalReasoningRetryUsageRecorder{}
+				usage.RegisterNamedPlugin("codex-upstream-model-bootstrap-test", recorder)
+				t.Cleanup(func() {
+					usage.RegisterNamedPlugin("codex-upstream-model-bootstrap-test", noopUsagePlugin{})
+				})
+
+				events := []string{`{"type":"response.created","response":{"id":"resp_1","model":"gpt-5.5-sol-2026-0815"}}`}
+				if tc.event != "" {
+					events = append(events, tc.event)
+				}
+				server := codexSSEServer(events...)
+				defer server.Close()
+
+				executor := NewCodexExecutor(codexBufferingConfig(mode.buffering))
+				auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+				auth.ID = "codex-upstream-model-bootstrap-" + tc.name + "-" + mode.name
+				req := cliproxyexecutor.Request{
+					Model:   "gpt-5.5-sol",
+					Payload: []byte(`{"model":"gpt-5.5-sol","input":"hello"}`),
+				}
+				opts := cliproxyexecutor.Options{
+					SourceFormat: sdktranslator.FromString("openai-response"),
+					Stream:       true,
+				}
+
+				result, err := executor.ExecuteStream(context.Background(), auth, req, opts)
+				if mode.buffering {
+					if result != nil {
+						for range result.Chunks {
+						}
+						t.Fatal("bootstrap failure must not return a stream")
+					}
+				} else {
+					if err != nil || result == nil {
+						t.Fatalf("unbuffered execution must return a stream, got error: %v", err)
+					}
+					_, err = drainChunks(result)
+				}
+				if err == nil {
+					t.Fatal("expected upstream failure")
+				}
+
+				record := recorder.waitForRecord(t, func(record usage.Record) bool {
+					return record.AuthID == auth.ID
+				})
+				if !record.Failed || record.Model != req.Model {
+					t.Fatalf("record outcome/model = %v/%q, want failed/%q", record.Failed, record.Model, req.Model)
+				}
+				if record.UpstreamModel != "gpt-5.5-sol-2026-0815" {
+					t.Fatalf("record.UpstreamModel = %q, want model from response.created before failure", record.UpstreamModel)
+				}
+			})
+		}
+	}
+}
+
 func TestCodexWebsocketsExecutorRecordsUpstreamResponseModelFromCreatedEvent(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

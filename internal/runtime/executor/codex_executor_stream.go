@@ -199,6 +199,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			data := bytes.TrimSpace(line[5:])
 			data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+			reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(data))
 			observeCodexTokenEvent(reporter, data)
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
 				if isCodexOverloadBootstrapFailure(terminalBody) {
