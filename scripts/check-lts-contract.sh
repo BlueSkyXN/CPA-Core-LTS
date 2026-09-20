@@ -221,6 +221,7 @@ require_grep "latency_ms" internal/usage internal/redisqueue internal/tui
 require_grep 'json:"reasoning_effort,omitempty"' internal/usage
 require_grep 'json:"service_tier,omitempty"' internal/usage
 require_grep 'json:"request_service_tier,omitempty"' internal/usage
+require_grep 'json:"upstream_model,omitempty"' internal/usage internal/redisqueue
 require_grep 'json:"outbound_service_tier,omitempty"' internal/usage internal/redisqueue
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue

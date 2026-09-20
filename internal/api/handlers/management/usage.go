@@ -268,6 +268,7 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"source",
 					"auth_index",
 					"alias",
+					"upstream_model",
 					"reasoning_effort",
 					"service_tier",
 					"request_service_tier",

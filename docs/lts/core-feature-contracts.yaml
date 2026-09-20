@@ -46,6 +46,7 @@ features:
       - reasoning_effort
       - service_tier
       - request_service_tier
+      - upstream_model
       - outbound_service_tier
       - response_service_tier
       - effective_service_tier
@@ -112,6 +113,7 @@ features:
       - reasoning_effort
       - service_tier
       - request_service_tier
+      - upstream_model
       - outbound_service_tier
       - response_service_tier
       - effective_service_tier

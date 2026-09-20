@@ -1520,3 +1520,98 @@ func TestUsageReporterPropagatesBaseURL(t *testing.T) {
 		t.Fatalf("recordNilAuth.BaseURL = %q, want empty", recordNilAuth.BaseURL)
 	}
 }
+
+func TestCodexUpstreamResponseModel(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "terminal event model",
+			data: `{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.3-codex-2026-0815","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`,
+			want: "gpt-5.3-codex-2026-0815",
+		},
+		{
+			name: "whitespace trimmed",
+			data: `{"response":{"model":"  gpt-5.3-codex  "}}`,
+			want: "gpt-5.3-codex",
+		},
+		{
+			name: "missing response object",
+			data: `{"type":"response.created"}`,
+			want: "",
+		},
+		{
+			name: "empty model",
+			data: `{"response":{"model":"   "}}`,
+			want: "",
+		},
+		{
+			name: "non-string model",
+			data: `{"response":{"model":42}}`,
+			want: "",
+		},
+		{
+			name: "oversized model",
+			data: `{"response":{"model":"` + strings.Repeat("a", 257) + `"}}`,
+			want: "",
+		},
+		{
+			name: "control characters rejected",
+			data: `{"response":{"model":"gpt\r\n-evil"}}`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		if got := CodexUpstreamResponseModel([]byte(tc.data)); got != tc.want {
+			t.Fatalf("%s: CodexUpstreamResponseModel = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestUsageReporterSetUpstreamModelFirstObservationWins(t *testing.T) {
+	ctx := context.Background()
+	reporter := NewUsageReporter(ctx, "codex", "gpt-5.3-codex", nil)
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+	if record.UpstreamModel != "" {
+		t.Fatalf("record.UpstreamModel = %q, want empty before observation", record.UpstreamModel)
+	}
+
+	reporter.SetUpstreamModel("  ")
+	record = reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+	if record.UpstreamModel != "" {
+		t.Fatalf("record.UpstreamModel = %q, want empty for blank observation", record.UpstreamModel)
+	}
+
+	reporter.SetUpstreamModel("gpt-5.3-codex-2026-0815")
+	reporter.SetUpstreamModel("gpt-5.3-codex-2027-0101")
+	record = reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+	if record.UpstreamModel != "gpt-5.3-codex-2026-0815" {
+		t.Fatalf("record.UpstreamModel = %q, want first observation gpt-5.3-codex-2026-0815", record.UpstreamModel)
+	}
+	if record.Model != "gpt-5.3-codex" {
+		t.Fatalf("record.Model = %q, want request-side model preserved", record.Model)
+	}
+}
+
+func TestUsageReporterAdditionalModelDoesNotInheritParentUpstreamModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.4", nil)
+	reporter.SetUpstreamModel("gpt-5.4-2026-0815")
+
+	primary := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+	if primary.UpstreamModel != "gpt-5.4-2026-0815" {
+		t.Fatalf("primary.UpstreamModel = %q, want parent response model", primary.UpstreamModel)
+	}
+
+	additional, ok := reporter.buildAdditionalModelRecord("gpt-image-1.5", usage.Detail{TotalTokens: 9})
+	if !ok {
+		t.Fatal("buildAdditionalModelRecord() ok = false")
+	}
+	if additional.Model != "gpt-image-1.5" {
+		t.Fatalf("additional.Model = %q, want gpt-image-1.5", additional.Model)
+	}
+	if additional.UpstreamModel != "" {
+		t.Fatalf("additional.UpstreamModel = %q, want empty without image-model response evidence", additional.UpstreamModel)
+	}
+}
