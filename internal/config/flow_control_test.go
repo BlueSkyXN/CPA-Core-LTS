@@ -8,7 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
 )
 
-func TestFlowControlLegacyDefaultAndRoundtrip(t *testing.T) {
+func TestFlowControlDefaultVersionAndRoundtrip(t *testing.T) {
 	cfg, err := ParseConfigBytes([]byte("port: 8317\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -18,6 +18,7 @@ func TestFlowControlLegacyDefaultAndRoundtrip(t *testing.T) {
 	}
 	cfg, err = ParseConfigBytes([]byte(`port: 8317
 flow-control:
+  version: 3
   enabled: true
   rules:
     - id: km
@@ -34,10 +35,35 @@ flow-control:
 	if len(cfg.FlowControl.Rules) != 1 || cfg.FlowControl.Rules[0].Scope != "key-model" {
 		t.Fatal("rule lost")
 	}
+	if cfg.FlowControl.Effective().Version != 3 {
+		t.Fatal("explicit version 3 must remain schema 3")
+	}
 	clone := cfg.CloneForRuntime()
 	clone.FlowControl.Rules[0].Windows[0].Requests = 99
 	if cfg.FlowControl.Rules[0].Windows[0].Requests != 10 {
 		t.Fatal("config alias")
+	}
+	cfg, err = ParseConfigBytes([]byte("port: 8317\nflow-control:\n  version: 2\n  enabled: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FlowControl.Effective().Version != 2 {
+		t.Fatal("explicit legacy version must be preserved")
+	}
+	cfg, err = ParseConfigBytes([]byte(`port: 8317
+flow-control:
+  enabled: true
+  rules:
+    - id: legacy
+      stage: attempt
+      scope: credential
+      max-concurrent: 1
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FlowControl.Effective().Version != 0 {
+		t.Fatal("populated versionless policy must retain legacy semantics")
 	}
 }
 func TestFlowControlRejectsHomeAndBadDraftOnlyWhenEnabled(t *testing.T) {

@@ -248,12 +248,12 @@ func TestV3PreviewAndObservationBounds(t *testing.T) {
 	e.mu.Unlock()
 }
 func TestV3MigrationDuringExecutionIsAtomic(t *testing.T) {
-	cfg := Config{Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "global", MaxConcurrent: 1}}}
+	cfg := Config{Version: 1, Enabled: true, Rules: []Rule{{ID: "r", Stage: Attempt, Scope: "global", MaxConcurrent: 1}}}
 	e, _ := New(cfg)
 	defer e.Close()
 	p, _ := e.AcquireImmediately(context.Background(), Identity{Stage: Attempt}, 0)
 	cfg.Version = 3
-	if e.Update(cfg) == nil || e.Version() != 0 || e.Summary().Attempts != 1 {
+	if e.Update(cfg) == nil || e.Version() != 1 || e.Summary().Attempts != 1 {
 		t.Fatal("version migrated under active execution")
 	}
 	p.Release()

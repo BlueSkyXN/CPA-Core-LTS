@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 )
 
@@ -42,9 +43,57 @@ func TestFlowControlStatusReferencesDoNotExposeTokens(t *testing.T) {
 	if result["schema-version"] != float64(3) || result["supported"] != true {
 		t.Fatal(result)
 	}
+	if result["legacy-policy"] != false {
+		t.Fatal("default policy must not be reported as legacy", result)
+	}
 	keys := result["keys"].([]any)
 	if keys[0].(map[string]any)["ref"] != coresession.CallerScope(cfg.APIKeys[0]) {
 		t.Fatal("reference differs from runtime caller scope")
+	}
+}
+
+func TestFlowControlMarksExplicitLegacyVersion(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.FlowControl.Version = 2
+	cfg.FlowControl.Enabled = false
+	manager := coreauth.NewManager(nil, nil, nil)
+	defer manager.CloseFlowControl()
+	h := NewHandler(cfg, "", manager)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	h.GetFlowControl(c)
+	if recorder.Code != 200 {
+		t.Fatal(recorder.Code)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["legacy-policy"] != true {
+		t.Fatal("explicit schema 1/2 policy must be marked legacy", result)
+	}
+}
+
+func TestFlowControlMarksPopulatedVersionlessLegacyPolicy(t *testing.T) {
+	cfg := &config.Config{FlowControl: flowcontrol.Config{
+		Enabled: true,
+		Rules:   []flowcontrol.Rule{{ID: "legacy", Stage: flowcontrol.Attempt, Scope: "credential", MaxConcurrent: 1}},
+	}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	defer manager.CloseFlowControl()
+	h := NewHandler(cfg, "", manager)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	h.GetFlowControl(c)
+	if recorder.Code != 200 {
+		t.Fatal(recorder.Code)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["legacy-policy"] != true {
+		t.Fatal("populated versionless policy must be marked legacy", result)
 	}
 }
 

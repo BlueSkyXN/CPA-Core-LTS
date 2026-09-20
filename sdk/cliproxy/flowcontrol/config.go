@@ -58,8 +58,9 @@ type Rule struct {
 }
 
 type Config struct {
-	// Version 3 explicitly opts into single-auth identity and joint first admission.
-	// Older policies retain their behavior until explicitly migrated.
+	// Version 3 is the default schema for a new, empty policy. Existing
+	// non-empty policies without an explicit version retain their legacy
+	// behavior until they are migrated through migration-preview.
 	Version     int               `yaml:"version,omitempty" json:"version,omitempty"`
 	Observation ObservationConfig `yaml:"observation" json:"observation"`
 	Enabled     bool              `yaml:"enabled" json:"enabled"`
@@ -72,7 +73,18 @@ type Config struct {
 var ruleID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 var opaqueRef = regexp.MustCompile(`^(anonymous|[a-f0-9]{64}|\*)$`)
 
+// effectiveVersion maps an unspecified version onto the current schema only for
+// an empty policy. A populated versionless policy is an older released policy
+// and must retain its legacy semantics until an explicit migration is saved.
+func (c Config) effectiveVersion() int {
+	if c.Version == 0 && len(c.Rules) == 0 {
+		return 3
+	}
+	return c.Version
+}
+
 func (c Config) Effective() Config {
+	c.Version = c.effectiveVersion()
 	c.Rules = append([]Rule(nil), c.Rules...)
 	for i := range c.Rules {
 		c.Rules[i].Windows = append([]Window(nil), c.Rules[i].Windows...)
@@ -102,6 +114,7 @@ func (c Config) Effective() Config {
 }
 
 func (c Config) Validate() error {
+	c.Version = c.effectiveVersion()
 	if c.Version < 0 || c.Version > 3 {
 		return fmt.Errorf("flow-control: unsupported version")
 	}

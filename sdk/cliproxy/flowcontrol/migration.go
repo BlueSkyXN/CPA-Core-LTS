@@ -17,8 +17,8 @@ type Migration struct {
 // Any old shared-account bucket with multiple possible Auth IDs is ambiguous.
 func Migrate(cfg Config, refs []AuthReference) Migration {
 	out := Migration{Config: cfg.Effective(), Issues: []MigrationIssue{}, Ready: true}
-	if cfg.Version >= 3 {
-		if err := cfg.Validate(); err != nil {
+	if out.Config.Version >= 3 {
+		if err := out.Config.Validate(); err != nil {
 			out.Issues = append(out.Issues, MigrationIssue{Reason: err.Error()})
 			out.Ready = false
 		}

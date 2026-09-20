@@ -143,8 +143,11 @@ func TestLongRunningSlotHasNoTTL(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+// Legacy schema 2 regression: credential dimensions are rejected by version 3.
 func TestCredentialAndArbitraryCrossProduct(t *testing.T) {
 	c := policy(rule("acct", "account", 3), Rule{ID: "file", Stage: Attempt, Scope: "credential", MaxConcurrent: 2}, Rule{ID: "combo", Stage: Attempt, Scope: "custom", GroupBy: []string{"model", "key", "credential"}, MaxConcurrent: 1})
+	c.Version = 2
 	e := mustEngine(t, c)
 	d := identity("a", "m", "account")
 	d.Credential = "cred-a"
@@ -233,17 +236,24 @@ func TestSnapshotWaitingDetailsAndDraining(t *testing.T) {
 	p.Release()
 }
 func TestCustomRuleValidationAndClone(t *testing.T) {
+	// Legacy schema 2 rejects empty, duplicate, and unknown group-by dims.
 	for _, dims := range [][]string{{}, {"key", "key"}, {"file"}} {
 		c := policy(Rule{ID: "c", Stage: Attempt, Scope: "custom", GroupBy: dims, MaxConcurrent: 1})
+		c.Version = 2
 		if c.Validate() == nil {
 			t.Fatal(dims)
 		}
+	}
+	// Explicit version 3 treats an empty group-by as "all matched traffic".
+	if c := (Config{Version: 3, Enabled: true, Rules: []Rule{{ID: "c", Stage: Attempt, Scope: "custom", GroupBy: []string{}, MaxConcurrent: 1}}}); c.Validate() != nil {
+		t.Fatal("v3 must allow empty custom group-by")
 	}
 	c := policy(Rule{ID: "c", Stage: Request, Scope: "custom", GroupBy: []string{"credential"}, MaxConcurrent: 1})
 	if c.Validate() == nil {
 		t.Fatal("request can't know credential")
 	}
 	c = policy(Rule{ID: "c", Stage: Attempt, Scope: "custom", GroupBy: []string{"credential", "model"}, MaxConcurrent: 1})
+	c.Version = 2
 	e := mustEngine(t, c)
 	c.Rules[0].GroupBy[0] = "invalid"
 	if reflect.DeepEqual(c.Rules, e.Snapshot().Policy.Rules) {
@@ -312,8 +322,11 @@ func TestStatusObserverCap(t *testing.T) {
 	e.mu.Unlock()
 }
 
+// Legacy schema 2 regression: unresolved credential dims stay unknown, not free.
 func TestExplainMissingCredentialIsUnknownNotUnused(t *testing.T) {
-	e := mustEngine(t, policy(Rule{ID: "cap", Stage: Attempt, Scope: "credential", Provider: "codex", MaxConcurrent: 5}))
+	c := policy(Rule{ID: "cap", Stage: Attempt, Scope: "credential", Provider: "codex", MaxConcurrent: 5})
+	c.Version = 2
+	e := mustEngine(t, c)
 	x := e.Explain(Identity{Stage: Attempt, Key: "anonymous", Model: "fixture", Provider: "codex"})
 	if x.Complete || x.CanStart || x.AdditionalSlots != nil || len(x.Matches) != 1 || x.Matches[0].Known || !reflect.DeepEqual(x.Unresolved, []string{"credential"}) {
 		t.Fatalf("missing target must not be treated as a free bucket: %+v", x)

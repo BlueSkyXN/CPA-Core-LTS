@@ -787,7 +787,7 @@ func (e *Engine) checkUpdateLocked(cfg Config, now time.Time) error {
 	if e.closed {
 		return &Error{Code: "flow_control_closed"}
 	}
-	if (cfg.Version >= 3) != (e.cfg.Version >= 3) && (len(e.active) > 0 || len(e.queue) > 0) {
+	if cfg.Enabled && (cfg.Version >= 3) != (e.cfg.Version >= 3) && (len(e.active) > 0 || len(e.queue) > 0) {
 		return &Error{Code: "flow_control_migration_busy"}
 	}
 	// Preflight projected buckets before publishing; a too-small resource cap
