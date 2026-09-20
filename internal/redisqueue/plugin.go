@@ -148,6 +148,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ExecutorType:         executorType,
 		Model:                modelName,
 		Alias:                aliasName,
+		UpstreamModel:        strings.TrimSpace(record.UpstreamModel),
 		Endpoint:             resolveEndpoint(ctx),
 		AuthType:             authType,
 		APIKey:               apiKey,
@@ -175,6 +176,7 @@ type queuedUsageDetail struct {
 	ExecutorType         string                   `json:"executor_type"`
 	Model                string                   `json:"model"`
 	Alias                string                   `json:"alias"`
+	UpstreamModel        string                   `json:"upstream_model,omitempty"`
 	Endpoint             string                   `json:"endpoint"`
 	AuthType             string                   `json:"auth_type"`
 	APIKey               string                   `json:"api_key"`
