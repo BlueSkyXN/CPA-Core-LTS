@@ -1,0 +1,107 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net" agent="draw.io" version="31.3.2" type="device">
+  <diagram id="codex-cache-affinity-decision" name="Page-1">
+    <mxGraphModel dx="1100" dy="1270" grid="1" gridSize="10" page="1" pageScale="1" pageWidth="1100" pageHeight="1270" background="#ffffff" adaptiveColors="none">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="background" value="" style="rounded=0;whiteSpace=none;html=0;fillColor=#ffffff;strokeColor=none;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=21;fontColor=#172554;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="0" y="0" width="1100" height="1270" />
+        </mxCell>
+        <mxCell id="title" value="ChatGPT OAuth 缓存适配：身份与前缀如何协作" style="rounded=0;whiteSpace=none;html=0;fillColor=none;strokeColor=none;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=30;fontColor=#0f172a;fontStyle=1;align=left;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="35" y="24" width="1030" height="55" />
+        </mxCell>
+        <mxCell id="subtitle" value="默认 client-aware 模式 · H = Session-Id · K = prompt_cache_key" style="rounded=0;whiteSpace=none;html=0;fillColor=none;strokeColor=none;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=21;fontColor=#475569;fontStyle=0;align=left;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="35" y="82" width="1030" height="55" />
+        </mxCell>
+        <mxCell id="scope" value="实际 Codex 普通生成 + OAuth&#10;API key、未知凭据及专用操作不进入新策略" style="rounded=1;whiteSpace=none;html=0;fillColor=#eff6ff;strokeColor=#93c5fd;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=20;fontColor=#172554;fontStyle=1;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="310" y="160" width="480" height="85" />
+        </mxCell>
+        <mxCell id="explicit" value="客户端 / 配置是否已明确&#10;缓存字段？" style="rounded=1;whiteSpace=none;html=0;fillColor=#f1f5f9;strokeColor=#94a3b8;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=22;fontColor=#172554;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;rhombus;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="365" y="290" width="370" height="120" />
+        </mxCell>
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="scope" target="explicit">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="preserve" value="保留对应字段及覆盖规则&#10;H 与 K 分别保存&#10;前缀结果不覆盖明确选择" style="rounded=1;whiteSpace=none;html=0;fillColor=#ecfdf5;strokeColor=#6ee7b7;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=22;fontColor=#065f46;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="40" y="465" width="345" height="110" />
+        </mxCell>
+        <mxCell id="identity" value="保留已有健康映射，或补齐可靠身份&#10;合格 XSID + CallerScope → 稳定 H&#10;新增补齐不自动增加缺失的 K" style="rounded=1;whiteSpace=none;html=0;fillColor=#eff6ff;strokeColor=#93c5fd;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=20;fontColor=#172554;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="680" y="465" width="375" height="125" />
+        </mxCell>
+        <mxCell id="e2" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=0.5;entryY=0;" edge="1" parent="1" source="explicit" target="preserve">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="220" y="350" />
+              <mxPoint x="220" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=1;exitY=0.5;entryX=0.5;entryY=0;" edge="1" parent="1" source="explicit" target="identity">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="865" y="350" />
+              <mxPoint x="865" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="inspect" value="第三方独立检查最终有效前缀&#10;带 XSID 仍检查；检查与采用分开&#10;候选须通过严格复核与交互锚点约束" style="rounded=1;whiteSpace=none;html=0;fillColor=#fff7ed;strokeColor=#fdba74;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#9a3412;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="680" y="645" width="375" height="115" />
+        </mxCell>
+        <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="identity" target="inspect">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="reliable" value="可靠身份&#10;已有绑定继续保留&#10;新身份建立稳定映射&#10;明确父子关系经复核可继承" style="rounded=1;whiteSpace=none;html=0;fillColor=#eff6ff;strokeColor=#93c5fd;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=20;fontColor=#172554;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="420" y="815" width="300" height="135" />
+        </mxCell>
+        <mxCell id="weak" value="弱身份 / 无身份&#10;唯一合格组 → 可复用&#10;无候选 / 歧义 → 新组或回退&#10;信息不足 → 兼容回退" style="rounded=1;whiteSpace=none;html=0;fillColor=#fff7ed;strokeColor=#fdba74;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=20;fontColor=#9a3412;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="755" y="815" width="300" height="135" />
+        </mxCell>
+        <mxCell id="e5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="inspect" target="reliable">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="865" y="780" />
+              <mxPoint x="570" y="780" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="inspect" target="weak">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="865" y="780" />
+              <mxPoint x="905" y="780" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="wire" value="最终出站：选定的 H + 独立保留的 K&#10;成功且实际出站校验通过后，才发布轨迹" style="rounded=1;whiteSpace=none;html=0;fillColor=#ecfdf5;strokeColor=#6ee7b7;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=22;fontColor=#065f46;fontStyle=1;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="310" y="1030" width="480" height="95" />
+        </mxCell>
+        <mxCell id="e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0;entryY=0.5;" edge="1" parent="1" source="preserve" target="wire">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="210" y="1075" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="reliable" target="wire">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="570" y="990" />
+              <mxPoint x="550" y="990" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;strokeWidth=2;strokeColor=#64748b;endArrow=block;endFill=1;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=19;fontColor=#334155;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=1;entryY=0.5;" edge="1" parent="1" source="weak" target="wire">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="905" y="1075" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="note" value="缓存组只用于出站亲和：不改变真实会话、账号选择、reasoning replay 或 WS 归属。&#10;稳定身份不会因前缀失败自动换号；上游实际缓存收益仍需独立实验。" style="rounded=1;whiteSpace=none;html=0;fillColor=#f8fafc;strokeColor=#e2e8f0;strokeWidth=1.5;fontFamily=Helvetica,PingFang SC,Microsoft YaHei,sans-serif;fontSize=20;fontColor=#475569;fontStyle=0;align=center;verticalAlign=middle;spacing=10;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="35" y="1170" width="1030" height="72" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
