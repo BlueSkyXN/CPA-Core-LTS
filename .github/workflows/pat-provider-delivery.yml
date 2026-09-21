@@ -60,6 +60,14 @@ jobs:
           echo "CORE_VERSION=${RELEASE_TAG:-dev}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Native provider regression tests
+        run: |
+          (cd examples/plugin/qoder/go && go test -count=1 ./... && go test -race -count=1 ./... && go vet ./...)
+          (cd examples/plugin/codebuddy/go && go test -race -count=1 ./... && go vet ./...)
+          go test -count=1 ./test -run '^TestCodeBuddyDynamic'
       - name: Package layout tests
         run: python3 -m unittest discover -s scripts -p test_package_pat_providers.py
       - name: Build optional image
