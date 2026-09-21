@@ -195,7 +195,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 	case pluginabi.MethodModelStatic:
 		models := canonicalQoderModels()
 		cfg := r.loadedConfig()
-		if cfg.Transport == "direct_openai" && len(cfg.DirectModels) > 0 {
+		if cfg.Transport == "direct_openai" {
 			models = configuredDirectModels(cfg.DirectModels)
 		}
 		return okEnvelope(pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models})
@@ -229,7 +229,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(resp)
 	case pluginabi.MethodExecutorCountTokens:
-		return nil, newPluginCallError("unsupported_operation", "Qoder runner does not expose an independent exact token counter", http.StatusNotImplemented, false)
+		return nil, newPluginCallError("unsupported_operation", "Qoder does not expose an independent exact token counter", http.StatusNotImplemented, false)
 	case pluginabi.MethodExecutorHTTPRequest:
 		return nil, newPluginCallError("unsupported_operation", "Qoder plugin does not expose arbitrary HTTP forwarding", http.StatusNotImplemented, false)
 	case pluginabi.MethodExecutorCancel:
@@ -269,11 +269,12 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/BlueSkyXN/CPA-Core-LTS",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "transport", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"sdk_cli", "direct_openai"}, Description: "Default Qoder transport; an auth file may explicitly select a transport. No request-side transport override is accepted."},
-				{Name: "runner_command", Type: pluginapi.ConfigFieldTypeString, Description: "Explicit cpa-qoder-runner executable or absolute path."},
+				{Name: "runner_command", Type: pluginapi.ConfigFieldTypeString, Description: "SDK-only cpa-qoder-runner executable or absolute path; direct_openai runs natively in Go."},
 				{Name: "runner_args", Type: pluginapi.ConfigFieldTypeArray, Description: "Fixed runner arguments; model requests cannot override them."},
-				{Name: "qoder_cli_path", Type: pluginapi.ConfigFieldTypeString, Description: "Required external Qoder CLI absolute path. SDK bundled CLI fallback is disabled."},
+				{Name: "qoder_cli_path", Type: pluginapi.ConfigFieldTypeString, Description: "Required external Qoder CLI absolute path for sdk_cli only. SDK bundled CLI fallback is disabled."},
 				{Name: "direct_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Explicit HTTPS OpenAI-compatible Qoder endpoint for direct_openai; loopback HTTP is allowed only for local tests."},
-				{Name: "direct_models_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional OpenAI-compatible model catalog endpoint for direct_openai; otherwise direct_models must be configured."},
+				{Name: "direct_models_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional per-account catalog URL; direct_catalog_format selects OpenAI Bearer or Qoder COSY parsing. Explicit direct_models takes precedence."},
+				{Name: "direct_catalog_format", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"openai", "qoder"}, Description: "Catalog wire format: openai uses Bearer and data/models arrays; qoder uses COSY and the enabled chat scene. Explicit direct_models keeps precedence."},
 				{Name: "direct_auth_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Legacy alias for the Qoder OpenAPI base used by direct PAT exchange; retained for existing configurations."},
 				{Name: "direct_token_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"auto", "bearer", "pat_exchange"}, Description: "Legacy direct credential mode; auto exchanges pt- PATs and bearer passes opaque access_token values through."},
 				{Name: "openapi_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Qoder OpenAPI base used for PAT exchange and account/plan/quota queries; never put a token in this URL."},

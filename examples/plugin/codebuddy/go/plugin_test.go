@@ -120,7 +120,7 @@ func TestCodeBuddyQuotaParsesPrecisePackagesAndEmptyResponse(t *testing.T) {
 		t.Fatal("billing response without an Accounts field was treated as zero quota")
 	}
 	empty, errEmpty := parseCodeBuddyQuota([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":null,"TotalCount":0,"TotalDosage":0}}}}`))
-	if errEmpty != nil || empty.Status != "available" || empty.TotalExact != "0" || empty.Remaining == nil || *empty.Remaining != 0 {
+	if errEmpty != nil || empty.Status != "unsupported" || empty.Code != "no_personal_resources" || empty.Total != nil || empty.Remaining != nil {
 		t.Fatalf("empty quota = %#v, err=%v", empty, errEmpty)
 	}
 	packages := []byte(`{"code":0,"data":{"Accounts":[{"PackageName":"base","Status":"active","CapacitySizePrecise":"1000.5000","CapacityUsedPrecise":"250.2500","CapacityRemainPrecise":"750.2500"},{"PackageName":"addon","Status":"active","CapacitySizePrecise":"2.25","CapacityUsedPrecise":"1.25","CapacityRemainPrecise":"1.00"}]}}`)
@@ -155,7 +155,7 @@ func TestCodeBuddyManagementSummaryUsesAuthIndexAndDoesNotExposeSecret(t *testin
 	if errDecode := json.Unmarshal(response.Body, &summary); errDecode != nil {
 		t.Fatal(errDecode)
 	}
-	if summary.Provider != pluginIdentifier || summary.AuthIndex != "1" || summary.Quota.Status != "available" || summary.Credential.Fingerprint == "" {
+	if summary.Provider != pluginIdentifier || summary.AuthIndex != "1" || summary.Quota.Status != "unsupported" || summary.Credential.Fingerprint == "" {
 		t.Fatalf("summary = %#v", summary)
 	}
 	second, errSecond := runtime.handleManagement(raw)
@@ -277,7 +277,7 @@ func readinessState(resp pluginapi.ReadinessResponse, level pluginapi.ReadinessL
 	return ""
 }
 
-func TestNonStreamReturnsStableClientErrorWithoutUpstreamCall(t *testing.T) {
+func TestInvalidNonStreamReturnsStableClientErrorWithoutUpstreamCall(t *testing.T) {
 	host := newFakeHost()
 	runtime := newPluginRuntime(host)
 	raw, errDispatch := runtime.dispatch(pluginabi.MethodExecutorExecute, []byte(`{}`))
@@ -289,7 +289,7 @@ func TestNonStreamReturnsStableClientErrorWithoutUpstreamCall(t *testing.T) {
 	if errDecode := json.Unmarshal(encoded, &env); errDecode != nil {
 		t.Fatal(errDecode)
 	}
-	if env.Error == nil || env.Error.Code != "stream_required" || env.Error.HTTPStatus != http.StatusBadRequest {
+	if env.Error == nil || env.Error.Code != "invalid_request" || env.Error.HTTPStatus != http.StatusBadRequest {
 		t.Fatalf("error envelope = %#v", env.Error)
 	}
 	if host.openCount() != 0 {

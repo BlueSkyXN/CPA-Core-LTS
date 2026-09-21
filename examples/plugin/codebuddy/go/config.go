@@ -13,8 +13,9 @@ const (
 	defaultCodeBuddyEndpoint = "https://copilot.tencent.com/v2/chat/completions"
 	defaultCatalogEndpoint   = "https://copilot.tencent.com/v3/config"
 	defaultBillingEndpoint   = "https://copilot.tencent.com/v2/billing/meter/get-user-resource"
-	defaultCatalogUserAgent  = "WorkBuddy/5.4.5"
-	defaultUserAgent         = "CPA-CodeBuddy-Provider/" + pluginVersion
+	// 厂商按完整客户端标识返回不同场景；这只是 HTTP 协议标识，无需安装 CLI。
+	defaultCatalogUserAgent = "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0"
+	defaultUserAgent        = defaultCatalogUserAgent
 )
 
 type pluginConfig struct {

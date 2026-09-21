@@ -15,6 +15,7 @@ import (
 
 const (
 	codeBuddyCatalogCacheTTL = time.Minute
+	codeBuddyCatalogStaleTTL = 5 * time.Minute
 	maxCodeBuddyCatalogBytes = 2 * 1024 * 1024
 )
 
@@ -22,11 +23,28 @@ type codeBuddyCatalog struct {
 	Models       []pluginapi.ModelInfo
 	Allowed      map[string]struct{}
 	EnterpriseID string
+	Scene        string
+	FetchedAt    time.Time
+	Stale        bool
+	Hints        map[string]codeBuddyModelHints
+}
+
+// 供应商扩展只放在插件 Summary，不改变 Core 的公共 ModelInfo/ABI。
+type codeBuddyModelHints struct {
+	Credits          string  `json:"credits_hint,omitempty"`
+	DefaultEffort    string  `json:"default_effort,omitempty"`
+	SupportedLengths []int64 `json:"supported_context_lengths,omitempty"`
 }
 
 type codeBuddyCatalogCacheEntry struct {
 	FetchedAt time.Time
 	Catalog   codeBuddyCatalog
+}
+
+type codeBuddyCatalogFlight struct {
+	done    chan struct{}
+	catalog codeBuddyCatalog
+	err     error
 }
 
 type codeBuddyCatalogResponse struct {
@@ -47,24 +65,33 @@ type codeBuddyCatalogAgent struct {
 }
 
 type codeBuddyCatalogModel struct {
-	ID                 string                    `json:"id"`
-	Name               string                    `json:"name"`
-	DescriptionEN      string                    `json:"descriptionEn"`
-	DescriptionZH      string                    `json:"descriptionZh"`
-	MaxAllowedSize     int64                     `json:"maxAllowedSize"`
-	MaxInputTokens     int64                     `json:"maxInputTokens"`
-	MaxOutputTokens    int64                     `json:"maxOutputTokens"`
-	DisabledMultimodal bool                      `json:"disabledMultimodal"`
-	OnlyReasoning      bool                      `json:"onlyReasoning"`
-	SupportsImages     bool                      `json:"supportsImages"`
-	SupportsReasoning  bool                      `json:"supportsReasoning"`
-	SupportsToolCall   bool                      `json:"supportsToolCall"`
-	Reasoning          codeBuddyCatalogReasoning `json:"reasoning"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	DescriptionEN      string `json:"descriptionEn"`
+	DescriptionZH      string `json:"descriptionZh"`
+	MaxAllowedSize     int64  `json:"maxAllowedSize"`
+	MaxInputTokens     int64  `json:"maxInputTokens"`
+	MaxOutputTokens    int64  `json:"maxOutputTokens"`
+	DisabledMultimodal bool   `json:"disabledMultimodal"`
+	OnlyReasoning      bool   `json:"onlyReasoning"`
+	SupportsImages     bool   `json:"supportsImages"`
+	SupportsReasoning  bool   `json:"supportsReasoning"`
+	SupportsToolCall   bool   `json:"supportsToolCall"`
+	Credits            string `json:"credits"`
+	CanDisableThinking *bool  `json:"canDisableThinking"`
+	ContextWindow      struct {
+		DefaultLength    int64   `json:"defaultLength"`
+		SupportedLengths []int64 `json:"supportedLengths"`
+	} `json:"contextWindow"`
+	Reasoning codeBuddyCatalogReasoning `json:"reasoning"`
 }
 
 type codeBuddyCatalogReasoning struct {
-	Effort  string `json:"effort"`
-	Summary string `json:"summary"`
+	Effort             string   `json:"effort"`
+	Summary            string   `json:"summary"`
+	DefaultEffort      string   `json:"defaultEffort"`
+	SupportedEfforts   []string `json:"supportedEfforts"`
+	CanDisableThinking *bool    `json:"canDisableThinking"`
 }
 
 func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, error) {
@@ -84,31 +111,63 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 }
 
 func (r *pluginRuntime) catalogForAuth(auth codeBuddyAuth, callbackID string) (codeBuddyCatalog, error) {
-	cfg := r.loadedConfig()
-	key := codeBuddyCatalogCacheKey(auth, cfg.CatalogEndpoint, cfg.CatalogUserAgent)
 	r.mu.Lock()
+	cfg, generation := r.config, r.generation
+	key := fmt.Sprintf("%d:%s", generation, codeBuddyCatalogCacheKey(auth, cfg.CatalogEndpoint, cfg.CatalogUserAgent))
 	cached, ok := r.catalogCache[key]
 	r.mu.Unlock()
 	if ok && time.Since(cached.FetchedAt) < codeBuddyCatalogCacheTTL {
 		return cloneCodeBuddyCatalog(cached.Catalog), nil
 	}
 	if strings.TrimSpace(callbackID) == "" {
-		if ok {
-			return cloneCodeBuddyCatalog(cached.Catalog), nil
+		if ok && time.Since(cached.FetchedAt) < codeBuddyCatalogStaleTTL {
+			result := cloneCodeBuddyCatalog(cached.Catalog)
+			result.Stale = true
+			return result, nil
 		}
 		return codeBuddyCatalog{}, newPluginCallError("catalog_unavailable", "CodeBuddy catalog requires a host callback context", http.StatusServiceUnavailable, true)
 	}
+	r.mu.Lock()
+	if flight := r.catalogFlights[key]; flight != nil {
+		r.mu.Unlock()
+		<-flight.done
+		return cloneCodeBuddyCatalog(flight.catalog), flight.err
+	}
+	// 前一次请求可能在两次加锁之间已经完成。
+	if latest, exists := r.catalogCache[key]; exists && time.Since(latest.FetchedAt) < codeBuddyCatalogCacheTTL {
+		r.mu.Unlock()
+		return cloneCodeBuddyCatalog(latest.Catalog), nil
+	}
+	flight := &codeBuddyCatalogFlight{done: make(chan struct{})}
+	r.catalogFlights[key] = flight
+	r.mu.Unlock()
 	catalog, errFetch := fetchCodeBuddyCatalog(r.caller, callbackID, cfg, auth)
 	if errFetch != nil {
-		if ok {
-			return cloneCodeBuddyCatalog(cached.Catalog), nil
+		// 明确拒绝不能使用旧权限名单掩盖；仅短暂网络/服务故障允许有界降级。
+		callErr, typed := errFetch.(*pluginCallError)
+		if ok && typed && callErr.retryable && (callErr.code == "catalog_unavailable" || callErr.code == "catalog_upstream_error") && time.Since(cached.FetchedAt) < codeBuddyCatalogStaleTTL {
+			catalog = cloneCodeBuddyCatalog(cached.Catalog)
+			catalog.Stale = true
+			errFetch = nil
 		}
-		return codeBuddyCatalog{}, errFetch
+	}
+	if errFetch == nil && !catalog.Stale {
+		catalog.FetchedAt = time.Now().UTC()
 	}
 	r.mu.Lock()
-	r.catalogCache[key] = codeBuddyCatalogCacheEntry{FetchedAt: time.Now(), Catalog: cloneCodeBuddyCatalog(catalog)}
+	if r.generation == generation {
+		if errFetch == nil && !catalog.Stale {
+			r.catalogCache[key] = codeBuddyCatalogCacheEntry{FetchedAt: catalog.FetchedAt, Catalog: cloneCodeBuddyCatalog(catalog)}
+		}
+		if errFetch != nil {
+			delete(r.catalogCache, key)
+		}
+	}
+	flight.catalog, flight.err = cloneCodeBuddyCatalog(catalog), errFetch
+	delete(r.catalogFlights, key)
+	close(flight.done)
 	r.mu.Unlock()
-	return catalog, nil
+	return catalog, errFetch
 }
 
 func fetchCodeBuddyCatalog(caller hostCaller, callbackID string, cfg pluginConfig, auth codeBuddyAuth) (codeBuddyCatalog, error) {
@@ -148,7 +207,7 @@ func parseCodeBuddyCatalog(raw []byte) (codeBuddyCatalog, error) {
 		return codeBuddyCatalog{}, newPluginCallError("catalog_invalid_response", "CodeBuddy catalog returned malformed JSON", http.StatusBadGateway, true)
 	}
 	if response.Code != 0 {
-		return codeBuddyCatalog{}, newPluginCallError("catalog_upstream_error", "CodeBuddy catalog rejected the request", http.StatusBadGateway, true)
+		return codeBuddyCatalog{}, newPluginCallError("catalog_rejected", "CodeBuddy catalog rejected the request", http.StatusBadGateway, false)
 	}
 	if response.Data == nil {
 		return codeBuddyCatalog{}, newPluginCallError("catalog_invalid_response", "CodeBuddy catalog response has no data", http.StatusBadGateway, true)
@@ -195,12 +254,15 @@ func parseCodeBuddyCatalog(raw []byte) (codeBuddyCatalog, error) {
 	}
 
 	models := make([]pluginapi.ModelInfo, 0, len(allowed))
+	hints := make(map[string]codeBuddyModelHints, len(allowed))
 	seen := make(map[string]struct{}, len(allowed))
 	for _, id := range modelOrder {
 		if _, ok := allowed[id]; !ok {
 			continue
 		}
 		models = append(models, codeBuddyModelInfo(modelByID[id]))
+		model := modelByID[id]
+		hints[id] = codeBuddyModelHints{Credits: strings.TrimSpace(model.Credits), DefaultEffort: codeBuddyDefaultEffort(model.Reasoning), SupportedLengths: append([]int64(nil), model.ContextWindow.SupportedLengths...)}
 		seen[id] = struct{}{}
 	}
 	missingIDs := make([]string, 0)
@@ -216,7 +278,14 @@ func parseCodeBuddyCatalog(raw []byte) (codeBuddyCatalog, error) {
 	if len(models) == 0 {
 		return codeBuddyCatalog{}, newPluginCallError("catalog_empty", "CodeBuddy catalog returned no authorized models", http.StatusServiceUnavailable, true)
 	}
-	return codeBuddyCatalog{Models: models, Allowed: allowed, EnterpriseID: strings.TrimSpace(response.Data.EnterpriseID)}, nil
+	return codeBuddyCatalog{Models: models, Allowed: allowed, EnterpriseID: strings.TrimSpace(response.Data.EnterpriseID), Scene: selectedAgent, Hints: hints}, nil
+}
+
+func codeBuddyDefaultEffort(reasoning codeBuddyCatalogReasoning) string {
+	if value := strings.TrimSpace(reasoning.DefaultEffort); value != "" {
+		return value
+	}
+	return strings.TrimSpace(reasoning.Effort)
 }
 
 func codeBuddyModelInfo(model codeBuddyCatalogModel) pluginapi.ModelInfo {
@@ -232,17 +301,37 @@ func codeBuddyModelInfo(model codeBuddyCatalogModel) pluginapi.ModelInfo {
 	if model.MaxAllowedSize > contextLength {
 		contextLength = model.MaxAllowedSize
 	}
+	if model.ContextWindow.DefaultLength > 0 {
+		contextLength = model.ContextWindow.DefaultLength
+	}
 	inputModalities := []string{"text"}
 	if model.SupportsImages && !model.DisabledMultimodal {
 		inputModalities = append(inputModalities, "image")
 	}
 	var thinking *pluginapi.ThinkingSupport
-	if model.SupportsReasoning || model.OnlyReasoning || strings.TrimSpace(model.Reasoning.Effort) != "" {
+	if model.SupportsReasoning || model.OnlyReasoning || codeBuddyDefaultEffort(model.Reasoning) != "" || len(model.Reasoning.SupportedEfforts) > 0 {
 		levels := []string{}
-		if effort := strings.TrimSpace(model.Reasoning.Effort); effort != "" {
-			levels = append(levels, effort)
+		seen := make(map[string]bool)
+		for _, effort := range model.Reasoning.SupportedEfforts {
+			effort = strings.TrimSpace(effort)
+			if effort != "" && !seen[effort] {
+				levels = append(levels, effort)
+				seen[effort] = true
+			}
 		}
-		thinking = &pluginapi.ThinkingSupport{Levels: levels, ZeroAllowed: !model.OnlyReasoning}
+		if len(levels) == 0 {
+			if effort := codeBuddyDefaultEffort(model.Reasoning); effort != "" {
+				levels = append(levels, effort)
+			}
+		}
+		zeroAllowed := !model.OnlyReasoning
+		if model.CanDisableThinking != nil {
+			zeroAllowed = *model.CanDisableThinking
+		}
+		if model.Reasoning.CanDisableThinking != nil {
+			zeroAllowed = *model.Reasoning.CanDisableThinking
+		}
+		thinking = &pluginapi.ThinkingSupport{Levels: levels, ZeroAllowed: zeroAllowed}
 	}
 	return pluginapi.ModelInfo{
 		ID:                         model.ID,
@@ -295,15 +384,32 @@ func codeBuddyCatalogCacheKey(auth codeBuddyAuth, endpoint, userAgent string) st
 }
 
 func cloneCodeBuddyCatalog(input codeBuddyCatalog) codeBuddyCatalog {
+	hints := make(map[string]codeBuddyModelHints, len(input.Hints))
+	for id, hint := range input.Hints {
+		hint.SupportedLengths = append([]int64(nil), hint.SupportedLengths...)
+		hints[id] = hint
+	}
 	return codeBuddyCatalog{
 		Models:       cloneCodeBuddyModels(input.Models),
 		Allowed:      cloneCodeBuddyAllowed(input.Allowed),
 		EnterpriseID: input.EnterpriseID,
+		Scene:        input.Scene, FetchedAt: input.FetchedAt, Stale: input.Stale, Hints: hints,
 	}
 }
 
 func cloneCodeBuddyModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {
-	return append([]pluginapi.ModelInfo(nil), input...)
+	output := append([]pluginapi.ModelInfo(nil), input...)
+	for i := range output {
+		output[i].SupportedGenerationMethods = append([]string(nil), input[i].SupportedGenerationMethods...)
+		output[i].SupportedInputModalities = append([]string(nil), input[i].SupportedInputModalities...)
+		output[i].SupportedOutputModalities = append([]string(nil), input[i].SupportedOutputModalities...)
+		if input[i].Thinking != nil {
+			value := *input[i].Thinking
+			value.Levels = append([]string(nil), value.Levels...)
+			output[i].Thinking = &value
+		}
+	}
+	return output
 }
 
 func cloneCodeBuddyAllowed(input map[string]struct{}) map[string]struct{} {

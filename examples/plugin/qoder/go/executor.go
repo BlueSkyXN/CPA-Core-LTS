@@ -20,6 +20,9 @@ func (r *pluginRuntime) execute(raw []byte) (pluginapi.ExecutorResponse, error) 
 	if req.Stream {
 		return pluginapi.ExecutorResponse{}, newPluginCallError("invalid_request", "Qoder non-stream executor received a streaming request", http.StatusBadRequest, false)
 	}
+	if auth, err := parseStoredAuth(req.StorageJSON); err == nil && r.transportForAuth(auth) == "direct_openai" {
+		return r.executeNative(req)
+	}
 	session, errStart := r.startTurn(req.ExecutorRequest)
 	if errStart != nil {
 		return pluginapi.ExecutorResponse{}, normalizeQoderExecutionLifecycleError(errStart)
@@ -52,6 +55,9 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	}
 	if !req.Stream || strings.TrimSpace(req.StreamID) == "" {
 		return rpcStreamResponse{}, newPluginCallError("invalid_stream", "Qoder stream requires stream=true and a stream ID", http.StatusBadRequest, false)
+	}
+	if auth, err := parseStoredAuth(req.StorageJSON); err == nil && r.transportForAuth(auth) == "direct_openai" {
+		return r.executeNativeStream(req)
 	}
 	session, errStart := r.startTurn(req.ExecutorRequest)
 	if errStart != nil {

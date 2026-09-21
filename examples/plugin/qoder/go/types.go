@@ -11,7 +11,7 @@ import (
 const (
 	pluginIdentifier     = "qoder"
 	pluginName           = "cpa-provider-qoder"
-	pluginVersion        = "0.1.0"
+	pluginVersion        = "0.2.0"
 	runnerProtocol       = 1
 	runnerPATEnv         = "CPA_QODER_RUNNER_PAT"
 	maxRunnerFrameBytes  = 1024 * 1024
@@ -98,11 +98,13 @@ type identifierResponse struct {
 
 type rpcExecutorRequest struct {
 	pluginapi.ExecutorRequest
-	StreamID string `json:"stream_id,omitempty"`
+	StreamID       string `json:"stream_id,omitempty"`
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type rpcAuthModelRequest struct {
 	pluginapi.AuthModelRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type managementRegistrationResponse struct {

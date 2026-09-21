@@ -60,7 +60,11 @@ func (c *hostHTTPClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (plu
 	helps.RecordAPIResponseMetadata(ctx, cfg, resp.StatusCode, resp.Header.Clone())
 	body, errReadAll := io.ReadAll(resp.Body)
 	if len(body) > 0 {
-		helps.AppendAPIResponseChunk(ctx, cfg, body)
+		logBody := body
+		if hostCredentialExchange(req.Method, req.URL) {
+			logBody = []byte("[REDACTED CREDENTIAL EXCHANGE]")
+		}
+		helps.AppendAPIResponseChunk(ctx, cfg, logBody)
 	}
 	if errReadAll != nil {
 		helps.RecordAPIResponseError(ctx, cfg, errReadAll)
@@ -94,11 +98,18 @@ func (c *hostHTTPClient) DoStream(ctx context.Context, req pluginapi.HTTPRequest
 			}
 		}()
 		buf := make([]byte, 32*1024)
+		credentialExchange := hostCredentialExchange(req.Method, req.URL)
+		credentialLogged := false
 		for {
 			n, errRead := resp.Body.Read(buf)
 			if n > 0 {
 				payload := bytes.Clone(buf[:n])
-				helps.AppendAPIResponseChunk(ctx, cfg, payload)
+				if !credentialExchange {
+					helps.AppendAPIResponseChunk(ctx, cfg, payload)
+				} else if !credentialLogged {
+					helps.AppendAPIResponseChunk(ctx, cfg, []byte("[REDACTED CREDENTIAL EXCHANGE]"))
+					credentialLogged = true
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -165,6 +176,9 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 	if req == nil {
 		return
 	}
+	if hostCredentialExchange(req.Method, req.URL.String()) {
+		body = []byte("[REDACTED CREDENTIAL EXCHANGE]")
+	}
 	provider := c.provider
 	var authID, authLabel, authType, authValue string
 	if c.auth != nil {
@@ -186,6 +200,24 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
+}
+
+// Qoder OpenAPI 换票的双向 body 都包含凭证；只隐藏日志副本，保留网络字节。
+// 按端点路径识别，以兼容配置的地区端点和测试/企业代理地址。
+func hostCredentialExchange(method, rawURL string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	for _, path := range []string{"/api/v1/jobToken/exchange", "/api/v1/jobToken/refresh", "/api/v1/deviceToken/refresh"} {
+		if strings.HasSuffix(u.Path, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) currentRuntimeConfig() *config.Config {

@@ -122,6 +122,10 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 		return pluginapi.ModelResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusBadRequest, false)
 	}
 	transport := r.transportForAuth(auth)
+	if transport == "direct_openai" {
+		models, err := r.nativeModels(auth, req.HostCallbackID, r.loadedConfig())
+		return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, err
+	}
 	cacheKey := authCacheKey(req.AuthID, req.AuthProvider, auth, transport)
 	r.mu.Lock()
 	cached, ok := r.modelCache[cacheKey]
@@ -227,5 +231,27 @@ func authCacheKey(authID, provider string, auth qoderAuth, requestedTransport ..
 }
 
 func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {
-	return append([]pluginapi.ModelInfo(nil), input...)
+	out := append([]pluginapi.ModelInfo(nil), input...)
+	for i := range out {
+		out[i].SupportedGenerationMethods = append([]string(nil), out[i].SupportedGenerationMethods...)
+		out[i].SupportedInputModalities = append([]string(nil), out[i].SupportedInputModalities...)
+		out[i].SupportedOutputModalities = append([]string(nil), out[i].SupportedOutputModalities...)
+		out[i].SupportedParameters = append([]string(nil), out[i].SupportedParameters...)
+		if out[i].Thinking != nil {
+			thinking := *out[i].Thinking
+			thinking.Levels = append([]string(nil), thinking.Levels...)
+			out[i].Thinking = &thinking
+		}
+	}
+	return out
+}
+
+func qoderDisplayName(id, supplied string) string {
+	if name := strings.TrimSpace(supplied); name != "" {
+		return name
+	}
+	if name := canonicalQoderModelDisplayNames[id]; name != "" {
+		return name
+	}
+	return id
 }

@@ -1,14 +1,15 @@
 # Qoder provider plugin
 
-This example implements the schema 5 `cpa-provider-qoder` dynamic plugin and
-connects it to the separately installed `cpa-qoder-runner`. One `qoder`
-Provider exposes two explicit transports:
+This example implements the `cpa-provider-qoder` dynamic plugin. One `qoder`
+Provider exposes two explicit transports. The PAT distribution selects native
+`direct_openai` and does not install Node, Qoder CLI, Qoder SDK or a runner:
 
-- `sdk_cli` (default): Qoder Agent SDK + the administrator-selected external
+- `sdk_cli` (legacy default when transport is omitted): separately installed
+  `cpa-qoder-runner`, Node, Qoder Agent SDK + the administrator-selected external
   `qoderclicn`/`qodercli`, with native sessions, workspace tools, skills, MCP,
   permissions, image input, and Agent events.
-- `direct_openai`: a configured OpenAI-compatible Qoder endpoint for raw
-  Chat/stream/tool requests and non-stream projection.
+- `direct_openai` (recommended): native Go with Core-owned HTTP callbacks to a
+  configured Qoder endpoint for Chat/stream/tool requests and non-stream projection.
 
 The transport can be selected by plugin configuration or an auth-file override.
 It is part of the execution-session identity, so a session never changes
@@ -37,17 +38,23 @@ handles Responses requests and responses around that boundary.
   "type": "qoder",
   "auth_mode": "pat",
   "pat": "[REDACTED_SECRET]",
-  "transport": "sdk_cli",
+  "transport": "direct_openai",
   "label": "Qoder 主账号"
 }
 ```
 
-The PAT is never put into JSONL frames or logs. The plugin gives the runner a
+Native Direct shares an in-memory token manager between inference, catalog and
+Summary. Concurrent exchanges/refreshes are coalesced; token expiry uses Qoder
+OpenAPI's millisecond `expires_in` (absolute `expires_at` takes precedence).
+The PAT is never put into JSONL frames or logs. For SDK mode, the plugin gives the runner a
 dedicated environment variable. The runner exchanges it in memory and Qoder
 Agent SDK creates and removes a mode-0600 host-callback payload that contains no
 token. Each runner also receives a private `TMPDIR` and PAT `HOME`.
 
 ## Configuration
+
+The following is the optional `sdk_cli` compatibility configuration. Native
+Direct configuration is shown immediately below it.
 
 ```yaml
 runner_command: /absolute/path/to/cpa-qoder-runner
@@ -76,7 +83,8 @@ exchange and account/plan/quota calls. CN and global Qoder endpoints are not
 interchangeable; choose one explicitly. Plain HTTP is accepted only for
 loopback test fixtures.
 
-For `direct_openai`, configure an exact model source:
+For native `direct_openai`, no runner or workspace settings are required. An
+existing exact manual model source remains supported:
 
 ```yaml
 transport: direct_openai
@@ -87,11 +95,32 @@ direct_models:
     display_name: Qwen3.8-Max
 ```
 
-`direct_models_endpoint` may be used instead of `direct_models` when the
-configured endpoint returns an OpenAI-compatible `{data:[...]}` catalog.
-Direct mode always exchanges the PAT through
+For automatic QoderCN catalog discovery, remove `direct_models` and set:
+
+```yaml
+direct_models_endpoint: https://gateway.qoder.com.cn/algo/api/v2/model/list
+direct_catalog_format: qoder
+```
+
+This fetches user identity and the COSY-signed enabled `chat` scene, retains raw
+model metadata, and exposes upstream display names with a built-in name fallback.
+Hidden/disabled entries are excluded. Discovery does not run billable inference
+or prove every listed model works with the configured Direct endpoint. The
+operator must select a matching regional catalog and inference endpoint; no
+protocol fallback, model guessing or automatic context-tier escalation occurs.
+
+The default `direct_catalog_format: openai` preserves existing Bearer catalog
+endpoints returning `{data:[...]}`, `{models:[...]}` or a model array. Explicit
+`direct_models` still takes precedence over any endpoint. Empty/failed live
+catalogs do not substitute a guessed static list. Catalogs are cached per
+credential/endpoint/config generation for `model_cache_ttl`, with concurrent
+refresh coalescing. Friendly display names are not executable aliases.
+
+With `auto` or `pat_exchange`, Direct exchanges the PAT through
 `POST /api/v1/jobToken/exchange`, refreshes in memory when needed, and retries
-one 401/403 response. Existing `direct_token_mode: bearer` and opaque legacy
+one pre-output 401 or explicit token-expiry 403 response. Queue/quota/model-denial
+errors do not trigger credential refresh, and no mid-stream generation is replayed.
+Existing `direct_token_mode: bearer` and opaque legacy
 `access_token` values remain supported; new PAT files should use `auto` or
 `pat_exchange`.
 
@@ -168,8 +197,9 @@ OpenAI tool calls.
 
 The Direct path preserves the original Chat `messages`, images, `tools`,
 `tool_choice`, and supported generation fields while forcing an upstream
-streaming request. It projects both stream and non-stream responses through the
-shared AgentEvent lifecycle and marks upstream usage as
+streaming request through Core's `host.http.*` bridge. It projects both stream
+and non-stream responses using the existing in-process event projection (no runner)
+and marks upstream usage as
 `provider_reported_unverified`.
 
 Usage events retain reported cache-read, cache-creation, and reasoning counts
@@ -180,8 +210,14 @@ reasoning counts remain subsets of the reported input/output totals. Missing
 details stay absent rather than being inferred from text or filled with zero.
 
 Both transports require an exact executable model ID and preserve explicit
-cancel, close, downstream disconnect, and SSE `[DONE]` handling. The plugin does
-not implement the reverse-engineered legacy COSY/QoderEncoding protocol.
+cancel, close, downstream disconnect, and SSE `[DONE]` handling. The plugin
+uses COSY/QoderEncoding only for explicitly selected catalog discovery. It does
+not use the legacy `agent_chat_generation` inference endpoint or a bundled base prompt.
+
+The default PAT image and native plugin archives need no runner. Existing
+`sdk_cli` deployments must retain/install their separately managed runner and
+CLI before switching images. Old explicit runner fields are accepted but unused
+by Direct. See [the rollout and validation guide](../../../docs/lts/pat-providers.md).
 
 ## Build
 

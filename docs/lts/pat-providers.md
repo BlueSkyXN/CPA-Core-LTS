@@ -1,0 +1,79 @@
+# Qoder / CodeBuddy 原生 PAT 插件
+
+两家保持原有 Provider 身份 `qoder`、`codebuddy`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder `direct_openai` 从 0.2.0 起直接在 Go 插件内执行，不启动 runner。完整 Qoder Agent 的 `sdk_cli` 仍是显式兼容能力，需要另外安装其运行组件。
+
+## 配置与兼容
+
+使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的默认运行镜像只包含 Core 和两家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。
+
+Qoder 插件未指定 `transport` 时仍按原有 `sdk_cli` 解释，避免升级改变旧账号含义。新 PAT 配套配置显式使用 `direct_openai`；auth 文件中的显式 transport 继续优先。已有 `pat`、legacy `access_token`、`local_cli` 解析规则不变，`local_cli` 不支持 Direct。
+
+Qoder 目录有两种使用方式：
+
+- 精确手动名单：继续配置 `direct_models`，它优先于动态 endpoint，不自动增加模型。
+- 自动发现：移除手动名单，设置 `direct_models_endpoint` 和 `direct_catalog_format`。`openai` 保持 Bearer + OpenAI 数组解析；`qoder` 使用 COSY 获取启用的 `chat` 模型。CN 示例使用 `https://gateway.qoder.com.cn/algo/api/v2/model/list`，签名内部添加 `Encode=1`。
+
+地区不能从 PAT 前缀判断。OpenAPI、catalog 和 inference 必须来自对应部署的已知地区配置。COSY 目录报告可用模型不等于所有模型已通过 Direct 推理验收；新增模型保留上游 key 和显示名，真实调用由管理员按需验证。
+
+显示名使用上游名称，缺失时使用内置映射，再缺失使用原始 ID。显示名不改变路由 ID；自定义可执行别名沿用 CPA 原有 alias 配置。目录按凭证、端点和配置代次隔离；并发获取合并；失败不伪造静态成功目录。`enable:false` 模型不发布，也不自动提升上下文计费档位。
+
+CodeBuddy 0.2.0 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
+
+新的模型元数据包含可选 reasoning levels、能否关闭 thinking、默认 context tier 和原始 credits 提示；不拼接其他场景名单，不把显示名当可执行 ID，不根据 `credits` 估算真实扣费。Summary 的 `catalog` 包含来源、场景、数量、获取时间、过期状态、模型能力和提示。Core `ModelInfo` 与 ABI 不变。
+
+CodeBuddy 同时支持流式和非流式。普通 JSON 响应由同一次上游 SSE 聚合，保留文字、reasoning、工具参数分片和最终 usage；要求 `[DONE]`，非流式还要求 finish reason，聚合上限 4 MiB。不新增厂商 Agent 或本机工具执行能力。
+
+## 认证、生命周期与统计
+
+Qoder 推理、目录和 Summary 共用内存中的 PAT 换票和刷新缓存。到期时间优先 `expires_at`，Qoder OpenAPI 的 `expires_in` 按毫秒处理。换票与刷新并发合并，更新 PAT 或重载配置不会复用旧缓存。Core HTTP 日志对 job/device token 交换端点的双向 body 脱敏，线上发送的字节不变。
+
+Qoder refresh 仅在明确认证失效时退回 PAT exchange；网络、限流、上游异常和无效响应不触发额外换票。刷新响应没有新 refresh token 时保留原票据。动态目录的显式 `default_context_window` / `defaultContextWindow` 优先于可选最大窗口。
+
+Direct 保留原始 messages、工具、图片、生成参数和会话标识；工具由客户端执行。HTTP 401 和明确 token 失效的 403 最多在输出前刷新重试一次；排队、额度和模型拒绝分别分类。流中断不在插件内自动重放生成请求。取消与关闭遵循账号、调用方和工作区身份；关闭上游后释放会话占用。
+
+SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw_usage` 归一并保留 cache-read、cache-creation 和 reasoning 分项，不重复累加到总量。上游流失败时，已收到的 usage 在下游仍连接时通过 usage-only 帧交给 Core，随后报告失败，不伪造成功终结。统计由 Core 正式 Provider 路径发布，插件不另建账本。额度查询与模型请求统计互相独立。
+
+## 发布前验证
+
+1. 分别在 `examples/plugin/qoder/go` 和 `examples/plugin/codebuddy/go` 运行 `go test -race -count=1 ./...`、`go vet ./...`。
+2. Qoder 非 race 测试包含动态库构建与真实 Core host 加载，使用本地假上游检查 catalog、流式/非流式和 usage 归属；不依赖真实凭证。
+   CodeBuddy 在仓库根执行 `go test -count=1 ./test -run TestCodeBuddyDynamic`，覆盖真实动态库注册、目录、流式/非流式、截断流失败及正式 usage 归属（Unix + CGO，非 race）。
+3. 仓库根执行 `python3 -m unittest discover -s scripts -p test_package_pat_providers.py`、`scripts/check-lts-contract.sh` 和 Core 测试。
+4. 具备 Docker 环境时构建 PAT 镜像并运行 `scripts/smoke-pat-providers.py --image <image>`；检查镜像中没有 Node/CLI/runner，验证插件注册及 auth 重建持久化。
+5. 在授权环境单独验收真实账号的 catalog、token 刷新、文本/图片/tools、usage、断连取消，以及所需的 Home 路径。模型请求可能消耗额度，不能用本地 fixture 代替真实验收。
+
+本地构建、GitHub CI、正式发行包、部署版本和真实上游验收分别报告。已有 `sdk_cli` 用户不得直接切换到不含 runner 的镜像；保留原镜像或显式补齐兼容运行组件。插件路线稳定后再评估是否内置 Core，不改变这次的 Provider/auth/model 身份。
+
+## 外部参考
+
+COSY 目录签名参考 Sliverkiss/cpa-plugin 的 MIT QoderWork 实现，归属和许可证见 `examples/plugin/qoder/THIRD_PARTY_NOTICES.md`，并随 Qoder 插件归档和镜像分发。没有引入第三方网关、旧 baseprompt 或新厂商 SDK。
+
+## CodeBuddy 企业 / 个人账号边界与下一阶段
+
+当前 Key 模式可用于目录和推理，但企业额度查询需要另行验证可用的认证方式。不能将
+`get-payment-type` 返回的 `free` 直接解释成“个人免费账号”，也不能把个人资源
+`Accounts:null/[]` 解释成企业余额为零。当前 Summary 明确输出：
+
+- `account.scope=tenant`：catalog 提供的 enterpriseId，仅为租户线索，成员身份未验证。
+- `plan.status=unknown`：尚无可证明的订阅计划。
+- `quota.scope=personal_resources`：本次查询的是个人资源包；空包为 `unsupported / no_personal_resources`，不是数值零。
+- 个人资源按有效状态/日期、分页读取；优先精确周期计数，缺字段、分页异常或混合单位返回 `partial`；不拿 `TotalDosage` 当消费量。
+
+已有 PAT/API Key auth 文件继续有效；不改默认账号、不自动跨企业/个人计费回退。
+本版本未实现 OAuth 登录或企业额度拉取，不能宣称已打通企业付费闭环。
+
+### 建议的最小后续实现
+
+1. 同一 `codebuddy` Provider 下新增显式 OAuth 凭据通道，复用 Core `AuthProvider` 的 Start/Poll/Refresh、auth storage 和 host HTTP。参考 WorkBuddy 原生 HTTP 登录，不依赖厂商 CLI/SDK或浏览器 Cookie 导出。
+2. 把 region、credential kind、成员 UID、enterpriseId、选定 billing scope 分开保存。OAuth 登录结果必须与用户选择的企业/个人身份核对；不能只比较 enterpriseId 就认为是同一成员。
+3. 企业模式使用 `POST /billing/meter/get-enterprise-user-usage`，按实际 OAuth 接口契约携带身份，读取成员 `credit`（已用）、`limitNum`（上限）和周期。保持小数，不四舍五入成整数，不称为公司总池。个人模式继续 `get-user-resource`。
+4. 企业 401/403 显示 `needs_login` / `forbidden`；只有厂商明确表示不支持且用户配置允许，才考虑回退查询。**查询回退不能变成推理的计费账号回退**。余额查询失败也不能直接禁用可用推理凭据。
+5. 先做状态机、刷新持久化、并发和身份绑定 fixture，再由用户完成一次登录 UAT。付费闭环另需授权：固定一个非零费率模型、一次请求、无重试/回退，核对企业明细的唯一标记与实际扣费。免费模型成功仅证明调用和明细归属，不证明付费企业扣减。个人真实账号也需独立验收。
+
+### 对比来源与取舍
+
+- [Sliverkiss WorkBuddy](https://github.com/Sliverkiss/cpa-plugin/tree/3a039f9ddf9a7cc248f231fc5964a9f6fab3805b/workbuddy)：原生 Go OAuth、企业成员额度查询、精确 scene 是有用路线；其 enterprise credits 默认关闭，不能把源码支持当成默认已启用。不要照搬金额取整、自动签到、试用领取、auth 删除或独立账本。
+- [9router CodeBuddy CN](https://github.com/decolua/9router/blob/a8c9d3802c5933500fba95416f5bf0c130581396/open-sse/services/usage/codebuddy-cn.js)：个人资源周期/赠送包区分和 SSE 聚合可参考；静态模型名单不是当前账号权限，不能合并进动态目录。
+- [codebuddy2api 历史实现](https://github.com/nopperabbo/codebuddy2api/tree/18b9ba3483d7516a2144f92c0deba83908faf9d5)：该快照主线已转向 Kiro，CodeBuddy 在 legacy；旧国际版 quota API 和本地估算器不是国内企业余额证明。不跨地区发送 Key，不关闭 TLS 验证，不使用固定用户 ID 兜底。
+
+以上第三方仅作公开源码只读对比，没有安装或执行其程序。CPA 保留自己的账号选择、usage、日志和管理契约。

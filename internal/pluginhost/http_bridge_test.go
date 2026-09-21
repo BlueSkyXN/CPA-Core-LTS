@@ -15,11 +15,85 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+func TestHostHTTPTokenExchangeRedactsLogsButPreservesWireBytes(t *testing.T) {
+	const requestBody = `{"personal_token":"pt-fixture-secret"}`
+	const responseBody = `{"token":"jt-fixture-secret","refresh_token":"jrt-fixture-secret"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		if string(body) != requestBody {
+			t.Error("redaction changed outbound credentials")
+		}
+		_, _ = io.WriteString(w, responseBody)
+	}))
+	defer server.Close()
+	for _, enabled := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx := context.WithValue(context.Background(), "gin", ginCtx)
+			host := New()
+			host.runtimeConfig = &config.Config{}
+			host.runtimeConfig.RequestLog = enabled
+			client := host.newHTTPClient(nil)
+			req := pluginapi.HTTPRequest{Method: http.MethodPost, URL: server.URL + "/api/v1/jobToken/exchange", Body: []byte(requestBody)}
+			var wire []byte
+			if stream {
+				resp, err := client.DoStream(ctx, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for chunk := range resp.Chunks {
+					if chunk.Err != nil {
+						t.Fatal(chunk.Err)
+					}
+					wire = append(wire, chunk.Payload...)
+				}
+			} else {
+				resp, err := client.Do(ctx, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wire = resp.Body
+			}
+			if string(wire) != responseBody {
+				t.Fatal("redaction changed returned credentials")
+			}
+			captured := ""
+			for _, key := range []string{"API_REQUEST", "API_RESPONSE"} {
+				if value, ok := ginCtx.Get(key); ok {
+					if raw, ok := value.([]byte); ok {
+						captured += string(raw)
+					}
+				}
+			}
+			if value, ok := ginCtx.Get(logging.DeferredAPIRequestContextKey); ok {
+				if source, ok := value.(interface {
+					SnapshotDeferredAPIRequests() []logging.DeferredAPIRequest
+				}); ok {
+					for _, snapshot := range source.SnapshotDeferredAPIRequests() {
+						captured += string(snapshot())
+					}
+				}
+			}
+			if strings.Contains(captured, "fixture-secret") {
+				t.Fatal("request logs leaked token exchange credentials")
+			}
+			if !strings.Contains(captured, "REDACTED CREDENTIAL EXCHANGE") {
+				t.Fatal("missing redacted exchange log")
+			}
+		}
+	}
+	if hostCredentialExchange(http.MethodPost, server.URL+"/model/v1/chat/completions") {
+		t.Fatal("chat body logging was suppressed")
+	}
+}
 
 func TestHostHTTPClientMarksUpstreamAttempt(t *testing.T) {
 	t.Parallel()

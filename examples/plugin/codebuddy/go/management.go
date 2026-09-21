@@ -23,6 +23,7 @@ type codeBuddySummary struct {
 	Credential summaryCredential `json:"credential"`
 	Account    summaryAccount    `json:"account"`
 	Plan       *summaryPlan      `json:"plan,omitempty"`
+	Catalog    *summaryCatalog   `json:"catalog,omitempty"`
 	Quota      codeBuddyQuota    `json:"quota"`
 	UpdatedAt  time.Time         `json:"updated_at"`
 	Cached     bool              `json:"cached"`
@@ -34,12 +35,24 @@ type summaryCredential struct {
 }
 
 type summaryAccount struct {
-	Status string `json:"status"`
-	Code   string `json:"code,omitempty"`
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Email  string `json:"email,omitempty"`
-	Source string `json:"source,omitempty"`
+	Status       string `json:"status"`
+	Code         string `json:"code,omitempty"`
+	ID           string `json:"id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Email        string `json:"email,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	EnterpriseID string `json:"enterprise_id,omitempty"`
+}
+
+type summaryCatalog struct {
+	Status    string                         `json:"status"`
+	Source    string                         `json:"source"`
+	Scene     string                         `json:"scene,omitempty"`
+	Count     int                            `json:"count"`
+	FetchedAt time.Time                      `json:"fetched_at"`
+	Models    []pluginapi.ModelInfo          `json:"models"`
+	Hints     map[string]codeBuddyModelHints `json:"hints,omitempty"`
 }
 
 type summaryPlan struct {
@@ -82,9 +95,9 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 		return managementJSONResponse(http.StatusBadRequest, map[string]any{"error": "invalid_auth"}), nil
 	}
 
-	cfg := r.loadedConfig()
-	cacheKey := codeBuddySummaryCacheKey(auth, cfg, authIndex)
 	r.mu.Lock()
+	cfg, generation := r.config, r.generation
+	cacheKey := fmt.Sprintf("%d:%s", generation, codeBuddySummaryCacheKey(auth, cfg, authIndex))
 	cached, okCached := r.summaryCache[cacheKey]
 	r.mu.Unlock()
 	if okCached && time.Since(cached.FetchedAt) < codeBuddySummaryCacheTTL {
@@ -120,15 +133,24 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			Fingerprint: codeBuddyCredentialFingerprint(auth),
 		},
 		Account:   summaryAccount{Status: "fallback", Source: "auth_label"},
+		Plan:      &summaryPlan{Status: "unknown", Code: "plan_not_verified"},
 		Quota:     r.codeBuddyQuotaSummary(auth, req.HostCallbackID),
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	if catalog, errCatalog := r.catalogForAuth(auth, req.HostCallbackID); errCatalog == nil && catalog.EnterpriseID != "" {
-		result.Account = summaryAccount{
-			Status: "available",
-			ID:     catalog.EnterpriseID,
-			Source: "catalog",
+	if catalog, errCatalog := r.catalogForAuth(auth, req.HostCallbackID); errCatalog == nil {
+		status := "available"
+		if catalog.Stale {
+			status = "stale"
+		}
+		result.Catalog = &summaryCatalog{Status: status, Source: "v3/config", Scene: catalog.Scene, Count: len(catalog.Models), FetchedAt: catalog.FetchedAt, Models: catalog.Models, Hints: catalog.Hints}
+		if catalog.EnterpriseID != "" {
+			result.Account = summaryAccount{
+				Status: "partial",
+				ID:     catalog.EnterpriseID,
+				Source: "catalog",
+				Scope:  "tenant", EnterpriseID: catalog.EnterpriseID, Code: "member_identity_unverified",
+			}
 		}
 	}
 	if cfg.AccountEndpoint != "" {
@@ -141,7 +163,9 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 	if r.summaryCache == nil {
 		r.summaryCache = make(map[string]codeBuddySummaryCacheEntry)
 	}
-	r.summaryCache[cacheKey] = codeBuddySummaryCacheEntry{FetchedAt: time.Now(), Summary: cloneCodeBuddySummary(result)}
+	if r.generation == generation {
+		r.summaryCache[cacheKey] = codeBuddySummaryCacheEntry{FetchedAt: time.Now(), Summary: cloneCodeBuddySummary(result)}
+	}
 	r.mu.Unlock()
 	return managementJSONResponse(http.StatusOK, result), nil
 }
@@ -230,10 +254,12 @@ func parseCodeBuddyAccount(raw []byte) summaryAccount {
 		account = rootMap
 	}
 	result := summaryAccount{
-		ID:     stringValue(account, "id", "user_id", "uid", "account_id", "enterpriseId"),
-		Name:   stringValue(account, "name", "username", "nickname", "account_name"),
-		Email:  stringValue(account, "email", "email_address"),
-		Source: "account_endpoint",
+		ID:           stringValue(account, "id", "user_id", "uid", "account_id"),
+		EnterpriseID: stringValue(account, "enterpriseId"),
+		Scope:        "member",
+		Name:         stringValue(account, "name", "username", "nickname", "account_name"),
+		Email:        stringValue(account, "email", "email_address"),
+		Source:       "account_endpoint",
 	}
 	if result.ID == "" && result.Name == "" && result.Email == "" {
 		return summaryAccount{Status: "unsupported", Code: "account_fields_missing"}
@@ -256,13 +282,15 @@ func codeBuddyCredentialFingerprint(auth codeBuddyAuth) string {
 
 func codeBuddySummaryCacheKey(auth codeBuddyAuth, cfg pluginConfig, authIndex string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		codeBuddyCredentialFingerprint(auth), strings.TrimSpace(authIndex), cfg.CatalogEndpoint, cfg.BillingEndpoint, cfg.AccountEndpoint,
+		codeBuddyCredentialFingerprint(auth), strings.TrimSpace(authIndex), cfg.CatalogEndpoint, cfg.CatalogUserAgent, cfg.BillingEndpoint, cfg.AccountEndpoint,
 	}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 
 func cloneCodeBuddySummary(input codeBuddySummary) codeBuddySummary {
-	output := input
-	output.Quota.Packages = append([]codeBuddyQuotaPackage(nil), input.Quota.Packages...)
+	// Summary 只包含脱敏 JSON，深复制嵌套模型、thinking、hint 和金额指针。
+	raw, _ := json.Marshal(input)
+	var output codeBuddySummary
+	_ = json.Unmarshal(raw, &output)
 	return output
 }
