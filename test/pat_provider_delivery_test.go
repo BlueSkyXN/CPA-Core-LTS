@@ -30,14 +30,21 @@ func TestPATProviderDistributionConfig(t *testing.T) {
 	}
 	qoder := cfg.Plugins.Configs["cpa-provider-qoder"]
 	var runtime struct {
-		Transport string   `yaml:"transport"`
-		Command   string   `yaml:"runner_command"`
-		Args      []string `yaml:"runner_args"`
+		Transport     string   `yaml:"transport"`
+		Command       string   `yaml:"runner_command"`
+		Args          []string `yaml:"runner_args"`
+		WorkingDir    string   `yaml:"working_directory"`
+		CatalogFormat string   `yaml:"direct_catalog_format"`
+		CatalogURL    string   `yaml:"direct_models_endpoint"`
+		Models        []any    `yaml:"direct_models"`
 	}
 	if err := qoder.Raw.Decode(&runtime); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.Transport != "direct_openai" || runtime.Command != "/usr/local/bin/node" || len(runtime.Args) != 1 || runtime.Args[0] != "/opt/cpa-qoder-runner/dist/index.js" {
-		t.Fatal("Qoder configuration must match the image runtime without requiring an external CLI")
+	if runtime.Transport != "direct_openai" || runtime.Command != "" || len(runtime.Args) != 0 || runtime.WorkingDir != "" {
+		t.Fatal("Qoder configuration must use native Direct without requiring a runner or external CLI")
+	}
+	if runtime.CatalogFormat != "qoder" || runtime.CatalogURL != "https://gateway.qoder.com.cn/algo/api/v2/model/list" || len(runtime.Models) != 0 {
+		t.Fatal("Qoder distribution must discover the account catalog instead of fixing a single model")
 	}
 }

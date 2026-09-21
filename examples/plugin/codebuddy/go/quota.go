@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type codeBuddyQuota struct {
 	Status         string                  `json:"status"`
+	Scope          string                  `json:"scope,omitempty"`
+	Source         string                  `json:"source,omitempty"`
 	Unit           string                  `json:"unit,omitempty"`
 	Total          *float64                `json:"total,omitempty"`
 	TotalExact     string                  `json:"total_exact,omitempty"`
@@ -23,6 +26,7 @@ type codeBuddyQuota struct {
 }
 
 type codeBuddyQuotaPackage struct {
+	Basis          string   `json:"basis,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	Status         string   `json:"status,omitempty"`
 	Unit           string   `json:"unit,omitempty"`
@@ -36,7 +40,8 @@ type codeBuddyQuotaPackage struct {
 	CycleEnd       string   `json:"cycle_end,omitempty"`
 }
 
-func (r *pluginRuntime) codeBuddyQuotaSummary(auth codeBuddyAuth, callbackID string) codeBuddyQuota {
+func (r *pluginRuntime) codeBuddyQuotaSummary(auth codeBuddyAuth, callbackID string) (result codeBuddyQuota) {
+	defer func() { result.Scope = "personal_resources"; result.Source = "get-user-resource" }()
 	cfg := r.loadedConfig()
 	if strings.TrimSpace(cfg.BillingEndpoint) == "" {
 		return codeBuddyQuota{Status: "not_configured", Code: "billing_endpoint_missing"}
@@ -50,48 +55,78 @@ func (r *pluginRuntime) codeBuddyQuotaSummary(auth codeBuddyAuth, callbackID str
 	headers.Set("X-API-Key", auth.APIKey)
 	headers.Set("X-Product", "SaaS")
 	headers.Set("User-Agent", cfg.CatalogUserAgent)
-	response, errRequest := doHostHTTP(r.caller, hostHTTPRequest{
-		HostCallbackID: callbackID,
-		Method:         http.MethodPost,
-		URL:            cfg.BillingEndpoint,
-		Headers:        headers,
-		Body:           []byte("{}"),
-	})
-	if errRequest != nil {
-		return codeBuddyQuota{Status: "upstream_error", Code: "billing_request_failed"}
+	// 同一个凭据分页面查询个人资源；不把 TotalDosage 当成已使用量。
+	var all []any
+	now := time.Now().In(time.FixedZone("CST", 8*60*60))
+	seenPages := make(map[string]bool)
+	for page := 1; page <= 10; page++ {
+		body, _ := json.Marshal(map[string]any{
+			"PageSize": 100, "PageNumber": page, "ProductCode": "p_tcaca", "Status": []int{0, 3},
+			"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
+			"PackageEndTimeRangeEnd":   now.AddDate(100, 0, 0).Format("2006-01-02 15:04:05"),
+		})
+		response, errRequest := doHostHTTP(r.caller, hostHTTPRequest{
+			HostCallbackID: callbackID,
+			Method:         http.MethodPost,
+			URL:            cfg.BillingEndpoint,
+			Headers:        headers,
+			Body:           body,
+		})
+		if errRequest != nil {
+			return codeBuddyQuota{Status: "upstream_error", Code: "billing_request_failed"}
+		}
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return codeBuddyQuota{Status: "auth_rejected", Code: "billing_auth_rejected"}
+		}
+		if response.StatusCode == http.StatusTooManyRequests {
+			return codeBuddyQuota{Status: "rate_limited", Code: "billing_rate_limited"}
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return codeBuddyQuota{Status: "upstream_error", Code: "billing_http_error"}
+		}
+		if len(response.Body) == 0 || len(response.Body) > 512*1024 {
+			return codeBuddyQuota{Status: "upstream_error", Code: "billing_response_invalid"}
+		}
+		data, errParse := decodeCodeBuddyQuotaData(response.Body)
+		if errParse != nil {
+			return codeBuddyQuota{Status: "partial", Code: "billing_response_invalid"}
+		}
+		items := arrayValue(data, "Accounts")
+		pageJSON, _ := json.Marshal(items)
+		if len(items) > 0 && seenPages[string(pageJSON)] {
+			return codeBuddyQuota{Status: "partial", Code: "billing_pagination_repeated"}
+		}
+		seenPages[string(pageJSON)] = true
+		all = append(all, items...)
+		totalCount, _ := strconv.Atoi(stringValue(data, "TotalCount"))
+		if totalCount > len(all) && len(items) == 0 {
+			return codeBuddyQuota{Status: "partial", Code: "billing_pagination_incomplete"}
+		}
+		if totalCount > 0 && len(all) >= totalCount || totalCount == 0 && len(items) < 100 {
+			combined, _ := json.Marshal(map[string]any{"Accounts": all})
+			quota, err := parseCodeBuddyQuota(combined)
+			if err != nil {
+				return codeBuddyQuota{Status: "partial", Code: "billing_response_invalid"}
+			}
+			return quota
+		}
 	}
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return codeBuddyQuota{Status: "auth_rejected", Code: "billing_auth_rejected"}
-	}
-	if response.StatusCode == http.StatusTooManyRequests {
-		return codeBuddyQuota{Status: "rate_limited", Code: "billing_rate_limited"}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return codeBuddyQuota{Status: "upstream_error", Code: "billing_http_error"}
-	}
-	if len(response.Body) == 0 || len(response.Body) > 512*1024 {
-		return codeBuddyQuota{Status: "upstream_error", Code: "billing_response_invalid"}
-	}
-	quota, errParse := parseCodeBuddyQuota(response.Body)
-	if errParse != nil {
-		return codeBuddyQuota{Status: "partial", Code: "billing_response_invalid"}
-	}
-	return quota
+	return codeBuddyQuota{Status: "partial", Code: "billing_pagination_limit"}
 }
 
-func parseCodeBuddyQuota(raw []byte) (codeBuddyQuota, error) {
+func decodeCodeBuddyQuotaData(raw []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
 	var root any
 	if errDecode := decoder.Decode(&root); errDecode != nil {
-		return codeBuddyQuota{}, errDecode
+		return nil, errDecode
 	}
 	rootMap, ok := root.(map[string]any)
 	if !ok {
-		return codeBuddyQuota{}, fmt.Errorf("billing response is not an object")
+		return nil, fmt.Errorf("billing response is not an object")
 	}
 	if code := stringOrNumber(rootMap, "code"); code != "" && code != "0" {
-		return codeBuddyQuota{}, fmt.Errorf("billing response returned code %s", code)
+		return nil, fmt.Errorf("billing response rejected the request")
 	}
 	data := mapValue(rootMap, "data")
 	if data == nil {
@@ -106,37 +141,48 @@ func parseCodeBuddyQuota(raw []byte) (codeBuddyQuota, error) {
 		data = nested
 	}
 
-	accountsPresent := mapHasKey(data, "Accounts") || mapHasKey(rootMap, "Accounts")
-	if !accountsPresent {
-		return codeBuddyQuota{}, fmt.Errorf("billing response has no accounts field")
+	if !mapHasKey(data, "Accounts") && mapHasKey(rootMap, "Accounts") {
+		data = rootMap
+	}
+	if !mapHasKey(data, "Accounts") {
+		return nil, fmt.Errorf("billing response has no accounts field")
+	}
+	for key, value := range data {
+		if strings.EqualFold(key, "Accounts") && value != nil {
+			if _, ok := value.([]any); !ok {
+				return nil, fmt.Errorf("billing accounts field is invalid")
+			}
+		}
+	}
+	return data, nil
+}
+
+func parseCodeBuddyQuota(raw []byte) (codeBuddyQuota, error) {
+	data, err := decodeCodeBuddyQuotaData(raw)
+	if err != nil {
+		return codeBuddyQuota{}, err
 	}
 	accountValues := arrayValue(data, "Accounts")
-	if len(accountValues) == 0 {
-		accountValues = arrayValue(rootMap, "Accounts")
-	}
 	packages := make([]codeBuddyQuotaPackage, 0, len(accountValues))
 	for _, rawPackage := range accountValues {
 		item, okItem := rawPackage.(map[string]any)
 		if !okItem {
-			continue
+			return codeBuddyQuota{}, fmt.Errorf("billing package is invalid")
 		}
 		packages = append(packages, parseCodeBuddyQuotaPackage(item))
 	}
 	if len(packages) == 0 {
 		return codeBuddyQuota{
-			Status:         "available",
-			Unit:           "credits",
-			Total:          floatPointer(0),
-			TotalExact:     "0",
-			Used:           floatPointer(0),
-			UsedExact:      "0",
-			Remaining:      floatPointer(0),
-			RemainingExact: "0",
-			Packages:       []codeBuddyQuotaPackage{},
+			Status:   "unsupported",
+			Code:     "no_personal_resources",
+			Scope:    "personal_resources",
+			Source:   "get-user-resource",
+			Unit:     "credits",
+			Packages: []codeBuddyQuotaPackage{},
 		}, nil
 	}
 
-	result := codeBuddyQuota{Status: "available", Unit: packages[0].Unit, Packages: packages}
+	result := codeBuddyQuota{Status: "available", Scope: "personal_resources", Source: "get-user-resource", Unit: packages[0].Unit, Packages: packages}
 	if result.Unit == "" {
 		result.Unit = "credits"
 	}
@@ -192,15 +238,30 @@ func parseCodeBuddyQuotaPackage(item map[string]any) codeBuddyQuotaPackage {
 	if unit == "" {
 		unit = "credits"
 	}
-	total := exactValue(item, "CapacitySizePrecise", "capacity_size_precise", "total")
-	used := exactValue(item, "CapacityUsedPrecise", "capacity_used_precise", "used")
-	remaining := exactValue(item, "CapacityRemainPrecise", "capacity_remain_precise", "remaining")
+	basis := "lifetime"
+	total := exactValue(item, "CapacitySizePrecise", "capacity_size_precise", "CapacitySize", "total")
+	used := exactValue(item, "CapacityUsedPrecise", "capacity_used_precise", "CapacityUsed", "used")
+	remaining := exactValue(item, "CapacityRemainPrecise", "capacity_remain_precise", "CapacityRemain", "remaining")
+	// 周期计数存在时整组采用，缺字段保留未知，不混入终身计数凑余额。
+	for key := range item {
+		if strings.HasPrefix(strings.ToLower(key), "cyclecapacity") {
+			basis = "cycle"
+			total = exactValue(item, "CycleCapacitySizePrecise", "CycleCapacitySize")
+			used = exactValue(item, "CycleCapacityUsedPrecise", "CycleCapacityUsed")
+			remaining = exactValue(item, "CycleCapacityRemainPrecise", "CycleCapacityRemain")
+			break
+		}
+	}
+	if used == "" && total != "" && remaining != "" {
+		used, _ = subtractExactDecimals(total, remaining)
+	}
 	if remaining == "" && total != "" && used != "" {
 		if value, ok := subtractExactDecimals(total, used); ok {
 			remaining = value
 		}
 	}
 	return codeBuddyQuotaPackage{
+		Basis:          basis,
 		Name:           name,
 		Status:         status,
 		Unit:           unit,

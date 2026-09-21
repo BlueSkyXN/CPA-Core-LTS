@@ -27,6 +27,12 @@ type pluginRuntime struct {
 	summaryCache   map[string]qoderSummaryCacheEntry
 	tokenCache     map[string]qoderTokenCacheEntry
 	runnerExtraEnv map[string]string
+	nativeActive   map[string]*nativeExecution
+	nativeSessions map[string]*nativeExecution
+	tokenFlights   map[string]*tokenFlight
+	catalogFlights map[string]*catalogFlight
+	nativeCatalogs map[string]nativeCatalogEntry
+	generation     uint64
 }
 
 type runnerSession struct {
@@ -53,6 +59,9 @@ func newPluginRuntime(caller hostCaller) *pluginRuntime {
 		modelCache:   make(map[string]cachedModels),
 		summaryCache: make(map[string]qoderSummaryCacheEntry),
 		tokenCache:   make(map[string]qoderTokenCacheEntry),
+		nativeActive: make(map[string]*nativeExecution), nativeSessions: make(map[string]*nativeExecution),
+		tokenFlights: make(map[string]*tokenFlight), catalogFlights: make(map[string]*catalogFlight),
+		nativeCatalogs: make(map[string]nativeCatalogEntry),
 	}
 }
 
@@ -72,6 +81,8 @@ func (r *pluginRuntime) configure(raw []byte) error {
 	r.modelCache = make(map[string]cachedModels)
 	r.summaryCache = make(map[string]qoderSummaryCacheEntry)
 	r.tokenCache = make(map[string]qoderTokenCacheEntry)
+	r.nativeCatalogs = make(map[string]nativeCatalogEntry)
+	r.generation++
 	r.accepting = true
 	r.mu.Unlock()
 	return nil
@@ -195,6 +206,7 @@ func (r *pluginRuntime) completeTurn(session *runnerSession, requestID string) {
 }
 
 func (r *pluginRuntime) cancelExecution(req pluginapi.CancelExecutionRequest) error {
+	r.cancelNative(req)
 	r.mu.Lock()
 	session := r.requestSession[strings.TrimSpace(req.RequestID)]
 	r.mu.Unlock()
@@ -234,6 +246,7 @@ func cancelMatches(session *runnerSession, req pluginapi.CancelExecutionRequest)
 }
 
 func (r *pluginRuntime) closeExecutionSessions(req pluginapi.CloseExecutionSessionRequest) error {
+	r.closeNative(req)
 	r.mu.Lock()
 	var selected []*runnerSession
 	for key, session := range r.sessions {
@@ -276,6 +289,9 @@ func closeMatches(session *runnerSession, req pluginapi.CloseExecutionSessionReq
 
 func (r *pluginRuntime) readiness(req pluginapi.ReadinessRequest) pluginapi.ReadinessResponse {
 	cfg := r.loadedConfig()
+	if readinessTransport(cfg, req) == "direct_openai" {
+		return r.nativeReadiness(req, cfg)
+	}
 	checks := []pluginapi.ReadinessCheck{{Level: pluginapi.ReadinessLevelPluginInstalled, State: pluginapi.ReadinessStateReady, Version: pluginVersion}}
 	if cfg.QoderCLIPath == "" && readinessTransport(cfg, req) == "sdk_cli" {
 		checks = append(checks,
@@ -355,8 +371,8 @@ func (r *pluginRuntime) readiness(req pluginapi.ReadinessRequest) pluginapi.Read
 func readinessTransport(cfg pluginConfig, req pluginapi.ReadinessRequest) string {
 	if len(req.StorageJSON) > 0 {
 		var auth qoderAuth
-		if json.Unmarshal(req.StorageJSON, &auth) == nil && strings.EqualFold(strings.TrimSpace(auth.Transport), "direct_openai") {
-			return "direct_openai"
+		if json.Unmarshal(req.StorageJSON, &auth) == nil && strings.TrimSpace(auth.Transport) != "" {
+			return strings.ToLower(strings.TrimSpace(auth.Transport))
 		}
 	}
 	if cfg.Transport == "direct_openai" {
@@ -369,10 +385,12 @@ func (r *pluginRuntime) quiesce() {
 	r.mu.Lock()
 	r.accepting = false
 	r.mu.Unlock()
+	r.closeNative(pluginapi.CloseExecutionSessionRequest{Scope: pluginapi.ExecutionSessionCloseScopeProvider})
 }
 
 func (r *pluginRuntime) shutdown() {
 	r.quiesce()
+	r.waitNative()
 	r.mu.Lock()
 	sessions := make([]*runnerSession, 0, len(r.sessions))
 	for _, session := range r.sessions {

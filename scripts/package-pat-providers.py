@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""将已构建的 Linux PAT 插件和 runner 打包；不下载、不编译、不发布。"""
+"""打包原生 Linux PAT 插件；--runner-dir 仅为显式 SDK 兼容附件，不下载、不编译、不发布。"""
 import argparse
 import hashlib
 import json
@@ -30,16 +30,18 @@ def archive(destination: Path, files: list[tuple[Path, str]]) -> None:
             output.writestr(info, source.read_bytes())
 
 
-def package(libraries: Path, runner: Path, output: Path, arch: str, commit: str, core_version: str) -> dict:
+def package(libraries: Path, runner: Path | None, output: Path, arch: str, commit: str, core_version: str) -> dict:
     if arch not in ("amd64", "arm64"):
         raise ValueError("Only linux/amd64 and linux/arm64 are supported")
     if commit != "unknown" and not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("core-commit must be a full SHA or unknown")
-    if not (runner / "dist/index.js").is_file() or not (runner / "node_modules").is_dir():
-        raise ValueError("Build runner dist and production node_modules before packaging")
-    runner_version = json.loads((runner / "package.json").read_text())["version"]
-    if not re.fullmatch(r"[0-9][0-9A-Za-z.+-]*", runner_version):
-        raise ValueError("Invalid runner version")
+    runner_version = None
+    if runner is not None:
+        if not (runner / "dist/index.js").is_file() or not (runner / "node_modules").is_dir():
+            raise ValueError("Build runner dist and production node_modules before packaging")
+        runner_version = json.loads((runner / "package.json").read_text())["version"]
+        if not re.fullmatch(r"[0-9][0-9A-Za-z.+-]*", runner_version):
+            raise ValueError("Invalid runner version")
     plugin_versions = {name: version(name) for name in ("codebuddy", "qoder")}
     for name in plugin_versions:
         if not (libraries / f"cpa-provider-{name}.so").is_file():
@@ -49,27 +51,32 @@ def package(libraries: Path, runner: Path, output: Path, arch: str, commit: str,
     for name, plugin_version in plugin_versions.items():
         library = f"cpa-provider-{name}.so"
         target = output / f"cpa-provider-{name}_{plugin_version}_linux_{arch}.zip"
-        archive(target, [(libraries / library, library)])
+        files = [(libraries / library, library)]
+        if name == "qoder":
+            files.append((ROOT / "examples/plugin/qoder/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"))
+        archive(target, files)
         assets.append(target)
-    runner_files = [(runner / "package.json", "package.json")]
-    for directory in ("dist", "node_modules"):
-        for path in (runner / directory).rglob("*"):
-            relative = path.relative_to(runner)
-            # npm 的命令链接不属于 node dist/index.js 的运行依赖。
-            if ".bin" in relative.parts:
-                continue
-            if path.is_symlink():
-                raise ValueError("Runner package contains an unexpected symlink")
-            if path.is_file():
-                runner_files.append((path, relative.as_posix()))
-    runner_asset = output / f"cpa-qoder-runner_{runner_version}_linux_{arch}.zip"
-    archive(runner_asset, runner_files)
-    assets.append(runner_asset)
+    if runner is not None:
+        runner_files = [(runner / "package.json", "package.json")]
+        for directory in ("dist", "node_modules"):
+            for path in (runner / directory).rglob("*"):
+                relative = path.relative_to(runner)
+                if ".bin" in relative.parts:
+                    continue
+                if path.is_symlink():
+                    raise ValueError("Runner package contains an unexpected symlink")
+                if path.is_file():
+                    runner_files.append((path, relative.as_posix()))
+        runner_asset = output / f"cpa-qoder-runner_{runner_version}_linux_{arch}.zip"
+        archive(runner_asset, runner_files)
+        assets.append(runner_asset)
     hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in assets}
     manifest = {
         "core_commit": commit, "core_version": core_version,
         "platform": f"linux/{arch}", "plugins": plugin_versions, "runner": runner_version,
-        "node_major": 22, "transport": "direct_openai", "assets": hashes,
+        "node_major": 22 if runner is not None else None,
+        "runtime": "native-go", "runner_required": False,
+        "transport": "direct_openai", "assets": hashes,
         "compatibility": "CPA-Core-LTS execution lifecycle extensions required; not upstream-only CPA",
     }
     (output / "pat-provider-bundle.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -80,7 +87,7 @@ def package(libraries: Path, runner: Path, output: Path, arch: str, commit: str,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--libraries-dir", type=Path, required=True)
-    parser.add_argument("--runner-dir", type=Path, required=True)
+    parser.add_argument("--runner-dir", type=Path, help="Optional SDK compatibility runner attachment; not required by direct_openai")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
     parser.add_argument("--core-commit", required=True)

@@ -13,31 +13,43 @@ const maxSSELineBytes = 1024 * 1024
 const codeBuddyConnectionLifecycleErrorCode = "connection_lifecycle"
 
 func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
+	execution, err := r.openExecution(raw, true)
+	if err != nil {
+		return rpcStreamResponse{}, err
+	}
+	go r.forwardStream(execution)
+	return rpcStreamResponse{Headers: http.Header{"Content-Type": {"text/event-stream"}}}, nil
+}
+
+func (r *pluginRuntime) openExecution(raw []byte, stream bool) (*activeExecution, error) {
 	var req rpcExecutorRequest
 	if errDecode := decodeRequest(raw, &req); errDecode != nil {
-		return rpcStreamResponse{}, newPluginCallError("invalid_request", "CodeBuddy executor request is invalid", http.StatusBadRequest, false)
+		return nil, newPluginCallError("invalid_request", "CodeBuddy executor request is invalid", http.StatusBadRequest, false)
 	}
-	if !req.Stream {
-		return rpcStreamResponse{}, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
+	if req.Stream != stream || strings.TrimSpace(req.RequestID) == "" || stream && strings.TrimSpace(req.StreamID) == "" {
+		return nil, newPluginCallError("invalid_request", "CodeBuddy request ID and stream mode must match the executor call", http.StatusBadRequest, false)
+	}
+	if !stream {
+		req.StreamID = ""
 	}
 	model := strings.TrimSpace(req.Model)
 	if strings.TrimSpace(req.HostCallbackID) == "" {
-		return rpcStreamResponse{}, newPluginCallError("invalid_stream", "CodeBuddy stream requires a host callback context", http.StatusBadRequest, false)
+		return nil, newPluginCallError("invalid_stream", "CodeBuddy request requires a host callback context", http.StatusBadRequest, false)
 	}
 	auth, errAuth := parseStoredAuth(req.StorageJSON)
 	if errAuth != nil {
-		return rpcStreamResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusUnauthorized, false)
+		return nil, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusUnauthorized, false)
 	}
 	if errModel := r.codeBuddyModelAllowed(auth, model, req.HostCallbackID); errModel != nil {
-		return rpcStreamResponse{}, errModel
+		return nil, errModel
 	}
 	body, errPayload := codeBuddyRequestPayload(req.Payload, model)
 	if errPayload != nil {
-		return rpcStreamResponse{}, errPayload
+		return nil, errPayload
 	}
 	execution, errRegister := r.registerExecution(req.RequestID, req.StreamID)
 	if errRegister != nil {
-		return rpcStreamResponse{}, errRegister
+		return nil, errRegister
 	}
 	releaseOnError := true
 	defer func() {
@@ -54,6 +66,7 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	headers.Set("Accept", "text/event-stream")
 	headers.Set("Content-Type", "application/json")
 	headers.Set("User-Agent", cfg.UserAgent)
+	headers.Set("X-Product", "SaaS")
 	upstream, errOpen := openHostHTTPStream(r.caller, hostHTTPRequest{
 		HostCallbackID: req.HostCallbackID,
 		Method:         http.MethodPost,
@@ -62,11 +75,11 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 		Body:           body,
 	})
 	if errOpen != nil {
-		return rpcStreamResponse{}, newPluginCallError("upstream_unavailable", "CodeBuddy upstream connection failed", http.StatusBadGateway, true)
+		return nil, newPluginCallError("upstream_unavailable", "CodeBuddy upstream connection failed", http.StatusBadGateway, true)
 	}
 	if execution.bindUpstream(r.caller, upstream.StreamID) {
 		execution.finish(r.caller, "CodeBuddy stream canceled", codeBuddyConnectionLifecycleErrorCode, true, 0)
-		return rpcStreamResponse{}, newPluginCallError(codeBuddyConnectionLifecycleErrorCode, "CodeBuddy request was canceled", 0, true)
+		return nil, newPluginCallError(codeBuddyConnectionLifecycleErrorCode, "CodeBuddy request was canceled", 0, true)
 	}
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 		execution.closeUpstream(r.caller)
@@ -74,16 +87,15 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
 		}
-		return rpcStreamResponse{}, newPluginCallError("upstream_error", fmt.Sprintf("CodeBuddy upstream returned HTTP %d", status), status, status == 429 || status >= 500)
+		return nil, newPluginCallError("upstream_error", fmt.Sprintf("CodeBuddy upstream returned HTTP %d", status), status, status == 429 || status >= 500)
 	}
 	if !strings.Contains(strings.ToLower(upstream.Headers.Get("Content-Type")), "text/event-stream") {
 		execution.closeUpstream(r.caller)
-		return rpcStreamResponse{}, newPluginCallError("invalid_upstream_response", "CodeBuddy upstream did not return text/event-stream", http.StatusBadGateway, true)
+		return nil, newPluginCallError("invalid_upstream_response", "CodeBuddy upstream did not return text/event-stream", http.StatusBadGateway, true)
 	}
 
 	releaseOnError = false
-	go r.forwardStream(execution)
-	return rpcStreamResponse{Headers: http.Header{"Content-Type": {"text/event-stream"}}}, nil
+	return execution, nil
 }
 
 func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
@@ -99,9 +111,8 @@ func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
 		return nil, newPluginCallError("unsupported_model", "CodeBuddy payload model must match the selected exact model ID", http.StatusBadRequest, false)
 	}
 	if stream, exists := body["stream"]; exists {
-		streamEnabled, ok := stream.(bool)
-		if !ok || !streamEnabled {
-			return nil, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
+		if _, ok := stream.(bool); !ok {
+			return nil, newPluginCallError("invalid_request", "CodeBuddy stream must be a boolean", http.StatusBadRequest, false)
 		}
 	}
 	if errToolChoice := normalizeCodeBuddyToolChoice(body); errToolChoice != nil {
@@ -109,6 +120,12 @@ func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
 	}
 	body["model"] = model
 	body["stream"] = true
+	options, _ := body["stream_options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
+	}
+	options["include_usage"] = true
+	body["stream_options"] = options
 	out, errMarshal := json.Marshal(body)
 	if errMarshal != nil {
 		return nil, newPluginCallError("invalid_request", "CodeBuddy request body could not be encoded", http.StatusBadRequest, false)
@@ -159,71 +176,74 @@ func normalizeCodeBuddyToolChoice(body map[string]any) error {
 }
 
 func (r *pluginRuntime) forwardStream(execution *activeExecution) {
-	validator := &sseValidator{}
-	errorMessage := ""
-	errorCode := ""
-	errorRetryable := false
-	errorHTTPStatus := 0
-	markConnectionLifecycle := func(message string) {
-		errorMessage = message
-		errorCode = codeBuddyConnectionLifecycleErrorCode
-		errorRetryable = true
-		errorHTTPStatus = 0
-	}
 	defer func() {
 		execution.closeUpstream(r.caller)
-		execution.finish(r.caller, errorMessage, errorCode, errorRetryable, errorHTTPStatus)
 		r.releaseExecution(execution)
 	}()
+	err := r.readExecution(execution, func(frame []byte) error {
+		if err := emitPluginStream(r.caller, execution.pluginStreamID, frame); err != nil {
+			return newPluginCallError(codeBuddyConnectionLifecycleErrorCode, "CodeBuddy downstream stream closed", 0, true)
+		}
+		return nil
+	})
+	execution.closeUpstream(r.caller)
+	if err != nil {
+		if typed, ok := err.(*pluginCallError); ok {
+			execution.finish(r.caller, typed.message, typed.code, typed.retryable, typed.statusCode)
+		} else {
+			execution.finish(r.caller, err.Error(), "", false, 0)
+		}
+	} else {
+		execution.finish(r.caller, "", "", false, 0)
+	}
+}
 
+// 流式和非流式共用读取、[DONE] 校验与取消逻辑，不重放生成请求。
+func (r *pluginRuntime) readExecution(execution *activeExecution, accept func([]byte) error) error {
+	validator := &sseValidator{}
+	emit := func(frames [][]byte) error {
+		for _, frame := range frames {
+			if err := accept(frame); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	canceled := func() error {
+		return newPluginCallError(codeBuddyConnectionLifecycleErrorCode, "CodeBuddy stream canceled", 0, true)
+	}
 	for {
 		if execution.canceled() {
-			markConnectionLifecycle("CodeBuddy stream canceled")
-			return
+			return canceled()
 		}
 		chunk, errRead := readHostHTTPStream(r.caller, execution.upstreamID())
 		if errRead != nil {
 			if execution.canceled() {
-				markConnectionLifecycle("CodeBuddy stream canceled")
-			} else {
-				errorMessage = "CodeBuddy upstream stream read failed"
+				return canceled()
 			}
-			return
+			return fmt.Errorf("CodeBuddy upstream stream read failed")
+		}
+		if execution.canceled() {
+			return canceled()
 		}
 		if chunk.Error != "" {
-			errorMessage = "CodeBuddy upstream stream failed"
-			return
+			return fmt.Errorf("CodeBuddy upstream stream failed")
 		}
 		if len(chunk.Payload) > 0 {
 			frames, errValidate := validator.consume(chunk.Payload)
-			if errValidate != nil {
-				errorMessage = errValidate.Error()
-				return
+			if err := emit(frames); err != nil {
+				return err
 			}
-			for _, frame := range frames {
-				if errEmit := emitPluginStream(r.caller, execution.pluginStreamID, frame); errEmit != nil {
-					markConnectionLifecycle("CodeBuddy downstream stream closed")
-					return
-				}
+			if errValidate != nil {
+				return errValidate
 			}
 		}
 		if validator.doneReceived || chunk.Done {
-			if execution.canceled() {
-				markConnectionLifecycle("CodeBuddy stream canceled")
-			} else {
-				frames, errFinish := validator.finish()
-				if errFinish != nil {
-					errorMessage = errFinish.Error()
-					return
-				}
-				for _, frame := range frames {
-					if errEmit := emitPluginStream(r.caller, execution.pluginStreamID, frame); errEmit != nil {
-						markConnectionLifecycle("CodeBuddy downstream stream closed")
-						return
-					}
-				}
+			frames, err := validator.finish()
+			if emitErr := emit(frames); emitErr != nil {
+				return emitErr
 			}
-			return
+			return err
 		}
 	}
 }
@@ -257,7 +277,7 @@ func (v *sseValidator) consume(payload []byte) ([][]byte, error) {
 		v.buffer = v.buffer[lineEnd+1:]
 		frame, errLine := v.consumeLine(line)
 		if errLine != nil {
-			return nil, errLine
+			return frames, errLine
 		}
 		if len(frame) > 0 {
 			frames = append(frames, frame)

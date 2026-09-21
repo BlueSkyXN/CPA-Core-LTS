@@ -35,12 +35,24 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(packager.hashlib.sha256((self.output / name).read_bytes()).hexdigest(), sha)
             with zipfile.ZipFile(self.output / name) as archive:
                 if name.startswith("cpa-provider-"):
-                    self.assertEqual(len(archive.namelist()), 1)
-                    self.assertNotIn("/", archive.namelist()[0])
+                    libraries = [item for item in archive.namelist() if item.endswith(".so")]
+                    self.assertEqual(len(libraries), 1)
+                    self.assertNotIn("/", libraries[0])
+                    if name.startswith("cpa-provider-qoder_"):
+                        self.assertIn("THIRD_PARTY_NOTICES.md", archive.namelist())
                 else:
                     self.assertIn("dist/index.js", archive.namelist())
                     self.assertIn("node_modules/example/index.js", archive.namelist())
         self.assertEqual(self.package(), manifest)
+
+    def test_native_package_has_no_runner_dependency(self):
+        manifest = packager.package(self.native, None, self.output, "amd64", "a" * 40, "test")
+        self.assertEqual(len(manifest["assets"]), 2)
+        self.assertIsNone(manifest["runner"])
+        self.assertIsNone(manifest["node_major"])
+        self.assertFalse(manifest["runner_required"])
+        self.assertEqual(manifest["runtime"], "native-go")
+        self.assertTrue(all(name.startswith("cpa-provider-") for name in manifest["assets"]))
 
     def test_missing_runner_fails_before_output(self):
         (self.runner / "dist/index.js").unlink()

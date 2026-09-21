@@ -13,13 +13,15 @@ import (
 const shutdownWait = 2 * time.Second
 
 type pluginRuntime struct {
-	mu           sync.Mutex
-	caller       hostCaller
-	config       pluginConfig
-	accepting    bool
-	active       map[string]*activeExecution
-	catalogCache map[string]codeBuddyCatalogCacheEntry
-	summaryCache map[string]codeBuddySummaryCacheEntry
+	mu             sync.Mutex
+	caller         hostCaller
+	config         pluginConfig
+	accepting      bool
+	active         map[string]*activeExecution
+	catalogCache   map[string]codeBuddyCatalogCacheEntry
+	catalogFlights map[string]*codeBuddyCatalogFlight
+	generation     uint64
+	summaryCache   map[string]codeBuddySummaryCacheEntry
 }
 
 type activeExecution struct {
@@ -36,12 +38,13 @@ type activeExecution struct {
 
 func newPluginRuntime(caller hostCaller) *pluginRuntime {
 	return &pluginRuntime{
-		caller:       caller,
-		config:       defaultPluginConfig(),
-		accepting:    true,
-		active:       make(map[string]*activeExecution),
-		catalogCache: make(map[string]codeBuddyCatalogCacheEntry),
-		summaryCache: make(map[string]codeBuddySummaryCacheEntry),
+		caller:         caller,
+		config:         defaultPluginConfig(),
+		accepting:      true,
+		active:         make(map[string]*activeExecution),
+		catalogCache:   make(map[string]codeBuddyCatalogCacheEntry),
+		catalogFlights: make(map[string]*codeBuddyCatalogFlight),
+		summaryCache:   make(map[string]codeBuddySummaryCacheEntry),
 	}
 }
 
@@ -58,6 +61,7 @@ func (r *pluginRuntime) configure(raw []byte) error {
 	}
 	r.mu.Lock()
 	r.config = cfg
+	r.generation++
 	r.catalogCache = make(map[string]codeBuddyCatalogCacheEntry)
 	r.summaryCache = make(map[string]codeBuddySummaryCacheEntry)
 	r.accepting = true
@@ -74,8 +78,8 @@ func (r *pluginRuntime) loadedConfig() pluginConfig {
 func (r *pluginRuntime) registerExecution(requestID, streamID string) (*activeExecution, error) {
 	requestID = strings.TrimSpace(requestID)
 	streamID = strings.TrimSpace(streamID)
-	if requestID == "" || streamID == "" {
-		return nil, newPluginCallError("invalid_stream", "CodeBuddy stream requires request_id and stream_id", http.StatusBadRequest, false)
+	if requestID == "" {
+		return nil, newPluginCallError("invalid_request", "CodeBuddy requires request_id", http.StatusBadRequest, false)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -220,6 +224,7 @@ func (r *pluginRuntime) quiesceAndWait() {
 func (r *pluginRuntime) shutdown() {
 	r.quiesceAndWait()
 	r.mu.Lock()
+	r.generation++
 	r.catalogCache = make(map[string]codeBuddyCatalogCacheEntry)
 	r.summaryCache = make(map[string]codeBuddySummaryCacheEntry)
 	r.mu.Unlock()
@@ -265,7 +270,7 @@ func (r *pluginRuntime) readiness(req pluginapi.ReadinessRequest) pluginapi.Read
 		Provider:     pluginIdentifier,
 		Ready:        ready,
 		Generation:   "g1-direct-https",
-		Capabilities: []string{"chat_completions", "stream", "cancel"},
+		Capabilities: []string{"chat_completions", "stream", "non_stream", "cancel"},
 		Checks:       checks,
 	}
 }

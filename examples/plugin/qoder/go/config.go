@@ -36,6 +36,7 @@ type pluginConfig struct {
 	QoderCLIPath         string                     `yaml:"qoder_cli_path"`
 	DirectEndpoint       string                     `yaml:"direct_endpoint"`
 	DirectModelsEndpoint string                     `yaml:"direct_models_endpoint"`
+	DirectCatalogFormat  string                     `yaml:"direct_catalog_format"`
 	DirectAuthEndpoint   string                     `yaml:"direct_auth_endpoint"`
 	DirectTokenMode      string                     `yaml:"direct_token_mode"`
 	OpenAPIEndpoint      string                     `yaml:"openapi_endpoint"`
@@ -73,15 +74,16 @@ type directModelConfig struct {
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
-		Transport:         "sdk_cli",
-		RunnerCommand:     "cpa-qoder-runner",
-		WorkingDirectory:  os.TempDir(),
-		MaxQueueFrames:    128,
-		RequestTimeout:    30 * time.Second,
-		ModelCacheTTL:     time.Minute,
-		PermissionDefault: "deny",
-		DirectTokenMode:   "auto",
-		OpenAPIUserAgent:  "qoder/1.1.40",
+		Transport:           "sdk_cli",
+		RunnerCommand:       "cpa-qoder-runner",
+		WorkingDirectory:    os.TempDir(),
+		MaxQueueFrames:      128,
+		RequestTimeout:      30 * time.Second,
+		ModelCacheTTL:       time.Minute,
+		PermissionDefault:   "deny",
+		DirectTokenMode:     "auto",
+		DirectCatalogFormat: "openai",
+		OpenAPIUserAgent:    "qoder/1.1.40",
 	}
 }
 
@@ -97,6 +99,13 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	cfg.QoderCLIPath = strings.TrimSpace(cfg.QoderCLIPath)
 	cfg.DirectEndpoint = strings.TrimSpace(cfg.DirectEndpoint)
 	cfg.DirectModelsEndpoint = strings.TrimSpace(cfg.DirectModelsEndpoint)
+	cfg.DirectCatalogFormat = strings.ToLower(strings.TrimSpace(cfg.DirectCatalogFormat))
+	if cfg.DirectCatalogFormat == "" {
+		cfg.DirectCatalogFormat = "openai"
+	}
+	if cfg.DirectCatalogFormat != "openai" && cfg.DirectCatalogFormat != "qoder" {
+		return pluginConfig{}, fmt.Errorf("direct_catalog_format must be openai or qoder")
+	}
 	cfg.DirectAuthEndpoint = strings.TrimRight(strings.TrimSpace(cfg.DirectAuthEndpoint), "/")
 	cfg.DirectTokenMode = strings.ToLower(strings.TrimSpace(cfg.DirectTokenMode))
 	cfg.OpenAPIEndpoint = strings.TrimRight(strings.TrimSpace(cfg.OpenAPIEndpoint), "/")
@@ -120,7 +129,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		return pluginConfig{}, fmt.Errorf("openapi_user_agent must be a single line of at most 256 bytes")
 	}
 	cfg.WorkingDirectory = strings.TrimSpace(cfg.WorkingDirectory)
-	if cfg.RunnerCommand == "" || strings.ContainsRune(cfg.RunnerCommand, '\x00') {
+	if cfg.Transport == "sdk_cli" && cfg.RunnerCommand == "" || strings.ContainsRune(cfg.RunnerCommand, '\x00') {
 		return pluginConfig{}, fmt.Errorf("runner_command is required")
 	}
 	for _, arg := range cfg.RunnerArgs {
@@ -188,7 +197,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 		}
 		seenDirectModels[model.ID] = struct{}{}
 		if model.DisplayName == "" {
-			model.DisplayName = model.ID
+			model.DisplayName = qoderDisplayName(model.ID, "")
 		}
 		if len(model.DisplayName) > 512 || len(model.Description) > 4096 {
 			return pluginConfig{}, fmt.Errorf("direct_models contains an oversized display name or description")
@@ -209,7 +218,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	if cfg.DirectModelsEndpoint == "" && len(cfg.DirectModels) == 0 && cfg.Transport == "direct_openai" {
 		return pluginConfig{}, fmt.Errorf("direct_models or direct_models_endpoint is required for direct_openai transport")
 	}
-	if cfg.WorkingDirectory == "" || !filepath.IsAbs(cfg.WorkingDirectory) {
+	if cfg.Transport == "sdk_cli" && (cfg.WorkingDirectory == "" || !filepath.IsAbs(cfg.WorkingDirectory)) {
 		return pluginConfig{}, fmt.Errorf("working_directory must be an absolute path")
 	}
 	if cfg.MaxQueueFrames < 1 || cfg.MaxQueueFrames > 4096 {

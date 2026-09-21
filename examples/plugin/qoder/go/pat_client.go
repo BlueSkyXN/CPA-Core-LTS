@@ -14,7 +14,6 @@ import (
 
 const (
 	qoderSummaryCacheTTL = time.Minute
-	qoderTokenCacheTTL   = 30 * time.Second
 	maxQoderAccountBody  = 256 * 1024
 )
 
@@ -164,34 +163,15 @@ func (r *pluginRuntime) qoderSummary(auth qoderAuth, callbackID string) qoderSum
 }
 
 func (r *pluginRuntime) qoderToken(auth qoderAuth, callbackID string) (qoderTokenState, error) {
-	cfg := r.loadedConfig()
-	key := qoderTokenCacheKey(auth, cfg.OpenAPIEndpoint)
-	r.mu.Lock()
-	cached, ok := r.tokenCache[key]
-	r.mu.Unlock()
-	if ok && time.Since(cached.FetchedAt) < qoderTokenCacheTTL && cached.State.ExpiresAt.After(time.Now().Add(30*time.Second)) {
-		return cached.State, nil
-	}
 	if !auth.isPAT() {
 		return qoderTokenState{}, fmt.Errorf("Qoder summary requires a pt- PAT")
 	}
-	source := auth.tokenSource()
-	state, errExchange := r.qoderTokenRequest(source, "", callbackID, "/api/v1/jobToken/exchange", map[string]string{"personal_token": source})
-	if errExchange != nil {
-		return qoderTokenState{}, errExchange
-	}
-	r.mu.Lock()
-	if r.tokenCache == nil {
-		r.tokenCache = make(map[string]qoderTokenCacheEntry)
-	}
-	r.tokenCache[key] = qoderTokenCacheEntry{FetchedAt: time.Now(), State: state}
-	r.mu.Unlock()
-	return state, nil
+	return r.cachedPATToken(auth, callbackID, r.loadedConfig(), "")
 }
 
 func (r *pluginRuntime) qoderJSONWithRefresh(auth qoderAuth, callbackID string, state *qoderTokenState, path string) (int, []byte) {
 	status, raw := r.qoderJSON(callbackID, state.Token, path)
-	if status != http.StatusUnauthorized && status != http.StatusForbidden {
+	if !qoderAuthRejected(status, raw) {
 		return status, raw
 	}
 	refreshed, errRefresh := r.qoderRefreshOrExchange(auth, callbackID, *state)
@@ -199,30 +179,20 @@ func (r *pluginRuntime) qoderJSONWithRefresh(auth qoderAuth, callbackID string, 
 		return status, raw
 	}
 	*state = refreshed
-	cfg := r.loadedConfig()
-	r.mu.Lock()
-	if r.tokenCache == nil {
-		r.tokenCache = make(map[string]qoderTokenCacheEntry)
-	}
-	r.tokenCache[qoderTokenCacheKey(auth, cfg.OpenAPIEndpoint)] = qoderTokenCacheEntry{FetchedAt: time.Now(), State: refreshed}
-	r.mu.Unlock()
 	status, raw = r.qoderJSON(callbackID, state.Token, path)
 	return status, raw
 }
 
 func (r *pluginRuntime) qoderRefreshOrExchange(auth qoderAuth, callbackID string, state qoderTokenState) (qoderTokenState, error) {
-	if state.RefreshToken != "" {
-		if refreshed, errRefresh := r.qoderTokenRequest("", state.RefreshToken, callbackID, "/api/v1/jobToken/refresh", map[string]string{"refresh_token": state.RefreshToken}); errRefresh == nil {
-			refreshed.Source = auth.tokenSource()
-			return refreshed, nil
-		}
-	}
-	source := auth.tokenSource()
-	return r.qoderTokenRequest(source, "", callbackID, "/api/v1/jobToken/exchange", map[string]string{"personal_token": source})
+	return r.cachedPATToken(auth, callbackID, r.loadedConfig(), state.Token)
 }
 
 func (r *pluginRuntime) qoderTokenRequest(source, refreshToken, callbackID, path string, body map[string]string) (qoderTokenState, error) {
 	cfg := r.loadedConfig()
+	return r.qoderTokenRequestWithConfig(cfg, source, callbackID, path, body)
+}
+
+func (r *pluginRuntime) qoderTokenRequestWithConfig(cfg pluginConfig, source, callbackID, path string, body map[string]string) (qoderTokenState, error) {
 	if strings.TrimSpace(cfg.OpenAPIEndpoint) == "" {
 		return qoderTokenState{}, fmt.Errorf("openapi endpoint is not configured")
 	}
@@ -237,8 +207,11 @@ func (r *pluginRuntime) qoderTokenRequest(source, refreshToken, callbackID, path
 		Headers:        headers,
 		Body:           mustMarshalJSON(body),
 	})
-	if errRequest != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
-		return qoderTokenState{}, fmt.Errorf("Qoder token endpoint failed")
+	if errRequest != nil {
+		return qoderTokenState{}, newPluginCallError("auth_unavailable", "Qoder token endpoint connection failed", 502, true)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return qoderTokenState{}, qoderUpstreamError(response.StatusCode, response.Body)
 	}
 	if len(response.Body) == 0 || len(response.Body) > maxQoderAccountBody {
 		return qoderTokenState{}, fmt.Errorf("Qoder token response is invalid")
@@ -255,8 +228,9 @@ func (r *pluginRuntime) qoderTokenRequest(source, refreshToken, callbackID, path
 	}
 	expiresAt := parseQoderTime(value, "expires_at", "expiresAt")
 	if expiresAt.IsZero() {
-		if seconds := numberValueFromMap(value, "expires_in"); seconds > 0 {
-			expiresAt = time.Now().Add(time.Duration(seconds) * time.Second)
+		// Qoder OpenAPI 返回的 expires_in 单位为毫秒；优先使用 expires_at。
+		if milliseconds := numberValueFromMap(value, "expires_in"); milliseconds > 0 && milliseconds <= 366*24*60*60*1000 {
+			expiresAt = time.Now().Add(time.Duration(milliseconds) * time.Millisecond)
 		}
 	}
 	if expiresAt.IsZero() {

@@ -202,7 +202,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 	case pluginabi.MethodModelStatic:
 		return okEnvelope(pluginapi.ModelResponse{Provider: pluginIdentifier})
 	case pluginabi.MethodModelForAuth:
-		resp, errModels := globalRuntime.modelsForAuth(raw)
+		resp, errModels := r.modelsForAuth(raw)
 		if errModels != nil {
 			return nil, errModels
 		}
@@ -213,13 +213,17 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 			Path:   "/plugins/codebuddy/summary",
 		}}})
 	case pluginabi.MethodManagementHandle:
-		resp, errManagement := globalRuntime.handleManagement(raw)
+		resp, errManagement := r.handleManagement(raw)
 		if errManagement != nil {
 			return nil, errManagement
 		}
 		return okEnvelope(resp)
 	case pluginabi.MethodExecutorExecute:
-		return nil, newPluginCallError("stream_required", "CodeBuddy G1 supports streaming requests only", http.StatusBadRequest, false)
+		resp, err := r.execute(raw)
+		if err != nil {
+			return nil, err
+		}
+		return okEnvelope(resp)
 	case pluginabi.MethodExecutorExecuteStream:
 		resp, errStream := r.executeStream(raw)
 		if errStream != nil {

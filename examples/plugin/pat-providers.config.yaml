@@ -22,13 +22,12 @@ plugins:
       permissions:
         auth-read: true
       transport: direct_openai
-      runner_command: /usr/local/bin/node
-      runner_args: [/opt/cpa-qoder-runner/dist/index.js]
-      working_directory: /tmp
       openapi_endpoint: https://openapi.qoder.com.cn
       direct_endpoint: https://gateway.qoder.com.cn/model/v1/chat/completions
-      # 中国区候选模型，来自现有插件文档；上线前必须以目标账号验证。
-      # 不将 SDK catalog 自动视为 Direct catalog，不提供猜测的模型别名。
-      direct_models:
-        - id: qmodel_38max
-          display_name: Qwen3.8-Max
+      # 自动读取该账号的启用 Chat 模型；不自动发起计费的模型测试。
+      direct_models_endpoint: https://gateway.qoder.com.cn/algo/api/v2/model/list
+      direct_catalog_format: qoder
+      # 已有 direct_models 保持精确手动目录语义；配置后优先于动态目录。
+      # direct_models:
+      #   - id: qmodel_38max
+      #     display_name: Qwen3.8-Max
