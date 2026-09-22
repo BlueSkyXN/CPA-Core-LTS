@@ -1103,7 +1103,9 @@ func TestManagerCodexRateLimitContinuityConfirmationBarrierBlocksDispatchAndStal
 	confirmCtx := context.WithValue(context.Background(), codexRateLimitContinuityAttemptContextKey{}, codexRateLimitContinuityAttempt{
 		key: key, sessionID: "execution:established", generation: 1, established: true,
 	})
-	entered := make(chan struct{})
+	// Buffer the notification so MarkResult cannot reach the hook before the
+	// assertion goroutine begins receiving and lose the non-blocking signal.
+	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	manager.continuityTransitionHook = func() {
 		select {

@@ -256,8 +256,9 @@ func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterUsesPayloadWit
 		},
 	}
 
-	for _, tc := range testCases {
+	for index, tc := range testCases {
 		tc := tc
+		authID := "codex-oauth-reasoning-effort-" + strconv.Itoa(index)
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := &codexAbnormalReasoningRetryUsageRecorder{}
 			usage.RegisterNamedPlugin("codex-abnormal-reasoning-retry-test", recorder)
@@ -269,7 +270,9 @@ func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterUsesPayloadWit
 			defer server.Close()
 
 			executor := NewCodexExecutor(codexAbnormalReasoningRetryTestConfigWithEfforts([]string{"xhigh"}))
-			_, err := executor.Execute(context.Background(), codexAbnormalReasoningRetryTestAuth(server.URL), cliproxyexecutor.Request{
+			auth := codexAbnormalReasoningRetryTestAuth(server.URL)
+			auth.ID = authID
+			_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 				Model:   "gpt-5.5",
 				Payload: tc.payload,
 			}, cliproxyexecutor.Options{
@@ -279,7 +282,7 @@ func TestCodexExecutorAbnormalReasoningRetry_ReasoningEffortFilterUsesPayloadWit
 			assertRetryWithoutPenaltyError(t, err)
 
 			record := recorder.waitForRecord(t, func(record usage.Record) bool {
-				return record.AuthID == "codex-oauth-1" && record.Model == "gpt-5.5" && record.Detail.ReasoningTokens == 516
+				return record.AuthID == authID && record.Model == "gpt-5.5" && record.Detail.ReasoningTokens == 516
 			})
 			if record.ReasoningEffort != "xhigh" {
 				t.Fatalf("record.ReasoningEffort = %q, want xhigh", record.ReasoningEffort)
