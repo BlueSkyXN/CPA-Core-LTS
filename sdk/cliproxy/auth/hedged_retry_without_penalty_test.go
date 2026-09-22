@@ -218,6 +218,31 @@ func (s *sequenceHedgeSelector) Pick(_ context.Context, _ string, _ string, _ cl
 	return auths[0], nil
 }
 
+// speedModeHedgeSelector keeps the trigger, primary, and secondary lane
+// assignments deterministic even when the zero-delay hedge lanes call Pick in
+// either goroutine order. The secondary lane is identifiable by the distinct-
+// auth exclusion metadata added by retryWithoutPenaltyHedgeOptions.
+type speedModeHedgeSelector struct {
+	primaryDispatched <-chan struct{}
+}
+
+func (s *speedModeHedgeSelector) Pick(ctx context.Context, _ string, _ string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_, hedged := opts.Metadata[cliproxyexecutor.CodexAbnormalReasoningRetryUsageMetadataKey]
+	excluded := excludedAuthIDsFromMetadata(opts.Metadata)
+	if !hedged {
+		return pickHedgedRetryTestAuth(auths, "auth-a")
+	}
+	if len(excluded) > 0 {
+		select {
+		case <-s.primaryDispatched:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return pickHedgedRetryTestAuth(auths, "auth-c")
+	}
+	return pickHedgedRetryTestAuth(auths, "auth-b")
+}
+
 func pickHedgedRetryTestAuth(auths []*Auth, authID string) (*Auth, error) {
 	for _, auth := range auths {
 		if auth != nil && auth.ID == authID {
@@ -243,6 +268,7 @@ type hedgedRetryTestExecutor struct {
 	fallbackPolicy     string
 	fallbackPayload    []byte
 	fallbackStreamData []cliproxyexecutor.StreamChunk
+	onExecute          func(string)
 }
 
 func (e *hedgedRetryTestExecutor) Identifier() string {
@@ -251,6 +277,9 @@ func (e *hedgedRetryTestExecutor) Identifier() string {
 
 func (e *hedgedRetryTestExecutor) Execute(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	authID := auth.ID
+	if e.onExecute != nil {
+		e.onExecute(authID)
+	}
 	behavior := e.nextBehavior(authID, false)
 	if err := e.wait(ctx, behavior); err != nil {
 		return cliproxyexecutor.Response{}, err
@@ -815,6 +844,8 @@ func TestManagerExecute_RetryWithoutPenaltyMaxOutputCanReturnLongerSpecialInMixe
 }
 
 func TestManagerExecute_HedgedRetrySpeedModeIgnoresDeliveryPolicySelector(t *testing.T) {
+	primaryDispatched := make(chan struct{})
+	var primaryDispatchedOnce sync.Once
 	executor := &hedgedRetryTestExecutor{
 		behaviors: map[string][]hedgedRetryBehavior{
 			"auth-a": {
@@ -824,7 +855,7 @@ func TestManagerExecute_HedgedRetrySpeedModeIgnoresDeliveryPolicySelector(t *tes
 				{
 					kind:    "success",
 					payload: "fast-short",
-					delay:   10 * time.Millisecond,
+					delay:   time.Millisecond,
 					usage:   coreusage.Detail{InputTokens: 5, OutputTokens: 20, ReasoningTokens: 8, TotalTokens: 25},
 					policy:  hedgedRetryTestCandidatePolicy(retryWithoutPenaltyDeliveryPolicyMaxOutput),
 				},
@@ -833,7 +864,7 @@ func TestManagerExecute_HedgedRetrySpeedModeIgnoresDeliveryPolicySelector(t *tes
 				{
 					kind:    "success",
 					payload: "slow-long",
-					delay:   50 * time.Millisecond,
+					delay:   500 * time.Millisecond,
 					usage:   coreusage.Detail{InputTokens: 5, OutputTokens: 80, ReasoningTokens: 8, TotalTokens: 85},
 					policy:  hedgedRetryTestCandidatePolicy(retryWithoutPenaltyDeliveryPolicyMaxOutput),
 				},
@@ -844,8 +875,13 @@ func TestManagerExecute_HedgedRetrySpeedModeIgnoresDeliveryPolicySelector(t *tes
 		hedgeDelay:      0,
 		requireDistinct: true,
 		deliveryPolicy:  retryWithoutPenaltyDeliveryPolicyMaxOutput,
+		onExecute: func(authID string) {
+			if authID == "auth-b" {
+				primaryDispatchedOnce.Do(func() { close(primaryDispatched) })
+			}
+		},
 	}
-	selector := &sequenceHedgeSelector{authIDs: []string{"auth-a", "auth-b", "auth-c"}}
+	selector := &speedModeHedgeSelector{primaryDispatched: primaryDispatched}
 	manager, _ := newHedgedRetryTestManagerWithSelector(t, selector, executor, "auth-a", "auth-b", "auth-c")
 	manager.SetRetryConfig(0, 0, 0)
 
