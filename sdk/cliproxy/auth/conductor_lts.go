@@ -707,6 +707,16 @@ func authAvailabilityExpired(auth *Auth, now time.Time) bool {
 	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 		return false
 	}
+	// An elapsed cooldown must not clear an independent credential failure.
+	// The selector still blocks terminal unauthorized credentials and expired
+	// access tokens after a quota/transient deadline has elapsed, so pruning
+	// must preserve the same state for Management and scheduler readback.
+	if hasUnauthorizedAuthFailure(auth) {
+		return false
+	}
+	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
+		return false
+	}
 	if availabilityStateIsNonResettable(auth.Quota, auth.LastError, auth.StatusMessage) {
 		return false
 	}

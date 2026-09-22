@@ -127,7 +127,8 @@ func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers h
 	}
 
 	summaryConfig := thinking.ExtractSummaryConfig(payload, from.String())
-	return thinking.ApplySummaryConfigForModel(translated, to.String(), model, summaryConfig)
+	translated = thinking.ApplySummaryConfigForModel(translated, to.String(), model, summaryConfig)
+	return sdktranslator.NormalizeRequest(ctx, from, to, model, translated, stream)
 }
 
 // HasCodexMultiAgentV2NamespaceConflict reports whether the request defines

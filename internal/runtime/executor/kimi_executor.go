@@ -133,6 +133,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	// Strip kimi- prefix and any [1m] suffix for upstream API
 	upstreamModel := normalizeKimiUpstreamModel(baseModel)
+	reporter.SetUpstreamModel(upstreamModel)
 	body, err = sjson.SetBytes(body, "model", upstreamModel)
 	if err != nil {
 		return resp, fmt.Errorf("kimi executor: failed to set model in payload: %w", err)
@@ -154,7 +155,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	body = normalizeKimiTemperature(body)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 
-	url := kimiauth.KimiAPIBaseURL + "/v1/chat/completions"
+	url := helps.ResolveKimiChatURL(auth)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
@@ -209,6 +210,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.ObserveResponseModel(data)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	var param any
 	// Note: TranslateNonStream uses req.Model (original with suffix) to preserve
@@ -259,6 +261,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 	// Strip kimi- prefix and any [1m] suffix for upstream API
 	upstreamModel := normalizeKimiUpstreamModel(baseModel)
+	reporter.SetUpstreamModel(upstreamModel)
 	body, err = sjson.SetBytes(body, "model", upstreamModel)
 	if err != nil {
 		return nil, fmt.Errorf("kimi executor: failed to set model in payload: %w", err)
@@ -284,7 +287,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	body = normalizeKimiTemperature(body)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 
-	url := kimiauth.KimiAPIBaseURL + "/v1/chat/completions"
+	url := helps.ResolveKimiChatURL(auth)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -348,6 +351,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			reporter.ObserveResponseModel(line)
 			streamUsage.ObserveOpenAIStream(line)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param, claudeInputTokens)
 			for i := range chunks {
@@ -392,6 +396,7 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 
 	body := bytes.Clone(req.Payload)
 	upstreamModel := normalizeKimiUpstreamModel(baseModel)
+	reporter.SetUpstreamModel(upstreamModel)
 	var errSet error
 	body, errSet = sjson.SetBytes(body, "model", upstreamModel)
 	if errSet != nil {
@@ -471,6 +476,7 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 		return resp, errRead
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.ObserveResponseModel(data)
 
 	if usage, ok := helps.ParseCodexUsage(data); ok && (usage.TotalTokens > 0 || usage.InputTokens > 0) {
 		reporter.Publish(ctx, usage)
@@ -501,6 +507,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 
 	body := bytes.Clone(req.Payload)
 	upstreamModel := normalizeKimiUpstreamModel(baseModel)
+	reporter.SetUpstreamModel(upstreamModel)
 	var errSet error
 	body, errSet = sjson.SetBytes(body, "model", upstreamModel)
 	if errSet != nil {
@@ -609,6 +616,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			reporter.ObserveResponseModel(line)
 
 			if bytes.HasPrefix(line, dataTag) {
 				dataBytes := bytes.TrimSpace(line[len(dataTag):])
@@ -653,7 +661,8 @@ func kimiClaudeAuth(auth *cliproxyauth.Auth) *cliproxyauth.Auth {
 	if delegated.Attributes == nil {
 		delegated.Attributes = make(map[string]string)
 	}
-	delegated.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+	domain := kimiauth.ResolveKimiDomainFromAuth(auth)
+	delegated.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(domain)
 	return delegated
 }
 
@@ -947,7 +956,11 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return auth, nil
 	}
 
-	client := kimiauth.NewDeviceFlowClientWithDeviceIDAndProxyURL(e.cfg, resolveKimiDeviceID(auth), auth.ProxyURL)
+	domain := kimiauth.ResolveKimiDomainFromAuth(auth)
+	client := kimiauth.NewDeviceFlowClientWithDomainDeviceIDAndProxyURL(e.cfg, domain, resolveKimiDeviceID(auth), auth.ProxyURL)
+	if httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 30*time.Second); httpClient != nil {
+		client.SetHTTPClient(httpClient)
+	}
 	td, err := client.RefreshToken(ctx, refreshToken)
 	if err != nil {
 		return nil, err
@@ -963,7 +976,36 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		exp := time.Unix(td.ExpiresAt, 0).UTC().Format(time.RFC3339)
 		auth.Metadata["expired"] = exp
 	}
-	auth.Metadata["type"] = "kimi"
+	if currentType, ok := auth.Metadata["type"].(string); !ok || currentType == "" {
+		if kimiauth.IsKimiAIDomain(domain) {
+			auth.Metadata["type"] = "kimi-ai"
+		} else {
+			auth.Metadata["type"] = "kimi"
+		}
+	}
+	if _, ok := auth.Metadata["domain"]; !ok {
+		auth.Metadata["domain"] = domain
+	}
+	if _, ok := auth.Metadata["base_url"]; !ok {
+		auth.Metadata["base_url"] = helps.ResolveKimiBaseURL(auth)
+	}
+	if storage, ok := auth.Storage.(*kimiauth.KimiTokenStorage); ok && storage != nil {
+		newStorage := *storage
+		newStorage.AccessToken = td.AccessToken
+		if td.RefreshToken != "" {
+			newStorage.RefreshToken = td.RefreshToken
+		}
+		if td.ExpiresAt > 0 {
+			newStorage.Expired = time.Unix(td.ExpiresAt, 0).UTC().Format(time.RFC3339)
+		}
+		if newStorage.Domain == "" {
+			newStorage.Domain = domain
+		}
+		if newStorage.BaseURL == "" {
+			newStorage.BaseURL = helps.ResolveKimiBaseURL(auth)
+		}
+		auth.Storage = &newStorage
+	}
 	now := time.Now().Format(time.RFC3339)
 	auth.Metadata["last_refresh"] = now
 	return auth, nil

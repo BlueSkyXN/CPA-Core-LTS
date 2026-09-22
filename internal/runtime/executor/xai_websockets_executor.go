@@ -781,12 +781,16 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			for _, payload := range xaiNormalizeReasoningSummaryDataEvents(payload) {
 				payload = namespaceRestorer.restore(payload)
 				payload = restoreXAIPlaintextMultiAgentFunctionArgs(payload, prepared.plaintextMultiAgentTools)
+				if prepared.webSearchAlias != "" {
+					payload = restoreXAIClientWebSearchName(payload, prepared.webSearchAlias)
+				}
 				payload = responseFilter.apply(payload)
 				if len(payload) == 0 {
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
 				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				reporter.ObserveResponseModel(payload)
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":

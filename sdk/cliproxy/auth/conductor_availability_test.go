@@ -302,6 +302,20 @@ func TestManagerPruneExpiredAvailabilityPreservesIndependentAuthState(t *testing
 				LastError:      &Error{HTTPStatus: http.StatusForbidden, Message: "cloudflare challenge"},
 			},
 		},
+		{
+			name: "expired access token after cooldown",
+			auth: &Auth{
+				Status:         StatusError,
+				StatusMessage:  "credential_quota",
+				Unavailable:    true,
+				NextRetryAfter: past,
+				Quota:          QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: past},
+				Metadata: map[string]any{
+					"access_token": "expired-token",
+					"expired":      now.Add(-time.Hour).Format(time.RFC3339),
+				},
+			},
+		},
 	}
 	for index, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

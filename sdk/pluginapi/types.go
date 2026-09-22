@@ -1642,9 +1642,13 @@ type UsageRecord struct {
 	// EffectiveServiceTier records the canonical tier selected for the request.
 	// It is empty when the effective tier cannot be determined safely.
 	EffectiveServiceTier string `json:"EffectiveServiceTier,omitempty"`
+	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
+	ResponseModel string `json:"ResponseModel,omitempty"`
 	// Generate reports whether the client requested actual generation.
 	// The host normalizes omitted usage.Record values to true before delivery.
 	Generate bool
+	// Stream reports whether the request was executed in streaming mode.
+	Stream bool
 	// RequestedAt is the time the request was received.
 	RequestedAt time.Time
 	// Latency is the total request latency.

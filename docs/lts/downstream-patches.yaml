@@ -834,11 +834,12 @@ patches:
   - id: expired-availability-pruning
     reason: Expired auth and model cooldown state must be pruned before Management availability is displayed so runtime routing, registry state, scheduler state, and persisted cooldown snapshots converge, while future, zero-deadline, disabled, Cloudflare, and independent auth-level warnings remain intact.
     introduced_in: 6b0f185939f914983514d6a5e62378a8d91164e7
-    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds observed quota signals, 7bc16ee3 preserves round-robin successor fairness, and 12b88f3a projects auth lifecycle state into the registry. The projection does not prune only expired resettable availability across manager, registry, scheduler, and cooldown-store state or preserve the LTS Cloudflare/transient exceptions and independent auth-level warnings, so the patch remains required.
+    affected_upstream_range: through ffe6ad3c5fcf0a5eedd2198cd2e04b0249dc5063 (upstream main, 2026-09-22); b4ff581d reconciles the Management projection, but does not mutate expired manager, registry, scheduler, and cooldown-store state. LTS keeps that convergence and adapts the projection so elapsed cooldowns never clear an independent unauthorized, expired-token, Cloudflare, or other deliberately preserved credential failure.
     files:
       - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/auth_files_cooldown_test.go
       - internal/api/handlers/management/auth_files_recent_requests_test.go
-      - sdk/cliproxy/auth/conductor.go
+      - sdk/cliproxy/auth/conductor_lts.go
       - sdk/cliproxy/auth/conductor_availability_test.go
     regression_tests:
       - TestModelAvailabilityExpiredRequiresPastResettableDeadline
@@ -848,6 +849,8 @@ patches:
       - TestManagerPruneExpiredAvailabilityClearsExpiredModelAggregate
       - TestManagerPruneExpiredAvailabilityPreservesIndependentAuthState
       - TestManagerPruneExpiredAvailabilityPreservesDisabledModel
+      - TestListAuthFiles_ExpiredCooldownWithSubsequentTokenFailure
+      - TestListAuthFiles_ExpiredCooldown_ExpiredToken_InFlightRefresh
       - TestListAuthFilesPrunesOnlyExplicitlyExpiredAvailability
     upstream_issue_or_pr: not-filed
     state: required
@@ -855,10 +858,11 @@ patches:
   - id: responses-chat-tool-call-turn-grouping
     reason: Reasoning, assistant text, or omitted assistant-side Responses items interleaved between consecutive function_call/custom_tool_call items must not split one assistant turn into adjacent assistant(tool_calls) messages. Kimi-style strict Chat Completions upstreams reject that shape with HTTP 400 ("assistant message with 'tool_calls' must be followed by tool messages"), permanently blocking affected Codex multi-agent histories routed through those upstreams. The related closed report focused on id pairing while the remaining defect is turn grouping, so LTS keeps the fix as a downstream patch.
     introduced_in: 12b542a201b1f8d083ada591cdb7687a7281b0a8
-    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 9d0a60bf and f2b1996b improve Gemini/Antigravity tool-result preservation and ordering, while f8c45c30 maps a Claude output format. None changes the Responses-to-Chat request converter, which still splits calls across reasoning, assistant text, or ignored assistant-side items, so LTS retains output-boundary grouping and user/developer turn boundaries.
+    affected_upstream_range: through ffe6ad3c5fcf0a5eedd2198cd2e04b0249dc5063 (upstream main, 2026-09-22); cc545cbf/c2ea2684 align complete, unambiguous tool outputs and protect repeated IDs, while 40cc6489 preserves reasoning across tool turns. LTS adapts those fixes with its existing parallel-call turn grouping and only defers intervening messages when call/output IDs are complete, unique, and one-to-one; incomplete or ambiguous histories retain natural order.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/translator/openai/openai/responses/openai_openai-responses_request.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_request_test.go
       - internal/translator/openai/openai/responses/openai_openai-responses_tool_turn_grouping_lts_test.go
     regression_tests:
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitByAssistantText
@@ -869,6 +873,10 @@ patches:
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsAcrossIgnoredAssistantItems
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesCompleteMessagesForUnaffectedShapes
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesMidCallReasoningToToolCallMessage
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_IncompleteToolCallsDoNotDeferMessages
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_CompleteToolCallsDoPairMessages
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DuplicateCallIDDoesNotReorder
+      - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DuplicateOutputCallIDDoesNotReorder
     upstream_issue_or_pr: "router-for-me/CLIProxyAPI#3213; related closed report router-for-me/CLIProxyAPI#3184"
     state: required
     retire_when: Upstream merges an equivalent turn-grouping fix that keeps one assistant turn of parallel function/custom tool calls grouped across reasoning and assistant-text items, preserves turn boundaries at user/developer messages, and a protected full-sync absorbs it with all listed regressions passing after removing the downstream implementation.
@@ -1298,7 +1306,7 @@ patches:
   - id: openai-claude-cache-write-accounting
     reason: OpenAI input totals already include cache-write tokens; when converting into Claude independent input/cache counters, subtract both cache read and cache write to prevent double counting while retaining the newly transmitted cache_creation_input_tokens.
     introduced_in: 4e176c699e36401718f9d5755dea2341b0c09461
-    affected_upstream_range: 893abbabc2a52a4494dbc8b42345d8dbf143abef through 4c1bebe837a6e624215a97dddee5db11f0eeb8bf; upstream transmits writes but subtracts only reads from input.
+    affected_upstream_range: Equivalent upstream fix 883660fb8153f48cf514de3e9c8268d847afcc64 is included in the ffe6ad3c main baseline. Production extraction now uses the upstream overflow-safe combined deduction; retain the stronger LTS streaming and non-streaming regressions until a separate retirement round.
     files:
       - internal/translator/codex/claude/codex_claude_response.go
       - internal/translator/codex/claude/codex_claude_response_test.go
@@ -1309,9 +1317,9 @@ patches:
       - TestConvertCodexResponseToClaudeNonStream_PreservesCacheWriteUsage
       - TestStreamingUsage_PreservesCacheWriteTokens
       - TestNonStreamingUsage_PreservesCacheWriteTokens
-    upstream_issue_or_pr: router-for-me/CLIProxyAPI@893abbabc2a52a4494dbc8b42345d8dbf143abef
-    state: required
-    retire_when: Upstream subtracts both included cache subsets when emitting Claude independent counters, and all streaming and non-streaming regressions pass without the LTS correction.
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI@883660fb8153f48cf514de3e9c8268d847afcc64
+    state: removable
+    retire_when: In a later cleanup round, remove any remaining LTS-only production delta only after confirming the four streaming/non-streaming regressions still pass against the upstream implementation; keep the regression coverage.
 
   - id: plugin-stream-history-capability-negotiation
     reason: LTS schema 5 already denotes executor lifecycle capabilities; upstream schema 5 history omission must not silently remove data from existing LTS plugins. Negotiate omission using the explicit StreamChunkHistoryOmitted capability, including handler-side history collection.
