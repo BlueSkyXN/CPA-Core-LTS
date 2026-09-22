@@ -61,6 +61,8 @@ type Record struct {
 	// recognized tier and the final outbound payload did not explicitly request
 	// one.
 	EffectiveServiceTier string
+	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
+	ResponseModel string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.

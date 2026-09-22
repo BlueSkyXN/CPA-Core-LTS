@@ -238,6 +238,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.ObserveResponseModel(data)
 	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, data, &param)
@@ -362,6 +363,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			reporter.ObserveResponseModel(line)
 			filtered := helps.FilterSSEUsageMetadata(line)
 			payload := helps.JSONPayload(filtered)
 			if len(payload) == 0 {
@@ -470,6 +472,7 @@ func (e *GeminiExecutor) executeInteractions(ctx context.Context, auth *cliproxy
 		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
 		return resp, err
 	}
+	reporter.ObserveResponseModel(data)
 	reporter.Publish(ctx, helps.ParseInteractionsUsage(data))
 	targetFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var param any
@@ -549,6 +552,7 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	go func() {
 		defer close(out)
+		defer reporter.EnsurePublished(ctx)
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("gemini executor: close interactions stream body error: %v", errClose)
@@ -578,6 +582,7 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 				payload = trimmed
 			}
 			if len(payload) > 0 {
+				reporter.ObserveResponseModel(payload)
 				if detail, ok := helps.ParseInteractionsStreamUsage(payload); ok {
 					reporter.Publish(ctx, detail)
 				}

@@ -99,4 +99,48 @@ Stage 2 文本冲突集中在 `cmd/server/main.go`、`config.example.yaml`、Man
 - `go list ./... | rg -v '/tmp$' | xargs go test -count=1`
 - `git diff --check` 与 `git diff --cached --check`
 
-Stage 2 的 exact-head CI、PR merge 和 post-merge readback 待远端完成后补记；Stage 3 尚未执行，不能用 Stage 2 结果替代。
+Stage 2 exact head `f34eb22d5a7733850c9b4005b70b3b04a7040999` 的 7 项 CI 全部成功；PR `#267` 以 merge commit `5d8757bf8fb14cbca0cb72b5799ad63c2eb488df` 合入。远端 readback 确认其父节点为 Stage 1 main `0f1516138e39256a876609965fe026fb020d1428` 与 exact head `f34eb22d`，不是 squash/rebase。
+
+## Stage 3 diff 结论
+
+| 主题 / 代表提交 | 分类 | LTS 处理 |
+|---|---|---|
+| `b773607e` FreeBSD release 与多镜像 fallback | absorbed | 纳入 FreeBSD amd64/arm64、直接 sysroot cross-build、镜像 fallback 与 `curl --retry`；保留 LTS release `timeout-minutes: 45`。只做 workflow 静态/构建验证，不触发 tag、Release 或 upload。 |
+| `cd5af08e..e84e248c` response model observability | adapted | 新增专用 `ResponseModel`，同时保留首个已知 served/upstream model 的 LTS `UpstreamModel` 兼容字段、substitution warning 和多 provider stream bounded observer。Redis/plugin 继续做 endpoint redaction。 |
+| `12773e74` cache-write deduction | upstream-equivalent / removable | production extraction 已采用 upstream 溢出安全的 cache-read + cache-write 合并扣减；四项 LTS streaming/non-streaming 回归通过，账本改为 `removable`，本轮不删除回归覆盖。 |
+| `cc545cbf`、`c2ea2684`、`40cc6489` Responses tool order/reasoning | adapted | 保留 LTS parallel function/custom-call turn grouping，同时纳入完整输出对齐、重复 ID fail-closed 与 reasoning continuation。仅当 call/output ID 完整、唯一且一一对应时延期消息；不完整或有歧义时保持自然顺序。 |
+| `b4ff581d` Management expired cooldown | adapted / patch-still-required | 纳入 read-only response reconciliation；继续先执行 LTS manager pruning，使 registry/scheduler/persisted cooldown 收敛，并保护 expired-token、unauthorized、Cloudflare 与独立 credential failure 不被过期 quota deadline 清空。 |
+| `42c9680e`、`ddc3f731`、`7b6fafce` Codex duplex/steering/prewarm | adapted | HTTP stream 与 duplex 共用 LTS protected request preparation：metadata privacy、cache affinity、model fallback/replay、reasoning wire normalization、service tier 与 usage attribution。下游 WebSocket 仍保持单 reader、bounded queue、disconnect/error lifecycle；duplex 接管并完整释放每个 prepared affinity。 |
+| `28100e54` LCP compaction/node metadata | adapted | 纳入 tail/environment fingerprint、node kind、fork/compaction metadata；仍在 admission 成功后绑定，日志只使用 redacted session/auth identity，不恢复原始 session ID 或 auth ID。 |
+| `a5ab6952` Kimi.ai OAuth/runtime | absorbed + adapted | 纳入 `.ai` OAuth、refresh、Management route、runtime 与 thinking；request-local auth clone 后只按受信任 domain 选择官方 `.com`/`.ai` endpoint，不修改共享 auth，也不信任任意 delegated `base_url`。 |
+| `660a5800` xAI web-search alias | adapted | 恢复 aliased/namespaced web search，同时保留 LTS plaintext Multi-Agent tool arguments provenance；HTTP 与 WebSocket 覆盖两条行为。 |
+| `ac3849e5` usage plugin、Redis metadata | adapted | 新增 `ResponseModel`、service tier、stream flag、`node_kind`、`is_fork`、`is_compaction`；保留 LTS token/timing/provenance/upstream-model 字段、`SafeBaseURL`、canonical usage v3 和旧 plugin JSON 兼容。 |
+| `c93978c4`、`bcd13ca9`、`ffe6ad3c` schema/cache-control 修复 | absorbed | 纳入 Gemini schema、tool-result cache-control hoisting、OpenAI-compatible max-token 与普通 provider 修复；相关 translator/executor package tests 通过。 |
+| `784285a4`、`0b9a91fb`、`29bdd856` 商业链接/图片 | reject presentation | 不恢复 PatewayAI、FluxA、affiliate、充值优惠、付费推荐或 Kimi 商业链接；删除新增推广图片，三语 README 保持 commercial-neutral。 |
+
+Stage 3 共有 27 个文本冲突，集中在 release workflow、三语 README、config、usage/plugin/Redis、Codex/Kimi/xAI executor、Responses translator、WebSocket handler、auth selector/session affinity 与 plugin usage types。所有冲突均逐 hunk 融合；没有使用整文件 `ours`/`theirs`，没有 `AGENTS.md` 进入产品差异，也没有遗留 conflict marker。
+
+## Stage 3 protected delta review
+
+- usage/Panel/queue：完整 usage statistics、Management `/usage*`、`usage-statistics-enabled`、Redis queue、canonical v3、`CPA-Panel-LTS` 默认源和 Panel response compatibility 均保留；新 response model/session metadata 均为 additive。
+- auth/session：Kimi delegated auth 保持 clone；LCP binding 继续 admission 后提交；scheduler provider alias、execution close、Home session alias 和 model fallback 保留 LTS scope/lifecycle。
+- Codex WebSocket：duplex/steering 复用同一条 protected preparation 管线；普通 stream 与 duplex 分别拥有明确 affinity ownership，single-reader 与 terminal/disconnect 语义通过完整 executor/API tests。
+- Management cooldown：upstream projection 与 LTS destructive pruning 不重复清理独立错误；过期 token、unauthorized 和 Cloudflare warning 继续阻止错误的 active readback。
+- translators：Responses 对齐只重排完整无歧义历史；LTS parallel turn grouping、cache-write accounting、text-only image omission、signature/plaintext provenance 和 service-tier normalization均保留。
+- presentation：拒绝 sponsor/affiliate/referral/充值推广及两张新增推广图；上游 ancestry 保留，但产品树与三语 README 不恢复商业推广。
+- downstream patches：`openai-claude-cache-write-accounting` 调整为 `removable` 而非本轮删除；`text-only-relayed-tool-image-guard`、`expired-availability-pruning`、`responses-chat-tool-call-turn-grouping`、WebSocket/affinity、usage/Panel、plaintext provenance 等继续 `required`。
+- validation boundary：源码、构建、contract、registry 和全仓测试已验证；Release、部署、HF/Home、真实 provider、真实账号与浏览器 UAT 未执行。
+
+## Stage 3 本地验证
+
+- `scripts/check-lts-contract.sh`
+- `go run ./scripts/ltsregistry --root .`
+- `go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'`
+- `go test -count=1` 覆盖 executor/helpers、API/Management、auth/session/Home、全部 translators、Kimi/auth/config/watcher、plugin/Redis/usage、logging/registry/thinking
+- patch ledger 原回归：Claude cache-write 四项与 text-only relayed tool-image guard
+- `go build -o /dev/null ./cmd/server`
+- `go test ./...`
+- `go list ./... | rg -v '/tmp$' | xargs go test -count=1`
+- `git diff --check` 与 `git diff --cached --check`
+
+本阶段没有执行真实 Release workflow、tag、上传、部署、HF/Home、真实 provider inference 或浏览器 UAT；这些外部交付层不能由源码 merge 或 CI 替代。

@@ -72,6 +72,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	outboundServiceTier := strings.TrimSpace(record.OutboundServiceTier)
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
+	responseModel := strings.TrimSpace(record.ResponseModel)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
 	sessionID := strings.TrimSpace(record.SessionID)
 	parentSessionID := strings.TrimSpace(record.ParentSessionID)
@@ -161,6 +162,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		EffectiveServiceTier: effectiveServiceTier,
 		SessionID:            sessionID,
 		ParentSessionID:      parentSessionID,
+		NodeKind:             strings.TrimSpace(clientRequestMetadata.NodeKind),
+		IsFork:               clientRequestMetadata.IsFork,
+		IsCompaction:         clientRequestMetadata.IsCompaction,
+		ResponseModel:        responseModel,
 	})
 	if err != nil {
 		return
@@ -189,6 +194,10 @@ type queuedUsageDetail struct {
 	EffectiveServiceTier string                   `json:"effective_service_tier,omitempty"`
 	SessionID            string                   `json:"session_id,omitempty"`
 	ParentSessionID      string                   `json:"parent_session_id,omitempty"`
+	NodeKind             string                   `json:"node_kind,omitempty"`
+	IsFork               bool                     `json:"is_fork,omitempty"`
+	IsCompaction         bool                     `json:"is_compaction,omitempty"`
+	ResponseModel        string                   `json:"response_model,omitempty"`
 }
 
 type requestDetail struct {

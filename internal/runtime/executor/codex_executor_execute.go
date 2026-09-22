@@ -57,7 +57,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated, body := translateCodexRequestPair(from, to, baseModel, originalPayload, req.Payload, false, helps.APIKeyModelIsCompat(req))
+	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
+	originalTranslated, body := translateCodexRequestPair(from, to, baseModel, originalPayload, req.Payload, false, isCompat)
 
 	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -80,7 +81,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
-	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
@@ -170,7 +171,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		eventData := bytes.TrimSpace(line[5:])
 		eventData = helps.RestoreCodexMultiAgentV2Response(eventData, optimizeMultiAgentV2)
-		reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(eventData))
+		reporter.ObserveCodexResponseModel(eventData)
 		eventType := gjson.GetBytes(eventData, "type").String()
 
 		if helps.HasMeaningfulCodexOutputDelta(eventData) {
@@ -297,7 +298,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated, body := translateCodexRequestPair(from, to, baseModel, originalPayload, req.Payload, false, helps.APIKeyModelIsCompat(req))
+	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
+	originalTranslated, body := translateCodexRequestPair(from, to, baseModel, originalPayload, req.Payload, false, isCompat)
 
 	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -311,7 +313,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
-	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
+	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
