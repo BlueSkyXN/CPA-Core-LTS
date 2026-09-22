@@ -28,7 +28,6 @@ const (
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexSparkModel            = "gpt-5.3-codex-spark"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
-	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
 )
 
 var dataTag = []byte("data:")
@@ -364,6 +363,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	}
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-State", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Window-Id", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "Thread-Id", "")
@@ -409,7 +409,10 @@ func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
 	headers.Set("Originator", codexOriginator)
 }
 
-func normalizeCodexInstructions(body []byte) []byte {
+func normalizeCodexInstructions(body []byte, nativeRequest ...bool) []byte {
+	if len(nativeRequest) > 0 && nativeRequest[0] {
+		return body
+	}
 	instructions := gjson.GetBytes(body, "instructions")
 	if !instructions.Exists() || instructions.Type == gjson.Null {
 		body, _ = sjson.SetBytes(body, "instructions", "")
@@ -451,20 +454,8 @@ func isImageGenerationFunctionTool(tool gjson.Result) bool {
 	return false
 }
 
-func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
-	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
-		return true
-	}
-	// Codex Desktop mirrors websocket-only request headers into client_metadata.
-	value := gjson.GetBytes(body, codexResponsesLiteMetadata)
-	if !value.Exists() {
-		return false
-	}
-	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
-}
-
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {
-	if isCodexResponsesLiteRequest(body, headers) {
+	if util.IsCodexResponsesLiteRequest(body, headers) {
 		return body
 	}
 	if strings.HasSuffix(baseModel, "spark") {
@@ -489,7 +480,7 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 }
 
 func normalizeCodexParallelToolCalls(body []byte, headers http.Header) []byte {
-	if isCodexResponsesLiteRequest(body, headers) {
+	if util.IsCodexResponsesLiteRequest(body, headers) {
 		body = helps.SetBoolIfDifferent(body, "parallel_tool_calls", false)
 		return body
 	}

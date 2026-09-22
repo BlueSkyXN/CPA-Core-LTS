@@ -854,7 +854,7 @@ func TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfus
 	if err != nil {
 		t.Fatalf("prepareCodexOutboundMetadata() error = %v", err)
 	}
-	headers = applyCodexWebsocketHeaders(ctx, headers, auth, "oauth-token", cfg)
+	headers = applyCodexWebsocketHeaders(ctx, headers, auth, "oauth-token", cfg, false)
 	applyCodexOutboundMetadataHeaders(headers, &state)
 
 	if state.enabled || !state.clientMetadata.CanonicalPresent {
@@ -898,7 +898,7 @@ func TestApplyCodexWebsocketHeadersOffModeProjectsCanonicalSessionWithoutMutatin
 	if !bytes.Equal(upstreamBody, rawBody) {
 		t.Fatalf("off mode mutated websocket body: got %s want %s", upstreamBody, rawBody)
 	}
-	headers = applyCodexWebsocketHeaders(context.Background(), headers, auth, "oauth-token", cfg)
+	headers = applyCodexWebsocketHeaders(context.Background(), headers, auth, "oauth-token", cfg, false)
 	if fallback := codexSessionHeaderValue(headers); fallback == "" || fallback == "off-ws-session" {
 		t.Fatalf("expected pre-projection random fallback, got %q", fallback)
 	}
@@ -929,7 +929,7 @@ func TestApplyCodexWebsocketHeadersOffModeBodyCanonicalSuppressesConflictingDire
 	if !bytes.Equal(upstreamBody, rawBody) {
 		t.Fatalf("off mode mutated websocket body: got %s want %s", upstreamBody, rawBody)
 	}
-	headers = applyCodexWebsocketHeaders(ctx, headers, auth, "oauth-token", cfg)
+	headers = applyCodexWebsocketHeaders(ctx, headers, auth, "oauth-token", cfg, false)
 	applyCodexOutboundMetadataHeaders(headers, &state)
 	if got := headers.Get("X-Codex-Turn-Metadata"); got != "" {
 		t.Fatalf("conflicting direct canonical header survived body precedence: %q", got)
