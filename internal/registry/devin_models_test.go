@@ -98,13 +98,17 @@ func TestValidateDevinModelsJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate model id", func(t *testing.T) {
-		data := []byte(`{"devin": [{"id": "devin/swe-2"}, {"id": "devin/swe-2"}]}`)
-		_, err := ValidateDevinModelsJSON(data)
-		if err == nil {
-			t.Fatal("expected error on duplicate model id, got nil")
-		}
-	})
+	for name, data := range map[string][]byte{
+		"exact duplicate": []byte(`{"devin": [{"id": "devin/swe-2"}, {"id": "devin/swe-2"}]}`),
+		"case duplicate":  []byte(`{"devin": [{"id": "devin/SWE-2"}, {"id": "devin/swe-2"}]}`),
+	} {
+		t.Run("duplicate model id/"+name, func(t *testing.T) {
+			_, err := ValidateDevinModelsJSON(data)
+			if err == nil {
+				t.Fatal("expected error on duplicate model id, got nil")
+			}
+		})
+	}
 }
 
 func TestEmbeddedDevinModelsLoadedOnStartup(t *testing.T) {

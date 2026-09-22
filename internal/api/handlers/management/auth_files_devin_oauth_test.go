@@ -90,7 +90,7 @@ func TestDevinRemoteOAuthFlow(t *testing.T) {
 	if start.Status != "ok" || start.State == "" || query.Get("state") != start.State || query.Get("code_challenge_method") != "S256" {
 		t.Fatalf("invalid authorization response: %s", w.Body.String())
 	}
-	if got := query.Get("redirect_uri"); got != "http://127.0.0.1:8317/devin/callback" {
+	if got := query.Get("redirect_uri"); got != "http://127.0.0.1:8317/callback" {
 		t.Fatalf("redirect_uri = %q", got)
 	}
 	if query.Get("code_verifier") != "" {

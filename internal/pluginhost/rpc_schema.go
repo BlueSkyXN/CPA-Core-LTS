@@ -26,6 +26,7 @@ type rpcCapabilities struct {
 	FrontendAuthProvider          bool                         `json:"frontend_auth_provider"`
 	FrontendAuthProviderExclusive bool                         `json:"frontend_auth_provider_exclusive"`
 	Scheduler                     bool                         `json:"scheduler"`
+	SchedulerAcrossPriorities     bool                         `json:"scheduler_across_priorities,omitempty"`
 	ModelRouter                   bool                         `json:"model_router"`
 	Executor                      bool                         `json:"executor"`
 	ExecutionCanceller            bool                         `json:"execution_canceller"`
@@ -148,6 +149,19 @@ type rpcQuotaResetRequest struct {
 
 type rpcEmptyResponse struct{}
 
+func schedulerWantsAcrossPriorities(caps pluginapi.Capabilities) bool {
+	if caps.Scheduler == nil {
+		return false
+	}
+	if caps.SchedulerAcrossPriorities {
+		return true
+	}
+	if opt, ok := caps.Scheduler.(interface{ SchedulerWantsAcrossPriorities() bool }); ok && opt != nil {
+		return opt.SchedulerWantsAcrossPriorities()
+	}
+	return false
+}
+
 func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 	caps := plugin.Capabilities
 	return rpcCapabilities{
@@ -158,6 +172,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		FrontendAuthProvider:          caps.FrontendAuthProvider != nil,
 		FrontendAuthProviderExclusive: caps.FrontendAuthProvider != nil && caps.FrontendAuthProviderExclusive,
 		Scheduler:                     caps.Scheduler != nil,
+		SchedulerAcrossPriorities:     schedulerWantsAcrossPriorities(caps),
 		ModelRouter:                   caps.ModelRouter != nil,
 		Executor:                      caps.Executor != nil,
 		ExecutionCanceller:            caps.ExecutionCanceller != nil,

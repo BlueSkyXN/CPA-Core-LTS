@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -94,12 +95,13 @@ type DevinPrompt struct {
 
 // DevinUsage captures token accounting from response Field 7.
 type DevinUsage struct {
-	PromptTokens     int64
-	CompletionTokens int64
-	CachedTokens     int64
-	StatusCode       uint64
-	RequestID        string
-	ModelName        string
+	PromptTokens     int64             `json:"prompt_tokens"`
+	CompletionTokens int64             `json:"completion_tokens"`
+	CachedTokens     int64             `json:"cached_tokens"`
+	StatusCode       uint64            `json:"status_code,omitempty"`
+	RequestID        string            `json:"request_id,omitempty"`
+	ModelName        string            `json:"model_name,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
 }
 
 // DevinFrameResult represents decoded content from a single Connect-proto frame.
@@ -116,7 +118,7 @@ type DevinFrameResult struct {
 	Latency                 float64
 	MessageID               string
 	Usage                   *DevinUsage
-	ResponseDimensionGroups []byte
+	ResponseDimensionGroups [][]byte
 	UnknownFieldNumbers     []int
 }
 
@@ -441,6 +443,9 @@ func BuildDevinGetChatMessageRequest(
 
 	// 6. Repeated Tools (Field 10)
 	for _, tool := range tools {
+		if tool.Name == "" || translatorcommon.IsDevinCodexAppAutomationUpdate("", tool.Name) {
+			continue
+		}
 		var tBytes []byte
 		if tool.Name != "" {
 			tBytes = protowire.AppendTag(tBytes, 1, protowire.BytesType)
@@ -453,6 +458,7 @@ func BuildDevinGetChatMessageRequest(
 		if strings.Contains(desc, "Takes a task_id parameter identifying the task") {
 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
 		}
+		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
 		if desc != "" {
 			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
 			tBytes = protowire.AppendString(tBytes, desc)
@@ -587,7 +593,7 @@ func ParseDevinFrame(payload []byte) (DevinFrameResult, error) {
 			case 21:
 				res.DeltaSignatureType = string(val)
 			case 28:
-				res.ResponseDimensionGroups = val
+				res.ResponseDimensionGroups = append(res.ResponseDimensionGroups, val)
 			default:
 				res.UnknownFieldNumbers = append(res.UnknownFieldNumbers, int(num))
 			}
@@ -631,6 +637,12 @@ func SanitizeDevinSystemPrompt(prompt string, matcher *SensitiveWordMatcher) str
 			continue
 		}
 		if strings.Contains(trimmed, "Fast mode for Claude Code") {
+			continue
+		}
+		if strings.Contains(trimmed, "Codex refers to the open-source agentic coding interface") {
+			continue
+		}
+		if strings.Contains(trimmed, "- Don’t output ANSI escape codes directly — the CLI renderer applies them.") {
 			continue
 		}
 		if matcher != nil && matcher.Matches(trimmed) {
@@ -715,6 +727,42 @@ func parseDevinTimestamp(data []byte) uint64 {
 	return secs
 }
 
+// parseDevinHeaderField parses a repeated submessage in Field 7 (subfield 8) representing upstream response headers:
+// Tag 1 (string): Header name (e.g. "x-request-id", "Request-Id", "openai-processing-ms")
+// Tag 2 (string): Header value (e.g. "req_011Cf1JivhJrXDq9ycq7cEtH", "chatcmpl-...")
+func parseDevinHeaderField(data []byte) (string, string) {
+	var key, val string
+	pos := 0
+	for pos < len(data) {
+		num, typ, n := protowire.ConsumeTag(data[pos:])
+		if n <= 0 {
+			break
+		}
+		pos += n
+		switch typ {
+		case protowire.BytesType:
+			b, bn := protowire.ConsumeBytes(data[pos:])
+			if bn <= 0 {
+				return key, val
+			}
+			pos += bn
+			switch num {
+			case 1:
+				key = string(b)
+			case 2:
+				val = string(b)
+			}
+		default:
+			nSkip := protowire.ConsumeFieldValue(num, typ, data[pos:])
+			if nSkip <= 0 {
+				return key, val
+			}
+			pos += nSkip
+		}
+	}
+	return key, val
+}
+
 func parseDevinUsageField(data []byte) *DevinUsage {
 	u := &DevinUsage{}
 	pos := 0
@@ -733,10 +781,12 @@ func parseDevinUsageField(data []byte) *DevinUsage {
 			}
 			pos += vn
 			switch num {
-			case 2: // Prompt tokens (uncached input)
-				u.PromptTokens = int64(v)
+			case 2: // Prompt tokens (uncached input from turn message)
+				u.PromptTokens += int64(v)
 			case 3: // Output tokens
 				u.CompletionTokens = int64(v)
+			case 4: // Additional context/system prompt tokens in OpenAI-family models (total prompt = 2 + 4)
+				u.PromptTokens += int64(v)
 			case 5: // Cache read tokens
 				u.CachedTokens = int64(v)
 			case 6: // Status code
@@ -750,7 +800,18 @@ func parseDevinUsageField(data []byte) *DevinUsage {
 			pos += bn
 			switch num {
 			case 8:
-				u.RequestID = string(val)
+				k, v := parseDevinHeaderField(val)
+				if k != "" {
+					if u.Headers == nil {
+						u.Headers = make(map[string]string)
+					}
+					u.Headers[k] = v
+					if (strings.EqualFold(k, "x-request-id") || strings.EqualFold(k, "request-id")) && v != "" {
+						u.RequestID = v
+					}
+				} else if len(val) > 0 && isPrintableASCII(val) && u.RequestID == "" {
+					u.RequestID = string(val)
+				}
 			case 9:
 				u.ModelName = string(val)
 			}
@@ -767,10 +828,137 @@ func parseDevinUsageField(data []byte) *DevinUsage {
 			}
 			pos += fn
 		default:
-			return u
+			nSkip := protowire.ConsumeFieldValue(num, typ, data[pos:])
+			if nSkip <= 0 {
+				return u
+			}
+			pos += nSkip
 		}
 	}
 	return u
+}
+
+// ParseDevinResponseDimensionGroups parses Field 28 (ResponseDimensionGroups) entries to extract Token Usage metrics:
+// input_tokens, output_tokens, cached_input_tokens.
+// Accepts one or more group payloads (each corresponding to a Field 28 value), or an outer envelope containing Tag 28.
+func ParseDevinResponseDimensionGroups(groups ...[]byte) (promptTokens, completionTokens, cachedTokens int64, found bool) {
+	for _, gBytes := range groups {
+		if len(gBytes) == 0 {
+			continue
+		}
+		// If outer envelope carries Tag 28, unwrap it to get inner group bytes.
+		if num, typ, n := protowire.ConsumeTag(gBytes); n > 0 && num == 28 && typ == protowire.BytesType {
+			if inner, bn := protowire.ConsumeBytes(gBytes[n:]); bn > 0 {
+				gBytes = inner
+			}
+		}
+
+		gPos := 0
+		var title string
+		type metricItem struct {
+			key string
+			val float32
+		}
+		var metrics []metricItem
+		for gPos < len(gBytes) {
+			gNum, gTyp, gn := protowire.ConsumeTag(gBytes[gPos:])
+			if gn <= 0 {
+				break
+			}
+			gPos += gn
+			if gTyp != protowire.BytesType {
+				gSkip := protowire.ConsumeFieldValue(gNum, gTyp, gBytes[gPos:])
+				if gSkip <= 0 {
+					break
+				}
+				gPos += gSkip
+				continue
+			}
+			gb, gbn := protowire.ConsumeBytes(gBytes[gPos:])
+			if gbn <= 0 {
+				break
+			}
+			gPos += gbn
+			if gNum == 1 {
+				title = string(gb)
+			} else if gNum == 2 {
+				mPos := 0
+				var mKey string
+				var mVal float32
+				for mPos < len(gb) {
+					mNum, mTyp, mn := protowire.ConsumeTag(gb[mPos:])
+					if mn <= 0 {
+						break
+					}
+					mPos += mn
+					if mTyp != protowire.BytesType {
+						mSkip := protowire.ConsumeFieldValue(mNum, mTyp, gb[mPos:])
+						if mSkip <= 0 {
+							break
+						}
+						mPos += mSkip
+						continue
+					}
+					mb, mbn := protowire.ConsumeBytes(gb[mPos:])
+					if mbn <= 0 {
+						break
+					}
+					mPos += mbn
+					if mNum == 5 {
+						mKey = string(mb)
+					} else if mNum == 4 {
+						dPos := 0
+						for dPos < len(mb) {
+							dNum, dTyp, dn := protowire.ConsumeTag(mb[dPos:])
+							if dn <= 0 {
+								break
+							}
+							dPos += dn
+							if dTyp == protowire.Fixed32Type {
+								dv, dfn := protowire.ConsumeFixed32(mb[dPos:])
+								if dfn <= 0 {
+									break
+								}
+								dPos += dfn
+								if dNum == 2 {
+									mVal = math.Float32frombits(dv)
+								}
+							} else {
+								dSkip := protowire.ConsumeFieldValue(dNum, dTyp, mb[dPos:])
+								if dSkip <= 0 {
+									break
+								}
+								dPos += dSkip
+							}
+						}
+					}
+				}
+				if mKey != "" {
+					metrics = append(metrics, metricItem{key: mKey, val: mVal})
+				}
+			}
+		}
+
+		if strings.EqualFold(title, "Token Usage") {
+			for _, m := range metrics {
+				switch m.key {
+				case "input_tokens":
+					promptTokens = int64(m.val)
+					found = true
+				case "output_tokens":
+					completionTokens = int64(m.val)
+					found = true
+				case "cached_input_tokens":
+					cachedTokens = int64(m.val)
+					found = true
+				}
+			}
+			if found {
+				return promptTokens, completionTokens, cachedTokens, true
+			}
+		}
+	}
+	return promptTokens, completionTokens, cachedTokens, found
 }
 
 // ParseDevinTrailerError inspects Connect-RPC EOS trailer frames and maps error status codes.
@@ -805,7 +993,11 @@ func ParseDevinTrailerError(payload []byte) (statusCode int, err error) {
 	case "unauthenticated":
 		httpCode = http.StatusUnauthorized
 	case "permission_denied":
-		httpCode = http.StatusForbidden
+		if strings.Contains(msgLower, "high demand") {
+			httpCode = http.StatusTooManyRequests
+		} else {
+			httpCode = http.StatusForbidden
+		}
 	case "resource_exhausted":
 		httpCode = http.StatusTooManyRequests
 	case "unavailable":
@@ -970,13 +1162,21 @@ func BuildDevinUpstreamLogBody(
 
 	var toolItems []DevinToolLogItem
 	for _, t := range tools {
+		if t.Name == "" || translatorcommon.IsDevinCodexAppAutomationUpdate("", t.Name) {
+			continue
+		}
+		desc := t.Description
+		if strings.Contains(desc, "Takes a task_id parameter identifying the task") {
+			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
+		}
+		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
 		var params json.RawMessage
 		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
 			params = json.RawMessage(t.Parameters)
 		}
 		toolItems = append(toolItems, DevinToolLogItem{
 			Name:        t.Name,
-			Description: t.Description,
+			Description: desc,
 			Parameters:  params,
 		})
 	}

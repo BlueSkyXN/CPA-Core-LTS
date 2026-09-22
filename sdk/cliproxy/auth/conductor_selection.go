@@ -42,6 +42,27 @@ func (m *Manager) hasPluginScheduler() bool {
 	return true
 }
 
+func (m *Manager) pluginSchedulerWantsAcrossPrioritiesLocked() bool {
+	if m == nil || m.pluginScheduler == nil {
+		return false
+	}
+	if opt, ok := m.pluginScheduler.(PluginSchedulerAcrossPriorities); ok && opt != nil {
+		return opt.SchedulerWantsAcrossPriorities()
+	}
+	return false
+}
+
+// PluginSchedulerWantsAcrossPriorities reports whether the configured plugin scheduler
+// opted into receiving candidates across all priority tiers.
+func (m *Manager) PluginSchedulerWantsAcrossPriorities() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.pluginSchedulerWantsAcrossPrioritiesLocked()
+}
+
 func isBuiltInSelector(selector Selector) bool {
 	switch selector.(type) {
 	case *RoundRobinSelector, *WeightedRoundRobinSelector, *FillFirstSelector:
@@ -658,10 +679,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 		}
 		if reason == blockReasonCooldown {
 			cooldownCount++
-			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-				earliest = next
-			}
-			continue
+		}
+		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
+			earliest = next
 		}
 		if hasUnauthorizedAuthFailure(candidate) {
 			unauthorizedCount++
@@ -696,7 +716,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 				HTTPStatus: http.StatusServiceUnavailable,
 			}, terminalCause)
 		}
-		return nil, WithCause(&Error{Code: "auth_unavailable", Message: "no auth available"}, lastCandidateErr)
+		return nil, newAuthUnavailableErrorWithCause(earliest, now, lastCandidateErr)
 	}
 
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
@@ -704,11 +724,13 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 
 // availableAuthsForSelector reports the candidates handed to priority-scoped consumers such as
 // the plugin scheduler, plus the candidates handed to the configured selector. Both are equal
-// unless session affinity is active, in which case the selector additionally receives lower
-// priority tiers so an established binding can be validated instead of being preempted by a
-// recovered higher-priority credential.
+// unless session affinity or an across-priorities scheduler is active, in which case the selector
+// or scheduler additionally receives lower priority tiers.
 func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
-	if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
+	_, sessionAffinity := selector.(*SessionAffinitySelector)
+	schedulerAcross := m.pluginSchedulerWantsAcrossPrioritiesLocked()
+
+	if !sessionAffinity && !schedulerAcross {
 		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
 		if err != nil {
 			return nil, nil, err
@@ -719,12 +741,24 @@ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, pr
 
 	// One availability pass and one clone pass serve both lists: the highest priority tier is a
 	// subset of the across-priority candidates, so it is narrowed from the same cloned auths.
-	selectorAuths, err = m.availableAuthsForRouteModelAcrossPriorities(auths, provider, routeModel, now)
-	if err != nil {
-		return nil, nil, err
+	allAuths, errAcross := m.availableAuthsForRouteModelAcrossPriorities(auths, provider, routeModel, now)
+	if errAcross != nil {
+		return nil, nil, errAcross
 	}
-	selectorAuths = cloneAuthSlice(selectorAuths)
-	return highestPriorityAuths(selectorAuths), selectorAuths, nil
+	allAuths = cloneAuthSlice(allAuths)
+
+	if schedulerAcross {
+		priorityAuths = allAuths
+	} else {
+		priorityAuths = highestPriorityAuths(allAuths)
+	}
+
+	if sessionAffinity {
+		selectorAuths = allAuths
+	} else {
+		selectorAuths = highestPriorityAuths(allAuths)
+	}
+	return priorityAuths, selectorAuths, nil
 }
 
 func selectionArgForSelector(selector Selector, routeModel string) string {
@@ -1467,7 +1501,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx context.Cont
 	}
 	var exhausted *homeRetryRoundExhaustedError
 	if m.HomeEnabled() && errors.As(err, &exhausted) && exhausted != nil {
-		if !isCredentialRetryRoundStatus(status) || !m.homeRetryAllowed(attempt, homeRetryLimit) {
+		if !isRequestRetryRoundError(err) || !m.homeRetryAllowed(attempt, homeRetryLimit) {
 			return 0, false, nil
 		}
 		if exhausted.retryNow {
@@ -1493,7 +1527,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx context.Cont
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	if !isCredentialRetryRoundStatus(status) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
+	if !isRequestRetryRoundError(err) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false, nil
 	}
 	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
@@ -1557,6 +1591,15 @@ func observeHomeCooldownRetryLimit(cooldown *homeDispatchRetryAfterError, retryL
 	}
 }
 
+func isRequestRetryRoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isCredentialRetryRoundStatus(statusCodeFromError(err)) || isTransientTransportError(err)
+}
+
+// cooldownWaitJitterCap bounds the random jitter added to cooldown waits so a
+// long wait is never extended by more than this amount.
 const cooldownWaitJitterCap = 2 * time.Second
 
 func jitteredCooldownWait(wait, maxWait time.Duration) time.Duration {
