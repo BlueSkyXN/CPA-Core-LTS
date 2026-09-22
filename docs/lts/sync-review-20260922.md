@@ -58,4 +58,45 @@ Stage 1 冲突集中在三语 README、`config.example.yaml`、request logging/A
 - `go test ./...`
 - `git diff --check` 与 `git diff --cached --check`
 
-Stage 1 exact-head CI、PR merge 与 post-merge readback 在远端完成后补记；Stage 2/3 尚未执行，不能用本阶段测试代替。
+Stage 1 exact head `545da586751b56168da54f59506e7ac5bc720beb` 的 7 项 CI 全部成功；PR `#266` 以 merge commit `0f1516138e39256a876609965fe026fb020d1428` 合入，父节点为原 `main` `ca027310` 与 exact head `545da586`，不是 squash/rebase。
+
+## Stage 2 diff 结论
+
+| 主题 / 代表提交 | 分类 | LTS 处理 |
+|---|---|---|
+| `9b52a499` AI gateway discovery | absorbed | 纳入 discovery service、zeroconf、CLI command 与 SDK advertiser；server version 输出继续使用 LTS `buildinfo.ProductName`。 |
+| `42ca5d34..65348b95` Meta provider、`8335eac7` alias/error rules | adapted | 纳入 auth/login/config/runtime/Management token resolution；minted key 在对 request 可见前原子持久化，同时保留 LTS generation/registration-epoch fence、per-auth persist ordering 与 stale reload/remove 拒绝。 |
+| `46d4baff` auth-files pagination | adapted | 纳入分页 response；virtual source/status hook 均在锁外运行，hook failure 只返回固定文案，不回显 token、OIDC、secret 或原始 error。 |
+| `b715526a` plugin priority、`afba07ba` config preservation | adapted | 纳入 priority scheduler 与 YAML 保存；保留 LTS plugin `permissions`、built-in route ownership、usage plugin/API 和旧 ABI 兼容面。 |
+| `6c5f6e18` Codex bootstrap timeout、`bb20fa2d` non-content framing | adapted | 纳入可配置 timeout、48 frame 与 1 MiB byte/chunk budget；超时后的 overload 才转 in-stream。保留 LTS zero-output incomplete request-scoped failover、abnormal reasoning retry/finalizer、affinity、upstream-model 和 usage attribution。 |
+| `bef1f65c` pre-HTTP transport retry | adapted | TLS/DNS/dial/reset 可在 request-retry 内重试且不污染 credential；typed EOF/UnexpectedEOF/abnormal-close 502 继续执行 LTS bounded transient cooldown，因此 `transient-eof-cooldown` 仍 `patch-still-required`。 |
+| `c4982e84` relayed tool-result image guard | adapted / upstream-equivalent candidate | 吸收标准 synthetic relay stripping；继续保留非标准 relay 的 LTS fallback omission marker。候选补丁本阶段不退休、不删除 shared production code/tests。 |
+| `7fcbdf88` web-search/citation、`8c984672` orphan function output、`7def8425` tool name | adapted | 吸收 translator 修复与 request envelope；保留 plaintext provenance、parallel tool-call turn grouping、`thinking.ParseSuffix` 和 Responses effort/summary 独立语义。 |
+| Devin/Gemini/Interactions/Responses 修复 | absorbed + adapted | 普通 provider、schema、tool、signature、terminal-stream 修复吸收；经过对应 translator/executor tests，不改变 LTS signature/replay、token accounting 或 Management usage shape。 |
+
+Stage 2 文本冲突集中在 `cmd/server/main.go`、`config.example.yaml`、Management auth handlers/tests、Codex client/bootstrap、pluginhost/config watcher、OpenAI/Antigravity translators、OpenAI-compatible tool results 与 auth conductor。三语 README 继续保持 commercial-neutral；upstream `AGENTS.md` 未进入 staged diff。
+
+## Stage 2 protected delta review
+
+- usage/Panel/queue：`internal/usage/`、Management `/usage*`、`usage-statistics-enabled`、Redis usage queue、canonical usage v3 和 `CPA-Panel-LTS` 默认源未被替换或降级。
+- auth lifecycle：Meta prepare/refresh 使用 persist-lock -> manager-lock 顺序，持久化成功后才安装 runtime snapshot；reload/remove 与 provider generation 仍可阻止旧 mint 写回。
+- retry/cooldown：吸收 pre-HTTP retry，但没有把 terminal EOF 泛化为 cooldown-free；Home retry limit、model fallback、request-scoped stop 与 LTS cooldown wait contract 均保留。
+- Codex stream：timeout/frame/byte budget 按 translated chunks 计入；只有 timeout 前的 overload/capacity 可在 header commit 前 failover，zero-output incomplete 继续是 request-scoped，其他非 overload terminal 保持 in-stream。
+- translator：Responses `reasoning.effort` 不隐式打开 visible summary；function/custom output 前继续 flush pending calls；Antigravity native web search 保留 suffix/capability 解析。
+- tool image：text-only standard relay 删除 synthetic user image message并把 marker 合并到 tool content；非标准 image part 也替换 marker；multimodal/unspecified target 保留 image relay。
+- Management/plugin：auth-file pagination、Meta token resolution、priority scheduler 与 plugin config 为 additive；hook errors 经过 redaction，不改变 usage endpoint/Panel response shape。
+- downstream patches：`responses-effort-summary-independence`、`transient-eof-cooldown`、plaintext provenance、auth generation/state isolation、Management error redaction 和 text-only fallback 均继续 `patch-still-required`；本阶段没有直接退休补丁。
+- validation boundary：本阶段只验证源码、本地构建和测试；Release、部署、HF/Home、真实 provider、真实账号与浏览器 UAT 未执行。
+
+## Stage 2 本地验证
+
+- `scripts/check-lts-contract.sh`
+- `go run ./scripts/ltsregistry --root .`
+- `go test ./internal/usage ./internal/api/handlers/management ./test -run 'Usage|usage'`
+- Codex bootstrap/abnormal retry/stream、Meta mint/generation、transport retry/cooldown、Management pagination/redaction、translator/tool-result、plugin/config/watcher 与 SDK WebSocket 定向测试
+- `go build -o /dev/null ./cmd/server`
+- `go test ./...`
+- `go list ./... | rg -v '/tmp$' | xargs go test -count=1`
+- `git diff --check` 与 `git diff --cached --check`
+
+Stage 2 的 exact-head CI、PR merge 和 post-merge readback 待远端完成后补记；Stage 3 尚未执行，不能用 Stage 2 结果替代。

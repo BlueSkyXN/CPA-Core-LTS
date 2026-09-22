@@ -18,7 +18,7 @@ Devin uses the existing management OAuth callback/status contract. No session to
 4. Poll `GET /v0/management/get-auth-status?state=...` with the management key. `status` is `wait`, `ok` after credentials are saved, or `error` with an `error` message. A successful callback submission alone does not mean token exchange has completed.
 5. Cancel a pending attempt with `DELETE /v0/management/oauth-session?state=...`.
 
-The generated redirect uses the server's configured port and TLS mode at `127.0.0.1:<port>/devin/callback`. When the browser can reach that loopback server (local deployment or an appropriate tunnel), the public callback route accepts the redirect automatically. Remote deployments do not require opening an extra callback port: use step 3 instead. This is a browser authorization-code flow, not a device-code flow.
+The generated redirect uses the server's configured port at `http://127.0.0.1:<port>/callback` (Devin's authorization page strictly validates that the redirect URI is `http://127.0.0.1:<port>/callback`). When the browser can reach that loopback server (local deployment or an appropriate tunnel), the public callback route accepts the redirect automatically. Remote deployments do not require opening an extra callback port: use step 3 instead. This is a browser authorization-code flow, not a device-code flow.
 
 Authorization must finish within five minutes. Credentials use the same `devin-*.json` format as `--devin-login`, including normalized session tokens, OAuth auth kind, and best-effort profile/plan metadata. Account/quota enrichment failures do not invalidate an otherwise valid session token.
 

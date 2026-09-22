@@ -142,14 +142,14 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 // UpdatePreparedAuth atomically merges request preparation results into the latest runtime auth
 // under the manager lock, preserving concurrent modifications without modifying refresh lifecycle fields.
 func (m *Manager) UpdatePreparedAuth(ctx context.Context, base, updated *Auth) (*Auth, error) {
-	saved, _, err := m.updateFromAsync(ctx, base, updated)
+	saved, _, err := m.updateFromAsyncWithMode(ctx, base, updated, updateModePrepare)
 	return saved, err
 }
 
 // UpdateRefreshedAuth atomically merges refresh results into the latest runtime auth
 // under the manager lock, preserving concurrent modifications (proxy_url, notes, weights, etc.).
 func (m *Manager) UpdateRefreshedAuth(ctx context.Context, base, updated *Auth) (*Auth, error) {
-	saved, _, err := m.updateFromAsync(ctx, base, updated)
+	saved, _, err := m.updateFromAsyncWithMode(ctx, base, updated, updateModeRefresh)
 	return saved, err
 }
 
@@ -164,28 +164,47 @@ func (m *Manager) updateIfGeneration(ctx context.Context, auth *Auth, expectedGe
 }
 
 func (m *Manager) update(ctx context.Context, auth *Auth, expectedGeneration uint64, requireGeneration bool) (*Auth, bool, error) {
-	return m.updateWithBase(ctx, auth, expectedGeneration, requireGeneration, nil)
+	return m.updateWithBase(ctx, auth, expectedGeneration, requireGeneration, nil, updateModeReplace)
 }
+
+type updateAuthMode int
+
+const (
+	updateModeReplace updateAuthMode = iota
+	updateModeRefresh
+	updateModePrepare
+)
 
 // updateFromAsync applies only changes made by refresh/preparation since base.
 // The private lifecycle generation and public registration epoch remain fences.
 func (m *Manager) updateFromAsync(ctx context.Context, base, updated *Auth) (*Auth, bool, error) {
+	return m.updateFromAsyncWithMode(ctx, base, updated, updateModeReplace)
+}
+
+func (m *Manager) updateFromAsyncWithMode(ctx context.Context, base, updated *Auth, mode updateAuthMode) (*Auth, bool, error) {
 	if base == nil || updated == nil {
 		return nil, false, nil
 	}
 	if base.ID != updated.ID || base.Provider != updated.Provider {
 		return nil, false, authLifecycleChangedError()
 	}
-	return m.updateWithBase(ctx, updated, base.generation, true, base)
+	return m.updateWithBase(ctx, updated, base.generation, true, base, mode)
 }
 
-func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGeneration uint64, requireGeneration bool, base *Auth) (*Auth, bool, error) {
+func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGeneration uint64, requireGeneration bool, base *Auth, mode updateAuthMode) (*Auth, bool, error) {
 	if auth == nil || auth.ID == "" {
 		return nil, false, nil
 	}
 	NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, false, fmt.Errorf("update auth: %w", errWeight)
+	}
+	persistMetaMint := (mode == updateModePrepare || mode == updateModeRefresh) && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta")
+	var metaPersistLock *authPersistLock
+	if persistMetaMint && m.store != nil && !shouldSkipPersist(ctx) {
+		metaPersistLock = m.persistLockFor(auth.ID)
+		metaPersistLock.mu.Lock()
+		defer metaPersistLock.mu.Unlock()
 	}
 	m.mu.Lock()
 	existing, ok := m.auths[auth.ID]
@@ -195,6 +214,9 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 	}
 	if requireGeneration && existing.generation != expectedGeneration {
 		m.mu.Unlock()
+		if persistMetaMint {
+			return nil, false, authLifecycleChangedError()
+		}
 		return nil, false, nil
 	}
 	if base != nil {
@@ -280,6 +302,15 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
+	// A minted Meta key must reach the configured store before requests can use it.
+	// Keep the epoch check, save and installation together so a concurrent reload
+	// or removal cannot let an obsolete mint overwrite the credential on disk.
+	if persistMetaMint {
+		if errPersist := m.persistSnapshotWithLock(ctx, auth, metaPersistLock); errPersist != nil {
+			m.mu.Unlock()
+			return nil, false, fmt.Errorf("persist meta auth: %w", errPersist)
+		}
+	}
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
@@ -290,7 +321,9 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 		m.scheduler.upsertAuth(authClone.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	if !persistMetaMint {
+		_ = m.persist(ctx, auth)
+	}
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -450,6 +483,16 @@ type authPersistLock struct {
 	lastGeneration uint64
 }
 
+func (m *Manager) persistLockFor(authID string) *authPersistLock {
+	lockValue, _ := m.persistLocks.LoadOrStore(authID, &authPersistLock{})
+	lock, _ := lockValue.(*authPersistLock)
+	if lock == nil {
+		lock = &authPersistLock{}
+		m.persistLocks.Store(authID, lock)
+	}
+	return lock
+}
+
 // persist saves the latest snapshot for this lifecycle. It re-reads m.auths
 // under m.mu, so callers must not hold m.mu: capture a clone inside the
 // critical section and persist after unlocking.
@@ -457,12 +500,7 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if m.store == nil || auth == nil || shouldSkipPersist(ctx) {
 		return nil
 	}
-	lockValue, _ := m.persistLocks.LoadOrStore(auth.ID, &authPersistLock{})
-	lock, _ := lockValue.(*authPersistLock)
-	if lock == nil {
-		lock = &authPersistLock{}
-		m.persistLocks.Store(auth.ID, lock)
-	}
+	lock := m.persistLockFor(auth.ID)
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	// A newer update may have reached persistence first. Save the latest
@@ -475,6 +513,20 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	}
 	auth = current.Clone()
 	m.mu.RUnlock()
+	return m.persistSnapshotWithLock(ctx, auth, lock)
+}
+
+// persistSnapshotWithLock saves an already lifecycle-validated snapshot. The caller
+// must hold lock when persistence is enabled; Meta prepare/refresh acquires it before
+// m.mu so the minted credential is durable before it becomes request-visible without
+// reversing the normal persist-lock -> manager-lock ordering.
+func (m *Manager) persistSnapshotWithLock(ctx context.Context, auth *Auth, lock *authPersistLock) error {
+	if m.store == nil || auth == nil || shouldSkipPersist(ctx) {
+		return nil
+	}
+	if lock == nil {
+		return fmt.Errorf("persist auth: missing lifecycle lock")
+	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return fmt.Errorf("persist auth: %w", errWeight)
 	}

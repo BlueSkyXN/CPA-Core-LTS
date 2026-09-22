@@ -191,71 +191,102 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	sawOutputDelta := false
 	var bootstrapLines [][]byte
 	if e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering {
+		bootstrapTimeout := e.cfg.Codex.StreamBootstrapTimeoutDuration()
+		bootstrapStart := nowCodexBootstrap()
+		bootstrapClaudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
+		var bootstrapParam any
 		bootstrapReleased := false
-		handshakeEvents := 0
+		bufferedFrames := 0
+		bufferedBytes := 0
 		for scanner.Scan() {
 			rawLine := bytes.Clone(scanner.Bytes())
 			bootstrapLines = append(bootstrapLines, rawLine)
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
-			if _, transformed := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); transformed {
-				handshakeEvents++
-				if handshakeEvents >= codexBootstrapMaxBufferedEvents {
-					helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap buffer limit %d reached, releasing stream without overload probing", codexBootstrapMaxBufferedEvents)
+			translatedLine := bytes.Clone(line)
+			bufferable := false
+			if transformedLine, transformed := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); transformed {
+				translatedLine = transformedLine
+				bufferable = true
+			} else if !bytes.HasPrefix(line, dataTag) {
+				// SSE comments, event/id/retry lines and blank separators are held
+				// with the data frame they describe and spend the same budgets.
+				bufferable = true
+			} else {
+				data := bytes.TrimSpace(line[5:])
+				data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+				translatedLine = append([]byte("data: "), data...)
+				reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(data))
+				observeCodexTokenEvent(reporter, data)
+				if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
+					if isCodexOverloadBootstrapFailure(terminalBody) {
+						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
+						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+						if !timeoutReached {
+							for _, bufferedLine := range bootstrapLines {
+								loggedLine := applyCodexIdentityConfuseResponsePayload(bufferedLine, identityState)
+								helps.AppendAPIResponseChunk(ctx, e.cfg, loggedLine)
+							}
+							closeResponseBody()
+							if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
+								helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
+								reporter.PublishFailure(ctx, errClearReplay)
+								return nil, errClearReplay
+							}
+							overloadErr := newCodexBootstrapOverloadErr(terminalBody)
+							helps.RecordAPIResponseError(ctx, e.cfg, overloadErr)
+							reporter.PublishFailure(ctx, overloadErr)
+							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered frames, failing over", bufferedFrames)
+							return nil, overloadErr
+						}
+						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d frames / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
+					}
+					// Only overload/capacity rejections are converted into a request-level
+					// failover above. Other terminal failures keep their ordinary in-stream
+					// delivery, so the downstream observes the same result as an unbuffered
+					// stream and an unrelated credential is not burned.
 					bootstrapReleased = true
 					break
 				}
-				continue
-			}
-			if !bytes.HasPrefix(line, dataTag) {
-				continue
-			}
 
-			data := bytes.TrimSpace(line[5:])
-			data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
-			reporter.SetUpstreamModel(helps.CodexUpstreamResponseModel(data))
-			observeCodexTokenEvent(reporter, data)
-			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
-				if isCodexOverloadBootstrapFailure(terminalBody) {
-					for _, bufferedLine := range bootstrapLines {
-						loggedLine := applyCodexIdentityConfuseResponsePayload(bufferedLine, identityState)
-						helps.AppendAPIResponseChunk(ctx, e.cfg, loggedLine)
-					}
+				eventType := gjson.GetBytes(data, "type").String()
+				// Bootstrap has only retained non-generated frames; any prior output
+				// would already have released this stream to the delivery path.
+				if helps.IsCodexTerminalEmptyIncomplete(data, 0, false) {
 					closeResponseBody()
-					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
-						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
-						reporter.PublishFailure(ctx, errClearReplay)
-						return nil, errClearReplay
-					}
-					overloadErr := newCodexBootstrapOverloadErr(terminalBody)
-					helps.RecordAPIResponseError(ctx, e.cfg, overloadErr)
-					reporter.PublishFailure(ctx, overloadErr)
-					helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered handshake events, failing over", handshakeEvents)
-					return nil, overloadErr
+					streamErr := newCodexEmptyIncompleteStreamError()
+					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+					reporter.PublishFailure(ctx, streamErr)
+					return nil, streamErr
 				}
-				bootstrapReleased = true
-				break
+				bufferable = isCodexBootstrapBufferableEvent(eventType, data)
+				if !bufferable {
+					bootstrapReleased = true
+					break
+				}
 			}
 
-			eventType := gjson.GetBytes(data, "type").String()
-			// Bootstrap has only retained handshake metadata; any prior output
-			// would already have released this stream to the delivery path.
-			if helps.IsCodexTerminalEmptyIncomplete(data, 0, false) {
-				closeResponseBody()
-				streamErr := newCodexEmptyIncompleteStreamError()
-				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
-				return nil, streamErr
+			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
+			translatedChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &bootstrapParam, bootstrapClaudeInputTokens)
+			frameBytes := len(rawLine)
+			for i := range translatedChunks {
+				frameBytes += len(translatedChunks[i])
 			}
-			if !isCodexHandshakeMetadataEvent(eventType) {
-				bootstrapReleased = true
-				break
+			timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
+			timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+			if !timeoutReached && bufferedFrames < codexBootstrapMaxBufferedFrames && bufferedBytes+frameBytes <= codexBootstrapMaxBufferedBytes {
+				bufferedFrames++
+				bufferedBytes += frameBytes
+				continue
 			}
-			handshakeEvents++
-			if handshakeEvents >= codexBootstrapMaxBufferedEvents {
-				helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap buffer limit %d reached, releasing stream without overload probing", codexBootstrapMaxBufferedEvents)
-				bootstrapReleased = true
-				break
+			exhausted := "frame budget"
+			if timeoutReached {
+				exhausted = "time budget"
+			} else if bufferedFrames < codexBootstrapMaxBufferedFrames {
+				exhausted = "byte budget"
 			}
+			helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap %s exhausted after %d frames / %d bytes / %v, releasing stream without overload probing", exhausted, bufferedFrames, bufferedBytes, timeSinceStart)
+			bootstrapReleased = true
+			break
 		}
 		if !bootstrapReleased {
 			closeResponseBody()

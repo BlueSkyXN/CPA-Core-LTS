@@ -32,14 +32,15 @@ func TestDevinOAuthRoutes(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name, provider, query string
-		want                  int
+		name, provider, query, callbackPath string
+		want                                int
 	}{
-		{name: "success", provider: "devin", query: "code=test-code", want: http.StatusOK},
-		{name: "denied", provider: "devin", query: "error=access_denied", want: http.StatusOK},
-		{name: "wrong provider", provider: "codex", query: "code=test-code", want: http.StatusBadRequest},
-		{name: "missing code", provider: "devin", want: http.StatusBadRequest},
-		{name: "unknown state", query: "code=test-code", want: http.StatusBadRequest},
+		{name: "success", provider: "devin", query: "code=test-code", callbackPath: "/callback", want: http.StatusOK},
+		{name: "success legacy path", provider: "devin", query: "code=test-code", callbackPath: "/devin/callback", want: http.StatusOK},
+		{name: "denied", provider: "devin", query: "error=access_denied", callbackPath: "/callback", want: http.StatusOK},
+		{name: "wrong provider", provider: "codex", query: "code=test-code", callbackPath: "/callback", want: http.StatusBadRequest},
+		{name: "missing code", provider: "devin", callbackPath: "/callback", want: http.StatusBadRequest},
+		{name: "unknown state", query: "code=test-code", callbackPath: "/callback", want: http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := "devin-route-" + strings.ReplaceAll(test.name, " ", "-")
@@ -48,12 +49,16 @@ func TestDevinOAuthRoutes(t *testing.T) {
 				defer management.CompleteOAuthSession(state)
 			}
 			w := httptest.NewRecorder()
-			server.engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/devin/callback?state="+state+"&"+test.query, nil))
+			path := test.callbackPath
+			if path == "" {
+				path = "/callback"
+			}
+			server.engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?state="+state+"&"+test.query, nil))
 			if w.Code != test.want {
 				t.Fatalf("callback: %d %s", w.Code, w.Body.String())
 			}
-			path := filepath.Join(server.cfg.AuthDir, ".oauth-devin-"+state+".oauth")
-			data, errRead := os.ReadFile(path)
+			filePath := filepath.Join(server.cfg.AuthDir, ".oauth-devin-"+state+".oauth")
+			data, errRead := os.ReadFile(filePath)
 			if test.want == http.StatusOK {
 				if errRead != nil {
 					t.Fatal(errRead)

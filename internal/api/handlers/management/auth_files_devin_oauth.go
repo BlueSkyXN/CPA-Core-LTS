@@ -31,9 +31,19 @@ var newDevinOAuthService = func(cfg *config.Config) devinOAuthService {
 	return devin.NewDevinAuthService(client)
 }
 
+// devinCallbackURL builds the required loopback callback URL for Devin OAuth.
+// Devin's authorization page strictly validates that redirect_uri matches
+// http://127.0.0.1:<port>/callback (http protocol, 127.0.0.1 host, and /callback path).
+func (h *Handler) devinCallbackURL() (string, error) {
+	if h == nil || h.cfg == nil || h.cfg.Port <= 0 {
+		return "", fmt.Errorf("server port is not configured")
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/callback", h.cfg.Port), nil
+}
+
 // RequestDevinToken starts the same callback/status flow used by the other WebUI providers.
 func (h *Handler) RequestDevinToken(c *gin.Context) {
-	redirectURI, errRedirect := h.managementCallbackURL("/devin/callback")
+	redirectURI, errRedirect := h.devinCallbackURL()
 	if errRedirect != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 		return
