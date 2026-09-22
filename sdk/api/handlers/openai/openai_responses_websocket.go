@@ -725,6 +725,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		lastAttemptedAuthID := pinnedAuthID
 		attemptedUpstreamMode := responsesWebsocketUpstreamModeUnknown
 		selectedAuthObserved := false
+		nativeRequest := util.IsCodexResponsesLiteRequest(payload, c.Request.Header)
+		var preserveNativeOutput atomic.Bool
 		pinnedAuthAttempted := false
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, executionParent)
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
@@ -739,6 +741,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			cliCtx = handlers.WithCodexModelFallbackContextResetReplay(cliCtx)
 		}
 		cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+			preserveNativeOutput.Store(false)
 			authID = strings.TrimSpace(authID)
 			if authID == "" || h == nil || h.AuthManager == nil {
 				return
@@ -751,6 +754,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				return
 			}
 			attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
+			preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 			if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
 				rememberPinnedAuth(authID, modelName)
 			}
@@ -780,8 +784,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			wsTimelineLog,
 			passthroughSessionID,
 			responsesWebsocketForwardOptions{
-				toolCacheTurn: toolCacheTurn,
-				suppressError: replayPinnedAuthFailure,
+				preserveCompletionOutput: preserveNativeOutput.Load,
+				toolCacheTurn:            toolCacheTurn,
+				suppressError:            replayPinnedAuthFailure,
 			},
 		)
 		if errForward != nil {

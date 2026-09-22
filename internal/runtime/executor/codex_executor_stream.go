@@ -53,6 +53,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+	preserveNativeOutput := helps.IsNativeCodexRequest(req.Payload, opts)
 	isGrokClient := grokbuild.IsGrokClientContext(ctx, opts.Headers)
 	to := sdktranslator.FromString("codex")
 	reporter.EnableSemanticTiming(to.String())
@@ -83,7 +84,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		body, _ = sjson.SetBytes(body, "stream_options.reasoning_summary_delivery", reasoningSummaryDelivery.Value())
 	}
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = normalizeCodexInstructions(body)
+	body = normalizeCodexInstructions(body, preserveNativeOutput)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
@@ -458,7 +459,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 							_ = abnormalRetry.RetryError(detail, reporter.ReasoningEffort())
 						}
 					}
-					completedData = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					completedData = data
+					if !preserveNativeOutput {
+						completedData = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+					}
 					outputItemsByIndex = nil
 					outputItemsFallback = nil
 					outputItemsBytes = 0
