@@ -117,18 +117,8 @@ func (r *pluginRuntime) startRunner(ctx context.Context, auth qoderAuth, request
 	return client, nil
 }
 
-func (r *pluginRuntime) transportForAuth(auth qoderAuth, requestedTransport ...string) string {
-	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
-		return strings.ToLower(strings.TrimSpace(requestedTransport[0]))
-	}
-	if auth.Transport != "" {
-		return auth.Transport
-	}
-	cfg := r.loadedConfig()
-	if cfg.Transport == "" {
-		return "sdk_cli"
-	}
-	return cfg.Transport
+func (r *pluginRuntime) transportForAuth(qoderAuth, ...string) string {
+	return "direct_openai"
 }
 
 func (r *pluginRuntime) acquireSession(ctx context.Context, req pluginapi.ExecutorRequest, auth qoderAuth) (*runnerSession, error) {
@@ -288,97 +278,7 @@ func closeMatches(session *runnerSession, req pluginapi.CloseExecutionSessionReq
 }
 
 func (r *pluginRuntime) readiness(req pluginapi.ReadinessRequest) pluginapi.ReadinessResponse {
-	cfg := r.loadedConfig()
-	if readinessTransport(cfg, req) == "direct_openai" {
-		return r.nativeReadiness(req, cfg)
-	}
-	checks := []pluginapi.ReadinessCheck{{Level: pluginapi.ReadinessLevelPluginInstalled, State: pluginapi.ReadinessStateReady, Version: pluginVersion}}
-	if cfg.QoderCLIPath == "" && readinessTransport(cfg, req) == "sdk_cli" {
-		checks = append(checks,
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateUnknown, Message: "runner command is configured but was not started"},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelProtocolReady, State: pluginapi.ReadinessStateNotReady, Message: "qoder_cli_path is required"},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelAuthReady, State: pluginapi.ReadinessStateUnknown, Message: "protocol is not ready"},
-		)
-		return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: false, Generation: pluginVersion, Checks: checks}
-	}
-	if len(req.StorageJSON) == 0 {
-		if cfg.Transport == "direct_openai" {
-			protocolState := pluginapi.ReadinessStateReady
-			protocolMessage := "direct endpoint configuration is present; selected auth is required for remote checks"
-			if cfg.DirectEndpoint == "" {
-				protocolState = pluginapi.ReadinessStateNotReady
-				protocolMessage = "direct_endpoint is required for direct_openai"
-			}
-			checks = append(checks,
-				pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateReady, Version: "direct-openai"},
-				pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelProtocolReady, State: protocolState, Message: protocolMessage},
-				pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelAuthReady, State: pluginapi.ReadinessStateUnknown, Message: "selected credential was not supplied"},
-			)
-			return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: req.Purpose != pluginapi.ReadinessPurposeAdmission && protocolState == pluginapi.ReadinessStateReady, Generation: pluginVersion, Capabilities: []string{"chat_completions", "stream", "direct_openai"}, Checks: checks}
-		}
-		checks = append(checks,
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateReady, Message: "runner command and explicit CLI path are configured"},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelProtocolReady, State: pluginapi.ReadinessStateUnknown, Message: "runner handshake requires a selected auth-local process"},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelAuthReady, State: pluginapi.ReadinessStateUnknown, Message: "selected credential was not supplied"},
-		)
-		return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: req.Purpose != pluginapi.ReadinessPurposeAdmission, Generation: pluginVersion, Checks: checks}
-	}
-	auth, errAuth := parseStoredAuth(req.StorageJSON)
-	if errAuth != nil {
-		checks = append(checks,
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateUnknown},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelProtocolReady, State: pluginapi.ReadinessStateUnknown},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelAuthReady, State: pluginapi.ReadinessStateNotReady, Message: "selected Qoder credential is invalid"},
-		)
-		return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: false, Generation: pluginVersion, Checks: checks}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.RequestTimeout)
-	defer cancel()
-	transport := r.transportForAuth(auth)
-	client, errStart := r.startRunner(ctx, auth, transport)
-	if errStart != nil {
-		checks = append(checks,
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateNotReady, Message: "Qoder runner could not be started"},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelProtocolReady, State: pluginapi.ReadinessStateNotReady, Message: "Qoder runner handshake failed"},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelAuthReady, State: pluginapi.ReadinessStateUnknown},
-		)
-		return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: false, Generation: pluginVersion, Checks: checks}
-	}
-	defer client.shutdown()
-	var state runnerReadiness
-	errProbe := client.call(ctx, "readiness", map[string]any{"auth": auth.runnerAuth(transport)}, &state)
-	if errProbe != nil {
-		checks = append(checks,
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateReady},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelProtocolReady, State: pluginapi.ReadinessStateReady, Version: strconv.Itoa(runnerProtocol)},
-			pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelAuthReady, State: pluginapi.ReadinessStateNotReady, Message: "Qoder auth readiness failed"},
-		)
-		return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: false, Generation: pluginVersion, Checks: checks}
-	}
-	checks = append(checks, state.Checks...)
-	capabilities := []string{"chat_completions", "stream", "sessions", "cancel", "close", "fixed_permissions"}
-	if transport == "direct_openai" {
-		capabilities = []string{"chat_completions", "stream", "cancel", "close", "direct_openai", "client_tools"}
-	} else {
-		checks = append(checks, pluginapi.ReadinessCheck{Level: pluginapi.ReadinessLevelSessionReady, State: pluginapi.ReadinessStateUnknown, Message: "session is created by executor start"})
-	}
-	return pluginapi.ReadinessResponse{
-		Provider: pluginIdentifier, Ready: state.Ready, Generation: pluginVersion,
-		Capabilities: capabilities, Checks: checks,
-	}
-}
-
-func readinessTransport(cfg pluginConfig, req pluginapi.ReadinessRequest) string {
-	if len(req.StorageJSON) > 0 {
-		var auth qoderAuth
-		if json.Unmarshal(req.StorageJSON, &auth) == nil && strings.TrimSpace(auth.Transport) != "" {
-			return strings.ToLower(strings.TrimSpace(auth.Transport))
-		}
-	}
-	if cfg.Transport == "direct_openai" {
-		return "direct_openai"
-	}
-	return "sdk_cli"
+	return r.nativeReadiness(req, r.loadedConfig())
 }
 
 func (r *pluginRuntime) quiesce() {

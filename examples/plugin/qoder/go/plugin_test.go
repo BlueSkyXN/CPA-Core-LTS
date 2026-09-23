@@ -25,8 +25,14 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 		t.Fatalf("parse PAT = %#v, %v", pat, errPAT)
 	}
 	direct, errDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"direct_openai","pat":"pt-fixture"}`))
-	if errDirect != nil || direct.Transport != "direct_openai" || direct.AuthMode != "pat" {
-		t.Fatalf("parse direct = %#v, %v", direct, errDirect)
+	if errDirect != nil || direct.Transport != "" || direct.AuthMode != "pat" || direct.PAT != "pt-fixture" {
+		t.Fatalf("parse direct compatibility transport = %#v, %v", direct, errDirect)
+	}
+	if _, errSDK := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"sdk_cli","pat":"pt-fixture"}`)); errSDK == nil {
+		t.Fatal("sdk_cli transport was accepted")
+	}
+	if _, errUnknown := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"carrier_pigeon","pat":"pt-fixture"}`)); errUnknown == nil {
+		t.Fatal("unknown transport was accepted")
 	}
 	legacy, errLegacy := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"pt-legacy","account_id":"legacy-account"}`))
 	if errLegacy != nil || legacy.tokenSource() != "pt-legacy" || legacy.AccountID != "legacy-account" {
@@ -39,16 +45,14 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if errLegacyBearer != nil || legacyBearer.runnerAuth()["mode"] != "access_token" {
 		t.Fatalf("legacy bearer access_token runner auth = %#v, err=%v", legacyBearer.runnerAuth(), errLegacyBearer)
 	}
-	local, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","access_token":"legacy-ignored","account_id":"legacy-account","profile_id":"cn-main","config_dir":"/tmp/qoder-cn","label":"Qoder CN"}`))
-	if errLocal != nil || local.AuthMode != "local_cli" || local.ProfileID != "cn-main" || local.ConfigDir != "/tmp/qoder-cn" || local.AccessToken != "" || local.AccountID != "" {
-		t.Fatalf("local_cli auth = %#v, err=%v", local, errLocal)
+	if _, errLocal := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocal == nil {
+		t.Fatal("local_cli auth was accepted")
 	}
-	localRunnerAuth := local.runnerAuth()
-	if localRunnerAuth["mode"] != "local_cli" || localRunnerAuth["profile_id"] != "cn-main" {
-		t.Fatalf("local_cli runner auth = %#v", localRunnerAuth)
+	if _, errLocalPAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","pat":"pt-invalid-mix","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalPAT == nil {
+		t.Fatal("local_cli with the new pat field was accepted")
 	}
-	if _, errLocalDirect := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","transport":"direct_openai","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalDirect == nil {
-		t.Fatal("local_cli direct transport was accepted")
+	if _, errMissingMode := parseStoredAuth([]byte(`{"type":"qoder","pat":"pt-fixture"}`)); errMissingMode == nil {
+		t.Fatal("missing auth_mode was accepted")
 	}
 	if _, errWhitespace := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":" pt-valid "}`)); errWhitespace == nil {
 		t.Fatal("PAT with surrounding whitespace was accepted")
@@ -58,9 +62,6 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	}
 	if _, errExplicitOpaquePAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","pat":"opaque","access_token":"opaque"}`)); errExplicitOpaquePAT == nil {
 		t.Fatal("explicit non-pt PAT was accepted through the legacy access_token field")
-	}
-	if _, errLocalPAT := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"local_cli","pat":"pt-invalid-mix","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`)); errLocalPAT == nil {
-		t.Fatal("local_cli with the new pat field was accepted")
 	}
 	safe := string(errorEnvelope(newPluginCallError("invalid_auth", "Qoder authentication failed", 401, false)))
 	if strings.Contains(safe, secret) {
@@ -224,13 +225,19 @@ direct_models:
 	if errDirect != nil || direct.Transport != "direct_openai" || len(direct.DirectModels) != 1 || direct.DirectAuthEndpoint != "https://openapi.example.test" {
 		t.Fatalf("direct config = %#v, %v", direct, errDirect)
 	}
-	if _, errNoModels := decodePluginConfig([]byte(`
-transport: direct_openai
-runner_command: /usr/local/bin/cpa-qoder-runner
-working_directory: /tmp
-direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
-`)); errNoModels == nil {
-		t.Fatal("direct config without model source was accepted")
+	empty, errEmpty := decodePluginConfig(nil)
+	if errEmpty != nil || empty.Transport != "direct_openai" ||
+		empty.DirectEndpoint != "https://gateway.qoder.com.cn/model/v1/chat/completions" ||
+		empty.DirectModelsEndpoint != "https://gateway.qoder.com.cn/algo/api/v2/model/list" ||
+		empty.OpenAPIEndpoint != "https://openapi.qoder.com.cn" ||
+		empty.DirectCatalogFormat != "qoder" || empty.DirectTokenMode != "auto" {
+		t.Fatalf("empty config native defaults = %#v, %v", empty, errEmpty)
+	}
+	if _, errSDKCLI := decodePluginConfig([]byte("transport: sdk_cli\n")); errSDKCLI == nil {
+		t.Fatal("sdk_cli transport config was accepted")
+	}
+	if _, errBadTransport := decodePluginConfig([]byte("transport: carrier_pigeon\n")); errBadTransport == nil {
+		t.Fatal("unknown transport config was accepted")
 	}
 	if _, errNoOpenAPI := decodePluginConfig([]byte(`
 transport: direct_openai
@@ -254,17 +261,6 @@ direct_models:
 `))
 	if errBearer != nil || bearer.DirectTokenMode != "bearer" || bearer.OpenAPIEndpoint != "https://openapi.example.test" || bearer.DirectAuthEndpoint != bearer.OpenAPIEndpoint {
 		t.Fatalf("legacy bearer config = %#v, %v", bearer, errBearer)
-	}
-	if _, errMissingAuth := decodePluginConfig([]byte(`
-transport: direct_openai
-runner_command: /usr/local/bin/cpa-qoder-runner
-working_directory: /tmp
-direct_endpoint: https://api2-v2.example.test/model/v1/chat/completions
-direct_token_mode: pat_exchange
-direct_models:
-  - id: qfmodel
-`)); errMissingAuth == nil {
-		t.Fatal("pat_exchange config without an auth endpoint was accepted")
 	}
 	if _, errOwnedArg := decodePluginConfig([]byte(`
 runner_command: /usr/local/bin/cpa-qoder-runner
@@ -656,36 +652,10 @@ func TestRunnerExitTakesPriorityOverBufferedEvents(t *testing.T) {
 	}
 }
 
-func TestRunnerCrashIsRestartableWithFreshSession(t *testing.T) {
+func TestExecutorAlwaysRunsNativeDirect(t *testing.T) {
 	runtime := newPluginRuntime(nil)
-	runtime.config = fakeRunnerConfig(t)
-	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "crash"}
-	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`)
-	req := pluginapi.ExecutorRequest{
-		RequestID: "request-restart", ExecutionSessionID: "session-restart", CallerScope: "caller", WorkspaceIdentity: "workspace",
-		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
-		Payload: []byte(`{"messages":[{"role":"user","content":"reply OK"}]}`), StorageJSON: authJSON,
-	}
-	if _, errCrash := runtime.startTurn(req); errCrash == nil {
-		t.Fatal("crashing runner start succeeded")
-	}
-	runtime.mu.Lock()
-	runtime.runnerExtraEnv["QODER_FAKE_MODE"] = "success"
-	runtime.mu.Unlock()
-	session, errRestart := runtime.startTurn(req)
-	if errRestart != nil {
-		t.Fatalf("fresh runner restart failed: %v", errRestart)
-	}
-	runtime.completeTurn(session, req.RequestID)
-	runtime.dropSession(session)
-}
-
-func TestNonStreamRunnerCrashReturnsConnectionLifecycleAndRecovers(t *testing.T) {
-	runtime := newPluginRuntime(nil)
-	runtime.config = fakeRunnerConfig(t)
-	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "crash"}
 	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
-		RequestID: "request-nonstream-crash", ExecutionSessionID: "session-nonstream-crash", CallerScope: "caller", WorkspaceIdentity: "workspace",
+		RequestID: "request-native", ExecutionSessionID: "session-native", CallerScope: "caller", WorkspaceIdentity: "workspace",
 		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
 		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
 		StorageJSON: []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`),
@@ -696,118 +666,14 @@ func TestNonStreamRunnerCrashReturnsConnectionLifecycleAndRecovers(t *testing.T)
 	}
 	_, errExecute := runtime.execute(raw)
 	callErr, ok := errExecute.(*pluginCallError)
-	if !ok || callErr.code != "connection_lifecycle" || callErr.statusCode != 0 || !callErr.retryable {
-		t.Fatalf("non-stream runner crash error = %#v, want retryable connection_lifecycle without HTTP status", errExecute)
-	}
-
-	runtime.mu.Lock()
-	runtime.runnerExtraEnv["QODER_FAKE_MODE"] = "success"
-	runtime.mu.Unlock()
-	req.RequestID = "request-nonstream-recovery"
-	raw, errMarshal = json.Marshal(req)
-	if errMarshal != nil {
-		t.Fatal(errMarshal)
-	}
-	response, errRecovery := runtime.execute(raw)
-	if errRecovery != nil || !strings.Contains(string(response.Payload), `"content":"OK"`) {
-		t.Fatalf("immediate non-stream recovery response=%s error=%v", response.Payload, errRecovery)
-	}
-	runtime.shutdown()
-}
-
-func TestIdleRunnerExitIsReplacedBeforeNextTurn(t *testing.T) {
-	runtime := newPluginRuntime(nil)
-	runtime.config = fakeRunnerConfig(t)
-	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "exit-after-success"}
-	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`)
-	request := func(requestID string) []byte {
-		req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
-			RequestID: requestID, ExecutionSessionID: "session-idle-restart", CallerScope: "caller", WorkspaceIdentity: "workspace",
-			AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
-			Payload: []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`), StorageJSON: authJSON,
-		}}
-		raw, _ := json.Marshal(req)
-		return raw
-	}
-	if _, errFirst := runtime.execute(request("request-idle-1")); errFirst != nil {
-		t.Fatalf("first turn failed: %v", errFirst)
-	}
-	key := executionSessionKey(pluginapi.ExecutorRequest{
-		ExecutionSessionID: "session-idle-restart", CallerScope: "caller", WorkspaceIdentity: "workspace",
-		AuthID: "auth-1", AuthIndex: "index-1",
-	}, qoderAuth{Type: "qoder", AuthMode: "pat", PAT: "pt-test-secret"})
-	runtime.mu.Lock()
-	firstSession := runtime.sessions[key]
-	runtime.mu.Unlock()
-	if firstSession == nil {
-		t.Fatal("persistent session missing after first turn")
-	}
-	select {
-	case <-firstSession.client.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("fake runner did not exit while idle")
+	if !ok || callErr.code != "invalid_request" || !strings.Contains(callErr.message, "host callback") {
+		t.Fatalf("execute without a host callback = %#v, want the native direct callback requirement", errExecute)
 	}
 	runtime.mu.Lock()
-	runtime.runnerExtraEnv["QODER_FAKE_MODE"] = "success"
+	sessions := len(runtime.sessions)
 	runtime.mu.Unlock()
-	if _, errSecond := runtime.execute(request("request-idle-2")); errSecond != nil {
-		t.Fatalf("next turn did not replace stale runner: %v", errSecond)
-	}
-	runtime.mu.Lock()
-	secondSession := runtime.sessions[key]
-	runtime.mu.Unlock()
-	if secondSession == nil || secondSession == firstSession {
-		t.Fatal("stale runner session was reused")
-	}
-	runtime.dropSession(secondSession)
-}
-
-func TestExecutorUsesRunnerAndProjectsChat(t *testing.T) {
-	runtime := newPluginRuntime(nil)
-	runtime.config = fakeRunnerConfig(t)
-	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success"}
-	authJSON := []byte(`{"type":"qoder","auth_mode":"pat","pat":"pt-test-secret"}`)
-	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
-		RequestID: "request-1", ExecutionSessionID: "session-1", CallerScope: "caller", WorkspaceIdentity: "workspace",
-		AuthID: "auth-1", AuthIndex: "index-1", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
-		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
-		StorageJSON: authJSON,
-	}}
-	raw, _ := json.Marshal(req)
-	response, errExecute := runtime.execute(raw)
-	if errExecute != nil {
-		t.Fatal(errExecute)
-	}
-	if !strings.Contains(string(response.Payload), `"content":"OK"`) {
-		t.Fatalf("response = %s", response.Payload)
-	}
-	if errClose := runtime.closeExecutionSessions(pluginapi.CloseExecutionSessionRequest{
-		Scope: pluginapi.ExecutionSessionCloseScopeSession, ExecutionSessionID: "session-1", CallerScope: "caller", WorkspaceIdentity: "workspace",
-	}); errClose != nil {
-		t.Fatal(errClose)
-	}
-}
-
-func TestExecutorRetainsLegacyLocalCLIAuthPath(t *testing.T) {
-	runtime := newPluginRuntime(nil)
-	runtime.config = fakeRunnerConfig(t)
-	runtime.runnerExtraEnv = map[string]string{"GO_WANT_QODER_FAKE_RUNNER": "1", "QODER_FAKE_MODE": "success"}
-	req := rpcExecutorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
-		RequestID: "request-local", ExecutionSessionID: "session-local", CallerScope: "caller", WorkspaceIdentity: "workspace",
-		AuthID: "auth-local", AuthIndex: "index-local", AuthProvider: "qoder", Model: "qfmodel", Format: "chat-completions",
-		Payload:     []byte(`{"model":"qfmodel","messages":[{"role":"user","content":"reply OK"}],"stream":false}`),
-		StorageJSON: []byte(`{"type":"qoder","auth_mode":"local_cli","profile_id":"cn-main","config_dir":"/tmp/qoder-cn"}`),
-	}}
-	raw, errMarshal := json.Marshal(req)
-	if errMarshal != nil {
-		t.Fatal(errMarshal)
-	}
-	response, errExecute := runtime.execute(raw)
-	if errExecute != nil {
-		t.Fatal(errExecute)
-	}
-	if !strings.Contains(string(response.Payload), `"content":"OK"`) {
-		t.Fatalf("local_cli response = %s", response.Payload)
+	if sessions != 0 {
+		t.Fatalf("native execution created %d runner sessions", sessions)
 	}
 }
 

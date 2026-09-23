@@ -145,7 +145,7 @@ func (r *pluginRuntime) nativeReadiness(req pluginapi.ReadinessRequest, cfg plug
 	authMessage := "selected credential was not supplied"
 	if len(req.StorageJSON) > 0 {
 		auth, err := parseStoredAuth(req.StorageJSON)
-		if err != nil || auth.AuthMode == "local_cli" || (auth.isPAT() && cfg.DirectTokenMode != "bearer" && cfg.OpenAPIEndpoint == "") {
+		if err != nil || (auth.isPAT() && cfg.DirectTokenMode != "bearer" && cfg.OpenAPIEndpoint == "") {
 			authState, authMessage = pluginapi.ReadinessStateNotReady, "selected direct credential or token exchange configuration is invalid"
 		} else {
 			authState, authMessage = pluginapi.ReadinessStateReady, "selected credential is configured; no inference probe was made"

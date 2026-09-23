@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -74,17 +73,21 @@ type directModelConfig struct {
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
-		Transport:           "sdk_cli",
-		RunnerCommand:       "cpa-qoder-runner",
-		WorkingDirectory:    os.TempDir(),
-		MaxQueueFrames:      128,
+		Transport:           "direct_openai",
+		DirectCatalogFormat: "qoder",
+		DirectTokenMode:     "auto",
+		OpenAPIUserAgent:    "qoder/1.1.40",
 		RequestTimeout:      30 * time.Second,
 		ModelCacheTTL:       time.Minute,
-		PermissionDefault:   "deny",
-		DirectTokenMode:     "auto",
-		DirectCatalogFormat: "openai",
-		OpenAPIUserAgent:    "qoder/1.1.40",
 	}
+}
+
+// nativeDirectEndpointDefaults 补齐运行原生 direct 所需的中国区默认 endpoints。
+// decode 阶段在显式配置归一化之后才应用，保证显式覆盖永远优先。
+func nativeDirectEndpointDefaults() (direct, models, openapi string) {
+	return "https://gateway.qoder.com.cn/model/v1/chat/completions",
+		"https://gateway.qoder.com.cn/algo/api/v2/model/list",
+		"https://openapi.qoder.com.cn"
 }
 
 func decodePluginConfig(raw []byte) (pluginConfig, error) {
@@ -101,7 +104,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	cfg.DirectModelsEndpoint = strings.TrimSpace(cfg.DirectModelsEndpoint)
 	cfg.DirectCatalogFormat = strings.ToLower(strings.TrimSpace(cfg.DirectCatalogFormat))
 	if cfg.DirectCatalogFormat == "" {
-		cfg.DirectCatalogFormat = "openai"
+		cfg.DirectCatalogFormat = "qoder"
 	}
 	if cfg.DirectCatalogFormat != "openai" && cfg.DirectCatalogFormat != "qoder" {
 		return pluginConfig{}, fmt.Errorf("direct_catalog_format must be openai or qoder")
@@ -110,12 +113,14 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	cfg.DirectTokenMode = strings.ToLower(strings.TrimSpace(cfg.DirectTokenMode))
 	cfg.OpenAPIEndpoint = strings.TrimRight(strings.TrimSpace(cfg.OpenAPIEndpoint), "/")
 	cfg.OpenAPIUserAgent = strings.TrimSpace(cfg.OpenAPIUserAgent)
-	if cfg.Transport == "" {
-		cfg.Transport = "sdk_cli"
+	if cfg.Transport == "sdk_cli" {
+		return pluginConfig{}, fmt.Errorf("Qoder no longer supports the sdk_cli transport; the plugin always runs native direct_openai")
 	}
-	if cfg.Transport != "sdk_cli" && cfg.Transport != "direct_openai" {
-		return pluginConfig{}, fmt.Errorf("transport must be sdk_cli or direct_openai")
+	if cfg.Transport != "" && cfg.Transport != "direct_openai" {
+		return pluginConfig{}, fmt.Errorf("Qoder transport is not supported: %s", cfg.Transport)
 	}
+	// transport is a compatibility field only; execution is fixed to native direct.
+	cfg.Transport = "direct_openai"
 	if cfg.DirectTokenMode == "" {
 		cfg.DirectTokenMode = "auto"
 	}
@@ -144,9 +149,6 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	}
 	if cfg.QoderCLIPath != "" && (!filepath.IsAbs(cfg.QoderCLIPath) || strings.ContainsRune(cfg.QoderCLIPath, '\x00')) {
 		return pluginConfig{}, fmt.Errorf("qoder_cli_path must be an absolute path")
-	}
-	if cfg.Transport == "direct_openai" && cfg.DirectEndpoint == "" {
-		return pluginConfig{}, fmt.Errorf("direct_endpoint is required when transport is direct_openai")
 	}
 	if cfg.DirectEndpoint != "" {
 		if errEndpoint := validateDirectURL(cfg.DirectEndpoint, "direct_endpoint"); errEndpoint != nil {
@@ -177,8 +179,18 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	if cfg.DirectAuthEndpoint == "" {
 		cfg.DirectAuthEndpoint = cfg.OpenAPIEndpoint
 	}
-	if cfg.DirectTokenMode == "pat_exchange" && cfg.DirectAuthEndpoint == "" {
-		return pluginConfig{}, fmt.Errorf("direct_auth_endpoint or openapi_endpoint is required when direct_token_mode is pat_exchange")
+	// Native direct defaults fill in only what the operator left unset, so an
+	// explicit regional override always wins over the China-zone defaults.
+	defaultDirect, defaultModels, defaultOpenAPI := nativeDirectEndpointDefaults()
+	if cfg.DirectEndpoint == "" {
+		cfg.DirectEndpoint = defaultDirect
+	}
+	if cfg.DirectModelsEndpoint == "" {
+		cfg.DirectModelsEndpoint = defaultModels
+	}
+	if cfg.OpenAPIEndpoint == "" {
+		cfg.OpenAPIEndpoint = defaultOpenAPI
+		cfg.DirectAuthEndpoint = cfg.OpenAPIEndpoint
 	}
 	if cfg.DirectModels != nil && len(cfg.DirectModels) > 256 {
 		return pluginConfig{}, fmt.Errorf("direct_models supports at most 256 entries")
@@ -215,13 +227,10 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 			}
 		}
 	}
-	if cfg.DirectModelsEndpoint == "" && len(cfg.DirectModels) == 0 && cfg.Transport == "direct_openai" {
-		return pluginConfig{}, fmt.Errorf("direct_models or direct_models_endpoint is required for direct_openai transport")
-	}
 	if cfg.Transport == "sdk_cli" && (cfg.WorkingDirectory == "" || !filepath.IsAbs(cfg.WorkingDirectory)) {
 		return pluginConfig{}, fmt.Errorf("working_directory must be an absolute path")
 	}
-	if cfg.MaxQueueFrames < 1 || cfg.MaxQueueFrames > 4096 {
+	if cfg.MaxQueueFrames < 0 || cfg.MaxQueueFrames > 4096 {
 		return pluginConfig{}, fmt.Errorf("max_queue_frames must be between 1 and 4096")
 	}
 	var errDuration error
@@ -237,7 +246,7 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 			return pluginConfig{}, fmt.Errorf("model_cache_ttl must be between 0 and 10m")
 		}
 	}
-	if cfg.PermissionDefault != "deny" && cfg.PermissionDefault != "cancel_turn" {
+	if cfg.PermissionDefault != "" && cfg.PermissionDefault != "deny" && cfg.PermissionDefault != "cancel_turn" {
 		return pluginConfig{}, fmt.Errorf("permission_default must be deny or cancel_turn")
 	}
 	for index := range cfg.PermissionRules {

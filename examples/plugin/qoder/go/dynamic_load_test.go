@@ -71,7 +71,7 @@ func TestDynamicPluginLoadHelper(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
-	rawConfig := []byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    qoder:\n      enabled: true\n      transport: direct_openai\n      runner_command: /not-installed\n      openapi_endpoint: %s\n      direct_endpoint: %s/chat\n      direct_models_endpoint: %s/models\n", dir, upstream.URL, upstream.URL, upstream.URL))
+	rawConfig := []byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    qoder:\n      enabled: true\n      transport: direct_openai\n      runner_command: /not-installed\n      direct_catalog_format: openai\n      openapi_endpoint: %s\n      direct_endpoint: %s/chat\n      direct_models_endpoint: %s/models\n", dir, upstream.URL, upstream.URL, upstream.URL))
 	cfg, errConfig := config.ParseConfigBytes(rawConfig)
 	if errConfig != nil {
 		t.Fatal(errConfig)

@@ -20,32 +20,7 @@ func (r *pluginRuntime) execute(raw []byte) (pluginapi.ExecutorResponse, error) 
 	if req.Stream {
 		return pluginapi.ExecutorResponse{}, newPluginCallError("invalid_request", "Qoder non-stream executor received a streaming request", http.StatusBadRequest, false)
 	}
-	if auth, err := parseStoredAuth(req.StorageJSON); err == nil && r.transportForAuth(auth) == "direct_openai" {
-		return r.executeNative(req)
-	}
-	session, errStart := r.startTurn(req.ExecutorRequest)
-	if errStart != nil {
-		return pluginapi.ExecutorResponse{}, normalizeQoderExecutionLifecycleError(errStart)
-	}
-	defer r.completeTurn(session, req.RequestID)
-	projection := newEventProjection(req.RequestID, req.Model)
-	ctx, cancel := context.WithTimeout(context.Background(), maxTurnDuration)
-	defer cancel()
-	for {
-		event, errEvent := session.client.readEvent(ctx)
-		if errEvent != nil {
-			r.dropSession(session)
-			return pluginapi.ExecutorResponse{}, newPluginCallError("connection_lifecycle", "Qoder runner event stream was lost", 0, true)
-		}
-		if errConsume := projection.consume(event); errConsume != nil {
-			r.dropSession(session)
-			return pluginapi.ExecutorResponse{}, newPluginCallError("connection_lifecycle", errConsume.Error(), 0, true)
-		}
-		if event.IsTerminal() {
-			response, errProjection := projection.nonStreamResponse()
-			return response, normalizeQoderExecutionLifecycleError(errProjection)
-		}
-	}
+	return r.executeNative(req)
 }
 
 func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
@@ -56,15 +31,7 @@ func (r *pluginRuntime) executeStream(raw []byte) (rpcStreamResponse, error) {
 	if !req.Stream || strings.TrimSpace(req.StreamID) == "" {
 		return rpcStreamResponse{}, newPluginCallError("invalid_stream", "Qoder stream requires stream=true and a stream ID", http.StatusBadRequest, false)
 	}
-	if auth, err := parseStoredAuth(req.StorageJSON); err == nil && r.transportForAuth(auth) == "direct_openai" {
-		return r.executeNativeStream(req)
-	}
-	session, errStart := r.startTurn(req.ExecutorRequest)
-	if errStart != nil {
-		return rpcStreamResponse{}, normalizeQoderExecutionLifecycleError(errStart)
-	}
-	go r.forwardEvents(session, req)
-	return rpcStreamResponse{Headers: http.Header{"Content-Type": {"text/event-stream"}}}, nil
+	return r.executeNativeStream(req)
 }
 
 func normalizeQoderExecutionLifecycleError(err error) error {

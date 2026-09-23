@@ -193,11 +193,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(resp)
 	case pluginabi.MethodModelStatic:
-		models := canonicalQoderModels()
-		cfg := r.loadedConfig()
-		if cfg.Transport == "direct_openai" {
-			models = configuredDirectModels(cfg.DirectModels)
-		}
+		models := configuredDirectModels(r.loadedConfig().DirectModels)
 		return okEnvelope(pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models})
 	case pluginabi.MethodModelForAuth:
 		resp, errModels := r.modelsForAuth(raw)
