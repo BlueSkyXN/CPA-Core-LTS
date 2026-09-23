@@ -191,18 +191,18 @@ title="${tag} — ${short_summary}"
     "$COMPANION_LABEL" "$companion_tag" "$companion_repo" "$companion_tag"
 
   cat <<'EOF'
-<!-- cliproxyapi-linux-release-assets:start -->
+<!-- sky-cpa-core-lts-release-assets:start -->
 ## 发布资产
 
-- `CLIProxyAPI_<version>_linux_<arch>.tar.gz` 是默认 Linux 构建，支持动态库插件，GLIBC 基线为 2.17。
-- `CLIProxyAPI_<version>_linux_<arch>_no-plugin.tar.gz` 是面向 musl / OpenWrt 等环境的便携构建，不支持动态库插件。
-- `sky-cpa-core-lts_<version>_linux_<arch>.tar.gz` 与 `sky-cpa-core-lts_<version>_linux_<arch>_no-plugin.tar.gz` 使用同一套 Core 代码和平台矩阵，只是二进制名和产品横幅为 `sky-cpa-core-lts`，供 CPA-HFS 使用。
+- 所有平台的归档均使用 `sky-cpa-core-lts_<version>_<os>_<arch>` 命名，内含二进制名和产品横幅均为 `sky-cpa-core-lts`。
+- `sky-cpa-core-lts_<version>_linux_<arch>.tar.gz` 支持动态库插件，GLIBC 基线为 2.17。
+- `sky-cpa-core-lts_<version>_linux_<arch>_no-plugin.tar.gz` 面向 musl / OpenWrt 等环境，不支持动态库插件。
 
 ### FreeBSD
 
-- `CLIProxyAPI_<version>_freebsd_aarch64_no-plugin.tar.gz` 是 FreeBSD arm64 构建，关闭 CGO，不支持动态库插件。
+- `sky-cpa-core-lts_<version>_freebsd_<arch>` 是 FreeBSD 构建；`_no-plugin` 变体关闭 CGO，不支持动态库插件。
 
-<!-- cliproxyapi-linux-release-assets:end -->
+<!-- sky-cpa-core-lts-release-assets:end -->
 
 EOF
   cat "$generated_file"
