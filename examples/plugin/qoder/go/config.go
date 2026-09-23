@@ -60,7 +60,34 @@ func nativeDirectEndpointDefaults() (direct, models, openapi string) {
 		"https://openapi.qoder.com.cn"
 }
 
+// removedRunnerFields 是随 runner 一起移除的旧配置字段。旧版本未声明 transport 时默认
+// sdk_cli，这类配置若被静默接受会改走原生 direct 默认值，因此 key 一出现就报迁移错误。
+var removedRunnerFields = []string{
+	"runner_command", "runner_args", "qoder_cli_path", "working_directory",
+	"max_queue_frames", "permission_default", "permission_rules",
+	"skills", "setting_sources", "allowed_tools", "disallowed_tools", "mcp_servers",
+}
+
+func rejectRemovedRunnerFields(raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var probe map[string]any
+	if errUnmarshal := yaml.Unmarshal(raw, &probe); errUnmarshal != nil {
+		return nil // malformed YAML 由主解析统一报错
+	}
+	for _, field := range removedRunnerFields {
+		if _, exists := probe[field]; exists {
+			return fmt.Errorf("Qoder config field %q was removed with the sdk_cli runner; migrate the configuration to native direct (see docs/lts/pat-providers.md)", field)
+		}
+	}
+	return nil
+}
+
 func decodePluginConfig(raw []byte) (pluginConfig, error) {
+	if errRemoved := rejectRemovedRunnerFields(raw); errRemoved != nil {
+		return pluginConfig{}, errRemoved
+	}
 	cfg := defaultPluginConfig()
 	if len(raw) > 0 {
 		if errUnmarshal := yaml.Unmarshal(raw, &cfg); errUnmarshal != nil {

@@ -34,7 +34,9 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 	var compat struct {
 		Transport string `json:"transport"`
 	}
-	_ = json.Unmarshal(raw, &compat)
+	if errCompat := json.Unmarshal(raw, &compat); errCompat != nil {
+		return qoderAuth{}, fmt.Errorf("decode Qoder auth transport: transport must be a string when present")
+	}
 	transport := strings.ToLower(strings.TrimSpace(compat.Transport))
 	if transport == "sdk_cli" {
 		return qoderAuth{}, fmt.Errorf("Qoder no longer supports the sdk_cli transport; use a PAT with the native direct transport")

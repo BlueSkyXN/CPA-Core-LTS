@@ -29,6 +29,12 @@ func TestAuthModesAndSecretSafeErrors(t *testing.T) {
 	if _, errUnknown := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":"carrier_pigeon","pat":"pt-fixture"}`)); errUnknown == nil {
 		t.Fatal("unknown transport was accepted")
 	}
+	if _, errTransportNumber := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":123,"pat":"pt-fixture"}`)); errTransportNumber == nil {
+		t.Fatal("non-string transport was accepted")
+	}
+	if _, errTransportObject := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","transport":{"mode":"sdk_cli"},"pat":"pt-fixture"}`)); errTransportObject == nil {
+		t.Fatal("object transport was accepted")
+	}
 	legacy, errLegacy := parseStoredAuth([]byte(`{"type":"qoder","auth_mode":"pat","access_token":"pt-legacy","account_id":"legacy-account"}`))
 	if errLegacy != nil || legacy.tokenSource() != "pt-legacy" {
 		t.Fatalf("legacy access_token = %#v, err=%v", legacy, errLegacy)
@@ -143,6 +149,17 @@ direct_models:
 	}
 	if _, errBadTransport := decodePluginConfig([]byte("transport: carrier_pigeon\n")); errBadTransport == nil {
 		t.Fatal("unknown transport config was accepted")
+	}
+	legacyRunner := []byte("runner_command: /usr/local/bin/cpa-qoder-runner\nqoder_cli_path: /usr/local/bin/qoderclicn\nworking_directory: /tmp\n")
+	if _, errLegacy := decodePluginConfig(legacyRunner); errLegacy == nil {
+		t.Fatal("legacy runner config without transport was accepted")
+	} else if !strings.Contains(errLegacy.Error(), "removed with the sdk_cli runner") {
+		t.Fatalf("legacy runner config error = %v", errLegacy)
+	}
+	for _, field := range []string{"runner_command", "runner_args", "qoder_cli_path", "working_directory", "max_queue_frames", "permission_default", "permission_rules", "skills", "setting_sources", "allowed_tools", "disallowed_tools", "mcp_servers"} {
+		if _, errField := decodePluginConfig([]byte(field + ":\n")); errField == nil {
+			t.Fatalf("removed runner field %s was accepted", field)
+		}
 	}
 	compatTransport, errCompat := decodePluginConfig([]byte("transport: direct_openai\n"))
 	if errCompat != nil || compatTransport.Transport != "direct_openai" {
