@@ -291,18 +291,18 @@ jobs:
           ARCHIVE_FORMAT: ${{ matrix.archive_format }}
         run: |
           set -euo pipefail
-          binary_name="cli-proxy-api"
+          binary_name="sky-cpa-core-lts"
           if [[ "$GOOS" == "windows" ]]; then
-            binary_name="cli-proxy-api.exe"
+            binary_name="sky-cpa-core-lts.exe"
           fi
 
           archive_dir="dist/${TARGET}/archive"
-          archive_name="CLIProxyAPI_${RELEASE_VERSION}_${GOOS}_${ASSET_ARCH}.${ARCHIVE_FORMAT}"
+          archive_name="sky-cpa-core-lts_${RELEASE_VERSION}_${GOOS}_${ASSET_ARCH}.${ARCHIVE_FORMAT}"
           rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
           CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
-            -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+            -ldflags="-s -w -X main.ProductName=sky-cpa-core-lts -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
@@ -314,7 +314,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/CLIProxyAPI_*
+          path: dist/sky-cpa-core-lts_*
           if-no-files-found: error
 
   build-linux-glibc:
@@ -376,11 +376,9 @@ jobs:
           set -euo pipefail
 
           archive_dir="dist/${TARGET}/archive"
-          sky_archive_dir="dist/${TARGET}/sky-archive"
-          archive_name="CLIProxyAPI_${RELEASE_VERSION}_linux_${ASSET_ARCH}.tar.gz"
-          sky_archive_name="sky-cpa-core-lts_${RELEASE_VERSION}_linux_${ASSET_ARCH}.tar.gz"
+          archive_name="sky-cpa-core-lts_${RELEASE_VERSION}_linux_${ASSET_ARCH}.tar.gz"
           rm -rf "dist/${TARGET}"
-          mkdir -p "$archive_dir" "$sky_archive_dir"
+          mkdir -p "$archive_dir"
 
           docker run --rm \
             -v "$PWD:/src" \
@@ -399,35 +397,27 @@ jobs:
               export PATH="/usr/local/go/bin:${PATH}"
 
               CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false \
-                -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-                -o "'"$archive_dir"'/cli-proxy-api" ./cmd/server/
-
-              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false \
                 -ldflags="-s -w -X main.ProductName=sky-cpa-core-lts -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-                -o "'"$sky_archive_dir"'/sky-cpa-core-lts" ./cmd/server/
+                -o "'"$archive_dir"'/sky-cpa-core-lts" ./cmd/server/
 
-              for binary in "'"$archive_dir"'/cli-proxy-api" "'"$sky_archive_dir"'/sky-cpa-core-lts"; do
-                glibc_versions="$(readelf --version-info "$binary" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
-                if [[ -n "${glibc_versions}" ]]; then
-                  printf "%s GLIBC versions:\n%s\n" "$binary" "${glibc_versions}"
-                  max_glibc="$(printf "%s\n" "${glibc_versions}" | sort -V | tail -n 1)"
-                  if [[ "$(printf "2.17\n%s\n" "${max_glibc}" | sort -V | tail -n 1)" != "2.17" ]]; then
-                    printf "linux ${GOARCH} binary %s requires GLIBC_%s, expected GLIBC_2.17 or older\n" "$binary" "${max_glibc}" >&2
-                    exit 1
-                  fi
+              binary="'"$archive_dir"'/sky-cpa-core-lts"
+              glibc_versions="$(readelf --version-info "$binary" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
+              if [[ -n "${glibc_versions}" ]]; then
+                printf "%s GLIBC versions:\n%s\n" "$binary" "${glibc_versions}"
+                max_glibc="$(printf "%s\n" "${glibc_versions}" | sort -V | tail -n 1)"
+                if [[ "$(printf "2.17\n%s\n" "${max_glibc}" | sort -V | tail -n 1)" != "2.17" ]]; then
+                  printf "linux ${GOARCH} binary %s requires GLIBC_%s, expected GLIBC_2.17 or older\n" "$binary" "${max_glibc}" >&2
+                  exit 1
                 fi
-              done
+              fi
             '
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          cp LICENSE README.md README_CN.md config.example.yaml "$sky_archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
-          tar -C "$sky_archive_dir" -czf "dist/$sky_archive_name" sky-cpa-core-lts LICENSE README.md README_CN.md config.example.yaml
+          tar -C "$archive_dir" -czf "dist/$archive_name" sky-cpa-core-lts LICENSE README.md README_CN.md config.example.yaml
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
-            dist/CLIProxyAPI_*
             dist/sky-cpa-core-lts_*
           if-no-files-found: error
 
@@ -498,37 +488,27 @@ jobs:
           set -euo pipefail
 
           archive_dir="dist/${TARGET}/archive"
-          sky_archive_dir="dist/${TARGET}/sky-archive"
-          archive_name="CLIProxyAPI_${RELEASE_VERSION}_linux_${ASSET_ARCH}_no-plugin.tar.gz"
-          sky_archive_name="sky-cpa-core-lts_${RELEASE_VERSION}_linux_${ASSET_ARCH}_no-plugin.tar.gz"
+          archive_name="sky-cpa-core-lts_${RELEASE_VERSION}_linux_${ASSET_ARCH}_no-plugin.tar.gz"
           rm -rf "dist/${TARGET}"
-          mkdir -p "$archive_dir" "$sky_archive_dir"
-
-          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false \
-            -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-            -o "$archive_dir/cli-proxy-api" ./cmd/server/
+          mkdir -p "$archive_dir"
 
           CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false \
             -ldflags="-s -w -X main.ProductName=sky-cpa-core-lts -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-            -o "$sky_archive_dir/sky-cpa-core-lts" ./cmd/server/
+            -o "$archive_dir/sky-cpa-core-lts" ./cmd/server/
 
-          for binary in "$archive_dir/cli-proxy-api" "$sky_archive_dir/sky-cpa-core-lts"; do
-            if readelf -l "$binary" | grep -q 'Requesting program interpreter'; then
-              readelf -l "$binary" >&2
-              echo "no-plugin linux binary must not require a dynamic interpreter" >&2
-              exit 1
-            fi
-          done
+          binary="$archive_dir/sky-cpa-core-lts"
+          if readelf -l "$binary" | grep -q 'Requesting program interpreter'; then
+            readelf -l "$binary" >&2
+            echo "no-plugin linux binary must not require a dynamic interpreter" >&2
+            exit 1
+          fi
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          cp LICENSE README.md README_CN.md config.example.yaml "$sky_archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
-          tar -C "$sky_archive_dir" -czf "dist/$sky_archive_name" sky-cpa-core-lts LICENSE README.md README_CN.md config.example.yaml
+          tar -C "$archive_dir" -czf "dist/$archive_name" sky-cpa-core-lts LICENSE README.md README_CN.md config.example.yaml
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
-            dist/CLIProxyAPI_*
             dist/sky-cpa-core-lts_*
           if-no-files-found: error
 
@@ -677,8 +657,8 @@ jobs:
           CGO_LDFLAGS="-fuse-ld=lld" \
           CC="clang --target=${clang_target} --sysroot=${sysroot_dir}" \
           go build -buildvcs=false \
-            -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-            -o "dist/${TARGET}/bin/cli-proxy-api" ./cmd/server/
+            -ldflags="-s -w -X main.ProductName=sky-cpa-core-lts -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+            -o "dist/${TARGET}/bin/sky-cpa-core-lts" ./cmd/server/
       - name: Build FreeBSD no-plugin binary
         if: ${{ !matrix.cgo_enabled }}
         shell: bash
@@ -686,25 +666,25 @@ jobs:
           set -euo pipefail
           mkdir -p "dist/${TARGET}/bin"
           CGO_ENABLED=0 GOOS=freebsd GOARCH="$TARGET_GOARCH" go build -buildvcs=false \
-            -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-            -o "dist/${TARGET}/bin/cli-proxy-api" ./cmd/server/
+            -ldflags="-s -w -X main.ProductName=sky-cpa-core-lts -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+            -o "dist/${TARGET}/bin/sky-cpa-core-lts" ./cmd/server/
       - name: Package FreeBSD archive
         shell: bash
         run: |
           set -euo pipefail
 
           archive_dir="dist/${TARGET}/archive"
-          archive_name="CLIProxyAPI_${RELEASE_VERSION}_freebsd_${ASSET_ARCH}${ASSET_SUFFIX}.tar.gz"
+          archive_name="sky-cpa-core-lts_${RELEASE_VERSION}_freebsd_${ASSET_ARCH}${ASSET_SUFFIX}.tar.gz"
           mkdir -p "$archive_dir"
 
           echo "Packaging ${archive_name}"
-          cp "dist/${TARGET}/bin/cli-proxy-api" "$archive_dir/cli-proxy-api"
+          cp "dist/${TARGET}/bin/sky-cpa-core-lts" "$archive_dir/sky-cpa-core-lts"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          tar -C "$archive_dir" -czf "dist/$archive_name" sky-cpa-core-lts LICENSE README.md README_CN.md config.example.yaml
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/CLIProxyAPI_*
+          path: dist/sky-cpa-core-lts_*
           if-no-files-found: error
 
   publish-release-assets:
@@ -740,25 +720,26 @@ jobs:
           shopt -s nullglob
           release_version="${RELEASE_TAG#v}"
           expected=(
-            "CLIProxyAPI_${release_version}_darwin_amd64.tar.gz"
-            "CLIProxyAPI_${release_version}_darwin_aarch64.tar.gz"
-            "CLIProxyAPI_${release_version}_windows_amd64.zip"
-            "CLIProxyAPI_${release_version}_windows_aarch64.zip"
-            "CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
-            "CLIProxyAPI_${release_version}_linux_aarch64.tar.gz"
-            "CLIProxyAPI_${release_version}_linux_amd64_no-plugin.tar.gz"
-            "CLIProxyAPI_${release_version}_linux_aarch64_no-plugin.tar.gz"
+            "sky-cpa-core-lts_${release_version}_darwin_amd64.tar.gz"
+            "sky-cpa-core-lts_${release_version}_darwin_aarch64.tar.gz"
+            "sky-cpa-core-lts_${release_version}_windows_amd64.zip"
+            "sky-cpa-core-lts_${release_version}_windows_aarch64.zip"
             "sky-cpa-core-lts_${release_version}_linux_amd64.tar.gz"
             "sky-cpa-core-lts_${release_version}_linux_aarch64.tar.gz"
             "sky-cpa-core-lts_${release_version}_linux_amd64_no-plugin.tar.gz"
             "sky-cpa-core-lts_${release_version}_linux_aarch64_no-plugin.tar.gz"
-            "CLIProxyAPI_${release_version}_freebsd_amd64.tar.gz"
-            "CLIProxyAPI_${release_version}_freebsd_aarch64_no-plugin.tar.gz"
+            "sky-cpa-core-lts_${release_version}_freebsd_amd64.tar.gz"
+            "sky-cpa-core-lts_${release_version}_freebsd_aarch64_no-plugin.tar.gz"
           )
-          archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip sky-cpa-core-lts_*.tar.gz)
+          archives=(sky-cpa-core-lts_*.tar.gz sky-cpa-core-lts_*.zip)
           if [[ ${#archives[@]} -ne ${#expected[@]} ]]; then
             printf 'Expected %s release archives, found %s.\n' "${#expected[@]}" "${#archives[@]}" >&2
             printf '  found: %s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+          legacy_archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
+          if [[ ${#legacy_archives[@]} -ne 0 ]]; then
+            printf 'Legacy CLIProxyAPI release archives must not be published: %s\n' "${legacy_archives[@]}" >&2
             exit 1
           fi
           for asset in "${expected[@]}"; do
@@ -771,10 +752,10 @@ jobs:
           expected_commit="$(git rev-parse --short "${RELEASE_TAG}^{commit}")"
           verify_dir="$(mktemp -d)"
           trap 'rm -rf "$verify_dir"' EXIT
-          tar -C "$verify_dir" -xzf "CLIProxyAPI_${release_version}_linux_amd64.tar.gz" cli-proxy-api
-          version_output="$("$verify_dir/cli-proxy-api" --help 2>&1)"
+          tar -C "$verify_dir" -xzf "sky-cpa-core-lts_${release_version}_linux_amd64.tar.gz" sky-cpa-core-lts
+          version_output="$("$verify_dir/sky-cpa-core-lts" --help 2>&1)"
           version_line="$(printf '%s\n' "$version_output" | sed -n '1p')"
-          if [[ "$version_line" != *"Version: ${release_version}, Commit: ${expected_commit},"* ]]; then
+          if [[ "$version_line" != *"sky-cpa-core-lts Version: ${release_version}, Commit: ${expected_commit},"* ]]; then
             echo "Release binary provenance mismatch: $version_line" >&2
             exit 1
           fi

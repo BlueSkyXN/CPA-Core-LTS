@@ -85,7 +85,14 @@ plugins:
 
         try:
             base = start()
+            docker("exec", name, "sh", "-ec",
+                   "test -x /CLIProxyAPI/sky-cpa-core-lts; ! test -e /CLIProxyAPI/CLIProxyAPI")
             wait_plugins(base)
+            startup_logs = docker("logs", name)
+            if "sky-cpa-core-lts Version:" not in startup_logs:
+                raise RuntimeError("PAT image did not report the sky-cpa-core-lts product name")
+            if "CLIProxyAPI Version:" in startup_logs:
+                raise RuntimeError("PAT image still reports the upstream CLIProxyAPI product name")
             docker("exec", name, "sh", "-ec",
                    "! command -v node; ! command -v qodercli; ! command -v qoderclicn; test ! -d /opt/cpa-qoder-runner")
             bundle = json.loads(docker("exec", name, "cat", "/opt/cpa-pat-plugins/bundle.json"))

@@ -15,8 +15,8 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 RUN mkdir -p /native && CGO_ENABLED=1 go build -buildvcs=false \
-    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
-    -o /native/CLIProxyAPI ./cmd/server
+    -ldflags="-s -w -X main.ProductName=sky-cpa-core-lts -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+    -o /native/sky-cpa-core-lts ./cmd/server
 RUN cd examples/plugin/codebuddy/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-codebuddy.so .
 RUN cd examples/plugin/qoder/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-qoder.so .
 
@@ -32,11 +32,11 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 WORKDIR /CLIProxyAPI
-COPY --from=native /native/CLIProxyAPI ./CLIProxyAPI
+COPY --from=native /native/sky-cpa-core-lts ./sky-cpa-core-lts
 # 独立于标准 Compose 的 /CLIProxyAPI/plugins 挂载，避免空目录遮住内置插件。
 COPY --from=native /native/cpa-provider-codebuddy.so /native/cpa-provider-qoder.so /opt/cpa-pat-plugins/
 COPY examples/plugin/qoder/THIRD_PARTY_NOTICES.md /opt/cpa-pat-plugins/qoder-THIRD_PARTY_NOTICES.md
 COPY --from=packages /out/pat-provider-bundle.json /opt/cpa-pat-plugins/bundle.json
 COPY examples/plugin/pat-providers.config.yaml ./config.example.yaml
 EXPOSE 8317
-CMD ["./CLIProxyAPI", "--config", "/CLIProxyAPI/config.yaml"]
+CMD ["./sky-cpa-core-lts", "--config", "/CLIProxyAPI/config.yaml"]

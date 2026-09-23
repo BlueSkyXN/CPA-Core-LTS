@@ -29,6 +29,38 @@ jobs:
           go build -o test-output ./cmd/server
           rm -f test-output
 
+  docker-image-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build standard Core image without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: cpa-core-lts:pr-smoke
+          build-args: |
+            VERSION=pr-smoke
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=pr-smoke
+      - name: Verify image binary name and banner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmd="$(docker image inspect cpa-core-lts:pr-smoke --format '{{json .Config.Cmd}}')"
+          test "$cmd" = '["./sky-cpa-core-lts"]'
+          docker run --rm --entrypoint /CLIProxyAPI/sky-cpa-core-lts cpa-core-lts:pr-smoke --help \
+            >"$RUNNER_TEMP/sky-cpa-core-lts-help.txt" 2>&1
+          grep -F 'sky-cpa-core-lts Version: pr-smoke' "$RUNNER_TEMP/sky-cpa-core-lts-help.txt"
+          if grep -Fq 'CLIProxyAPI Version:' "$RUNNER_TEMP/sky-cpa-core-lts-help.txt"; then
+            echo 'Legacy CLIProxyAPI product banner found in the standard image.' >&2
+            exit 1
+          fi
+
   provider-connectors:
     runs-on: ubuntu-latest
     steps:
