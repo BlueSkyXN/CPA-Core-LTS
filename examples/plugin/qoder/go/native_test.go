@@ -109,7 +109,7 @@ func nativeFixture(t *testing.T, handler http.HandlerFunc) (*pluginRuntime, *nat
 	host := &nativeFixtureHost{client: &http.Client{Timeout: 5 * time.Second}, streams: make(map[string]io.ReadCloser), closeCounts: make(map[string]int), closed: make(chan pluginStreamCloseRequest, 10)}
 	r := newPluginRuntime(host)
 	r.config.Transport = "direct_openai"
-	r.config.RunnerCommand = "/fixture/no-node-or-runner"
+	r.config.DirectModelsEndpoint = server.URL + "/models"
 	r.config.DirectEndpoint = server.URL + "/model/v1/chat/completions"
 	r.config.OpenAPIEndpoint = server.URL
 	r.config.DirectModels = []directModelConfig{{ID: "qmodel_38max", DisplayName: "Qwen3.8-Max"}}

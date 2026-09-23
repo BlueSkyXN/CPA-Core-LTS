@@ -249,7 +249,7 @@ func (r *pluginRuntime) consumeNative(exec *nativeExecution, upstream hostHTTPSt
 		return err
 	}
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 4096), maxRunnerFrameBytes)
+	scanner.Buffer(make([]byte, 4096), maxSSEFrameBytes)
 	var event bytes.Buffer
 	total := 0
 	consume := func() (bool, error) {

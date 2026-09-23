@@ -39,12 +39,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: examples/runner/qoder/package-lock.json
       - name: Test CodeBuddy plugin
         working-directory: examples/plugin/codebuddy/go
         run: |
@@ -57,11 +51,6 @@ jobs:
           go test -race -count=1 ./...
           go vet ./...
           go build -buildmode=c-shared -o /tmp/cpa-provider-qoder.so .
-      - name: Test Qoder runner
-        working-directory: examples/runner/qoder
-        run: |
-          npm ci --ignore-scripts
-          npm test
 
   credential-permissions-windows:
     runs-on: windows-latest

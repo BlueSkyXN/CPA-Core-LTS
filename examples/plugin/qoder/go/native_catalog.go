@@ -216,10 +216,10 @@ func parseNativeCatalog(raw []byte, format string) (nativeCatalogEntry, error) {
 }
 
 // 保留旧 Direct 目录接受的 camelCase 元数据，snake_case 显式值优先。
-func decodeNativeCatalogModel(raw []byte) (runnerModel, error) {
+func decodeNativeCatalogModel(raw []byte) (qoderCatalogModel, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return runnerModel{}, err
+		return qoderCatalogModel{}, err
 	}
 	for canonical, alias := range map[string]string{
 		"display_name": "displayName", "is_default": "isDefault", "is_enabled": "isEnabled",
@@ -236,9 +236,9 @@ func decodeNativeCatalogModel(raw []byte) (runnerModel, error) {
 	}
 	normalized, err := json.Marshal(fields)
 	if err != nil {
-		return runnerModel{}, err
+		return qoderCatalogModel{}, err
 	}
-	var model runnerModel
+	var model qoderCatalogModel
 	err = json.Unmarshal(normalized, &model)
 	return model, err
 }

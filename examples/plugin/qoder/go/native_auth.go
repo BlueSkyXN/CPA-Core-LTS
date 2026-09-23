@@ -67,9 +67,6 @@ func (r *pluginRuntime) cachedPATToken(auth qoderAuth, callbackID string, cfg pl
 }
 
 func (r *pluginRuntime) nativeToken(auth qoderAuth, callbackID string, cfg pluginConfig, rejected string) (qoderTokenState, error) {
-	if auth.AuthMode == "local_cli" {
-		return qoderTokenState{}, newPluginCallError("invalid_auth", "Qoder direct does not use local CLI credentials", 400, false)
-	}
 	if auth.isPAT() && cfg.DirectTokenMode != "bearer" {
 		return r.cachedPATToken(auth, callbackID, cfg, rejected)
 	}

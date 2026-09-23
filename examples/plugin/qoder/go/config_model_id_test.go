@@ -16,7 +16,6 @@ func TestDirectModelIDCharacters(t *testing.T) {
 	} {
 		t.Run(tt.id, func(t *testing.T) {
 			raw, err := yaml.Marshal(map[string]any{
-				"transport": "direct_openai", "runner_command": "/usr/bin/node", "working_directory": "/tmp",
 				"direct_endpoint": "http://127.0.0.1:9/v1/chat/completions",
 				"direct_models":   []map[string]string{{"id": tt.id}},
 			})

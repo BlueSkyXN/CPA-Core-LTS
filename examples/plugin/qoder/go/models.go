@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -41,7 +39,7 @@ var canonicalQoderModelDisplayNames = map[string]string{
 	"mmodel":        "MiniMax-M2.7",
 }
 
-type runnerModel struct {
+type qoderCatalogModel struct {
 	ID                      string   `json:"id"`
 	DisplayName             string   `json:"display_name"`
 	Description             string   `json:"description,omitempty"`
@@ -57,31 +55,6 @@ type runnerModel struct {
 	SupportsDisabled        bool     `json:"supports_disabled,omitempty"`
 	AvailableContextWindows []int64  `json:"available_context_windows,omitempty"`
 	DefaultContextWindow    int64    `json:"default_context_window,omitempty"`
-}
-
-type runnerModelsResponse struct {
-	Models []runnerModel `json:"models"`
-}
-
-type cachedModels struct {
-	expires time.Time
-	models  []pluginapi.ModelInfo
-}
-
-func canonicalQoderModels() []pluginapi.ModelInfo {
-	models := make([]pluginapi.ModelInfo, 0, len(canonicalQoderModelIDs))
-	for _, id := range canonicalQoderModelIDs {
-		display := canonicalQoderModelDisplayNames[id]
-		if display == "" {
-			display = id
-		}
-		models = append(models, pluginapi.ModelInfo{
-			ID: id, Name: id, DisplayName: display, Object: "model", OwnedBy: pluginIdentifier, Type: "agent",
-			SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: []string{"text"},
-			SupportedOutputModalities: []string{"text"}, UserDefined: true,
-		})
-	}
-	return models
 }
 
 func configuredDirectModels(models []directModelConfig) []pluginapi.ModelInfo {
@@ -121,62 +94,11 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	if errAuth != nil {
 		return pluginapi.ModelResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusBadRequest, false)
 	}
-	transport := r.transportForAuth(auth)
-	if transport == "direct_openai" {
-		models, err := r.nativeModels(auth, req.HostCallbackID, r.loadedConfig())
-		return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, err
-	}
-	cacheKey := authCacheKey(req.AuthID, req.AuthProvider, auth, transport)
-	r.mu.Lock()
-	cached, ok := r.modelCache[cacheKey]
-	r.mu.Unlock()
-	if ok && time.Now().Before(cached.expires) {
-		return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: cloneModels(cached.models)}, nil
-	}
-
-	cfg := r.loadedConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.RequestTimeout)
-	defer cancel()
-	client, errStart := r.startRunner(ctx, auth, transport)
-	if errStart != nil {
-		return pluginapi.ModelResponse{}, errStart
-	}
-	defer client.shutdown()
-	var result runnerModelsResponse
-	directModels, errDirectModels := directModelsJSON(cfg.DirectModels)
-	if errDirectModels != nil {
-		return pluginapi.ModelResponse{}, newPluginCallError("invalid_config", errDirectModels.Error(), http.StatusInternalServerError, false)
-	}
-	if errCall := client.call(ctx, "models", map[string]any{
-		"auth": auth.runnerAuth(transport), "cache_ttl_ms": cfg.ModelCacheTTL.Milliseconds(),
-		"models_endpoint": cfg.DirectModelsEndpoint, "models_json": directModels,
-	}, &result); errCall != nil {
-		return pluginapi.ModelResponse{}, errCall
-	}
-	models := make([]pluginapi.ModelInfo, 0, len(result.Models))
-	for _, model := range result.Models {
-		id := strings.TrimSpace(model.ID)
-		if id == "" || model.IsEnabled != nil && !*model.IsEnabled {
-			continue
-		}
-		display := strings.TrimSpace(model.DisplayName)
-		if display == "" {
-			display = id
-		}
-		model.ID = id
-		model.DisplayName = display
-		models = append(models, qoderModelInfo(model))
-	}
-	if len(models) == 0 {
-		return pluginapi.ModelResponse{}, newPluginCallError("models_unavailable", "Qoder live model discovery returned no enabled canonical IDs", http.StatusServiceUnavailable, true)
-	}
-	r.mu.Lock()
-	r.modelCache[cacheKey] = cachedModels{expires: time.Now().Add(cfg.ModelCacheTTL), models: cloneModels(models)}
-	r.mu.Unlock()
-	return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, nil
+	models, err := r.nativeModels(auth, req.HostCallbackID, r.loadedConfig())
+	return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, err
 }
 
-func qoderModelInfo(model runnerModel) pluginapi.ModelInfo {
+func qoderModelInfo(model qoderCatalogModel) pluginapi.ModelInfo {
 	inputModalities := []string{"text"}
 	if model.IsVL {
 		inputModalities = append(inputModalities, "image")
@@ -202,32 +124,6 @@ func qoderModelInfo(model runnerModel) pluginapi.ModelInfo {
 		SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: inputModalities,
 		SupportedOutputModalities: []string{"text"}, Thinking: thinking, UserDefined: true,
 	}
-}
-
-func (auth qoderAuth) runnerAuth(requestedTransport ...string) map[string]any {
-	transport := auth.Transport
-	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
-		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
-	}
-	if auth.AuthMode == "pat" {
-		mode := "access_token"
-		if auth.isPAT() {
-			mode = "pat"
-		}
-		return map[string]any{"mode": mode, "env_var": runnerPATEnv, "account_id": auth.AccountID, "transport": transport}
-	}
-	return map[string]any{"mode": "local_cli", "profile_id": auth.ProfileID, "transport": transport}
-}
-
-func authCacheKey(authID, provider string, auth qoderAuth, requestedTransport ...string) string {
-	transport := auth.Transport
-	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
-		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
-	}
-	if transport == "" {
-		transport = "sdk_cli"
-	}
-	return sessionDigest([]string{"qoder-models", strings.TrimSpace(provider), strings.TrimSpace(authID), auth.AuthMode, transport, auth.AccountID, auth.tokenSource(), auth.ProfileID, auth.ConfigDir})
 }
 
 func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {

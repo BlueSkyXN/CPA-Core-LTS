@@ -11,10 +11,8 @@ import (
 const (
 	pluginIdentifier     = "qoder"
 	pluginName           = "cpa-provider-qoder"
-	pluginVersion        = "0.2.0"
-	runnerProtocol       = 1
-	runnerPATEnv         = "CPA_QODER_RUNNER_PAT"
-	maxRunnerFrameBytes  = 1024 * 1024
+	pluginVersion        = "0.3.0"
+	maxSSEFrameBytes     = 1024 * 1024
 	maxExecutorBodyBytes = 4 * 1024 * 1024
 )
 

@@ -113,12 +113,6 @@ func (r *pluginRuntime) qoderSummary(auth qoderAuth, callbackID string) qoderSum
 		Quota:      qoderQuotaSummary{Status: "not_configured", Code: "openapi_endpoint_missing"},
 		UpdatedAt:  time.Now().UTC(),
 	}
-	if auth.AuthMode == "local_cli" {
-		result.Account = qoderAccountSummary{Status: "unsupported", Code: "local_cli_account_unavailable", Source: "auth_label"}
-		result.Plan = &qoderPlanSummary{Status: "unsupported", Code: "local_cli_plan_unavailable"}
-		result.Quota = qoderQuotaSummary{Status: "unsupported", Code: "local_cli_quota_unavailable"}
-		return result
-	}
 	if !auth.isPAT() {
 		result.Account = qoderAccountSummary{Status: "unsupported", Code: "legacy_token_not_pat", Source: "auth_label"}
 		result.Plan = &qoderPlanSummary{Status: "unsupported", Code: "legacy_token_not_pat"}
@@ -720,18 +714,11 @@ func floatPointer(value float64) *float64 {
 }
 
 func qoderCredentialFingerprint(auth qoderAuth) string {
-	source := auth.tokenSource()
-	if source == "" {
-		source = strings.Join([]string{"local_cli", auth.ProfileID, auth.ConfigDir}, "\x00")
-	}
-	sum := sha256.Sum256([]byte(source))
+	sum := sha256.Sum256([]byte(auth.tokenSource()))
 	return hex.EncodeToString(sum[:8])
 }
 
 func qoderCredentialKind(auth qoderAuth) string {
-	if auth.AuthMode == "local_cli" {
-		return "local_cli"
-	}
 	return "pat"
 }
 
