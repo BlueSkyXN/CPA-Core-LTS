@@ -1,4 +1,6 @@
 # PAT 扩展镜像配置示例。先设置管理密钥和客户端 API key，再启动。
+# Qoder 插件默认即走原生 direct_openai 并内置中国区 endpoints，
+# 国际区或私有网关实例可按需覆盖 direct_endpoint / openapi_endpoint 等字段。
 host: ""
 port: 8317
 auth-dir: /root/.cli-proxy-api
@@ -21,12 +23,7 @@ plugins:
       enabled: true
       permissions:
         auth-read: true
-      transport: direct_openai
-      openapi_endpoint: https://openapi.qoder.com.cn
-      direct_endpoint: https://gateway.qoder.com.cn/model/v1/chat/completions
-      # 自动读取该账号的启用 Chat 模型；不自动发起计费的模型测试。
-      direct_models_endpoint: https://gateway.qoder.com.cn/algo/api/v2/model/list
-      direct_catalog_format: qoder
+      # 自动读取账号启用的 Chat 模型（中国区默认 endpoints）；
       # 已有 direct_models 保持精确手动目录语义；配置后优先于动态目录。
       # direct_models:
       #   - id: qmodel_38max

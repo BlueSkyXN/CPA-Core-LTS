@@ -47,10 +47,6 @@ plugins:
     cpa-provider-qoder:
       enabled: true
       permissions: {{auth-read: true}}
-      transport: direct_openai
-      openapi_endpoint: http://127.0.0.1:9
-      direct_endpoint: http://127.0.0.1:9/v1/chat/completions
-      direct_models: [{{id: fixture-model}}]
 ''')
         config.chmod(0o600)
 
@@ -94,6 +90,12 @@ plugins:
                    "! command -v node; ! command -v qodercli; ! command -v qoderclicn; test ! -d /opt/cpa-qoder-runner")
             bundle = json.loads(docker("exec", name, "cat", "/opt/cpa-pat-plugins/bundle.json"))
             assert bundle["runtime"] == "native-go" and bundle["runner_required"] is False
+            assert bundle["runner"] is None and bundle["node_major"] is None
+            qoder_version = tuple(int(part) for part in bundle["plugins"]["qoder"].split(".")[:2])
+            assert qoder_version >= (0, 3), "qoder plugin must be native PAT-only 0.3.0+"
+            providers = {p["id"]: p for p in request(base, "/plugins")["plugins"]}
+            qoder_meta = providers["cpa-provider-qoder"].get("metadata") or {}
+            assert str(qoder_meta.get("version", "")) == bundle["plugins"]["qoder"], "qoder metadata version must match bundle"
             for provider in ("codebuddy", "qoder"):
                 request(base, f"/auth-files?name={provider}-fixture.json", "POST",
                         {"type": provider, "auth_mode": "pat", "pat": "pt-fixture-not-a-real-credential", "label": "Fixture"})

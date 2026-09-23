@@ -8,7 +8,6 @@ on:
       - 'examples/plugin/codebuddy/**'
       - 'examples/plugin/qoder/**'
       - 'examples/plugin/pat-providers.config.yaml'
-      - 'examples/runner/qoder/**'
       - 'scripts/*pat*providers*'
       - '.github/workflows/pat-provider-delivery.yml'
   workflow_dispatch:

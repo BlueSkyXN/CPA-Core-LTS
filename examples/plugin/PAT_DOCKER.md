@@ -6,9 +6,9 @@
 ## 提供什么
 
 - 同一 Core 源码版本构建的 Core、CodeBuddy/Qoder Linux 动态库。
-- Node 22、Qoder runner 及锁文件指定的运行依赖。
-- Qoder 使用 `direct_openai`：不安装 Qoder CLI、不启动原生 Agent 工具、不在两种模式之间自动兜底。
-- 镜像内 `/opt/cpa-pat-plugins/bundle.json` 记录 Core SHA、插件/runner 版本及平台。
+- 镜像不含 Node、Qoder CLI、Qoder SDK 或 runner；插件为原生 Go 动态库。
+- Qoder 默认原生 `direct_openai` 并内置中国区 endpoints：不安装 Qoder CLI、不启动原生 Agent 工具、不在模式之间自动兜底；国际区实例显式覆盖 endpoint。
+- 镜像内 `/opt/cpa-pat-plugins/bundle.json` 记录 Core SHA 与插件版本及平台（`runner=null`、`node_major=null`）。
 - PAT、配置、日志通过挂载保存；镜像中没有账号或管理凭据。
 
 ## 使用
@@ -16,9 +16,9 @@
 1. 使用 `examples/plugin/pat-providers.config.yaml` 作为新部署的配置起点，设置自己的
    `remote-management.secret-key` 和客户端 `api-keys`，通过 `CLI_PROXY_CONFIG_PATH` 指向该文件。
    对已有配置只合并 `plugins` 配置，保留其他 provider、统计及访问控制设置。
-2. 示例提供中国区 Qoder endpoint 和候选模型 `qmodel_38max`，来自仓库已有 Direct 配置。
-   这不是目标账号已通过验证的承诺。上线前需要验证目标区域的 PAT、准确模型 ID、Chat/tools 及 Responses 行为。
-   国际区不能沿用中国区配置。区域是实例级设置，PAT 表单不会写入虚构的每账号区域字段。
+2. Qoder 最小配置只需启用插件与 `auth-read` 权限：中国区 endpoints 与原生 `direct_openai` 均为内置默认值，
+   模型目录按账号自动发现。上线前需要验证目标区域的 PAT、准确模型 ID、Chat/tools 及 Responses 行为。
+   国际区需显式覆盖 `direct_endpoint` / `direct_models_endpoint` / `openapi_endpoint`。区域是实例级设置，PAT 表单不会写入虚构的每账号区域字段。
 3. 已正式发布扩展镜像时，设置 `CPA_PAT_IMAGE` 为相应的固定版本
    `ghcr.io/blueskyxn/cpa-core-lts:<Core-tag>-pat-providers`，执行：
 
@@ -50,7 +50,7 @@ Release，并记录验证过的 Panel tag/SHA；不能把旧 Panel 当作完整�
 本地联调可将该 Panel 的 `dist/index.html` 作为 `management.html` 挂到 `/CLIProxyAPI/static/management.html`，
 并在专用测试配置中设置 `remote-management.disable-auto-update-panel: true`；不要改变正式实例的更新策略。
 
-内置插件和 runner 随扩展镜像一起升级；不要在该目录使用插件商店独立覆盖升级。
+内置插件随扩展镜像一起升级；不要在该目录使用插件商店独立覆盖升级。
 标准 Compose 的 `/CLIProxyAPI/plugins` 不会遮住内置目录，但本发行版不会自动加载该标准目录中的其他插件；
 需要其他插件的实例应明确整理其 `plugins.dir` 和配置，不能把本示例当作无差别替换。
 回退镜像不会主动修改或删除 auth 文件。重建保留账号的前提是继续使用相同 auth 挂载。
@@ -62,13 +62,12 @@ Release，并记录验证过的 Panel tag/SHA；不能把旧 Panel 当作完整�
 手工运行时默认 `publish=false`。正式发布必须选择已经存在且包含本工作流的 Core Release tag，并显式启用
 `publish`，才会上传固定版本镜像和附件；不会移动标准 `latest` 标签，也不覆盖已有 Release 附件。
 
-- `cpa-provider-<provider>_<plugin-version>_linux_<arch>.zip`：ZIP 根目录只有 `.so`。
-- `cpa-qoder-runner_<runner-version>_linux_<arch>.zip`：`dist`、生产 `node_modules`、`package.json`；Node 单独提供。
+- `cpa-provider-<provider>_<plugin-version>_linux_<arch>.zip`：ZIP 根目录只有 `.so`（Qoder 另含 `THIRD_PARTY_NOTICES.md`）。
 - `provider-checksums-<arch>.txt`：仅这些产物的校验值，不覆盖 Core Release 的 `checksums.txt`。
-- `pat-provider-bundle-<arch>.json`：配套版本和 SHA 清单。
+- `pat-provider-bundle-<arch>.json`：配套版本和 SHA 清单，`runner=null`、`node_major=null` 为可审计字段。
 
 独立插件商店接入应使用 `direct` 安装计划，填写对应附件固定 URL 与 SHA-256；不要直接套用 Core 的 latest
-Release 与插件版本规则。runner ZIP 不是动态插件安装包，当前商店不会安装它。
+Release 与插件版本规则。
 
 ## 验证
 
@@ -78,6 +77,6 @@ docker build -f Dockerfile.pat-providers --build-arg COMMIT="$(git rev-parse HEA
 python3 scripts/smoke-pat-providers.py --image cpa-pat:test
 ```
 
-容器 smoke 只验证两插件加载、Node/runner 可启动、PAT 文件登记及容器重建持久化。
+容器 smoke 只验证两插件加载（最小 Qoder 配置即默认值可用）、镜像无 Node/runner、PAT 文件登记及容器重建持久化。
 它仅向容器内的关闭 loopback 端口配置 provider，不用真实凭据、不请求供应商、不证明真实模型可用。
 真实验收另需：目标账号的模型/额度查询、实际流式调用、Responses、usage 归属、失效 PAT 提示。

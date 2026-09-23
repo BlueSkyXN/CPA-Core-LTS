@@ -1,12 +1,12 @@
 # Qoder / CodeBuddy 原生 PAT 插件
 
-两家保持原有 Provider 身份 `qoder`、`codebuddy`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder `direct_openai` 从 0.2.0 起直接在 Go 插件内执行，不启动 runner。完整 Qoder Agent 的 `sdk_cli` 仍是显式兼容能力，需要另外安装其运行组件。
+两家保持原有 Provider 身份 `qoder`、`codebuddy`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证并固定原生 `direct_openai` 直连，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。
 
 ## 配置与兼容
 
 使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的默认运行镜像只包含 Core 和两家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。
 
-Qoder 插件未指定 `transport` 时仍按原有 `sdk_cli` 解释，避免升级改变旧账号含义。新 PAT 配套配置显式使用 `direct_openai`；auth 文件中的显式 transport 继续优先。已有 `pat`、legacy `access_token`、`local_cli` 解析规则不变，`local_cli` 不支持 Direct。
+Qoder 插件内置中国区原生默认值：`transport` 固定为 `direct_openai`，`direct_endpoint` / `direct_models_endpoint` / `openapi_endpoint` / `direct_catalog_format=qoder` 全部有默认值，最小启用配置只需 `enabled` 与 `auth-read` 权限。auth 或配置中的 `transport` 仅作为兼容字段：`direct_openai` 等价无操作，`sdk_cli` 明确拒绝。认证只接受 `pat`（legacy `access_token` 继续作为旧 PAT 文件的读取别名）；`local_cli` 已移除并明确报错。国际区或私有网关实例显式覆盖对应 endpoint 即可，显式覆盖永远优先于默认值。
 
 Qoder 目录有两种使用方式：
 
@@ -42,7 +42,7 @@ SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw
 4. 具备 Docker 环境时构建 PAT 镜像并运行 `scripts/smoke-pat-providers.py --image <image>`；检查镜像中没有 Node/CLI/runner，验证插件注册及 auth 重建持久化。
 5. 在授权环境单独验收真实账号的 catalog、token 刷新、文本/图片/tools、usage、断连取消，以及所需的 Home 路径。模型请求可能消耗额度，不能用本地 fixture 代替真实验收。
 
-本地构建、GitHub CI、正式发行包、部署版本和真实上游验收分别报告。已有 `sdk_cli` 用户不得直接切换到不含 runner 的镜像；保留原镜像或显式补齐兼容运行组件。插件路线稳定后再评估是否内置 Core，不改变这次的 Provider/auth/model 身份。
+本地构建、GitHub CI、正式发行包、部署版本和真实上游验收分别报告。`local_cli` / `sdk_cli` / runner 已随 Qoder 0.3.0 移除，存量部署升级前必须确认没有依赖这些路径的账号或配置；旧 `access_token` PAT 文件继续可读。插件路线稳定后再评估是否内置 Core，不改变这次的 Provider/auth/model 身份。
 
 ## 外部参考
 
