@@ -3,7 +3,6 @@ package main
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -40,7 +39,7 @@ var canonicalQoderModelDisplayNames = map[string]string{
 	"mmodel":        "MiniMax-M2.7",
 }
 
-type runnerModel struct {
+type qoderCatalogModel struct {
 	ID                      string   `json:"id"`
 	DisplayName             string   `json:"display_name"`
 	Description             string   `json:"description,omitempty"`
@@ -56,31 +55,6 @@ type runnerModel struct {
 	SupportsDisabled        bool     `json:"supports_disabled,omitempty"`
 	AvailableContextWindows []int64  `json:"available_context_windows,omitempty"`
 	DefaultContextWindow    int64    `json:"default_context_window,omitempty"`
-}
-
-type runnerModelsResponse struct {
-	Models []runnerModel `json:"models"`
-}
-
-type cachedModels struct {
-	expires time.Time
-	models  []pluginapi.ModelInfo
-}
-
-func canonicalQoderModels() []pluginapi.ModelInfo {
-	models := make([]pluginapi.ModelInfo, 0, len(canonicalQoderModelIDs))
-	for _, id := range canonicalQoderModelIDs {
-		display := canonicalQoderModelDisplayNames[id]
-		if display == "" {
-			display = id
-		}
-		models = append(models, pluginapi.ModelInfo{
-			ID: id, Name: id, DisplayName: display, Object: "model", OwnedBy: pluginIdentifier, Type: "agent",
-			SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: []string{"text"},
-			SupportedOutputModalities: []string{"text"}, UserDefined: true,
-		})
-	}
-	return models
 }
 
 func configuredDirectModels(models []directModelConfig) []pluginapi.ModelInfo {
@@ -124,7 +98,7 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, err
 }
 
-func qoderModelInfo(model runnerModel) pluginapi.ModelInfo {
+func qoderModelInfo(model qoderCatalogModel) pluginapi.ModelInfo {
 	inputModalities := []string{"text"}
 	if model.IsVL {
 		inputModalities = append(inputModalities, "image")
@@ -150,32 +124,6 @@ func qoderModelInfo(model runnerModel) pluginapi.ModelInfo {
 		SupportedGenerationMethods: []string{"chat"}, SupportedInputModalities: inputModalities,
 		SupportedOutputModalities: []string{"text"}, Thinking: thinking, UserDefined: true,
 	}
-}
-
-func (auth qoderAuth) runnerAuth(requestedTransport ...string) map[string]any {
-	transport := auth.Transport
-	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
-		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
-	}
-	if auth.AuthMode == "pat" {
-		mode := "access_token"
-		if auth.isPAT() {
-			mode = "pat"
-		}
-		return map[string]any{"mode": mode, "env_var": runnerPATEnv, "account_id": auth.AccountID, "transport": transport}
-	}
-	return map[string]any{"mode": "local_cli", "profile_id": auth.ProfileID, "transport": transport}
-}
-
-func authCacheKey(authID, provider string, auth qoderAuth, requestedTransport ...string) string {
-	transport := auth.Transport
-	if len(requestedTransport) > 0 && strings.TrimSpace(requestedTransport[0]) != "" {
-		transport = strings.ToLower(strings.TrimSpace(requestedTransport[0]))
-	}
-	if transport == "" {
-		transport = "sdk_cli"
-	}
-	return sessionDigest([]string{"qoder-models", strings.TrimSpace(provider), strings.TrimSpace(authID), auth.AuthMode, transport, auth.AccountID, auth.tokenSource(), auth.ProfileID, auth.ConfigDir})
 }
 
 func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {

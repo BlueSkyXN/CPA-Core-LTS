@@ -10,17 +10,13 @@ import (
 )
 
 type qoderAuth struct {
-	Type      string `json:"type"`
-	AuthMode  string `json:"auth_mode"`
-	Transport string `json:"transport,omitempty"`
-	PAT       string `json:"pat,omitempty"`
-	Label     string `json:"label,omitempty"`
+	Type     string `json:"type"`
+	AuthMode string `json:"auth_mode"`
+	PAT      string `json:"pat,omitempty"`
+	Label    string `json:"label,omitempty"`
 	// AccessToken is the legacy source used by published Qoder auth files.
 	// New files should use PAT, but the provider must keep reading this field.
 	AccessToken string `json:"access_token,omitempty"`
-	AccountID   string `json:"account_id,omitempty"`
-	ProfileID   string `json:"profile_id,omitempty"`
-	ConfigDir   string `json:"config_dir,omitempty"`
 }
 
 func parseStoredAuth(raw []byte) (qoderAuth, error) {
@@ -34,20 +30,20 @@ func parseStoredAuth(raw []byte) (qoderAuth, error) {
 	}
 	auth.Type = pluginIdentifier
 	auth.AuthMode = strings.ToLower(strings.TrimSpace(auth.AuthMode))
-	auth.Transport = strings.ToLower(strings.TrimSpace(auth.Transport))
 	auth.Label = strings.TrimSpace(auth.Label)
-	auth.AccountID = strings.TrimSpace(auth.AccountID)
-	auth.ProfileID = strings.TrimSpace(auth.ProfileID)
-	auth.ConfigDir = strings.TrimSpace(auth.ConfigDir)
-	if auth.Transport == "sdk_cli" {
+	var compat struct {
+		Transport string `json:"transport"`
+	}
+	_ = json.Unmarshal(raw, &compat)
+	transport := strings.ToLower(strings.TrimSpace(compat.Transport))
+	if transport == "sdk_cli" {
 		return qoderAuth{}, fmt.Errorf("Qoder no longer supports the sdk_cli transport; use a PAT with the native direct transport")
 	}
-	if auth.Transport != "" && auth.Transport != "direct_openai" {
-		return qoderAuth{}, fmt.Errorf("Qoder transport is not supported: %s", auth.Transport)
+	if transport != "" && transport != "direct_openai" {
+		return qoderAuth{}, fmt.Errorf("Qoder transport is not supported: %s", transport)
 	}
 	// transport is accepted as a no-op compatibility field; execution is always native direct.
-	auth.Transport = ""
-	if strings.ContainsAny(auth.PAT, "\r\n\x00") || strings.ContainsAny(auth.AccessToken, "\r\n\x00") || strings.ContainsAny(auth.Label, "\r\n\x00") || strings.ContainsAny(auth.AccountID, "\r\n\x00") || strings.ContainsAny(auth.ProfileID, "\r\n\x00") || strings.ContainsAny(auth.ConfigDir, "\r\n\x00") {
+	if strings.ContainsAny(auth.PAT, "\r\n\x00") || strings.ContainsAny(auth.AccessToken, "\r\n\x00") || strings.ContainsAny(auth.Label, "\r\n\x00") {
 		return qoderAuth{}, fmt.Errorf("Qoder auth contains invalid characters")
 	}
 	if strings.TrimSpace(auth.PAT) != auth.PAT || strings.TrimSpace(auth.AccessToken) != auth.AccessToken {

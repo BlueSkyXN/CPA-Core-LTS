@@ -10,7 +10,7 @@ import (
 
 // direct 请求只记录在途状态；对话历史仍由客户端逐次提供。
 type nativeExecution struct {
-	identity  runnerSession
+	identity  executionIdentity
 	requestID string
 	mu        sync.Mutex
 	upstream  string
@@ -23,19 +23,19 @@ func (r *pluginRuntime) registerNative(req rpcExecutorRequest, auth qoderAuth) (
 	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.HostCallbackID) == "" || r.caller == nil {
 		return nil, newPluginCallError("invalid_request", "Qoder direct requires request_id and a host callback context", 400, false)
 	}
-	key := executionSessionKey(req.ExecutorRequest, auth, "direct_openai")
+	key := executionSessionKey(req.ExecutorRequest, auth)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.accepting {
 		return nil, newPluginCallError("plugin_quiescing", "Qoder plugin is quiescing", 503, true)
 	}
-	if r.nativeActive[req.RequestID] != nil || r.requestSession[req.RequestID] != nil {
+	if r.nativeActive[req.RequestID] != nil {
 		return nil, newPluginCallError("duplicate_request", "Qoder request is already active", 409, false)
 	}
 	if r.nativeSessions[key] != nil {
 		return nil, newPluginCallError("turn_conflict", "Qoder execution session already has an active turn", 409, true)
 	}
-	exec := &nativeExecution{requestID: req.RequestID, done: make(chan struct{}), identity: runnerSession{
+	exec := &nativeExecution{requestID: req.RequestID, done: make(chan struct{}), identity: executionIdentity{
 		key: key, authID: req.AuthID, authIndex: req.AuthIndex, callerScope: req.CallerScope,
 		workspaceIdentity: req.WorkspaceIdentity, executionSessionID: effectiveExecutionSessionID(req.ExecutorRequest),
 	}}
