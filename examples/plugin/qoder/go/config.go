@@ -55,7 +55,7 @@ func defaultPluginConfig() pluginConfig {
 // nativeDirectEndpointDefaults 补齐运行原生 direct 所需的中国区默认 endpoints。
 // decode 阶段在显式配置归一化之后才应用，保证显式覆盖永远优先。
 func nativeDirectEndpointDefaults() (direct, models, openapi string) {
-	return "https://gateway.qoder.com.cn/model/v1/chat/completions",
+	return "https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation",
 		"https://gateway.qoder.com.cn/algo/api/v2/model/list",
 		"https://openapi.qoder.com.cn"
 }

@@ -119,9 +119,11 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 		return nil, hostHTTPStreamResponse{}, err
 	}
 	allowed := false
+	var selected pluginapi.ModelInfo
 	for _, model := range models {
 		if model.ID == req.Model {
 			allowed = true
+			selected = model
 			break
 		}
 	}
@@ -135,12 +137,57 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 	if err != nil {
 		return nil, hostHTTPStreamResponse{}, err
 	}
+	endpoint := cfg.DirectEndpoint
+	cosy := isQoderCosyInferenceEndpoint(endpoint)
+	if cosy {
+		endpoint, err = qoderCosyInferenceURL(endpoint)
+		if err != nil {
+			return nil, hostHTTPStreamResponse{}, newPluginCallError("direct_endpoint_required", "Qoder direct endpoint is invalid", 503, false)
+		}
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		if exec.isCanceled() {
 			return nil, hostHTTPStreamResponse{}, nativeCanceled()
 		}
 		headers := http.Header{"Authorization": {"Bearer " + state.Token}, "Accept": {"text/event-stream"}, "Content-Type": {"application/json"}, "X-Request-ID": {req.RequestID}, "X-Session-ID": {effectiveExecutionSessionID(req.ExecutorRequest)}}
-		response, err := openHostHTTPStream(r.caller, hostHTTPRequest{HostCallbackID: req.HostCallbackID, Method: http.MethodPost, URL: cfg.DirectEndpoint, Headers: headers, Body: body})
+		requestBody := body
+		if cosy {
+			identity, identityErr := doHostHTTP(r.caller, hostHTTPRequest{HostCallbackID: req.HostCallbackID, Method: http.MethodGet,
+				URL: cfg.OpenAPIEndpoint + "/api/v1/userinfo", Headers: http.Header{"Accept": {"application/json"}, "Authorization": {"Bearer " + state.Token}}})
+			if identityErr != nil {
+				return nil, hostHTTPStreamResponse{}, newPluginCallError("auth_unavailable", "Qoder user identity request failed", 502, true)
+			}
+			if identity.StatusCode != http.StatusOK {
+				if attempt == 0 && auth.isPAT() && cfg.DirectTokenMode != "bearer" && qoderAuthRejected(identity.StatusCode, identity.Body) {
+					state, err = r.nativeToken(auth, req.HostCallbackID, cfg, state.Token)
+					if err != nil {
+						return nil, hostHTTPStreamResponse{}, err
+					}
+					continue
+				}
+				return nil, hostHTTPStreamResponse{}, qoderUpstreamError(identity.StatusCode, identity.Body)
+			}
+			if len(identity.Body) > maxQoderAccountBody {
+				return nil, hostHTTPStreamResponse{}, nativeInvalidResponse()
+			}
+			var user map[string]any
+			if json.Unmarshal(identity.Body, &user) != nil {
+				return nil, hostHTTPStreamResponse{}, nativeInvalidResponse()
+			}
+			uid := stringValueFromMap(user, "id", "user_id", "userId")
+			if uid == "" {
+				return nil, hostHTTPStreamResponse{}, nativeInvalidResponse()
+			}
+			requestBody, err = nativeCosyRequestPayload(req.ExecutorRequest, selected, user)
+			if err != nil {
+				return nil, hostHTTPStreamResponse{}, err
+			}
+			headers, err = qoderSignedHeaders(endpoint, user, uid, state, string(requestBody), req.Model)
+			if err != nil {
+				return nil, hostHTTPStreamResponse{}, newPluginCallError("direct_invalid_request", "Qoder COSY signing failed", 502, false)
+			}
+		}
+		response, err := openHostHTTPStream(r.caller, hostHTTPRequest{HostCallbackID: req.HostCallbackID, Method: http.MethodPost, URL: endpoint, Headers: headers, Body: requestBody})
 		if err != nil {
 			return nil, response, newPluginCallError("connection_lifecycle", "Qoder direct connection failed", 0, true)
 		}
