@@ -1,5 +1,5 @@
 # PAT 扩展镜像配置示例。先设置管理密钥和客户端 API key，再启动。
-# Qoder 插件默认即走原生 direct_openai 并内置中国区 endpoints，
+# Qoder 插件默认走原生 COSY 文本推理并内置中国区 endpoints，
 # 国际区或私有网关实例可按需覆盖 direct_endpoint / openapi_endpoint 等字段。
 host: ""
 port: 8317

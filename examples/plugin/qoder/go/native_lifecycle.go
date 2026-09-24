@@ -155,8 +155,12 @@ func (r *pluginRuntime) nativeReadiness(req pluginapi.ReadinessRequest, cfg plug
 	if req.Purpose == pluginapi.ReadinessPurposeAdmission || len(req.StorageJSON) > 0 || req.AuthID != "" || req.AuthIndex != "" {
 		ready = ready && authState == pluginapi.ReadinessStateReady
 	}
+	capabilities := []string{"chat_completions", "stream", "cancel", "close", "direct_openai"}
+	if !isQoderCosyInferenceEndpoint(cfg.DirectEndpoint) {
+		capabilities = append(capabilities, "client_tools")
+	}
 	return pluginapi.ReadinessResponse{Provider: pluginIdentifier, Ready: ready, Generation: pluginVersion,
-		Capabilities: []string{"chat_completions", "stream", "cancel", "close", "direct_openai", "client_tools"},
+		Capabilities: capabilities,
 		Checks: []pluginapi.ReadinessCheck{
 			{Level: pluginapi.ReadinessLevelPluginInstalled, State: pluginapi.ReadinessStateReady, Version: pluginVersion},
 			{Level: pluginapi.ReadinessLevelRunnerInstalled, State: pluginapi.ReadinessStateReady, Version: "native-go", Message: "external runner, Node and Qoder SDK are not required"},

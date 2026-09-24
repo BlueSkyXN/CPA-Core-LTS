@@ -52,6 +52,10 @@ func qoderEncode(raw []byte) string {
 }
 
 func qoderCatalogHeaders(endpoint string, user map[string]any, uid string, state qoderTokenState) (http.Header, error) {
+	return qoderSignedHeaders(endpoint, user, uid, state, "", "")
+}
+
+func qoderSignedHeaders(endpoint string, user map[string]any, uid string, state qoderTokenState, encodedBody, modelID string) (http.Header, error) {
 	machine, err := cosyUUID()
 	if err != nil {
 		return nil, err
@@ -100,9 +104,8 @@ func qoderCatalogHeaders(endpoint string, user map[string]any, uid string, state
 	}
 	date := strconv.FormatInt(time.Now().Unix(), 10)
 	cosyKey, payload64 := base64.StdEncoding.EncodeToString(wrapped), base64.StdEncoding.EncodeToString(payload)
-	// CN catalog 的 GET 签名使用编码后的 {}，请求本身没有 body。
-	body := qoderEncode([]byte("{}"))
-	sum := md5.Sum([]byte(strings.Join([]string{payload64, cosyKey, date, body, strings.TrimPrefix(u.Path, "/algo")}, "\n")))
+	// 签名的 body 必须与实际发送的字节完全一致；GET 使用空串。
+	sum := md5.Sum([]byte(strings.Join([]string{payload64, cosyKey, date, encodedBody, strings.TrimPrefix(u.Path, "/algo")}, "\n")))
 	h := make(http.Header)
 	for name, value := range map[string]string{
 		"Authorization": "Bearer COSY." + payload64 + "." + hex.EncodeToString(sum[:]),
@@ -114,6 +117,12 @@ func qoderCatalogHeaders(endpoint string, user map[string]any, uid string, state
 		"Content-Type": "application/json", "User-Agent": "Go-http-client/2.0",
 	} {
 		h.Set(name, value)
+	}
+	if modelID != "" {
+		h.Set("Accept", "text/event-stream")
+		h.Set("Cache-Control", "no-cache")
+		h.Set("X-Model-Key", modelID)
+		h.Set("X-Model-Source", "system")
 	}
 	return h, nil
 }

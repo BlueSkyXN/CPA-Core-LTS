@@ -94,7 +94,13 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	if errAuth != nil {
 		return pluginapi.ModelResponse{}, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusBadRequest, false)
 	}
-	models, err := r.nativeModels(auth, req.HostCallbackID, r.loadedConfig())
+	cfg := r.loadedConfig()
+	models, err := r.nativeModels(auth, req.HostCallbackID, cfg)
+	if isQoderCosyInferenceEndpoint(cfg.DirectEndpoint) {
+		for i := range models {
+			models[i].SupportedInputModalities = []string{"text"}
+		}
+	}
 	return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, err
 }
 

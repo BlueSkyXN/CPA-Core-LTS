@@ -11,7 +11,7 @@ import (
 const (
 	pluginIdentifier     = "qoder"
 	pluginName           = "cpa-provider-qoder"
-	pluginVersion        = "0.3.0"
+	pluginVersion        = "0.3.1"
 	maxSSEFrameBytes     = 1024 * 1024
 	maxExecutorBodyBytes = 4 * 1024 * 1024
 )

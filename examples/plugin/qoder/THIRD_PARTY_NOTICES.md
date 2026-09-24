@@ -1,6 +1,7 @@
-# Qoder COSY 目录协议参考
+# Qoder COSY 协议参考
 
-`go/cosy.go` 的签名算法参考 Sliverkiss/cpa-plugin 的 QoderWork 实现：
+`go/cosy.go` 的签名算法参考 Sliverkiss/cpa-plugin 的 QoderWork 实现，
+用于模型目录与中国区文本推理请求：
 https://github.com/Sliverkiss/cpa-plugin/tree/3a039f9ddf9a7cc248f231fc5964a9f6fab3805b/qoderwork
 
 MIT License

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -398,6 +400,18 @@ func TestNativeCatalogCOSYNamesFilteringAndIsolation(t *testing.T) {
 			catalogs.Add(1)
 			if request.URL.Query().Get("Encode") != "1" || !strings.HasPrefix(request.Header.Get("Authorization"), "Bearer COSY.") || request.Header.Get("Cosy-User") != "fixture-user" {
 				t.Error("missing COSY catalog identity")
+			}
+			authorization := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer COSY.")
+			parts := strings.Split(authorization, ".")
+			if len(parts) != 2 {
+				t.Error("invalid COSY authorization shape")
+			} else {
+				sum := md5.Sum([]byte(strings.Join([]string{
+					parts[0], request.Header.Get("Cosy-Key"), request.Header.Get("Cosy-Date"), "", "/api/v2/model/list",
+				}, "\n")))
+				if parts[1] != hex.EncodeToString(sum[:]) {
+					t.Error("COSY GET signature must use an empty body")
+				}
 			}
 			wrapped, err := base64.StdEncoding.DecodeString(request.Header.Get("Cosy-Key"))
 			if err != nil || len(wrapped) != 128 {

@@ -1,9 +1,10 @@
 # Qoder provider plugin
 
 This example implements the `cpa-provider-qoder` dynamic plugin. The provider
-supports PAT authentication only and always runs the native Go
-`direct_openai` transport: no Node, Qoder CLI, Qoder SDK, or runner is
-installed or started. The former `sdk_cli`/`local_cli` compatibility path was
+supports PAT authentication only and runs native Go HTTP: the China-zone
+default uses COSY-signed inference, while an explicit OpenAI-compatible
+`direct_endpoint` retains the existing OpenAI request format. No Node,
+Qoder CLI, Qoder SDK, or runner is installed or started. The former `sdk_cli`/`local_cli` compatibility path was
 removed in plugin 0.3.0; configuration or auth files that explicitly request
 `sdk_cli` are rejected with a clear error instead of silently changing
 meaning.
@@ -53,15 +54,16 @@ permissions:
   auth-read: true
 ```
 
-China-zone native defaults are built in: `direct_endpoint`
-(`https://gateway.qoder.com.cn/model/v1/chat/completions`),
+From plugin 0.3.1, China-zone native defaults are built in: `direct_endpoint`
+(`https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation`),
 `direct_models_endpoint`
 (`https://gateway.qoder.com.cn/algo/api/v2/model/list`),
 `openapi_endpoint` (`https://openapi.qoder.com.cn`),
 `direct_catalog_format: qoder`, `direct_token_mode: auto`, and
-`openapi_user_agent: qoder/1.1.40`. Explicit overrides always win, so
-international or private-gateway instances only need to override the
-endpoints they use:
+`openapi_user_agent: qoder/1.1.40`. The default inference endpoint adds
+`FetchKeys=llm_model_result`, `AgentId=agent_common`, and `Encode=1` per
+request. Explicit overrides always win. Other regional or private gateways
+must use their corresponding verified endpoints:
 
 ```yaml
 openapi_endpoint: https://openapi.example.test
@@ -70,6 +72,10 @@ direct_models_endpoint: https://api.example.test/algo/api/v2/model/list
 request_timeout: 30s
 model_cache_ttl: 1m
 ```
+
+An existing explicit `direct_endpoint` ending in `/model/v1/chat/completions`
+continues to use the OpenAI-compatible wire format. To use the verified CN
+COSY path, remove that override or replace it with the COSY endpoint above.
 
 `openapi_endpoint` is the verified regional Qoder OpenAPI base used for PAT
 exchange and account/plan/quota calls. CN and global Qoder endpoints are not
@@ -151,11 +157,15 @@ Short-lived tokens and raw vendor payloads are never returned.
 
 ## Direct behavior
 
-The Direct path preserves the original Chat `messages`, images, `tools`,
-`tool_choice`, and supported generation fields while forcing an upstream
-streaming request through Core's `host.http.*` bridge. It projects both
-stream and non-stream responses using the existing in-process event
-projection and marks upstream usage as `provider_reported_unverified`.
+The China-zone COSY path signs the exact encoded request body and unwraps
+the vendor's nested SSE envelope through Core's `host.http.*` bridge. The
+verified scope is text Chat with stream and non-stream responses. It maps
+text message history, model ID, and basic generation parameters without
+shipping a vendor base prompt. Image content and client tools fail with
+`unsupported_input`; the COSY catalog advertises text input only. An
+explicit non-COSY OpenAI-compatible endpoint retains the original direct
+payload behavior, including images and tools. Both paths use the existing
+event projection and mark upstream usage as `provider_reported_unverified`.
 
 Usage events retain reported cache-read, cache-creation, and reasoning counts
 through optional `cache_read_tokens`, `cache_creation_tokens`, and
@@ -165,9 +175,9 @@ rather than being inferred from text or filled with zero.
 
 Execution requires an exact executable model ID and preserves explicit
 cancel, close, downstream disconnect, and SSE `[DONE]` handling. The plugin
-uses COSY/QoderEncoding only for explicitly selected catalog discovery. It
-does not use the legacy `agent_chat_generation` inference endpoint or a
-bundled base prompt.
+uses COSY/QoderEncoding for the China-zone catalog and its default inference
+endpoint. The optional OpenAI-compatible endpoint keeps its own Bearer wire
+format; there is no automatic retry from one protocol to the other.
 
 The PAT image and native plugin archives need no runner. Existing
 `sdk_cli`/`local_cli` deployments must migrate their accounts to PATs before

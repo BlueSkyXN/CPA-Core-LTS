@@ -138,7 +138,7 @@ direct_models:
 	}
 	empty, errEmpty := decodePluginConfig(nil)
 	if errEmpty != nil || empty.Transport != "direct_openai" ||
-		empty.DirectEndpoint != "https://gateway.qoder.com.cn/model/v1/chat/completions" ||
+		empty.DirectEndpoint != "https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation" ||
 		empty.DirectModelsEndpoint != "https://gateway.qoder.com.cn/algo/api/v2/model/list" ||
 		empty.OpenAPIEndpoint != "https://openapi.qoder.com.cn" ||
 		empty.DirectCatalogFormat != "qoder" || empty.DirectTokenMode != "auto" {
