@@ -1,21 +1,23 @@
 # Qoder / CodeBuddy 原生 PAT 插件
 
-两家保持原有 Provider 身份 `qoder`、`codebuddy`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证并固定原生 `direct_openai` 直连，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。
+两家保持原有 Provider 身份 `qoder`、`codebuddy`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。
 
 ## 配置与兼容
 
 使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的默认运行镜像只包含 Core 和两家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。
 
-Qoder 插件内置中国区原生默认值：`transport` 固定为 `direct_openai`，`direct_endpoint` / `direct_models_endpoint` / `openapi_endpoint` / `direct_catalog_format=qoder` 全部有默认值，最小启用配置只需 `enabled` 与 `auth-read` 权限。auth 或配置中的 `transport` 仅作为兼容字段：`direct_openai` 等价无操作，`sdk_cli` 明确拒绝。认证只接受 `pat`（legacy `access_token` 继续作为旧 PAT 文件的读取别名）；`local_cli` 已移除并明确报错。国际区或私有网关实例显式覆盖对应 endpoint 即可，显式覆盖永远优先于默认值。
+Qoder 插件 0.3.1 的中国区原生默认值：`transport` 固定为 `direct_openai` 兼容名称，`direct_endpoint` 默认指向 `/algo/api/v2/service/pro/sse/agent_chat_generation`，`direct_models_endpoint` / `openapi_endpoint` / `direct_catalog_format=qoder` 也有默认值，最小启用配置只需 `enabled` 与 `auth-read` 权限。auth 或配置中的 `transport` 仅作为兼容字段：`direct_openai` 等价无操作，`sdk_cli` 明确拒绝。认证只接受 `pat`（legacy `access_token` 继续作为旧 PAT 文件的读取别名）；`local_cli` 已移除并明确报错。国际区或私有网关实例需显式覆盖并验证相应 endpoint，显式覆盖永远优先于默认值。已有显式 `/model/v1/chat/completions` 覆盖仍按 OpenAI wire 发送；若要使用已验证的中国区 COSY 推理，需移除该覆盖或改为上述 COSY endpoint。
 
 Qoder 目录有两种使用方式：
 
 - 精确手动名单：继续配置 `direct_models`，它优先于动态 endpoint，不自动增加模型。
 - 自动发现：移除手动名单，设置 `direct_models_endpoint` 和 `direct_catalog_format`。`openai` 保持 Bearer + OpenAI 数组解析；`qoder` 使用 COSY 获取启用的 `chat` 模型。CN 示例使用 `https://gateway.qoder.com.cn/algo/api/v2/model/list`，签名内部添加 `Encode=1`。
 
-地区不能从 PAT 前缀判断。OpenAPI、catalog 和 inference 必须来自对应部署的已知地区配置。COSY 目录报告可用模型不等于所有模型已通过 Direct 推理验收；新增模型保留上游 key 和显示名，真实调用由管理员按需验证。
+地区不能从 PAT 前缀判断。OpenAPI、catalog 和 inference 必须来自对应部署的已知地区配置。COSY 目录报告可用模型不等于所有模型已通过推理验收；新增模型保留上游 key 和显示名，真实调用由管理员按需验证。中国区默认 COSY 推理已用一份真实 PAT 验证 `qfmodel` 文本 Chat 的流式和非流式响应；其他模型与图片、工具仍需单独验收。当前 COSY 路径对图片和客户端工具明确返回 `unsupported_input`，目录只向客户端声明文本输入。
 
 显示名使用上游名称，缺失时使用内置映射，再缺失使用原始 ID。显示名不改变路由 ID；自定义可执行别名沿用 CPA 原有 alias 配置。目录按凭证、端点和配置代次隔离；并发获取合并；失败不伪造静态成功目录。`enable:false` 模型不发布，也不自动提升上下文计费档位。
+
+Management 的 `GET /v0/management/auth-files/models?name=...` 只读取当前 registry。若凭证暂无已注册模型，Panel 会调用 `POST /v0/management/auth-files/models/refresh?name=...` 重新发现单个凭证的目录；Core 沿原注册路径更新 registry 和 scheduler。重新发现可能触发 PAT 换票和目录 HTTP 请求，但不执行推理。成功返回 `status=ready|empty` 和 `models`；凭证不存在返回 404、已禁用返回 409、目录失败返回 502 与安全错误码、超时返回 504，不回传插件原始错误或上游响应体。旧 Core 没有此 POST 时，Panel 仍按原有空列表处理。
 
 CodeBuddy 0.2.0 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
 
@@ -29,7 +31,7 @@ Qoder 推理、目录和 Summary 共用内存中的 PAT 换票和刷新缓存。
 
 Qoder refresh 仅在明确认证失效时退回 PAT exchange；网络、限流、上游异常和无效响应不触发额外换票。刷新响应没有新 refresh token 时保留原票据。动态目录的显式 `default_context_window` / `defaultContextWindow` 优先于可选最大窗口。
 
-Direct 保留原始 messages、工具、图片、生成参数和会话标识；工具由客户端执行。HTTP 401 和明确 token 失效的 403 最多在输出前刷新重试一次；排队、额度和模型拒绝分别分类。流中断不在插件内自动重放生成请求。取消与关闭遵循账号、调用方和工作区身份；关闭上游后释放会话占用。
+中国区默认 COSY 推理映射文本 messages、模型、常用生成参数和会话标识，并对实际发送的编码体签名；不发送第三方模板的系统提示词。显式非 COSY OpenAI 兼容 endpoint 保留原始 messages、工具、图片、生成参数和会话标识；工具由客户端执行。HTTP 401 和明确 token 失效的 403 最多在输出前刷新重试一次；排队、额度和模型拒绝分别分类。流中断不在插件内自动重放生成请求。取消与关闭遵循账号、调用方和工作区身份；关闭上游后释放会话占用。
 
 SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw_usage` 归一并保留 cache-read、cache-creation 和 reasoning 分项，不重复累加到总量。上游流失败时，已收到的 usage 在下游仍连接时通过 usage-only 帧交给 Core，随后报告失败，不伪造成功终结。统计由 Core 正式 Provider 路径发布，插件不另建账本。额度查询与模型请求统计互相独立。
 
@@ -46,7 +48,7 @@ SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw
 
 ## 外部参考
 
-COSY 目录签名参考 Sliverkiss/cpa-plugin 的 MIT QoderWork 实现，归属和许可证见 `examples/plugin/qoder/THIRD_PARTY_NOTICES.md`，并随 Qoder 插件归档和镜像分发。没有引入第三方网关、旧 baseprompt 或新厂商 SDK。
+COSY 签名参考 Sliverkiss/cpa-plugin 的 MIT QoderWork 实现，归属和许可证见 `examples/plugin/qoder/THIRD_PARTY_NOTICES.md`，并随 Qoder 插件归档和镜像分发。推理请求字段另与 [qoder2api-hub 的公开实现](https://github.com/shuishuipingan/qoder2api-hub/tree/81eee37f0b4f3d7a6382c3ff402937cba565bfd1) 对照，并通过当前 Qoder CN PAT 独立实测；没有引入第三方网关、其 baseprompt 模板或新厂商 SDK。
 
 ## CodeBuddy 企业 / 个人账号边界与下一阶段
 
