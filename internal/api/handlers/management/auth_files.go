@@ -1,9 +1,11 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -354,10 +356,11 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 		authID = name // fallback to filename as ID
 	}
 
-	// Get models from registry
-	reg := registry.GetGlobalRegistry()
-	models := reg.GetModelsForClient(authID)
+	c.JSON(http.StatusOK, gin.H{"models": authFileModels(authID)})
+}
 
+func authFileModels(authID string) []gin.H {
+	models := registry.GetGlobalRegistry().GetModelsForClient(authID)
 	result := make([]gin.H, 0, len(models))
 	for _, m := range models {
 		entry := gin.H{
@@ -375,7 +378,83 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 		result = append(result, entry)
 	}
 
-	c.JSON(200, gin.H{"models": result})
+	return result
+}
+
+// RefreshAuthFileModels retries discovery for one registered credential and
+// returns only safe status metadata; plugin error messages may contain secrets.
+func (h *Handler) RefreshAuthFileModels(c *gin.Context) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name_required", "message": "name is required"})
+		return
+	}
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth_manager_unavailable", "message": "auth manager is unavailable"})
+		return
+	}
+	var auth *coreauth.Auth
+	for _, candidate := range h.authManager.List() {
+		if candidate != nil && (candidate.FileName == name || candidate.ID == name) {
+			auth = candidate
+			break
+		}
+	}
+	if auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth_not_found", "message": "auth file was not found"})
+		return
+	}
+	if auth.Disabled {
+		c.JSON(http.StatusConflict, gin.H{"error": "auth_disabled", "message": "auth file is disabled"})
+		return
+	}
+	h.mu.Lock()
+	hook := h.authModelsRefreshHook
+	h.mu.Unlock()
+	if hook == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model_refresh_unavailable", "message": "model refresh is unavailable"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 40*time.Second)
+	defer cancel()
+	if err := hook(ctx, auth.Clone()); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "model_discovery_timeout", "message": "model discovery timed out"})
+			return
+		}
+		code := "model_discovery_failed"
+		if coded, ok := err.(interface{ PluginCode() string }); ok {
+			if candidate := safeModelDiscoveryCode(coded.PluginCode()); candidate != "" {
+				code = candidate
+			}
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": code, "message": "model discovery failed"})
+		return
+	}
+	models := authFileModels(auth.ID)
+	status := "ready"
+	if len(models) == 0 {
+		status = "empty"
+	}
+	c.JSON(http.StatusOK, gin.H{"status": status, "models": models})
+}
+
+func safeModelDiscoveryCode(code string) string {
+	if code == "" || len(code) > 64 {
+		return ""
+	}
+	for i, char := range code {
+		if i == 0 {
+			if char < 'a' || char > 'z' {
+				return ""
+			}
+			continue
+		}
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return ""
+		}
+	}
+	return code
 }
 
 // List auth files from disk when the auth manager is unavailable.

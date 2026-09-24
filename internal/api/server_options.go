@@ -24,6 +24,7 @@ type serverOptionConfig struct {
 	keepAliveOnTimeout    func()
 	postAuthHook          auth.PostAuthHook
 	postAuthPersistHook   auth.PostAuthHook
+	authModelsRefreshHook func(context.Context, *auth.Auth) error
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
@@ -112,6 +113,13 @@ func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 func WithPostAuthPersistHook(hook auth.PostAuthHook) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.postAuthPersistHook = hook
+	}
+}
+
+// WithAuthModelsRefreshHook binds an explicit Management model refresh to the service registry path.
+func WithAuthModelsRefreshHook(hook func(context.Context, *auth.Auth) error) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.authModelsRefreshHook = hook
 	}
 }
 

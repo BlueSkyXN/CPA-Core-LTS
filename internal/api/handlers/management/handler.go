@@ -57,6 +57,7 @@ type Handler struct {
 	logDir                  string
 	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
+	authModelsRefreshHook   func(context.Context, *coreauth.Auth) error
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
 	pluginStoreRegistryURL  string
@@ -154,6 +155,16 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 	}
 	h.mu.Lock()
 	h.pluginHost = host
+	h.mu.Unlock()
+}
+
+// SetAuthModelsRefreshHook sets the service-owned model registration callback.
+func (h *Handler) SetAuthModelsRefreshHook(hook func(context.Context, *coreauth.Auth) error) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.authModelsRefreshHook = hook
 	h.mu.Unlock()
 }
 

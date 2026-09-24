@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -18,28 +19,28 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	s.registerModelsForAuthWithCache(ctx, a, nil)
 }
 
-func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) {
+func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) error {
 	if a == nil || a.ID == "" {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	if a.Disabled {
 		if s != nil && s.coreManager != nil {
 			if current, ok := s.coreManager.GetByID(a.ID); ok && current != nil && !current.Disabled {
-				return
+				return nil
 			}
 		}
 		GlobalModelRegistry().UnregisterClient(a.ID)
-		return
+		return nil
 	}
 	if s != nil && s.coreManager != nil {
 		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled {
-			return
+			return nil
 		}
 	}
 	authKind := a.AuthKind()
@@ -64,11 +65,11 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			excluded = strings.Split(val, ",")
 		}
 	}
-	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded) {
-		return
+	if handled, err := s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded); handled {
+		return err
 	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	var models []*ModelInfo
 	switch provider {
@@ -259,15 +260,15 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 						GlobalModelRegistry().UnregisterClient(a.ID)
 					}
 				}
-				return
+				return nil
 			}
 			if indexed := configEntryForAuthIndex(a, s.cfg.OpenAICompatibility); indexed != nil && registerCompat(indexed) {
-				return
+				return nil
 			}
 			for i := range s.cfg.OpenAICompatibility {
 				compat := &s.cfg.OpenAICompatibility[i]
 				if strings.EqualFold(compat.Name, compatName) && registerCompat(compat) {
-					return
+					return nil
 				}
 			}
 			if isCompatAuth {
@@ -278,16 +279,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 					// No matching provider found or models removed entirely; drop any prior registration.
 					GlobalModelRegistry().UnregisterClient(a.ID)
 				}
-				return
+				return nil
 			}
 		}
 	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	key := provider
 	if key == "" {
@@ -299,10 +300,11 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
 		}
-		return
+		return nil
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+	return nil
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for
@@ -321,42 +323,74 @@ func (s *Service) refreshModelRegistrationForAuthWithCache(current *coreauth.Aut
 }
 
 func (s *Service) refreshModelRegistrationForAuthWithContext(ctx context.Context, current *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) bool {
+	refreshed, _ := s.refreshModelRegistrationForAuthWithContextResult(ctx, current, compatCache, false)
+	return refreshed
+}
+
+// Explicit Management retries stop after a discovery failure so one request
+// does not immediately repeat the same upstream call. Other refreshes retain
+// their existing second pass over the latest auth snapshot.
+func (s *Service) refreshModelRegistrationForAuthWithContextResult(ctx context.Context, current *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache, stopOnDiscoveryError bool) (bool, error) {
 	if s == nil || s.coreManager == nil || current == nil || current.ID == "" {
-		return false
+		return false, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
-		return false
+		return false, ctx.Err()
 	}
 	if !current.Disabled {
 		s.ensureExecutorsForAuthWithContext(ctx, current, false)
 	}
-	s.registerModelsForAuthWithCache(ctx, current, compatCache)
+	err := s.registerModelsForAuthWithCache(ctx, current, compatCache)
 	s.coreManager.ReconcileRegistryModelStates(ctx, current.ID)
 	if ctx.Err() != nil {
-		return false
+		return false, ctx.Err()
 	}
 
 	latest, ok := s.latestAuthForModelRegistration(current.ID)
 	if !ok || latest.Disabled {
 		GlobalModelRegistry().UnregisterClient(current.ID)
 		s.coreManager.RefreshSchedulerEntry(current.ID)
-		return false
+		return false, nil
+	}
+	if err != nil && stopOnDiscoveryError {
+		s.coreManager.RefreshSchedulerEntry(current.ID)
+		return true, err
 	}
 
 	// Re-apply the latest auth snapshot so concurrent auth updates cannot leave
 	// stale model registrations behind. This may duplicate registration work when
 	// no auth fields changed, but keeps the refresh path simple and correct.
 	s.ensureExecutorsForAuthWithContext(ctx, latest, false)
-	s.registerModelsForAuthWithCache(ctx, latest, compatCache)
+	err = s.registerModelsForAuthWithCache(ctx, latest, compatCache)
 	if ctx.Err() != nil {
-		return false
+		return false, ctx.Err()
 	}
 	s.coreManager.ReconcileRegistryModelStates(ctx, latest.ID)
 	s.coreManager.RefreshSchedulerEntry(current.ID)
-	return true
+	return true, err
+}
+
+// refreshAuthFileModels reuses the normal registration path so Management refreshes
+// update both the model registry and the auth scheduler.
+func (s *Service) refreshAuthFileModels(ctx context.Context, auth *coreauth.Auth) error {
+	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
+		return errors.New("auth model refresh unavailable")
+	}
+	current, ok := s.coreManager.GetByID(auth.ID)
+	if !ok || current == nil || current.Disabled {
+		return errors.New("auth model refresh unavailable")
+	}
+	refreshed, err := s.refreshModelRegistrationForAuthWithContextResult(ctx, current, nil, true)
+	if err != nil {
+		return err
+	}
+	if !refreshed {
+		return errors.New("auth model refresh unavailable")
+	}
+	return nil
 }
 
 // latestAuthForModelRegistration returns the latest auth snapshot regardless of
