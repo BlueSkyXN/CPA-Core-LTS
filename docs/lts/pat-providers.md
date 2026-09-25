@@ -1,10 +1,10 @@
-# Qoder / CodeBuddy 原生 PAT 插件
+# Qoder / CodeBuddy / Copilot 原生插件
 
-两家保持原有 Provider 身份 `qoder`、`codebuddy`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。
+三家保持原有 Provider 身份 `qoder`、`codebuddy`、`copilot`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。Copilot（0.1.0）支持 GitHub OAuth device 登录与自备 `github_token` 两种认证，同为纯 Go 原生动态库。
 
 ## 配置与兼容
 
-使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的默认运行镜像只包含 Core 和两家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。
+使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的默认运行镜像只包含 Core 和三家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。
 
 Qoder 插件 0.3.1 的中国区原生默认值：`transport` 固定为 `direct_openai` 兼容名称，`direct_endpoint` 默认指向 `/algo/api/v2/service/pro/sse/agent_chat_generation`，`direct_models_endpoint` / `openapi_endpoint` / `direct_catalog_format=qoder` 也有默认值，最小启用配置只需 `enabled` 与 `auth-read` 权限。auth 或配置中的 `transport` 仅作为兼容字段：`direct_openai` 等价无操作，`sdk_cli` 明确拒绝。认证只接受 `pat`（legacy `access_token` 继续作为旧 PAT 文件的读取别名）；`local_cli` 已移除并明确报错。国际区或私有网关实例需显式覆盖并验证相应 endpoint，显式覆盖永远优先于默认值。已有显式 `/model/v1/chat/completions` 覆盖仍按 OpenAI wire 发送；若要使用已验证的中国区 COSY 推理，需移除该覆盖或改为上述 COSY endpoint。
 
@@ -35,10 +35,32 @@ Qoder refresh 仅在明确认证失效时退回 PAT exchange；网络、限流�
 
 SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw_usage` 归一并保留 cache-read、cache-creation 和 reasoning 分项，不重复累加到总量。上游流失败时，已收到的 usage 在下游仍连接时通过 usage-only 帧交给 Core，随后报告失败，不伪造成功终结。统计由 Core 正式 Provider 路径发布，插件不另建账本。额度查询与模型请求统计互相独立。
 
+## Copilot（GitHub Copilot provider）
+
+Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 接入，纯 Go 原生动态库，无 Node、GitHub CLI 或 runner。认证两种模式：`oauth` 走 GitHub OAuth device flow（发起后经插件 Management 路由 `GET /v0/management/plugins/copilot/login-info` 查询 user_code 与状态，`device_code` 不外发到日志或响应）；`github_token` 直接使用用户自备的 GitHub PAT。两种模式的 auth 文件 `type` 均为 `copilot`。
+
+凭据安全：`POST /login/oauth/access_token`（长期 `ghu_` token）、`POST /login/device/code`（device_code）与 `GET /copilot_internal/v2/token`（短时 Copilot JWT）三个凭据交换端点在 Core HTTP 请求日志中做双向 body 脱敏，路径后缀匹配以兼容 GHES；`/copilot_internal/user` 与 chat/inference 端点不脱敏。该清单目前由宿主手工维护，后续方向是插件注册时自声明敏感端点。
+
+端点覆盖：`github_api_endpoint` 显式覆盖 GitHub API base（token 交换、user、quota）；GHES 用 `enterprise_domain` 同时改写 `github.com`、`api.github.com` 与 Copilot API base。默认面向 github.com 云端。
+
+模型目录按账号发现（`ExecutorModelScopeOAuth`）；显示名、路由 ID、目录隔离语义与 Qoder/CodeBuddy 一致。执行协商格式为 `chat-completions` 与 `embeddings`：客户端四协议入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1beta generateContent` 经 Core 标准转换层进入 chat-completions 格式，`/v1/embeddings` 为 Core 公共入口直达插件。生命周期支持取消、readiness 与会话关闭（schema 与 capability 双门控）。usage 经 Core 正式 Provider 统计管道发布，插件不另建账本；配额 summary 查询 `copilot_internal/user`，不把配额快照当计费事实。
+
+## 插件 ABI 契约与 LTS schema 语义（第三方插件作者须知）
+
+`sdk/pluginabi` 与 `sdk/pluginapi` 是 LTS 的稳定公开契约：破坏性变更必须升级 SchemaVersion/ABIVersion，并保留旧行为分支。宿主接受 schema 低于当前的插件，缺失协商字段按 schema 1 处理。
+
+schema 语义在 LTS 与 upstream 存在一处分叉，第三方作者必须区分：
+
+- **LTS schema 5 = 执行生命周期**：`executor.cancel` / `executor.close_session` / `executor.readiness` 三个方法仅在插件 schema ≥ 5 且 capability 显式声明时才会被调用（双门控）。upstream 插件不会被误调。
+- **upstream schema 5 = 流 chunk history 省略**：LTS 不采用该隐式语义，以显式 `StreamChunkHistoryOmitted` capability 表达；声明后才生效。
+- **schema 6 双边语义相同**（raw management response）。
+
+平台成本结论（实测）：接入一个标准 OAuth/PAT 型 provider 是纯插件工作，零 Core 改动；接入新推理形态（非 OpenAI 兼容上游）需要协商层注册格式名加 Core 入口 handler，约 40 行级。
+
 ## 发布前验证
 
-1. 分别在 `examples/plugin/qoder/go` 和 `examples/plugin/codebuddy/go` 运行 `go test -race -count=1 ./...`、`go vet ./...`。
-2. Qoder 非 race 测试包含动态库构建与真实 Core host 加载，使用本地假上游检查 catalog、流式/非流式和 usage 归属；不依赖真实凭证。
+1. 分别在 `examples/plugin/qoder/go`、`examples/plugin/copilot/go` 和 `examples/plugin/codebuddy/go` 运行 `go test -race -count=1 ./...`、`go vet ./...`。
+2. Qoder 与 Copilot 的非 race 测试包含动态库构建与真实 Core host 加载，使用本地假上游检查目录、流式/非流式、登录状态、usage 归属；不依赖真实凭证。
    CodeBuddy 在仓库根执行 `go test -count=1 ./test -run TestCodeBuddyDynamic`，覆盖真实动态库注册、目录、流式/非流式、截断流失败及正式 usage 归属（Unix + CGO，非 race）。
 3. 仓库根执行 `python3 -m unittest discover -s scripts -p test_package_pat_providers.py`、`scripts/check-lts-contract.sh` 和 Core 测试。
 4. 具备 Docker 环境时构建 PAT 镜像并运行 `scripts/smoke-pat-providers.py --image <image>`；检查镜像中没有 Node/CLI/runner，验证插件注册及 auth 重建持久化。

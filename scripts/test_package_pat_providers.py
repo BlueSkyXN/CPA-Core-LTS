@@ -17,7 +17,7 @@ class PackageTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.native, self.output = [self.root / name for name in ("native", "out")]
         self.native.mkdir()
-        for name in ("codebuddy", "qoder"):
+        for name in ("codebuddy", "copilot", "qoder"):
             (self.native / f"cpa-provider-{name}.so").write_bytes(b"fixture-not-executable")
 
     def package(self, arch: str = "amd64"):
@@ -25,7 +25,7 @@ class PackageTests(unittest.TestCase):
 
     def test_layout_hashes_and_repeatability(self):
         manifest = self.package()
-        self.assertEqual(len(manifest["assets"]), 2)
+        self.assertEqual(len(manifest["assets"]), 3)
         for name, sha in manifest["assets"].items():
             self.assertEqual(packager.hashlib.sha256((self.output / name).read_bytes()).hexdigest(), sha)
             with zipfile.ZipFile(self.output / name) as archive:
