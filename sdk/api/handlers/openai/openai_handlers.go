@@ -149,6 +149,38 @@ func shouldTreatAsResponsesFormat(rawJSON []byte) bool {
 	return false
 }
 
+// Embeddings handles the /v1/embeddings endpoint following the OpenAI
+// embeddings API specification. Embeddings never stream: the request is
+// dispatched non-streaming with the "embeddings" source format, and executors
+// that declare the format receive the payload untranslated.
+func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
+	rawJSON, err := h.ReadRequestBody(c)
+	if err != nil {
+		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+
+	modelName := gjson.GetBytes(rawJSON, "model").String()
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, Embeddings, modelName, rawJSON, h.GetAlt(c))
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errMsg.Error)
+		return
+	}
+	c.Header("Content-Type", "application/json")
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(resp)
+	cliCancel()
+}
+
 // Completions handles the /v1/completions endpoint.
 // It determines whether the request is for a streaming or non-streaming response
 // and calls the appropriate handler based on the model provider.

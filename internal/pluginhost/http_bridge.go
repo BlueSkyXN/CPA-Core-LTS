@@ -202,20 +202,24 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 	})
 }
 
-// Qoder OpenAPI 换票的双向 body 都包含凭证；只隐藏日志副本，保留网络字节。
+// 插件凭据交换端点的双向 body 都包含凭证；只隐藏日志副本，保留网络字节。
 // 按端点路径识别，以兼容配置的地区端点和测试/企业代理地址。
+// 覆盖 Qoder jobToken/deviceToken 与 GitHub OAuth device 流、Copilot 短时票。
 func hostCredentialExchange(method, rawURL string) bool {
-	if method != http.MethodPost {
-		return false
-	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	for _, path := range []string{"/api/v1/jobToken/exchange", "/api/v1/jobToken/refresh", "/api/v1/deviceToken/refresh"} {
-		if strings.HasSuffix(u.Path, path) {
-			return true
-		}
+	get := strings.EqualFold(method, http.MethodGet)
+	post := strings.EqualFold(method, http.MethodPost)
+	switch {
+	case post && strings.HasSuffix(u.Path, "/api/v1/jobToken/exchange"),
+		post && strings.HasSuffix(u.Path, "/api/v1/jobToken/refresh"),
+		post && strings.HasSuffix(u.Path, "/api/v1/deviceToken/refresh"),
+		post && strings.HasSuffix(u.Path, "/login/device/code"),
+		post && strings.HasSuffix(u.Path, "/login/oauth/access_token"),
+		get && strings.HasSuffix(u.Path, "/copilot_internal/v2/token"):
+		return true
 	}
 	return false
 }

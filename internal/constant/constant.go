@@ -27,4 +27,7 @@ const (
 
 	// Interactions represents the Google Interactions API format identifier.
 	Interactions = "interactions"
+
+	// Embeddings represents the OpenAI embeddings API format identifier.
+	Embeddings = "embeddings"
 )
