@@ -93,6 +93,25 @@ func TestHostHTTPTokenExchangeRedactsLogsButPreservesWireBytes(t *testing.T) {
 	if hostCredentialExchange(http.MethodPost, server.URL+"/model/v1/chat/completions") {
 		t.Fatal("chat body logging was suppressed")
 	}
+	// Copilot / GitHub 凭据端点与 chat/inference 端点的区分。
+	if !hostCredentialExchange(http.MethodPost, "https://github.com/login/oauth/access_token") {
+		t.Fatal("GitHub OAuth token poll body must be redacted")
+	}
+	if !hostCredentialExchange(http.MethodPost, "https://github.com/login/device/code") {
+		t.Fatal("GitHub device code body must be redacted")
+	}
+	if !hostCredentialExchange(http.MethodGet, "https://api.github.com/copilot_internal/v2/token") {
+		t.Fatal("Copilot short-lived token exchange body must be redacted")
+	}
+	if hostCredentialExchange(http.MethodGet, "https://api.github.com/copilot_internal/user") {
+		t.Fatal("Copilot account summary is not credential material")
+	}
+	if hostCredentialExchange(http.MethodPost, "https://api.githubcopilot.com/chat/completions") {
+		t.Fatal("Copilot chat body logging was suppressed")
+	}
+	if !hostCredentialExchange(http.MethodPost, "https://example.invalid/ghes/login/oauth/access_token") {
+		t.Fatal("GHES OAuth token poll must be redacted by path suffix")
+	}
 }
 
 func TestHostHTTPClientMarksUpstreamAttempt(t *testing.T) {
