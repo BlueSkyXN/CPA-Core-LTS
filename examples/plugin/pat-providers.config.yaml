@@ -19,6 +19,12 @@ plugins:
       enabled: true
       permissions:
         auth-read: true
+    cpa-provider-copilot:
+      enabled: true
+      permissions:
+        auth-read: true
+      # GitHub OAuth device 登录经 Management 的 /plugins/copilot/login-info 查询；
+      # GHES 实例用 enterprise_domain 或 github_api_endpoint 覆盖默认 github.com/api.github.com。
     cpa-provider-qoder:
       enabled: true
       permissions:

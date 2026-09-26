@@ -44,6 +44,9 @@ plugins:
       endpoint: http://127.0.0.1:9/v2/chat/completions
       catalog_endpoint: http://127.0.0.1:9/v3/config
       billing_endpoint: http://127.0.0.1:9/v2/billing/meter/get-user-resource
+    cpa-provider-copilot:
+      enabled: true
+      permissions: {{auth-read: true}}
     cpa-provider-qoder:
       enabled: true
       permissions: {{auth-read: true}}
@@ -56,6 +59,14 @@ plugins:
                    "-v", f"{root / 'auths'}:/root/.cli-proxy-api", args.image)
             port = docker("port", name, "8317/tcp").split(":")[-1]
             return f"http://127.0.0.1:{port}/v0/management"
+
+        def docker_or_dump_logs(*args: str) -> str:
+            try:
+                return docker(*args)
+            except subprocess.CalledProcessError:
+                logs = subprocess.run(["docker", "logs", "--tail", "40", name], capture_output=True, text=True)
+                print((logs.stdout + logs.stderr).replace(key, "[fixture-key]"))
+                raise
 
         def request(base, path, method="GET", payload=None):
             data = json.dumps(payload).encode() if payload is not None else None
@@ -74,7 +85,7 @@ plugins:
                         for item in response.get("plugins", [])
                     ]})
                     active = {p["id"] for p in response["plugins"] if p.get("registered") and p.get("effective_enabled")}
-                    if {"cpa-provider-codebuddy", "cpa-provider-qoder"} <= active:
+                    if {"cpa-provider-codebuddy", "cpa-provider-copilot", "cpa-provider-qoder"} <= active:
                         return
                 except (OSError, urllib.error.URLError, KeyError) as error:
                     last = type(error).__name__ + ":" + str(getattr(error, "code", ""))
@@ -85,8 +96,8 @@ plugins:
 
         try:
             base = start()
-            docker("exec", name, "sh", "-ec",
-                   "test -x /CLIProxyAPI/sky-cpa-core-lts; ! test -e /CLIProxyAPI/CLIProxyAPI")
+            docker_or_dump_logs("exec", name, "sh", "-ec",
+                                "test -x /CLIProxyAPI/sky-cpa-core-lts; ! test -e /CLIProxyAPI/CLIProxyAPI")
             wait_plugins(base)
             startup_logs = docker("logs", name)
             if "sky-cpa-core-lts Version:" not in startup_logs:
@@ -103,12 +114,16 @@ plugins:
             providers = {p["id"]: p for p in request(base, "/plugins")["plugins"]}
             qoder_meta = providers["cpa-provider-qoder"].get("metadata") or {}
             assert str(qoder_meta.get("version", "")) == bundle["plugins"]["qoder"], "qoder metadata version must match bundle"
-            for provider in ("codebuddy", "qoder"):
-                request(base, f"/auth-files?name={provider}-fixture.json", "POST",
-                        {"type": provider, "auth_mode": "pat", "pat": "pt-fixture-not-a-real-credential", "label": "Fixture"})
+            for provider in ("codebuddy", "copilot", "qoder"):
+                if provider == "copilot":
+                    payload = {"type": provider, "auth_mode": "github_token",
+                               "github_token": "gho-fixture-not-a-real-credential", "label": "Fixture"}
+                else:
+                    payload = {"type": provider, "auth_mode": "pat", "pat": "pt-fixture-not-a-real-credential", "label": "Fixture"}
+                request(base, f"/auth-files?name={provider}-fixture.json", "POST", payload)
             def check_files(base):
                 files = request(base, "/auth-files")["files"]
-                for provider in ("codebuddy", "qoder"):
+                for provider in ("codebuddy", "copilot", "qoder"):
                     assert any(f["name"] == f"{provider}-fixture.json" and f.get("auth_index") for f in files)
             check_files(base)
             docker("rm", "-f", name)

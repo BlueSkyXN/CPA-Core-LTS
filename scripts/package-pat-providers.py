@@ -35,7 +35,7 @@ def package(libraries: Path, output: Path, arch: str, commit: str, core_version:
         raise ValueError("Only linux/amd64 and linux/arm64 are supported")
     if commit != "unknown" and not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("core-commit must be a full SHA or unknown")
-    plugin_versions = {name: version(name) for name in ("codebuddy", "qoder")}
+    plugin_versions = {name: version(name) for name in ("codebuddy", "copilot", "qoder")}
     for name in plugin_versions:
         if not (libraries / f"cpa-provider-{name}.so").is_file():
             raise ValueError(f"Missing {name} dynamic library")

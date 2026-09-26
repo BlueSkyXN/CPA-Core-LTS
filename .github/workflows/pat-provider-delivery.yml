@@ -6,6 +6,7 @@ on:
       - 'Dockerfile.pat-providers'
       - 'docker-compose.pat-providers.yml'
       - 'examples/plugin/codebuddy/**'
+      - 'examples/plugin/copilot/**'
       - 'examples/plugin/qoder/**'
       - 'examples/plugin/pat-providers.config.yaml'
       - 'scripts/*pat*providers*'
@@ -65,6 +66,7 @@ jobs:
       - name: Native provider regression tests
         run: |
           (cd examples/plugin/qoder/go && go test -count=1 ./... && go test -race -count=1 ./... && go vet ./...)
+          (cd examples/plugin/copilot/go && go test -count=1 ./... && go test -race -count=1 ./... && go vet ./...)
           (cd examples/plugin/codebuddy/go && go test -race -count=1 ./... && go vet ./...)
           go test -count=1 ./test -run '^TestCodeBuddyDynamic'
       - name: Package layout tests
