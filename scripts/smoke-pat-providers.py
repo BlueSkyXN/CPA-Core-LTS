@@ -60,6 +60,14 @@ plugins:
             port = docker("port", name, "8317/tcp").split(":")[-1]
             return f"http://127.0.0.1:{port}/v0/management"
 
+        def docker_or_dump_logs(*args: str) -> str:
+            try:
+                return docker(*args)
+            except subprocess.CalledProcessError:
+                logs = subprocess.run(["docker", "logs", "--tail", "40", name], capture_output=True, text=True)
+                print((logs.stdout + logs.stderr).replace(key, "[fixture-key]"))
+                raise
+
         def request(base, path, method="GET", payload=None):
             data = json.dumps(payload).encode() if payload is not None else None
             req = urllib.request.Request(base + path, data=data, method=method,
@@ -88,8 +96,8 @@ plugins:
 
         try:
             base = start()
-            docker("exec", name, "sh", "-ec",
-                   "test -x /CLIProxyAPI/sky-cpa-core-lts; ! test -e /CLIProxyAPI/CLIProxyAPI")
+            docker_or_dump_logs("exec", name, "sh", "-ec",
+                                "test -x /CLIProxyAPI/sky-cpa-core-lts; ! test -e /CLIProxyAPI/CLIProxyAPI")
             wait_plugins(base)
             startup_logs = docker("logs", name)
             if "sky-cpa-core-lts Version:" not in startup_logs:
