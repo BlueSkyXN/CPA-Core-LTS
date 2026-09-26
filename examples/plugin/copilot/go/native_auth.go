@@ -32,6 +32,9 @@ func copilotChatHeaders(cfg pluginConfig, token, requestID string) http.Header {
 	headers.Set("Authorization", "Bearer "+token)
 	headers.Set("Accept", "text/event-stream")
 	headers.Set("Openai-Intent", "conversation-agent")
+	// 官方客户端用 X-Initiator 区分 user 与 agent 发起的对话；本插件只代理
+	// 客户端直接请求，固定 user。embeddings/目录等非对话端点不带该头。
+	headers.Set("X-Initiator", "user")
 	if requestID != "" {
 		headers.Set("X-Request-Id", requestID)
 	}

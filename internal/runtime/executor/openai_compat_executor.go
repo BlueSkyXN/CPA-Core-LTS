@@ -91,6 +91,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
 
+	if opts.SourceFormat.String() == "embeddings" {
+		return e.executeEmbeddings(ctx, auth, req, opts)
+	}
+
 	if opts.Alt != "responses/compact" && (opts.SourceFormat.String() == "openai-response" || opts.SourceFormat.String() == "codex") {
 		if controlErr := util.RequireChatRepresentableResponses(req.Payload); controlErr != nil {
 			err = statusErr{code: http.StatusBadRequest, msg: controlErr.Error()}
@@ -254,6 +258,92 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		return resp, err
 	}
 	httpReq.Header.Set("Content-Type", contentType)
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      payload,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+
+	body, errRead := io.ReadAll(httpResp.Body)
+	if errRead != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+		err = errRead
+		return resp, err
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+
+	reporter.ObserveResponseModel(body)
+	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
+	reporter.EnsurePublished(ctx)
+	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
+	return resp, nil
+}
+
+// executeEmbeddings forwards /v1/embeddings requests to the provider's
+// /embeddings endpoint. The payload already matches the OpenAI embeddings
+// schema, so it is passed through without chat translation; only the model
+// field is normalized to the resolved model name. Embeddings never stream.
+func (e *OpenAICompatExecutor) executeEmbeddings(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	baseURL, apiKey := e.resolveCredentials(auth)
+	if baseURL == "" {
+		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
+		return resp, err
+	}
+
+	payload := req.Payload
+	if baseModel != "" && gjson.GetBytes(payload, "model").String() != baseModel {
+		if updated, errSet := sjson.SetBytes(payload, "model", baseModel); errSet == nil {
+			payload = updated
+		}
+	}
+	reporter.SetTranslatedReasoningEffort(payload, "openai")
+
+	url := strings.TrimSuffix(baseURL, "/") + "/embeddings"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return resp, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}

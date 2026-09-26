@@ -263,6 +263,12 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name: pluginName, Version: pluginVersion, Author: "BlueSkyXN",
 			GitHubRepository: "https://github.com/BlueSkyXN/CPA-Core-LTS",
+			// 宿主请求日志对凭据交换端点的双向 body 脱敏；声明与宿主内置规则并集生效。
+			SensitiveEndpoints: []pluginapi.SensitiveEndpoint{
+				{Method: http.MethodPost, PathSuffix: "/api/v1/jobToken/exchange"},
+				{Method: http.MethodPost, PathSuffix: "/api/v1/jobToken/refresh"},
+				{Method: http.MethodPost, PathSuffix: "/api/v1/deviceToken/refresh"},
+			},
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "direct_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Explicit HTTPS OpenAI-compatible Qoder endpoint override; defaults to the China-zone gateway."},
 				{Name: "direct_models_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Per-account catalog URL override; defaults to the China-zone model list."},

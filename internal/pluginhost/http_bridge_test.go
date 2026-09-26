@@ -1515,3 +1515,74 @@ func TestHostHTTPClientWireProfile_DefaultTransportCustomTLSDialer(t *testing.T)
 		t.Fatal("timeout waiting for default transport custom TLS dialer")
 	}
 }
+
+func TestHostHTTPCredentialRedactionIncludesPluginDeclarations(t *testing.T) {
+	const requestBody = `{"grant":"declared-fixture-secret"}`
+	const responseBody = `{"access_token":"declared-fresh-secret"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		if string(body) != requestBody {
+			t.Error("redaction changed outbound credentials")
+		}
+		_, _ = io.WriteString(w, responseBody)
+	}))
+	defer server.Close()
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	host := New()
+	host.runtimeConfig = &config.Config{}
+	host.runtimeConfig.RequestLog = true
+	host.mu.Lock()
+	host.declaredSensitive["cpa-provider-fixture"] = cloneSensitiveEndpoints([]pluginapi.SensitiveEndpoint{
+		{Method: http.MethodPost, PathSuffix: "/vendor/session/issue"},
+	})
+	host.mu.Unlock()
+	if len(host.DeclaredSensitiveEndpoints()) != 1 {
+		t.Fatal("declared endpoints were not retained")
+	}
+
+	client := host.newHTTPClient(nil)
+	resp, err := client.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: server.URL + "/vendor/session/issue", Body: []byte(requestBody)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(resp.Body) != responseBody {
+		t.Fatalf("wire body changed: %q", string(resp.Body))
+	}
+	captured := ""
+	for _, key := range []string{"API_REQUEST", "API_RESPONSE"} {
+		if value, ok := ginCtx.Get(key); ok {
+			if raw, ok := value.([]byte); ok {
+				captured += string(raw)
+			}
+		}
+	}
+	if value, ok := ginCtx.Get(logging.DeferredAPIRequestContextKey); ok {
+		if source, ok := value.(interface {
+			SnapshotDeferredAPIRequests() []logging.DeferredAPIRequest
+		}); ok {
+			for _, snapshot := range source.SnapshotDeferredAPIRequests() {
+				captured += string(snapshot())
+			}
+		}
+	}
+	if strings.Contains(captured, "declared-fresh-secret") || strings.Contains(captured, "declared-fixture-secret") {
+		t.Fatalf("declared credential endpoint leaked into logs: %q", captured)
+	}
+	if !strings.Contains(captured, "REDACTED CREDENTIAL EXCHANGE") {
+		t.Fatalf("declared endpoint was not redacted: %q", captured)
+	}
+
+	// 未声明端点不受影响；声明匹配大小写不敏感且按后缀匹配。
+	concrete := &hostHTTPClient{host: host}
+	if concrete.matchCredentialExchange(http.MethodPost, server.URL+"/vendor/other") {
+		t.Fatal("undeclared endpoint was redacted")
+	}
+	if !concrete.matchCredentialExchange(http.MethodPost, "https://proxy.example.invalid/prefix/VENDOR/session/ISSUE") {
+		t.Fatal("declared match must be a case-insensitive path suffix")
+	}
+	if !concrete.matchCredentialExchange(http.MethodGet, "https://api.github.com/copilot_internal/v2/token") {
+		t.Fatal("built-in rules must stay in effect alongside declarations")
+	}
+}

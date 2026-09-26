@@ -34,6 +34,21 @@ type Metadata struct {
 	Logo string
 	// ConfigFields describes plugin-owned configuration fields for management clients.
 	ConfigFields []ConfigField
+	// SensitiveEndpoints declares plugin-owned endpoints whose request or
+	// response bodies carry credentials. The host redacts the logged bodies
+	// of matching calls (network bytes are untouched). Declarations from all
+	// active plugins are merged; built-in host rules stay in effect.
+	SensitiveEndpoints []SensitiveEndpoint
+}
+
+// SensitiveEndpoint is one plugin-declared credential exchange endpoint.
+type SensitiveEndpoint struct {
+	// Method restricts the rule to one HTTP method (for example POST or GET);
+	// empty matches any method.
+	Method string
+	// PathSuffix matches the URL path case-insensitively by suffix so that
+	// configured regional endpoints and test/enterprise proxies still match.
+	PathSuffix string
 }
 
 // ConfigFieldType classifies plugin-owned configuration values for management clients.

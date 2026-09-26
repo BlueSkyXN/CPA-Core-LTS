@@ -39,7 +39,7 @@ SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw
 
 Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 接入，纯 Go 原生动态库，无 Node、GitHub CLI 或 runner。认证两种模式：`oauth` 走 GitHub OAuth device flow（发起后经插件 Management 路由 `GET /v0/management/plugins/copilot/login-info` 查询 user_code 与状态，`device_code` 不外发到日志或响应）；`github_token` 直接使用用户自备的 GitHub PAT。两种模式的 auth 文件 `type` 均为 `copilot`。
 
-凭据安全：`POST /login/oauth/access_token`（长期 `ghu_` token）、`POST /login/device/code`（device_code）与 `GET /copilot_internal/v2/token`（短时 Copilot JWT）三个凭据交换端点在 Core HTTP 请求日志中做双向 body 脱敏，路径后缀匹配以兼容 GHES；`/copilot_internal/user` 与 chat/inference 端点不脱敏。该清单目前由宿主手工维护，后续方向是插件注册时自声明敏感端点。
+凭据安全：`POST /login/oauth/access_token`（长期 `ghu_` token）、`POST /login/device/code`（device_code）与 `GET /copilot_internal/v2/token`（短时 Copilot JWT）三个凭据交换端点在 Core HTTP 请求日志中做双向 body 脱敏，路径后缀匹配以兼容 GHES；`/copilot_internal/user` 与 chat/inference 端点不脱敏。脱敏范围 = 宿主内置规则 + 各插件注册时通过 `Metadata.SensitiveEndpoints` 自声明的端点（方法 + 大小写不敏感路径后缀）取并集；网络字节不变。
 
 端点覆盖：`github_api_endpoint` 显式覆盖 GitHub API base（token 交换、user、quota）；GHES 用 `enterprise_domain` 同时改写 `github.com`、`api.github.com` 与 Copilot API base。默认面向 github.com 云端。
 
@@ -56,6 +56,8 @@ schema 语义在 LTS 与 upstream 存在一处分叉，第三方作者必须区�
 - **schema 6 双边语义相同**（raw management response）。
 
 平台成本结论（实测）：接入一个标准 OAuth/PAT 型 provider 是纯插件工作，零 Core 改动；接入新推理形态（非 OpenAI 兼容上游）需要协商层注册格式名加 Core 入口 handler，约 40 行级。
+
+凭据脱敏自声明：插件在注册 `Metadata` 里声明 `SensitiveEndpoints`（`Method` 为空匹配任意方法；`PathSuffix` 大小写不敏感按后缀匹配 URL 路径，兼容地区端点与企业代理）。宿主将所有已注册插件的声明并集与内置规则合并，命中即把该调用的请求/响应 body 从日志中替换为 `[REDACTED CREDENTIAL EXCHANGE]`，网络字节不变；插件卸载或重配后并集随之重建。声明是安全方向的补充：多声明只会多脱敏，不影响转发。
 
 ## 发布前验证
 

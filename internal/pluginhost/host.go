@@ -83,11 +83,13 @@ type Host struct {
 	commandLineHits        map[string]struct{}
 	managementRoutes       map[string]managementRouteRecord
 	resourceRoutes         map[string]resourceRouteRecord
-	streams                *streamBridge
-	httpStreams            *hostHTTPStreamBridge
-	modelStreams           *modelStreamBridge
-	callbackContexts       *callbackContextRegistry
-	snapshot               atomic.Value
+	// declaredSensitive 按插件 ID 保存注册时自声明的凭据端点；并集用于请求日志脱敏。
+	declaredSensitive map[string][]pluginapi.SensitiveEndpoint
+	streams           *streamBridge
+	httpStreams       *hostHTTPStreamBridge
+	modelStreams      *modelStreamBridge
+	callbackContexts  *callbackContextRegistry
+	snapshot          atomic.Value
 }
 
 func New() *Host {
@@ -113,6 +115,7 @@ func New() *Host {
 		commandLineHits:        make(map[string]struct{}),
 		managementRoutes:       make(map[string]managementRouteRecord),
 		resourceRoutes:         make(map[string]resourceRouteRecord),
+		declaredSensitive:      make(map[string][]pluginapi.SensitiveEndpoint),
 		streams:                newStreamBridge(),
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
@@ -858,6 +861,7 @@ func (h *Host) removePluginRuntimeStateLocked(id string) {
 	}
 	delete(h.modelProviders, id)
 	delete(h.modelRegistrations, id)
+	delete(h.declaredSensitive, id)
 }
 
 func (h *Host) rebuildActivePluginMapsLocked(records []capabilityRecord) {
@@ -967,18 +971,18 @@ func (h *Host) rollbackReplacementContext(ctx context.Context, lp *loadedPlugin,
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-			id:          lp.id,
-			path:        lp.path,
-			version:     lp.version,
-			priority:    item.Priority,
-			permissions: item.Permissions,
-			meta:        plugin.Metadata,
-			plugin:      plugin,
-		}, pluginFile{
-			ID:      lp.id,
-			Path:    lp.path,
-			Version: lp.version,
-		}, true
+		id:          lp.id,
+		path:        lp.path,
+		version:     lp.version,
+		priority:    item.Priority,
+		permissions: item.Permissions,
+		meta:        plugin.Metadata,
+		plugin:      plugin,
+	}, pluginFile{
+		ID:      lp.id,
+		Path:    lp.path,
+		Version: lp.version,
+	}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {
@@ -1020,8 +1024,51 @@ func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeI
 	}
 	lp.configYAML = bytes.Clone(item.ConfigYAML)
 	lp.plugin = plugin
+	// 注册与重配都会经过这里：整体替换该插件的自声明端点并刷新并集。
+	h.declaredSensitive[lp.id] = cloneSensitiveEndpoints(plugin.Metadata.SensitiveEndpoints)
 	h.mu.Unlock()
 	return plugin, true
+}
+
+func cloneSensitiveEndpoints(endpoints []pluginapi.SensitiveEndpoint) []pluginapi.SensitiveEndpoint {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	out := make([]pluginapi.SensitiveEndpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		endpoint.Method = strings.ToUpper(strings.TrimSpace(endpoint.Method))
+		endpoint.PathSuffix = strings.TrimSpace(endpoint.PathSuffix)
+		if endpoint.PathSuffix == "" {
+			continue
+		}
+		out = append(out, endpoint)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// DeclaredSensitiveEndpoints returns the merged endpoint declarations from all
+// currently registered plugins. Callers must treat the result as read-only.
+func (h *Host) DeclaredSensitiveEndpoints() []pluginapi.SensitiveEndpoint {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	total := 0
+	for _, endpoints := range h.declaredSensitive {
+		total += len(endpoints)
+	}
+	if total == 0 {
+		return nil
+	}
+	out := make([]pluginapi.SensitiveEndpoint, 0, total)
+	for _, endpoints := range h.declaredSensitive {
+		out = append(out, endpoints...)
+	}
+	return out
 }
 
 func (h *Host) safePluginAction(ctx context.Context, id, method string, fn func() error) (err error, ok bool) {

@@ -165,7 +165,7 @@ func TestNativeDirectPreservesRequestAndUsageWithoutRunner(t *testing.T) {
 					if request.Header.Get("Authorization") != "Bearer cc-fixture" {
 						t.Error("wrong upstream credential")
 					}
-					if request.Header.Get("Copilot-Integration-Id") != "vscode-chat" || request.Header.Get("Openai-Intent") != "conversation-agent" || request.Header.Get("Editor-Version") != "vscode/1.110.1" || request.Header.Get("Editor-Plugin-Version") != "copilot-chat/0.38.2" || request.Header.Get("User-Agent") != "GitHubCopilotChat/0.38.2" || request.Header.Get("X-Github-Api-Version") != "2025-10-01" || request.Header.Get("X-Request-Id") != "one" {
+					if request.Header.Get("Copilot-Integration-Id") != "vscode-chat" || request.Header.Get("Openai-Intent") != "conversation-agent" || request.Header.Get("X-Initiator") != "user" || request.Header.Get("Editor-Version") != "vscode/1.110.1" || request.Header.Get("Editor-Plugin-Version") != "copilot-chat/0.38.2" || request.Header.Get("User-Agent") != "GitHubCopilotChat/0.38.2" || request.Header.Get("X-Github-Api-Version") != "2025-10-01" || request.Header.Get("X-Request-Id") != "one" {
 						t.Errorf("identity headers changed: %v", request.Header)
 					}
 					var body map[string]any
