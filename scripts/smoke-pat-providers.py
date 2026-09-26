@@ -37,7 +37,7 @@ usage-statistics-enabled: true
 plugins:
   enabled: true
   dir: /opt/cpa-pat-plugins
-    configs:
+  configs:
     cpa-provider-codebuddy:
       enabled: true
       permissions: {{auth-read: true}}
