@@ -61,7 +61,7 @@ func (c *hostHTTPClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (plu
 	body, errReadAll := io.ReadAll(resp.Body)
 	if len(body) > 0 {
 		logBody := body
-		if hostCredentialExchange(req.Method, req.URL) {
+		if c.matchCredentialExchange(req.Method, req.URL) {
 			logBody = []byte("[REDACTED CREDENTIAL EXCHANGE]")
 		}
 		helps.AppendAPIResponseChunk(ctx, cfg, logBody)
@@ -98,7 +98,7 @@ func (c *hostHTTPClient) DoStream(ctx context.Context, req pluginapi.HTTPRequest
 			}
 		}()
 		buf := make([]byte, 32*1024)
-		credentialExchange := hostCredentialExchange(req.Method, req.URL)
+		credentialExchange := c.matchCredentialExchange(req.Method, req.URL)
 		credentialLogged := false
 		for {
 			n, errRead := resp.Body.Read(buf)
@@ -176,7 +176,7 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 	if req == nil {
 		return
 	}
-	if hostCredentialExchange(req.Method, req.URL.String()) {
+	if c.matchCredentialExchange(req.Method, req.URL.String()) {
 		body = []byte("[REDACTED CREDENTIAL EXCHANGE]")
 	}
 	provider := c.provider
@@ -204,7 +204,8 @@ func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Conf
 
 // 插件凭据交换端点的双向 body 都包含凭证；只隐藏日志副本，保留网络字节。
 // 按端点路径识别，以兼容配置的地区端点和测试/企业代理地址。
-// 覆盖 Qoder jobToken/deviceToken 与 GitHub OAuth device 流、Copilot 短时票。
+// 内置清单覆盖 Qoder jobToken/deviceToken 与 GitHub OAuth device 流、Copilot 短时票；
+// 插件注册时自声明的端点（Metadata.SensitiveEndpoints）在其之上合并生效。
 func hostCredentialExchange(method, rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -220,6 +221,31 @@ func hostCredentialExchange(method, rawURL string) bool {
 		post && strings.HasSuffix(u.Path, "/login/oauth/access_token"),
 		get && strings.HasSuffix(u.Path, "/copilot_internal/v2/token"):
 		return true
+	}
+	return false
+}
+
+// matchCredentialExchange extends the built-in rules with the endpoint
+// declarations merged from registered plugins.
+func (c *hostHTTPClient) matchCredentialExchange(method, rawURL string) bool {
+	if hostCredentialExchange(method, rawURL) {
+		return true
+	}
+	declared := c.host.DeclaredSensitiveEndpoints()
+	if len(declared) == 0 {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	for _, endpoint := range declared {
+		if endpoint.Method != "" && !strings.EqualFold(method, endpoint.Method) {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(u.Path), strings.ToLower(endpoint.PathSuffix)) {
+			return true
+		}
 	}
 	return false
 }

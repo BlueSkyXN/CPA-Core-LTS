@@ -286,6 +286,12 @@ func pluginRegistration() registration {
 				{Name: "excluded_model_prefixes", Type: pluginapi.ConfigFieldTypeArray, Description: "Case-sensitive model ID prefixes excluded from the published account catalog and from execution."},
 				{Name: "model_cache_ttl", Type: pluginapi.ConfigFieldTypeString, Description: "Per-credential live model catalog cache TTL, at most 10m."},
 			},
+			// 宿主请求日志对凭据交换端点的双向 body 脱敏；声明与宿主内置规则并集生效。
+			SensitiveEndpoints: []pluginapi.SensitiveEndpoint{
+				{Method: http.MethodPost, PathSuffix: "/login/device/code"},
+				{Method: http.MethodPost, PathSuffix: "/login/oauth/access_token"},
+				{Method: http.MethodGet, PathSuffix: "/copilot_internal/v2/token"},
+			},
 		},
 		Capabilities: registrationCapabilities{
 			ModelProvider: true, AuthProvider: true, Executor: true,
