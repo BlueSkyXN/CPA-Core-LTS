@@ -139,6 +139,18 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: zcode-coding-plan-plugin
+    registry_feature: zcode-coding-plan-plugin
+    maintenance_policy: long-term-maintained-optional-integration
+    markers:
+      - examples/plugin/zcode-coding-plan/
+      - plugin-management-v1
+      - auth_import_only
+    validation:
+      - go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
+      - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+    conflict_policy: preserve_manual_private_configuration_and_isolated_provider_source
+
   - id: anthropic-plugin-responses
     registry_feature: anthropic-plugin-responses
     maintenance_policy: long-term-maintained

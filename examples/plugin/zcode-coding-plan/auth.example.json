@@ -1,0 +1,6 @@
+{
+  "type": "zcode-coding-plan",
+  "label": "Coding Plan",
+  "config_file": "<ABSOLUTE_PATH_TO_PRIVATE_CONFIG>",
+  "request_retry": 0
+}

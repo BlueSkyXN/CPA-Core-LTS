@@ -588,6 +588,25 @@ features:
       - go test ./internal/pluginhost ./internal/translator/claude/openai/responses ./sdk/pluginapi ./sdk/translator ./sdk/api/handlers ./sdk/api/handlers/openai
       - scripts/check-lts-contract.sh
 
+  - id: zcode-coding-plan-plugin
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Keep the single-account Coding Plan provider source, manual private configuration, synthetic acceptance fixtures, and explicit nested-module CI in the Core repository without a built-in vendor executor or runtime worker.
+    core_files:
+      - examples/plugin/zcode-coding-plan/
+      - examples/plugin/Makefile
+      - .github/workflows/pr-test-build.yml
+    required_markers:
+      - plugin-management-v1
+      - auth_import_only
+    validation:
+      - go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
+      - go -C examples/plugin/zcode-coding-plan/go vet ./...
+      - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+      - scripts/check-lts-contract.sh
+
   - id: local-flow-control
     kind: lts-feature
     support: optional

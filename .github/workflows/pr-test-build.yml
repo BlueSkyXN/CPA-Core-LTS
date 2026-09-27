@@ -83,6 +83,16 @@ jobs:
           go test -race -count=1 ./...
           go vet ./...
           go build -buildmode=c-shared -o /tmp/cpa-provider-qoder.so .
+      - name: Set up Node for synthetic crypto parity
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+      - name: Test Coding Plan plugin
+        working-directory: examples/plugin/zcode-coding-plan
+        run: |
+          CP_NODE="$(command -v node)" go -C go test -race -count=1 ./...
+          go -C go vet ./...
+          sh test-cpa.sh
 
   credential-permissions-windows:
     runs-on: windows-latest

@@ -81,7 +81,7 @@ Responses 字符串 input 与等价 user 数组输入语义一致。显式 tempe
 基线 `b809d748`，分支 `feat/anthropic-plugin-responses`；Go 1.27.0、macOS arm64。全部依赖解析使用 GOPROXY=off/GOSUMDB=off；供应商请求只使用内存替身或 loopback 合成服务，无真实凭据。
 
 - 新 JSON/请求控制、完整 SSE 与多行 usage、redirect、选中模型 compat、丢弃首包后的 request-scoped 重试、分片 thinking 签名和 WS 错误父响应测试均在实现前实际失败，随后通过。
-- 最终回归包含静态 host_features；消费者动态集成进一步验证 HTTP JSON/SSE、有效 header 控制、工具/thinking 两轮、WS 同连接续接及错误父 ID 不 dispatch。未把消费者源码或测试放入 Core，也未执行真实供应商请求。
+- 最终回归包含静态 host_features；消费者动态集成进一步验证 HTTP JSON/SSE、有效 header 控制、工具/thinking 两轮、WS 同连接续接及错误父 ID 不 dispatch。后续按交付要求，消费者源码与合成测试纳入 `examples/plugin/zcode-coding-plan/`，独立嵌套 module 和 CI 验证；Core 通用适配不依赖该供应商实现。未执行真实供应商请求。
 - `go test -count=1 -p=1 -timeout=180s ./...`：通过，包含 usage、Management、内置执行器、handler、translator、动态 CodeBuddy 集成。
 - `go test -race -count=1 -timeout=180s ./internal/pluginhost ./internal/translator/claude/openai/responses ./sdk/translator ./sdk/api/handlers`：通过；WS 父响应校验回归单独 race 通过，整个 openai handler 包普通回归通过。
 - `go vet ./internal/pluginhost ./internal/translator/claude/openai/responses ./sdk/pluginapi ./sdk/translator ./sdk/api/handlers`：通过。
