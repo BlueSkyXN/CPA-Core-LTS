@@ -13,7 +13,7 @@
 - tool-only、thinking-only、合法空 content 不因没有可见文字被拒绝。
 - SSE 支持 LF/CRLF/CR、完整帧/任意拆包、多 data 行、注释和 ping。data-only SSE 必须有标准空行事件分隔；内置执行器无分隔符的逐行调用保留原路径，不按网络块猜事件边界。
 - 未知非内容事件允许忽略以保留协议扩展性；未知内容块、非法 JSON、未闭合内容块、无 message_stop 的 EOF 报错。截断的工具参数仅在已声明 max_tokens 时作为 incomplete 保留。
-- 完成后重复终态与迟到事件不再次输出或发布 usage。事件与工具参数缓冲各限制为 50 MiB，沿用内置 Claude stream scanner 的量级，不降低其他路径上限。
+- 完成后重复终态与迟到事件不再次输出或发布 usage。事件与工具参数缓冲各限制为 50 MiB，沿用内置 Claude stream scanner 的量级，不降低其他路径上限。解析按行片段扫描，在复制片段前检查累计上限；超限不得依赖调用方 deadline 才终止。
 - 插件 stream 的 response-before hook 接收每个已重建事件的一条 `data: <紧凑 JSON>`；after hook 接收现有转换器产生的 Responses 事件。hook 各执行一次，顺序不变；原生 Messages 和内置逐行调用的 hook 输入保持原样。
 
 ## 状态、统计和取消所有权
@@ -88,6 +88,8 @@ Responses 字符串 input 与等价 user 数组输入语义一致。显式 tempe
 - Qoder 与 CodeBuddy 嵌套 module 的 `go test -count=1 ./...`：分别通过。
 - `scripts/check-lts-contract.sh`、`git diff --check`、修改文件 gofmt 检查和 `go build ./cmd/server`：通过；构建输出置于独立临时目录。
 - 额外以既有消费者动态库跑合成 Responses HTTP 集成：字符串 input、非流式数组、流式数组均返回正确答案；JSON/SSE 汇总及内置执行器对照通过。该离线消费者不是特性依赖，不证明其供应商控制或生产安全已完成。
+
+PR 首轮 Linux/Go 1.26 race 检查中，50 MiB 超限用例超过既有 3 秒调用方 deadline；没有报告数据竞态。分帧改为按行片段扫描、复制前检查上限后，本地原用例 `-race -count=20` 和 CI 同组八包 race 均通过，动态消费者全链回归通过。未修改测试期限或降低事件上限。
 
 一次并行全仓运行中，`TestCodeBuddyDynamicPlugin` 在输出卸载日志后达到其 90 秒子进程上限；此前全仓通过，随后隔离连续两次通过、最终串行全仓通过。没有修改该测试或以增加超时掩盖；此偶发失败根因未确认。
 

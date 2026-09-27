@@ -33,22 +33,31 @@ func claudePluginConversionError() error {
 }
 
 func (p *claudePluginSSE) feed(chunk []byte, emit func([]byte, string) error) error {
-	for _, b := range chunk {
+	for len(chunk) > 0 {
 		if p.cr {
 			p.cr = false
-			if b == '\n' {
+			if chunk[0] == '\n' {
+				chunk = chunk[1:]
 				continue
 			}
 		}
-		p.size++
-		if p.size > maxClaudePluginEventBytes {
+		end := bytes.IndexAny(chunk, "\r\n")
+		length := len(chunk)
+		if end >= 0 {
+			length = end + 1
+		}
+		// 超限在复制前拒绝，避免逐字节遍历和扩容拖延上游取消。
+		if length > maxClaudePluginEventBytes-p.size {
 			return claudePluginConversionError()
 		}
-		if b != '\r' && b != '\n' {
-			p.line = append(p.line, b)
-			continue
+		p.size += length
+		if end < 0 {
+			p.line = append(p.line, chunk...)
+			return nil
 		}
-		p.cr = b == '\r'
+		p.line = append(p.line, chunk[:end]...)
+		p.cr = chunk[end] == '\r'
+		chunk = chunk[length:]
 		if len(p.line) == 0 {
 			if len(p.data) > 0 {
 				if err := emit(p.data[:len(p.data)-1], p.event); err != nil {
