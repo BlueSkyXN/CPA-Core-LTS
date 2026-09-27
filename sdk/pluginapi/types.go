@@ -206,6 +206,8 @@ type ModelInfo struct {
 	SupportedOutputModalities []string
 	// Thinking describes optional reasoning controls for the model.
 	Thinking *ThinkingSupport
+	// IsCompat opts this model into third-party Anthropic thinking/signature compatibility.
+	IsCompat bool `json:"IsCompat,omitempty"`
 	// UserDefined reports whether the model was provided by user configuration.
 	UserDefined bool
 }
@@ -1012,6 +1014,8 @@ type HTTPRequest struct {
 	Headers http.Header
 	// Body contains the raw request body.
 	Body []byte
+	// DisableRedirects returns the first 3xx response without replaying this request.
+	DisableRedirects bool `json:"disable_redirects,omitempty"`
 	// WireProfile specifies optional outbound HTTP wire profile settings.
 	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`
 }

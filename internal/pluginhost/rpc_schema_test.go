@@ -205,6 +205,12 @@ func TestRegisterRPCPluginSendsHostSchemaVersion(t *testing.T) {
 	if registered.SchemaVersion != pluginabi.SchemaVersion {
 		t.Fatalf("registered SchemaVersion = %d, want %d", registered.SchemaVersion, pluginabi.SchemaVersion)
 	}
+	features := strings.Join(lookup.lastLifecycle.HostFeatures, ",")
+	for _, feature := range []string{"anthropic-plugin-responses-v1", "plugin-model-compat-v1", "http-disable-redirects-v1", "sensitive-endpoints-v1"} {
+		if !strings.Contains(features, feature) {
+			t.Errorf("host feature missing: %s", feature)
+		}
+	}
 	if string(lookup.lastLifecycle.ConfigYAML) != "mode: test" {
 		t.Fatalf("lifecycle config = %q, want input config", lookup.lastLifecycle.ConfigYAML)
 	}

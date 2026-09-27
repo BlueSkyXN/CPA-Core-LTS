@@ -132,6 +132,10 @@ require_path internal/config/config.go
 require_path internal/redisqueue
 require_path config.example.yaml
 require_path docs/lts/codex-429-resilience.md
+require_path docs/lts/anthropic-plugin-responses.md
+require_grep 'json:"disable_redirects,omitempty"' sdk/pluginapi/types.go internal/pluginhost/host_callbacks.go
+require_grep 'json:"IsCompat,omitempty"' sdk/pluginapi/types.go
+require_grep 'anthropic-plugin-responses' docs/lts/core-feature-contracts.yaml
 require_path .github/scripts/refresh-model-catalogs.sh
 
 require_grep "mgmt.GET(\"/usage\"" internal/api/server_management.go

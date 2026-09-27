@@ -8,8 +8,9 @@ import (
 )
 
 type rpcLifecycleRequest struct {
-	ConfigYAML    []byte `json:"config_yaml"`
-	SchemaVersion uint32 `json:"schema_version"`
+	ConfigYAML    []byte   `json:"config_yaml"`
+	SchemaVersion uint32   `json:"schema_version"`
+	HostFeatures  []string `json:"host_features,omitempty"`
 }
 
 type rpcRegistration struct {

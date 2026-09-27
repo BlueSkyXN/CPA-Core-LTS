@@ -704,7 +704,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 		} else if nativeWebsocketPassthrough {
 			requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
-		} else if len(lastRequest) == 0 && strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
+		} else if previousResponseID != "" && (len(lastRequest) == 0 || previousResponseID != lastResponseID) {
+			// HTTP/SSE 续接只拥有当前连接的最近历史，不能把错误父 ID 静默改接到最新一轮。
 			errMsg = responsesWebsocketPreviousResponseNotFoundError()
 		} else {
 			requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(

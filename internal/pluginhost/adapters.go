@@ -137,6 +137,7 @@ func pluginModelInfoToRegistryModelInfo(model pluginapi.ModelInfo) *registry.Mod
 		SupportedInputModalities:   cloneStringSlice(model.SupportedInputModalities),
 		SupportedOutputModalities:  cloneStringSlice(model.SupportedOutputModalities),
 		Thinking:                   pluginThinkingSupportToRegistryThinkingSupport(model.Thinking),
+		IsCompat:                   model.IsCompat,
 		UserDefined:                model.UserDefined,
 	}
 }
@@ -177,6 +178,7 @@ func registryModelInfoToPluginModelInfo(model *registry.ModelInfo) pluginapi.Mod
 		SupportedInputModalities:   cloneStringSlice(model.SupportedInputModalities),
 		SupportedOutputModalities:  cloneStringSlice(model.SupportedOutputModalities),
 		Thinking:                   registryThinkingSupportToPluginThinkingSupport(model.Thinking),
+		IsCompat:                   model.IsCompat,
 		UserDefined:                model.UserDefined,
 	}
 }

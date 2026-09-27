@@ -139,6 +139,17 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: anthropic-plugin-responses
+    registry_feature: anthropic-plugin-responses
+    maintenance_policy: long-term-maintained
+    markers:
+      - disable_redirects
+      - IsCompat
+      - message_stop
+    validation:
+      - go test ./internal/pluginhost ./internal/translator/claude/openai/responses ./sdk/pluginapi ./sdk/translator ./sdk/api/handlers ./sdk/api/handlers/openai
+    conflict_policy: preserve_standard_plugin_wire_support_single_usage_and_opt_in_security_defaults
+
   - id: codex-oauth-cache-affinity
     registry_feature: codex-oauth-cache-affinity
     maintenance_policy: long-term-maintained

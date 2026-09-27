@@ -561,6 +561,30 @@ features:
     validation:
       - go test ./internal/registry -run 'Astra|CatalogRefresh|CodexClientModels'
 
+  - id: anthropic-plugin-responses
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Preserve standard Anthropic plugin JSON and SSE responses, selected-model compatibility, request-scoped conversion failures, single-attempt usage, and opt-in protection against credential-bearing redirects.
+    core_files:
+      - docs/lts/anthropic-plugin-responses.md
+      - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/claude_responses_sse.go
+      - internal/pluginhost/http_bridge.go
+      - internal/pluginhost/rpc_schema.go
+      - sdk/api/handlers/handlers_stream.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+      - internal/translator/claude/openai/responses/
+      - sdk/pluginapi/types.go
+    required_markers:
+      - disable_redirects
+      - IsCompat
+      - message_stop
+    validation:
+      - go test ./internal/pluginhost ./internal/translator/claude/openai/responses ./sdk/pluginapi ./sdk/translator ./sdk/api/handlers ./sdk/api/handlers/openai
+      - scripts/check-lts-contract.sh
+
   - id: local-flow-control
     kind: lts-feature
     support: optional

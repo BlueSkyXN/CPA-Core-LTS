@@ -74,6 +74,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	resp, errCall := callPlugin[rpcRegistration](ctx, client, method, rpcLifecycleRequest{
 		ConfigYAML:    bytes.Clone(configYAML),
 		SchemaVersion: pluginabi.SchemaVersion,
+		HostFeatures:  []string{"anthropic-plugin-responses-v1", "plugin-model-compat-v1", "http-disable-redirects-v1", "sensitive-endpoints-v1"},
 	})
 	if errCall != nil {
 		return pluginapi.Plugin{}, errCall
