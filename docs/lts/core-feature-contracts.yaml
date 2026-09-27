@@ -569,6 +569,9 @@ features:
     reason: Preserve standard Anthropic plugin JSON and SSE responses, selected-model compatibility, request-scoped conversion failures, single-attempt usage, and opt-in protection against credential-bearing redirects.
     core_files:
       - docs/lts/anthropic-plugin-responses.md
+      - docs/lts/plugin-management-readiness.md
+      - internal/api/handlers/management/plugin_readiness.go
+      - internal/pluginhost/snapshot.go
       - internal/pluginhost/adapters_executors.go
       - internal/pluginhost/claude_responses_sse.go
       - internal/pluginhost/http_bridge.go

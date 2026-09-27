@@ -133,6 +133,8 @@ require_path internal/redisqueue
 require_path config.example.yaml
 require_path docs/lts/codex-429-resilience.md
 require_path docs/lts/anthropic-plugin-responses.md
+require_path docs/lts/plugin-management-readiness.md
+require_grep '"/plugins/:id/readiness"' internal/api/server_management.go
 require_grep 'json:"disable_redirects,omitempty"' sdk/pluginapi/types.go internal/pluginhost/host_callbacks.go
 require_grep 'json:"IsCompat,omitempty"' sdk/pluginapi/types.go
 require_grep 'anthropic-plugin-responses' docs/lts/core-feature-contracts.yaml

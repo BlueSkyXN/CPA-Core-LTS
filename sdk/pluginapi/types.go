@@ -91,6 +91,8 @@ type Capabilities struct {
 	ModelProvider ModelProvider
 	// AuthProvider lets the host parse, login, poll, and refresh plugin provider auths.
 	AuthProvider AuthProvider
+	// AuthImportOnly retains parsing/refresh but disables interactive login; false preserves legacy behavior.
+	AuthImportOnly bool
 	// FrontendAuthProvider authenticates frontend requests before proxy handling.
 	FrontendAuthProvider FrontendAuthProvider
 	// FrontendAuthProviderExclusive makes this frontend auth provider the only active request auth provider when selected.

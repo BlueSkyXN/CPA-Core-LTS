@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 )
 
 type rpcPluginAdapter struct {
@@ -71,10 +72,22 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if client == nil {
 		return pluginapi.Plugin{}, fmt.Errorf("plugin client is nil")
 	}
+	var configObject any
+	var configJSON []byte
+	if yaml.Unmarshal(configYAML, &configObject) == nil {
+		if configObject == nil {
+			configObject = map[string]any{}
+		}
+		if _, ok := configObject.(map[string]any); ok && pluginConfigHasStringKeys(configObject) {
+			// JSON 投影不可表示旧 YAML 时保留原契约，由依赖 JSON 的插件拒绝缺失投影。
+			configJSON, _ = json.Marshal(configObject)
+		}
+	}
 	resp, errCall := callPlugin[rpcRegistration](ctx, client, method, rpcLifecycleRequest{
+		ConfigJSON:    configJSON,
 		ConfigYAML:    bytes.Clone(configYAML),
 		SchemaVersion: pluginabi.SchemaVersion,
-		HostFeatures:  []string{"anthropic-plugin-responses-v1", "plugin-model-compat-v1", "http-disable-redirects-v1", "sensitive-endpoints-v1"},
+		HostFeatures:  []string{"anthropic-plugin-responses-v1", "plugin-model-compat-v1", "http-disable-redirects-v1", "sensitive-endpoints-v1", "plugin-management-v1"},
 	})
 	if errCall != nil {
 		return pluginapi.Plugin{}, errCall
@@ -92,6 +105,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		Metadata:      resp.Metadata,
 		SchemaVersion: schemaVersion,
 		Capabilities: pluginapi.Capabilities{
+			AuthImportOnly:                resp.Capabilities.AuthImportOnly,
 			StreamChunkHistoryOmitted:     resp.Capabilities.StreamChunkHistoryOmitted,
 			FrontendAuthProviderExclusive: resp.Capabilities.FrontendAuthProvider && resp.Capabilities.FrontendAuthProviderExclusive,
 			ExecutorModelScope:            resp.Capabilities.ExecutorModelScope,
@@ -196,6 +210,26 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		}
 	}
 	return plugin, nil
+}
+
+func pluginConfigHasStringKeys(value any) bool {
+	switch v := value.(type) {
+	case map[any]any:
+		return false
+	case map[string]any:
+		for _, child := range v {
+			if !pluginConfigHasStringKeys(child) {
+				return false
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if !pluginConfigHasStringKeys(child) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func callPlugin[T any](ctx context.Context, client pluginClient, method string, request any) (T, error) {

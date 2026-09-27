@@ -366,6 +366,18 @@ func (h *Host) HasExecutorCandidateProvider(provider string) bool {
 // ProbeProviderReadiness probes the active plugin executor for provider. A
 // loaded legacy plugin without the readiness capability remains fail-closed.
 func (h *Host) ProbeProviderReadiness(ctx context.Context, provider string, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
+	return h.probeProviderReadiness(ctx, "", provider, req)
+}
+
+// ProbePluginReadiness prevents a management probe from reaching a different plugin that owns the same provider.
+func (h *Host) ProbePluginReadiness(ctx context.Context, pluginID, provider string, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
+	if strings.TrimSpace(pluginID) == "" {
+		return pluginapi.ReadinessResponse{}, fmt.Errorf("plugin id is required")
+	}
+	return h.probeProviderReadiness(ctx, pluginID, provider, req)
+}
+
+func (h *Host) probeProviderReadiness(ctx context.Context, pluginID, provider string, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
 	if h == nil {
 		return pluginapi.ReadinessResponse{}, fmt.Errorf("plugin host is unavailable")
 	}
@@ -384,6 +396,9 @@ func (h *Host) ProbeProviderReadiness(ctx context.Context, provider string, req 
 	adapter, okAdapter := executor.(*executorAdapter)
 	if !okAdapter || adapter == nil || adapter.host != h {
 		return pluginapi.ReadinessResponse{}, fmt.Errorf("provider %s is not owned by the plugin host", provider)
+	}
+	if pluginID != "" && adapter.pluginID != pluginID {
+		return pluginapi.ReadinessResponse{}, fmt.Errorf("plugin does not own selected executor")
 	}
 	if adapter.readiness == nil {
 		return legacyProviderReadiness(provider, adapter.version), nil
