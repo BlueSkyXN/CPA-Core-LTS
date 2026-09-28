@@ -133,7 +133,7 @@ jobs:
               if asset.startswith("zcode-coding-plan_"):
                   with zipfile.ZipFile(asset) as package:
                       assert "zcode-coding-plan.so" in package.namelist()
-                      assert package.read("zcode-coding-plan.so")[:4] == b"\\x7fELF"
+                      assert package.read("zcode-coding-plan.so")[:4] == bytes.fromhex("7f454c46")
                       assert json.loads(package.read("config.example.json"))["host_logging_disabled"] is False
           PY
       - name: Save image and platform metadata
