@@ -598,6 +598,11 @@ features:
       - examples/plugin/zcode-coding-plan/
       - examples/plugin/Makefile
       - .github/workflows/pr-test-build.yml
+      - .github/workflows/pat-provider-delivery.yml
+      - Dockerfile.pat-providers
+      - docker-compose.coding-plan.yml
+      - scripts/package-pat-providers.py
+      - scripts/smoke-pat-providers.py
     required_markers:
       - plugin-management-v1
       - auth_import_only
@@ -605,6 +610,7 @@ features:
       - go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
       - go -C examples/plugin/zcode-coding-plan/go vet ./...
       - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+      - python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
       - scripts/check-lts-contract.sh
 
   - id: local-flow-control

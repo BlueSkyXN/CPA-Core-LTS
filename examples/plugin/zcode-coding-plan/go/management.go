@@ -130,8 +130,8 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 		}
 	}
 	protocol := map[bool]string{true: "ready", false: "not_ready"}[accepting]
-	return map[string]any{"Provider": provider, "Ready": ready, "Generation": "0.3.0", "Capabilities": []string{"anthropic", "stream", "cancel", "prompt_policies", "manual_auth"}, "Checks": []any{
-		map[string]any{"Level": "plugin_installed", "State": "ready", "Version": "0.3.0"},
+	return map[string]any{"Provider": provider, "Ready": ready, "Generation": pluginVersion, "Capabilities": []string{"anthropic", "stream", "cancel", "prompt_policies", "manual_auth"}, "Checks": []any{
+		map[string]any{"Level": "plugin_installed", "State": "ready", "Version": pluginVersion},
 		map[string]any{"Level": "runner_installed", "State": "ready", "Version": "native-go", "Message": "No external runtime required"},
 		map[string]any{"Level": "protocol_ready", "State": protocol},
 		map[string]any{"Level": "auth_ready", "State": authState, "Message": message},

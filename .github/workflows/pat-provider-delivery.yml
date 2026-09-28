@@ -8,6 +8,10 @@ on:
       - 'examples/plugin/codebuddy/**'
       - 'examples/plugin/copilot/**'
       - 'examples/plugin/qoder/**'
+      - 'examples/plugin/zcode-coding-plan/**'
+      - 'docker-compose.coding-plan.yml'
+      - '.dockerignore'
+      - 'LICENSE'
       - 'examples/plugin/pat-providers.config.yaml'
       - 'scripts/*pat*providers*'
       - '.github/workflows/pat-provider-delivery.yml'
@@ -56,21 +60,32 @@ jobs:
             printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9][A-Za-z0-9._-]*-lts-[A-Za-z0-9._-]+$'
             test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           fi
-          echo "CORE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "CORE_VERSION=${RELEASE_TAG:-dev}" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          {
+            echo "CORE_SHA=$(git rev-parse HEAD)"
+            echo "CORE_VERSION=${RELEASE_TAG:-dev}"
+            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
       - name: Native provider regression tests
         run: |
           (cd examples/plugin/qoder/go && go test -count=1 ./... && go test -race -count=1 ./... && go vet ./...)
           (cd examples/plugin/copilot/go && go test -count=1 ./... && go test -race -count=1 ./... && go vet ./...)
           (cd examples/plugin/codebuddy/go && go test -race -count=1 ./... && go vet ./...)
           go test -count=1 ./test -run '^TestCodeBuddyDynamic'
-      - name: Package layout tests
-        run: python3 -m unittest discover -s scripts -p test_package_pat_providers.py
+          CP_NODE="$(command -v node)" go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
+          go -C examples/plugin/zcode-coding-plan/go vet ./...
+          sh examples/plugin/zcode-coding-plan/test-cpa.sh
+      - name: Package layout and smoke fixture tests
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
+          CLI_PROXY_CONFIG_PATH="$PWD/examples/plugin/pat-providers.config.yaml" CPA_CODING_PLAN_PRIVATE_DIR="$RUNNER_TEMP" \
+            docker compose -f docker-compose.pat-providers.yml -f docker-compose.coding-plan.yml config --quiet
       - name: Build optional image
         uses: docker/build-push-action@v6
         with:
@@ -101,6 +116,26 @@ jobs:
             COMMIT=${{ env.CORE_SHA }}
             BUILD_DATE=${{ env.BUILD_DATE }}
           cache-from: type=gha,scope=pat-${{ matrix.arch }}
+      - name: Verify installable archives
+        run: |
+          set -eu
+          cd provider-artifacts
+          sha256sum -c provider-checksums.txt
+          for archive in *.zip; do unzip -t "$archive"; done
+          python3 - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+          bundle = json.loads(Path("pat-provider-bundle.json").read_text())
+          assert set(bundle["plugins"]) == {"codebuddy", "copilot", "qoder", "zcode-coding-plan"}
+          assert set(bundle["assets"]) == {path.name for path in Path(".").glob("*.zip")}
+          for asset in bundle["assets"]:
+              if asset.startswith("zcode-coding-plan_"):
+                  with zipfile.ZipFile(asset) as package:
+                      assert "zcode-coding-plan.so" in package.namelist()
+                      assert package.read("zcode-coding-plan.so")[:4] == b"\\x7fELF"
+                      assert json.loads(package.read("config.example.json"))["host_logging_disabled"] is False
+          PY
       - name: Save image and platform metadata
         env:
           ARCH: ${{ matrix.arch }}
@@ -148,6 +183,9 @@ jobs:
             test "$(jq -r .core_commit "$dir/pat-provider-bundle-${arch}.json")" = "$source_commit"
             test "$(jq -r .core_version "$dir/pat-provider-bundle-${arch}.json")" = "$RELEASE_TAG"
             test "$(jq -r .platform "$dir/pat-provider-bundle-${arch}.json")" = "linux/${arch}"
+            jq -e '.plugins | keys == ["codebuddy", "copilot", "qoder", "zcode-coding-plan"]' "$dir/pat-provider-bundle-${arch}.json" >/dev/null
+            coding_plan_version="$(jq -r '.plugins["zcode-coding-plan"]' "$dir/pat-provider-bundle-${arch}.json")"
+            test -f "$dir/zcode-coding-plan_${coding_plan_version}_linux_${arch}.zip"
             (cd "$dir" && sha256sum -c "provider-checksums-${arch}.txt")
             docker load -i "$dir/image.tar.gz"
             tag="${IMAGE}:${RELEASE_TAG}-pat-providers-${arch}"

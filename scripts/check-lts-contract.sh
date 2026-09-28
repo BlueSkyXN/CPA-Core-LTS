@@ -138,6 +138,10 @@ require_path examples/plugin/zcode-coding-plan/SPEC.md
 require_path examples/plugin/zcode-coding-plan/go/main.go
 require_path examples/plugin/zcode-coding-plan/test-cpa.sh
 require_grep 'examples/plugin/zcode-coding-plan' .github/workflows/pr-test-build.yml
+require_grep 'examples/plugin/zcode-coding-plan' .github/workflows/pat-provider-delivery.yml
+require_grep '/native/zcode-coding-plan.so' Dockerfile.pat-providers
+require_grep 'zcode-coding-plan' scripts/package-pat-providers.py scripts/smoke-pat-providers.py
+require_path docker-compose.coding-plan.yml
 require_grep 'zcode-coding-plan-plugin' docs/lts/core-feature-contracts.yaml
 require_grep '"/plugins/:id/readiness"' internal/api/server_management.go
 require_grep 'json:"disable_redirects,omitempty"' sdk/pluginapi/types.go internal/pluginhost/host_callbacks.go

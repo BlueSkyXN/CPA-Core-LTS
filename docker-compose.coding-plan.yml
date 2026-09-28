@@ -1,0 +1,10 @@
+# 与 docker-compose.pat-providers.yml 组合使用；不改变其他插件的挂载要求。
+services:
+  cli-proxy-api:
+    volumes:
+      - type: bind
+        source: ${CPA_CODING_PLAN_PRIVATE_DIR:?Set CPA_CODING_PLAN_PRIVATE_DIR to an existing private config directory}
+        target: /run/cpa-coding-plan
+        read_only: true
+        bind:
+          create_host_path: false

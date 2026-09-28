@@ -11,6 +11,8 @@ COPY sdk ./sdk
 COPY examples/plugin/codebuddy ./examples/plugin/codebuddy
 COPY examples/plugin/copilot ./examples/plugin/copilot
 COPY examples/plugin/qoder ./examples/plugin/qoder
+COPY examples/plugin/zcode-coding-plan ./examples/plugin/zcode-coding-plan
+COPY LICENSE ./LICENSE
 COPY scripts/package-pat-providers.py ./scripts/package-pat-providers.py
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -21,6 +23,7 @@ RUN mkdir -p /native && CGO_ENABLED=1 go build -buildvcs=false \
 RUN cd examples/plugin/codebuddy/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-codebuddy.so .
 RUN cd examples/plugin/copilot/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-copilot.so .
 RUN cd examples/plugin/qoder/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/cpa-provider-qoder.so .
+RUN cd examples/plugin/zcode-coding-plan/go && CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -o /native/zcode-coding-plan.so .
 
 FROM native AS packages
 ARG TARGETARCH
@@ -36,7 +39,9 @@ ENV TZ=Asia/Shanghai
 WORKDIR /CLIProxyAPI
 COPY --from=native /native/sky-cpa-core-lts ./sky-cpa-core-lts
 # 独立于标准 Compose 的 /CLIProxyAPI/plugins 挂载，避免空目录遮住内置插件。
-COPY --from=native /native/cpa-provider-codebuddy.so /native/cpa-provider-copilot.so /native/cpa-provider-qoder.so /opt/cpa-pat-plugins/
+COPY --from=native /native/cpa-provider-codebuddy.so /native/cpa-provider-copilot.so /native/cpa-provider-qoder.so /native/zcode-coding-plan.so /opt/cpa-pat-plugins/
+COPY examples/plugin/zcode-coding-plan/README.md examples/plugin/zcode-coding-plan/SPEC.md examples/plugin/zcode-coding-plan/config.example.json examples/plugin/zcode-coding-plan/auth.example.json /opt/cpa-plugin-examples/zcode-coding-plan/
+COPY LICENSE /opt/cpa-plugin-examples/zcode-coding-plan/LICENSE
 COPY examples/plugin/qoder/THIRD_PARTY_NOTICES.md /opt/cpa-pat-plugins/qoder-THIRD_PARTY_NOTICES.md
 COPY --from=packages /out/pat-provider-bundle.json /opt/cpa-pat-plugins/bundle.json
 COPY examples/plugin/pat-providers.config.yaml ./config.example.yaml

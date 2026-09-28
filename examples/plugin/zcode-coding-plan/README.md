@@ -24,6 +24,16 @@ CI provides Node 24.14.0 for the crypto reference. Without `CP_NODE`, only that 
 
 The root `go test ./...` does not enter nested modules. The existing `provider-connectors` PR job explicitly runs this plugin's unit/race/vet and dynamic integration tests. `make -C examples/plugin build` also includes the Go library; when installing its `zcode-coding-plan-go.*` output, rename it to `zcode-coding-plan.*` to keep the configured plugin ID stable. Compiled artifacts are not tracked.
 
+## Full provider image and installable packages
+
+The existing full provider distribution now builds Coding Plan together with CodeBuddy, Copilot and Qoder from the same Core commit for Linux amd64/arm64. It retains the `pat-provider-delivery` workflow and `-pat-providers` image tags; the standard Core image is unchanged. See [the full-image guide](../PAT_DOCKER.md) in the repository.
+
+The full image includes `/opt/cpa-pat-plugins/zcode-coding-plan.so` and placeholder-only examples under `/opt/cpa-plugin-examples/zcode-coding-plan/`. Use `docker-compose.coding-plan.yml` alongside `docker-compose.pat-providers.yml` to mount an existing user-maintained private directory read-only at `/run/cpa-coding-plan`. Configure file-based key/device references relative to that directory; do not embed secrets or device identity in build arguments. The extra override is not required for deployments using only the other providers.
+
+Each architecture exports `zcode-coding-plan_<version>_linux_<arch>.zip`, containing the stable library name, README, SPEC, LICENSE and example JSON files. The shared provider checksum/manifest records the Core commit, plugin version and platform, plus the per-plugin `direct_anthropic` transport. The examples leave the logging acknowledgement disabled and contain no personal values.
+
+PR builds export CI artifacts and run an egress-blocked four-plugin image smoke; they do not publish releases or images. Manual publication still requires an existing Core release tag and explicit `publish=true`, and does not move the standard latest image tag. Source availability or successful packaging must not be described as a released/downloadable artifact until publication actually completes.
+
 ## Host requirements
 
 C ABI 1 / schema 6 plus all five host features are required:
@@ -105,4 +115,4 @@ Text, custom function tools, paired tool results and existing thinking/signature
 - A plugin execution dispatches at most one model request. Disable unsuitable caller/Core retries and fallbacks separately; this is not an end-to-end exactly-once guarantee.
 - Core unload drains active RPCs and does not force-cancel them. Stop traffic and cancel/finish requests before unload/restart. Tests isolate each C-shared scenario in a child process; they do not prove arbitrary hot replacement safety.
 
-Validation before this source import included macOS arm64 Go 1.27.0/1.26.5 unit/race/vet, synthetic crypto parity, actual dynamic JSON/SSE/WS and management flows. Earlier Go 1.27 dynamic test children intermittently failed to exit after their scenario finished; later full suites passed, but the cause is not established and nonzero exits remain failures. Linux results are determined by the current PR's explicit plugin CI; no Windows dynamic-runtime, live billing, long-running load, TLS fingerprint, or production deployment claim is made.
+Validation before this source import included macOS arm64 Go 1.27.0/1.26.5 unit/race/vet, synthetic crypto parity, actual dynamic JSON/SSE/WS and management flows. macOS dynamic test children on Go 1.27 and 1.26.5 have intermittently failed to exit after their scenario finished; full suites have also passed, but the cause is not established and nonzero exits remain failures. Linux results are determined by the current PR's explicit plugin CI; no Windows dynamic-runtime, live billing, long-running load, TLS fingerprint, or production deployment claim is made.

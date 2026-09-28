@@ -149,7 +149,8 @@ lts_owned_features:
     validation:
       - go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
       - sh examples/plugin/zcode-coding-plan/test-cpa.sh
-    conflict_policy: preserve_manual_private_configuration_and_isolated_provider_source
+      - python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
+    conflict_policy: preserve_manual_private_configuration_and_four_plugin_distribution
 
   - id: anthropic-plugin-responses
     registry_feature: anthropic-plugin-responses

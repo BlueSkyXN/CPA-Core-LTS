@@ -89,7 +89,7 @@ type httpChunk struct {
 func registration() any {
 	return map[string]any{
 		"schema_version": 6,
-		"metadata":       map[string]any{"Name": provider, "Version": "0.3.0", "Author": "Coding Plan tool maintainers", "GitHubRepository": "https://github.com/BlueSkyXN/CPA-Core-LTS", "SensitiveEndpoints": []any{map[string]any{"Method": "POST", "PathSuffix": "/api/paas/c1f3a7e2/v2/client"}}, "ConfigFields": managementFields()},
+		"metadata":       map[string]any{"Name": provider, "Version": pluginVersion, "Author": "Coding Plan tool maintainers", "GitHubRepository": "https://github.com/BlueSkyXN/CPA-Core-LTS", "SensitiveEndpoints": []any{map[string]any{"Method": "POST", "PathSuffix": "/api/paas/c1f3a7e2/v2/client"}}, "ConfigFields": managementFields()},
 		"capabilities":   map[string]any{"auth_provider": true, "auth_import_only": true, "model_provider": true, "executor": true, "execution_canceller": true, "execution_session_closer": true, "provider_readiness": true, "executor_model_scope": "oauth", "executor_input_formats": []string{"claude"}, "executor_output_formats": []string{"claude"}},
 	}
 }

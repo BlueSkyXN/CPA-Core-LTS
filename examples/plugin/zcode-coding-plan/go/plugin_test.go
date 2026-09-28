@@ -27,6 +27,27 @@ func TestRepositoryMetadataPointsToPluginSource(t *testing.T) {
 	}
 }
 
+func TestVersionMatchesReadinessAndPackageSource(t *testing.T) {
+	raw, err := os.ReadFile("types.go")
+	if err != nil {
+		t.Fatal("package version source missing", err)
+	}
+	marker := []byte(`pluginVersion = "`)
+	_, after, ok := bytes.Cut(raw, marker)
+	if !ok {
+		t.Fatal("package version marker missing")
+	}
+	version, _, ok := bytes.Cut(after, []byte(`"`))
+	if !ok || len(version) == 0 {
+		t.Fatal("package version is empty")
+	}
+	meta := registration().(map[string]any)["metadata"].(map[string]any)
+	status, err := newRuntime(nil).readiness([]byte(`{}`))
+	if err != nil || meta["Version"] != string(version) || status.(map[string]any)["Generation"] != string(version) {
+		t.Fatal("packaged and runtime versions disagree", err)
+	}
+}
+
 func TestSharedPromptCases(t *testing.T) {
 	raw, err := os.ReadFile("../testdata/prompt-cases.json")
 	if err != nil {
