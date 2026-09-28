@@ -139,6 +139,30 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: zcode-coding-plan-plugin
+    registry_feature: zcode-coding-plan-plugin
+    maintenance_policy: long-term-maintained-optional-integration
+    markers:
+      - examples/plugin/zcode-coding-plan/
+      - plugin-management-v1
+      - auth_import_only
+    validation:
+      - go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
+      - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+      - python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
+    conflict_policy: preserve_manual_private_configuration_and_four_plugin_distribution
+
+  - id: anthropic-plugin-responses
+    registry_feature: anthropic-plugin-responses
+    maintenance_policy: long-term-maintained
+    markers:
+      - disable_redirects
+      - IsCompat
+      - message_stop
+    validation:
+      - go test ./internal/pluginhost ./internal/translator/claude/openai/responses ./sdk/pluginapi ./sdk/translator ./sdk/api/handlers ./sdk/api/handlers/openai
+    conflict_policy: preserve_standard_plugin_wire_support_single_usage_and_opt_in_security_defaults
+
   - id: codex-oauth-cache-affinity
     registry_feature: codex-oauth-cache-affinity
     maintenance_policy: long-term-maintained

@@ -54,6 +54,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/plugins/:id/config", s.mgmt.GetPluginConfig)
 		mgmt.PUT("/plugins/:id/config", s.mgmt.PutPluginConfig)
 		mgmt.PATCH("/plugins/:id/config", s.mgmt.PatchPluginConfig)
+		mgmt.GET("/plugins/:id/readiness", s.mgmt.GetPluginReadiness)
 		mgmt.GET("/plugins/:id/quota", s.mgmt.GetPluginQuota)
 		mgmt.POST("/plugins/:id/quota", s.mgmt.FetchPluginQuota)
 		mgmt.DELETE("/plugins/:id/quota", s.mgmt.ResetPluginQuota)

@@ -13,7 +13,8 @@ Dockerfile
 docs
 README.md
 README_CN.md
-LICENSE
+# Plugin installable archives include the repository license.
+!LICENSE
 
 # Runtime data folders (should be mounted as volumes)
 auths

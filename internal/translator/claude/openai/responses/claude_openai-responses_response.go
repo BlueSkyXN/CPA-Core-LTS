@@ -458,6 +458,22 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 
 // ConvertClaudeResponseToOpenAIResponses converts Claude SSE to OpenAI Responses SSE events.
 func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+	if checked, ok := (*param).(*PluginResponseState); ok {
+		if !checked.accept(rawJSON) {
+			return nil
+		}
+		seed := checked.contentSeed(rawJSON)
+		var frames [][]byte
+		if len(seed) > 0 && gjson.GetBytes(bytes.TrimSpace(bytes.TrimPrefix(rawJSON, dataTag)), "type").String() == "content_block_stop" {
+			frames = ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.native)
+			seed = nil
+		}
+		frames = append(frames, ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, &checked.native)...)
+		if len(seed) > 0 {
+			frames = append(frames, ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.native)...)
+		}
+		return frames
+	}
 	if *param == nil {
 		*param = &claudeToResponsesState{
 			MessageOutputIndex: -1,
@@ -728,7 +744,8 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		} else if dt == "signature_delta" {
 			if st.ReasoningActive {
 				if signature := d.Get("signature"); signature.Exists() && signature.String() != "" {
-					st.ReasoningSignature = signature.String()
+					// signature_delta 是增量；覆盖会丢失分片并破坏下一轮思考回放。
+					st.ReasoningSignature += signature.String()
 				}
 			}
 			return [][]byte{}
@@ -962,15 +979,27 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 	return noSSEOutput(out)
 }
 
-// ConvertClaudeResponseToOpenAIResponsesNonStream aggregates Claude SSE into a single OpenAI Responses JSON.
-func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	// Aggregate Claude SSE lines into a single OpenAI Responses JSON (non-stream)
-	// We follow the same aggregation logic as the streaming variant but produce
-	// one final object matching docs/out.json structure.
+// ConvertClaudeResponseToOpenAIResponsesNonStream converts a Claude message or aggregated SSE into Responses JSON.
+func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
 
+	var message gjson.Result
+	if gjson.ValidBytes(rawJSON) {
+		message = gjson.ParseBytes(rawJSON)
+		if err := validatePluginMessage(message); err != nil {
+			if param != nil {
+				if checked, ok := (*param).(*PluginResponseState); ok {
+					checked.Err = err
+				}
+			}
+			return nil
+		}
+	}
 	// Collect SSE data: lines start with "data: "; ignore others
 	var chunks [][]byte
 	remaining := rawJSON
+	if message.Exists() {
+		remaining = nil
+	}
 	for len(remaining) > 0 {
 		var line []byte
 		idx := bytes.IndexByte(remaining, '\n')
@@ -986,6 +1015,17 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			continue
 		}
 		chunks = append(chunks, line[len(dataTag):])
+	}
+	if !message.Exists() && param != nil {
+		if checked, ok := (*param).(*PluginResponseState); ok {
+			for _, chunk := range chunks {
+				checked.accept(append([]byte("data: "), chunk...))
+			}
+			if checked.Err != nil || !checked.Terminal {
+				checked.Err = pluginResponseError()
+				return nil
+			}
+		}
 	}
 
 	reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
@@ -1038,6 +1078,88 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		return item
 	}
 
+	addContentBlock := func(cb gjson.Result, idx int, complete bool) {
+		typ := cb.Get("type").String()
+		switch typ {
+		case "text":
+			item := newOutputItem("message", idx)
+			item.id = fmt.Sprintf("msg_%s_%d", responseID, messageCount)
+			messageCount++
+			if len(pendingAnnotations) > 0 {
+				item.annotations = append(item.annotations, pendingAnnotations...)
+				pendingAnnotations = nil
+			}
+			activeMessageItem = item
+		case "tool_use":
+			activeMessageItem = nil
+			itemType := "function_call"
+			if _, isCustomTool := customToolNames[cb.Get("name").String()]; isCustomTool {
+				itemType = "custom_tool_call"
+			}
+			item := newOutputItem(itemType, idx)
+			item.callID = cb.Get("id").String()
+			if itemType == "custom_tool_call" {
+				item.id = fmt.Sprintf("ctc_%s", item.callID)
+			} else {
+				item.id = fmt.Sprintf("fc_%s", item.callID)
+			}
+			item.name = cb.Get("name").String()
+		case "server_tool_use":
+			activeMessageItem = nil
+			name := cb.Get("name").String()
+			if name != claudeWebSearchToolName {
+				log.Debugf("claude->responses: unmapped server_tool_use %q at block %d", name, idx)
+				return
+			}
+			toolUseID := cb.Get("id").String()
+			item := newOutputItem("web_search_call", idx)
+			item.id = responsesWebSearchCallID(toolUseID)
+			item.callID = toolUseID
+			webSearchByToolID[toolUseID] = item
+			// Streaming announces an empty input and fills it through
+			// input_json_delta; only seed when the query is already present.
+			if input := cb.Get("input"); input.IsObject() && claudeWebSearchQuery(input.Raw) != "" {
+				item.args.WriteString(input.Raw)
+			}
+		case "web_search_tool_result":
+			if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil {
+				item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
+			} else {
+				log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
+			}
+		case "thinking", "redacted_thinking":
+			activeMessageItem = nil
+			item := newOutputItem("reasoning", idx)
+			item.id = fmt.Sprintf("rs_%s_%d", responseID, idx)
+			item.signature = claudeReasoningCarrier(cb)
+		}
+
+		if complete {
+			if item := blockToItem[idx]; item != nil {
+				switch item.itemType {
+				case "message":
+					item.text.WriteString(cb.Get("text").String())
+					for _, citation := range cb.Get("citations").Array() {
+						item.annotations = append(item.annotations, citation.Value())
+					}
+				case "reasoning":
+					item.text.WriteString(cb.Get("thinking").String())
+				case "function_call", "custom_tool_call":
+					item.args.WriteString(cb.Get("input").Raw)
+				}
+			}
+		}
+	}
+	if message.Exists() {
+		responseID = message.Get("id").String()
+		createdAt = time.Now().Unix()
+		stopReason = message.Get("stop_reason").String()
+		usageTokens.Merge(message.Get("usage"))
+		for idx, cb := range message.Get("content").Array() {
+			addContentBlock(cb, idx, true)
+		}
+	}
+
 	// Walk through SSE chunks to fill state
 	for _, ch := range chunks {
 		root := gjson.ParseBytes(ch)
@@ -1052,64 +1174,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			}
 
 		case "content_block_start":
-			cb := root.Get("content_block")
-			if !cb.Exists() {
-				continue
-			}
-			idx := int(root.Get("index").Int())
-			typ := cb.Get("type").String()
-			switch typ {
-			case "text":
-				item := newOutputItem("message", idx)
-				item.id = fmt.Sprintf("msg_%s_%d", responseID, messageCount)
-				messageCount++
-				if len(pendingAnnotations) > 0 {
-					item.annotations = append(item.annotations, pendingAnnotations...)
-					pendingAnnotations = nil
-				}
-				activeMessageItem = item
-			case "tool_use":
-				activeMessageItem = nil
-				itemType := "function_call"
-				if _, isCustomTool := customToolNames[cb.Get("name").String()]; isCustomTool {
-					itemType = "custom_tool_call"
-				}
-				item := newOutputItem(itemType, idx)
-				item.callID = cb.Get("id").String()
-				if itemType == "custom_tool_call" {
-					item.id = fmt.Sprintf("ctc_%s", item.callID)
-				} else {
-					item.id = fmt.Sprintf("fc_%s", item.callID)
-				}
-				item.name = cb.Get("name").String()
-			case "server_tool_use":
-				activeMessageItem = nil
-				name := cb.Get("name").String()
-				if name != claudeWebSearchToolName {
-					log.Debugf("claude->responses: unmapped server_tool_use %q at block %d", name, idx)
-					continue
-				}
-				toolUseID := cb.Get("id").String()
-				item := newOutputItem("web_search_call", idx)
-				item.id = responsesWebSearchCallID(toolUseID)
-				item.callID = toolUseID
-				webSearchByToolID[toolUseID] = item
-				// Streaming announces an empty input and fills it through
-				// input_json_delta; only seed when the query is already present.
-				if input := cb.Get("input"); input.IsObject() && claudeWebSearchQuery(input.Raw) != "" {
-					item.args.WriteString(input.Raw)
-				}
-			case "web_search_tool_result":
-				if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil {
-					item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
-				} else {
-					log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
-				}
-			case "thinking", "redacted_thinking":
-				activeMessageItem = nil
-				item := newOutputItem("reasoning", idx)
-				item.id = fmt.Sprintf("rs_%s_%d", responseID, idx)
-				item.signature = claudeReasoningCarrier(cb)
+			if cb := root.Get("content_block"); cb.Exists() {
+				addContentBlock(cb, int(root.Get("index").Int()), false)
 			}
 
 		case "content_block_delta":
@@ -1142,7 +1208,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			case "signature_delta":
 				if item != nil && item.itemType == "reasoning" {
 					if signature := d.Get("signature"); signature.Exists() && signature.String() != "" {
-						item.signature = signature.String()
+						// SSE 汇总必须与流式路径拼接同一份完整签名。
+						item.signature += signature.String()
 					}
 				}
 			case "citations_delta":

@@ -16,6 +16,7 @@ import (
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	clauderesponses "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/responses"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -365,6 +366,18 @@ func (h *Host) HasExecutorCandidateProvider(provider string) bool {
 // ProbeProviderReadiness probes the active plugin executor for provider. A
 // loaded legacy plugin without the readiness capability remains fail-closed.
 func (h *Host) ProbeProviderReadiness(ctx context.Context, provider string, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
+	return h.probeProviderReadiness(ctx, "", provider, req)
+}
+
+// ProbePluginReadiness prevents a management probe from reaching a different plugin that owns the same provider.
+func (h *Host) ProbePluginReadiness(ctx context.Context, pluginID, provider string, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
+	if strings.TrimSpace(pluginID) == "" {
+		return pluginapi.ReadinessResponse{}, fmt.Errorf("plugin id is required")
+	}
+	return h.probeProviderReadiness(ctx, pluginID, provider, req)
+}
+
+func (h *Host) probeProviderReadiness(ctx context.Context, pluginID, provider string, req pluginapi.ReadinessRequest) (pluginapi.ReadinessResponse, error) {
 	if h == nil {
 		return pluginapi.ReadinessResponse{}, fmt.Errorf("plugin host is unavailable")
 	}
@@ -383,6 +396,9 @@ func (h *Host) ProbeProviderReadiness(ctx context.Context, provider string, req 
 	adapter, okAdapter := executor.(*executorAdapter)
 	if !okAdapter || adapter == nil || adapter.host != h {
 		return pluginapi.ReadinessResponse{}, fmt.Errorf("provider %s is not owned by the plugin host", provider)
+	}
+	if pluginID != "" && adapter.pluginID != pluginID {
+		return pluginapi.ReadinessResponse{}, fmt.Errorf("plugin does not own selected executor")
 	}
 	if adapter.readiness == nil {
 		return legacyProviderReadiness(provider, adapter.version), nil
@@ -984,6 +1000,10 @@ type preparedExecutorCall struct {
 }
 
 func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
+	return a.prepareExecutorCallForAuth(context.Background(), nil, req, opts)
+}
+
+func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
 	inputRequested := executorInputFormat(req, opts)
 	requestedFormat := executorRequestedFormat(req, opts)
 	inputFormat, errInput := a.selectExecutorInputFormat(inputRequested)
@@ -998,7 +1018,20 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 	nativeReq := req
 	nativeOpts := opts
 	if inputRequested != "" && inputRequested != inputFormat {
-		nativeReq.Payload = sdktranslator.TranslateRequest(inputRequested, inputFormat, req.Model, req.Payload, opts.Stream)
+		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: req.Model, Body: req.Payload, Stream: opts.Stream}
+		if inputRequested == sdktranslator.FormatOpenAIResponse && inputFormat == sdktranslator.FormatClaude {
+			models := a.host.modelRegistration(a.pluginID).models
+			if auth != nil {
+				models = registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+			}
+			for _, model := range models {
+				if model != nil && (model.ID == req.Model || model.Name == req.Model) {
+					envelope.ModelInfo = model
+					break
+				}
+			}
+		}
+		nativeReq.Payload = sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope).Body
 	}
 	nativeReq.Format = outputFormat
 	nativeOpts.SourceFormat = inputFormat
@@ -1262,7 +1295,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		}
 	}()
 
-	prepared, errPrepare := a.prepareExecutorCall(req, opts)
+	prepared, errPrepare := a.prepareExecutorCallForAuth(ctx, auth, req, opts)
 	if errPrepare != nil {
 		return coreexecutor.Response{}, errPrepare
 	}
@@ -1295,19 +1328,38 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		return coreexecutor.Response{}, errExecute
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
-	if reporter != nil {
-		if len(pluginResp.Payload) > 0 {
-			reporter.MarkFirstResponseByte()
-			reporter.RecordFirstPacket()
+	if reporter != nil && len(pluginResp.Payload) > 0 {
+		reporter.MarkFirstResponseByte()
+		reporter.RecordFirstPacket()
+	}
+	var translated []byte
+	if isClaudePluginResponses(prepared) {
+		checked := &clauderesponses.PluginResponseState{}
+		var param any = checked
+		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, &param)
+		if checked.Err != nil || !validClaudePluginResponsesJSON(translated) {
+			err = claudePluginConversionError()
+			if reporter != nil {
+				if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
+					reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
+				}
+				reporter.PublishFailureWithDetail(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload), err)
+			}
+			return coreexecutor.Response{}, err
 		}
+	}
+	if reporter != nil {
 		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
 		}
 		reporter.Publish(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload))
 		reporter.EnsurePublished(ctx)
 	}
+	if translated == nil {
+		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil)
+	}
 	return coreexecutor.Response{
-		Payload:  a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil),
+		Payload:  translated,
 		Metadata: cloneAnyMap(pluginResp.Metadata),
 		Headers:  cloneHeader(pluginResp.Headers),
 	}, nil
@@ -1333,7 +1385,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		}
 	}()
 
-	prepared, errPrepare := a.prepareExecutorCall(req, opts)
+	prepared, errPrepare := a.prepareExecutorCallForAuth(ctx, auth, req, opts)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -1346,14 +1398,28 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	if ctx != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	stopBootstrapCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
+	streamCtx := ctx
+	var cancelStream context.CancelFunc
+	streamHandedOff := false
+	if isClaudePluginResponses(prepared) {
+		if streamCtx == nil {
+			streamCtx = context.Background()
+		}
+		streamCtx, cancelStream = context.WithCancel(streamCtx)
+		defer func() {
+			if !streamHandedOff {
+				cancelStream()
+			}
+		}()
+	}
+	stopBootstrapCancellationWatch := a.watchExecutionCancellation(streamCtx, pluginReq)
 	defer stopBootstrapCancellationWatch()
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	if reporter != nil {
 		reporter.EnableSemanticTiming(prepared.outputFormat.String())
 		reporter.StartResponseTiming()
 	}
-	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, pluginReq)
+	pluginResp, errExecuteStream := a.executor.ExecuteStream(streamCtx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
 		if reporter != nil {
 			reporter.PublishFailure(ctx, ctx.Err())
@@ -1367,6 +1433,15 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		return nil, errExecuteStream
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
+	if isClaudePluginResponses(prepared) {
+		parent := ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		chunks := a.translateClaudePluginStream(parent, cancelStream, pluginReq, prepared, reporter, pluginResp.Chunks)
+		streamHandedOff = true
+		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(parent, chunks)}, nil
+	}
 	rawPluginChunks := observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, pluginResp.Chunks)
 	pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, rawPluginChunks)
 	return &coreexecutor.StreamResult{
@@ -1495,7 +1570,7 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 		}
 	}()
 
-	prepared, errPrepare := a.prepareExecutorCall(req, opts)
+	prepared, errPrepare := a.prepareExecutorCallForAuth(ctx, auth, req, opts)
 	if errPrepare != nil {
 		return coreexecutor.Response{}, errPrepare
 	}

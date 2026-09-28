@@ -44,6 +44,12 @@ func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJ
 
 func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) []byte {
 	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
+	// 字符串 input 是 Responses 的 user 消息简写，不能在数组遍历时丢失。
+	if input := gjson.GetBytes(rawJSON, "input"); input.Type == gjson.String {
+		message := []byte(`{"role":"user","content":""}`)
+		message, _ = sjson.SetBytes(message, "content", input.String())
+		rawJSON, _ = sjson.SetRawBytes(rawJSON, "input", common.JoinRawArray([][]byte{message}))
+	}
 
 	userID := common.DeriveClaudeUserID(rawJSON)
 
@@ -113,6 +119,12 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			val = int64(info.MaxCompletionTokens)
 		}
 		out, _ = sjson.SetBytes(out, "max_tokens", val)
+	}
+
+	for _, key := range []string{"temperature", "top_p"} {
+		if value := root.Get(key); value.Type == gjson.Number {
+			out, _ = sjson.SetRawBytes(out, key, []byte(value.Raw))
+		}
 	}
 
 	// Stream
@@ -574,7 +586,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			case "auto":
 				out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
 			case "none":
-				// Leave unset; implies no tools
+				// 保留 tools 时省略 choice 会恢复 auto，必须显式禁用。
+				out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"none"}`))
 			case "required":
 				if len(includedToolNames) > 0 {
 					out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"any"}`))
@@ -614,6 +627,12 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 	}
 
+	if parallel := root.Get("parallel_tool_calls"); parallel.Type == gjson.False && len(toolItems) > 0 && gjson.GetBytes(out, "tool_choice.type").String() != "none" {
+		if !gjson.GetBytes(out, "tool_choice").Exists() {
+			out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
+		}
+		out, _ = sjson.SetBytes(out, "tool_choice.disable_parallel_tool_use", true)
+	}
 	return out
 }
 

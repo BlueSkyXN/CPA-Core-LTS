@@ -25,20 +25,24 @@ type pluginListResponse struct {
 }
 
 type pluginListEntry struct {
-	ID               string                  `json:"id"`
-	Path             string                  `json:"path"`
-	Configured       bool                    `json:"configured"`
-	Registered       bool                    `json:"registered"`
-	Enabled          bool                    `json:"enabled"`
-	EffectiveEnabled bool                    `json:"effective_enabled"`
-	SupportsOAuth    bool                    `json:"supports_oauth"`
-	OAuthProvider    string                  `json:"oauth_provider"`
-	SupportsQuota    bool                    `json:"supports_quota"`
-	QuotaProvider    string                  `json:"quota_provider,omitempty"`
-	Logo             string                  `json:"logo"`
-	ConfigFields     []pluginConfigFieldInfo `json:"config_fields"`
-	Menus            []pluginMenuInfo        `json:"menus"`
-	Metadata         *pluginMetadataInfo     `json:"metadata"`
+	ID                string                  `json:"id"`
+	Path              string                  `json:"path"`
+	Configured        bool                    `json:"configured"`
+	Registered        bool                    `json:"registered"`
+	Enabled           bool                    `json:"enabled"`
+	EffectiveEnabled  bool                    `json:"effective_enabled"`
+	SupportsOAuth     bool                    `json:"supports_oauth"`
+	SupportsAuth      bool                    `json:"supports_auth"`
+	AuthProvider      string                  `json:"auth_provider,omitempty"`
+	SupportsReadiness bool                    `json:"supports_readiness"`
+	ExecutorProvider  string                  `json:"executor_provider,omitempty"`
+	OAuthProvider     string                  `json:"oauth_provider"`
+	SupportsQuota     bool                    `json:"supports_quota"`
+	QuotaProvider     string                  `json:"quota_provider,omitempty"`
+	Logo              string                  `json:"logo"`
+	ConfigFields      []pluginConfigFieldInfo `json:"config_fields"`
+	Menus             []pluginMenuInfo        `json:"menus"`
+	Metadata          *pluginMetadataInfo     `json:"metadata"`
 }
 
 type pluginMetadataInfo struct {
@@ -123,6 +127,10 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 			entry.ID = htmlsanitize.String(info.ID)
 			entry.Registered = true
 			entry.SupportsOAuth = info.SupportsOAuth
+			entry.SupportsAuth = info.SupportsAuth
+			entry.AuthProvider = htmlsanitize.String(info.AuthProvider)
+			entry.SupportsReadiness = info.SupportsReadiness
+			entry.ExecutorProvider = htmlsanitize.String(info.ExecutorProvider)
 			entry.OAuthProvider = htmlsanitize.String(info.OAuthProvider)
 			entry.SupportsQuota = info.SupportsQuota
 			entry.QuotaProvider = htmlsanitize.String(info.QuotaProvider)

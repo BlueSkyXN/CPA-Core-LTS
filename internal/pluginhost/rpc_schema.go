@@ -8,8 +8,10 @@ import (
 )
 
 type rpcLifecycleRequest struct {
-	ConfigYAML    []byte `json:"config_yaml"`
-	SchemaVersion uint32 `json:"schema_version"`
+	ConfigYAML    []byte   `json:"config_yaml"`
+	ConfigJSON    []byte   `json:"config_json,omitempty"`
+	SchemaVersion uint32   `json:"schema_version"`
+	HostFeatures  []string `json:"host_features,omitempty"`
 }
 
 type rpcRegistration struct {
@@ -23,6 +25,7 @@ type rpcCapabilities struct {
 	ModelRegistrar                bool                         `json:"model_registrar"`
 	ModelProvider                 bool                         `json:"model_provider"`
 	AuthProvider                  bool                         `json:"auth_provider"`
+	AuthImportOnly                bool                         `json:"auth_import_only,omitempty"`
 	FrontendAuthProvider          bool                         `json:"frontend_auth_provider"`
 	FrontendAuthProviderExclusive bool                         `json:"frontend_auth_provider_exclusive"`
 	Scheduler                     bool                         `json:"scheduler"`
@@ -169,6 +172,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ModelRegistrar:                caps.ModelRegistrar != nil,
 		ModelProvider:                 caps.ModelProvider != nil,
 		AuthProvider:                  caps.AuthProvider != nil,
+		AuthImportOnly:                caps.AuthImportOnly,
 		FrontendAuthProvider:          caps.FrontendAuthProvider != nil,
 		FrontendAuthProviderExclusive: caps.FrontendAuthProvider != nil && caps.FrontendAuthProviderExclusive,
 		Scheduler:                     caps.Scheduler != nil,

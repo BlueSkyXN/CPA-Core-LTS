@@ -17,15 +17,16 @@ class PackageTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.native, self.output = [self.root / name for name in ("native", "out")]
         self.native.mkdir()
-        for name in ("codebuddy", "copilot", "qoder"):
-            (self.native / f"cpa-provider-{name}.so").write_bytes(b"fixture-not-executable")
+        for name in ("cpa-provider-codebuddy", "cpa-provider-copilot", "cpa-provider-qoder", "zcode-coding-plan"):
+            (self.native / f"{name}.so").write_bytes(b"fixture-not-executable")
 
     def package(self, arch: str = "amd64"):
         return packager.package(self.native, self.output, arch, "a" * 40, "test")
 
     def test_layout_hashes_and_repeatability(self):
         manifest = self.package()
-        self.assertEqual(len(manifest["assets"]), 3)
+        self.assertEqual(len(manifest["assets"]), 4)
+        self.assertEqual(set(manifest["plugins"]), {"codebuddy", "copilot", "qoder", "zcode-coding-plan"})
         for name, sha in manifest["assets"].items():
             self.assertEqual(packager.hashlib.sha256((self.output / name).read_bytes()).hexdigest(), sha)
             with zipfile.ZipFile(self.output / name) as archive:
@@ -42,8 +43,11 @@ class PackageTests(unittest.TestCase):
         self.assertIsNone(manifest["node_major"])
         self.assertFalse(manifest["runner_required"])
         self.assertEqual(manifest["runtime"], "native-go")
-        self.assertEqual(manifest["transport"], "direct_openai")
-        self.assertTrue(all(name.startswith("cpa-provider-") for name in manifest["assets"]))
+        self.assertEqual(manifest["transport"], "mixed")
+        self.assertEqual(manifest["plugin_transports"], {
+            "codebuddy": "direct_openai", "copilot": "direct_openai", "qoder": "direct_openai",
+            "zcode-coding-plan": "direct_anthropic",
+        })
 
     def test_arch_metadata_and_distinct_assets(self):
         manifest = self.package("arm64")
@@ -58,7 +62,28 @@ class PackageTests(unittest.TestCase):
         manifest = self.package()
         for name, expected in manifest["plugins"].items():
             self.assertRegex(expected, r"^[0-9][0-9A-Za-z.+-]*$")
-            self.assertTrue(any(asset.startswith(f"cpa-provider-{name}_{expected}_") for asset in manifest["assets"]))
+            stem = name if name == "zcode-coding-plan" else f"cpa-provider-{name}"
+            self.assertTrue(any(asset.startswith(f"{stem}_{expected}_") for asset in manifest["assets"]))
+
+    def test_coding_plan_archive_preserves_identity_and_only_example_config(self):
+        manifest = self.package()
+        name = next(name for name in manifest["assets"] if name.startswith("zcode-coding-plan_"))
+        with zipfile.ZipFile(self.output / name) as archive:
+            self.assertEqual(set(archive.namelist()), {
+                "zcode-coding-plan.so", "README.md", "SPEC.md", "LICENSE",
+                "config.example.json", "auth.example.json",
+            })
+            config = json.loads(archive.read("config.example.json"))
+            self.assertFalse(config["host_logging_disabled"])
+            self.assertEqual(config["credential"], {"api_key_env": "CP_API_KEY"})
+            self.assertEqual(config["identity"]["device_id_env"], "CP_DEVICE_ID")
+            self.assertEqual(json.loads(archive.read("auth.example.json"))["type"], "zcode-coding-plan")
+
+    def test_missing_coding_plan_library_is_rejected(self):
+        (self.native / "zcode-coding-plan.so").unlink()
+        with self.assertRaises(ValueError):
+            self.package()
+        self.assertFalse(self.output.exists())
 
     def test_missing_library_is_rejected(self):
         (self.native / "cpa-provider-qoder.so").unlink()

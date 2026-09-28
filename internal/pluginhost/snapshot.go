@@ -28,14 +28,18 @@ type Snapshot struct {
 
 // RegisteredPluginInfo describes a plugin that is active in the current runtime snapshot.
 type RegisteredPluginInfo struct {
-	ID            string
-	Priority      int
-	Metadata      pluginapi.Metadata
-	SupportsOAuth bool
-	OAuthProvider string
-	SupportsQuota bool
-	QuotaProvider string
-	Menus         []RegisteredPluginMenu
+	ID                string
+	Priority          int
+	Metadata          pluginapi.Metadata
+	SupportsOAuth     bool
+	SupportsAuth      bool
+	AuthProvider      string
+	SupportsReadiness bool
+	ExecutorProvider  string
+	OAuthProvider     string
+	SupportsQuota     bool
+	QuotaProvider     string
+	Menus             []RegisteredPluginMenu
 }
 
 // RegisteredPluginMenu describes a plugin-owned resource menu entry.
@@ -91,15 +95,23 @@ func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 				quotaIdentifier = identifier
 			}
 		}
+		executorProvider := ""
+		if executor := record.plugin.Capabilities.Executor; executor != nil && !h.isPluginFused(record.id) {
+			executorProvider, _ = h.executorProvider(record, executor)
+		}
 		out = append(out, RegisteredPluginInfo{
-			ID:            record.id,
-			Priority:      record.priority,
-			Metadata:      clonePluginMetadata(record.meta),
-			SupportsOAuth: authProvider != nil,
-			OAuthProvider: oauthProvider,
-			SupportsQuota: quotaProvider != nil,
-			QuotaProvider: quotaIdentifier,
-			Menus:         menusByPlugin[record.id],
+			SupportsAuth:      authProvider != nil,
+			AuthProvider:      oauthProvider,
+			SupportsReadiness: record.plugin.Capabilities.ProviderReadiness != nil && executorProvider != "",
+			ExecutorProvider:  executorProvider,
+			ID:                record.id,
+			Priority:          record.priority,
+			Metadata:          clonePluginMetadata(record.meta),
+			SupportsOAuth:     authProvider != nil && !record.plugin.Capabilities.AuthImportOnly,
+			OAuthProvider:     oauthProvider,
+			SupportsQuota:     quotaProvider != nil,
+			QuotaProvider:     quotaIdentifier,
+			Menus:             menusByPlugin[record.id],
 		})
 	}
 	return out

@@ -16,24 +16,26 @@ import (
 )
 
 type rpcHostHTTPRequest struct {
-	HTTPClientID   string                     `json:"http_client_id,omitempty"`
-	HostCallbackID string                     `json:"host_callback_id,omitempty"`
-	Method         string                     `json:"method,omitempty"`
-	URL            string                     `json:"url,omitempty"`
-	Headers        httpHeader                 `json:"headers,omitempty"`
-	Body           []byte                     `json:"body,omitempty"`
-	WireProfile    *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
-	Request        *httpRequest               `json:"request,omitempty"`
+	HTTPClientID     string                     `json:"http_client_id,omitempty"`
+	HostCallbackID   string                     `json:"host_callback_id,omitempty"`
+	Method           string                     `json:"method,omitempty"`
+	URL              string                     `json:"url,omitempty"`
+	Headers          httpHeader                 `json:"headers,omitempty"`
+	Body             []byte                     `json:"body,omitempty"`
+	DisableRedirects bool                       `json:"disable_redirects,omitempty"`
+	WireProfile      *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
+	Request          *httpRequest               `json:"request,omitempty"`
 }
 
 type httpHeader map[string][]string
 
 type httpRequest struct {
-	Method      string                     `json:"method,omitempty"`
-	URL         string                     `json:"url,omitempty"`
-	Headers     httpHeader                 `json:"headers,omitempty"`
-	Body        []byte                     `json:"body,omitempty"`
-	WireProfile *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
+	Method           string                     `json:"method,omitempty"`
+	URL              string                     `json:"url,omitempty"`
+	Headers          httpHeader                 `json:"headers,omitempty"`
+	Body             []byte                     `json:"body,omitempty"`
+	DisableRedirects bool                       `json:"disable_redirects,omitempty"`
+	WireProfile      *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
 }
 
 type rpcHostHTTPStreamResponse struct {
@@ -307,19 +309,21 @@ func decodeHostHTTPRequestWithCallbackID(raw []byte) (pluginapi.HTTPRequest, str
 			wireProfile = req.WireProfile
 		}
 		return pluginapi.HTTPRequest{
-			Method:      req.Request.Method,
-			URL:         req.Request.URL,
-			Headers:     map[string][]string(req.Request.Headers),
-			Body:        append([]byte(nil), req.Request.Body...),
-			WireProfile: cloneWireProfile(wireProfile),
+			Method:           req.Request.Method,
+			URL:              req.Request.URL,
+			Headers:          map[string][]string(req.Request.Headers),
+			Body:             append([]byte(nil), req.Request.Body...),
+			DisableRedirects: req.DisableRedirects || req.Request.DisableRedirects,
+			WireProfile:      cloneWireProfile(wireProfile),
 		}, req.HostCallbackID, nil
 	}
 	return pluginapi.HTTPRequest{
-		Method:      req.Method,
-		URL:         req.URL,
-		Headers:     map[string][]string(req.Headers),
-		Body:        append([]byte(nil), req.Body...),
-		WireProfile: cloneWireProfile(req.WireProfile),
+		Method:           req.Method,
+		URL:              req.URL,
+		Headers:          map[string][]string(req.Headers),
+		Body:             append([]byte(nil), req.Body...),
+		DisableRedirects: req.DisableRedirects,
+		WireProfile:      cloneWireProfile(req.WireProfile),
 	}, req.HostCallbackID, nil
 }
 

@@ -91,6 +91,8 @@ type Capabilities struct {
 	ModelProvider ModelProvider
 	// AuthProvider lets the host parse, login, poll, and refresh plugin provider auths.
 	AuthProvider AuthProvider
+	// AuthImportOnly retains parsing/refresh but disables interactive login; false preserves legacy behavior.
+	AuthImportOnly bool
 	// FrontendAuthProvider authenticates frontend requests before proxy handling.
 	FrontendAuthProvider FrontendAuthProvider
 	// FrontendAuthProviderExclusive makes this frontend auth provider the only active request auth provider when selected.
@@ -206,6 +208,8 @@ type ModelInfo struct {
 	SupportedOutputModalities []string
 	// Thinking describes optional reasoning controls for the model.
 	Thinking *ThinkingSupport
+	// IsCompat opts this model into third-party Anthropic thinking/signature compatibility.
+	IsCompat bool `json:"IsCompat,omitempty"`
 	// UserDefined reports whether the model was provided by user configuration.
 	UserDefined bool
 }
@@ -1012,6 +1016,8 @@ type HTTPRequest struct {
 	Headers http.Header
 	// Body contains the raw request body.
 	Body []byte
+	// DisableRedirects returns the first 3xx response without replaying this request.
+	DisableRedirects bool `json:"disable_redirects,omitempty"`
 	// WireProfile specifies optional outbound HTTP wire profile settings.
 	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`
 }

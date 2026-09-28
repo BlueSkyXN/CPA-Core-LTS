@@ -1,6 +1,6 @@
 EXAMPLES := simple model auth frontend-auth executor protocol-format request-translator request-normalizer response-translator response-normalizer thinking usage cli management-api host-callback host-callback-auth-files host-model-callback claude-web-search-router
 LANGUAGES := go c rust
-GO_ONLY_EXAMPLES := codebuddy qoder
+GO_ONLY_EXAMPLES := codebuddy qoder zcode-coding-plan
 BIN_DIR := $(CURDIR)/bin
 BUILD_DIR := $(BIN_DIR)/build
 

@@ -1,10 +1,10 @@
-# Qoder / CodeBuddy / Copilot 原生插件
+# Qoder / CodeBuddy / Copilot / Coding Plan 原生插件
 
 三家保持原有 Provider 身份 `qoder`、`codebuddy`、`copilot`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。Copilot（0.1.0）支持 GitHub OAuth device 登录与自备 `github_token` 两种认证，同为纯 Go 原生动态库。
 
 ## 配置与兼容
 
-使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的默认运行镜像只包含 Core 和三家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。
+使用 `examples/plugin/pat-providers.config.yaml` 作为新部署示例，合并所需插件字段到现有配置，不覆盖已有 API key、auth、流控或 usage 配置。`Dockerfile.pat-providers` 的完整运行镜像包含 Core 和四家原生动态库，不包含 Node、厂商 CLI、Qoder SDK 或 runner。原生插件与 Core 由同一份源码构建。Coding Plan 沿用 `zcode-coding-plan` 插件/账号身份，私有配置通过 `docker-compose.coding-plan.yml` 只读挂载；只使用其他三家时不要求新增挂载。既有镜像/tag/workflow 名称不改，详见 `examples/plugin/PAT_DOCKER.md`。
 
 Qoder 插件 0.3.1 的中国区原生默认值：`transport` 固定为 `direct_openai` 兼容名称，`direct_endpoint` 默认指向 `/algo/api/v2/service/pro/sse/agent_chat_generation`，`direct_models_endpoint` / `openapi_endpoint` / `direct_catalog_format=qoder` 也有默认值，最小启用配置只需 `enabled` 与 `auth-read` 权限。auth 或配置中的 `transport` 仅作为兼容字段：`direct_openai` 等价无操作，`sdk_cli` 明确拒绝。认证只接受 `pat`（legacy `access_token` 继续作为旧 PAT 文件的读取别名）；`local_cli` 已移除并明确报错。国际区或私有网关实例需显式覆盖并验证相应 endpoint，显式覆盖永远优先于默认值。已有显式 `/model/v1/chat/completions` 覆盖仍按 OpenAI wire 发送；若要使用已验证的中国区 COSY 推理，需移除该覆盖或改为上述 COSY endpoint。
 
@@ -45,6 +45,14 @@ Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 
 
 模型目录按账号发现（`ExecutorModelScopeOAuth`）；显示名、路由 ID、目录隔离语义与 Qoder/CodeBuddy 一致。执行协商格式为 `chat-completions` 与 `embeddings`：客户端四协议入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1beta generateContent` 经 Core 标准转换层进入 chat-completions 格式，`/v1/embeddings` 为 Core 公共入口直达插件。生命周期支持取消、readiness 与会话关闭（schema 与 capability 双门控）。usage 经 Core 正式 Provider 统计管道发布，插件不另建账本；配额 summary 查询 `copilot_internal/user`，不把配额快照当计费事实。
 
+## Coding Plan（单账号 direct Anthropic）
+
+`zcode-coding-plan` 为原生 Go/C ABI 插件，通过 Core 通用 Anthropic/Responses JSON/SSE 与 WS 适配接入。不启动 Node worker 或官方 Agent，不执行工具、不维护第二份历史。它要求现有 schema 6 及五项 host_features，手动提供 API key、设备身份、模型白名单和私有文件引用；没有 OAuth、账号发现或额度轮询。
+
+完整插件版包含 `zcode-coding-plan.so`，每个 Linux 架构导出 `zcode-coding-plan_<version>_linux_<arch>.zip`。版本来自插件 `types.go` 的单一 `pluginVersion`；包内只有动态库、说明、许可证和占位配置，不携带个人值。原三插件包保持不变。bundle 清单新增插件版本及 `plugin_transports`，总 `transport=mixed`，Coding Plan 为 `direct_anthropic`。
+
+Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。只有显式启用才允许逐请求提示词覆盖；清除覆盖继承私有文件。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
+
 ## 插件 ABI 契约与 LTS schema 语义（第三方插件作者须知）
 
 `sdk/pluginabi` 与 `sdk/pluginapi` 是 LTS 的稳定公开契约：破坏性变更必须升级 SchemaVersion/ABIVersion，并保留旧行为分支。宿主接受 schema 低于当前的插件，缺失协商字段按 schema 1 处理。
@@ -61,10 +69,10 @@ schema 语义在 LTS 与 upstream 存在一处分叉，第三方作者必须区�
 
 ## 发布前验证
 
-1. 分别在 `examples/plugin/qoder/go`、`examples/plugin/copilot/go` 和 `examples/plugin/codebuddy/go` 运行 `go test -race -count=1 ./...`、`go vet ./...`。
+1. 分别在 `examples/plugin/qoder/go`、`examples/plugin/copilot/go`、`examples/plugin/codebuddy/go` 和 `examples/plugin/zcode-coding-plan/go` 运行 `go test -race -count=1 ./...`、`go vet ./...`；Coding Plan 用 `CP_NODE` 指向 Node24.14.0 执行合成差分，再运行 `sh examples/plugin/zcode-coding-plan/test-cpa.sh`。
 2. Qoder 与 Copilot 的非 race 测试包含动态库构建与真实 Core host 加载，使用本地假上游检查目录、流式/非流式、登录状态、usage 归属；不依赖真实凭证。
    CodeBuddy 在仓库根执行 `go test -count=1 ./test -run TestCodeBuddyDynamic`，覆盖真实动态库注册、目录、流式/非流式、截断流失败及正式 usage 归属（Unix + CGO，非 race）。
-3. 仓库根执行 `python3 -m unittest discover -s scripts -p test_package_pat_providers.py`、`scripts/check-lts-contract.sh` 和 Core 测试。
+3. 仓库根执行 `python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'`、`scripts/check-lts-contract.sh` 和 Core 测试。
 4. 具备 Docker 环境时构建 PAT 镜像并运行 `scripts/smoke-pat-providers.py --image <image>`；检查镜像中没有 Node/CLI/runner，验证插件注册及 auth 重建持久化。
 5. 在授权环境单独验收真实账号的 catalog、token 刷新、文本/图片/tools、usage、断连取消，以及所需的 Home 路径。模型请求可能消耗额度，不能用本地 fixture 代替真实验收。
 

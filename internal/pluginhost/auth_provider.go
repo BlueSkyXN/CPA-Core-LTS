@@ -260,6 +260,9 @@ func (h *Host) StartLogin(ctx context.Context, provider string, baseURL string, 
 	if record == nil {
 		return pluginapi.AuthLoginStartResponse{}, false, nil
 	}
+	if record.plugin.Capabilities.AuthImportOnly {
+		return pluginapi.AuthLoginStartResponse{}, true, fmt.Errorf("provider supports auth import only")
+	}
 	var startMetadata map[string]any
 	if len(metadata) > 0 {
 		startMetadata = metadata[0]
@@ -298,6 +301,9 @@ func (h *Host) PollLogin(ctx context.Context, provider, state string, metadata .
 	record := h.authProviderRecord(provider)
 	if record == nil {
 		return pluginapi.AuthLoginPollResponse{}, false, nil
+	}
+	if record.plugin.Capabilities.AuthImportOnly {
+		return pluginapi.AuthLoginPollResponse{}, true, fmt.Errorf("provider supports auth import only")
 	}
 	var pollMetadata map[string]any
 	if len(metadata) > 0 {

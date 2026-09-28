@@ -1,0 +1,10 @@
+{
+  "note": "Synthetic test-only values. RFC 8032 test seed/public key; never a real account or device.",
+  "api_key": "synthetic-key.synthetic-secret",
+  "timestamp": "1700000000000",
+  "nonce": "000102030405060708090a0b0c0d0e0f",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+  "public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+  "scopes": ["synthetic-account", "synthetic-caller", "synthetic-workspace", "synthetic-conversation"]
+}

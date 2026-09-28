@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -544,6 +545,11 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	bootstrapEligible := func(err error) bool {
+		// 首包被拦截器丢弃后仍可能收到本地转换错误，不能按 502 再次生成。
+		var requestError coreexecutor.RequestScopedError
+		if errors.As(err, &requestError) && requestError.IsRequestScoped() {
+			return false
+		}
 		status := statusFromError(err)
 		if status == 0 {
 			return true
