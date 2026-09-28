@@ -71,12 +71,8 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.output / name) as archive:
             self.assertEqual(set(archive.namelist()), {
                 "zcode-coding-plan.so", "README.md", "SPEC.md", "LICENSE",
-                "config.example.json", "auth.example.json",
+                "auth.example.json",
             })
-            config = json.loads(archive.read("config.example.json"))
-            self.assertFalse(config["host_logging_disabled"])
-            self.assertEqual(config["credential"], {"api_key_env": "CP_API_KEY"})
-            self.assertEqual(config["identity"]["device_id_env"], "CP_DEVICE_ID")
             auth = json.loads(archive.read("auth.example.json"))
             self.assertEqual(auth["type"], "zcode-coding-plan")
             self.assertIn("api_key", auth)

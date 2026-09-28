@@ -4,16 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 )
-
-type promptConfig struct {
-	Mode                 string            `json:"mode"`
-	Template             string            `json:"template"`
-	MovePosition         string            `json:"move_position"`
-	AllowRequestOverride bool              `json:"allow_request_override"`
-	Templates            map[string]string `json:"templates"`
-}
 
 func uuid() string {
 	var b [16]byte
@@ -61,118 +52,6 @@ func textBlocks(value any) ([]any, error) {
 		}
 	}
 	return list, nil
-}
-func validatePrompt(p promptConfig) error {
-	switch p.Mode {
-	case "preserve", "replace", "prepend", "append", "move_to_user":
-	default:
-		return problem(400, "invalid_prompt", "Unknown prompt mode")
-	}
-	if p.MovePosition != "" && p.MovePosition != "first_user" && p.MovePosition != "last_user" {
-		return problem(400, "invalid_prompt", "Invalid move_position")
-	}
-	if p.Mode != "preserve" && strings.TrimSpace(p.Templates[p.Template]) == "" {
-		return problem(400, "invalid_prompt", "A configured non-empty template is required")
-	}
-	return nil
-}
-func applyPrompt(body map[string]any, p promptConfig) error {
-	if p.Mode == "" {
-		p.Mode = "preserve"
-	}
-	if ext, exists := body["x_coding_plan"]; exists {
-		if !p.AllowRequestOverride {
-			return problem(400, "prompt_override_disabled", "Request prompt override is disabled")
-		}
-		o, ok := ext.(map[string]any)
-		if !ok || len(o) != 1 {
-			return problem(400, "invalid_prompt", "Invalid x_coding_plan extension")
-		}
-		sel, ok := o["prompt"].(map[string]any)
-		if !ok {
-			return problem(400, "invalid_prompt", "Invalid prompt override")
-		}
-		for k, v := range sel {
-			s, ok := v.(string)
-			if !ok {
-				return problem(400, "invalid_prompt", "Invalid prompt override value")
-			}
-			switch k {
-			case "mode":
-				p.Mode = s
-			case "template":
-				// 即使 preserve 不读取模板，也不能接受未登记路径或 URL 作为模板选择。
-				if _, exists := p.Templates[s]; !exists {
-					return problem(400, "invalid_prompt", "Select a configured template name")
-				}
-				p.Template = s
-			case "move_position":
-				p.MovePosition = s
-			default:
-				return problem(400, "invalid_prompt", "Unknown prompt override field")
-			}
-		}
-	}
-	delete(body, "x_coding_plan")
-	if err := validatePrompt(p); err != nil {
-		return err
-	}
-	original, err := textBlocks(body["system"])
-	if err != nil {
-		return err
-	}
-	if p.Mode == "preserve" {
-		return nil
-	}
-	template := map[string]any{"type": "text", "text": p.Templates[p.Template]}
-	switch p.Mode {
-	case "prepend":
-		body["system"] = append([]any{template}, original...)
-		return nil
-	case "append":
-		body["system"] = append(original, template)
-		return nil
-	}
-	body["system"] = []any{template}
-	if p.Mode == "replace" || len(original) == 0 {
-		return nil
-	}
-	texts := []string{}
-	for _, v := range original {
-		b := v.(map[string]any)
-		for k := range b {
-			if k != "type" && k != "text" && k != "cache_control" {
-				return problem(400, "invalid_system", "Cannot move system blocks with additional fields")
-			}
-		}
-		texts = append(texts, b["text"].(string))
-	}
-	text := strings.Join(texts, "\n\n")
-	if text == "" {
-		return nil
-	}
-	messages := body["messages"].([]any)
-	index := -1
-	for i, v := range messages {
-		if v.(map[string]any)["role"] == "user" {
-			index = i
-			if p.MovePosition == "first_user" {
-				break
-			}
-		}
-	}
-	if index < 0 {
-		return problem(400, "invalid_system", "Moving system requires a user message")
-	}
-	m := messages[index].(map[string]any)
-	var content []any
-	if s, ok := m["content"].(string); ok {
-		content = []any{map[string]any{"type": "text", "text": s}}
-	} else {
-		content = m["content"].([]any)
-	}
-	m["content"] = append([]any{map[string]any{"type": "text", "text": "Caller context (moved from system; user-level):\n" + text}}, content...)
-	return nil
 }
 func transform(raw []byte, c *config, session string) (map[string]any, error) {
 	var b map[string]any
@@ -249,7 +128,10 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 			}
 		}
 	}
-	if err := applyPrompt(b, c.Prompt); err != nil {
+	if _, exists := b["x_coding_plan"]; exists {
+		return nil, problem(400, "prompt_override_disabled", "Prompt override is no longer supported")
+	}
+	if _, err := textBlocks(b["system"]); err != nil {
 		return nil, err
 	}
 	if err := validateCache(b); err != nil {

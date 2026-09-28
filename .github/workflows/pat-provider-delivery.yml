@@ -9,7 +9,6 @@ on:
       - 'examples/plugin/copilot/**'
       - 'examples/plugin/qoder/**'
       - 'examples/plugin/zcode-coding-plan/**'
-      - 'docker-compose.coding-plan.yml'
       - '.dockerignore'
       - 'LICENSE'
       - 'examples/plugin/pat-providers.config.yaml'
@@ -84,8 +83,8 @@ jobs:
       - name: Package layout and smoke fixture tests
         run: |
           python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
-          CLI_PROXY_CONFIG_PATH="$PWD/examples/plugin/pat-providers.config.yaml" CPA_CODING_PLAN_PRIVATE_DIR="$RUNNER_TEMP" \
-            docker compose -f docker-compose.pat-providers.yml -f docker-compose.coding-plan.yml config --quiet
+          CLI_PROXY_CONFIG_PATH="$PWD/examples/plugin/pat-providers.config.yaml" \
+            docker compose -f docker-compose.pat-providers.yml config --quiet
       - name: Build optional image
         uses: docker/build-push-action@v6
         with:
@@ -134,7 +133,6 @@ jobs:
                   with zipfile.ZipFile(asset) as package:
                       assert "zcode-coding-plan.so" in package.namelist()
                       assert package.read("zcode-coding-plan.so")[:4] == bytes.fromhex("7f454c46")
-                      assert json.loads(package.read("config.example.json"))["host_logging_disabled"] is False
                       assert "api_key" in json.loads(package.read("auth.example.json"))
           PY
       - name: Save image and platform metadata

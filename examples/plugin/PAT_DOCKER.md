@@ -51,26 +51,13 @@
 
 ## Coding Plan 的账号配置
 
-默认（推荐）：**单文件内联账号，无需任何挂载**。在 Panel 添加账号表单直接提交，或在 Auth Files 上传：
+单文件内联账号，无需任何挂载或环境变量。在 Panel 添加账号表单直接提交，或在 Auth Files 上传：
 
 ```json
 {"type":"zcode-coding-plan","label":"Coding Plan","api_key":"<key>","device_id":"<device-id>","request_retry":0}
 ```
 
-凭据随 auth 文件保存（与 Qoder/CodeBuddy PAT 同模式）；内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型，1M 上下文。上传前需在 **Plugins → Edit config** 将 `host_logging_disabled` 设为 true（一次性日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志）。之后 Check readiness 选择账号做本地诊断。
-
-高级（私有文件引用，向后兼容）：共享 Compose 对其他三家仍不要求 Coding Plan 目录；启用文件引用形态时额外使用只读挂载 override：
-
-1. 在仓库以外创建私有目录，手动准备 `config.json`、API key 文件、device ID 文件以及模板。参考 `examples/plugin/zcode-coding-plan/config.example.json`，容器部署建议使用相对私有目录的 `api_key_file` / `device_id_file`，不要将秘密填入镜像构建参数。占位示例默认 `host_logging_disabled=false`，须先审核宿主与外部代理日志后才明确修改，不能为了启动盲目开启。`models` 可省略，省略时使用内置 `glm-5.3`/`glm-5.3-flash` 默认白名单。
-2. 私有目录中的 `config.json` 在容器内为 `/run/cpa-coding-plan/config.json`，与共享示例 `plugins.configs.zcode-coding-plan.config_file` 对齐。设置 `CPA_CODING_PLAN_PRIVATE_DIR` 为该目录的绝对路径，再使用：
-
-   ```sh
-   docker compose -f docker-compose.pat-providers.yml -f docker-compose.coding-plan.yml up -d --no-build
-   ```
-
-   目录只读挂载且必须已存在；不会自动创建空目录、复制官方客户端身份或扫描账号。非 Coding Plan 部署仍使用原 Compose 命令。
-3. 文件引用形态在配套 Panel 的 Auth Files 上传 `{"type":"zcode-coding-plan","label":"Coding Plan","request_retry":0}`（`config_file` 由插件配置或账号文件提供）。通过 Plugins → Edit config 管理提示词覆盖；Check readiness 选择账号后执行本地诊断。未选账号返回 unknown/not ready，不触发模型、签名握手或额度查询。
-4. 目录或环境变量变动需要按插件说明停止流量、完成/取消请求并重启。容器重建继续挂载相同 auth 与私有目录；不依赖镜像内写入状态。模板名称、单账号限制、五种 prompt 策略及日志边界见[插件说明](zcode-coding-plan/README.md)。
+凭据随 auth 文件保存（与 Qoder/CodeBuddy PAT 同模式）；内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型，1M 上下文、128k 输出、low/high/max 思考档。上传前在 **Plugins → Edit config** 把 `host_logging_disabled` 设为 true（一次性日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志）。可选 `upstream: zai` 切国际区端点。之后 Check readiness 选择账号做本地诊断；容器重建后账号随 auth 目录持久化。0.3.x 的 `config_file` 引用和 `docker-compose.coding-plan.yml` 已移除，旧文件会得到明确报错。
 
 ## Panel 配套与升级
 

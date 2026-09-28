@@ -3,8 +3,6 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -27,9 +25,12 @@ func TestParseAuthInlineRules(t *testing.T) {
 	if _, err = parseAuth([]byte(`{"type":"zcode-coding-plan","device_id":"synthetic-device"}`)); err == nil {
 		t.Fatal("missing api_key accepted")
 	}
-	combined := encode(map[string]any{"type": provider, "api_key": "synthetic-key.synthetic-secret", "device_id": "synthetic-device", "config_file": "/tmp/other.json"})
-	if _, err = parseAuth(combined); err == nil || !strings.Contains(safeError(err).Message, "cannot be combined") {
-		t.Fatal("inline credentials with config_file accepted", err)
+	if _, err = parseAuth([]byte(`{"type":"zcode-coding-plan","label":"bare"}`)); err == nil {
+		t.Fatal("account without credentials accepted")
+	}
+	stale := []byte(`{"type":"zcode-coding-plan","label":"stale","config_file":"/tmp/other.json"}`)
+	if _, err = parseAuth(stale); err == nil || !strings.Contains(safeError(err).Message, "no longer supported") {
+		t.Fatal("legacy config_file reference accepted", err)
 	}
 	if _, err = parseAuth([]byte(`{"type":"zcode-coding-plan","api_key":"synthetic-key","device_id":"d"}`)); err == nil {
 		t.Fatal("malformed api key accepted")
@@ -150,29 +151,14 @@ func TestInlineExecutionAndReconfigure(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultsModels(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CP_TEST_KEY", "synthetic-key.synthetic-secret")
-	t.Setenv("CP_TEST_DEVICE", "synthetic-device")
-	path := filepath.Join(dir, "private.json")
-	raw := []byte(`{"credential":{"api_key_env":"CP_TEST_KEY"},"identity":{"device_id_env":"CP_TEST_DEVICE","platform":"linux-x64","os_category":"linux","os_version":"test","language":"en","timezone":"UTC"},"host_logging_disabled":true,"prompt":{"mode":"preserve"}}`)
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := loadConfig(path)
-	if err != nil {
-		t.Fatal("private file without models rejected:", err)
-	}
-	if len(c.Models) != 2 || c.Models[0] != "glm-5.3" {
-		t.Fatal("default allowlist not applied to private file")
-	}
-}
-
-func TestManagementFieldsIncludeLoggingAcknowledgement(t *testing.T) {
+func TestManagementFieldsCoverInlineControls(t *testing.T) {
+	names := map[string]bool{}
 	for _, field := range managementFields() {
-		if field.(map[string]any)["Name"] == "host_logging_disabled" {
-			return
+		names[field.(map[string]any)["Name"].(string)] = true
+	}
+	for _, name := range []string{"host_logging_disabled", "upstream", "models", "model_limits"} {
+		if !names[name] {
+			t.Fatal(name + " missing from management fields")
 		}
 	}
-	t.Fatal("host_logging_disabled missing from management fields")
 }

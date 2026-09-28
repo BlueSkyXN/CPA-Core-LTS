@@ -1,9 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,23 +8,25 @@ import (
 func managementRegistration(settings any) []byte {
 	return encode(map[string]any{"schema_version": 6, "host_features": []string{"anthropic-plugin-responses-v1", "plugin-model-compat-v1", "http-disable-redirects-v1", "sensitive-endpoints-v1", "plugin-management-v1"}, "config_json": encode(settings)})
 }
+
 func TestManagementConfigAndReadiness(t *testing.T) {
-	path := fixtureConfig(t)
 	r := newRuntime(nil)
-	settings := map[string]any{"config_file": path, "prompt_mode": "preserve", "allow_request_override": true}
+	ack := true
+	upstream := "zai"
+	settings := map[string]any{"host_logging_disabled": ack, "upstream": upstream}
 	if _, err := r.dispatch("plugin.register", managementRegistration(settings)); err != nil {
 		t.Fatal(err)
 	}
-	storage := []byte(`{"type":"zcode-coding-plan","label":"synthetic"}`)
+	storage := inlineStorage()
 	if _, err := r.dispatch("auth.parse", encode(map[string]any{"RawJSON": storage})); err != nil {
-		t.Fatal("configured file reference rejected:", err)
+		t.Fatal("inline account rejected at parse:", err)
 	}
 	c, err := r.configuration(storage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Prompt.AllowRequestOverride {
-		t.Fatal("management prompt override not applied")
+	if c.Endpoint != "https://api.z.ai/api/anthropic/v1/messages" {
+		t.Fatal("upstream override not applied to effective config")
 	}
 	status, err := r.dispatch("executor.readiness", []byte(`{}`))
 	if err != nil {
@@ -41,10 +40,10 @@ func TestManagementConfigAndReadiness(t *testing.T) {
 		t.Fatal("configured auth not ready", err)
 	}
 	raw := string(encode(status))
-	if containsAny(raw, []string{"synthetic-key", "synthetic-device", path}) {
+	if containsAny(raw, []string{"synthetic-key", "synthetic-secret", "synthetic-device"}) {
 		t.Fatal("diagnostic leaked private data")
 	}
-	settings["prompt_mode"] = "not-a-mode"
+	settings["upstream"] = "not-a-preset"
 	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(settings)); err == nil {
 		t.Fatal("invalid update accepted")
 	}
@@ -52,24 +51,24 @@ func TestManagementConfigAndReadiness(t *testing.T) {
 	if err != nil || preserved != c {
 		t.Fatal("invalid reconfiguration replaced working snapshot")
 	}
-	other := encode(authRecord{Type: provider, ConfigFile: filepath.Join(t.TempDir(), "other.json")})
+	other := []byte(`{"type":"zcode-coding-plan","api_key":"other-key.other-secret","device_id":"other-device"}`)
 	if _, err = r.configuration(other); err == nil {
-		t.Fatal("conflicting config references accepted")
+		t.Fatal("second account accepted")
 	}
 }
 func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 	r := newRuntime(nil)
-	settings := map[string]any{"config_file": fixtureConfig(t)}
-	if _, err := r.dispatch("plugin.register", managementRegistration(settings)); err != nil {
+	ack := true
+	if _, err := r.dispatch("plugin.register", managementRegistration(map[string]any{"host_logging_disabled": ack})); err != nil {
 		t.Fatal(err)
 	}
-	storage := []byte(`{"type":"zcode-coding-plan"}`)
+	storage := inlineStorage()
 	old, err := r.configuration(storage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings["allow_request_override"] = true
-	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(settings)); err != nil {
+	zai := "zai"
+	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": ack, "upstream": zai})); err != nil {
 		t.Fatal(err)
 	}
 	req := executorRequest{RequestID: "synthetic-request", CallbackID: "synthetic-callback", AuthID: "synthetic-auth"}
@@ -77,7 +76,7 @@ func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 		t.Fatal("stale configuration admitted", err)
 	}
 	current, err := r.configuration(storage)
-	if err != nil || current == old || !current.Prompt.AllowRequestOverride {
+	if err != nil || current == old || current.Endpoint != "https://api.z.ai/api/anthropic/v1/messages" {
 		t.Fatal("new configuration not applied", err)
 	}
 	e, err := r.admit(req, current)
@@ -85,7 +84,7 @@ func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.finish(e)
-	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{})); err == nil {
+	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": ack})); err == nil {
 		t.Fatal("active configuration replaced")
 	}
 	preserved, err := r.configuration(storage)
@@ -93,49 +92,11 @@ func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 		t.Fatal("busy reconfigure changed active snapshot")
 	}
 }
-
-func containsAny(s string, values []string) bool {
-	for _, v := range values {
-		if len(v) > 0 && strings.Contains(s, v) {
+func containsAny(text string, values []string) bool {
+	for _, value := range values {
+		if strings.Contains(text, value) {
 			return true
 		}
 	}
 	return false
-}
-func TestManagementTemplateOverrideAndNoSecretWrite(t *testing.T) {
-	path := fixtureConfig(t)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg map[string]any
-	_ = json.Unmarshal(raw, &cfg)
-	cfg["prompt"] = map[string]any{"mode": "preserve", "templates": map[string]string{"t": "template.txt"}}
-	if err = os.WriteFile(filepath.Join(filepath.Dir(path), "template.txt"), []byte("template"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	raw = encode(cfg)
-	if err = os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	r := newRuntime(nil)
-	_, err = r.dispatch("plugin.register", managementRegistration(map[string]any{"config_file": path, "prompt_mode": "replace", "prompt_template": "t"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := r.configuration([]byte(`{"type":"zcode-coding-plan"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := transformExecution(executorRequest{Payload: []byte(`{"model":"test-model","max_tokens":10,"messages":[{"role":"user","content":"hello"}]}`)}, c, "session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encode(result["system"])), "template") {
-		t.Fatal("template selection lost")
-	}
-	after, _ := os.ReadFile(path)
-	if string(after) != string(raw) {
-		t.Fatal("management wrote private config")
-	}
 }

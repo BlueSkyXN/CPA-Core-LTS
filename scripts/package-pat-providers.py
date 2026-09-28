@@ -56,7 +56,7 @@ def package(libraries: Path, output: Path, arch: str, commit: str, core_version:
         if name == "zcode-coding-plan":
             base = ROOT / "examples/plugin/zcode-coding-plan"
             files.extend((base / filename, filename) for filename in
-                         ("README.md", "SPEC.md", "config.example.json", "auth.example.json"))
+                         ("README.md", "SPEC.md", "auth.example.json"))
             files.append((ROOT / "LICENSE", "LICENSE"))
         archive(target, files)
         assets.append(target)

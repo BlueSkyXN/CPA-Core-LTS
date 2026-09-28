@@ -1,6 +1,7 @@
 # Binaries
 cli-proxy-api
 *.exe
+/examples/plugin/zcode-coding-plan/go/go
 
 # Configuration
 config.yaml
@@ -64,3 +65,4 @@ _bmad-output/*
 /local
 /server
 /tmp
+examples/plugin/zcode-coding-plan/integration/go.sum

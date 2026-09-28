@@ -29,7 +29,7 @@ func TestV2BlockedBodyCancelAndBoundedDetach(t *testing.T) {
 				if isolateDynamic(t) {
 					return
 				}
-				f := newV2Fixture(t, true)
+				f := newV2Fixture(t)
 				b := &blockedFixtureBody{started: make(chan struct{}), closed: make(chan struct{})}
 				f.transport.blocked = b
 				f.transport.mode = phase
@@ -84,10 +84,10 @@ func TestV2Redirect308StopsBeforeReplay(t *testing.T) {
 			if isolateDynamic(t) {
 				return
 			}
-			f := newV2Fixture(t, true)
+			f := newV2Fixture(t)
 			f.transport.mode = phase
 			f.transport.redirectStatus = 308
-			res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello"}`, v2Model), "")
+			res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello"}`, v2Model))
 			if res.Code < 400 || f.transport.targets != 0 || len(f.transport.captured) > 1 {
 				t.Fatal("redirect replay not blocked")
 			}

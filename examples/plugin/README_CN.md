@@ -10,7 +10,7 @@
 - `frontend-auth/`：只演示前端认证提供方能力。
 - `frontend-auth-exclusive/`：演示被选中后成为唯一请求认证方式的前端认证提供方。
 - `executor/`：只演示执行器能力。
-- `zcode-coding-plan/`：纯 Go 单账号 Coding Plan 插件，单文件内联凭据（保留高级私有配置路径）、内置 GLM 默认模型、通用 Panel 就绪诊断、提示词策略及 Anthropic/Responses JSON/SSE/WS 接入；见[使用说明与安全边界](zcode-coding-plan/README.md)。
+- `zcode-coding-plan/`：纯 Go 单账号 Coding Plan 插件，单文件内联凭据、内置 GLM 默认模型、通用 Panel 就绪诊断及 Anthropic/Responses JSON/SSE/WS 接入；见[使用说明与安全边界](zcode-coding-plan/README.md)。
 - `protocol-format/`：使用最小执行器重点演示输入和输出格式声明。
 - `request-translator/`：只演示请求转换能力。
 - `request-normalizer/`：只演示请求规整能力。

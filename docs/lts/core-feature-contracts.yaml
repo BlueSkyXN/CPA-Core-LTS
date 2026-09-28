@@ -600,7 +600,6 @@ features:
       - .github/workflows/pr-test-build.yml
       - .github/workflows/pat-provider-delivery.yml
       - Dockerfile.pat-providers
-      - docker-compose.coding-plan.yml
       - scripts/package-pat-providers.py
       - scripts/smoke-pat-providers.py
     required_markers:

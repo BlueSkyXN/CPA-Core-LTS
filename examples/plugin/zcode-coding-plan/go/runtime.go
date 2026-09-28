@@ -25,12 +25,10 @@ type pluginRuntime struct {
 	accepting  bool
 	active     map[string]*execution
 	config     *config
-	configPath string
 	authOwner  string
 	signer     *signer
 	management managementConfig
-	// 内联（单文件）账号形态：首个生效账号的凭据快照，供 reconfigure 后重建 signer。
-	inlineAuth     bool
+	// 首个生效账号的凭据快照，供 reconfigure 后重建 signer。
 	inlineAPIKey   string
 	inlineDeviceID string
 }
@@ -45,40 +43,23 @@ func (r *pluginRuntime) configuration(raw []byte) (*config, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	a.ConfigFile, err = r.authConfigPath(a)
-	if err != nil {
-		return nil, err
-	}
 	if r.config != nil {
-		if r.configPath != a.ConfigFile {
+		if a.APIKey != r.inlineAPIKey || a.DeviceID != r.inlineDeviceID {
 			return nil, problem(409, "single_account_only", "This plugin instance supports one configured account")
-		}
-		if a.inline() && (a.APIKey != r.inlineAPIKey || a.DeviceID != r.inlineDeviceID) {
-			return nil, problem(409, "single_account_only", "Only one inline account is supported")
 		}
 		return r.config, nil
 	}
-	var c *config
-	if a.inline() {
-		// 与私有文件模式同语义的日志审计门：确认原始请求/错误体日志已关闭后，内联凭据才可加载。
-		if r.management.HostLoggingDisabled == nil || !*r.management.HostLoggingDisabled {
-			return nil, problem(503, "unsafe_host_logging", "Enable host_logging_disabled in the plugin management config before loading inline credentials")
-		}
-		c = defaultConfig()
-		r.inlineAuth = true
-		r.inlineAPIKey, r.inlineDeviceID = a.APIKey, a.DeviceID
-		c.APIKey, c.DeviceID = a.APIKey, a.DeviceID
-	} else {
-		c, err = loadConfig(a.ConfigFile)
-		if err != nil {
-			return nil, err
-		}
+	// 日志审计门：确认原始请求/错误体日志已关闭后，凭据才可加载。
+	if r.management.HostLoggingDisabled == nil || !*r.management.HostLoggingDisabled {
+		return nil, problem(503, "unsafe_host_logging", "Enable host_logging_disabled in the plugin management config before loading inline credentials")
 	}
+	c := defaultConfig()
 	if err = r.management.apply(c); err != nil {
 		return nil, err
 	}
+	r.inlineAPIKey, r.inlineDeviceID = a.APIKey, a.DeviceID
+	c.APIKey, c.DeviceID = a.APIKey, a.DeviceID
 	r.config = c
-	r.configPath = a.ConfigFile
 	r.signer = &signer{apiKey: c.APIKey, endpoint: c.Endpoint}
 	return c, nil
 }
@@ -411,7 +392,7 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"Handled": true, "Auth": map[string]any{"Provider": provider, "Label": a.Label, "FileName": req.FileName, "StorageJSON": req.RawJSON, "Metadata": map[string]any{"type": provider, "config_file": a.ConfigFile, "request_retry": 0}}}, nil
+		return map[string]any{"Handled": true, "Auth": map[string]any{"Provider": provider, "Label": a.Label, "FileName": req.FileName, "StorageJSON": req.RawJSON, "Metadata": map[string]any{"type": provider, "request_retry": 0}}}, nil
 	case "auth.refresh":
 		var req struct {
 			StorageJSON []byte
@@ -422,11 +403,10 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) (any, error) {
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		a, err := r.resolveAuth(req.StorageJSON)
-		if err != nil {
+		if _, err := r.resolveAuth(req.StorageJSON); err != nil {
 			return nil, err
 		}
-		return map[string]any{"Auth": map[string]any{"Provider": provider, "ID": req.AuthID, "StorageJSON": req.StorageJSON, "Metadata": map[string]any{"type": provider, "config_file": a.ConfigFile, "request_retry": 0}, "Attributes": req.Attributes}}, nil
+		return map[string]any{"Auth": map[string]any{"Provider": provider, "ID": req.AuthID, "StorageJSON": req.StorageJSON, "Metadata": map[string]any{"type": provider, "request_retry": 0}, "Attributes": req.Attributes}}, nil
 	case "model.static":
 		return map[string]any{"Provider": provider, "Models": []any{}}, nil
 	case "model.for_auth":

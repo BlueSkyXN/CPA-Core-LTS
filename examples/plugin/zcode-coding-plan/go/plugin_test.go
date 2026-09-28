@@ -12,9 +12,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
-	"reflect"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -48,54 +45,19 @@ func TestVersionMatchesReadinessAndPackageSource(t *testing.T) {
 	}
 }
 
-func TestSharedPromptCases(t *testing.T) {
-	raw, err := os.ReadFile("../testdata/prompt-cases.json")
+func TestSystemPassthroughAndPromptOverrideRejected(t *testing.T) {
+	cfg := &config{Models: []string{"test-model"}, DeviceID: "synthetic-device"}
+	input := encode(map[string]any{"model": "test-model", "max_tokens": 10, "system": "caller", "messages": []any{map[string]any{"role": "user", "content": "one"}}})
+	result, err := transform(input, cfg, "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cases []struct {
-		Name, Mode, System string
-		Position           string `json:"move_position"`
-		Expected           any    `json:"expectedSystem"`
-		Index              *int   `json:"movedIndex"`
+	if result["system"] != "caller" {
+		t.Fatal("preserve semantics must pass the caller system prompt through unchanged")
 	}
-	if json.Unmarshal(raw, &cases) != nil {
-		t.Fatal("fixtures")
-	}
-	for _, c := range cases {
-		t.Run(c.Name, func(t *testing.T) {
-			cfg := &config{Models: []string{"test-model"}, DeviceID: "synthetic-device", Prompt: promptConfig{Mode: c.Mode, Template: "test", MovePosition: c.Position, Templates: map[string]string{"test": "template"}}}
-			input := encode(map[string]any{"model": "test-model", "max_tokens": 10, "system": c.System, "messages": []any{map[string]any{"role": "user", "content": "one"}, map[string]any{"role": "assistant", "content": "reply"}, map[string]any{"role": "user", "content": "two"}}})
-			result, err := transform(input, cfg, "session")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(result["system"], c.Expected) {
-				t.Fatalf("system mismatch: %s", encode(result["system"]))
-			}
-			if c.Index != nil {
-				m := result["messages"].([]any)[*c.Index].(map[string]any)
-				block := m["content"].([]any)[0].(map[string]any)
-				if block["text"] != "Caller context (moved from system; user-level):\ncaller" {
-					t.Fatal("move")
-				}
-			}
-		})
-	}
-}
-func TestPromptOverride(t *testing.T) {
-	cfg := &config{Models: []string{"m"}, DeviceID: "synthetic", Prompt: promptConfig{Mode: "preserve", Templates: map[string]string{"t": "new"}}}
-	raw := []byte(`{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"x"}],"x_coding_plan":{"prompt":{"mode":"replace","template":"t"}}}`)
+	raw := []byte(`{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"x"}],"x_coding_plan":{"prompt":{"mode":"preserve"}}}`)
 	if _, err := transform(raw, cfg, "s"); err == nil {
-		t.Fatal("override accepted")
-	}
-	cfg.Prompt.AllowRequestOverride = true
-	b, err := transform(raw, cfg, "s")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := b["x_coding_plan"]; ok {
-		t.Fatal("extension leaked")
+		t.Fatal("prompt override accepted after template removal")
 	}
 }
 func TestSSE(t *testing.T) {
@@ -160,7 +122,7 @@ func (f *fakeHost) Call(method string, value any) (json.RawMessage, error) {
 		if !req.DisableRedirects {
 			return nil, problem(500, "redirect_policy", "Redirects must be disabled")
 		}
-		if strings.HasSuffix(req.URL, "/client") {
+		if bytes.HasSuffix([]byte(req.URL), []byte("/client")) {
 			f.handshakes++
 			if req.Headers.Get("Authorization") != "synthetic-key.synthetic-secret" {
 				return nil, problem(401, "bad_auth", "bad auth")
@@ -211,33 +173,25 @@ func (f *fakeHost) Call(method string, value any) (json.RawMessage, error) {
 	}
 	return nil, problem(500, "unknown_callback", "Unknown callback")
 }
-func fixtureConfig(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("CP_TEST_KEY", "synthetic-key.synthetic-secret")
-	t.Setenv("CP_TEST_DEVICE", "synthetic-device")
-	path := filepath.Join(dir, "private.json")
-	raw := []byte(`{"credential":{"api_key_env":"CP_TEST_KEY"},"identity":{"device_id_env":"CP_TEST_DEVICE","platform":"linux-x64","os_category":"linux","os_version":"test","language":"en","timezone":"UTC"},"models":["test-model"],"host_logging_disabled":true,"prompt":{"mode":"preserve"}}`)
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
+
 func TestExecutorHostCallbacks(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	f := &fakeHost{private: priv, public: pub, reads: map[string]int{}, streamDone: make(chan struct{})}
 	r := newRuntime(f)
 	defer r.stop()
-	path := fixtureConfig(t)
-	storage := encode(authRecord{Type: provider, ConfigFile: path})
-	req := executorRequest{RequestID: "r1", CallbackID: "cb", AuthID: "synthetic-auth", ExecutionSessionID: "conversation", Format: "claude", StorageJSON: storage, Payload: []byte(`{"model":"test-model","max_tokens":2,"messages":[{"role":"user","content":"x"}]}`)}
+	ack := true
+	if _, err := r.dispatch("plugin.register", managementRegistration(map[string]any{"host_logging_disabled": ack})); err != nil {
+		t.Fatal(err)
+	}
+	storage := inlineStorage()
+	req := executorRequest{RequestID: "r1", CallbackID: "cb", AuthID: "synthetic-auth", ExecutionSessionID: "conversation", Format: "claude", StorageJSON: storage, Payload: []byte(`{"model":"glm-5.3","max_tokens":2,"messages":[{"role":"user","content":"x"}]}`)}
 	if _, err := r.execute(req); err != nil {
 		t.Fatal(err)
 	}
 	req.Stream = true
 	req.StreamID = "host-stream"
 	req.RequestID = "r2"
-	req.Payload = []byte(`{"model":"test-model","max_tokens":2,"stream":true,"messages":[{"role":"user","content":"x"}]}`)
+	req.Payload = []byte(`{"model":"glm-5.3-flash","max_tokens":2,"stream":true,"messages":[{"role":"user","content":"x"}]}`)
 	if _, err := r.execute(req); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +203,7 @@ func TestExecutorHostCallbacks(t *testing.T) {
 	}
 }
 func TestMetadataWireOrder(t *testing.T) {
-	cfg := &config{Models: []string{"m"}, DeviceID: "synthetic", Prompt: promptConfig{Mode: "preserve"}}
+	cfg := &config{Models: []string{"m"}, DeviceID: "synthetic"}
 	b, err := transform([]byte(`{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"x"}]}`), cfg, "s")
 	if err != nil {
 		t.Fatal(err)

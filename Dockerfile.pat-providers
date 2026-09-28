@@ -40,7 +40,7 @@ WORKDIR /CLIProxyAPI
 COPY --from=native /native/sky-cpa-core-lts ./sky-cpa-core-lts
 # 独立于标准 Compose 的 /CLIProxyAPI/plugins 挂载，避免空目录遮住内置插件。
 COPY --from=native /native/cpa-provider-codebuddy.so /native/cpa-provider-copilot.so /native/cpa-provider-qoder.so /native/zcode-coding-plan.so /opt/cpa-pat-plugins/
-COPY examples/plugin/zcode-coding-plan/README.md examples/plugin/zcode-coding-plan/SPEC.md examples/plugin/zcode-coding-plan/config.example.json examples/plugin/zcode-coding-plan/auth.example.json /opt/cpa-plugin-examples/zcode-coding-plan/
+COPY examples/plugin/zcode-coding-plan/README.md examples/plugin/zcode-coding-plan/SPEC.md examples/plugin/zcode-coding-plan/auth.example.json /opt/cpa-plugin-examples/zcode-coding-plan/
 COPY LICENSE /opt/cpa-plugin-examples/zcode-coding-plan/LICENSE
 COPY examples/plugin/qoder/THIRD_PARTY_NOTICES.md /opt/cpa-pat-plugins/qoder-THIRD_PARTY_NOTICES.md
 COPY --from=packages /out/pat-provider-bundle.json /opt/cpa-pat-plugins/bundle.json

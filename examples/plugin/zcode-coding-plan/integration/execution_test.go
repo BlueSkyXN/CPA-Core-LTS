@@ -49,7 +49,7 @@ type fixtureTransport struct {
 func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if req.URL.Host != "open.bigmodel.cn" {
+	if req.URL.Host != "open.bigmodel.cn" && req.URL.Host != "api.z.ai" {
 		return nil, fmt.Errorf("unexpected host blocked")
 	}
 	body, err := io.ReadAll(req.Body)
@@ -104,9 +104,7 @@ func TestCPAExecutorWithNoNetworkTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(dir, "zcode-coding-plan"+filepath.Ext(library)), lib, 0700)
-	private := filepath.Join(dir, "config.json")
-	os.WriteFile(private, []byte(`{"credential":{"api_key_env":"CP_INTEGRATION_KEY"},"identity":{"device_id_env":"CP_INTEGRATION_DEVICE","platform":"linux-x64","os_category":"linux","os_version":"test","language":"en","timezone":"UTC"},"models":["test-model"],"host_logging_disabled":true,"prompt":{"mode":"preserve"}}`), 0600)
-	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\nrequest-log: false\n", dir)))
+	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      host_logging_disabled: true\n      models: [\"test-model\"]\nrequest-log: false\n", dir)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +113,7 @@ func TestCPAExecutorWithNoNetworkTransport(t *testing.T) {
 	defer cancel()
 	defer h.ShutdownAll()
 	h.ApplyConfig(ctx, cfg)
-	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "config_file": private, "request_retry": 0})
+	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": "synthetic-key.synthetic-secret", "device_id": "synthetic-device", "request_retry": 0})
 	auth, handled, err := h.ParseAuth(ctx, pluginapi.AuthParseRequest{RawJSON: storage, FileName: "synthetic.json"})
 	if err != nil || !handled {
 		t.Fatalf("auth %v", err)
