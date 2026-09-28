@@ -22,6 +22,19 @@ class SmokeFixtureTests(unittest.TestCase):
             self.assertTrue(config["host_logging_disabled"])
             self.assertFalse((root / "auths").exists())
 
+    def test_internal_network_endpoint_does_not_require_published_port(self):
+        info = {"State": {"Running": True}, "NetworkSettings": {
+            "Ports": {}, "Networks": {"fixture": {"IPAddress": "172.30.0.2"}},
+        }}
+        self.assertEqual(smoke.fixture_management_url(info, "fixture"), "http://172.30.0.2:8317/v0/management")
+        info["State"]["Running"] = False
+        with self.assertRaises(RuntimeError):
+            smoke.fixture_management_url(info, "fixture")
+        info["State"]["Running"] = True
+        info["NetworkSettings"]["Networks"]["fixture"]["IPAddress"] = ""
+        with self.assertRaises(ValueError):
+            smoke.fixture_management_url(info, "fixture")
+
     def test_readiness_requires_selected_auth_and_no_secret_echo(self):
         smoke.check_coding_plan_status({"Ready": False, "Checks": [{"Level": "auth_ready", "State": "unknown"}]}, selected=False)
         smoke.check_coding_plan_status({"Ready": True, "Checks": [{"Level": "auth_ready", "State": "ready"}]}, selected=True)

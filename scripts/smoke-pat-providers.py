@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Docker 完整版 fixture smoke：四插件加载、手动账号、就绪诊断和重建持久化；禁止出站。"""
 import argparse
+import ipaddress
 import json
 from pathlib import Path
 import secrets
@@ -38,6 +39,14 @@ def check_coding_plan_status(status: dict, selected: bool) -> None:
     assert checks.get("auth_ready") == ("ready" if selected else "unknown")
     text = json.dumps(status)
     assert not any(value in text for value in ("synthetic-key", "synthetic-secret", "synthetic-device", "/run/cpa-coding-plan")), "diagnostic leaked private fixture data"
+
+
+def fixture_management_url(info: dict, network: str) -> str:
+    if not info["State"]["Running"]:
+        raise RuntimeError("Fixture container stopped before management became available")
+    # internal 网络不保证生成发布端口；CI 在 Linux 宿主直接访问隔离网桥地址。
+    address = ipaddress.IPv4Address(info["NetworkSettings"]["Networks"][network]["IPAddress"])
+    return f"http://{address}:8317/v0/management"
 
 
 def main() -> None:
@@ -86,13 +95,12 @@ plugins:
         config.chmod(0o600)
 
         def start() -> str:
-            docker("run", "-d", "--name", name, "--network", name, "-p", "127.0.0.1::8317",
+            docker("run", "-d", "--name", name, "--network", name,
                    "-v", f"{config}:/CLIProxyAPI/config.yaml",
                    "-v", f"{private}:/run/cpa-coding-plan:ro",
                    "-v", f"{root / 'auths'}:/root/.cli-proxy-api", args.image,
                    "./sky-cpa-core-lts", "--config", "/CLIProxyAPI/config.yaml", "--local-model", "--no-browser")
-            port = docker("port", name, "8317/tcp").split(":")[-1]
-            return f"http://127.0.0.1:{port}/v0/management"
+            return fixture_management_url(json.loads(docker("inspect", name))[0], name)
 
         def docker_or_dump_logs(*args: str) -> str:
             try:
@@ -102,11 +110,13 @@ plugins:
                 print((logs.stdout + logs.stderr).replace(key, "[fixture-key]"))
                 raise
 
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
         def request(base, path, method="GET", payload=None):
             data = json.dumps(payload).encode() if payload is not None else None
             req = urllib.request.Request(base + path, data=data, method=method,
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with opener.open(req, timeout=5) as response:
                 return json.load(response)
 
         def wait_plugins(base):
@@ -188,6 +198,11 @@ plugins:
             wait_plugins(base)
             check_files(base)
             print("PASS: four native plugins, auth registration, Coding Plan readiness and recreation persistence (egress blocked, no inference)")
+        except Exception:
+            for command in (["docker", "inspect", "--format", "{{json .State}}", name], ["docker", "logs", "--tail", "50", name]):
+                result = subprocess.run(command, capture_output=True, text=True)
+                print((result.stdout + result.stderr).replace(key, "[fixture-key]"))
+            raise
         finally:
             subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             subprocess.run(["docker", "network", "rm", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)

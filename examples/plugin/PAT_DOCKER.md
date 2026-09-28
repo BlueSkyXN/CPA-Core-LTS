@@ -100,5 +100,5 @@ python3 scripts/smoke-pat-providers.py --image cpa-pat:test
 ```
 
 容器 smoke 验证四插件加载（最小 Qoder/Copilot 配置即默认值可用）、镜像无 Node/runner、账号文件登记及容器重建持久化；Coding Plan 额外验证只读私有配置、无账号不就绪、选账号本地就绪、响应不含秘密与重建后继续就绪。
-容器使用 internal 网络阻止出站，Core 全局代理指向关闭的 loopback 端口，禁用远端模型目录刷新；只使用 synthetic 值，不调用供应商或证明真实模型可用。
+容器使用 internal 网络阻止出站，Core 全局代理指向关闭的 loopback 端口，禁用远端模型目录刷新；只使用 synthetic 值，不调用供应商或证明真实模型可用。该 smoke 面向 Linux 本地 Docker daemon，直接访问检查得到的隔离网桥 IP，不依赖 internal 网络的端口发布；Docker Desktop/远端 daemon 不属于该脚本的连接方式。
 真实验收另需：目标账号的模型/额度查询、实际流式调用、Responses、usage 归属、失效 PAT 提示。
