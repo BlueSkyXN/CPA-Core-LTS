@@ -195,7 +195,7 @@ func newV2Fixture(t *testing.T, override bool) *v2Fixture {
 	if models.Err != nil {
 		t.Fatal(models.Err)
 	}
-	if len(models.Models) != 1 || !models.Models[0].IsCompat || models.Models[0].ContextLength != 500000 || models.Models[0].MaxCompletionTokens != 128000 {
+	if len(models.Models) != 1 || !models.Models[0].IsCompat || models.Models[0].ContextLength != 1000000 || models.Models[0].MaxCompletionTokens != 128000 {
 		t.Fatal("model metadata not applied")
 	}
 	reg := registry.GetGlobalRegistry()

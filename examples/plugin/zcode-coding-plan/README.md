@@ -1,6 +1,6 @@
 # Coding Plan native Go plugin
 
-`zcode-coding-plan` v0.3.0 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
+`zcode-coding-plan` v0.4.0 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
 
 The plugin supports direct Anthropic Messages with Core's Responses HTTP JSON/SSE adapter and same-connection WebSocket continuation. It does not execute tools, maintain another chat history, discover accounts, scan official application directories, query quota or implement interactive login. Use only credentials and client identity you are authorized to use. Local synthetic acceptance is not proof of upstream acceptance, pricing or production logging safety.
 
@@ -46,17 +46,30 @@ C ABI 1 / schema 6 plus all five host features are required:
 
 Missing capability declarations reject registration/reconfiguration before secrets or network use. Use the companion [Panel management feature](https://github.com/BlueSkyXN/CPA-Panel-LTS/pull/95) for generic configuration and readiness controls. No auth-list, auth-read, auth-write or model-execute permissions are needed.
 
-## Manual private configuration
+## Accounts: inline single file (default) or private config reference (advanced)
 
-Copy [config.example.json](config.example.json) to a server-side private directory and replace every placeholder manually. Never place it or its secrets in the repository, the auth directory, a release archive or a browser field.
+The default account form is a single self-contained JSON file — credentials live inline, exactly like the Qoder/CodeBuddy PAT files:
+
+```json
+{"type":"zcode-coding-plan","label":"Coding Plan","api_key":"<your key>","device_id":"<device id>","request_retry":0}
+```
+
+- Panel's add-account form submits this shape directly; leave `device_id` blank to have the Panel generate one.
+- `api_key` and `device_id` must be provided together, and cannot be combined with `config_file`.
+- Inline credentials load only after the deployment owner enables `host_logging_disabled` once in **Panel → Plugins → Edit config** (see below). Until then readiness reports the acknowledgement as missing and no credential is used.
+- Defaults without a private config: upstream `bigmodel` (Anthropic-compatible endpoint), models `glm-5.3` (text-only) and `glm-5.3-flash` (text+image) with 1,000,000-token context, 128,000-token output budget, thinking levels low/high/max, `max_inflight` 2, prompt mode `preserve`.
+
+## Manual private configuration (advanced)
+
+Copy [config.example.json](config.example.json) to a server-side private directory and replace every placeholder manually. Never place it or its secrets in the repository, a release archive or a browser field.
 
 - API key and device ID each accept exactly one of their `_env` or `_file` references. Relative files resolve against the private config directory.
 - Set environment variables before starting Core: a C-shared library has its own Go runtime and must not rely on later `os.Setenv` changes.
 - Identity fields are explicit user-supplied values. There is no machine/account discovery or embedded personal fallback.
-- `models` is an explicit allowlist. `GLM-5.3-Flash` has context/output metadata limits 500000/128000; limits do not increase the default output budget. Other limits require explicit configuration.
-- `host_logging_disabled` defaults false and blocks secret loading until the deployment owner has audited logging. Setting it true does not disable any Core/proxy logger. `request-log: false` alone is not sufficient proof that error capture is off.
+- `models` is optional; without it the built-in `glm-5.3` / `glm-5.3-flash` allowlist applies. Both built-in models carry context/output metadata limits 1000000/128000; limits do not increase the default output budget. Other limits require explicit configuration.
+- `host_logging_disabled` in the private file defaults false and blocks secret loading until the deployment owner has audited logging. Setting it true does not disable any Core/proxy logger. `request-log: false` alone is not sufficient proof that error capture is off. For inline accounts the same acknowledgement is the management-config field of the same name.
 
-Configure the plugin after manually installing the library in your selected plugin directory:
+Configure the file-reference form after manually installing the library in your selected plugin directory:
 
 ```yaml
 plugins:
@@ -66,6 +79,7 @@ plugins:
     zcode-coding-plan:
       enabled: true
       config_file: "/absolute/path/to/private/config.json"
+      # host_logging_disabled: true   # inline accounts only; private files keep it inside the file
       # Optional overrides; omitted fields inherit the private file.
       # prompt_mode: replace
       # prompt_template: review
@@ -81,7 +95,7 @@ Upload an account reference through the existing Panel Auth Files page or place 
 
 Alternatively use [auth.example.json](auth.example.json) with its own absolute `config_file`. Two explicit references must agree. A plugin instance supports one config/account, not an account pool.
 
-Panel **Plugins → Edit config** exposes the five public fields. Boolean fields distinguish inherit, true and false; choosing inherit removes that override. **Manage accounts** opens the existing account page. **Check readiness** loads available accounts but does not automatically probe; select an account and click the diagnostic button. Provider-only results cannot claim auth readiness. Local readiness does not verify remote acceptance or billing.
+Panel **Plugins → Edit config** exposes the six public fields. Boolean fields distinguish inherit, true and false; choosing inherit removes that override. **Manage accounts** opens the existing account page. **Check readiness** loads available accounts but does not automatically probe; select an account and click the diagnostic button. Provider-only results cannot claim auth readiness. Local readiness does not verify remote acceptance or billing.
 
 Configuration saved means the existing PATCH persisted its fields, not that asynchronous runtime reconfiguration succeeded. Check registration/effective status and explicit readiness separately. Reconfiguration rejects active requests and preserves the plugin's old memory snapshot on failure; Core's existing reload behavior is unchanged. For changes to identity, credentials or template files, stop traffic, cancel/finish requests and restart Core.
 

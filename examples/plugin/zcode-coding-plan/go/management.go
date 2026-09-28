@@ -11,6 +11,7 @@ type managementConfig struct {
 	PromptTemplate       *string `json:"prompt_template"`
 	PromptMovePosition   *string `json:"prompt_move_position"`
 	AllowRequestOverride *bool   `json:"allow_request_override"`
+	HostLoggingDisabled  *bool   `json:"host_logging_disabled"`
 }
 
 func parseManagementConfig(raw []byte) (managementConfig, error) {
@@ -52,6 +53,13 @@ func (m managementConfig) apply(c *config) error {
 	return validatePrompt(c.Prompt)
 }
 func (r *pluginRuntime) authConfigPath(a authRecord) (string, error) {
+	if a.inline() {
+		// 内联凭据与文件引用是两条互斥的账号形态，不能同时指向私有配置。
+		if r.management.ConfigFile != "" {
+			return "", problem(409, "credential_conflict", "Inline credentials cannot be combined with a plugin config_file")
+		}
+		return "", nil
+	}
 	path := a.ConfigFile
 	if r.management.ConfigFile != "" {
 		if path != "" && path != r.management.ConfigFile {
@@ -87,12 +95,22 @@ func (r *pluginRuntime) reconfigure(cfg managementConfig) error {
 			path = r.configPath
 		}
 		var err error
-		next, err = loadConfig(path)
-		if err != nil {
-			return err
+		if r.inlineAuth {
+			if path != "" && path != r.configPath {
+				return problem(409, "config_conflict", "Inline credentials cannot be combined with a config_file")
+			}
+			next = defaultConfig()
+		} else {
+			next, err = loadConfig(path)
+			if err != nil {
+				return err
+			}
 		}
 		if err = cfg.apply(next); err != nil {
 			return err
+		}
+		if r.inlineAuth {
+			next.APIKey, next.DeviceID = r.inlineAPIKey, r.inlineDeviceID
 		}
 	}
 	if r.signer != nil {
@@ -145,5 +163,6 @@ func managementFields() []any {
 		map[string]any{"Name": "prompt_template", "Type": "string", "Description": "Select a template name already registered in the private file, never a path or URL."},
 		map[string]any{"Name": "prompt_move_position", "Type": "enum", "EnumValues": []string{"first_user", "last_user"}, "Description": "Position used by move_to_user; clear to inherit."},
 		map[string]any{"Name": "allow_request_override", "Type": "boolean", "Description": "Allow per-request prompt selection. Unset inherits the private file policy."},
+		map[string]any{"Name": "host_logging_disabled", "Type": "boolean", "Description": "Required for inline (single-file) accounts: acknowledge that CPA raw request and error-body logs are disabled before inline credentials may load. Private-file deployments keep the acknowledgement inside the file."},
 	}
 }

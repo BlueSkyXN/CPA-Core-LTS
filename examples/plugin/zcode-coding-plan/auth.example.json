@@ -1,6 +1,7 @@
 {
   "type": "zcode-coding-plan",
   "label": "Coding Plan",
-  "config_file": "<ABSOLUTE_PATH_TO_PRIVATE_CONFIG>",
+  "api_key": "<YOUR_CODING_PLAN_API_KEY>",
+  "device_id": "<YOUR_DEVICE_ID_OR_LEAVE_BLANK_FOR_PANEL_AUTOFILL>",
   "request_retry": 0
 }

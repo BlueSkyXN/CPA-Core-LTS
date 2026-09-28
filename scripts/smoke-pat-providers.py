@@ -33,12 +33,20 @@ def write_coding_plan_fixture(root: Path) -> Path:
     return private
 
 
+def inline_coding_plan_payload() -> dict:
+    """单文件内联账号：凭据随 auth 文件保存，无私有目录、无 config_file、无环境变量。"""
+    return {"type": "zcode-coding-plan", "label": "Synthetic inline account",
+            "api_key": "inline-key.inline-secret", "device_id": "inline-device", "request_retry": 0}
+
+
 def check_coding_plan_status(status: dict, selected: bool) -> None:
     assert status.get("Ready") is selected, "readiness must reflect selected local auth"
     checks = {check["Level"]: check["State"] for check in status.get("Checks", [])}
     assert checks.get("auth_ready") == ("ready" if selected else "unknown")
     text = json.dumps(status)
-    assert not any(value in text for value in ("synthetic-key", "synthetic-secret", "synthetic-device", "/run/cpa-coding-plan")), "diagnostic leaked private fixture data"
+    leaks = ("synthetic-key", "synthetic-secret", "synthetic-device", "/run/cpa-coding-plan",
+             "inline-key", "inline-secret", "inline-device")
+    assert not any(value in text for value in leaks), "diagnostic leaked private fixture data"
 
 
 def fixture_management_url(info: dict, network: str) -> str:
@@ -59,8 +67,8 @@ def main() -> None:
         root = Path(directory)
         (root / "auths").mkdir()
         private = write_coding_plan_fixture(root)
-        config = root / "config.yaml"
-        config.write_text(f'''host: ""
+        def build_config(path: Path, zcode_stanza: str) -> None:
+            path.write_text(f'''host: ""
 port: 8317
 auth-dir: /root/.cli-proxy-api
 remote-management:
@@ -89,16 +97,24 @@ plugins:
       enabled: true
       permissions: {{auth-read: true}}
     zcode-coding-plan:
-      enabled: true
-      config_file: /run/cpa-coding-plan/config.json
+{zcode_stanza}
 ''')
-        config.chmod(0o600)
+            path.chmod(0o600)
 
-        def start() -> str:
-            docker("run", "-d", "--name", name, "--network", name,
-                   "-v", f"{config}:/CLIProxyAPI/config.yaml",
-                   "-v", f"{private}:/run/cpa-coding-plan:ro",
-                   "-v", f"{root / 'auths'}:/root/.cli-proxy-api", args.image,
+        config = root / "config.yaml"
+        build_config(config, "      enabled: true\n      config_file: /run/cpa-coding-plan/config.json")
+        inline_config = root / "config-inline.yaml"
+        build_config(inline_config, "      enabled: true\n      host_logging_disabled: true")
+        inline_auths = root / "auths-inline"
+        inline_auths.mkdir()
+
+        def start(config_path: Path, mount_private: bool = True) -> str:
+            auths = root / "auths" if mount_private else inline_auths
+            mounts = ["-v", f"{config_path}:/CLIProxyAPI/config.yaml"]
+            if mount_private:
+                mounts += ["-v", f"{private}:/run/cpa-coding-plan:ro"]
+            mounts += ["-v", f"{auths}:/root/.cli-proxy-api"]
+            docker("run", "-d", "--name", name, "--network", name, *mounts, args.image,
                    "./sky-cpa-core-lts", "--config", "/CLIProxyAPI/config.yaml", "--local-model", "--no-browser")
             return fixture_management_url(json.loads(docker("inspect", name))[0], name)
 
@@ -194,10 +210,32 @@ plugins:
                 assert "synthetic-key" not in json.dumps(stored) and "synthetic-device" not in json.dumps(stored)
             check_files(base)
             docker("rm", "-f", name)
-            base = start()
+            base = start(config)
             wait_plugins(base)
             check_files(base)
-            print("PASS: four native plugins, auth registration, Coding Plan readiness and recreation persistence (egress blocked, no inference)")
+            # 单文件内联账号场景：无私有目录挂载、无 config_file、无环境变量，
+            # 仅管理面 host_logging_disabled 确认 + 内联凭据的 auth 文件。
+            docker("rm", "-f", name)
+            base = start(inline_config, mount_private=False)
+            wait_plugins(base)
+            check_coding_plan_status(request(base, "/plugins/zcode-coding-plan/readiness"), selected=False)
+            inline = inline_coding_plan_payload()
+            request(base, "/auth-files?name=zcode-coding-plan-inline.json", "POST", inline)
+            files = request(base, "/auth-files")["files"]
+            inline_account = next(f for f in files if f["name"] == "zcode-coding-plan-inline.json" and f.get("auth_index"))
+            query = urllib.parse.urlencode({"auth_index": inline_account["auth_index"]})
+            check_coding_plan_status(request(base, "/plugins/zcode-coding-plan/readiness?" + query), selected=True)
+            stored = request(base, "/auth-files/download?name=zcode-coding-plan-inline.json")
+            assert stored["type"] == "zcode-coding-plan" and stored["api_key"] == inline["api_key"]
+            assert stored["device_id"] == inline["device_id"] and stored["request_retry"] == 0
+            docker("rm", "-f", name)
+            base = start(inline_config, mount_private=False)
+            wait_plugins(base)
+            files = request(base, "/auth-files")["files"]
+            inline_account = next(f for f in files if f["name"] == "zcode-coding-plan-inline.json" and f.get("auth_index"))
+            query = urllib.parse.urlencode({"auth_index": inline_account["auth_index"]})
+            check_coding_plan_status(request(base, "/plugins/zcode-coding-plan/readiness?" + query), selected=True)
+            print("PASS: four native plugins, file-mode and inline Coding Plan accounts, readiness and recreation persistence (egress blocked, no inference)")
         except Exception:
             for command in (["docker", "inspect", "--format", "{{json .State}}", name], ["docker", "logs", "--tail", "50", name]):
                 result = subprocess.run(command, capture_output=True, text=True)

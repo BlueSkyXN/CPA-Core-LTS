@@ -22,6 +22,14 @@ class SmokeFixtureTests(unittest.TestCase):
             self.assertTrue(config["host_logging_disabled"])
             self.assertFalse((root / "auths").exists())
 
+    def test_inline_coding_plan_payload_is_single_file_self_contained(self):
+        payload = smoke.inline_coding_plan_payload()
+        self.assertEqual(payload["type"], "zcode-coding-plan")
+        self.assertIn("api_key", payload)
+        self.assertIn("device_id", payload)
+        self.assertNotIn("config_file", payload)
+        self.assertTrue(payload["api_key"].count(".") == 1)
+
     def test_internal_network_endpoint_does_not_require_published_port(self):
         info = {"State": {"Running": True}, "NetworkSettings": {
             "Ports": {}, "Networks": {"fixture": {"IPAddress": "172.30.0.2"}},

@@ -29,6 +29,10 @@ type pluginRuntime struct {
 	authOwner  string
 	signer     *signer
 	management managementConfig
+	// 内联（单文件）账号形态：首个生效账号的凭据快照，供 reconfigure 后重建 signer。
+	inlineAuth     bool
+	inlineAPIKey   string
+	inlineDeviceID string
 }
 
 func newRuntime(c hostCaller) *pluginRuntime {
@@ -49,11 +53,26 @@ func (r *pluginRuntime) configuration(raw []byte) (*config, error) {
 		if r.configPath != a.ConfigFile {
 			return nil, problem(409, "single_account_only", "This plugin instance supports one configured account")
 		}
+		if a.inline() && (a.APIKey != r.inlineAPIKey || a.DeviceID != r.inlineDeviceID) {
+			return nil, problem(409, "single_account_only", "Only one inline account is supported")
+		}
 		return r.config, nil
 	}
-	c, err := loadConfig(a.ConfigFile)
-	if err != nil {
-		return nil, err
+	var c *config
+	if a.inline() {
+		// 与私有文件模式同语义的日志审计门：确认原始请求/错误体日志已关闭后，内联凭据才可加载。
+		if r.management.HostLoggingDisabled == nil || !*r.management.HostLoggingDisabled {
+			return nil, problem(503, "unsafe_host_logging", "Enable host_logging_disabled in the plugin management config before loading inline credentials")
+		}
+		c = defaultConfig()
+		r.inlineAuth = true
+		r.inlineAPIKey, r.inlineDeviceID = a.APIKey, a.DeviceID
+		c.APIKey, c.DeviceID = a.APIKey, a.DeviceID
+	} else {
+		c, err = loadConfig(a.ConfigFile)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err = r.management.apply(c); err != nil {
 		return nil, err
@@ -330,7 +349,11 @@ func modelList(c *config) []any {
 	out := []any{}
 	for _, m := range c.Models {
 		limits := limitsFor(c, m)
-		out = append(out, map[string]any{"ID": m, "Name": m, "DisplayName": m, "Object": "model", "OwnedBy": provider, "Type": "agent", "UserDefined": true, "IsCompat": true, "ContextLength": limits.Context, "MaxCompletionTokens": limits.Output, "SupportedParameters": []string{"max_tokens", "tools", "tool_choice", "temperature", "top_p"}, "SupportedInputModalities": []string{"text"}, "SupportedOutputModalities": []string{"text"}})
+		input := []string{"text"}
+		if builtinModelImageInput(m) {
+			input = append(input, "image")
+		}
+		out = append(out, map[string]any{"ID": m, "Name": m, "DisplayName": m, "Object": "model", "OwnedBy": provider, "Type": "agent", "UserDefined": true, "IsCompat": true, "ContextLength": limits.Context, "MaxCompletionTokens": limits.Output, "SupportedParameters": []string{"max_tokens", "tools", "tool_choice", "temperature", "top_p"}, "SupportedInputModalities": input, "SupportedOutputModalities": []string{"text"}, "Thinking": map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}})
 	}
 	return out
 }

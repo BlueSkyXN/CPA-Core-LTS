@@ -27,8 +27,11 @@ plugins:
       # GHES 实例用 enterprise_domain 或 github_api_endpoint 覆盖默认 github.com/api.github.com。
     zcode-coding-plan:
       enabled: true
-      # 用 docker-compose.coding-plan.yml 只读挂载用户私有目录；未配置账号不会出网。
-      config_file: /run/cpa-coding-plan/config.json
+      # 默认账号形态是单文件内联凭据（auth 文件直接带 api_key/device_id），无需挂载；
+      # 启用内联凭据前把 host_logging_disabled 设为 true（一次性日志审计确认）：
+      # host_logging_disabled: true
+      # 高级路径：用 docker-compose.coding-plan.yml 只读挂载用户私有目录；未配置账号不会出网。
+      # config_file: /run/cpa-coding-plan/config.json
     cpa-provider-qoder:
       enabled: true
       permissions:

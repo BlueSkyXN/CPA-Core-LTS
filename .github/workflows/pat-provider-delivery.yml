@@ -135,6 +135,7 @@ jobs:
                       assert "zcode-coding-plan.so" in package.namelist()
                       assert package.read("zcode-coding-plan.so")[:4] == bytes.fromhex("7f454c46")
                       assert json.loads(package.read("config.example.json"))["host_logging_disabled"] is False
+                      assert "api_key" in json.loads(package.read("auth.example.json"))
           PY
       - name: Save image and platform metadata
         env:

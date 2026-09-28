@@ -18,7 +18,7 @@ This directory contains standard dynamic library plugin examples for the CLIProx
 - `scheduler/`: Go-only scheduler that can select a configured auth ID, delegate to a built-in scheduler, or deny picks.
 - `claude-web-search-router/`: ModelRouter + executor for Claude Code built-in `web_search` (antigravity / codex / xai / Tavily). See `claude-web-search-router/README.md`.
 - `codebuddy/`: schema 5 CodeBuddy AuthProvider/ModelsForAuth/Executor and read-only Summary integration over the direct HTTPS lane; models are discovered per PAT.
-- `zcode-coding-plan/`: native Go single-account Coding Plan plugin with manual private configuration, generic Panel readiness, prompt policies, and Anthropic/Responses JSON/SSE/WS integration. See [setup and safety boundaries](zcode-coding-plan/README.md).
+- `zcode-coding-plan/`: native Go single-account Coding Plan plugin with inline single-file credentials (advanced private-config path kept), built-in GLM model defaults, generic Panel readiness, prompt policies, and Anthropic/Responses JSON/SSE/WS integration. See [setup and safety boundaries](zcode-coding-plan/README.md).
 - `qoder/`: schema 5 Qoder AuthProvider/ModelsForAuth/Executor with PAT-only auth, native Go `direct_openai` execution with built-in China-zone endpoint defaults, legacy auth-file compatibility, and a read-only Summary over the Qoder OpenAPI.
 - `response-translator/`: response translation capability only.
 - `response-normalizer/`: response normalization capability only.

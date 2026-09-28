@@ -150,7 +150,7 @@ lts_owned_features:
       - go -C examples/plugin/zcode-coding-plan/go test -race -count=1 ./...
       - sh examples/plugin/zcode-coding-plan/test-cpa.sh
       - python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
-    conflict_policy: preserve_manual_private_configuration_and_four_plugin_distribution
+    conflict_policy: preserve_inline_single_file_accounts_manual_private_configuration_and_four_plugin_distribution
 
   - id: anthropic-plugin-responses
     registry_feature: anthropic-plugin-responses

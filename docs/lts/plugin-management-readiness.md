@@ -34,4 +34,4 @@ Readiness is a snapshot, not a liveness subscription or remote service acceptanc
 
 ## Acceptance
 
-Manual-only registration does not advertise/execute OAuth; legacy registration remains compatible. Config JSON roundtrips booleans, arrays, objects and strings without custom YAML parsers. Ready/not-ready/unsupported, wrong plugin/auth, missing host, timeout/error safety and no inference calls are covered. Consumer integration proves private config references and prompt policy reach the effective request. Panel shows registration separately from readiness, never infers ready from HTTP200 alone.
+Manual-only registration does not advertise/execute OAuth; legacy registration remains compatible. Config JSON roundtrips booleans, arrays, objects and strings without custom YAML parsers. Ready/not-ready/unsupported, wrong plugin/auth, missing host, timeout/error safety and no inference calls are covered. Consumer integration proves private config references, inline single-file credentials and prompt policy reach the effective request. Panel shows registration separately from readiness, never infers ready from HTTP200 alone.
