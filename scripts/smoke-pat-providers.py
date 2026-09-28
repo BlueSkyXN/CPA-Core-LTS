@@ -157,7 +157,7 @@ plugins:
         try:
             docker("network", "create", "--internal", name)
             assert json.loads(docker("network", "inspect", name))[0]["Internal"] is True
-            base = start()
+            base = start(config)
             docker_or_dump_logs("exec", name, "sh", "-ec",
                                 "test -x /CLIProxyAPI/sky-cpa-core-lts; ! test -e /CLIProxyAPI/CLIProxyAPI")
             wait_plugins(base)
