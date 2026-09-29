@@ -117,3 +117,45 @@ func TestResponsesEnvelopeEmptyCapabilitiesAndLegacyFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
+	const model = "effort-undeclared-model"
+	body := []byte(`{"input":"hello","reasoning":{"effort":"high"}}`)
+
+	// An authoritative card without any thinking declaration must not invent a
+	// budget: the requested effort passes through for downstream validation.
+	for _, userDefined := range []bool{false, true} {
+		selected := &registry.ModelInfo{ID: model, UserDefined: userDefined}
+		out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
+			Model: model, Body: body, ModelInfo: selected,
+		}).Body
+		if got := gjson.GetBytes(out, "output_config.effort").String(); got != "high" {
+			t.Errorf("effort passthrough = %q, want high (user-defined=%t)", got, userDefined)
+		}
+		if gjson.GetBytes(out, "thinking").Exists() {
+			t.Errorf("undeclared thinking invented thinking controls (user-defined=%t)", userDefined)
+		}
+	}
+
+	// A declared budget-style model (Min/Max without Levels) keeps the budget fallback.
+	budgetStyle := &registry.ModelInfo{ID: model, Thinking: &registry.ThinkingSupport{Min: 1024, Max: 64000}}
+	out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
+		Model: model, Body: body, ModelInfo: budgetStyle,
+	}).Body
+	if !gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+		t.Error("budget-style thinking declaration lost its budget fallback")
+	}
+
+	// Legacy metadata-free translation keeps the historical budget fallback both
+	// when the global lookup misses and when it hits a model without thinking data.
+	reg := registry.GetGlobalRegistry()
+	legacyBody := []byte(`{"input":"hello","reasoning":{"effort":"high"}}`)
+	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+		t.Error("legacy lookup-miss budget fallback changed")
+	}
+	reg.RegisterClient(model+"-no-thinking-peer", "claude", []*registry.ModelInfo{{ID: model, MaxCompletionTokens: 4096}})
+	t.Cleanup(func() { reg.UnregisterClient(model + "-no-thinking-peer") })
+	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+		t.Error("legacy no-thinking-hit budget fallback changed")
+	}
+}

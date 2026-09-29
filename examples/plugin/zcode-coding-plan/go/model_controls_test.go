@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,7 @@ func TestThinkingRejectsUnsupportedControls(t *testing.T) {
 	for _, extra := range []string{
 		`"reasoning_effort":"none"`, `"reasoning_effort":"medium"`, `"reasoning_effort":42`,
 		`"thinking":{"type":"disabled"}`, `"thinking":{"type":"enabled","budget_tokens":100}`,
+		`"thinking":{"type":"enabled","display":"summarized"}`,
 		`"output_config":{"effort":"high","format":{"type":"json_schema"}}`,
 		`"reasoning_effort":"low","output_config":{"effort":"high"}`,
 	} {
@@ -50,6 +52,11 @@ func TestThinkingRejectsUnsupportedControls(t *testing.T) {
 	result, err := transformExecution(executorRequest{Payload: body, OriginalRequest: []byte(`{"reasoning":{"effort":"max"}}`)}, defaultConfig(), "session")
 	if err != nil || result["reasoning_effort"] != "low" {
 		t.Fatal("original request overrode the effective Core payload", err)
+	}
+	summaryBody := []byte(`{"model":"glm-5.3","max_tokens":100,"reasoning_effort":"low","thinking":{"type":"enabled","display":"summarized"},"messages":[{"role":"user","content":"hello"}]}`)
+	_, err = transformExecution(executorRequest{Payload: summaryBody}, defaultConfig(), "session")
+	if err == nil || !strings.Contains(err.Error(), "summary") {
+		t.Fatal("summary display rejection must point at the reasoning summary control", err)
 	}
 }
 

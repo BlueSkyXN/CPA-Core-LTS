@@ -84,8 +84,10 @@ func applyThinkingControls(body, original map[string]any) error {
 					return problem(400, "invalid_request", "clear_thinking must be boolean")
 				}
 				next[key] = value
+			case "display":
+				return problem(400, "unsupported_parameter", "Reasoning summary display controls are not supported by this provider")
 			default:
-				return problem(400, "unsupported_parameter", "Manual thinking budgets and display controls are not supported")
+				return problem(400, "unsupported_parameter", "Manual thinking budget controls are not supported")
 			}
 		}
 	}
