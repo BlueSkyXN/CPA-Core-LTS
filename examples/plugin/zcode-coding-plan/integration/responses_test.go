@@ -335,6 +335,14 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 	if len(f.transport.captured) != before {
 		t.Fatal("invalid request reached model")
 	}
+	summaryBefore := len(f.transport.captured)
+	summary := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"high","summary":"auto"}}`, v2Model))
+	if summary.Code != 400 || !strings.Contains(summary.Body.String(), "summary") {
+		t.Fatalf("summary control rejection must point at the reasoning summary: %d %s", summary.Code, summary.Body.String())
+	}
+	if len(f.transport.captured) != summaryBefore {
+		t.Fatal("rejected summary control reached model")
+	}
 }
 func TestV2PromptOverrideRemoved(t *testing.T) {
 	if isolateDynamic(t) {

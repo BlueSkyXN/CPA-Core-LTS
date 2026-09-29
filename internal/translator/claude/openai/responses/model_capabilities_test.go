@@ -158,4 +158,36 @@ func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
 	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
 		t.Error("legacy no-thinking-hit budget fallback changed")
 	}
+
+	// An empty thinking support struct still counts as a declaration and keeps
+	// the budget fallback.
+	emptySupport := &registry.ModelInfo{ID: model, Thinking: &registry.ThinkingSupport{}}
+	out = sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
+		Model: model, Body: body, ModelInfo: emptySupport,
+	}).Body
+	if !gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+		t.Error("empty thinking support struct lost its budget fallback")
+	}
+
+	// A conflicting peer with a lower output limit and no max level must not
+	// downgrade or clamp the authoritative undeclared route.
+	reg.RegisterClient(model+"-conflicting-peer", "claude", []*registry.ModelInfo{{
+		ID: model, MaxCompletionTokens: 4096,
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}},
+	}})
+	t.Cleanup(func() { reg.UnregisterClient(model + "-conflicting-peer") })
+	combined := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
+		Model:     model,
+		Body:      []byte(`{"input":"hello","reasoning":{"effort":"max"},"max_output_tokens":64000}`),
+		ModelInfo: &registry.ModelInfo{ID: model},
+	}).Body
+	if got := gjson.GetBytes(combined, "output_config.effort").String(); got != "max" {
+		t.Errorf("effort downgraded by peer = %q, want max", got)
+	}
+	if gjson.GetBytes(combined, "thinking").Exists() {
+		t.Error("peer thinking levels leaked into an undeclared route")
+	}
+	if got := gjson.GetBytes(combined, "max_tokens").Int(); got != 64000 {
+		t.Errorf("max_tokens clamped by peer = %d, want 64000", got)
+	}
 }
