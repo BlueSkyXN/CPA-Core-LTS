@@ -20,11 +20,8 @@ func init() {
 		},
 	)
 	sdktranslator.RegisterRequestEnvelope(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, func(_ context.Context, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
-		if req.ModelInfo != nil && req.ModelInfo.IsCompat {
-			req.Body = ConvertOpenAIResponsesRequestToClaudeWithCompat(req.Model, req.Body, req.Stream)
-		} else {
-			req.Body = ConvertOpenAIResponsesRequestToClaude(req.Model, req.Body, req.Stream)
-		}
+		preserveEmptyThinkingBlocks := req.ModelInfo != nil && req.ModelInfo.IsCompat
+		req.Body = convertOpenAIResponsesRequestToClaude(req.Model, req.Body, req.Stream, preserveEmptyThinkingBlocks, req.ModelInfo)
 		return req
 	})
 }

@@ -142,6 +142,12 @@ func ApplySummaryConfigForModel(body []byte, format, model string, config Summar
 	return applySummaryConfigForModel(body, format, model, nil, config)
 }
 
+// ApplySummaryConfigWithModelInfo treats a non-nil model definition as authoritative,
+// including empty capabilities. Nil retains the legacy model lookup.
+func ApplySummaryConfigWithModelInfo(body []byte, format, model string, modelInfo *registry.ModelInfo, config SummaryConfig) []byte {
+	return applySummaryConfigForModel(body, format, model, modelInfo, config)
+}
+
 // applySummaryConfigForModel uses the resolved model definition when execution
 // selected a configured API-key model whose capability is not globally visible.
 func applySummaryConfigForModel(body []byte, format, model string, modelInfo *registry.ModelInfo, config SummaryConfig) []byte {

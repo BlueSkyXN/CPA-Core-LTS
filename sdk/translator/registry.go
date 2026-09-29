@@ -106,7 +106,7 @@ func (r *Registry) TranslateRequestEnvelope(ctx context.Context, from, to Format
 	if fn != nil {
 		summaryConfig := thinking.ExtractSummaryConfig(req.Body, from.String())
 		req = fn(ctx, req)
-		req.Body = thinking.ApplySummaryConfigForModel(req.Body, to.String(), req.Model, summaryConfig)
+		req.Body = thinking.ApplySummaryConfigWithModelInfo(req.Body, to.String(), req.Model, req.ModelInfo, summaryConfig)
 		if hooks != nil {
 			// Request normalizers run after native translation and own the final
 			// provider payload, including any summary field they remove.
@@ -136,7 +136,7 @@ func (r *Registry) TranslateRequestEnvelope(ctx context.Context, from, to Format
 	req.Body = hooks.NormalizeRequest(ctx, from, to, req.Model, req.Body, req.Stream)
 	summaryConfig := thinking.ExtractSummaryConfig(req.Body, from.String())
 	if translated, ok := hooks.TranslateRequest(ctx, from, to, req.Model, req.Body, req.Stream); ok {
-		req.Body = thinking.ApplySummaryConfigForModel(translated, to.String(), req.Model, summaryConfig)
+		req.Body = thinking.ApplySummaryConfigWithModelInfo(translated, to.String(), req.Model, req.ModelInfo, summaryConfig)
 	}
 	req.Format = to
 	return req

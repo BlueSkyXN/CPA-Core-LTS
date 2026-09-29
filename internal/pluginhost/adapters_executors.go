@@ -1020,16 +1020,11 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 	if inputRequested != "" && inputRequested != inputFormat {
 		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: req.Model, Body: req.Payload, Stream: opts.Stream}
 		if inputRequested == sdktranslator.FormatOpenAIResponse && inputFormat == sdktranslator.FormatClaude {
-			models := a.host.modelRegistration(a.pluginID).models
-			if auth != nil {
-				models = registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+			modelInfo, errModel := a.executionModelInfo(auth, req, opts)
+			if errModel != nil {
+				return preparedExecutorCall{}, errModel
 			}
-			for _, model := range models {
-				if model != nil && (model.ID == req.Model || model.Name == req.Model) {
-					envelope.ModelInfo = model
-					break
-				}
-			}
+			envelope.ModelInfo = modelInfo
 		}
 		nativeReq.Payload = sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope).Body
 	}

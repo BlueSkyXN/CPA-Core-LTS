@@ -102,6 +102,12 @@ func init() {
 
 当 OpenAI 处理器接到需要路由到 `myprov` 的请求时，流水线会自动应用已注册的转换。
 
+### 所选模型的能力
+
+需要按模型能力转换时，通过 `RequestEnvelope.ModelInfo` 将本次执行所选路由的模型定义传给 `TranslateRequestEnvelope`。非 nil 定义是权威来源，包括空的 `Thinking` 或未指定的输出上限；不能从其他账号或 provider 的同名模型补齐这些字段。Responses→Claude 翻译使用该定义处理 reasoning effort 和输出上限，注册表的 summary 后处理也使用它决定如何激活 thinking。nil 定义保留无模型元数据调用方的旧查表行为。不要修改传入的模型定义。
+
+插件 Host 优先采用执行级已解析能力，其次使用所选账号的模型目录（无账号调用则使用当前插件的静态目录）。别名解析结合请求路由与 `MetadataModelID`；匹配有歧义时返回 request-scoped 错误，不按注册顺序猜选。已声明目录中的匹配缺失保持未知，不继承其他账号的能力。原生翻译之后，request normalizer 仍有权删除或改写控制字段。
+
 ## 3) 注册模型
 
 通过全局模型注册表将模型暴露到 `/v1/models`：

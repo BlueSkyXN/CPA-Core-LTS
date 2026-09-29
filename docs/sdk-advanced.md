@@ -109,6 +109,12 @@ func init() {
 
 When the OpenAI handler receives a request that should route to `myprov`, the pipeline uses the registered transforms automatically.
 
+### Selected model capabilities
+
+For model-aware translation, pass the selected execution route's model definition in `RequestEnvelope.ModelInfo` to `TranslateRequestEnvelope`. A non-nil definition is authoritative, including empty `Thinking` or unspecified output limits; do not fill those fields from another account or provider with the same model name. The Responses-to-Claude translator uses this definition for reasoning effort and output limits, and the registry's summary pass uses it when activating thinking. A nil definition preserves the legacy lookup behavior for callers without model metadata. Do not mutate the supplied definition.
+
+The plugin host prefers execution-scoped resolved capabilities, then the selected account's model catalog (or the current plugin's static catalog for an unscoped call). Alias resolution uses the requested route and `MetadataModelID`; an ambiguous match is a request-scoped error rather than a registration-order choice. A miss in a declared catalog stays unknown instead of inheriting a peer's capabilities. Request normalizers retain their existing authority to remove or rewrite controls after native translation.
+
 ## 3) Register Models
 
 Expose models under `/v1/models` by registering them in the global model registry using the auth ID (client ID) and provider name.
