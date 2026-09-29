@@ -18,6 +18,7 @@ type execution struct {
 	upstream string
 	done     chan struct{}
 	once     sync.Once
+	signer   *signer
 }
 type pluginRuntime struct {
 	mu         sync.Mutex
@@ -26,39 +27,57 @@ type pluginRuntime struct {
 	active     map[string]*execution
 	config     *config
 	authOwner  string
+	authIndex  string
+	retiring   bool
 	signer     *signer
 	management managementConfig
-	// 首个生效账号的凭据快照，供 reconfigure 后重建 signer。
-	inlineAPIKey   string
-	inlineDeviceID string
 }
 
 func newRuntime(c hostCaller) *pluginRuntime {
 	return &pluginRuntime{caller: c, accepting: true, active: map[string]*execution{}}
 }
-func (r *pluginRuntime) configuration(raw []byte) (*config, error) {
+func (r *pluginRuntime) loggingAcknowledgedLocked() error {
+	if r.management.HostLoggingDisabled == nil || !*r.management.HostLoggingDisabled {
+		return problem(503, "unsafe_host_logging", "Enable host_logging_disabled in the plugin management config before loading inline credentials")
+	}
+	return nil
+}
+func (r *pluginRuntime) configuration(raw []byte, authID string) (*config, error) {
 	a, err := parseAuth(raw)
 	if err != nil {
 		return nil, err
 	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return nil, problem(400, "invalid_auth", "Host account identity is required")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.config != nil {
-		if a.APIKey != r.inlineAPIKey || a.DeviceID != r.inlineDeviceID {
-			return nil, problem(409, "single_account_only", "This plugin instance supports one configured account")
-		}
+	if err := r.loggingAcknowledgedLocked(); err != nil {
+		return nil, err
+	}
+	if !r.accepting || r.retiring {
+		return nil, problem(503, "unavailable", "Plugin account is stopping")
+	}
+	if r.authOwner != "" && r.authOwner != authID {
+		return nil, problem(409, "single_account_only", "This plugin instance supports one configured account")
+	}
+	if r.config != nil && r.config.APIKey == a.APIKey && r.config.DeviceID == a.DeviceID {
 		return r.config, nil
 	}
-	// 日志审计门：确认原始请求/错误体日志已关闭后，凭据才可加载。
-	if r.management.HostLoggingDisabled == nil || !*r.management.HostLoggingDisabled {
-		return nil, problem(503, "unsafe_host_logging", "Enable host_logging_disabled in the plugin management config before loading inline credentials")
+	if len(r.active) > 0 {
+		return nil, problem(409, "busy", "Finish or cancel requests before replacing account credentials")
 	}
 	c := defaultConfig()
 	if err = r.management.apply(c); err != nil {
 		return nil, err
 	}
-	r.inlineAPIKey, r.inlineDeviceID = a.APIKey, a.DeviceID
 	c.APIKey, c.DeviceID = a.APIKey, a.DeviceID
+	c.AccountScope = authID
+	if r.signer != nil {
+		r.signer.close()
+	}
+	r.authOwner = authID
 	r.config = c
 	r.signer = &signer{apiKey: c.APIKey, endpoint: c.Endpoint}
 	return c, nil
@@ -66,11 +85,14 @@ func (r *pluginRuntime) configuration(raw []byte) (*config, error) {
 func (r *pluginRuntime) admit(req executorRequest, c *config) (*execution, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.accepting {
+	if err := r.loggingAcknowledgedLocked(); err != nil {
+		return nil, err
+	}
+	if !r.accepting || r.retiring {
 		return nil, problem(503, "unavailable", "Plugin is stopping")
 	}
 	// 校验与 admission 之间可能发生重配置，旧快照不能配合新签名器执行。
-	if r.config != nil && r.config != c {
+	if r.config != c || r.signer == nil {
 		return nil, problem(409, "config_changed", "Configuration changed before admission; submit again")
 	}
 	if len(r.active) >= c.MaxInflight {
@@ -79,18 +101,17 @@ func (r *pluginRuntime) admit(req executorRequest, c *config) (*execution, error
 	if req.RequestID == "" || req.CallbackID == "" {
 		return nil, problem(400, "invalid_request", "Host execution context is required")
 	}
-	owner := req.AuthID + "\x00" + req.AuthIndex
-	if r.authOwner != "" && r.authOwner != owner {
+	if req.AuthID == "" || r.authOwner != strings.TrimSpace(req.AuthID) {
 		return nil, problem(409, "single_account_only", "Only one auth record is supported")
 	}
-	r.authOwner = owner
+	r.authIndex = req.AuthIndex
 	for _, e := range r.active {
 		if e.req.RequestID == req.RequestID && e.req.AuthID == req.AuthID {
 			return nil, problem(409, "duplicate_execution", "Request is already active")
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &execution{req: req, id: uuid(), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	e := &execution{req: req, id: uuid(), ctx: ctx, cancel: cancel, done: make(chan struct{}), signer: r.signer}
 	r.active[e.id] = e
 	return e, nil
 }
@@ -128,8 +149,45 @@ func (r *pluginRuntime) bind(e *execution, id string) error {
 	e.mu.Unlock()
 	return nil
 }
+func (r *pluginRuntime) clearAccountLocked() {
+	if r.signer != nil {
+		r.signer.close()
+	}
+	r.config, r.signer = nil, nil
+	r.authOwner, r.authIndex = "", ""
+	r.retiring = false
+}
 func (r *pluginRuntime) finish(e *execution) {
-	e.once.Do(func() { r.cancelOne(e); r.mu.Lock(); delete(r.active, e.id); r.mu.Unlock(); close(e.done) })
+	e.once.Do(func() {
+		r.cancelOne(e)
+		r.mu.Lock()
+		delete(r.active, e.id)
+		if r.retiring && len(r.active) == 0 {
+			r.clearAccountLocked()
+		}
+		r.mu.Unlock()
+		close(e.done)
+	})
+}
+func (r *pluginRuntime) closeAccount(q cancelRequest) {
+	r.mu.Lock()
+	owned := (q.Provider == "" || q.Provider == provider) && (q.Scope == "provider" ||
+		(q.AuthID != "" && q.AuthID == r.authOwner) ||
+		(q.AuthID == "" && q.AuthIndex != "" && q.AuthIndex == r.authIndex))
+	var pending []*execution
+	if owned {
+		r.retiring = true
+		for _, e := range r.active {
+			pending = append(pending, e)
+		}
+		if len(pending) == 0 {
+			r.clearAccountLocked()
+		}
+	}
+	r.mu.Unlock()
+	for _, e := range pending {
+		r.cancelOne(e)
+	}
 }
 func matches(e *execution, q cancelRequest) bool {
 	p := e.req
@@ -151,11 +209,15 @@ func (r *pluginRuntime) cancelMatching(q cancelRequest) {
 func (r *pluginRuntime) stop() {
 	r.mu.Lock()
 	r.accepting = false
+	r.retiring = true
 	var pending []*execution
 	for _, e := range r.active {
 		pending = append(pending, e)
 	}
 	s := r.signer
+	if len(pending) == 0 {
+		r.clearAccountLocked()
+	}
 	r.mu.Unlock()
 	for _, e := range pending {
 		r.cancelOne(e)
@@ -178,7 +240,7 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	if req.Format != "" && req.Format != "claude" {
 		return nil, problem(400, "unsupported_format", "Expected host-translated Anthropic Messages")
 	}
-	c, err := r.configuration(req.StorageJSON)
+	c, err := r.configuration(req.StorageJSON, req.AuthID)
 	if err != nil {
 		return nil, err
 	}
@@ -204,10 +266,7 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	if stream && req.StreamID == "" {
 		return nil, problem(400, "invalid_request", "Missing host stream ID")
 	}
-	r.mu.Lock()
-	s := r.signer
-	r.mu.Unlock()
-	signed, err := s.headers(r, e, session)
+	signed, err := e.signer.headers(r, e, session)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +393,13 @@ func modelList(c *config) []any {
 		if builtinModelImageInput(m) {
 			input = append(input, "image")
 		}
-		out = append(out, map[string]any{"ID": m, "Name": m, "DisplayName": m, "Object": "model", "OwnedBy": provider, "Type": "agent", "UserDefined": true, "IsCompat": true, "ContextLength": limits.Context, "MaxCompletionTokens": limits.Output, "SupportedParameters": []string{"max_tokens", "tools", "tool_choice", "temperature", "top_p"}, "SupportedInputModalities": input, "SupportedOutputModalities": []string{"text"}, "Thinking": map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}})
+		parameters := []string{"max_tokens", "tools", "tool_choice", "temperature", "top_p"}
+		model := map[string]any{"ID": m, "Name": m, "DisplayName": m, "Object": "model", "OwnedBy": provider, "Type": "agent", "UserDefined": true, "IsCompat": true, "ContextLength": limits.Context, "MaxCompletionTokens": limits.Output, "SupportedParameters": parameters, "SupportedInputModalities": input, "SupportedOutputModalities": []string{"text"}}
+		if _, known := builtinModelLimits(m); known {
+			model["SupportedParameters"] = append(parameters, "reasoning_effort", "thinking")
+			model["Thinking"] = map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}
+		}
+		out = append(out, model)
 	}
 	return out
 }
@@ -410,11 +475,14 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) (any, error) {
 	case "model.static":
 		return map[string]any{"Provider": provider, "Models": []any{}}, nil
 	case "model.for_auth":
-		var req struct{ StorageJSON []byte }
+		var req struct {
+			StorageJSON []byte
+			AuthID      string
+		}
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		c, err := r.configuration(req.StorageJSON)
+		c, err := r.configuration(req.StorageJSON, req.AuthID)
 		if err != nil {
 			return nil, err
 		}
@@ -454,7 +522,11 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) (any, error) {
 				return nil, problem(400, "invalid_close", "Unknown scope")
 			}
 		}
-		r.cancelMatching(q)
+		if method == "executor.close_session" && (q.Scope == "auth" || q.Scope == "provider") {
+			r.closeAccount(q)
+		} else {
+			r.cancelMatching(q)
+		}
 		return map[string]any{}, nil
 	case "executor.readiness":
 		return r.readiness(raw)

@@ -21,7 +21,7 @@ func TestManagementConfigAndReadiness(t *testing.T) {
 	if _, err := r.dispatch("auth.parse", encode(map[string]any{"RawJSON": storage})); err != nil {
 		t.Fatal("inline account rejected at parse:", err)
 	}
-	c, err := r.configuration(storage)
+	c, err := r.configuration(storage, "synthetic-auth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestManagementConfigAndReadiness(t *testing.T) {
 	if status.(map[string]any)["Ready"] != false {
 		t.Fatal("unscoped probe claimed auth ready")
 	}
-	status, err = r.dispatch("executor.readiness", encode(map[string]any{"StorageJSON": storage}))
+	status, err = r.dispatch("executor.readiness", encode(map[string]any{"StorageJSON": storage, "AuthID": "synthetic-auth"}))
 	if err != nil || status.(map[string]any)["Ready"] != true {
 		t.Fatal("configured auth not ready", err)
 	}
@@ -47,12 +47,12 @@ func TestManagementConfigAndReadiness(t *testing.T) {
 	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(settings)); err == nil {
 		t.Fatal("invalid update accepted")
 	}
-	preserved, err := r.configuration(storage)
+	preserved, err := r.configuration(storage, "synthetic-auth")
 	if err != nil || preserved != c {
 		t.Fatal("invalid reconfiguration replaced working snapshot")
 	}
 	other := []byte(`{"type":"zcode-coding-plan","api_key":"other-key.other-secret","device_id":"other-device"}`)
-	if _, err = r.configuration(other); err == nil {
+	if _, err = r.configuration(other, "other-auth"); err == nil {
 		t.Fatal("second account accepted")
 	}
 }
@@ -63,7 +63,7 @@ func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	storage := inlineStorage()
-	old, err := r.configuration(storage)
+	old, err := r.configuration(storage, "synthetic-auth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 	if _, err = r.admit(req, old); err == nil || safeError(err).Code != "config_changed" {
 		t.Fatal("stale configuration admitted", err)
 	}
-	current, err := r.configuration(storage)
+	current, err := r.configuration(storage, "synthetic-auth")
 	if err != nil || current == old || current.Endpoint != "https://api.z.ai/api/anthropic/v1/messages" {
 		t.Fatal("new configuration not applied", err)
 	}
@@ -87,7 +87,7 @@ func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {
 	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": ack})); err == nil {
 		t.Fatal("active configuration replaced")
 	}
-	preserved, err := r.configuration(storage)
+	preserved, err := r.configuration(storage, "synthetic-auth")
 	if err != nil || preserved != current {
 		t.Fatal("busy reconfigure changed active snapshot")
 	}

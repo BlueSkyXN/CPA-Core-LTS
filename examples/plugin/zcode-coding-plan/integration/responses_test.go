@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -87,7 +88,11 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	h := req.Header
 	sig, _ := base64.StdEncoding.DecodeString(h.Get("X-Client-Sig"))
-	if !ed25519.Verify(f.pub, []byte("synthetic-key\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
+	id, secret := f.fixtureTransport.credentials()
+	if h.Get("Authorization") != "Bearer "+id+"."+secret || h.Get("X-Api-Key") != id+"."+secret {
+		return nil, fmt.Errorf("unexpected model credential")
+	}
+	if !ed25519.Verify(f.pub, []byte(id+"\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
 		return nil, fmt.Errorf("invalid synthetic signature")
 	}
 	if h.Get("X-Coding-Plan-Prompt") != "" || gjson.GetBytes(body, "x_coding_plan").Exists() {
@@ -118,7 +123,7 @@ func v2Reply(body []byte, n int) string {
 		content = []any{map[string]any{"type": "thinking", "thinking": "synthetic reason", "signature": "synthetic-opaque"}, map[string]any{"type": "tool_use", "id": "call-fixture", "name": "lookup", "input": map[string]any{"q": "hello"}}}
 		stop = "tool_use"
 	}
-	b, _ := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("message-%d", n), "model": v2Model, "role": "assistant", "content": content, "stop_reason": stop, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}})
+	b, _ := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("message-%d", n), "model": gjson.GetBytes(body, "model").String(), "role": "assistant", "content": content, "stop_reason": stop, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}})
 	return string(b)
 }
 func v2Events(reply string) string {
@@ -152,9 +157,10 @@ type v2Fixture struct {
 	usage     *fixtureUsageSink
 	logs      []string
 	cfg       *config.Config
+	manager   *coreauth.Manager
 }
 
-func newV2Fixture(t *testing.T) *v2Fixture {
+func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
 	t.Helper()
 	library := os.Getenv("CP_PLUGIN_LIBRARY")
 	if library == "" {
@@ -168,7 +174,11 @@ func newV2Fixture(t *testing.T) *v2Fixture {
 	if err = os.WriteFile(filepath.Join(dir, "zcode-coding-plan"+filepath.Ext(library)), lib, 0700); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      host_logging_disabled: true\n      models: [%q]\nrequest-log: true\nrequest-retry: 0\n", dir, v2Model)))
+	if len(allowedModels) == 0 {
+		allowedModels = []string{v2Model}
+	}
+	modelJSON, _ := json.Marshal(allowedModels)
+	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("auth-dir: %q\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      host_logging_disabled: true\n      models: %s\nrequest-log: true\nrequest-retry: 0\n", t.TempDir(), dir, modelJSON)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +190,14 @@ func newV2Fixture(t *testing.T) *v2Fixture {
 	if err != nil || !handled {
 		t.Fatalf("auth parse: %v", err)
 	}
-	auth.ID = "v2-fixture-auth"
+	auth.ID = "synthetic.json"
 	auth.Index = "v2-fixture-index"
 	auth.Status = coreauth.StatusActive
 	models := h.ModelsForAuth(context.Background(), auth)
 	if models.Err != nil {
 		t.Fatal(models.Err)
 	}
-	if len(models.Models) != 1 || !models.Models[0].IsCompat || models.Models[0].ContextLength != 1000000 || models.Models[0].MaxCompletionTokens != 128000 {
+	if len(models.Models) != len(allowedModels) || !models.Models[0].IsCompat || models.Models[0].ContextLength != 1000000 || models.Models[0].MaxCompletionTokens != 128000 {
 		t.Fatal("model metadata not applied")
 	}
 	reg := registry.GetGlobalRegistry()
@@ -201,7 +211,7 @@ func newV2Fixture(t *testing.T) *v2Fixture {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	f := &v2Fixture{host: h, cfg: cfg, transport: &v2Transport{fixtureTransport: &fixtureTransport{pub: pub, priv: priv}}, usage: &fixtureUsageSink{records: make(chan coreusage.Record, 128)}}
+	f := &v2Fixture{host: h, cfg: cfg, manager: manager, transport: &v2Transport{fixtureTransport: &fixtureTransport{pub: pub, priv: priv}}, usage: &fixtureUsageSink{records: make(chan coreusage.Record, 128)}}
 	manager.SetRoundTripperProvider(f.transport)
 	coreusage.RegisterNamedPlugin("coding-plan-v2", f.usage)
 	gin.SetMode(gin.TestMode)
@@ -228,13 +238,17 @@ func newV2Fixture(t *testing.T) *v2Fixture {
 		}
 		f.logs = append(f.logs, captured.String())
 	})
-	handler := openai.NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+	baseHandlers := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)
+	handler := openai.NewOpenAIResponsesAPIHandler(baseHandlers)
+	router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(baseHandlers).ClaudeMessages)
 	router.POST("/v1/responses", handler.Responses)
 	router.GET("/v1/responses/ws", handler.ResponsesWebsocket)
 	mgmt := management.NewHandlerWithoutConfigFilePath(cfg, manager)
 	mgmt.SetPluginHost(h)
 	router.GET("/v0/management/plugins/:id/readiness", mgmt.GetPluginReadiness)
 	router.GET("/v0/management/plugins", mgmt.ListPlugins)
+	router.POST("/v0/management/auth-files", mgmt.UploadAuthFile)
+	router.DELETE("/v0/management/auth-files", mgmt.DeleteAuthFile)
 	if len(h.DeclaredSensitiveEndpoints()) != 1 {
 		t.Fatal("credential endpoint declaration missing")
 	}
@@ -312,7 +326,7 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 	}
 	f.checkUsage(t, false)
 	before := len(f.transport.captured)
-	for _, control := range []string{`"reasoning":{"effort":"high"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
+	for _, control := range []string{`"reasoning":{"effort":"medium"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
 		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello",%s}`, v2Model, control))
 		if res.Code < 400 {
 			t.Fatalf("unsupported control accepted: %s", control)

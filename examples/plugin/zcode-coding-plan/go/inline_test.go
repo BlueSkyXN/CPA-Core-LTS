@@ -45,14 +45,14 @@ func TestInlineConfigurationRequiresLoggingAcknowledgement(t *testing.T) {
 	if _, err := r.dispatch("plugin.register", managementRegistration(map[string]any{})); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.configuration(inlineStorage()); err == nil || safeError(err).Status != 503 || safeError(err).Code != "unsafe_host_logging" {
+	if _, err := r.configuration(inlineStorage(), "inline-auth"); err == nil || safeError(err).Status != 503 || safeError(err).Code != "unsafe_host_logging" {
 		t.Fatal("inline credentials loaded without acknowledgement", err)
 	}
 	ack := true
 	if _, err := r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": ack})); err != nil {
 		t.Fatal(err)
 	}
-	c, err := r.configuration(inlineStorage())
+	c, err := r.configuration(inlineStorage(), "inline-auth")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,10 +66,10 @@ func TestInlineConfigurationRequiresLoggingAcknowledgement(t *testing.T) {
 		t.Fatal("default upstream endpoint missing")
 	}
 	second := []byte(`{"type":"zcode-coding-plan","api_key":"other-key.other-secret","device_id":"other-device"}`)
-	if _, err = r.configuration(second); err == nil {
+	if _, err = r.configuration(second, "second-auth"); err == nil {
 		t.Fatal("second inline account accepted")
 	}
-	status, err := r.dispatch("executor.readiness", encode(map[string]any{"StorageJSON": inlineStorage()}))
+	status, err := r.dispatch("executor.readiness", encode(map[string]any{"StorageJSON": inlineStorage(), "AuthID": "inline-auth"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,14 +136,14 @@ func TestInlineExecutionAndReconfigure(t *testing.T) {
 	<-f.streamDone
 	f.mu.Lock()
 	f.mu.Unlock()
-	if _, err := r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": ack, "prompt_mode": "preserve"})); err != nil {
+	if _, err := r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": ack})); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.configuration(storage); err != nil {
+	if _, err := r.configuration(storage, "inline-auth"); err != nil {
 		t.Fatal("inline config lost after reconfigure", err)
 	}
 	r.mu.Lock()
-	key := r.inlineAPIKey
+	key := r.config.APIKey
 	signer := r.signer
 	r.mu.Unlock()
 	if key != "synthetic-key.synthetic-secret" || signer == nil {

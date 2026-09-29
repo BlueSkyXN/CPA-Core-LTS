@@ -3,7 +3,10 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"net/url"
+	"strings"
 )
 
 func uuid() string {
@@ -105,7 +108,28 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 				return nil, problem(400, "unsupported_content", "Invalid block")
 			}
 			switch block["type"] {
-			case "text", "thinking", "redacted_thinking", "tool_use", "tool_result":
+			case "text", "thinking", "redacted_thinking", "tool_use":
+			case "image":
+				if m["role"] != "user" {
+					return nil, problem(400, "unsupported_content", "Images require a user message")
+				}
+				if err := validateImage(block, model); err != nil {
+					return nil, err
+				}
+			case "tool_result":
+				if content, ok := block["content"].([]any); ok {
+					for _, value := range content {
+						part, ok := value.(map[string]any)
+						if !ok {
+							return nil, problem(400, "unsupported_content", "Invalid tool result content")
+						}
+						if part["type"] == "image" {
+							if err := validateImage(part, model); err != nil {
+								return nil, err
+							}
+						}
+					}
+				}
 			default:
 				return nil, problem(400, "unsupported_content", "Unsupported content type")
 			}
@@ -154,6 +178,38 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 	metadata["user_id"] = string(encode(wire))
 	b["metadata"] = metadata
 	return b, nil
+}
+func validateImage(block map[string]any, model string) error {
+	if !builtinModelImageInput(model) {
+		return problem(400, "unsupported_content", "This model does not support image input")
+	}
+	source, ok := block["source"].(map[string]any)
+	if !ok {
+		return problem(400, "invalid_request", "Image source must be an object")
+	}
+	switch source["type"] {
+	case "base64":
+		mime, _ := source["media_type"].(string)
+		switch mime {
+		case "image/jpeg", "image/png", "image/gif", "image/webp":
+		default:
+			return problem(400, "unsupported_content", "Unsupported image media type")
+		}
+		data, _ := source["data"].(string)
+		decoded, err := base64.StdEncoding.Strict().DecodeString(data)
+		if err != nil || len(decoded) == 0 {
+			return problem(400, "invalid_request", "Image data must be valid base64")
+		}
+	case "url":
+		value, _ := source["url"].(string)
+		u, err := url.Parse(value)
+		if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || strings.ContainsAny(value, "\r\n\x00") {
+			return problem(400, "invalid_request", "Image URL must be an HTTP or HTTPS URL without credentials")
+		}
+	default:
+		return problem(400, "unsupported_content", "Unsupported image source")
+	}
+	return nil
 }
 func validateCache(body map[string]any) error {
 	blocks, _ := textBlocks(body["system"])

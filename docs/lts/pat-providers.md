@@ -47,11 +47,11 @@ Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 
 
 ## Coding Plan（单账号 direct Anthropic）
 
-`zcode-coding-plan` 为原生 Go/C ABI 插件，通过 Core 通用 Anthropic/Responses JSON/SSE 与 WS 适配接入。不启动 Node worker 或官方 Agent，不执行工具、不维护第二份历史。它要求现有 schema 6 及五项 host_features。账号唯一形态是单文件内联凭据（`api_key`/`device_id` 直接保存在 auth 文件里，与 Qoder/CodeBuddy PAT 文件同模式），内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型（1M 上下文、low/high/max 思考档），零挂载零环境变量；0.4.0 移除了 0.3.x 的私有配置文件引用链与 `docker-compose.coding-plan.yml`。没有 OAuth、账号发现或额度轮询。
+`zcode-coding-plan` 为原生 Go/C ABI 插件，通过 Core 通用 Anthropic/Responses JSON/SSE 与 WS 适配接入。不启动 Node worker 或官方 Agent，不执行工具、不维护第二份历史。它要求现有 schema 6 及五项 host_features。账号唯一形态是单文件内联凭据（`api_key`/`device_id` 直接保存在 auth 文件里，与 Qoder/CodeBuddy PAT 文件同模式），内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型（1M 上下文、low/high/max 思考档），无需额外凭据挂载或环境变量；0.4.0 移除了 0.3.x 的私有配置文件引用链与 `docker-compose.coding-plan.yml`。没有 OAuth、账号发现或额度轮询。
 
 完整插件版包含 `zcode-coding-plan.so`，每个 Linux 架构导出 `zcode-coding-plan_<version>_linux_<arch>.zip`。版本来自插件 `types.go` 的单一 `pluginVersion`；包内只有动态库、说明、许可证和占位配置，不携带个人值。原三插件包保持不变。bundle 清单新增插件版本及 `plugin_transports`，总 `transport=mixed`，Coding Plan 为 `direct_anthropic`。
 
-Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_logging_disabled` 布尔字段是日志审计确认门，`upstream`/`models`/`model_limits` 为可选覆盖。Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。只有显式启用才允许逐请求提示词覆盖；清除覆盖继承私有文件或内置默认。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
+Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_logging_disabled` 布尔字段是日志审计确认门，`upstream`/`models`/`model_limits` 为可选覆盖。Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。提示词固定透传，旧私有配置和提示词覆盖字段明确拒绝。日志确认改为 false 或清除并成功热重载后，缓存凭据失效且调用被阻止。同一 AuthID 可以更新 key/device ID；有在途请求时暂拒凭据切换，删除账号会在取消和清理完成后释放绑定，允许添加替代账号。Panel 表单要求插件 ≥0.4.0，按实际 upstream 显示端点，并移除旧账号的 config_file 引用。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
 
 ## 插件 ABI 契约与 LTS schema 语义（第三方插件作者须知）
 

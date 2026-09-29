@@ -48,8 +48,15 @@ func TestCancelAndQuiesceCloseHandshakeBody(t *testing.T) {
 		t.Run(map[bool]string{false: "cancel", true: "quiesce"}[stop], func(t *testing.T) {
 			h := &blockingHandshakeHost{read: make(chan struct{}), closed: make(chan struct{})}
 			r := newRuntime(h)
-			req := executorRequest{RequestID: "synthetic", CallbackID: "callback"}
-			e, err := r.admit(req, &config{MaxInflight: 1})
+			if _, err := r.dispatch("plugin.register", managementRegistration(map[string]any{"host_logging_disabled": true})); err != nil {
+				t.Fatal(err)
+			}
+			c, err := r.configuration(inlineStorage(), "synthetic-auth")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := executorRequest{RequestID: "synthetic", CallbackID: "callback", AuthID: "synthetic-auth"}
+			e, err := r.admit(req, c)
 			if err != nil {
 				t.Fatal(err)
 			}

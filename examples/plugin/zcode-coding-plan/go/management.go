@@ -16,6 +16,15 @@ func parseManagementConfig(raw []byte) (managementConfig, error) {
 	if len(raw) == 0 || json.Unmarshal(raw, &cfg) != nil {
 		return cfg, problem(400, "invalid_config", "Host config_json is required")
 	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return cfg, problem(400, "invalid_config", "Host config_json must be an object")
+	}
+	for _, name := range []string{"config_file", "credential", "identity", "prompt", "prompt_mode", "prompt_template", "prompt_move_position", "allow_request_override"} {
+		if _, exists := fields[name]; exists {
+			return cfg, problem(400, "invalid_config", "Private configuration and prompt overrides were removed; use inline accounts and the declared management fields")
+		}
+	}
 	if cfg.Upstream != nil && upstreamEndpoint(*cfg.Upstream) == "" {
 		return cfg, problem(400, "invalid_config", "Unknown upstream preset")
 	}
@@ -57,30 +66,33 @@ func (r *pluginRuntime) resolveAuth(raw []byte) (authRecord, error) {
 func (r *pluginRuntime) reconfigure(cfg managementConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.active) > 0 {
+	if len(r.active) > 0 || r.retiring {
 		return problem(409, "busy", "Finish or cancel requests before reconfiguring")
 	}
-	if r.config != nil {
-		next := defaultConfig()
+	var next *config
+	if r.config != nil && cfg.HostLoggingDisabled != nil && *cfg.HostLoggingDisabled {
+		next = defaultConfig()
 		if err := cfg.apply(next); err != nil {
 			return err
 		}
-		next.APIKey, next.DeviceID = r.inlineAPIKey, r.inlineDeviceID
-		if r.signer != nil {
-			r.signer.close()
-		}
-		r.management = cfg
-		r.config = next
-		r.signer = &signer{apiKey: next.APIKey, endpoint: next.Endpoint}
-	} else {
-		r.management = cfg
+		next.APIKey, next.DeviceID = r.config.APIKey, r.config.DeviceID
+		next.AccountScope = r.authOwner
 	}
-	r.authOwner = ""
+	if r.signer != nil {
+		r.signer.close()
+	}
+	r.management, r.config, r.signer = cfg, next, nil
+	if next != nil {
+		r.signer = &signer{apiKey: next.APIKey, endpoint: next.Endpoint}
+	}
 	r.accepting = true
 	return nil
 }
 func (r *pluginRuntime) readiness(raw []byte) (any, error) {
-	var req struct{ StorageJSON []byte }
+	var req struct {
+		StorageJSON []byte
+		AuthID      string
+	}
 	if err := decode(raw, &req); err != nil {
 		return nil, err
 	}
@@ -90,7 +102,7 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 	authState, message := "unknown", "Select an imported account; no remote request has been made"
 	ready := false
 	if len(req.StorageJSON) > 0 {
-		if _, err := r.configuration(req.StorageJSON); err != nil {
+		if _, err := r.configuration(req.StorageJSON, req.AuthID); err != nil {
 			authState = "not_ready"
 			message = safeError(err).Message
 		} else {
@@ -110,7 +122,7 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 }
 func managementFields() []any {
 	return []any{
-		map[string]any{"Name": "host_logging_disabled", "Type": "boolean", "Description": "Required before inline credentials may load: acknowledge that CPA raw request and error-body logs are disabled. Setting it true does not disable any logger."},
+		map[string]any{"Name": "host_logging_disabled", "Type": "boolean", "Description": "Required for credential loading and execution: acknowledge that CPA raw request and error-body logs are disabled. False or inherit blocks calls after successful reload. Setting true does not disable any logger."},
 		map[string]any{"Name": "upstream", "Type": "enum", "EnumValues": []string{"bigmodel", "zai"}, "Description": "Upstream preset: bigmodel (open.bigmodel.cn, default) or zai (api.z.ai international). Clear to inherit the default."},
 		map[string]any{"Name": "models", "Type": "array", "Description": "Optional explicit model allowlist (JSON array of model IDs). Clear to use the built-in glm-5.3 / glm-5.3-flash catalog."},
 		map[string]any{"Name": "model_limits", "Type": "object", "Description": "Optional per-model context/output limits, e.g. {\"glm-5.3\":{\"context\":1000000,\"output\":128000}}. Clear to use built-in limits."},

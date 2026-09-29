@@ -27,8 +27,8 @@ plugins:
       # GHES 实例用 enterprise_domain 或 github_api_endpoint 覆盖默认 github.com/api.github.com。
     zcode-coding-plan:
       enabled: true
-      # 账号 = 单文件内联凭据（auth 文件直接带 api_key/device_id），无需任何挂载。
-      # 加载凭据前把 host_logging_disabled 设为 true（一次性日志审计确认）：
+      # 账号 = 单文件内联凭据（auth 文件直接带 api_key/device_id），无需额外私有凭据挂载。
+      # 审核并关闭原始请求/错误体日志后，把 host_logging_disabled 设为 true；撤销后阻止调用：
       # host_logging_disabled: true
       # 可选：upstream: zai 切国际区；models/model_limits 覆盖内置 glm-5.3/glm-5.3-flash 目录。
     cpa-provider-qoder:

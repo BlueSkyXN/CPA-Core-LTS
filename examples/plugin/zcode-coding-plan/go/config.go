@@ -108,9 +108,6 @@ type authRecord struct {
 	RequestRetry int    `json:"request_retry"`
 }
 
-// inline 报告该账号是否以内联凭据（单文件自包含）形态提供。
-func (a authRecord) inline() bool { return a.APIKey != "" || a.DeviceID != "" }
-
 func validateInlineSecret(name, value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" || strings.ContainsAny(value, "\r\n\x00<") {
@@ -124,11 +121,11 @@ func parseAuth(raw []byte) (authRecord, error) {
 	if decode(raw, &a) != nil || a.Type != provider {
 		return a, problem(400, "invalid_auth", "Invalid account record for this provider")
 	}
-	var stale struct {
-		ConfigFile string `json:"config_file"`
+	var fields map[string]any
+	if decode(raw, &fields) != nil {
+		return a, problem(400, "invalid_auth", "Invalid account record for this provider")
 	}
-	_ = decode(raw, &stale)
-	if stale.ConfigFile != "" {
+	if _, exists := fields["config_file"]; exists {
 		return a, problem(400, "invalid_auth", "config_file references are no longer supported; provide inline api_key and device_id")
 	}
 	if a.APIKey == "" || a.DeviceID == "" {

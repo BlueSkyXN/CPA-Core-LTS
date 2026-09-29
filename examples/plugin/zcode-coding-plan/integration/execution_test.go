@@ -44,6 +44,16 @@ type fixtureTransport struct {
 	pub                ed25519.PublicKey
 	priv               ed25519.PrivateKey
 	handshakes, models int
+	apiKey             string
+}
+
+func (f *fixtureTransport) credentials() (string, string) {
+	key := f.apiKey
+	if key == "" {
+		key = "synthetic-key.synthetic-secret"
+	}
+	id, secret, _ := strings.Cut(key, ".")
+	return id, secret
 }
 
 func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -56,16 +66,20 @@ func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return nil, err
 	}
+	id, secret := f.credentials()
 	text := ""
 	ct := "application/json"
 	if strings.HasSuffix(req.URL.Path, "/client") {
 		f.handshakes++
-		key, _ := hkdf.Key(sha256.New, []byte("synthetic-secret"), []byte("WD_CLIENT_SIGN_KDF_SALT"), "ed25519_priv", 32)
+		if req.Header.Get("Authorization") != id+"."+secret {
+			return nil, fmt.Errorf("unexpected handshake credential")
+		}
+		key, _ := hkdf.Key(sha256.New, []byte(secret), []byte("WD_CLIENT_SIGN_KDF_SALT"), "ed25519_priv", 32)
 		block, _ := aes.NewCipher(key)
 		gcm, _ := cipher.NewGCM(block)
 		iv := bytes.Repeat([]byte{7}, 12)
 		der, _ := x509.MarshalPKCS8PrivateKey(f.priv)
-		ciphertext := append(iv, gcm.Seal(nil, iv, []byte(base64.StdEncoding.EncodeToString(der)), []byte("synthetic-key"))...)
+		ciphertext := append(iv, gcm.Seal(nil, iv, []byte(base64.StdEncoding.EncodeToString(der)), []byte(id))...)
 		data, _ := json.Marshal(map[string]any{"code": 200, "data": map[string]any{"privateCipher": base64.StdEncoding.EncodeToString(ciphertext)}})
 		text = string(data)
 	} else {
@@ -76,7 +90,7 @@ func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		h := req.Header
 		sig, _ := base64.StdEncoding.DecodeString(h.Get("X-Client-Sig"))
-		if !ed25519.Verify(f.pub, []byte("synthetic-key\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
+		if !ed25519.Verify(f.pub, []byte(id+"\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
 			return nil, fmt.Errorf("invalid signature")
 		}
 		if b["system"] != "caller" {

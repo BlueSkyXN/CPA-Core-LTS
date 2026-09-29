@@ -51,17 +51,17 @@
 
 ## Coding Plan 的账号配置
 
-单文件内联账号，无需任何挂载或环境变量。在 Panel 添加账号表单直接提交，或在 Auth Files 上传：
+单文件内联账号，无需额外的私有凭据挂载或环境变量；仍需保留正常的 Core 配置与 auth 目录持久化。在 Panel 添加账号表单直接提交，或在 Auth Files 上传：
 
 ```json
 {"type":"zcode-coding-plan","label":"Coding Plan","api_key":"<key>","device_id":"<device-id>","request_retry":0}
 ```
 
-凭据随 auth 文件保存（与 Qoder/CodeBuddy PAT 同模式）；内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型，1M 上下文、128k 输出、low/high/max 思考档。上传前在 **Plugins → Edit config** 把 `host_logging_disabled` 设为 true（一次性日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志）。可选 `upstream: zai` 切国际区端点。之后 Check readiness 选择账号做本地诊断；容器重建后账号随 auth 目录持久化。0.3.x 的 `config_file` 引用和 `docker-compose.coding-plan.yml` 已移除，旧文件会得到明确报错。
+凭据随 auth 文件保存（与 Qoder/CodeBuddy PAT 同模式）；内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型，1M 上下文、128k 输出、low/high/max 思考档。上传前在 **Plugins → Edit config** 把 `host_logging_disabled` 设为 true（日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志。撤销或清除后，成功热重载会阻止后续调用）。可选 `upstream: zai` 切国际区端点。之后 Check readiness 选择账号做本地诊断；容器重建后账号随 auth 目录持久化。0.3.x 的 `config_file` 引用和 `docker-compose.coding-plan.yml` 已移除；旧账号引用与旧插件配置字段会得到明确报错。新版 Panel 要求插件 ≥0.4.0，编辑账号会移除旧引用；管理员还需清理插件配置中的旧字段。同一账号可更新 key/device ID，删除旧账号并完成请求清理后可添加替代账号。
 
 ## Panel 配套与升级
 
-Core 保持从 CPA-Panel-LTS 下载 `management.html` 的既有机制。发布这套功能时需要先准备包含 PAT UI 和通用插件就绪诊断（Panel PR #95）的 Panel Release，并记录验证过的 Panel tag/SHA；不能把旧 Panel 当作完整验收。
+Core 保持从 CPA-Panel-LTS 下载 `management.html` 的既有机制。发布这套功能时需要先准备包含 PAT UI 和通用插件就绪诊断（Panel PR #95）及 Coding Plan 表单（Panel PR #96）的 Panel Release，并记录验证过的 Panel tag/SHA；不能把旧 Panel 当作完整验收。
 本地联调可将该 Panel 的 `dist/index.html` 作为 `management.html` 挂到 `/CLIProxyAPI/static/management.html`，
 并在专用测试配置中设置 `remote-management.disable-auto-update-panel: true`；不要改变正式实例的更新策略。
 
@@ -78,7 +78,7 @@ Core 保持从 CPA-Panel-LTS 下载 `management.html` 的既有机制。发布�
 `publish`，才会上传固定版本镜像和附件；不会移动标准 `latest` 标签，也不覆盖已有 Release 附件。
 
 - `cpa-provider-<provider>_<plugin-version>_linux_<arch>.zip`：原三插件文件名与内容不变，ZIP 根目录只有 `.so`（Qoder 另含 `THIRD_PARTY_NOTICES.md`）。
-- `zcode-coding-plan_<plugin-version>_linux_<arch>.zip`：根目录包含 `zcode-coding-plan.so`、README、SPEC、LICENSE 及 `config.example.json` / `auth.example.json`，没有个人配置、token、device ID 或 Node/runner。
+- `zcode-coding-plan_<plugin-version>_linux_<arch>.zip`：根目录包含 `zcode-coding-plan.so`、README、SPEC、LICENSE 及 `auth.example.json`，没有个人配置、token、device ID 或 Node/runner。
 - 清单 `transport=mixed`，新增 `plugin_transports` 分别标明原三插件的 `direct_openai` 兼容名称和 Coding Plan 的 `direct_anthropic`；不把所有插件误报为同一协议。
 - `provider-checksums-<arch>.txt`：仅这些产物的校验值，不覆盖 Core Release 的 `checksums.txt`。
 - `pat-provider-bundle-<arch>.json`：配套版本和 SHA 清单，`runner=null`、`node_major=null` 为可审计字段。

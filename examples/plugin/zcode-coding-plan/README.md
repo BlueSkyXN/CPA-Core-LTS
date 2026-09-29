@@ -28,7 +28,7 @@ The root `go test ./...` does not enter nested modules. The existing `provider-c
 
 The existing full provider distribution now builds Coding Plan together with CodeBuddy, Copilot and Qoder from the same Core commit for Linux amd64/arm64. It retains the `pat-provider-delivery` workflow and `-pat-providers` image tags; the standard Core image is unchanged. See [the full-image guide](../PAT_DOCKER.md) in the repository.
 
-The full image includes `/opt/cpa-pat-plugins/zcode-coding-plan.so` and a placeholder-only `auth.example.json` under `/opt/cpa-plugin-examples/zcode-coding-plan/`. No mounts, private directories or environment variables are required: the account is one self-contained auth file (see below).
+The full image includes `/opt/cpa-pat-plugins/zcode-coding-plan.so` and a placeholder-only `auth.example.json` under `/opt/cpa-plugin-examples/zcode-coding-plan/`. No extra credential mounts, private configuration directories or environment variables are required: the account is one self-contained auth file (see below). The normal Core configuration and auth-directory persistence remain required.
 
 Each architecture exports `zcode-coding-plan_<version>_linux_<arch>.zip`, containing the stable library name, README, SPEC, LICENSE and example JSON files. The shared provider checksum/manifest records the Core commit, plugin version and platform, plus the per-plugin `direct_anthropic` transport. The examples leave the logging acknowledgement disabled and contain no personal values.
 
@@ -54,39 +54,29 @@ The only account form is one JSON file with inline credentials, exactly like the
 {"type":"zcode-coding-plan","label":"Coding Plan","api_key":"<your key>","device_id":"<device id>","request_retry":0}
 ```
 
-- Panel's add-account form submits this shape directly; leave `device_id` blank to have the Panel generate one.
-- `api_key` and `device_id` must be provided together. Legacy `config_file` references (0.3.x) are rejected with a clear error.
-- Credentials load only after the deployment owner enables `host_logging_disabled` once in **Panel → Plugins → Edit config**. Until then readiness reports the acknowledgement as missing and no credential is used. Setting it true does not disable any logger; it acknowledges that CPA raw request and error-body logs are off.
+- Panel's add-account form requires plugin 0.4.0 or newer and accepts a manually entered API key. You may enter an existing client `deviceMid` as `device_id`; an explicit value wins. Leave it blank to preserve the saved ID while editing, or generate and save one UUID v4 for a new account. The plugin never generates a per-request replacement. Manual entry does not require an official client installation; importing an existing ID is optional and neither path guarantees upstream acceptance or billing discounts.
+- `api_key` and `device_id` must be provided together. Legacy `config_file` auth references and removed private/prompt management fields are rejected. Panel editing removes the obsolete account reference; administrators must remove obsolete plugin config fields separately.
+- Credentials load only while `host_logging_disabled` is explicitly true in **Panel → Plugins → Edit config**. Setting it true does not disable any logger; it acknowledges that CPA raw request and error-body logs are off. A successful reconfiguration to false or inherit discards cached credentials/signing state, blocks new execution and reports not-ready. Reconfirming allows the selected account to load again.
 - Built-in defaults: upstream `bigmodel` (`https://open.bigmodel.cn/api/anthropic/v1/messages`; switch to `zai`/`api.z.ai` via the management `upstream` field), models `glm-5.3` (text-only) and `glm-5.3-flash` (text+image) with 1,000,000-token context, 128,000-token output budget, thinking levels low/high/max, `max_inflight` 2, caller system prompt preserved as-is.
 - Optional management overrides (`models`, `model_limits`) cover non-default allowlists; they are Panel-editable fields, not files.
 
-Upload through the Panel Auth Files page or place the file in your configured auth directory. A plugin instance supports one account, not an account pool.
+Upload through the Panel Auth Files page or place the file in your configured auth directory. A plugin instance supports one account, not an account pool. Ownership follows Core's stable `AuthID`, not the API key. Updating that account's key or device ID replaces the signer once active requests finish; an overlapping update returns busy and can be retried. Removing the account cancels its executions and releases the binding after cleanup, so a replacement can load without restarting Core. Ordinary conversation closure does not remove the account binding.
 
 Panel **Plugins → Edit config** exposes the four public fields (host_logging_disabled, upstream, models, model_limits). Boolean fields distinguish inherit, true and false; choosing inherit removes that override. **Manage accounts** opens the existing account page. **Check readiness** loads available accounts but does not automatically probe; select an account and click the diagnostic button. Provider-only results cannot claim auth readiness. Local readiness does not verify remote acceptance or billing.
 
 Configuration saved means the existing PATCH persisted its fields, not that asynchronous runtime reconfiguration succeeded. Check registration/effective status and explicit readiness separately. Reconfiguration rejects active requests and preserves the plugin's old memory snapshot on failure; Core's existing reload behavior is unchanged.
 
-## Prompt policy and supported request shape
+## Supported request shape
 
-Private `prompt.templates` maps names to relative UTF-8 template files. `prompt.template` selects a default name. Modes:
+Caller system prompts are preserved. Template files, prompt modes and per-request prompt selection were removed. `x_coding_plan` is rejected and `X-Coding-Plan-Prompt` no longer selects a policy. Controls stripped from the effective Core payload are never restored from `OriginalRequest`.
 
-| Mode | Effect |
-| --- | --- |
-| `preserve` | Keep caller system unchanged. |
-| `replace` | Use the configured template as system. |
-| `prepend` | Put the template before caller system blocks. |
-| `append` | Put the template after caller system blocks. |
-| `move_to_user` | Use the template as system and move caller system text into the first/last user message. |
+The built-in GLM models accept `low`, `high` and `max` effort. Native Messages may supply `reasoning_effort` or `output_config.effort`; Responses supplies `reasoning.effort`, which Core translates before plugin execution. The plugin normalizes the effective control to `reasoning_effort` plus `thinking.type=enabled`, without inventing token budgets. Conflicting fields, unsupported levels, manual budgets and disabled thinking are rejected. Omitting controls preserves the upstream default. Optional custom model IDs do not inherit unverified built-in thinking/image capabilities.
 
-Request selection uses the effective header:
+The field names and mandatory thinking behavior follow the official [GLM-5.3 model guide](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3.md) and [migration guide](https://docs.bigmodel.cn/cn/guide/start/migrate-to-glm-new.md). These guides demonstrate Chat Completions fields; the plugin's normalization over its Anthropic-compatible endpoint is covered by synthetic wire assertions, not a claim of live upstream acceptance. Real account/provider acceptance remains a deployment check.
 
-```text
-X-Coding-Plan-Prompt: {"mode":"replace","template":"review"}
-```
+`glm-5.3-flash` accepts native Anthropic image blocks and translated Responses `input_image`: base64 JPEG/PNG/GIF/WebP or HTTP(S) image URLs without embedded credentials. The plugin validates and forwards image sources but does not fetch URLs itself. Text-only `glm-5.3` rejects images before upstream dispatch. Custom function tools, paired text/image tool results and thinking/signature history remain supported.
 
-Only mode/template/move_position are allowed, and `allow_request_override` must be true. Template names cannot be paths or URLs. Native Messages `x_coding_plan.prompt` remains supported; conflicting header/body sources fail. Responses body extensions that Core drops are rejected rather than recovered from OriginalRequest. WebSocket headers select a connection-level policy, not a separate per-turn history.
-
-Text, custom function tools, paired tool results and existing thinking/signature replay are covered by synthetic tests. Default thinking is supplied by the provider. Explicit effort/manual/adaptive thinking, strict output schemas, priority tier, HTTP store/background, image/file/server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. Chat HTTP is not a verified delivery entry point.
+Strict output schemas, priority tier, HTTP store/background, files, server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. Chat HTTP is not a verified delivery entry point.
 
 ## Safety and validation boundary
 
