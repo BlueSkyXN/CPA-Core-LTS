@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 )
 
-const promptHeader = "X-Coding-Plan-Prompt"
-
 func transformExecution(req executorRequest, c *config, session string) (map[string]any, error) {
 	var body, original map[string]any
 	if err := decode(req.Payload, &body); err != nil || body == nil {
@@ -15,20 +13,13 @@ func transformExecution(req executorRequest, c *config, session string) (map[str
 		return nil, problem(400, "invalid_request", "Invalid request context")
 	}
 	if _, lost := original["x_coding_plan"]; lost {
-		if _, effective := body["x_coding_plan"]; !effective {
-			return nil, problem(400, "unsupported_prompt_entry", "Use X-Coding-Plan-Prompt for cross-protocol selection")
-		}
+		return nil, problem(400, "unsupported_prompt_entry", "Prompt overrides are no longer supported")
 	}
 	for _, source := range []map[string]any{body, original} {
 		if _, ok := source["text"]; ok {
 			format, _ := source["text"].(map[string]any)
 			if f, ok := format["format"].(map[string]any); ok && f["type"] != "text" {
 				return nil, problem(400, "unsupported_parameter", "Structured output is not supported")
-			}
-		}
-		if reason, ok := source["reasoning"].(map[string]any); ok {
-			if value, has := reason["effort"]; has && value != nil && value != "" {
-				return nil, problem(400, "unsupported_parameter", "Explicit reasoning effort is not verified for this provider")
 			}
 		}
 		if tier, ok := source["service_tier"].(string); ok && tier != "" && tier != "auto" && tier != "default" {
@@ -41,30 +32,11 @@ func transformExecution(req executorRequest, c *config, session string) (map[str
 			return nil, problem(400, "unsupported_parameter", "Server-side storage and background requests are not supported")
 		}
 	}
-	if _, ok := body["thinking"]; ok {
-		return nil, problem(400, "unsupported_parameter", "Use the provider default thinking mode")
+	if err := applyThinkingControls(body, original); err != nil {
+		return nil, err
 	}
-	for _, key := range []string{"output_config", "speed"} {
-		if _, ok := body[key]; ok {
-			return nil, problem(400, "unsupported_parameter", "Unverified generation control")
-		}
-	}
-	values := req.Headers.Values(promptHeader)
-	if len(values) > 1 {
-		return nil, problem(400, "invalid_prompt", "Multiple prompt controls are not allowed")
-	}
-	if len(values) == 1 {
-		if len(values[0]) > 2048 {
-			return nil, problem(400, "invalid_prompt", "Prompt control is too large")
-		}
-		if _, present := body["x_coding_plan"]; present {
-			return nil, problem(400, "invalid_prompt", "Choose only one prompt control source")
-		}
-		var selection map[string]any
-		if json.Unmarshal([]byte(values[0]), &selection) != nil || len(selection) == 0 {
-			return nil, problem(400, "invalid_prompt", "Invalid prompt control")
-		}
-		body["x_coding_plan"] = map[string]any{"prompt": selection}
+	if _, ok := body["speed"]; ok {
+		return nil, problem(400, "unsupported_parameter", "Unverified generation control")
 	}
 	model, _ := body["model"].(string)
 	limit := limitsFor(c, model)
@@ -113,8 +85,8 @@ func validateToolHistory(body map[string]any) error {
 				if nested, ok := block["content"].([]any); ok {
 					for _, entry := range nested {
 						part, ok := entry.(map[string]any)
-						if !ok || part["type"] != "text" {
-							return problem(400, "unsupported_content", "Only text tool results are supported")
+						if !ok || (part["type"] != "text" && part["type"] != "image") {
+							return problem(400, "unsupported_content", "Only text and supported image tool results are allowed")
 						}
 					}
 				}

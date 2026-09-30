@@ -10,17 +10,13 @@ spec.loader.exec_module(smoke)
 
 
 class SmokeFixtureTests(unittest.TestCase):
-    def test_coding_plan_private_fixture_is_explicit_and_separate_from_auths(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            private = smoke.write_coding_plan_fixture(root)
-            self.assertEqual(private, root / "coding-plan")
-            config = json.loads((private / "config.json").read_text())
-            self.assertEqual(config["credential"], {"api_key_file": "api-key.txt"})
-            self.assertEqual(config["identity"]["device_id_file"], "device-id.txt")
-            self.assertEqual((private / "api-key.txt").read_text(), "synthetic-key.synthetic-secret")
-            self.assertTrue(config["host_logging_disabled"])
-            self.assertFalse((root / "auths").exists())
+    def test_inline_coding_plan_payload_is_single_file_self_contained(self):
+        payload = smoke.inline_coding_plan_payload()
+        self.assertEqual(payload["type"], "zcode-coding-plan")
+        self.assertIn("api_key", payload)
+        self.assertIn("device_id", payload)
+        self.assertNotIn("config_file", payload)
+        self.assertTrue(payload["api_key"].count(".") == 1)
 
     def test_internal_network_endpoint_does_not_require_published_port(self):
         info = {"State": {"Running": True}, "NetworkSettings": {

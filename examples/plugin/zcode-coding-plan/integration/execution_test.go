@@ -44,28 +44,42 @@ type fixtureTransport struct {
 	pub                ed25519.PublicKey
 	priv               ed25519.PrivateKey
 	handshakes, models int
+	apiKey             string
+}
+
+func (f *fixtureTransport) credentials() (string, string) {
+	key := f.apiKey
+	if key == "" {
+		key = "synthetic-key.synthetic-secret"
+	}
+	id, secret, _ := strings.Cut(key, ".")
+	return id, secret
 }
 
 func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if req.URL.Host != "open.bigmodel.cn" {
+	if req.URL.Host != "open.bigmodel.cn" && req.URL.Host != "api.z.ai" {
 		return nil, fmt.Errorf("unexpected host blocked")
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		return nil, err
 	}
+	id, secret := f.credentials()
 	text := ""
 	ct := "application/json"
 	if strings.HasSuffix(req.URL.Path, "/client") {
 		f.handshakes++
-		key, _ := hkdf.Key(sha256.New, []byte("synthetic-secret"), []byte("WD_CLIENT_SIGN_KDF_SALT"), "ed25519_priv", 32)
+		if req.Header.Get("Authorization") != id+"."+secret {
+			return nil, fmt.Errorf("unexpected handshake credential")
+		}
+		key, _ := hkdf.Key(sha256.New, []byte(secret), []byte("WD_CLIENT_SIGN_KDF_SALT"), "ed25519_priv", 32)
 		block, _ := aes.NewCipher(key)
 		gcm, _ := cipher.NewGCM(block)
 		iv := bytes.Repeat([]byte{7}, 12)
 		der, _ := x509.MarshalPKCS8PrivateKey(f.priv)
-		ciphertext := append(iv, gcm.Seal(nil, iv, []byte(base64.StdEncoding.EncodeToString(der)), []byte("synthetic-key"))...)
+		ciphertext := append(iv, gcm.Seal(nil, iv, []byte(base64.StdEncoding.EncodeToString(der)), []byte(id))...)
 		data, _ := json.Marshal(map[string]any{"code": 200, "data": map[string]any{"privateCipher": base64.StdEncoding.EncodeToString(ciphertext)}})
 		text = string(data)
 	} else {
@@ -76,7 +90,7 @@ func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		h := req.Header
 		sig, _ := base64.StdEncoding.DecodeString(h.Get("X-Client-Sig"))
-		if !ed25519.Verify(f.pub, []byte("synthetic-key\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
+		if !ed25519.Verify(f.pub, []byte(id+"\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
 			return nil, fmt.Errorf("invalid signature")
 		}
 		if b["system"] != "caller" {
@@ -104,9 +118,7 @@ func TestCPAExecutorWithNoNetworkTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(dir, "zcode-coding-plan"+filepath.Ext(library)), lib, 0700)
-	private := filepath.Join(dir, "config.json")
-	os.WriteFile(private, []byte(`{"credential":{"api_key_env":"CP_INTEGRATION_KEY"},"identity":{"device_id_env":"CP_INTEGRATION_DEVICE","platform":"linux-x64","os_category":"linux","os_version":"test","language":"en","timezone":"UTC"},"models":["test-model"],"host_logging_disabled":true,"prompt":{"mode":"preserve"}}`), 0600)
-	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\nrequest-log: false\n", dir)))
+	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      host_logging_disabled: true\n      models: [\"test-model\"]\nrequest-log: false\n", dir)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +127,7 @@ func TestCPAExecutorWithNoNetworkTransport(t *testing.T) {
 	defer cancel()
 	defer h.ShutdownAll()
 	h.ApplyConfig(ctx, cfg)
-	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "config_file": private, "request_retry": 0})
+	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": "synthetic-key.synthetic-secret", "device_id": "synthetic-device", "request_retry": 0})
 	auth, handled, err := h.ParseAuth(ctx, pluginapi.AuthParseRequest{RawJSON: storage, FileName: "synthetic.json"})
 	if err != nil || !handled {
 		t.Fatalf("auth %v", err)

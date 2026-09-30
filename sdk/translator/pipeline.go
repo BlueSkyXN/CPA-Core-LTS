@@ -8,10 +8,12 @@ import (
 
 // RequestEnvelope represents a request in the translation pipeline.
 type RequestEnvelope struct {
-	Format    Format
-	Model     string
-	Stream    bool
-	Body      []byte
+	Format Format
+	Model  string
+	Stream bool
+	Body   []byte
+	// ModelInfo is authoritative for the selected route, including empty capabilities.
+	// Nil preserves metadata-free translation; transforms must not mutate this definition.
 	ModelInfo *registry.ModelInfo
 }
 

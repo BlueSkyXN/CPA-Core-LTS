@@ -2,15 +2,13 @@ package main
 
 import (
 	"encoding/json"
-	"path/filepath"
 )
 
 type managementConfig struct {
-	ConfigFile           string  `json:"config_file"`
-	PromptMode           *string `json:"prompt_mode"`
-	PromptTemplate       *string `json:"prompt_template"`
-	PromptMovePosition   *string `json:"prompt_move_position"`
-	AllowRequestOverride *bool   `json:"allow_request_override"`
+	HostLoggingDisabled *bool                  `json:"host_logging_disabled"`
+	Upstream            *string                `json:"upstream"`
+	Models              []string               `json:"models"`
+	ModelLimits         map[string]modelLimits `json:"model_limits"`
 }
 
 func parseManagementConfig(raw []byte) (managementConfig, error) {
@@ -18,99 +16,83 @@ func parseManagementConfig(raw []byte) (managementConfig, error) {
 	if len(raw) == 0 || json.Unmarshal(raw, &cfg) != nil {
 		return cfg, problem(400, "invalid_config", "Host config_json is required")
 	}
-	if cfg.ConfigFile != "" && !filepath.IsAbs(cfg.ConfigFile) {
-		return cfg, problem(400, "invalid_config", "config_file must be an absolute server path")
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return cfg, problem(400, "invalid_config", "Host config_json must be an object")
 	}
-	if cfg.PromptMode != nil {
-		switch *cfg.PromptMode {
-		case "preserve", "replace", "prepend", "append", "move_to_user":
-		default:
-			return cfg, problem(400, "invalid_prompt", "Unknown prompt mode")
+	for _, name := range []string{"config_file", "credential", "identity", "prompt", "prompt_mode", "prompt_template", "prompt_move_position", "allow_request_override"} {
+		if _, exists := fields[name]; exists {
+			return cfg, problem(400, "invalid_config", "Private configuration and prompt overrides were removed; use inline accounts and the declared management fields")
 		}
 	}
-	if cfg.PromptMovePosition != nil && *cfg.PromptMovePosition != "first_user" && *cfg.PromptMovePosition != "last_user" {
-		return cfg, problem(400, "invalid_prompt", "Invalid move_position")
+	if cfg.Upstream != nil && upstreamEndpoint(*cfg.Upstream) == "" {
+		return cfg, problem(400, "invalid_config", "Unknown upstream preset")
+	}
+	if cfg.Models != nil {
+		if err := validateModelAllowlist(cfg.Models); err != nil {
+			return cfg, err
+		}
+	}
+	for _, limits := range cfg.ModelLimits {
+		if limits.Context <= 0 || limits.Output <= 0 || limits.Output > limits.Context {
+			return cfg, problem(400, "invalid_config", "Invalid model limits")
+		}
 	}
 	return cfg, nil
 }
 func (m managementConfig) apply(c *config) error {
-	if m.PromptMode != nil {
-		c.Prompt.Mode = *m.PromptMode
+	if m.HostLoggingDisabled != nil {
+		c.HostLoggingDisabled = *m.HostLoggingDisabled
 	}
-	if m.PromptTemplate != nil {
-		if _, exists := c.Prompt.Templates[*m.PromptTemplate]; !exists {
-			return problem(400, "invalid_prompt", "Select a configured template name")
+	if m.Upstream != nil {
+		c.Upstream = *m.Upstream
+		c.Endpoint = upstreamEndpoint(c.Upstream)
+	}
+	if m.Models != nil {
+		c.Models = append([]string(nil), m.Models...)
+	}
+	if m.ModelLimits != nil {
+		limits := map[string]modelLimits{}
+		for name, value := range m.ModelLimits {
+			limits[name] = value
 		}
-		c.Prompt.Template = *m.PromptTemplate
+		c.ModelLimits = limits
 	}
-	if m.PromptMovePosition != nil {
-		c.Prompt.MovePosition = *m.PromptMovePosition
-	}
-	if m.AllowRequestOverride != nil {
-		c.Prompt.AllowRequestOverride = *m.AllowRequestOverride
-	}
-	return validatePrompt(c.Prompt)
-}
-func (r *pluginRuntime) authConfigPath(a authRecord) (string, error) {
-	path := a.ConfigFile
-	if r.management.ConfigFile != "" {
-		if path != "" && path != r.management.ConfigFile {
-			return "", problem(409, "config_conflict", "Auth and plugin config_file references must agree")
-		}
-		path = r.management.ConfigFile
-	}
-	if path == "" {
-		return "", problem(400, "invalid_auth", "Configure an absolute config_file for this provider")
-	}
-	return path, nil
+	return nil
 }
 func (r *pluginRuntime) resolveAuth(raw []byte) (authRecord, error) {
-	a, err := parseAuth(raw)
-	if err != nil {
-		return a, err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a.ConfigFile, err = r.authConfigPath(a)
-	return a, err
+	return parseAuth(raw)
 }
 func (r *pluginRuntime) reconfigure(cfg managementConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.active) > 0 {
+	if len(r.active) > 0 || r.retiring {
 		return problem(409, "busy", "Finish or cancel requests before reconfiguring")
 	}
 	var next *config
-	path := cfg.ConfigFile
-	if r.config != nil {
-		if path == "" {
-			path = r.configPath
-		}
-		var err error
-		next, err = loadConfig(path)
-		if err != nil {
+	if r.config != nil && cfg.HostLoggingDisabled != nil && *cfg.HostLoggingDisabled {
+		next = defaultConfig()
+		if err := cfg.apply(next); err != nil {
 			return err
 		}
-		if err = cfg.apply(next); err != nil {
-			return err
-		}
+		next.APIKey, next.DeviceID = r.config.APIKey, r.config.DeviceID
+		next.AccountScope = r.authOwner
 	}
 	if r.signer != nil {
 		r.signer.close()
 	}
-	r.management = cfg
-	r.config = next
-	r.configPath = path
-	r.authOwner = ""
-	r.signer = nil
-	r.accepting = true
+	r.management, r.config, r.signer = cfg, next, nil
 	if next != nil {
 		r.signer = &signer{apiKey: next.APIKey, endpoint: next.Endpoint}
 	}
+	r.accepting = true
 	return nil
 }
 func (r *pluginRuntime) readiness(raw []byte) (any, error) {
-	var req struct{ StorageJSON []byte }
+	var req struct {
+		StorageJSON []byte
+		AuthID      string
+	}
 	if err := decode(raw, &req); err != nil {
 		return nil, err
 	}
@@ -120,7 +102,7 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 	authState, message := "unknown", "Select an imported account; no remote request has been made"
 	ready := false
 	if len(req.StorageJSON) > 0 {
-		if _, err := r.configuration(req.StorageJSON); err != nil {
+		if _, err := r.configuration(req.StorageJSON, req.AuthID); err != nil {
 			authState = "not_ready"
 			message = safeError(err).Message
 		} else {
@@ -130,7 +112,7 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 		}
 	}
 	protocol := map[bool]string{true: "ready", false: "not_ready"}[accepting]
-	return map[string]any{"Provider": provider, "Ready": ready, "Generation": pluginVersion, "Capabilities": []string{"anthropic", "stream", "cancel", "prompt_policies", "manual_auth"}, "Checks": []any{
+	return map[string]any{"Provider": provider, "Ready": ready, "Generation": pluginVersion, "Capabilities": []string{"anthropic", "stream", "cancel", "manual_auth"}, "Checks": []any{
 		map[string]any{"Level": "plugin_installed", "State": "ready", "Version": pluginVersion},
 		map[string]any{"Level": "runner_installed", "State": "ready", "Version": "native-go", "Message": "No external runtime required"},
 		map[string]any{"Level": "protocol_ready", "State": protocol},
@@ -140,10 +122,9 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 }
 func managementFields() []any {
 	return []any{
-		map[string]any{"Name": "config_file", "Type": "string", "Description": "Absolute server path to your private JSON config. Keep secrets and device identity in that file, not here."},
-		map[string]any{"Name": "prompt_mode", "Type": "enum", "EnumValues": []string{"preserve", "replace", "prepend", "append", "move_to_user"}, "Description": "Override the private file prompt mode; clear to inherit."},
-		map[string]any{"Name": "prompt_template", "Type": "string", "Description": "Select a template name already registered in the private file, never a path or URL."},
-		map[string]any{"Name": "prompt_move_position", "Type": "enum", "EnumValues": []string{"first_user", "last_user"}, "Description": "Position used by move_to_user; clear to inherit."},
-		map[string]any{"Name": "allow_request_override", "Type": "boolean", "Description": "Allow per-request prompt selection. Unset inherits the private file policy."},
+		map[string]any{"Name": "host_logging_disabled", "Type": "boolean", "Description": "Required for credential loading and execution: acknowledge that CPA raw request and error-body logs are disabled. False or inherit blocks calls after successful reload. Setting true does not disable any logger."},
+		map[string]any{"Name": "upstream", "Type": "enum", "EnumValues": []string{"bigmodel", "zai"}, "Description": "Upstream preset: bigmodel (open.bigmodel.cn, default) or zai (api.z.ai international). Clear to inherit the default."},
+		map[string]any{"Name": "models", "Type": "array", "Description": "Optional explicit model allowlist (JSON array of model IDs). Clear to use the built-in glm-5.3 / glm-5.3-flash catalog."},
+		map[string]any{"Name": "model_limits", "Type": "object", "Description": "Optional per-model context/output limits, e.g. {\"glm-5.3\":{\"context\":1000000,\"output\":128000}}. Clear to use built-in limits."},
 	}
 }

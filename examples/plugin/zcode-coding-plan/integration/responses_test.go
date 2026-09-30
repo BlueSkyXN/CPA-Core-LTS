@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -51,7 +52,7 @@ func (f *v2Transport) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return
 func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	if req.URL.Host != "open.bigmodel.cn" {
+	if req.URL.Host != "open.bigmodel.cn" && req.URL.Host != "api.z.ai" {
 		f.targets++
 		return nil, fmt.Errorf("non-fixture destination blocked")
 	}
@@ -87,7 +88,11 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	h := req.Header
 	sig, _ := base64.StdEncoding.DecodeString(h.Get("X-Client-Sig"))
-	if !ed25519.Verify(f.pub, []byte("synthetic-key\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
+	id, secret := f.fixtureTransport.credentials()
+	if h.Get("Authorization") != "Bearer "+id+"."+secret || h.Get("X-Api-Key") != id+"."+secret {
+		return nil, fmt.Errorf("unexpected model credential")
+	}
+	if !ed25519.Verify(f.pub, []byte(id+"\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
 		return nil, fmt.Errorf("invalid synthetic signature")
 	}
 	if h.Get("X-Coding-Plan-Prompt") != "" || gjson.GetBytes(body, "x_coding_plan").Exists() {
@@ -118,7 +123,7 @@ func v2Reply(body []byte, n int) string {
 		content = []any{map[string]any{"type": "thinking", "thinking": "synthetic reason", "signature": "synthetic-opaque"}, map[string]any{"type": "tool_use", "id": "call-fixture", "name": "lookup", "input": map[string]any{"q": "hello"}}}
 		stop = "tool_use"
 	}
-	b, _ := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("message-%d", n), "model": v2Model, "role": "assistant", "content": content, "stop_reason": stop, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}})
+	b, _ := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("message-%d", n), "model": gjson.GetBytes(body, "model").String(), "role": "assistant", "content": content, "stop_reason": stop, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}})
 	return string(b)
 }
 func v2Events(reply string) string {
@@ -152,9 +157,10 @@ type v2Fixture struct {
 	usage     *fixtureUsageSink
 	logs      []string
 	cfg       *config.Config
+	manager   *coreauth.Manager
 }
 
-func newV2Fixture(t *testing.T, override bool) *v2Fixture {
+func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
 	t.Helper()
 	library := os.Getenv("CP_PLUGIN_LIBRARY")
 	if library == "" {
@@ -168,34 +174,30 @@ func newV2Fixture(t *testing.T, override bool) *v2Fixture {
 	if err = os.WriteFile(filepath.Join(dir, "zcode-coding-plan"+filepath.Ext(library)), lib, 0700); err != nil {
 		t.Fatal(err)
 	}
-	private := filepath.Join(dir, "private.json")
-	if err = os.WriteFile(filepath.Join(dir, "template"), []byte("template"), 0600); err != nil {
-		t.Fatal(err)
+	if len(allowedModels) == 0 {
+		allowedModels = []string{v2Model}
 	}
-	raw := fmt.Sprintf(`{"credential":{"api_key_env":"CP_INTEGRATION_KEY"},"identity":{"device_id_env":"CP_INTEGRATION_DEVICE","platform":"linux-x64","os_category":"linux","os_version":"synthetic","language":"en","timezone":"UTC"},"models":["%s"],"host_logging_disabled":true,"prompt":{"mode":"preserve","allow_request_override":%t,"templates":{"t":"template"}}}`, v2Model, override)
-	if err = os.WriteFile(private, []byte(raw), 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      config_file: %q\nrequest-log: true\nrequest-retry: 0\n", dir, private)))
+	modelJSON, _ := json.Marshal(allowedModels)
+	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("auth-dir: %q\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      host_logging_disabled: true\n      models: %s\nrequest-log: true\nrequest-retry: 0\n", t.TempDir(), dir, modelJSON)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := pluginhost.New()
 	t.Cleanup(h.ShutdownAll)
 	h.ApplyConfig(context.Background(), cfg)
-	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "request_retry": 0})
+	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": "synthetic-key.synthetic-secret", "device_id": "synthetic-device", "request_retry": 0})
 	auth, handled, err := h.ParseAuth(context.Background(), pluginapi.AuthParseRequest{RawJSON: storage, FileName: "synthetic.json"})
 	if err != nil || !handled {
 		t.Fatalf("auth parse: %v", err)
 	}
-	auth.ID = "v2-fixture-auth"
+	auth.ID = "synthetic.json"
 	auth.Index = "v2-fixture-index"
 	auth.Status = coreauth.StatusActive
 	models := h.ModelsForAuth(context.Background(), auth)
 	if models.Err != nil {
 		t.Fatal(models.Err)
 	}
-	if len(models.Models) != 1 || !models.Models[0].IsCompat || models.Models[0].ContextLength != 500000 || models.Models[0].MaxCompletionTokens != 128000 {
+	if len(models.Models) != len(allowedModels) || !models.Models[0].IsCompat || models.Models[0].ContextLength != 1000000 || models.Models[0].MaxCompletionTokens != 128000 {
 		t.Fatal("model metadata not applied")
 	}
 	reg := registry.GetGlobalRegistry()
@@ -209,7 +211,7 @@ func newV2Fixture(t *testing.T, override bool) *v2Fixture {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	f := &v2Fixture{host: h, cfg: cfg, transport: &v2Transport{fixtureTransport: &fixtureTransport{pub: pub, priv: priv}}, usage: &fixtureUsageSink{records: make(chan coreusage.Record, 128)}}
+	f := &v2Fixture{host: h, cfg: cfg, manager: manager, transport: &v2Transport{fixtureTransport: &fixtureTransport{pub: pub, priv: priv}}, usage: &fixtureUsageSink{records: make(chan coreusage.Record, 128)}}
 	manager.SetRoundTripperProvider(f.transport)
 	coreusage.RegisterNamedPlugin("coding-plan-v2", f.usage)
 	gin.SetMode(gin.TestMode)
@@ -236,27 +238,28 @@ func newV2Fixture(t *testing.T, override bool) *v2Fixture {
 		}
 		f.logs = append(f.logs, captured.String())
 	})
-	handler := openai.NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+	baseHandlers := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)
+	handler := openai.NewOpenAIResponsesAPIHandler(baseHandlers)
+	router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(baseHandlers).ClaudeMessages)
 	router.POST("/v1/responses", handler.Responses)
 	router.GET("/v1/responses/ws", handler.ResponsesWebsocket)
 	mgmt := management.NewHandlerWithoutConfigFilePath(cfg, manager)
 	mgmt.SetPluginHost(h)
 	router.GET("/v0/management/plugins/:id/readiness", mgmt.GetPluginReadiness)
 	router.GET("/v0/management/plugins", mgmt.ListPlugins)
+	router.POST("/v0/management/auth-files", mgmt.UploadAuthFile)
+	router.DELETE("/v0/management/auth-files", mgmt.DeleteAuthFile)
 	if len(h.DeclaredSensitiveEndpoints()) != 1 {
 		t.Fatal("credential endpoint declaration missing")
 	}
 	return f
 }
-func (f *v2Fixture) post(t *testing.T, body, header string) *httptest.ResponseRecorder {
+func (f *v2Fixture) post(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	if header != "" {
-		req.Header.Set("X-Coding-Plan-Prompt", header)
-	}
 	rec := httptest.NewRecorder()
 	f.router.ServeHTTP(rec, req)
 	return rec
@@ -275,37 +278,26 @@ func (f *v2Fixture) checkUsage(t *testing.T, failed bool) {
 		t.Fatal("usage missing")
 	}
 }
-func TestV2ResponsesHTTPPromptAndHistory(t *testing.T) {
+func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	f := newV2Fixture(t, true)
-	for _, mode := range []string{"preserve", "replace", "prepend", "append", "move_to_user"} {
-		for _, stream := range []bool{false, true} {
-			request := fmt.Sprintf(`{"model":%q,"instructions":"caller","input":"hello","stream":%t}`, v2Model, stream)
-			res := f.post(t, request, fmt.Sprintf(`{"mode":%q,"template":"t"}`, mode))
-			if res.Code != 200 || !strings.Contains(res.Body.String(), "fixture-ok") {
-				t.Fatalf("%s stream=%v status=%d: %s", mode, stream, res.Code, res.Body.String())
-			}
-			f.checkUsage(t, false)
-			body := f.transport.captured[len(f.transport.captured)-1]
-			system := gjson.GetBytes(body, "system").Raw
-			if mode == "preserve" && !strings.Contains(system, "caller") {
-				t.Fatal("caller lost")
-			}
-			if mode != "preserve" && !strings.Contains(system, "template") {
-				t.Fatal("template lost")
-			}
-			if mode == "replace" && strings.Contains(system, "caller") {
-				t.Fatal("caller not replaced")
-			}
-			if mode == "move_to_user" && !strings.Contains(gjson.GetBytes(body, "messages").Raw, "Caller context") {
-				t.Fatal("caller not moved")
-			}
+	f := newV2Fixture(t)
+	for _, stream := range []bool{false, true} {
+		request := fmt.Sprintf(`{"model":%q,"instructions":"caller","input":"hello","stream":%t}`, v2Model, stream)
+		res := f.post(t, request)
+		if res.Code != 200 || !strings.Contains(res.Body.String(), "fixture-ok") {
+			t.Fatalf("stream=%v status=%d: %s", stream, res.Code, res.Body.String())
+		}
+		f.checkUsage(t, false)
+		body := f.transport.captured[len(f.transport.captured)-1]
+		system := gjson.GetBytes(body, "system").Raw
+		if !strings.Contains(system, "caller") {
+			t.Fatal("caller system prompt lost")
 		}
 	}
 	tools := `[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]`
-	first := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","tools":%s}`, v2Model, tools), "")
+	first := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","tools":%s}`, v2Model, tools))
 	if first.Code != 200 {
 		t.Fatal(first.Body.String())
 	}
@@ -319,7 +311,7 @@ func TestV2ResponsesHTTPPromptAndHistory(t *testing.T) {
 	}
 	history = append(history, map[string]any{"type": "function_call_output", "call_id": "call-fixture", "output": "found"})
 	input, _ := json.Marshal(history)
-	second := f.post(t, fmt.Sprintf(`{"model":%q,"input":%s,"tools":%s}`, v2Model, input, tools), "")
+	second := f.post(t, fmt.Sprintf(`{"model":%q,"input":%s,"tools":%s}`, v2Model, input, tools))
 	if second.Code != 200 {
 		t.Fatal(second.Body.String())
 	}
@@ -328,14 +320,14 @@ func TestV2ResponsesHTTPPromptAndHistory(t *testing.T) {
 	if !strings.Contains(last, `"signature":"synthetic-opaque"`) || !strings.Contains(last, `"tool_result"`) {
 		t.Fatal("tool/thinking history not preserved")
 	}
-	clamped := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","max_output_tokens":128001}`, v2Model), "")
+	clamped := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","max_output_tokens":128001}`, v2Model))
 	if clamped.Code != 200 || gjson.GetBytes(f.transport.captured[len(f.transport.captured)-1], "max_tokens").Int() != 128000 {
 		t.Fatal("host model limit not respected")
 	}
 	f.checkUsage(t, false)
 	before := len(f.transport.captured)
-	for _, control := range []string{`"reasoning":{"effort":"high"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"replace","template":"t"}}`} {
-		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello",%s}`, v2Model, control), "")
+	for _, control := range []string{`"reasoning":{"effort":"medium"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
+		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello",%s}`, v2Model, control))
 		if res.Code < 400 {
 			t.Fatalf("unsupported control accepted: %s", control)
 		}
@@ -343,25 +335,33 @@ func TestV2ResponsesHTTPPromptAndHistory(t *testing.T) {
 	if len(f.transport.captured) != before {
 		t.Fatal("invalid request reached model")
 	}
+	summaryBefore := len(f.transport.captured)
+	summary := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"high","summary":"auto"}}`, v2Model))
+	if summary.Code != 400 || !strings.Contains(summary.Body.String(), "summary") {
+		t.Fatalf("summary control rejection must point at the reasoning summary: %d %s", summary.Code, summary.Body.String())
+	}
+	if len(f.transport.captured) != summaryBefore {
+		t.Fatal("rejected summary control reached model")
+	}
 }
-func TestV2PromptOverrideDisabled(t *testing.T) {
+func TestV2PromptOverrideRemoved(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	f := newV2Fixture(t, false)
-	res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello"}`, v2Model), `{"mode":"replace","template":"t"}`)
+	f := newV2Fixture(t)
+	res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","x_coding_plan":{"prompt":{"mode":"preserve"}}}`, v2Model))
 	if res.Code != 400 || len(f.transport.captured) != 0 || f.transport.handshakes != 0 {
-		t.Fatal("disabled override reached upstream")
+		t.Fatal("in-body override reached upstream")
 	}
 }
 func TestV2WebsocketToolContinuation(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	f := newV2Fixture(t, true)
+	f := newV2Fixture(t)
 	server := httptest.NewServer(f.router)
 	defer server.Close()
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", http.Header{"X-Coding-Plan-Prompt": {`{"mode":"replace","template":"t"}`}})
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,8 +403,8 @@ func TestV2WebsocketToolContinuation(t *testing.T) {
 	body := string(f.transport.captured[1])
 	session1, session2 := f.transport.headers[0].Get("X-Session-Id"), f.transport.headers[1].Get("X-Session-Id")
 	f.transport.lock.Unlock()
-	if !strings.Contains(body, `"tool_result"`) || !strings.Contains(body, `"signature":"synthetic-opaque"`) || !strings.Contains(body, "template") || session1 != session2 {
-		t.Fatal("WS history/session/prompt ownership lost")
+	if !strings.Contains(body, `"tool_result"`) || !strings.Contains(body, `"signature":"synthetic-opaque"`) || session1 != session2 {
+		t.Fatal("WS history/session ownership lost")
 	}
 	send(`{"type":"response.create","previous_response_id":"not-on-this-connection","input":[]}`)
 	bad := read()
@@ -423,10 +423,10 @@ func TestV2SensitiveLoggingRedirectAndFailure(t *testing.T) {
 			if isolateDynamic(t) {
 				return
 			}
-			f := newV2Fixture(t, true)
+			f := newV2Fixture(t)
 			f.transport.mode = mode
 			f.transport.redirectStatus = 307
-			res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","stream":%t}`, v2Model, mode == "truncate"), "")
+			res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","stream":%t}`, v2Model, mode == "truncate"))
 			if mode == "normal" {
 				if res.Code != 200 {
 					t.Fatal(res.Body.String())

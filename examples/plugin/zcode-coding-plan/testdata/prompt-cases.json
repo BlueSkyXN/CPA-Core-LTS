@@ -1,8 +1,0 @@
-[
-  {"name":"preserve","mode":"preserve","system":"caller","expectedSystem":"caller"},
-  {"name":"replace","mode":"replace","system":"caller","expectedSystem":[{"type":"text","text":"template"}]},
-  {"name":"prepend","mode":"prepend","system":"caller","expectedSystem":[{"type":"text","text":"template"},{"type":"text","text":"caller"}]},
-  {"name":"append","mode":"append","system":"caller","expectedSystem":[{"type":"text","text":"caller"},{"type":"text","text":"template"}]},
-  {"name":"move-last","mode":"move_to_user","system":"caller","expectedSystem":[{"type":"text","text":"template"}],"movedIndex":2},
-  {"name":"move-first","mode":"move_to_user","move_position":"first_user","system":"caller","expectedSystem":[{"type":"text","text":"template"}],"movedIndex":0}
-]

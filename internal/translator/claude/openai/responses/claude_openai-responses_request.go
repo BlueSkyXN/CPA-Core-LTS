@@ -33,16 +33,22 @@ const (
 //   - max_output_tokens -> max_tokens
 //   - stream passthrough via parameter
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, nil)
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithCompat preserves reasoning items
 // whose encrypted content is empty for configured compatibility endpoints.
 func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, nil)
 }
 
-func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) []byte {
+func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo) []byte {
+	// modelInfo keeps its caller-supplied value as the authority flag; metadata-free
+	// callers fall back to the legacy global lookup for capability hints.
+	resolvedModelInfo := modelInfo
+	if resolvedModelInfo == nil {
+		resolvedModelInfo = registry.LookupModelInfo(modelName, "claude")
+	}
 	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
 	// 字符串 input 是 Responses 的 user 消息简写，不能在数组遍历时丢失。
 	if input := gjson.GetBytes(rawJSON, "input"); input.Type == gjson.String {
@@ -56,7 +62,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// Base Claude message payload
 	out := []byte(`{"model":"","max_tokens":32000,"messages":[],"metadata":{}}`)
 	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
-	out, _ = sjson.SetBytes(out, "max_tokens", defaultClaudeResponsesMaxTokensForModel(modelName))
+	out, _ = sjson.SetBytes(out, "max_tokens", defaultClaudeResponsesMaxTokensForModel(modelName, resolvedModelInfo))
 
 	root := gjson.ParseBytes(rawJSON)
 
@@ -64,9 +70,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	if v := root.Get("reasoning.effort"); v.Exists() {
 		effort := strings.ToLower(strings.TrimSpace(v.String()))
 		if effort != "" {
-			mi := registry.LookupModelInfo(modelName, "claude")
-			supportsAdaptive := mi != nil && mi.Thinking != nil && len(mi.Thinking.Levels) > 0
-			supportsMax := supportsAdaptive && thinking.HasLevel(mi.Thinking.Levels, string(thinking.LevelMax))
+			supportsAdaptive := resolvedModelInfo != nil && resolvedModelInfo.Thinking != nil && len(resolvedModelInfo.Thinking.Levels) > 0
+			supportsMax := supportsAdaptive && thinking.HasLevel(resolvedModelInfo.Thinking.Levels, string(thinking.LevelMax))
 
 			// Claude 4.6 supports adaptive thinking with output_config.effort.
 			// MapToClaudeEffort normalizes levels (e.g. minimal→low, xhigh→high) to avoid
@@ -89,8 +94,14 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
 					out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 				}
+			} else if modelInfo != nil && modelInfo.Thinking == nil {
+				// The authoritative route declared no thinking capability at all
+				// (custom or unverified model). Pass the requested effort through
+				// for downstream validation instead of inventing a budget.
+				out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 			} else {
-				// Legacy/manual thinking (budget_tokens).
+				// Legacy/manual thinking (budget_tokens). Covers metadata-free
+				// callers and models that declared budget-style thinking support.
 				budget, ok := thinking.ConvertLevelToBudget(effort)
 				if ok {
 					switch budget {
@@ -115,8 +126,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// Max tokens
 	if mot := root.Get("max_output_tokens"); mot.Exists() && mot.Type != gjson.Null {
 		val := mot.Int()
-		if info := registry.LookupModelInfo(modelName, "claude"); info != nil && info.MaxCompletionTokens > 0 && val > int64(info.MaxCompletionTokens) {
-			val = int64(info.MaxCompletionTokens)
+		if resolvedModelInfo != nil && resolvedModelInfo.MaxCompletionTokens > 0 && val > int64(resolvedModelInfo.MaxCompletionTokens) {
+			val = int64(resolvedModelInfo.MaxCompletionTokens)
 		}
 		out, _ = sjson.SetBytes(out, "max_tokens", val)
 	}
@@ -636,13 +647,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	return out
 }
 
-func defaultClaudeResponsesMaxTokensForModel(modelName string) int {
+func defaultClaudeResponsesMaxTokensForModel(modelName string, modelInfo *registry.ModelInfo) int {
 	maxTokens := defaultClaudeResponsesMaxTokens
 	if strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "fable") {
 		maxTokens = defaultFableResponsesMaxTokens
 	}
-	if info := registry.LookupModelInfo(modelName, "claude"); info != nil && info.MaxCompletionTokens > 0 && info.MaxCompletionTokens < maxTokens {
-		return info.MaxCompletionTokens
+	if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 && modelInfo.MaxCompletionTokens < maxTokens {
+		return modelInfo.MaxCompletionTokens
 	}
 	return maxTokens
 }

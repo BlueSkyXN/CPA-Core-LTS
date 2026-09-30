@@ -13,6 +13,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginhost"
+	"gopkg.in/yaml.v3"
 )
 
 func isolateDynamic(t *testing.T) bool {
@@ -52,15 +53,16 @@ func TestCPADynamicLoadAndAuth(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "zcode-coding-plan"+filepath.Ext(library)), raw, 0700); err != nil {
 		t.Fatal(err)
 	}
-	// c-shared 有独立 Go runtime，环境变量必须在动态库初始化前设置。
-	t.Setenv("CP_INTEGRATION_KEY", "synthetic-key.synthetic-secret")
-	t.Setenv("CP_INTEGRATION_DEVICE", "synthetic-device")
 	enabled := true
+	var overrides yaml.Node
+	if err := yaml.Unmarshal([]byte(`{"host_logging_disabled":true,"models":["test-model"]}`), &overrides); err != nil {
+		t.Fatal(err)
+	}
 	host := pluginhost.New()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	defer host.ShutdownAll()
-	host.ApplyConfig(ctx, pluginhost.RuntimeConfig{Enabled: true, Dir: dir, Configs: map[string]pluginhost.PluginInstanceConfig{"zcode-coding-plan": {Enabled: &enabled}}})
+	host.ApplyConfig(ctx, pluginhost.RuntimeConfig{Enabled: true, Dir: dir, Configs: map[string]pluginhost.PluginInstanceConfig{"zcode-coding-plan": {Enabled: &enabled, Raw: overrides}}})
 	list := host.RegisteredPlugins()
 	if len(list) != 1 {
 		t.Fatalf("registered plugin count=%d", len(list))
@@ -68,12 +70,7 @@ func TestCPADynamicLoadAndAuth(t *testing.T) {
 	if !host.HasAuthProvider("zcode-coding-plan") {
 		t.Fatal("auth provider missing")
 	}
-	configPath := filepath.Join(dir, "private.json")
-	config := []byte(`{"credential":{"api_key_env":"CP_INTEGRATION_KEY"},"identity":{"device_id_env":"CP_INTEGRATION_DEVICE","platform":"linux-x64","os_category":"linux","os_version":"test","language":"en","timezone":"UTC"},"models":["test-model"],"host_logging_disabled":true,"prompt":{"mode":"preserve"}}`)
-	if err = os.WriteFile(configPath, config, 0600); err != nil {
-		t.Fatal(err)
-	}
-	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "config_file": configPath, "label": "Synthetic", "request_retry": 0})
+	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": "synthetic-key.synthetic-secret", "device_id": "synthetic-device", "label": "Synthetic", "request_retry": 0})
 	auth, handled, err := host.ParseAuth(ctx, pluginapi.AuthParseRequest{RawJSON: storage, FileName: "synthetic.json"})
 	if err != nil || !handled || auth == nil {
 		t.Fatalf("auth parse handled=%v err=%v", handled, err)

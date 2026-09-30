@@ -71,13 +71,13 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.output / name) as archive:
             self.assertEqual(set(archive.namelist()), {
                 "zcode-coding-plan.so", "README.md", "SPEC.md", "LICENSE",
-                "config.example.json", "auth.example.json",
+                "auth.example.json",
             })
-            config = json.loads(archive.read("config.example.json"))
-            self.assertFalse(config["host_logging_disabled"])
-            self.assertEqual(config["credential"], {"api_key_env": "CP_API_KEY"})
-            self.assertEqual(config["identity"]["device_id_env"], "CP_DEVICE_ID")
-            self.assertEqual(json.loads(archive.read("auth.example.json"))["type"], "zcode-coding-plan")
+            auth = json.loads(archive.read("auth.example.json"))
+            self.assertEqual(auth["type"], "zcode-coding-plan")
+            self.assertIn("api_key", auth)
+            self.assertIn("device_id", auth)
+            self.assertNotIn("config_file", auth)
 
     def test_missing_coding_plan_library_is_rejected(self):
         (self.native / "zcode-coding-plan.so").unlink()
