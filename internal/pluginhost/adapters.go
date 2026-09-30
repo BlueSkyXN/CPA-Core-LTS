@@ -136,6 +136,7 @@ func pluginModelInfoToRegistryModelInfo(model pluginapi.ModelInfo) *registry.Mod
 		SupportedParameters:        cloneStringSlice(model.SupportedParameters),
 		SupportedInputModalities:   cloneStringSlice(model.SupportedInputModalities),
 		SupportedOutputModalities:  cloneStringSlice(model.SupportedOutputModalities),
+		NativeCapabilities:         pluginNativeCapabilitiesToRegistry(model.NativeCapabilities),
 		Thinking:                   pluginThinkingSupportToRegistryThinkingSupport(model.Thinking),
 		IsCompat:                   model.IsCompat,
 		UserDefined:                model.UserDefined,
@@ -177,6 +178,7 @@ func registryModelInfoToPluginModelInfo(model *registry.ModelInfo) pluginapi.Mod
 		SupportedParameters:        cloneStringSlice(model.SupportedParameters),
 		SupportedInputModalities:   cloneStringSlice(model.SupportedInputModalities),
 		SupportedOutputModalities:  cloneStringSlice(model.SupportedOutputModalities),
+		NativeCapabilities:         registryNativeCapabilitiesToPlugin(model.NativeCapabilities),
 		Thinking:                   registryThinkingSupportToPluginThinkingSupport(model.Thinking),
 		IsCompat:                   model.IsCompat,
 		UserDefined:                model.UserDefined,
@@ -194,6 +196,30 @@ func registryThinkingSupportToPluginThinkingSupport(thinking *registry.ThinkingS
 		DynamicAllowed: thinking.DynamicAllowed,
 		Levels:         cloneStringSlice(thinking.Levels),
 	}
+}
+
+func pluginNativeCapabilitiesToRegistry(capabilities *pluginapi.NativeCapabilities) *registry.NativeCapabilities {
+	if capabilities == nil {
+		return nil
+	}
+	out := &registry.NativeCapabilities{}
+	if capabilities.WebSearch != nil {
+		webSearch := *capabilities.WebSearch
+		out.WebSearch = &webSearch
+	}
+	return out
+}
+
+func registryNativeCapabilitiesToPlugin(capabilities *registry.NativeCapabilities) *pluginapi.NativeCapabilities {
+	if capabilities == nil {
+		return nil
+	}
+	out := &pluginapi.NativeCapabilities{}
+	if capabilities.WebSearch != nil {
+		webSearch := *capabilities.WebSearch
+		out.WebSearch = &webSearch
+	}
+	return out
 }
 
 func cloneStringSlice(in []string) []string {
@@ -217,6 +243,14 @@ func cloneRegistryModels(in []*registry.ModelInfo) []*registry.ModelInfo {
 		copyModel.SupportedParameters = cloneStringSlice(model.SupportedParameters)
 		copyModel.SupportedInputModalities = cloneStringSlice(model.SupportedInputModalities)
 		copyModel.SupportedOutputModalities = cloneStringSlice(model.SupportedOutputModalities)
+		if model.NativeCapabilities != nil {
+			capabilities := *model.NativeCapabilities
+			if capabilities.WebSearch != nil {
+				webSearch := *capabilities.WebSearch
+				capabilities.WebSearch = &webSearch
+			}
+			copyModel.NativeCapabilities = &capabilities
+		}
 		if model.Thinking != nil {
 			thinking := *model.Thinking
 			thinking.Levels = cloneStringSlice(model.Thinking.Levels)

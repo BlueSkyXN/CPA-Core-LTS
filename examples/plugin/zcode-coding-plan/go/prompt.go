@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -109,6 +110,8 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 			}
 			switch block["type"] {
 			case "text", "thinking", "redacted_thinking", "tool_use":
+			case "server_tool_use", "web_search_tool_result", "web_fetch_tool_result":
+				return nil, problem(400, "unsupported_content", "Provider-native tool history is not supported by Coding Plan; use client-executed function or MCP tools and start a new conversation without server-tool history")
 			case "image":
 				if m["role"] != "user" {
 					return nil, problem(400, "unsupported_content", "Images require a user message")
@@ -135,22 +138,8 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 			}
 		}
 	}
-	if v, exists := b["tools"]; exists {
-		list, ok := v.([]any)
-		if !ok {
-			return nil, problem(400, "unsupported_tools", "Invalid tools")
-		}
-		for _, v := range list {
-			tool, ok := v.(map[string]any)
-			if !ok {
-				return nil, problem(400, "unsupported_tools", "Invalid tool")
-			}
-			_, name := tool["name"].(string)
-			_, schema := tool["input_schema"].(map[string]any)
-			if !name || !schema {
-				return nil, problem(400, "unsupported_tools", "Only custom tools are supported")
-			}
-		}
+	if err := validateTools(b); err != nil {
+		return nil, err
 	}
 	if _, exists := b["x_coding_plan"]; exists {
 		return nil, problem(400, "prompt_override_disabled", "Prompt override is no longer supported")
@@ -179,6 +168,44 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 	b["metadata"] = metadata
 	return b, nil
 }
+func validateTools(body map[string]any) error {
+	value, exists := body["tools"]
+	if !exists {
+		return nil
+	}
+	tools, ok := value.([]any)
+	if !ok {
+		return problem(400, "invalid_request", "tools must be an array")
+	}
+	for i, value := range tools {
+		tool, ok := value.(map[string]any)
+		if !ok {
+			return problem(400, "invalid_request", fmt.Sprintf("tools[%d] must be an object", i))
+		}
+		if value, exists := tool["type"]; exists {
+			typ, ok := value.(string)
+			if !ok || strings.TrimSpace(typ) == "" {
+				return problem(400, "invalid_request", fmt.Sprintf("tools[%d].type must be a non-empty string when present", i))
+			}
+			if typ != "custom" {
+				message := "Provider-native tools are not supported by Coding Plan; use client-executed function or MCP tools with name and input_schema"
+				if strings.HasPrefix(typ, "web_search_") {
+					message = "Provider-native web_search is not supported by Coding Plan; disable provider-native WebSearch for this model and use a client-executed function or MCP search tool"
+				}
+				return problem(400, "unsupported_tools", fmt.Sprintf("tools[%d]: %s", i, message))
+			}
+		}
+		name, ok := tool["name"].(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			return problem(400, "invalid_request", fmt.Sprintf("tools[%d].name must be a non-empty string", i))
+		}
+		if _, ok := tool["input_schema"].(map[string]any); !ok {
+			return problem(400, "invalid_request", fmt.Sprintf("tools[%d].input_schema must be an object", i))
+		}
+	}
+	return nil
+}
+
 func validateImage(block map[string]any, model string) error {
 	if !builtinModelImageInput(model) {
 		return problem(400, "unsupported_content", "This model does not support image input")

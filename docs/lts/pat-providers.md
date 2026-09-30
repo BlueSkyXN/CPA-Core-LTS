@@ -53,6 +53,14 @@ Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 
 
 Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_logging_disabled` 布尔字段是日志审计确认门，`upstream`/`models`/`model_limits` 为可选覆盖。Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。提示词固定透传，旧私有配置和提示词覆盖字段明确拒绝。日志确认改为 false 或清除并成功热重载后，缓存凭据失效且调用被阻止。同一 AuthID 可以更新 key/device ID；有在途请求时暂拒凭据切换，删除账号会在取消和清理完成后释放绑定，允许添加替代账号。Panel 表单要求插件 ≥0.4.0，按实际 upstream 显示端点，并移除旧账号的 config_file 引用。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
 
+### Coding Plan 工具能力边界
+
+0.4.2 源码明确区分客户端执行的 function/custom/MCP 工具与 provider-native server tools：前者保留定义、schema 和成对历史，后者在签名握手／模型请求前明确拒绝。给原生 `web_search_*` 添加 `input_schema` 也不能绕过校验。无效函数定义按 `tools[index]` 指出字段，错误不回显调用者提供的名称、类型或 schema；旧服务端工具历史需使用不含该历史的新会话，不伪造搜索结果。
+
+插件模型 API 新增可选的 `ModelInfo.NativeCapabilities.WebSearch` 三态声明，ABI/schema 不变；旧插件缺省仍为未知。宿主深拷贝并保留此能力，Coding Plan 对所有 allowlist ID 声明 `false`，通过现有 CPA-aware `/v1/models?client_version=cpa` 输出 `cpa_capabilities.web_search=false`。同名可搜索 provider 不能覆盖不支持搜索的插件路径。普通模型目录不会自动修改客户端本地配置。
+
+ZCode 使用当前生效数据目录下的 `.zcode/v2/provider_config.json`；手动模型规则位于 `config.modelConfigRules.manualProviderModelRules[].config`。仅合并 `properties.supportsNativeWebSearch=false`，不关闭普通 tool call、不重复添加同一 provider/model 的自动和手动规则。内置 WebSearch 实际另发 provider-native 模型请求且没有外部搜索自动 fallback；联网需求应使用独立的客户端 function/MCP 搜索工具。具体限制见插件 [README](../../examples/plugin/zcode-coding-plan/README.md#client-tools-and-native-websearch)。源码版本不是已发布产物，本地合成回归不是线上真实模型或客户端 UI 验收。
+
 ## 插件 ABI 契约与 LTS schema 语义（第三方插件作者须知）
 
 `sdk/pluginabi` 与 `sdk/pluginapi` 是 LTS 的稳定公开契约：破坏性变更必须升级 SchemaVersion/ABIVersion，并保留旧行为分支。宿主接受 schema 低于当前的插件，缺失协商字段按 schema 1 处理。

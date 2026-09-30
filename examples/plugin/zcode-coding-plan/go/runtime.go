@@ -395,6 +395,7 @@ func modelList(c *config) []any {
 		}
 		parameters := []string{"max_tokens", "tools", "tool_choice", "temperature", "top_p"}
 		model := map[string]any{"ID": m, "Name": m, "DisplayName": m, "Object": "model", "OwnedBy": provider, "Type": "agent", "UserDefined": true, "IsCompat": true, "ContextLength": limits.Context, "MaxCompletionTokens": limits.Output, "SupportedParameters": parameters, "SupportedInputModalities": input, "SupportedOutputModalities": []string{"text"}}
+		model["NativeCapabilities"] = map[string]any{"WebSearch": false}
 		if _, known := builtinModelLimits(m); known {
 			model["SupportedParameters"] = append(parameters, "reasoning_effort", "thinking")
 			model["Thinking"] = map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}
