@@ -39,7 +39,11 @@ func TestThinkingRejectsUnsupportedControls(t *testing.T) {
 	for _, extra := range []string{
 		`"reasoning_effort":"none"`, `"reasoning_effort":"medium"`, `"reasoning_effort":42`,
 		`"thinking":{"type":"disabled"}`, `"thinking":{"type":"enabled","budget_tokens":100}`,
-		`"thinking":{"type":"enabled","display":"summarized"}`,
+		`"thinking":{"type":"enabled","display":"omitted"}`,
+		`"thinking":{"type":"enabled","display":"raw"}`,
+		`"thinking":{"type":"enabled","display":null}`,
+		`"thinking":{"type":"enabled","display":42}`,
+		`"thinking":{"type":"enabled","display":true}`,
 		`"output_config":{"effort":"high","format":{"type":"json_schema"}}`,
 		`"reasoning_effort":"low","output_config":{"effort":"high"}`,
 	} {
@@ -53,7 +57,7 @@ func TestThinkingRejectsUnsupportedControls(t *testing.T) {
 	if err != nil || result["reasoning_effort"] != "low" {
 		t.Fatal("original request overrode the effective Core payload", err)
 	}
-	summaryBody := []byte(`{"model":"glm-5.3","max_tokens":100,"reasoning_effort":"low","thinking":{"type":"enabled","display":"summarized"},"messages":[{"role":"user","content":"hello"}]}`)
+	summaryBody := []byte(`{"model":"glm-5.3","max_tokens":100,"reasoning_effort":"low","thinking":{"type":"enabled","display":"omitted"},"messages":[{"role":"user","content":"hello"}]}`)
 	_, err = transformExecution(executorRequest{Payload: summaryBody}, defaultConfig(), "session")
 	if err == nil || !strings.Contains(err.Error(), "summary") {
 		t.Fatal("summary display rejection must point at the reasoning summary control", err)
@@ -97,5 +101,36 @@ func TestCustomModelDoesNotAdvertiseUnverifiedThinking(t *testing.T) {
 	m := modelList(c)[0].(map[string]any)
 	if m["Thinking"] != nil || len(m["SupportedInputModalities"].([]string)) != 1 {
 		t.Fatal("custom model inherited built-in-only capabilities")
+	}
+}
+
+func TestThinkingSummaryDisplay(t *testing.T) {
+	for _, model := range builtinModels {
+		for _, effort := range append([]string{""}, builtinThinkingLevels...) {
+			for _, clear := range []bool{false, true} {
+				body := map[string]any{"model": model, "max_tokens": 100, "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "thinking": map[string]any{"type": "adaptive", "display": "summarized", "clear_thinking": clear}}
+				if effort != "" {
+					body["output_config"] = map[string]any{"effort": effort}
+				}
+				result, err := transformExecution(executorRequest{Payload: encode(body)}, defaultConfig(), "session")
+				if err != nil {
+					t.Fatal(err)
+				}
+				think := result["thinking"].(map[string]any)
+				if len(think) != 2 || think["type"] != "enabled" || think["clear_thinking"] != clear {
+					t.Fatal("display leaked or effective thinking changed")
+				}
+				if effort != "" && result["reasoning_effort"] != effort {
+					t.Fatal("effort lost")
+				}
+			}
+		}
+	}
+	for _, original := range []string{`{"reasoning":{"summary":"auto"}}`, `{"reasoning":{"summary":"none"}}`, `{"thinking":{"type":"enabled","display":"omitted"}}`} {
+		body := []byte(`{"model":"glm-5.3","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`)
+		result, err := transformExecution(executorRequest{Payload: body, OriginalRequest: []byte(original)}, defaultConfig(), "session")
+		if err != nil || result["thinking"] != nil {
+			t.Fatal("original display restored removed controls", err)
+		}
 	}
 }

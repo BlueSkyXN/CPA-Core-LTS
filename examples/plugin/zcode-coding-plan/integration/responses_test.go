@@ -241,6 +241,7 @@ func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
 	baseHandlers := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)
 	handler := openai.NewOpenAIResponsesAPIHandler(baseHandlers)
 	router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(baseHandlers).ClaudeMessages)
+	router.POST("/v1/chat/completions", openai.NewOpenAIAPIHandler(baseHandlers).ChatCompletions)
 	router.POST("/v1/responses", handler.Responses)
 	router.GET("/v1/responses/ws", handler.ResponsesWebsocket)
 	mgmt := management.NewHandlerWithoutConfigFilePath(cfg, manager)
@@ -335,14 +336,24 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 	if len(f.transport.captured) != before {
 		t.Fatal("invalid request reached model")
 	}
-	summaryBefore := len(f.transport.captured)
-	summary := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"high","summary":"auto"}}`, v2Model))
-	if summary.Code != 400 || !strings.Contains(summary.Body.String(), "summary") {
-		t.Fatalf("summary control rejection must point at the reasoning summary: %d %s", summary.Code, summary.Body.String())
+	summary := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"high","summary":"auto"},"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`, v2Model))
+	if summary.Code != 200 || gjson.GetBytes(summary.Body.Bytes(), "output.0.summary.0.text").String() != "synthetic reason" {
+		t.Fatalf("summary display failed: %d %s", summary.Code, summary.Body.String())
 	}
-	if len(f.transport.captured) != summaryBefore {
-		t.Fatal("rejected summary control reached model")
+	if gjson.GetBytes(f.transport.captured[len(f.transport.captured)-1], "thinking.display").Exists() {
+		t.Fatal("display leaked upstream")
 	}
+	before = len(f.transport.captured)
+	for _, hide := range []string{`"none"`, `null`} {
+		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"high","summary":%s}}`, v2Model, hide))
+		if res.Code != 400 || !strings.Contains(res.Body.String(), "summary") {
+			t.Fatalf("hide was not rejected: %d", res.Code)
+		}
+	}
+	if len(f.transport.captured) != before {
+		t.Fatal("hidden summary reached upstream")
+	}
+
 }
 func TestV2PromptOverrideRemoved(t *testing.T) {
 	if isolateDynamic(t) {

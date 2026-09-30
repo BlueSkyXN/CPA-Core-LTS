@@ -18,7 +18,7 @@ The host must advertise all five features before registration/reconfiguration ca
 
 ## Request and lifecycle rules
 
-Core owns routing, account selection, Responses translation, connection history, usage attribution and callback contexts. The plugin owns its configuration snapshot, signer and active executions. It never keeps a second conversation history or emits a second usage report.
+Core owns routing, account selection, Responses/Chat translation, connection history, usage attribution and callback contexts. The plugin owns its configuration snapshot, signer and active executions. It never keeps a second conversation history or emits a second usage report.
 
 ```mermaid
 sequenceDiagram
@@ -46,6 +46,10 @@ System prompts are preserved; there are no template files, prompt modes or per-r
 
 Built-in model effort is low/high/max. Normalize effective native `reasoning_effort`, `output_config.effort` or translated Responses effort to GLM `reasoning_effort` and `thinking.type=enabled`; do not invent manual budgets. Reject unsupported levels, contradictory controls and disabled thinking. Flash image sources are validated base64 JPEG/PNG/GIF/WebP or HTTP(S) URLs without credentials; text-only models reject images, and the plugin never fetches image URLs. Custom allowlisted IDs do not advertise unverified built-in capabilities. Tests assert the outgoing fields; live acceptance at the Anthropic-compatible endpoint remains separate.
 
+For built-in GLM, accept effective `thinking.display=summarized` and consume it locally; never send display upstream. Preserve effective effort, enabled thinking and boolean clear_thinking. Reject effective omitted, unsupported strings and non-string display values before handshake/model dispatch. Do not recover removed controls from OriginalRequest. Responses auto/concise/detailed are display intent, not a promise of actual summarization. The shared translator only carries disabled summary intent when target thinking is active; reliable server-side hiding remains unsupported.
+
+Expose provider-public thinking through Responses summary_text, Chat reasoning_content or native Messages thinking, without mixing it into the final answer, duplicating raw/summary, decoding opaque payloads or adding an inference call. Retain existing Responses/Messages signed history. Chat has no new signature carrier. Chat and Responses requests use selected-route capabilities; non-nil empty capability metadata must not inherit peers or invent a thinking budget. Chat supports ordinary Message JSON and checked full-frame SSE through the shared Anthropic event bridge; retain hook order, cancellation, terminal validation and single usage reporting.
+
 Bind the configured account to the Core AuthID. Same-account credential rotation replaces config/signing snapshots only when no execution is active; busy and stale admission are explicit errors. Reconfiguration retains account ownership. Account/provider closure cancels owned work and releases credentials and ownership after the final execution finishes; session-only closure does not. Every configuration lookup and admission checks the logging acknowledgement. Successful false/inherit reconfiguration removes cached credentials and reports not-ready; re-acknowledgement reloads the selected account.
 
 Registration/reconfiguration validates management input before swapping state. Reconfiguration rejects active executions; failures preserve the plugin's prior memory snapshot. Admission rejects a config snapshot replaced after validation. This is not a promise that Core rolls back persisted YAML when its existing asynchronous reload fails.
@@ -69,4 +73,5 @@ Reuse the existing `Dockerfile.pat-providers`, `pat-provider-delivery` workflow 
 3. `test-cpa.sh` builds the actual C-shared library in a temporary directory and exercises the checkout's Core using an in-memory upstream transport and loopback WebSocket listener. Preserve JSON/SSE, tool/thinking history, parent-ID checks, no retry/replay, log canaries, cancellation and management/config tests.
 4. Each dynamic scenario runs in a child process with its existing bounded deadline; failures and nonzero exits must fail the suite. Never treat a printed PASS as process success or increase deadlines to hide a hang.
 5. Integrate into the existing provider-connectors PR job and LTS source guard. The Core root `go test ./...` does not traverse nested modules, so the explicit plugin job is required.
-6. The source tree must build and test without the originating local workspace, private files or a separate Node product checkout. Cross-platform/live acceptance is claimed only for environments actually verified.
+6. The new three-protocol reasoning-display dynamic fixture is an acceptance requirement, not a completed E2E claim. Run it only when that testing is authorized. Mock host/translator tests are distinct from dynamic-library, real-client and upstream acceptance.
+7. The source tree must build and test without the originating local workspace, private files or a separate Node product checkout. Cross-platform/live acceptance is claimed only for environments actually verified.

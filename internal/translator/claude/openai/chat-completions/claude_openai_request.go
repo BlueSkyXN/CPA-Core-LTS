@@ -34,16 +34,16 @@ import (
 // Returns:
 //   - []byte: The transformed request data in Claude Code API format
 func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, false)
+	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, false, nil)
 }
 
 // ConvertOpenAIRequestToClaudeWithCompat preserves assistant reasoning content
 // as an unsigned thinking block for configured compatibility endpoints.
 func ConvertOpenAIRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, true)
+	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, true, nil)
 }
 
-func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) []byte {
+func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo) []byte {
 	rawJSON := inputRawJSON
 
 	userID := common.DeriveClaudeUserID(rawJSON)
@@ -58,7 +58,10 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	if v := root.Get("reasoning_effort"); v.Exists() {
 		effort := strings.ToLower(strings.TrimSpace(v.String()))
 		if effort != "" {
-			mi := registry.LookupModelInfo(modelName, "claude")
+			mi := modelInfo
+			if mi == nil {
+				mi = registry.LookupModelInfo(modelName, "claude")
+			}
 			supportsAdaptive := mi != nil && mi.Thinking != nil && len(mi.Thinking.Levels) > 0
 			supportsMax := supportsAdaptive && thinking.HasLevel(mi.Thinking.Levels, string(thinking.LevelMax))
 
@@ -83,6 +86,8 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 					out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
 					out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 				}
+			} else if modelInfo != nil && modelInfo.Thinking == nil {
+				out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 			} else {
 				// Legacy/manual thinking (budget_tokens).
 				budget, ok := thinking.ConvertLevelToBudget(effort)
@@ -111,6 +116,9 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	// max_completion_tokens, so accept either spelling.
 	if maxTokens := firstExisting(root.Get("max_tokens"), root.Get("max_completion_tokens")); maxTokens.Exists() {
 		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
+	}
+	if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 && gjson.GetBytes(out, "max_tokens").Int() > int64(modelInfo.MaxCompletionTokens) {
+		out, _ = sjson.SetBytes(out, "max_tokens", modelInfo.MaxCompletionTokens)
 	}
 
 	// Top P setting for nucleus sampling.

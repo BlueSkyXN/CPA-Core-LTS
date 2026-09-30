@@ -113,12 +113,20 @@ func TestExecutorModelInfoPreventsGlobalFallbackOnCatalogMiss(t *testing.T) {
 		reg.UnregisterClient(auth.ID)
 		reg.UnregisterClient("catalog-miss-peer")
 	})
-	prepared, err := adapter.prepareExecutorCallForAuth(context.Background(), auth, coreexecutor.Request{Model: "catalog-miss-model", Payload: []byte(`{"input":"hello","max_output_tokens":64000,"reasoning":{"summary":"auto"}}`)}, coreexecutor.Options{SourceFormat: tr.FormatOpenAIResponse})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gjson.GetBytes(prepared.req.Payload, "max_tokens").Int() != 64000 || gjson.GetBytes(prepared.req.Payload, "thinking").Exists() {
-		t.Fatal("selected catalog miss inherited global capability")
+	for _, source := range []struct {
+		format tr.Format
+		body   string
+	}{
+		{tr.FormatOpenAIResponse, `{"input":"hello","max_output_tokens":64000,"reasoning":{"summary":"auto"}}`},
+		{tr.FormatOpenAI, `{"messages":[{"role":"user","content":"hello"}],"max_completion_tokens":64000,"reasoning_effort":"max"}`},
+	} {
+		prepared, err := adapter.prepareExecutorCallForAuth(context.Background(), auth, coreexecutor.Request{Model: "catalog-miss-model", Payload: []byte(source.body)}, coreexecutor.Options{SourceFormat: source.format})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gjson.GetBytes(prepared.req.Payload, "max_tokens").Int() != 64000 || gjson.GetBytes(prepared.req.Payload, "thinking").Exists() {
+			t.Fatal("selected catalog miss inherited global capability")
+		}
 	}
 }
 
@@ -151,38 +159,83 @@ func TestExecutorSelectedCapabilitiesAcrossExecutionCalls(t *testing.T) {
 		},
 	}
 	adapter := newCurrentExecutorAdapterForTest(New(), "selected-execution", executor, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
-	for _, authID := range []string{"selected-execution-auth", "selected-execution-second", "selected-execution-auth"} {
-		auth := &coreauth.Auth{ID: authID, Provider: adapter.provider}
-		for _, operation := range []string{"execute", "stream", "count"} {
-			req := coreexecutor.Request{Model: model, Payload: []byte(fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"max"},"max_output_tokens":64000}`, model))}
-			opts := coreexecutor.Options{SourceFormat: tr.FormatOpenAIResponse, ResponseFormat: tr.FormatClaude, Stream: operation == "stream"}
-			var err error
-			switch operation {
-			case "execute":
-				_, err = adapter.Execute(context.Background(), auth, req, opts)
-			case "count":
-				_, err = adapter.CountTokens(context.Background(), auth, req, opts)
-			case "stream":
-				var result *coreexecutor.StreamResult
-				result, err = adapter.ExecuteStream(context.Background(), auth, req, opts)
-				if err == nil {
-					for chunk := range result.Chunks {
-						if chunk.Err != nil {
-							t.Fatal(chunk.Err)
+	for _, source := range []tr.Format{tr.FormatOpenAIResponse, tr.FormatOpenAI} {
+		for _, authID := range []string{"selected-execution-auth", "selected-execution-second", "selected-execution-auth"} {
+			auth := &coreauth.Auth{ID: authID, Provider: adapter.provider}
+			for _, operation := range []string{"execute", "stream", "count"} {
+				req := coreexecutor.Request{Model: model, Payload: []byte(fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"max"},"max_output_tokens":64000}`, model))}
+				if source == tr.FormatOpenAI {
+					req.Payload = []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max","max_completion_tokens":64000}`, model))
+				}
+				opts := coreexecutor.Options{SourceFormat: source, ResponseFormat: tr.FormatClaude, Stream: operation == "stream"}
+				var err error
+				switch operation {
+				case "execute":
+					_, err = adapter.Execute(context.Background(), auth, req, opts)
+				case "count":
+					_, err = adapter.CountTokens(context.Background(), auth, req, opts)
+				case "stream":
+					var result *coreexecutor.StreamResult
+					result, err = adapter.ExecuteStream(context.Background(), auth, req, opts)
+					if err == nil {
+						for chunk := range result.Chunks {
+							if chunk.Err != nil {
+								t.Fatal(chunk.Err)
+							}
 						}
 					}
 				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantEffort, wantMax := "max", int64(64000)
+				if authID == "selected-execution-second" {
+					wantEffort, wantMax = "high", 4096
+				}
+				if captured.AuthID != authID || gjson.GetBytes(captured.Payload, "output_config.effort").String() != wantEffort || gjson.GetBytes(captured.Payload, "max_tokens").Int() != wantMax {
+					t.Fatalf("%s reused another account's capabilities for %s", operation, authID)
+				}
 			}
-			if err != nil {
-				t.Fatal(err)
+		}
+	}
+}
+
+func TestExecutorSummaryIntentAndNormalizerAuthority(t *testing.T) {
+	defer tr.SetPluginHooks(nil)
+	host := New()
+	adapter := newCurrentExecutorAdapterForTest(host, "summary-controls", &fakeExecutor{}, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
+	host.modelRegistrations[adapter.pluginID] = pluginModelRegistration{models: []*registry.ModelInfo{{ID: "summary-controls", Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high", "max"}}}}}
+	for _, source := range []tr.Format{tr.FormatOpenAIResponse, tr.FormatOpenAI} {
+		for _, remove := range []bool{false, true} {
+			tr.SetPluginHooks(&anthropicTestHooks{removeThinking: remove})
+			for _, tc := range []struct{ controls, display, effort string }{
+				{``, "", ""},
+				{`"reasoning":{"summary":"auto"}`, "summarized", ""},
+				{`"reasoning":{"summary":"concise"}`, "summarized", ""},
+				{`"reasoning":{"summary":"detailed"}`, "summarized", ""},
+				{`"reasoning":{"summary":"none"}`, "", ""},
+				{`"reasoning":{"summary":null}`, "", ""},
+				{`"reasoning":{"summary":"none","effort":"high"},"reasoning_effort":"high"`, "omitted", "high"},
+				{`"reasoning":{"summary":null,"effort":"high"},"reasoning_effort":"high"`, "omitted", "high"},
+			} {
+				body := `{"messages":[{"role":"user","content":"hello"}],"input":"hello"`
+				if tc.controls != "" {
+					body += "," + tc.controls
+				}
+				body += "}"
+				prepared, err := adapter.prepareExecutorCallForAuth(context.Background(), nil, coreexecutor.Request{Model: "summary-controls", Payload: []byte(body)}, coreexecutor.Options{SourceFormat: source})
+				if err != nil {
+					t.Fatal(err)
+				}
+				display := tc.display
+				if remove {
+					display = ""
+				}
+				if gjson.GetBytes(prepared.req.Payload, "thinking.display").String() != display || gjson.GetBytes(prepared.req.Payload, "output_config.effort").String() != tc.effort {
+					t.Errorf("summary intent mismatch source=%s remove=%v controls=%s", source, remove, tc.controls)
+				}
 			}
-			wantEffort, wantMax := "max", int64(64000)
-			if authID == "selected-execution-second" {
-				wantEffort, wantMax = "high", 4096
-			}
-			if captured.AuthID != authID || gjson.GetBytes(captured.Payload, "output_config.effort").String() != wantEffort || gjson.GetBytes(captured.Payload, "max_tokens").Int() != wantMax {
-				t.Fatalf("%s reused another account's capabilities for %s", operation, authID)
-			}
+			tr.SetPluginHooks(nil)
 		}
 	}
 }
