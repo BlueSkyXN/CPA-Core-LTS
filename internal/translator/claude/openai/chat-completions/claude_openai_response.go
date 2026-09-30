@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -43,10 +44,11 @@ type claudeUsageTokens struct {
 
 // ToolCallAccumulator holds the state for accumulating tool call data
 type ToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Index     int
-	Arguments strings.Builder
+	ID           string
+	Name         string
+	InitialInput string
+	Index        int
+	Arguments    strings.Builder
 }
 
 func (u *claudeUsageTokens) Merge(usage gjson.Result) {
@@ -100,7 +102,24 @@ func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalT
 //
 // Returns:
 //   - [][]byte: A slice of OpenAI-compatible JSON responses
-func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func ConvertClaudeResponseToOpenAI(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+	if checked, ok := (*param).(*claudecommon.PluginResponseState); ok {
+		checked.Chat = true
+		if !checked.Accept(rawJSON) {
+			return nil
+		}
+		seed := checked.ContentSeed(rawJSON)
+		var frames [][]byte
+		if len(seed) > 0 && gjson.GetBytes(bytes.TrimSpace(bytes.TrimPrefix(rawJSON, dataTag)), "type").String() == "content_block_stop" {
+			frames = ConvertClaudeResponseToOpenAI(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.Native)
+			seed = nil
+		}
+		frames = append(frames, ConvertClaudeResponseToOpenAI(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, &checked.Native)...)
+		if len(seed) > 0 {
+			frames = append(frames, ConvertClaudeResponseToOpenAI(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.Native)...)
+		}
+		return frames
+	}
 	if *param == nil {
 		*param = &ConvertAnthropicResponseToOpenAIParams{
 			CreatedAt:    0,
@@ -348,15 +367,42 @@ func mapAnthropicStopReasonToOpenAI(anthropicReason string) string {
 //
 // Returns:
 //   - []byte: An OpenAI-compatible JSON response containing all message content and metadata
-func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
-	chunks := make([][]byte, 0)
-
-	lines := bytes.Split(rawJSON, []byte("\n"))
-	for _, line := range lines {
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
+func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
+	var checked *claudecommon.PluginResponseState
+	if param != nil {
+		checked, _ = (*param).(*claudecommon.PluginResponseState)
+	}
+	invalid := func() []byte {
+		if checked != nil {
+			checked.Err = claudecommon.PluginResponseError()
 		}
-		chunks = append(chunks, bytes.TrimSpace(line[5:]))
+		return nil
+	}
+	var message gjson.Result
+	var chunks [][]byte
+	if gjson.ValidBytes(rawJSON) {
+		message = gjson.ParseBytes(rawJSON)
+		if claudecommon.ValidatePluginMessage(message, true) != nil {
+			return invalid()
+		}
+	} else {
+		for _, line := range bytes.Split(rawJSON, []byte("\n")) {
+			if !bytes.HasPrefix(line, dataTag) {
+				continue
+			}
+			chunk := bytes.TrimSpace(line[len(dataTag):])
+			if !gjson.ValidBytes(chunk) {
+				return invalid()
+			}
+			chunks = append(chunks, chunk)
+			if checked != nil {
+				checked.Chat = true
+				checked.Accept(line)
+			}
+		}
+		if len(chunks) == 0 || (checked != nil && (checked.Err != nil || !checked.Terminal)) {
+			return invalid()
+		}
 	}
 
 	// Base OpenAI non-streaming response template
@@ -370,6 +416,34 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	var reasoningParts []string
 	usageTokens := claudeUsageTokens{}
 	toolCallsAccumulator := make(map[int]*ToolCallAccumulator)
+
+	addBlock := func(index int, block gjson.Result) {
+		switch block.Get("type").String() {
+		case "text":
+			if text := block.Get("text").String(); text != "" {
+				contentParts = append(contentParts, text)
+			}
+		case "thinking":
+			if text := block.Get("thinking").String(); text != "" {
+				reasoningParts = append(reasoningParts, text)
+			}
+		case "tool_use":
+			toolCallsAccumulator[index] = &ToolCallAccumulator{ID: block.Get("id").String(), Name: block.Get("name").String(), InitialInput: block.Get("input").Raw}
+		}
+	}
+	if message.Exists() {
+		messageID = message.Get("id").String()
+		model = message.Get("model").String()
+		if model == "" {
+			model = modelName
+		}
+		createdAt = time.Now().Unix()
+		stopReason = message.Get("stop_reason").String()
+		usageTokens.Merge(message.Get("usage"))
+		for index, block := range message.Get("content").Array() {
+			addBlock(index, block)
+		}
+	}
 
 	for _, chunk := range chunks {
 		root := gjson.ParseBytes(chunk)
@@ -386,21 +460,7 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 			}
 
 		case "content_block_start":
-			// Handle different content block types at the beginning
-			if contentBlock := root.Get("content_block"); contentBlock.Exists() {
-				blockType := contentBlock.Get("type").String()
-				if blockType == "thinking" {
-					// Start of thinking/reasoning content - skip for now as it's handled in delta
-					continue
-				} else if blockType == "tool_use" {
-					// Initialize tool call accumulator for this index
-					index := int(root.Get("index").Int())
-					toolCallsAccumulator[index] = &ToolCallAccumulator{
-						ID:   contentBlock.Get("id").String(),
-						Name: contentBlock.Get("name").String(),
-					}
-				}
-			}
+			addBlock(int(root.Get("index").Int()), root.Get("content_block"))
 
 		case "content_block_delta":
 			// Process incremental content updates
@@ -433,7 +493,11 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 			index := int(root.Get("index").Int())
 			if accumulator, exists := toolCallsAccumulator[index]; exists {
 				if accumulator.Arguments.Len() == 0 {
-					accumulator.Arguments.WriteString("{}")
+					if accumulator.InitialInput != "" {
+						accumulator.Arguments.WriteString(accumulator.InitialInput)
+					} else {
+						accumulator.Arguments.WriteString("{}")
+					}
 				}
 			}
 
@@ -493,6 +557,12 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 			}
 
 			arguments := accumulator.Arguments.String()
+			if arguments == "" {
+				arguments = accumulator.InitialInput
+			}
+			if arguments == "" {
+				arguments = "{}"
+			}
 
 			idPath := fmt.Sprintf("choices.0.message.tool_calls.%d.id", toolCallsCount)
 			typePath := fmt.Sprintf("choices.0.message.tool_calls.%d.type", toolCallsCount)

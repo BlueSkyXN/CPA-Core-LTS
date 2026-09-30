@@ -1,8 +1,8 @@
 # Coding Plan native Go plugin
 
-`zcode-coding-plan` v0.4.0 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
+`zcode-coding-plan` v0.4.1 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
 
-The plugin supports direct Anthropic Messages with Core's Responses HTTP JSON/SSE adapter and same-connection WebSocket continuation. It does not execute tools, maintain another chat history, discover accounts, scan official application directories, query quota or implement interactive login. Use only credentials and client identity you are authorized to use. Local synthetic acceptance is not proof of upstream acceptance, pricing or production logging safety.
+The plugin supports direct Anthropic Messages with Core's Responses HTTP JSON/SSE adapter and same-connection WebSocket continuation. The matching Core source also provides Chat Completions JSON/SSE conversion; updating the plugin alone on an older Core does not add that adapter. It does not execute tools, maintain another chat history, discover accounts, scan official application directories, query quota or implement interactive login. Use only credentials and client identity you are authorized to use. Local synthetic acceptance is not proof of upstream acceptance, pricing or production logging safety.
 
 ## Build and test
 
@@ -70,13 +70,31 @@ Configuration saved means the existing PATCH persisted its fields, not that asyn
 
 Caller system prompts are preserved. Template files, prompt modes and per-request prompt selection were removed. `x_coding_plan` is rejected and `X-Coding-Plan-Prompt` no longer selects a policy. Controls stripped from the effective Core payload are never restored from `OriginalRequest`.
 
-The built-in GLM models accept `low`, `high` and `max` effort. Native Messages may supply `reasoning_effort` or `output_config.effort`; Responses supplies `reasoning.effort`, which Core translates before plugin execution. The plugin normalizes the effective control to `reasoning_effort` plus `thinking.type=enabled`, without inventing token budgets. Conflicting fields, unsupported levels, manual budgets and disabled thinking are rejected. Omitting controls preserves the upstream default. Optional custom model IDs do not inherit unverified built-in thinking/image capabilities.
+The built-in GLM models accept `low`, `high` and `max` effort. Native Messages may supply `reasoning_effort` or `output_config.effort`; Responses supplies `reasoning.effort`, and Chat Completions supplies `reasoning_effort`, which Core translates before plugin execution. Responses and Chat use the selected account/model capabilities, not another provider's same-name model. The plugin normalizes the effective control to `reasoning_effort` plus `thinking.type=enabled`, without inventing token budgets. Conflicting fields, unsupported levels, manual budgets and disabled thinking are rejected. Omitting controls preserves the upstream default. Optional custom model IDs do not inherit unverified built-in thinking/image capabilities.
+
+### Reasoning display compatibility
+
+With the matching Core source, `reasoning.summary: "auto"` in Responses (including summary-only requests) is translated to `thinking.display: "summarized"`. Built-in GLM models accept this effective display control locally and omit it from the upstream request. Chat's non-`none` effort retains Core's existing implicit request for visible reasoning. Native Messages may send `thinking: {"type":"enabled","display":"summarized"}`. Effort, enabled thinking and boolean `clear_thinking` are preserved.
+
+Public thinking text returned by the provider stays separate from the final answer:
+
+| Client protocol | JSON | SSE |
+|---|---|---|
+| Responses | reasoning item `summary[].text` (`summary_text`) | `response.reasoning_summary_text.delta` and matching part/done events |
+| Chat Completions | `choices[].message.reasoning_content` | `choices[].delta.reasoning_content` |
+| Messages | `content[]` thinking blocks | thinking blocks / `thinking_delta` |
+
+The text is not compressed or regenerated. `concise`/`detailed` currently select the same summary-compatible display channel; they do not guarantee a particular summary length. No second model call or raw/summary duplication is introduced. Only provider-public text is displayed; signatures and redacted/encrypted payloads are not decrypted or rendered as reasoning. Responses/Messages retain their existing opaque replay handling; Chat `reasoning_content` is a text compatibility extension, not a lossless carrier for Anthropic signatures.
+
+Effective `thinking.display: "omitted"` is still rejected before upstream dispatch, as are invalid display values/types. Responses `summary: "none"` or `null` is not equivalent to leaving the field out: Core converts it to `omitted` when thinking is active. Without an active target thinking mode, the shared converter may not carry that hide intent; this change does not provide reliable server-side hiding. Do not use these fields as a privacy guarantee. Controls removed by Core normalizers are never restored from `OriginalRequest`.
+
+Current Codex and ZCode clients can consume the summary compatibility channel without raw-only output. Actual UI rendering and the dynamic-library three-protocol fixture remain separate acceptance steps. This source change does not edit client settings, publish packages or update a deployment; xAI/Grok's existing normalization remains unchanged.
 
 The field names and mandatory thinking behavior follow the official [GLM-5.3 model guide](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3.md) and [migration guide](https://docs.bigmodel.cn/cn/guide/start/migrate-to-glm-new.md). These guides demonstrate Chat Completions fields; the plugin's normalization over its Anthropic-compatible endpoint is covered by synthetic wire assertions, not a claim of live upstream acceptance. Real account/provider acceptance remains a deployment check.
 
 `glm-5.3-flash` accepts native Anthropic image blocks and translated Responses `input_image`: base64 JPEG/PNG/GIF/WebP or HTTP(S) image URLs without embedded credentials. The plugin validates and forwards image sources but does not fetch URLs itself. Text-only `glm-5.3` rejects images before upstream dispatch. Custom function tools, paired text/image tool results and thinking/signature history remain supported.
 
-Strict output schemas, priority tier, HTTP store/background, files, server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. Chat HTTP is not a verified delivery entry point.
+Strict output schemas, priority tier, HTTP store/background, files, server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. Chat HTTP has mock host/translator regression coverage; the new three-protocol dynamic-library fixture and real-client rendering have not been run for this change.
 
 ## Safety and validation boundary
 

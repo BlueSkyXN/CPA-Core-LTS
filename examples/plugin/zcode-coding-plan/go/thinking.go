@@ -85,7 +85,18 @@ func applyThinkingControls(body, original map[string]any) error {
 				}
 				next[key] = value
 			case "display":
-				return problem(400, "unsupported_parameter", "Reasoning summary display controls are not supported by this provider")
+				display, ok := value.(string)
+				if !ok {
+					return problem(400, "invalid_request", "thinking.display must be a string")
+				}
+				switch display {
+				case "summarized":
+					// Core maps public thinking text to the client's reasoning channel.
+				case "omitted":
+					return problem(400, "unsupported_parameter", "Hiding reasoning summary is not supported by this provider")
+				default:
+					return problem(400, "unsupported_parameter", "Unsupported thinking.display value")
+				}
 			default:
 				return problem(400, "unsupported_parameter", "Manual thinking budget controls are not supported")
 			}

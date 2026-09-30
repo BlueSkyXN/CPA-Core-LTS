@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	clauderesponses "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/responses"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -83,8 +83,8 @@ func (p *claudePluginSSE) feed(chunk []byte, emit func([]byte, string) error) er
 	return nil
 }
 
-func isClaudePluginResponses(prepared preparedExecutorCall) bool {
-	return prepared.outputFormat == tr.FormatClaude && prepared.requestedFormat == tr.FormatOpenAIResponse
+func isClaudePluginOpenAI(prepared preparedExecutorCall) bool {
+	return prepared.outputFormat == tr.FormatClaude && (prepared.requestedFormat == tr.FormatOpenAIResponse || prepared.requestedFormat == tr.FormatOpenAI)
 }
 
 func claudePluginUpstreamError(payload []byte) error {
@@ -149,7 +149,8 @@ func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cance
 			fail(claudePluginConversionError())
 			return
 		}
-		state := &clauderesponses.PluginResponseState{}
+		state := &claudecommon.PluginResponseState{Chat: prepared.requestedFormat == tr.FormatOpenAI}
+		chatFinished := false
 		var param any = state
 		var parser claudePluginSSE
 		first := true
@@ -175,7 +176,10 @@ func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cance
 			if state.Err != nil {
 				return claudePluginConversionError()
 			}
-			if state.Terminal && !claudePluginHasResponsesTerminal(frames) {
+			if state.Chat && claudePluginHasChatFinish(frames) {
+				chatFinished = true
+			}
+			if state.Terminal && ((!state.Chat && !claudePluginHasResponsesTerminal(frames)) || (state.Chat && !chatFinished)) {
 				return claudePluginConversionError()
 			}
 			for _, frame := range frames {
@@ -257,4 +261,40 @@ func validClaudePluginResponsesJSON(body []byte) bool {
 	root := gjson.ParseBytes(body)
 	status := root.Get("status").String()
 	return root.Get("object").String() == "response" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("output").IsArray() && (status == "completed" || status == "incomplete")
+}
+
+func validClaudePluginChatJSON(body []byte) bool {
+	if !json.Valid(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	return root.Get("object").String() == "chat.completion" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("choices").IsArray() && root.Get("choices.0.message.role").String() == "assistant" && validChatFinish(root.Get("choices.0.finish_reason").String())
+}
+
+func validChatFinish(reason string) bool {
+	switch reason {
+	case "stop", "length", "tool_calls", "content_filter":
+		return true
+	}
+	return false
+}
+
+func claudePluginHasChatFinish(frames [][]byte) bool {
+	for _, frame := range frames {
+		if !json.Valid(frame) {
+			continue
+		}
+		root := gjson.ParseBytes(frame)
+		if root.Get("object").String() == "chat.completion.chunk" && root.Get("id").String() != "" && validChatFinish(root.Get("choices.0.finish_reason").String()) {
+			return true
+		}
+	}
+	return false
+}
+
+func validClaudePluginOpenAIJSON(prepared preparedExecutorCall, body []byte) bool {
+	if prepared.requestedFormat == tr.FormatOpenAI {
+		return validClaudePluginChatJSON(body)
+	}
+	return validClaudePluginResponsesJSON(body)
 }

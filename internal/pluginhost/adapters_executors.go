@@ -16,7 +16,7 @@ import (
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	clauderesponses "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/responses"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -1019,7 +1019,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 	nativeOpts := opts
 	if inputRequested != "" && inputRequested != inputFormat {
 		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: req.Model, Body: req.Payload, Stream: opts.Stream}
-		if inputRequested == sdktranslator.FormatOpenAIResponse && inputFormat == sdktranslator.FormatClaude {
+		if (inputRequested == sdktranslator.FormatOpenAIResponse || inputRequested == sdktranslator.FormatOpenAI) && inputFormat == sdktranslator.FormatClaude {
 			modelInfo, errModel := a.executionModelInfo(auth, req, opts)
 			if errModel != nil {
 				return preparedExecutorCall{}, errModel
@@ -1328,11 +1328,11 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		reporter.RecordFirstPacket()
 	}
 	var translated []byte
-	if isClaudePluginResponses(prepared) {
-		checked := &clauderesponses.PluginResponseState{}
+	if isClaudePluginOpenAI(prepared) {
+		checked := &claudecommon.PluginResponseState{Chat: prepared.requestedFormat == sdktranslator.FormatOpenAI}
 		var param any = checked
 		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, &param)
-		if checked.Err != nil || !validClaudePluginResponsesJSON(translated) {
+		if checked.Err != nil || !validClaudePluginOpenAIJSON(prepared, translated) {
 			err = claudePluginConversionError()
 			if reporter != nil {
 				if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
@@ -1396,7 +1396,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	streamCtx := ctx
 	var cancelStream context.CancelFunc
 	streamHandedOff := false
-	if isClaudePluginResponses(prepared) {
+	if isClaudePluginOpenAI(prepared) {
 		if streamCtx == nil {
 			streamCtx = context.Background()
 		}
@@ -1428,7 +1428,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		return nil, errExecuteStream
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
-	if isClaudePluginResponses(prepared) {
+	if isClaudePluginOpenAI(prepared) {
 		parent := ctx
 		if parent == nil {
 			parent = context.Background()

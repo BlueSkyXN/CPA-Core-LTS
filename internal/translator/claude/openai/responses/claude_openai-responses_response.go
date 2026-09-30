@@ -459,18 +459,18 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 // ConvertClaudeResponseToOpenAIResponses converts Claude SSE to OpenAI Responses SSE events.
 func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if checked, ok := (*param).(*PluginResponseState); ok {
-		if !checked.accept(rawJSON) {
+		if !checked.Accept(rawJSON) {
 			return nil
 		}
-		seed := checked.contentSeed(rawJSON)
+		seed := checked.ContentSeed(rawJSON)
 		var frames [][]byte
 		if len(seed) > 0 && gjson.GetBytes(bytes.TrimSpace(bytes.TrimPrefix(rawJSON, dataTag)), "type").String() == "content_block_stop" {
-			frames = ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.native)
+			frames = ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.Native)
 			seed = nil
 		}
-		frames = append(frames, ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, &checked.native)...)
+		frames = append(frames, ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, &checked.Native)...)
 		if len(seed) > 0 {
-			frames = append(frames, ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.native)...)
+			frames = append(frames, ConvertClaudeResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, seed, &checked.Native)...)
 		}
 		return frames
 	}
@@ -1019,7 +1019,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	if !message.Exists() && param != nil {
 		if checked, ok := (*param).(*PluginResponseState); ok {
 			for _, chunk := range chunks {
-				checked.accept(append([]byte("data: "), chunk...))
+				checked.Accept(append([]byte("data: "), chunk...))
 			}
 			if checked.Err != nil || !checked.Terminal {
 				checked.Err = pluginResponseError()
