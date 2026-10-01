@@ -64,16 +64,29 @@ func validatePluginContent(block gjson.Result, searches map[string]bool, chat bo
 			return PluginResponseError()
 		}
 	case "tool_use", "server_tool_use":
-		if block.Get("id").String() == "" || block.Get("name").String() == "" || !block.Get("input").IsObject() {
+		if block.Get("id").String() == "" || block.Get("name").String() == "" {
+			return PluginResponseError()
+		}
+		// GLM Coding Plan stream starts omit the input object on server_tool_use;
+		// only reject an explicitly malformed non-object input.
+		if input := block.Get("input"); input.Exists() && !input.IsObject() {
 			return PluginResponseError()
 		}
 		if block.Get("type").String() == "server_tool_use" {
-			if block.Get("name").String() != "web_search" {
+			// GLM Coding Plan reports its provider-executed search as web_search_prime.
+			if name := block.Get("name").String(); name != "web_search" && name != "web_search_prime" {
 				return PluginResponseError()
 			}
 			searches[block.Get("id").String()] = true
 		}
 	case "web_search_tool_result":
+		if !searches[block.Get("tool_use_id").String()] {
+			return PluginResponseError()
+		}
+	case "tool_result":
+		// GLM Coding Plan returns provider-executed search hits as assistant-side
+		// bare tool_result blocks paired with a preceding web_search(_prime)
+		// server_tool_use; unpaired ones stay invalid.
 		if !searches[block.Get("tool_use_id").String()] {
 			return PluginResponseError()
 		}
@@ -207,7 +220,11 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 			if !block.closed {
 				return fail()
 			}
-			if (block.kind == "tool_use" || block.kind == "server_tool_use") && s.stop != "max_tokens" && (!json.Valid([]byte(block.args.String())) || !gjson.Parse(block.args.String()).IsObject()) {
+			// GLM Coding Plan stream server_tool_use blocks carry no input at all;
+			// only client tool_use (and server blocks that accumulated input)
+			// must end with a JSON object body.
+			requiresObjectArgs := block.kind == "tool_use" || block.args.Len() > 0
+			if (block.kind == "tool_use" || block.kind == "server_tool_use") && s.stop != "max_tokens" && requiresObjectArgs && (!json.Valid([]byte(block.args.String())) || !gjson.Parse(block.args.String()).IsObject()) {
 				return fail()
 			}
 		}
