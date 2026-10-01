@@ -206,12 +206,26 @@ type ModelInfo struct {
 	SupportedInputModalities []string
 	// SupportedOutputModalities lists produced output modality names.
 	SupportedOutputModalities []string
+	// NativeCapabilities declares provider-hosted tools; nil leaves support unknown.
+	NativeCapabilities *NativeCapabilities `json:"NativeCapabilities,omitempty"`
 	// Thinking describes optional reasoning controls for the model.
 	Thinking *ThinkingSupport
 	// IsCompat opts this model into third-party Anthropic thinking/signature compatibility.
 	IsCompat bool `json:"IsCompat,omitempty"`
 	// UserDefined reports whether the model was provided by user configuration.
 	UserDefined bool
+}
+
+// NativeCapabilities contains optional provider-hosted tool support.
+type NativeCapabilities struct {
+	// WebSearch distinguishes explicit support or rejection from unknown (nil).
+	WebSearch *bool `json:"WebSearch,omitempty"`
+	// WebSearchReplay optionally selects a non-default search-history replay
+	// protocol; "bigmodel" allows BigModel Coding Plan's plain refer-tagged
+	// results instead of Anthropic's encrypted_content. Empty keeps the
+	// provider-native replay rules. Declaring native search support alone does
+	// not select a replay protocol.
+	WebSearchReplay string `json:"WebSearchReplay,omitempty"`
 }
 
 // ThinkingSupport describes supported reasoning budget controls.

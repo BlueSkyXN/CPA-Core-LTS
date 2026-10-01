@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -20,6 +21,10 @@ import (
 // previous answer as unsourced and search again.
 const (
 	claudeWebSearchToolName = "web_search"
+
+	// bigmodelWebSearchPrimeToolName is the server tool name GLM Coding Plan
+	// actually reports in server_tool_use blocks for native web searches.
+	bigmodelWebSearchPrimeToolName = "web_search_prime"
 
 	// responsesWebSearchIDPrefix namespaces the Claude server_tool_use id inside
 	// the Responses item id, mirroring the fc_/ctc_ prefixes used for tool calls
@@ -61,7 +66,36 @@ func claudeWebSearchQuery(input string) string {
 	if input == "" {
 		return ""
 	}
-	return strings.TrimSpace(gjson.Get(input, "query").String())
+	if query := strings.TrimSpace(gjson.Get(input, "query").String()); query != "" {
+		return query
+	}
+	// GLM Coding Plan reports the query as search_query.
+	return strings.TrimSpace(gjson.Get(input, "search_query").String())
+}
+
+// bigmodelToolResultToResponses converts the Python-repr hit string GLM
+// Coding Plan returns inside bare tool_result blocks into Responses results.
+// Parsing is structural (see claudecommon.ParseBigModelSearchRepr); raw hit
+// fields such as refer/content ride along so replay can restore them.
+func bigmodelToolResultToResponses(content string) []byte {
+	hits, ok := claudecommon.ParseBigModelSearchRepr(content)
+	if !ok || len(hits) == 0 {
+		return nil
+	}
+	results := make([][]byte, 0, len(hits))
+	for _, hit := range hits {
+		entry := []byte(`{"type":"web_search_result","title":"","url":""}`)
+		entry, _ = sjson.SetBytes(entry, "title", hit.Title)
+		entry, _ = sjson.SetBytes(entry, "url", hit.URL)
+		if refer, exists := hit.Fields["refer"]; exists {
+			entry, _ = sjson.SetBytes(entry, "refer", refer)
+		}
+		if body, exists := hit.Fields["content"]; exists {
+			entry, _ = sjson.SetBytes(entry, "content", body)
+		}
+		results = append(results, entry)
+	}
+	return translatorcommon.JoinRawArray(results)
 }
 
 // claudeWebSearchResultsToResponses converts the content of a Claude
@@ -107,7 +141,7 @@ func buildResponsesWebSearchCallItem(claudeToolUseID, query string, results []by
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
 // buildResponsesWebSearchCallItem: it rebuilds the Claude block pair so a
 // replayed turn still shows that the search happened and what it returned.
-func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result) [][]byte {
+func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result, allowBigModelReplay bool) [][]byte {
 	toolUseID := claudeWebSearchToolUseID(strings.TrimSpace(item.Get("id").String()))
 	if toolUseID == "" {
 		return nil
@@ -122,7 +156,7 @@ func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result) [][]byte {
 
 	result := []byte(`{"type":"web_search_tool_result","tool_use_id":"","content":[]}`)
 	result, _ = sjson.SetBytes(result, "tool_use_id", toolUseID)
-	if content := responsesWebSearchResultsToClaude(item.Get("results")); len(content) > 0 {
+	if content := responsesWebSearchResultsToClaude(item.Get("results"), allowBigModelReplay); len(content) > 0 {
 		result, _ = sjson.SetRawBytes(result, "content", content)
 	}
 	return [][]byte{use, result}
@@ -141,7 +175,7 @@ func responsesWebSearchCallQuery(item gjson.Result) string {
 	return strings.TrimSpace(item.Get("action.url").String())
 }
 
-func responsesWebSearchResultsToClaude(results gjson.Result) []byte {
+func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay bool) []byte {
 	if results.IsObject() {
 		return []byte(results.Raw)
 	}
@@ -152,6 +186,17 @@ func responsesWebSearchResultsToClaude(results gjson.Result) []byte {
 	results.ForEach(func(_, entry gjson.Result) bool {
 		if entry.Get("type").String() == "web_search_tool_result_error" {
 			blocks = append(blocks, []byte(entry.Raw))
+			return true
+		}
+		// BigModel search hits carry their original refer/content fields instead
+		// of Anthropic's encrypted_content. The exception follows the explicit
+		// WebSearchReplay protocol discriminator (the Coding Plan plugin), not
+		// search capability: native Anthropic search models stay on the strict
+		// encrypted_content replay contract below.
+		if allowBigModelReplay && strings.TrimSpace(entry.Get("refer").String()) != "" {
+			block := []byte(entry.Raw)
+			block, _ = sjson.SetBytes(block, "type", "web_search_result")
+			blocks = append(blocks, block)
 			return true
 		}
 		// Anthropic validates encrypted_content and rejects the whole request when

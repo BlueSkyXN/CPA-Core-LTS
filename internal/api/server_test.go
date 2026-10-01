@@ -3693,13 +3693,20 @@ func TestModelsForCPAClientSerializesWebSearchCapabilities(t *testing.T) {
 		{"cpa-web-search-mixed-codex", "codex", "cpa-mixed-search-model"},
 		{"cpa-web-search-mixed-gemini", "gemini", "cpa-mixed-search-model"},
 		{"cpa-web-search-prefixed", "codex", "team/cpa-prefixed-search-model"},
+		{"cpa-web-search-plugin", "zcode-coding-plan", "cpa-no-search-plugin-model"},
+		{"cpa-web-search-plugin-mixed", "zcode-coding-plan", "cpa-mixed-plugin-search-model"},
+		{"cpa-web-search-plugin-peer", "claude", "cpa-mixed-plugin-search-model"},
 	}
 	webSearch := true
 	for _, registration := range registrations {
+		capability := webSearch
+		if registration.provider == "zcode-coding-plan" {
+			capability = false
+		}
 		modelRegistry.RegisterClient(registration.clientID, registration.provider, []*registry.ModelInfo{{
 			ID: registration.modelID,
 			NativeCapabilities: &registry.NativeCapabilities{
-				WebSearch: &webSearch,
+				WebSearch: &capability,
 			},
 		}})
 	}
@@ -3732,7 +3739,7 @@ func TestModelsForCPAClientSerializesWebSearchCapabilities(t *testing.T) {
 	for _, modelID := range []string{"cpa-search-codex-model", "cpa-search-xai-model", "cpa-search-claude-model", "team/cpa-prefixed-search-model"} {
 		assertSerializedCPAWebSearch(t, entries[modelID], true)
 	}
-	for _, modelID := range []string{"cpa-no-search-gemini-model", "cpa-mixed-search-model"} {
+	for _, modelID := range []string{"cpa-no-search-gemini-model", "cpa-mixed-search-model", "cpa-no-search-plugin-model", "cpa-mixed-plugin-search-model"} {
 		assertSerializedCPAWebSearch(t, entries[modelID], false)
 	}
 

@@ -1,6 +1,6 @@
 # Coding Plan native Go plugin
 
-`zcode-coding-plan` v0.4.1 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
+`zcode-coding-plan` v0.4.2 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
 
 The plugin supports direct Anthropic Messages with Core's Responses HTTP JSON/SSE adapter and same-connection WebSocket continuation. The matching Core source also provides Chat Completions JSON/SSE conversion; updating the plugin alone on an older Core does not add that adapter. It does not execute tools, maintain another chat history, discover accounts, scan official application directories, query quota or implement interactive login. Use only credentials and client identity you are authorized to use. Local synthetic acceptance is not proof of upstream acceptance, pricing or production logging safety.
 
@@ -88,13 +88,31 @@ The text is not compressed or regenerated. `concise`/`detailed` currently select
 
 Effective `thinking.display: "omitted"` is still rejected before upstream dispatch, as are invalid display values/types. Responses `summary: "none"` or `null` is not equivalent to leaving the field out: Core converts it to `omitted` when thinking is active. Without an active target thinking mode, the shared converter may not carry that hide intent; this change does not provide reliable server-side hiding. Do not use these fields as a privacy guarantee. Controls removed by Core normalizers are never restored from `OriginalRequest`.
 
-Current Codex and ZCode clients can consume the summary compatibility channel without raw-only output. Actual UI rendering and the dynamic-library three-protocol fixture remain separate acceptance steps. This source change does not edit client settings, publish packages or update a deployment; xAI/Grok's existing normalization remains unchanged.
+Current Codex and ZCode clients can consume the summary compatibility channel without raw-only output. The offline dynamic-library suite covers all three protocol adapters; actual client UI rendering and live upstream acceptance remain separate checks. Installing this source does not edit client settings, publish packages or update a deployment; xAI/Grok's existing normalization remains unchanged.
 
 The field names and mandatory thinking behavior follow the official [GLM-5.3 model guide](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3.md) and [migration guide](https://docs.bigmodel.cn/cn/guide/start/migrate-to-glm-new.md). These guides demonstrate Chat Completions fields; the plugin's normalization over its Anthropic-compatible endpoint is covered by synthetic wire assertions, not a claim of live upstream acceptance. Real account/provider acceptance remains a deployment check.
 
 `glm-5.3-flash` accepts native Anthropic image blocks and translated Responses `input_image`: base64 JPEG/PNG/GIF/WebP or HTTP(S) image URLs without embedded credentials. The plugin validates and forwards image sources but does not fetch URLs itself. Text-only `glm-5.3` rejects images before upstream dispatch. Custom function tools, paired text/image tool results and thinking/signature history remain supported.
 
-Strict output schemas, priority tier, HTTP store/background, files, server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. Chat HTTP has mock host/translator regression coverage; the new three-protocol dynamic-library fixture and real-client rendering have not been run for this change.
+### Client tools and native WebSearch
+
+Client-executed function/custom tools remain supported across Responses, Chat and Messages. Core translates OpenAI function/custom definitions into Anthropic `name` plus `input_schema`; MCP search and coding tools use this same path. A client-executed function named `web_search` is valid. The plugin does not execute any tool itself.
+
+Provider-native web search (`web_search_20250305` / `web_search_20260209`) is supported and executed upstream: GLM Coding Plan answers through `web_search_prime` server blocks plus assistant-side bare `tool_result` hits, which Core folds into a single Responses `web_search_call`. Other provider-native tool types remain unsupported. Supplying an `input_schema` does not turn a server tool into a client tool. Native definitions fail before signing/model dispatch, with a specific WebSearch diagnostic; malformed client definitions identify their `tools[index]` field without echoing caller-provided names or schemas. Search history round-trips through Core's server-tool pair translation; `web_fetch` history is still rejected explicitly.
+
+The matching Core preserves optional plugin `ModelInfo.NativeCapabilities.WebSearch` metadata. Coding Plan declares it `true` for allowlisted models (probe-confirmed 2026-10-01 against the real upstream); custom IDs stay conservative. CPA-aware `/v1/models?client_version=cpa` consumers receive `cpa_capabilities.web_search=true`. Other clients must configure their own capability flag; generic model listings do not automatically reconfigure ZCode or Codex. Older plugins omit the additive field and retain unknown support; ABI/schema versions are unchanged.
+
+Coding Plan additionally declares `ModelInfo.NativeCapabilities.WebSearchReplay = "bigmodel"` on the same built-in IDs. That field is the search-history replay protocol discriminator Core's Responses translator checks: refer-tagged BigModel results are replayed verbatim only on this protocol, while search-capable native Anthropic models (which also set `WebSearch=true`) keep Anthropic's strict `encrypted_content` replay rules. Search capability alone never selects the replay protocol.
+
+For ZCode, set only this model property, preserving ordinary tool support and the rest of the model configuration:
+
+```json
+{"properties":{"supportsNativeWebSearch":false}}
+```
+
+Merge it into the relevant provider/model rule in the active `provider_config.json`, under `config.modelConfigRules.manualProviderModelRules[].config` for a manually configured model. The current client keeps that file under its selected data base directory's `.zcode/v2/`; it is not the older `config.json`. Do not create a second automatic and manual rule for the same provider/model. This disables only the built-in WebSearch exposed for that model. ZCode's built-in WebSearch makes a second provider-native model request; it is not an independent client-side search service and has no automatic external-search fallback. Use a separately configured client-executed function/MCP search tool when needed. After changing capabilities, start a new conversation if the old history contains server-tool blocks. Do not disable all tools, fabricate schemas, or silently remove tools to force a successful response.
+
+Strict output schemas, priority tier, HTTP store/background, files, server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. The offline suite loads the actual C-shared library into the current Core and covers three-protocol JSON/SSE client tools plus native-tool pre-dispatch rejection. It uses synthetic credentials and an in-memory upstream transport, not a real search service or client UI.
 
 ## Safety and validation boundary
 
