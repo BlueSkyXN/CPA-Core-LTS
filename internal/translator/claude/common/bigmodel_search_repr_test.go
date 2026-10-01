@@ -283,6 +283,56 @@ func TestBigModelJSONShapeRealStreamReplay(t *testing.T) {
 	}
 }
 
+// JSON-legal string encodings must decode in the JSON shape: escaped slashes
+// and UTF-16 surrogate pairs (external review repro, 2026-10-02). Paired
+// surrogates follow the JSON pairing rule; lone or malformed surrogates stay
+// rejected in both dialects.
+func TestBigModelJSONEscapeDecoding(t *testing.T) {
+	hits, ok := ParseBigModelSearchRepr(`[[{"title": "T", "link": "https:\/\/example.com\/a", "content": "body", "refer": "ref_1"}]]`)
+	if !ok || len(hits) != 1 || hits[0].URL != "https://example.com/a" || !utf8.ValidString(hits[0].URL) {
+		t.Fatalf("escaped slash: ok=%v hits=%+v", ok, hits)
+	}
+	hits, ok = ParseBigModelSearchRepr(`[[{"title": "T\ud83d\ude00", "link": "https://example.com/a", "content": "b\ud83d\ude00y", "refer": "r\ud83d\ude00f"}]]`)
+	if !ok || len(hits) != 1 {
+		t.Fatalf("surrogate pair: ok=%v hits=%d", ok, len(hits))
+	}
+	if hits[0].Title != "T\U0001F600" || hits[0].Fields["content"] != "b\U0001F600y" || hits[0].Fields["refer"] != "r\U0001F600f" {
+		t.Fatalf("surrogate pair fields: %+v", hits[0])
+	}
+	if !utf8.ValidString(hits[0].Title) || !utf8.ValidString(hits[0].Fields["content"]) || !utf8.ValidString(hits[0].Fields["refer"]) {
+		t.Fatal("surrogate pair decoded to invalid UTF-8")
+	}
+	// The JSON-only slash escape is unambiguous in the union and must not
+	// change what a repr-shape payload means.
+	if hits, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'a\/b', 'link': 'https://e.com/x'}]}]`); !ok || len(hits) != 1 || hits[0].Title != "a/b" {
+		t.Fatalf("repr shape with escaped slash: ok=%v hits=%+v", ok, hits)
+	}
+	for _, payload := range []string{
+		`[[{"title": "T\ud83d", "link": "https://example.com/a"}]]`,
+		`[[{"title": "T\ud83dx", "link": "https://example.com/a"}]]`,
+		`[[{"title": "T\ud83d\ud83d", "link": "https://example.com/a"}]]`,
+		`[[{"title": "T\ud83d\ud004", "link": "https://example.com/a"}]]`,
+		`[[{"title": "T\udc00", "link": "https://example.com/a"}]]`,
+		`[[{"title": "T\ud83d\/", "link": "https://example.com/a"}]]`,
+	} {
+		if _, ok = ParseBigModelSearchRepr(payload); ok {
+			t.Fatalf("lone or malformed surrogate accepted: %s", payload)
+		}
+	}
+}
+
+// The escaped encodings must also survive the full non-stream JSON message
+// validation path, not only the direct parser entry point.
+func TestBigModelJSONEscapesJSONMessagePath(t *testing.T) {
+	content := `[[{\"title\": \"T\\ud83d\\ude00\", \"link\": \"https:\\\/\\\/example.com\\\/a\", \"content\": \"b\\ud83d\\ude00y\", \"refer\": \"ref_1\"}]]`
+	message := `{"id":"m","type":"message","role":"assistant","stop_reason":"end_turn","content":[` +
+		`{"type":"server_tool_use","id":"s_esc","name":"web_search_prime"},` +
+		`{"type":"tool_result","tool_use_id":"s_esc","content":"` + content + `"}]}`
+	if err := ValidatePluginMessage(mustParse(message), false); err != nil {
+		t.Fatalf("escaped JSON-shape payload rejected in JSON validation: %v", err)
+	}
+}
+
 func TestDuplicateServerToolUseIDRejected(t *testing.T) {
 	// JSON path: the same server_tool_use id appears twice.
 	dupJSON := `{"id":"m","type":"message","role":"assistant","stop_reason":"end_turn","content":[` +

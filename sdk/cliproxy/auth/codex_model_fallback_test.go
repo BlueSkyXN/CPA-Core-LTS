@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -61,6 +62,12 @@ type codexModelFallbackRetryExecutor struct {
 	calls           []string
 	behaviors       map[string][]codexModelFallbackRetryBehavior
 	streamBehaviors map[string][]codexModelFallbackRetryBehavior
+	// strictQueues records any call against an unconfigured or exhausted
+	// behavior queue instead of silently synthesizing a default success, so
+	// unexpected extra calls surface with the call log instead of passable
+	// "ok" payloads (see the CI investigation noted on the hedge-winner test).
+	strictQueues    bool
+	queueViolations []string
 }
 
 func (e *codexModelFallbackRetryExecutor) Identifier() string { return "codex" }
@@ -69,10 +76,17 @@ func codexModelFallbackRetryBehaviorKey(authID, model string) string {
 	return authID + "|" + model
 }
 
+func (e *codexModelFallbackRetryExecutor) queueViolationsSnapshot() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.queueViolations...)
+}
+
 func (e *codexModelFallbackRetryExecutor) next(authID, model string, stream bool) codexModelFallbackRetryBehavior {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	key := codexModelFallbackRetryBehaviorKey(authID, model)
+	callIndex := len(e.calls)
 	e.calls = append(e.calls, key)
 	queues := e.behaviors
 	if stream {
@@ -80,6 +94,12 @@ func (e *codexModelFallbackRetryExecutor) next(authID, model string, stream bool
 	}
 	queue := queues[key]
 	if len(queue) == 0 {
+		if e.strictQueues {
+			e.queueViolations = append(e.queueViolations, fmt.Sprintf(
+				"call #%d auth=%s model=%s stream=%t hit an unconfigured or exhausted behavior queue; calls so far: %v",
+				callIndex+1, authID, model, stream, e.calls))
+			return codexModelFallbackRetryBehavior{kind: "success", payload: "STRICT-QUEUE-VIOLATION auth=" + authID + " model=" + model}
+		}
 		return codexModelFallbackRetryBehavior{kind: "success", payload: "ok"}
 	}
 	behavior := queue[0]
@@ -1176,7 +1196,7 @@ func TestManagerExecuteCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWi
 }
 
 func TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWinner(t *testing.T) {
-	executor := &codexModelFallbackRetryExecutor{streamBehaviors: map[string][]codexModelFallbackRetryBehavior{
+	executor := &codexModelFallbackRetryExecutor{strictQueues: true, streamBehaviors: map[string][]codexModelFallbackRetryBehavior{
 		codexModelFallbackRetryBehaviorKey("auth-source-stream", "gpt-source"): {
 			{kind: "abnormal", maxRetries: 3},
 			{kind: "usage_limit"},
@@ -1235,6 +1255,17 @@ func TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndH
 	callbackMu.Unlock()
 	if len(gotCallbacks) != 3 || gotCallbacks[0] != "auth-source-stream" || gotCallbacks[1] != "auth-source-stream" || gotCallbacks[2] != "auth-target-stream-b" {
 		t.Fatalf("stream selected callbacks = %#v, want source attempts plus final target hedge winner", gotCallbacks)
+	}
+	// This test has failed intermittently on CI (2026-10-01, three times:
+	// runs 36878009199, 36885579955 attempt 1 and 2) with payload "ok" - the
+	// mock's old empty-queue default, meaning some call hit an unconfigured or
+	// exhausted behavior queue. Strict mode turns that into a recorded
+	// violation with the call log so the next CI failure identifies the
+	// unexpected call instead of masquerading as a normal winner. Root cause
+	// (manager behavior vs fixture ordering) is still open; do not resolve it
+	// by rerunning.
+	if violations := executor.queueViolationsSnapshot(); len(violations) > 0 {
+		t.Fatalf("unexpected mock queue exhaustion: %v", violations)
 	}
 }
 
