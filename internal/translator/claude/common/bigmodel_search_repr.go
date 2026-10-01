@@ -185,7 +185,13 @@ func (p *reprParser) string() (string, bool) {
 	return "", false
 }
 
-// writeEscape decodes one Python escape after the backslash was consumed.
+// writeEscape decodes one escape after the backslash was consumed. The two
+// upstream dialects share this decoder: the escapes each side legally emits
+// (Python repr's \xNN/\uXXXX/\UXXXXXXXX and JSON's \/, \uXXXX with paired
+// surrogates) are unambiguous in the union, and everything still unknown is
+// rejected. Paired surrogates follow the JSON rule - a high surrogate must be
+// immediately followed by its low counterpart - and lone surrogates stay
+// rejected in both dialects.
 func (p *reprParser) writeEscape(builder *strings.Builder) bool {
 	escape := p.source[p.offset]
 	p.offset++
@@ -202,25 +208,46 @@ func (p *reprParser) writeEscape(builder *strings.Builder) bool {
 		builder.WriteByte('\f')
 	case '\\', '\'', '"':
 		builder.WriteByte(escape)
+	case '/':
+		// JSON permits escaping the slash; Python repr never emits it and
+		// accepting it cannot change what a repr payload means.
+		builder.WriteByte('/')
 	case 'x':
 		// In a str repr \xNN is the Unicode code point U+00NN.
-		code, ok := p.readHexRune(2, 0xFF)
-		if !ok {
+		code, ok := p.readHexValue(2)
+		if !ok || code > 0xFF {
 			return false
 		}
-		builder.WriteRune(code)
+		builder.WriteRune(rune(code))
 	case 'u':
-		code, ok := p.readHexRune(4, 0xFFFF)
+		code, ok := p.readHexValue(4)
 		if !ok {
 			return false
 		}
-		builder.WriteRune(code)
+		if code >= 0xD800 && code <= 0xDBFF {
+			// JSON represents a non-BMP character as a high surrogate escape
+			// immediately followed by its low counterpart.
+			if p.offset+2 > len(p.source) || p.source[p.offset] != '\\' || p.source[p.offset+1] != 'u' {
+				return false
+			}
+			p.offset += 2
+			low, ok := p.readHexValue(4)
+			if !ok || low < 0xDC00 || low > 0xDFFF {
+				return false
+			}
+			builder.WriteRune(rune(0x10000 + (code-0xD800)<<10 + (low - 0xDC00)))
+			return true
+		}
+		if code >= 0xDC00 && code <= 0xDFFF {
+			return false
+		}
+		builder.WriteRune(rune(code))
 	case 'U':
-		code, ok := p.readHexRune(8, 0x10FFFF)
-		if !ok {
+		code, ok := p.readHexValue(8)
+		if !ok || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) {
 			return false
 		}
-		builder.WriteRune(code)
+		builder.WriteRune(rune(code))
 	default:
 		// Unknown escapes are not silently mangled; the payload is rejected.
 		return false
@@ -228,16 +255,18 @@ func (p *reprParser) writeEscape(builder *strings.Builder) bool {
 	return true
 }
 
-func (p *reprParser) readHexRune(length int, maxValue int) (rune, bool) {
+// readHexValue consumes exactly length hex digits; range and pairing rules
+// are enforced by the caller.
+func (p *reprParser) readHexValue(length int) (int, bool) {
 	if p.offset+length > len(p.source) {
 		return 0, false
 	}
 	value := hexValue(p.source[p.offset : p.offset+length])
-	if value < 0 || value > maxValue || (value >= 0xD800 && value <= 0xDFFF) {
+	if value < 0 {
 		return 0, false
 	}
 	p.offset += length
-	return rune(value), true
+	return value, true
 }
 
 // scalar accepts only numbers and the three Python literals; any other bare

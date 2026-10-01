@@ -606,6 +606,67 @@ func TestBigModelJSONShapeBareResultFolding(t *testing.T) {
 	}
 }
 
+// Legal JSON string encodings (escaped slash, UTF-16 surrogate pairs) must
+// survive the whole chain: SSE validation and folding into the Responses item,
+// then replay of that item back into Claude history with decoded values
+// (external review repro, 2026-10-02).
+func TestBigModelJSONEscapesFoldAndReplayChain(t *testing.T) {
+	repr := `[[{"title": "T\ud83d\ude00", "link": "https:\/\/example.com\/a", "content": "b\ud83d\ude00y", "refer": "ref_1"}]]`
+	lines := []string{
+		`data: {"type":"message_start","message":{"id":"msg_esc","usage":{"input_tokens":9,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_esc","name":"web_search_prime","input":{"search_query":"q"}}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_result","tool_use_id":"srvtoolu_esc","content":` + fmt.Sprintf("%q", repr) + `}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"done"}}`,
+		`data: {"type":"content_block_stop","index":2}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	out := ConvertClaudeResponseToOpenAIResponsesNonStream(
+		context.Background(), "claude-test", nil, nil, []byte(strings.Join(lines, "\n")), nil)
+	var call gjson.Result
+	for _, item := range gjson.GetBytes(out, "output").Array() {
+		if item.Get("type").String() == "web_search_call" {
+			call = item
+		}
+	}
+	if !call.Exists() {
+		t.Fatalf("no web_search_call item; output=%s", gjson.GetBytes(out, "output").Raw)
+	}
+	if got := call.Get("results.0.title").String(); got != "T\U0001F600" {
+		t.Fatalf("folded title = %q, want decoded surrogate pair", got)
+	}
+	if got := call.Get("results.0.url").String(); got != "https://example.com/a" {
+		t.Fatalf("folded url = %q, want decoded escaped slashes", got)
+	}
+	if got := call.Get("results.0.content").String(); got != "b\U0001F600y" {
+		t.Fatalf("folded content = %q, want decoded surrogate pair", got)
+	}
+	if got := call.Get("results.0.refer").String(); got != "ref_1" {
+		t.Fatalf("folded refer = %q", got)
+	}
+
+	// Replay the folded item back through the BigModel protocol route and
+	// assert the decoded values land in the Claude history blocks.
+	raw := responsesRequestFromItems(call.Raw)
+	replay := &registry.ModelInfo{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true), WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
+	back := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("glm-5.3", raw, false, replay)
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.url").String(); got != "https://example.com/a" {
+		t.Fatalf("replayed url = %q, want decoded escaped slashes", got)
+	}
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.title").String(); got != "T\U0001F600" {
+		t.Fatalf("replayed title = %q, want decoded surrogate pair", got)
+	}
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.content").String(); got != "b\U0001F600y" {
+		t.Fatalf("replayed content = %q, want decoded surrogate pair", got)
+	}
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.refer").String(); got != "ref_1" {
+		t.Fatalf("replayed refer = %q", got)
+	}
+}
+
 // The BigModel refer replay exception follows the explicit WebSearchReplay
 // protocol discriminator, not search capability: native Anthropic models are
 // search-capable too and must keep the strict encrypted_content replay rule
