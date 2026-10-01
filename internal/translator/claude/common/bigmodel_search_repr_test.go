@@ -169,9 +169,47 @@ func TestParseBigModelSearchReprEdgeCases(t *testing.T) {
 	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 123, 'link': 'https://e.com/n'}]}]`); ok {
 		t.Fatal("non-string title accepted")
 	}
+	// Non-string refer/content corrupt the hit: the whole payload must fail
+	// instead of parsing "successfully" with the field silently dropped.
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'T', 'link': 'https://e.com/a', 'refer': 123}]}]`); ok {
+		t.Fatal("numeric refer silently dropped")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'T', 'link': 'https://e.com/a', 'refer': ['ref_1']}]}]`); ok {
+		t.Fatal("list refer silently dropped")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'T', 'link': 'https://e.com/a', 'content': ['body']}]}]`); ok {
+		t.Fatal("list content silently dropped")
+	}
+	// Carrier metadata values must be strings too.
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [], 'type': 123}]`); ok {
+		t.Fatal("non-string carrier field accepted")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'T', 'link': 'https://e.com/a', 'score': 1e+}]}]`); ok {
+		t.Fatal("malformed number inside hit accepted")
+	}
+	// Intact refer/content must ride through Fields for replay.
+	hits, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'T', 'link': 'https://e.com/a', 'content': 'body', 'refer': 'ref_1'}]}]`)
+	if !ok || len(hits) != 1 || hits[0].Fields["content"] != "body" || hits[0].Fields["refer"] != "ref_1" {
+		t.Fatalf("hit body/source fields lost: ok=%v hits=%+v", ok, hits)
+	}
 	deep := "[" + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + "]"
 	if _, ok = ParseBigModelSearchRepr(deep); ok {
 		t.Fatal("unbounded nesting accepted")
+	}
+}
+
+// Number tokens must match the decimal literal grammar Python repr emits;
+// character-class matching alone would accept corruption like 1e+ or 1-2.
+func TestReprNumberGrammar(t *testing.T) {
+	for _, token := range []string{"0", "123", "-5", "1.5", "-0.5", "1e10", "1e+30", "1E-7", "1.5e-3", "-0.0"} {
+		if !isReprNumber(token) {
+			t.Fatalf("valid number token %q rejected", token)
+		}
+	}
+	for _, token := range []string{"1e+", "1-2", "1..2", "1.", ".5", "-", "+1", "1e", "--1", "1.5.6", "e5", "", "0x10", "NaN", "inf"} {
+		if isReprNumber(token) {
+			t.Fatalf("invalid number token %q accepted", token)
+		}
 	}
 }
 

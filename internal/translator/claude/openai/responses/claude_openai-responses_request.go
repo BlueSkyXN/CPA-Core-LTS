@@ -43,8 +43,8 @@ func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJ
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithModelInfo lets executor adapters
-// pass the selected model metadata; a model that declares provider-native web
-// search support also unlocks BigModel-style search history replay.
+// pass the selected model metadata; a model that declares the BigModel search
+// replay protocol also unlocks refer-tagged search history replay.
 func ConvertOpenAIResponsesRequestToClaudeWithModelInfo(modelName string, inputRawJSON []byte, stream bool, modelInfo *registry.ModelInfo) []byte {
 	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, modelInfo)
 }
@@ -452,8 +452,11 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 		case "web_search_call":
 			// Rebuild the Claude server-side search pair so the replayed turn
-			// still shows the search and its hits.
-			allowBigModelReplay := resolvedModelInfo != nil && resolvedModelInfo.NativeCapabilities != nil && resolvedModelInfo.NativeCapabilities.WebSearch != nil && *resolvedModelInfo.NativeCapabilities.WebSearch
+			// still shows the search and its hits. The BigModel replay protocol
+			// is selected by an explicit WebSearchReplay discriminator, not by
+			// search capability: native Anthropic models are search-capable too
+			// and must keep the strict encrypted_content replay contract.
+			allowBigModelReplay := resolvedModelInfo != nil && resolvedModelInfo.NativeCapabilities != nil && resolvedModelInfo.NativeCapabilities.WebSearchReplay == registry.NativeWebSearchReplayBigModel
 			if blocks := convertResponsesWebSearchCallToClaudeBlocks(item, allowBigModelReplay); len(blocks) > 0 {
 				appendParts("assistant", blocks...)
 			}

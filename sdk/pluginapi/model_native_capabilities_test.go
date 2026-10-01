@@ -2,6 +2,7 @@ package pluginapi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -40,5 +41,39 @@ func TestModelNativeCapabilitiesJSONTriState(t *testing.T) {
 				t.Fatal("legacy model decoder rejected additive capability metadata", err)
 			}
 		})
+	}
+}
+
+// WebSearchReplay is an additive protocol discriminator: it must survive the
+// wire round-trip when set and stay absent for legacy payloads.
+func TestModelNativeCapabilitiesWebSearchReplayRoundTrip(t *testing.T) {
+	var model ModelInfo
+	if err := json.Unmarshal([]byte(`{"ID":"model","NativeCapabilities":{"WebSearch":true,"WebSearchReplay":"bigmodel"}}`), &model); err != nil {
+		t.Fatal(err)
+	}
+	if model.NativeCapabilities == nil || model.NativeCapabilities.WebSearchReplay != "bigmodel" {
+		t.Fatal("replay protocol lost in decode")
+	}
+	raw, err := json.Marshal(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"WebSearchReplay":"bigmodel"`) {
+		t.Fatalf("replay protocol omitted from wire form: %s", raw)
+	}
+
+	var legacy ModelInfo
+	if err := json.Unmarshal([]byte(`{"ID":"model","NativeCapabilities":{"WebSearch":true}}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.NativeCapabilities == nil || legacy.NativeCapabilities.WebSearchReplay != "" {
+		t.Fatal("legacy payload gained a replay protocol")
+	}
+	raw, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "WebSearchReplay") {
+		t.Fatalf("legacy payload serialized a replay protocol: %s", raw)
 	}
 }

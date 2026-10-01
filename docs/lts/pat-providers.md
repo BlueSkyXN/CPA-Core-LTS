@@ -59,6 +59,8 @@ Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_l
 
 插件模型 API 的可选 `ModelInfo.NativeCapabilities.WebSearch` 三态声明不变，ABI/schema 不变；旧插件缺省仍为未知。宿主深拷贝并保留此能力，Coding Plan 自 0.4.2 起对内置 allowlist ID 声明 `true`（真实上游探测支持），自定义 ID 保持保守。CPA-aware `/v1/models?client_version=cpa` 据此输出 `cpa_capabilities.web_search`。普通模型目录不会自动修改客户端本地配置。
 
+`NativeCapabilities.WebSearchReplay` 是同层新增的可选加法字段（字符串协议判别器）：Core 的 Responses 转换器只对声明 `bigmodel` 的路由按 BigModel 协议回放搜索历史（带 `refer` 的裸结果原样回放），而同样声明 `WebSearch=true` 的原生 Anthropic 模型仍走严格 `encrypted_content` 回放契约——“支持原生搜索”不等于“采用 BigModel 回放协议”。Coding Plan 对内置 allowlist ID 同时声明两个字段，自定义 ID 两个都不声明；旧插件解码后该字段为空。
+
 ZCode 使用当前生效数据目录下的 `.zcode/v2/provider_config.json`；手动模型规则位于 `config.modelConfigRules.manualProviderModelRules[].config`。仅合并 `properties.supportsNativeWebSearch=false`，不关闭普通 tool call、不重复添加同一 provider/model 的自动和手动规则。内置 WebSearch 实际另发 provider-native 模型请求且没有外部搜索自动 fallback；联网需求应使用独立的客户端 function/MCP 搜索工具。具体限制见插件 [README](../../examples/plugin/zcode-coding-plan/README.md#client-tools-and-native-websearch)。源码版本不是已发布产物，本地合成回归不是线上真实模型或客户端 UI 验收。
 
 ## 插件 ABI 契约与 LTS schema 语义（第三方插件作者须知）

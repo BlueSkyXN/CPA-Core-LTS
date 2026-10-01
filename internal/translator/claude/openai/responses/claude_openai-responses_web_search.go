@@ -189,10 +189,10 @@ func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay
 			return true
 		}
 		// BigModel search hits carry their original refer/content fields instead
-		// of Anthropic's encrypted_content. The exception is scoped to models
-		// whose selected route explicitly declares provider-native search
-		// support (the Coding Plan plugin); native Anthropic targets keep the
-		// strict encrypted_content replay contract below.
+		// of Anthropic's encrypted_content. The exception follows the explicit
+		// WebSearchReplay protocol discriminator (the Coding Plan plugin), not
+		// search capability: native Anthropic search models stay on the strict
+		// encrypted_content replay contract below.
 		if allowBigModelReplay && strings.TrimSpace(entry.Get("refer").String()) != "" {
 			block := []byte(entry.Raw)
 			block, _ = sjson.SetBytes(block, "type", "web_search_result")

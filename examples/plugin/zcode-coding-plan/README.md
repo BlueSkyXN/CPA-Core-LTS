@@ -102,6 +102,8 @@ Provider-native web search (`web_search_20250305` / `web_search_20260209`) is su
 
 The matching Core preserves optional plugin `ModelInfo.NativeCapabilities.WebSearch` metadata. Coding Plan declares it `true` for allowlisted models (probe-confirmed 2026-10-01 against the real upstream); custom IDs stay conservative. CPA-aware `/v1/models?client_version=cpa` consumers receive `cpa_capabilities.web_search=true`. Other clients must configure their own capability flag; generic model listings do not automatically reconfigure ZCode or Codex. Older plugins omit the additive field and retain unknown support; ABI/schema versions are unchanged.
 
+Coding Plan additionally declares `ModelInfo.NativeCapabilities.WebSearchReplay = "bigmodel"` on the same built-in IDs. That field is the search-history replay protocol discriminator Core's Responses translator checks: refer-tagged BigModel results are replayed verbatim only on this protocol, while search-capable native Anthropic models (which also set `WebSearch=true`) keep Anthropic's strict `encrypted_content` replay rules. Search capability alone never selects the replay protocol.
+
 For ZCode, set only this model property, preserving ordinary tool support and the rest of the model configuration:
 
 ```json

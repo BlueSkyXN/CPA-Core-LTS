@@ -6,9 +6,11 @@ import "strings"
 // values inside assistant-side bare tool_result blocks, shaped as
 // [{"text": [{"title", "link", "content", "refer"}]}]. This parser accepts
 // exactly that contract: bounded nesting, quoted strings with Python escapes,
-// numbers and the True/False/None literals. Anything else - unknown tokens,
-// truncated payloads, hits with missing or non-string title/link, excessive
-// depth - fails loudly so callers never mistake corruption for empty results.
+// numbers and the True/False/None literals. Accepted structure values are
+// strings only; scalars parse but never satisfy a string field. Anything
+// else - unknown tokens, truncated payloads, non-string hit or carrier
+// values, malformed numbers, excessive depth - fails loudly so callers never
+// mistake corruption for empty or partially-dropped results.
 
 type BigModelSearchHit struct {
 	Title  string
@@ -265,21 +267,57 @@ func (p *reprParser) scalarValue(text string) (any, bool) {
 	if text == "True" || text == "False" || text == "None" {
 		return reprScalar(text), true
 	}
-	digits := 0
-	for i := 0; i < len(text); i++ {
-		c := text[i]
-		switch {
-		case c >= '0' && c <= '9':
-			digits++
-		case c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E':
-		default:
-			return nil, false
-		}
-	}
-	if digits == 0 {
+	if !isReprNumber(text) {
 		return nil, false
 	}
 	return reprScalar(text), true
+}
+
+// isReprNumber validates the decimal literal grammar Python repr emits:
+// an optional '-', a mandatory integer digit run, an optional fraction with
+// mandatory digits, and an optional exponent with mandatory digits. Tokens
+// such as 1e+, 1-2 or 1..2 use number characters but are not numbers and are
+// rejected so corrupted payloads cannot parse as valid scalars.
+func isReprNumber(text string) bool {
+	i := 0
+	if i < len(text) && text[i] == '-' {
+		i++
+	}
+	intStart := i
+	for i < len(text) && isReprDigit(text[i]) {
+		i++
+	}
+	if i == intStart {
+		return false
+	}
+	if i < len(text) && text[i] == '.' {
+		i++
+		fracStart := i
+		for i < len(text) && isReprDigit(text[i]) {
+			i++
+		}
+		if i == fracStart {
+			return false
+		}
+	}
+	if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
+		i++
+		if i < len(text) && (text[i] == '+' || text[i] == '-') {
+			i++
+		}
+		expStart := i
+		for i < len(text) && isReprDigit(text[i]) {
+			i++
+		}
+		if i == expStart {
+			return false
+		}
+	}
+	return i == len(text)
+}
+
+func isReprDigit(c byte) bool {
+	return c >= '0' && c <= '9'
 }
 
 func hexValue(text string) int {
@@ -303,8 +341,10 @@ func lowerHex(c byte) byte {
 
 // collectTextHits enforces the hit-list structure: every element of a
 // top-level container is either the {"text": [hit...]} carrier dict or an
-// empty list, and every hit carries string title and link. A corrupt hit
-// fails the whole payload instead of being silently dropped.
+// empty list, and every value in a carrier or hit dict is a string (title and
+// link additionally required, link non-empty). A corrupt field type - a
+// numeric or list-valued refer/content - fails the whole payload instead of
+// being silently dropped as a "successful" parse with missing fields.
 func collectTextHits(value any, hits *[]BigModelSearchHit) bool {
 	list, isList := value.([]any)
 	if !isList {
@@ -321,6 +361,14 @@ func collectTextHits(value any, hits *[]BigModelSearchHit) bool {
 			if !isTextList {
 				return false
 			}
+			for key, value := range typed {
+				if key == "text" {
+					continue
+				}
+				if _, isString := value.(string); !isString {
+					return false
+				}
+			}
 			for _, raw := range textList {
 				hit, isHit := raw.(map[string]any)
 				if !isHit {
@@ -332,10 +380,12 @@ func collectTextHits(value any, hits *[]BigModelSearchHit) bool {
 					return false
 				}
 				fields := map[string]string{}
-				for key, raw := range hit {
-					if text, isString := raw.(string); isString {
-						fields[key] = text
+				for key, value := range hit {
+					text, isString := value.(string)
+					if !isString {
+						return false
 					}
+					fields[key] = text
 				}
 				*hits = append(*hits, BigModelSearchHit{Title: title, URL: link, Fields: fields})
 			}

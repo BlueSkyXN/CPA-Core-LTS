@@ -400,7 +400,10 @@ func modelList(c *config) []any {
 			model["Thinking"] = map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}
 			// Only probe-verified built-in IDs declare native search support;
 			// custom IDs stay unknown instead of inheriting the capability.
-			model["NativeCapabilities"] = map[string]any{"WebSearch": true}
+			// WebSearchReplay is the replay-protocol discriminator the host
+			// checks separately from search capability; the literal matches
+			// registry.NativeWebSearchReplayBigModel ("bigmodel").
+			model["NativeCapabilities"] = map[string]any{"WebSearch": true, "WebSearchReplay": "bigmodel"}
 		}
 		out = append(out, model)
 	}

@@ -86,14 +86,18 @@ func TestCodingPlanDeclaresNativeSearchCapability(t *testing.T) {
 	reg := registry.GetGlobalRegistry()
 	for _, model := range reg.GetModelsForClient("synthetic.json") {
 		if model.ID == "custom-model" {
-			// Custom IDs never inherit the probe-verified builtin capability.
-			if model.NativeCapabilities != nil && model.NativeCapabilities.WebSearch != nil {
-				t.Fatal("custom model inherited built-in native search capability")
+			// Custom IDs never inherit the probe-verified builtin capability
+			// or the BigModel replay protocol discriminator.
+			if model.NativeCapabilities != nil && (model.NativeCapabilities.WebSearch != nil || model.NativeCapabilities.WebSearchReplay != "") {
+				t.Fatal("custom model inherited built-in native search capability or replay protocol")
 			}
 			continue
 		}
 		if model.NativeCapabilities == nil || model.NativeCapabilities.WebSearch == nil || !*model.NativeCapabilities.WebSearch {
 			t.Fatal("Coding Plan native search capability was not preserved by the dynamic host")
+		}
+		if model.NativeCapabilities.WebSearchReplay != registry.NativeWebSearchReplayBigModel {
+			t.Fatalf("Coding Plan built-in %s search replay protocol = %q, want %q", model.ID, model.NativeCapabilities.WebSearchReplay, registry.NativeWebSearchReplayBigModel)
 		}
 		// The registry resolver stays conservative for plugin routes (nil), so
 		// accept explicit true or unknown; the plugin metadata itself is asserted

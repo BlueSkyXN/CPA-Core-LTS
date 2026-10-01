@@ -554,28 +554,62 @@ func TestBigModelSearchPrimeBareResultShape(t *testing.T) {
 	if got := call.Get("results.0.title").String(); got != "Wise USD to CNY" {
 		t.Fatalf("results[0].title = %q", got)
 	}
+	// The body and source fields must survive the fold into the Responses item
+	// so the next turn can replay them on the BigModel protocol.
+	if got := call.Get("results.0.content").String(); got != "1 USD = 7.18 CNY" {
+		t.Fatalf("results[0].content = %q, want preserved body", got)
+	}
+	if got := call.Get("results.0.refer").String(); got != "ref_1" {
+		t.Fatalf("results[0].refer = %q, want preserved source", got)
+	}
 }
 
-// The BigModel refer replay exception is scoped to models that declare
-// provider-native web search support; native Claude targets keep the strict
-// encrypted_content replay rule for the very same history.
+// The BigModel refer replay exception follows the explicit WebSearchReplay
+// protocol discriminator, not search capability: native Anthropic models are
+// search-capable too and must keep the strict encrypted_content replay rule
+// for the very same history.
 func boolPtr(b bool) *bool { return &b }
 
-func TestBigModelReferReplayScopedToNativeSearchCapableModel(t *testing.T) {
+func TestBigModelReferReplayScopedToReplayProtocol(t *testing.T) {
 	item := `{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed",
 		"action":{"type":"search","query":"q"},
 		"results":[{"type":"web_search_result","title":"T","url":"https://example.com/a","refer":"ref_1"}]}`
 	raw := responsesRequestFromItems(item)
-	capable := &registry.ModelInfo{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true)}}
+	capable := &registry.ModelInfo{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true), WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
 	scoped := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("glm-5.3", raw, false, capable)
 	if got := gjson.GetBytes(scoped, "messages.0.content.1.content.0.url").String(); got != "https://example.com/a" {
-		t.Fatalf("capable route dropped BigModel hit: %s", gjson.GetBytes(scoped, "messages.0.content.1").Raw)
+		t.Fatalf("replay-protocol route dropped BigModel hit: %s", gjson.GetBytes(scoped, "messages.0.content.1").Raw)
 	}
 	if got := gjson.GetBytes(scoped, "messages.0.content.1.content.0.refer").String(); got != "ref_1" {
-		t.Fatalf("capable route lost refer field")
+		t.Fatalf("replay-protocol route lost refer field")
 	}
-	strict := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item), false)
+
+	// A model that merely declares native search support, without the replay
+	// protocol discriminator, stays strict.
+	searchOnly := &registry.ModelInfo{ID: "claude-test", NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true)}}
+	strict := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("claude-test", responsesRequestFromItems(item), false, searchOnly)
 	if got := gjson.GetBytes(strict, "messages.0.content.1.content.#").Int(); got != 0 {
-		t.Fatalf("native Claude route replayed a refer-only hit without encrypted_content: %s", gjson.GetBytes(strict, "messages.0.content.1").Raw)
+		t.Fatalf("search-capable model without replay discriminator replayed a refer-only hit: %s", gjson.GetBytes(strict, "messages.0.content.1").Raw)
+	}
+
+	// The embedded static catalog really does mark native Claude models as
+	// search-capable, so the discriminator above is what keeps them strict.
+	// If the catalog ever drops that flag this regression must be revisited.
+	catalog := registry.LookupModelInfo("claude-opus-5", "claude")
+	if catalog == nil || catalog.NativeCapabilities == nil || catalog.NativeCapabilities.WebSearch == nil || !*catalog.NativeCapabilities.WebSearch {
+		t.Fatalf("claude-opus-5 static catalog entry no longer declares web search; revisit replay scoping")
+	}
+	if catalog.NativeCapabilities.WebSearchReplay != "" {
+		t.Fatal("native Claude catalog entry unexpectedly declares a replay protocol")
+	}
+	viaCatalog := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("claude-opus-5", responsesRequestFromItems(item), false, catalog)
+	if got := gjson.GetBytes(viaCatalog, "messages.0.content.1.content.#").Int(); got != 0 {
+		t.Fatalf("catalog-backed native Claude route replayed a refer-only hit without encrypted_content: %s", gjson.GetBytes(viaCatalog, "messages.0.content.1").Raw)
+	}
+
+	// Metadata-free callers keep the legacy strict behavior.
+	legacy := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item), false)
+	if got := gjson.GetBytes(legacy, "messages.0.content.1.content.#").Int(); got != 0 {
+		t.Fatalf("metadata-free route replayed a refer-only hit: %s", gjson.GetBytes(legacy, "messages.0.content.1").Raw)
 	}
 }

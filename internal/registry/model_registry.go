@@ -25,11 +25,22 @@ const (
 	DefaultClaudeMaxOutputTokens = 64000
 )
 
+// NativeWebSearchReplayBigModel selects BigModel Coding Plan's search-history
+// replay protocol (plain refer-tagged hits instead of encrypted_content).
+const NativeWebSearchReplayBigModel = "bigmodel"
+
 // NativeCapabilities contains tri-state native capability metadata from the catalog.
 type NativeCapabilities struct {
 	// WebSearch reports explicit per-model support for native web search.
 	// nil means the catalog has not established support either way.
 	WebSearch *bool `json:"web_search,omitempty"`
+	// WebSearchReplay selects the search-history replay protocol the provider
+	// accepts. Empty keeps the provider-native rules (Anthropic requires a
+	// genuine encrypted_content on replayed results). It is a protocol
+	// discriminator, not a capability: declaring native web search support
+	// alone must not select it, because native Anthropic models also serve
+	// search-capable routes under the strict replay contract.
+	WebSearchReplay string `json:"web_search_replay,omitempty"`
 }
 
 // ModelInfo represents information about an available model

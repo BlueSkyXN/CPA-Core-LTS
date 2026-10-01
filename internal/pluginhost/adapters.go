@@ -202,7 +202,7 @@ func pluginNativeCapabilitiesToRegistry(capabilities *pluginapi.NativeCapabiliti
 	if capabilities == nil {
 		return nil
 	}
-	out := &registry.NativeCapabilities{}
+	out := &registry.NativeCapabilities{WebSearchReplay: capabilities.WebSearchReplay}
 	if capabilities.WebSearch != nil {
 		webSearch := *capabilities.WebSearch
 		out.WebSearch = &webSearch
@@ -214,7 +214,7 @@ func registryNativeCapabilitiesToPlugin(capabilities *registry.NativeCapabilitie
 	if capabilities == nil {
 		return nil
 	}
-	out := &pluginapi.NativeCapabilities{}
+	out := &pluginapi.NativeCapabilities{WebSearchReplay: capabilities.WebSearchReplay}
 	if capabilities.WebSearch != nil {
 		webSearch := *capabilities.WebSearch
 		out.WebSearch = &webSearch

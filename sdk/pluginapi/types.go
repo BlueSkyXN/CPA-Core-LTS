@@ -220,6 +220,12 @@ type ModelInfo struct {
 type NativeCapabilities struct {
 	// WebSearch distinguishes explicit support or rejection from unknown (nil).
 	WebSearch *bool `json:"WebSearch,omitempty"`
+	// WebSearchReplay optionally selects a non-default search-history replay
+	// protocol; "bigmodel" allows BigModel Coding Plan's plain refer-tagged
+	// results instead of Anthropic's encrypted_content. Empty keeps the
+	// provider-native replay rules. Declaring native search support alone does
+	// not select a replay protocol.
+	WebSearchReplay string `json:"WebSearchReplay,omitempty"`
 }
 
 // ThinkingSupport describes supported reasoning budget controls.
