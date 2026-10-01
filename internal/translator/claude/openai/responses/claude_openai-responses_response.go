@@ -667,10 +667,10 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			// GLM Coding Plan reports provider-executed search hits as
 			// assistant-side bare tool_result blocks carrying a Python-repr
 			// string; fold them into the matching web_search_call item.
-			if item := st.WebSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && cb.Get("content").Type == gjson.String {
-				if results := bigmodelToolResultToResponses(cb.Get("content").String()); results != nil {
-					item.Results = results
-				}
+			if item := st.WebSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && item.Results == nil && cb.Get("content").Type == gjson.String {
+				// The response validator already rejects unparsable payloads and
+				// duplicate results; Results==nil here keeps the first win.
+				item.Results = bigmodelToolResultToResponses(cb.Get("content").String())
 			}
 		} else if typ == "thinking" || typ == "redacted_thinking" {
 			// start reasoning item
@@ -1138,10 +1138,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			}
 		case "tool_result":
 			// GLM Coding Plan bare assistant-side search hits (see stream path).
-			if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && cb.Get("content").Type == gjson.String {
-				if results := bigmodelToolResultToResponses(cb.Get("content").String()); results != nil {
-					item.results = results
-				}
+			if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && item.results == nil && cb.Get("content").Type == gjson.String {
+				item.results = bigmodelToolResultToResponses(cb.Get("content").String())
 			}
 		case "thinking", "redacted_thinking":
 			activeMessageItem = nil

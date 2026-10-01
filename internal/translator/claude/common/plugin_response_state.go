@@ -20,7 +20,17 @@ type PluginResponseState struct {
 	Terminal bool
 	stop     string
 	blocks   map[int]*pluginContentBlock
-	searches map[string]bool
+	searches map[string]int
+}
+
+const (
+	searchStateCalled   = 1
+	searchStateConsumed = 2
+)
+
+func bigmodelSearchContentParses(content string) bool {
+	_, ok := ParseBigModelSearchRepr(content)
+	return ok
 }
 
 type pluginContentBlock struct {
@@ -45,7 +55,7 @@ func supportedPluginStop(reason string, chat bool) bool {
 	}
 }
 
-func validatePluginContent(block gjson.Result, searches map[string]bool, chat bool) error {
+func validatePluginContent(block gjson.Result, searches map[string]int, chat bool) error {
 	blockType := block.Get("type").String()
 	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result") {
 		return PluginResponseError()
@@ -63,33 +73,44 @@ func validatePluginContent(block gjson.Result, searches map[string]bool, chat bo
 		if block.Get("data").Type != gjson.String || block.Get("data").String() == "" {
 			return PluginResponseError()
 		}
-	case "tool_use", "server_tool_use":
+	case "tool_use":
+		// Client tool calls always carry an object input; the optional-input
+		// relaxation below is reserved for provider server tools.
+		if block.Get("id").String() == "" || block.Get("name").String() == "" || !block.Get("input").IsObject() {
+			return PluginResponseError()
+		}
+	case "server_tool_use":
 		if block.Get("id").String() == "" || block.Get("name").String() == "" {
 			return PluginResponseError()
 		}
-		// GLM Coding Plan stream starts omit the input object on server_tool_use;
-		// only reject an explicitly malformed non-object input.
+		// GLM Coding Plan stream starts omit the input object entirely.
 		if input := block.Get("input"); input.Exists() && !input.IsObject() {
 			return PluginResponseError()
 		}
-		if block.Get("type").String() == "server_tool_use" {
-			// GLM Coding Plan reports its provider-executed search as web_search_prime.
-			if name := block.Get("name").String(); name != "web_search" && name != "web_search_prime" {
-				return PluginResponseError()
-			}
-			searches[block.Get("id").String()] = true
-		}
-	case "web_search_tool_result":
-		if !searches[block.Get("tool_use_id").String()] {
+		// GLM Coding Plan reports its provider-executed search as web_search_prime.
+		if name := block.Get("name").String(); name != "web_search" && name != "web_search_prime" {
 			return PluginResponseError()
 		}
+		if searches[block.Get("id").String()] != searchStateCalled {
+			searches[block.Get("id").String()] = searchStateCalled
+		}
+	case "web_search_tool_result":
+		if searches[block.Get("tool_use_id").String()] != searchStateCalled {
+			return PluginResponseError()
+		}
+		searches[block.Get("tool_use_id").String()] = searchStateConsumed
 	case "tool_result":
 		// GLM Coding Plan returns provider-executed search hits as assistant-side
 		// bare tool_result blocks paired with a preceding web_search(_prime)
-		// server_tool_use; unpaired ones stay invalid.
-		if !searches[block.Get("tool_use_id").String()] {
+		// server_tool_use. The repr payload must parse fully, and each search
+		// may consume exactly one result.
+		if searches[block.Get("tool_use_id").String()] != searchStateCalled {
 			return PluginResponseError()
 		}
+		if content := block.Get("content"); content.Type != gjson.String || !bigmodelSearchContentParses(content.String()) {
+			return PluginResponseError()
+		}
+		searches[block.Get("tool_use_id").String()] = searchStateConsumed
 	default:
 		return PluginResponseError()
 	}
@@ -100,7 +121,7 @@ func ValidatePluginMessage(message gjson.Result, chat bool) error {
 	if message.Get("type").String() != "message" || message.Get("id").String() == "" || message.Get("role").String() != "assistant" || !message.Get("content").IsArray() || !supportedPluginStop(message.Get("stop_reason").String(), chat) {
 		return PluginResponseError()
 	}
-	searches := make(map[string]bool)
+	searches := make(map[string]int)
 	for _, block := range message.Get("content").Array() {
 		if err := validatePluginContent(block, searches, chat); err != nil {
 			return err
@@ -132,7 +153,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		}
 		s.Started = true
 		s.blocks = make(map[int]*pluginContentBlock)
-		s.searches = make(map[string]bool)
+		s.searches = make(map[string]int)
 	case "content_block_start":
 		index := root.Get("index")
 		idx := int(index.Int())

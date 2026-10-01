@@ -85,6 +85,13 @@ func TestCodingPlanDeclaresNativeSearchCapability(t *testing.T) {
 	newV2Fixture(t, "glm-5.3", "glm-5.3-flash", "custom-model")
 	reg := registry.GetGlobalRegistry()
 	for _, model := range reg.GetModelsForClient("synthetic.json") {
+		if model.ID == "custom-model" {
+			// Custom IDs never inherit the probe-verified builtin capability.
+			if model.NativeCapabilities != nil && model.NativeCapabilities.WebSearch != nil {
+				t.Fatal("custom model inherited built-in native search capability")
+			}
+			continue
+		}
 		if model.NativeCapabilities == nil || model.NativeCapabilities.WebSearch == nil || !*model.NativeCapabilities.WebSearch {
 			t.Fatal("Coding Plan native search capability was not preserved by the dynamic host")
 		}

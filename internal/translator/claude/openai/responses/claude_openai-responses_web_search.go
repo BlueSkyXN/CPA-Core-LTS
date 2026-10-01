@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -72,21 +73,26 @@ func claudeWebSearchQuery(input string) string {
 	return strings.TrimSpace(gjson.Get(input, "search_query").String())
 }
 
-// bigmodelSearchReprPattern extracts title/link pairs from the Python-repr
-// search-hit string GLM Coding Plan returns inside bare tool_result blocks
-// (probe-confirmed 2026-10-01: [{'text': [{'title','link','content','refer'}]}]).
-var bigmodelSearchReprPattern = regexp.MustCompile(`'title':\s*'((?:[^'\\]|\\.)*)',\s*'link':\s*'((?:[^'\\]|\\.)*)'`)
-
+// bigmodelToolResultToResponses converts the Python-repr hit string GLM
+// Coding Plan returns inside bare tool_result blocks into Responses results.
+// Parsing is structural (see claudecommon.ParseBigModelSearchRepr); raw hit
+// fields such as refer/content ride along so replay can restore them.
 func bigmodelToolResultToResponses(content string) []byte {
-	matches := bigmodelSearchReprPattern.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
+	hits, ok := claudecommon.ParseBigModelSearchRepr(content)
+	if !ok || len(hits) == 0 {
 		return nil
 	}
-	results := make([][]byte, 0, len(matches))
-	for _, match := range matches {
+	results := make([][]byte, 0, len(hits))
+	for _, hit := range hits {
 		entry := []byte(`{"type":"web_search_result","title":"","url":""}`)
-		entry, _ = sjson.SetBytes(entry, "title", strings.ReplaceAll(match[1], `\'`, `'`))
-		entry, _ = sjson.SetBytes(entry, "url", strings.ReplaceAll(match[2], `\'`, `'`))
+		entry, _ = sjson.SetBytes(entry, "title", hit.Title)
+		entry, _ = sjson.SetBytes(entry, "url", hit.URL)
+		if refer, exists := hit.Fields["refer"]; exists {
+			entry, _ = sjson.SetBytes(entry, "refer", refer)
+		}
+		if body, exists := hit.Fields["content"]; exists {
+			entry, _ = sjson.SetBytes(entry, "content", body)
+		}
 		results = append(results, entry)
 	}
 	return translatorcommon.JoinRawArray(results)
@@ -180,6 +186,15 @@ func responsesWebSearchResultsToClaude(results gjson.Result) []byte {
 	results.ForEach(func(_, entry gjson.Result) bool {
 		if entry.Get("type").String() == "web_search_tool_result_error" {
 			blocks = append(blocks, []byte(entry.Raw))
+			return true
+		}
+		// BigModel search hits carry their original refer/content fields instead
+		// of Anthropic's encrypted_content; replay them verbatim rather than
+		// dropping them through the Anthropic-only rule below.
+		if strings.TrimSpace(entry.Get("refer").String()) != "" {
+			block := []byte(entry.Raw)
+			block, _ = sjson.SetBytes(block, "type", "web_search_result")
+			blocks = append(blocks, block)
 			return true
 		}
 		// Anthropic validates encrypted_content and rejects the whole request when
