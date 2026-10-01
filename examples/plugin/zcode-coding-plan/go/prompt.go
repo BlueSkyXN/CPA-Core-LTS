@@ -110,8 +110,14 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 			}
 			switch block["type"] {
 			case "text", "thinking", "redacted_thinking", "tool_use":
-			case "server_tool_use", "web_search_tool_result", "web_fetch_tool_result":
-				return nil, problem(400, "unsupported_content", "Provider-native tool history is not supported by Coding Plan; use client-executed function or MCP tools and start a new conversation without server-tool history")
+			case "server_tool_use":
+				name, _ := block["name"].(string)
+				if name != "web_search" && name != "web_search_prime" {
+					return nil, problem(400, "unsupported_content", "Unsupported server tool in Coding Plan history")
+				}
+			case "web_search_tool_result":
+			case "web_fetch_tool_result":
+				return nil, problem(400, "unsupported_content", "web_fetch history is not supported by Coding Plan")
 			case "image":
 				if m["role"] != "user" {
 					return nil, problem(400, "unsupported_content", "Images require a user message")
@@ -187,12 +193,16 @@ func validateTools(body map[string]any) error {
 			if !ok || strings.TrimSpace(typ) == "" {
 				return problem(400, "invalid_request", fmt.Sprintf("tools[%d].type must be a non-empty string when present", i))
 			}
-			if typ != "custom" {
-				message := "Provider-native tools are not supported by Coding Plan; use client-executed function or MCP tools with name and input_schema"
-				if strings.HasPrefix(typ, "web_search_") {
-					message = "Provider-native web_search is not supported by Coding Plan; disable provider-native WebSearch for this model and use a client-executed function or MCP search tool"
-				}
-				return problem(400, "unsupported_tools", fmt.Sprintf("tools[%d]: %s", i, message))
+			switch typ {
+			case "custom":
+			case "web_search_20250305", "web_search_20260209":
+				// Native web search executes upstream; 2026-10-01 real-credential
+				// probes confirmed both versions run and answer via web_search_prime
+				// server_tool_use plus bare tool_result blocks. They carry no
+				// client name/input_schema contract, so skip those checks.
+				continue
+			default:
+				return problem(400, "unsupported_tools", fmt.Sprintf("tools[%d]: Provider-native tools are not supported by Coding Plan; use client-executed function or MCP tools with name and input_schema", i))
 			}
 		}
 		name, ok := tool["name"].(string)

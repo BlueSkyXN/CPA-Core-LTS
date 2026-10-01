@@ -62,7 +62,7 @@ func TestInvalidToolDefinitions(t *testing.T) {
 }
 
 func TestNativeToolsRejectedBeforeCallbacks(t *testing.T) {
-	for _, typ := range []string{"web_search_20250305", "web_search_20260209", "web_fetch_20250910", "bash_20250124", "synthetic-private-type"} {
+	for _, typ := range []string{"web_fetch_20250910", "bash_20250124", "synthetic-private-type"} {
 		for _, schema := range []bool{false, true} {
 			t.Run(typ+map[bool]string{false: "/native", true: "/forged-schema"}[schema], func(t *testing.T) {
 				pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -85,9 +85,6 @@ func TestNativeToolsRejectedBeforeCallbacks(t *testing.T) {
 				if !strings.Contains(api.Message, "client-executed") || strings.Contains(api.Message, "synthetic-private") {
 					t.Fatal("tool error lacks remediation or echoes caller-controlled values")
 				}
-				if strings.HasPrefix(typ, "web_search_") && !strings.Contains(api.Message, "provider-native WebSearch") {
-					t.Fatal("web search error lacks client capability guidance")
-				}
 				if h.handshakes != 0 || h.models != 0 || h.closed != 0 || len(r.active) != 0 {
 					t.Fatal("rejected tool reached a callback or retained an execution")
 				}
@@ -97,15 +94,64 @@ func TestNativeToolsRejectedBeforeCallbacks(t *testing.T) {
 }
 
 func TestNativeToolHistoryRejected(t *testing.T) {
-	for _, typ := range []string{"server_tool_use", "web_search_tool_result", "web_fetch_tool_result"} {
+	for _, typ := range []string{"web_fetch_tool_result"} {
 		body := map[string]any{
 			"model": "glm-5.3", "max_tokens": 100,
 			"messages": []any{map[string]any{"role": "assistant", "content": []any{map[string]any{"type": typ}}}},
 		}
 		_, err := transformExecution(executorRequest{Payload: encode(body)}, defaultConfig(), "session")
 		var api *apiError
-		if !errors.As(err, &api) || api.Status != 400 || api.Code != "unsupported_content" || !strings.Contains(api.Message, "new conversation") {
+		if !errors.As(err, &api) || api.Status != 400 || api.Code != "unsupported_content" {
 			t.Fatalf("native history error = %v", err)
+		}
+	}
+	// Unknown server tools stay rejected; pairing of search history is
+	// guaranteed by Core's request translation, not re-validated here.
+	for _, block := range []map[string]any{
+		{"type": "server_tool_use", "name": "code_execution", "id": "srv_1"},
+	} {
+		body := map[string]any{
+			"model": "glm-5.3", "max_tokens": 100,
+			"messages": []any{map[string]any{"role": "assistant", "content": []any{block}}},
+		}
+		if _, err := transformExecution(executorRequest{Payload: encode(body)}, defaultConfig(), "session"); err == nil {
+			t.Fatalf("history block %v accepted", block["type"])
+		}
+	}
+}
+
+func TestNativeSearchToolsAndHistoryAccepted(t *testing.T) {
+	for _, typ := range []string{"web_search_20250305", "web_search_20260209"} {
+		for _, schema := range []bool{false, true} {
+			tool := map[string]any{"type": typ, "name": "web_search", "max_uses": 2}
+			if schema {
+				tool["input_schema"] = map[string]any{"type": "object"}
+			}
+			body := map[string]any{
+				"model": "glm-5.3", "max_tokens": 100,
+				"tools":    []any{tool},
+				"messages": []any{map[string]any{"role": "user", "content": "search"}},
+			}
+			result, err := transformExecution(executorRequest{Payload: encode(body)}, defaultConfig(), "session")
+			if err != nil {
+				t.Fatalf("%s schema=%v error = %v", typ, schema, err)
+			}
+			tools, _ := result["tools"].([]any)
+			if len(tools) != 1 {
+				t.Fatalf("%s schema=%v tools = %v", typ, schema, result["tools"])
+			}
+		}
+	}
+	for _, name := range []string{"web_search", "web_search_prime"} {
+		body := map[string]any{
+			"model": "glm-5.3", "max_tokens": 100,
+			"messages": []any{map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "server_tool_use", "name": name, "id": "srvtoolu_1", "input": map[string]any{"query": "golang"}},
+				map[string]any{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []any{}},
+			}}},
+		}
+		if _, err := transformExecution(executorRequest{Payload: encode(body)}, defaultConfig(), "session"); err != nil {
+			t.Fatalf("%s history error = %v", name, err)
 		}
 	}
 }

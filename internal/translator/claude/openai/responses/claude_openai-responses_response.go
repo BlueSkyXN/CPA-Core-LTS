@@ -642,7 +642,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.FuncCallIDs[idx] = st.CurrentFCID
 			st.FuncNames[idx] = name
 		} else if typ == "server_tool_use" {
-			if name := cb.Get("name").String(); name != claudeWebSearchToolName {
+			if name := cb.Get("name").String(); name != claudeWebSearchToolName && name != bigmodelWebSearchPrimeToolName {
 				// Reachability guard: only web_search can be enabled on Claude by
 				// this translator, so anything else means a new upstream tool.
 				log.Debugf("claude->responses: unmapped server_tool_use %q at block %d", name, idx)
@@ -662,6 +662,15 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				item.Results = claudeWebSearchResultsToResponses(cb.Get("content"))
 			} else {
 				log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
+			}
+		} else if typ == "tool_result" {
+			// GLM Coding Plan reports provider-executed search hits as
+			// assistant-side bare tool_result blocks carrying a Python-repr
+			// string; fold them into the matching web_search_call item.
+			if item := st.WebSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && cb.Get("content").Type == gjson.String {
+				if results := bigmodelToolResultToResponses(cb.Get("content").String()); results != nil {
+					item.Results = results
+				}
 			}
 		} else if typ == "thinking" || typ == "redacted_thinking" {
 			// start reasoning item
@@ -1107,7 +1116,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		case "server_tool_use":
 			activeMessageItem = nil
 			name := cb.Get("name").String()
-			if name != claudeWebSearchToolName {
+			if name != claudeWebSearchToolName && name != bigmodelWebSearchPrimeToolName {
 				log.Debugf("claude->responses: unmapped server_tool_use %q at block %d", name, idx)
 				return
 			}
@@ -1126,6 +1135,13 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 				item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
 			} else {
 				log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
+			}
+		case "tool_result":
+			// GLM Coding Plan bare assistant-side search hits (see stream path).
+			if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && cb.Get("content").Type == gjson.String {
+				if results := bigmodelToolResultToResponses(cb.Get("content").String()); results != nil {
+					item.results = results
+				}
 			}
 		case "thinking", "redacted_thinking":
 			activeMessageItem = nil

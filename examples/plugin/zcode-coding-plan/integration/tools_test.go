@@ -42,7 +42,7 @@ func TestThreeProtocolClientTools(t *testing.T) {
 	}
 }
 
-func TestNativeToolsFailBeforeSigning(t *testing.T) {
+func TestNativeSearchToolsDispatch(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
@@ -61,36 +61,45 @@ func TestNativeToolsFailBeforeSigning(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			f.router.ServeHTTP(rec, req)
-			if rec.Code != 400 || !strings.Contains(rec.Body.String(), "provider-native WebSearch") || strings.Contains(rec.Body.String(), "Only custom tools") {
-				t.Fatalf("native tool diagnostic failed: path=%s stream=%t status=%d body=%s", protocol.path, stream, rec.Code, rec.Body.String())
+			// Native web_search now dispatches to the fake upstream instead of
+			// failing validation; only the model round-trip is asserted here.
+			if rec.Code != 200 {
+				t.Fatalf("native search dispatch failed: path=%s stream=%t status=%d body=%s", protocol.path, stream, rec.Code, rec.Body.String())
 			}
-			f.checkUsage(t, true)
-			if f.transport.handshakes != 0 || len(f.transport.captured) != 0 {
-				t.Fatal("native tool rejection reached signing or model dispatch")
+			f.checkUsage(t, false)
+			captured := f.transport.captured[len(f.transport.captured)-1]
+			if !gjson.GetBytes(captured, "tools.#").Exists() || gjson.GetBytes(captured, "tools.#").Int() == 0 {
+				t.Fatalf("native search tool was dropped: %s", gjson.GetBytes(captured, "tools").Raw)
+			}
+			if typ := gjson.GetBytes(captured, "tools.@reverse.0.type").String(); typ != "web_search_20250305" && typ != "web_search_20260209" {
+				t.Fatalf("dispatched tool type = %q", typ)
 			}
 		}
 	}
 }
 
-func TestCodingPlanDeclaresNativeSearchUnsupported(t *testing.T) {
+func TestCodingPlanDeclaresNativeSearchCapability(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
 	newV2Fixture(t, "glm-5.3", "glm-5.3-flash", "custom-model")
 	reg := registry.GetGlobalRegistry()
 	for _, model := range reg.GetModelsForClient("synthetic.json") {
-		if model.NativeCapabilities == nil || model.NativeCapabilities.WebSearch == nil || *model.NativeCapabilities.WebSearch {
+		if model.NativeCapabilities == nil || model.NativeCapabilities.WebSearch == nil || !*model.NativeCapabilities.WebSearch {
 			t.Fatal("Coding Plan native search capability was not preserved by the dynamic host")
 		}
-		if supported := reg.GetResponsesWebSearchCapability(model.ID); supported == nil || *supported {
-			t.Fatal("Coding Plan search capability did not resolve to explicit false")
+		// The registry resolver stays conservative for plugin routes (nil), so
+		// accept explicit true or unknown; the plugin metadata itself is asserted
+		// above. Flipping the resolver for plugin providers is a Core follow-up.
+		if supported := reg.GetResponsesWebSearchCapability(model.ID); supported != nil && !*supported {
+			t.Fatal("Coding Plan search capability resolved to explicit false")
 		}
 	}
-	search := true
 	peer := "native-search-peer"
-	reg.RegisterClient(peer, "claude", []*registry.ModelInfo{{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: &search}}})
+	off := false
+	reg.RegisterClient(peer, "claude", []*registry.ModelInfo{{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: &off}}})
 	t.Cleanup(func() { reg.UnregisterClient(peer) })
-	if supported := reg.GetResponsesWebSearchCapability("glm-5.3"); supported == nil || *supported {
-		t.Fatal("peer capability overrode the unsupported plugin route")
+	if supported := reg.GetResponsesWebSearchCapability("glm-5.3"); supported != nil && *supported {
+		t.Fatal("peer false capability did not win for its own route")
 	}
 }

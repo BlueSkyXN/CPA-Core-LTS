@@ -21,6 +21,10 @@ import (
 const (
 	claudeWebSearchToolName = "web_search"
 
+	// bigmodelWebSearchPrimeToolName is the server tool name GLM Coding Plan
+	// actually reports in server_tool_use blocks for native web searches.
+	bigmodelWebSearchPrimeToolName = "web_search_prime"
+
 	// responsesWebSearchIDPrefix namespaces the Claude server_tool_use id inside
 	// the Responses item id, mirroring the fc_/ctc_ prefixes used for tool calls
 	// so the original id can be recovered on replay.
@@ -61,7 +65,31 @@ func claudeWebSearchQuery(input string) string {
 	if input == "" {
 		return ""
 	}
-	return strings.TrimSpace(gjson.Get(input, "query").String())
+	if query := strings.TrimSpace(gjson.Get(input, "query").String()); query != "" {
+		return query
+	}
+	// GLM Coding Plan reports the query as search_query.
+	return strings.TrimSpace(gjson.Get(input, "search_query").String())
+}
+
+// bigmodelSearchReprPattern extracts title/link pairs from the Python-repr
+// search-hit string GLM Coding Plan returns inside bare tool_result blocks
+// (probe-confirmed 2026-10-01: [{'text': [{'title','link','content','refer'}]}]).
+var bigmodelSearchReprPattern = regexp.MustCompile(`'title':\s*'((?:[^'\\]|\\.)*)',\s*'link':\s*'((?:[^'\\]|\\.)*)'`)
+
+func bigmodelToolResultToResponses(content string) []byte {
+	matches := bigmodelSearchReprPattern.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	results := make([][]byte, 0, len(matches))
+	for _, match := range matches {
+		entry := []byte(`{"type":"web_search_result","title":"","url":""}`)
+		entry, _ = sjson.SetBytes(entry, "title", strings.ReplaceAll(match[1], `\'`, `'`))
+		entry, _ = sjson.SetBytes(entry, "url", strings.ReplaceAll(match[2], `\'`, `'`))
+		results = append(results, entry)
+	}
+	return translatorcommon.JoinRawArray(results)
 }
 
 // claudeWebSearchResultsToResponses converts the content of a Claude

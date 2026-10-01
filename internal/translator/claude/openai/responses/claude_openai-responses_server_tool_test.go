@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -508,5 +509,48 @@ func TestTextSearchTextOrderPreservedInStreamingAndReplay(t *testing.T) {
 	wantBlocks := []string{"text", "server_tool_use", "web_search_tool_result", "text"}
 	if strings.Join(replayedBlocks, ",") != strings.Join(wantBlocks, ",") {
 		t.Fatalf("replayed block types = %v, want %v", replayedBlocks, wantBlocks)
+	}
+}
+
+// TestBigModelSearchPrimeBareResultShape folds the probe-confirmed GLM Coding
+// Plan response (server_tool_use name=web_search_prime + assistant-side bare
+// tool_result carrying a Python-repr hit string) into one web_search_call.
+func TestBigModelSearchPrimeBareResultShape(t *testing.T) {
+	repr := `[{'text': [{'title': 'Wise USD to CNY', 'link': 'https://wise.com/rate', 'content': '1 USD = 7.18 CNY', 'refer': 'ref_1'}]}, []]`
+	lines := []string{
+		`data: {"type":"message_start","message":{"id":"msg_prime","usage":{"input_tokens":9,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_prime","name":"web_search_prime","input":{"search_query":"usd cny","search_recency_filter":"oneDay"}}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_result","tool_use_id":"srvtoolu_prime","content":` + fmt.Sprintf("%q", repr) + `}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"About 7.18."}}`,
+		`data: {"type":"content_block_stop","index":2}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	out := ConvertClaudeResponseToOpenAIResponsesNonStream(
+		context.Background(), "claude-test", nil, nil, []byte(strings.Join(lines, "\n")), nil)
+	items := gjson.GetBytes(out, "output").Array()
+	var call gjson.Result
+	for _, item := range items {
+		if item.Get("type").String() == "web_search_call" {
+			call = item
+		}
+	}
+	if !call.Exists() {
+		t.Fatalf("no web_search_call item; output=%s", gjson.GetBytes(out, "output").Raw)
+	}
+	if got := call.Get("action.query").String(); got != "usd cny" {
+		t.Fatalf("action.query = %q, want search_query value", got)
+	}
+	if got := call.Get("results.#").Int(); got != 1 {
+		t.Fatalf("results = %d, want 1 parsed hit: %s", got, call.Get("results").Raw)
+	}
+	if got := call.Get("results.0.url").String(); got != "https://wise.com/rate" {
+		t.Fatalf("results[0].url = %q", got)
+	}
+	if got := call.Get("results.0.title").String(); got != "Wise USD to CNY" {
+		t.Fatalf("results[0].title = %q", got)
 	}
 }

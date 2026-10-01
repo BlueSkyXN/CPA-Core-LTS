@@ -46,7 +46,8 @@ func supportedPluginStop(reason string, chat bool) bool {
 }
 
 func validatePluginContent(block gjson.Result, searches map[string]bool, chat bool) error {
-	if chat && (block.Get("type").String() == "server_tool_use" || block.Get("type").String() == "web_search_tool_result") {
+	blockType := block.Get("type").String()
+	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result") {
 		return PluginResponseError()
 	}
 	switch block.Get("type").String() {
