@@ -141,7 +141,7 @@ func buildResponsesWebSearchCallItem(claudeToolUseID, query string, results []by
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
 // buildResponsesWebSearchCallItem: it rebuilds the Claude block pair so a
 // replayed turn still shows that the search happened and what it returned.
-func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result) [][]byte {
+func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result, allowBigModelReplay bool) [][]byte {
 	toolUseID := claudeWebSearchToolUseID(strings.TrimSpace(item.Get("id").String()))
 	if toolUseID == "" {
 		return nil
@@ -156,7 +156,7 @@ func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result) [][]byte {
 
 	result := []byte(`{"type":"web_search_tool_result","tool_use_id":"","content":[]}`)
 	result, _ = sjson.SetBytes(result, "tool_use_id", toolUseID)
-	if content := responsesWebSearchResultsToClaude(item.Get("results")); len(content) > 0 {
+	if content := responsesWebSearchResultsToClaude(item.Get("results"), allowBigModelReplay); len(content) > 0 {
 		result, _ = sjson.SetRawBytes(result, "content", content)
 	}
 	return [][]byte{use, result}
@@ -175,7 +175,7 @@ func responsesWebSearchCallQuery(item gjson.Result) string {
 	return strings.TrimSpace(item.Get("action.url").String())
 }
 
-func responsesWebSearchResultsToClaude(results gjson.Result) []byte {
+func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay bool) []byte {
 	if results.IsObject() {
 		return []byte(results.Raw)
 	}
@@ -189,9 +189,11 @@ func responsesWebSearchResultsToClaude(results gjson.Result) []byte {
 			return true
 		}
 		// BigModel search hits carry their original refer/content fields instead
-		// of Anthropic's encrypted_content; replay them verbatim rather than
-		// dropping them through the Anthropic-only rule below.
-		if strings.TrimSpace(entry.Get("refer").String()) != "" {
+		// of Anthropic's encrypted_content. The exception is scoped to models
+		// whose selected route explicitly declares provider-native search
+		// support (the Coding Plan plugin); native Anthropic targets keep the
+		// strict encrypted_content replay contract below.
+		if allowBigModelReplay && strings.TrimSpace(entry.Get("refer").String()) != "" {
 			block := []byte(entry.Raw)
 			block, _ = sjson.SetBytes(block, "type", "web_search_result")
 			blocks = append(blocks, block)

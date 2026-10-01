@@ -91,9 +91,13 @@ func validatePluginContent(block gjson.Result, searches map[string]int, chat boo
 		if name := block.Get("name").String(); name != "web_search" && name != "web_search_prime" {
 			return PluginResponseError()
 		}
-		if searches[block.Get("id").String()] != searchStateCalled {
-			searches[block.Get("id").String()] = searchStateCalled
+		id := block.Get("id").String()
+		if _, exists := searches[id]; exists {
+			// A repeated call id (before or after its result) would reopen or
+			// alias an existing search; reject it outright.
+			return PluginResponseError()
 		}
+		searches[id] = searchStateCalled
 	case "web_search_tool_result":
 		if searches[block.Get("tool_use_id").String()] != searchStateCalled {
 			return PluginResponseError()

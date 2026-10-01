@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/tidwall/gjson"
 )
 
@@ -552,5 +553,29 @@ func TestBigModelSearchPrimeBareResultShape(t *testing.T) {
 	}
 	if got := call.Get("results.0.title").String(); got != "Wise USD to CNY" {
 		t.Fatalf("results[0].title = %q", got)
+	}
+}
+
+// The BigModel refer replay exception is scoped to models that declare
+// provider-native web search support; native Claude targets keep the strict
+// encrypted_content replay rule for the very same history.
+func boolPtr(b bool) *bool { return &b }
+
+func TestBigModelReferReplayScopedToNativeSearchCapableModel(t *testing.T) {
+	item := `{"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed",
+		"action":{"type":"search","query":"q"},
+		"results":[{"type":"web_search_result","title":"T","url":"https://example.com/a","refer":"ref_1"}]}`
+	raw := responsesRequestFromItems(item)
+	capable := &registry.ModelInfo{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true)}}
+	scoped := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("glm-5.3", raw, false, capable)
+	if got := gjson.GetBytes(scoped, "messages.0.content.1.content.0.url").String(); got != "https://example.com/a" {
+		t.Fatalf("capable route dropped BigModel hit: %s", gjson.GetBytes(scoped, "messages.0.content.1").Raw)
+	}
+	if got := gjson.GetBytes(scoped, "messages.0.content.1.content.0.refer").String(); got != "ref_1" {
+		t.Fatalf("capable route lost refer field")
+	}
+	strict := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item), false)
+	if got := gjson.GetBytes(strict, "messages.0.content.1.content.#").Int(); got != 0 {
+		t.Fatalf("native Claude route replayed a refer-only hit without encrypted_content: %s", gjson.GetBytes(strict, "messages.0.content.1").Raw)
 	}
 }

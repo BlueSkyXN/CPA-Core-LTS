@@ -1,7 +1,9 @@
 package claudecommon
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
@@ -127,10 +129,22 @@ func TestParseBigModelSearchReprEdgeCases(t *testing.T) {
 	if !ok || len(hits) != 1 || hits[0].Title != "What's new" {
 		t.Fatalf("double-quoted title: ok=%v hits=%+v", ok, hits)
 	}
-	// Escapes decode; \xa0-style hex must not corrupt the value.
-	hits, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'a` + "\xa0" + `b` + "\t" + `c', 'link': 'https://e.com/b'}]}]`)
-	if !ok || len(hits) != 1 || hits[0].Title != "a\xa0b\tc" {
-		t.Fatalf("escape decoding: ok=%v title=%q", ok, firstTitle(hits))
+	// Literal \xNN / \t sequences in a raw fixture decode to Unicode code
+	// points; the result must stay valid UTF-8 (U+00A0 encodes as C2 A0).
+	hits, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'a\xa0b\tc', 'link': 'https://e.com/b'}]}]`)
+	if !ok || len(hits) != 1 || hits[0].Title != "a\u00a0b\tc" || !utf8.ValidString(hits[0].Title) {
+		t.Fatalf("escape decoding: ok=%v title=%q valid=%v", ok, firstTitle(hits), utf8.ValidString(firstTitle(hits)))
+	}
+	// \U capital escapes and \u escapes decode; invalid hex is rejected.
+	hits, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'x\U0001F600y\u4e2dz', 'link': 'https://e.com/c'}]}]`)
+	if !ok || len(hits) != 1 || hits[0].Title != "x\U0001F600y\u4e2dz" {
+		t.Fatalf("unicode escapes: ok=%v title=%q", ok, firstTitle(hits))
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'a\uZZZZb', 'link': 'https://e.com/d'}]}]`); ok {
+		t.Fatal("invalid \\u hex accepted")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'a\q b', 'link': 'https://e.com/e'}]}]`); ok {
+		t.Fatal("unknown escape accepted")
 	}
 	// Text that merely looks like fields inside a hit's content is a string
 	// value in the structure and must never be re-scanned as separate hits.
@@ -138,12 +152,48 @@ func TestParseBigModelSearchReprEdgeCases(t *testing.T) {
 	if !ok || len(hits) != 1 || hits[0].Title != "Real" {
 		t.Fatalf("embedded example extracted as hit: ok=%v hits=%+v", ok, hits)
 	}
-	// Truncated / corrupt payloads fail loudly instead of returning partials.
+	// Corrupt or unrecognized payloads fail loudly instead of returning
+	// partial or empty success.
 	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'Broken'`); ok {
 		t.Fatal("truncated repr parsed successfully")
 	}
 	if _, ok = ParseBigModelSearchRepr(``); ok {
 		t.Fatal("empty string parsed successfully")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[garbage]`); ok {
+		t.Fatal("bare token list parsed successfully")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 'A', 'link': 'https://e.com/a'}, {'title': 'B'}]}]`); ok {
+		t.Fatal("hit without link silently dropped")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[{'text': [{'title': 123, 'link': 'https://e.com/n'}]}]`); ok {
+		t.Fatal("non-string title accepted")
+	}
+	deep := "[" + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + "]"
+	if _, ok = ParseBigModelSearchRepr(deep); ok {
+		t.Fatal("unbounded nesting accepted")
+	}
+}
+
+func TestDuplicateServerToolUseIDRejected(t *testing.T) {
+	// JSON path: the same server_tool_use id appears twice.
+	dupJSON := `{"id":"m","type":"message","role":"assistant","stop_reason":"end_turn","content":[` +
+		`{"type":"server_tool_use","id":"s1","name":"web_search_prime"},` +
+		`{"type":"server_tool_use","id":"s1","name":"web_search_prime"}]}`
+	if err := ValidatePluginMessage(mustParse(dupJSON), false); err == nil {
+		t.Fatal("duplicate server_tool_use id accepted in JSON validation")
+	}
+	// Stream path: reopening an already consumed search id is rejected.
+	state, failedAt := acceptLines(t,
+		`{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[]}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"s1","name":"web_search_prime"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"tool_result","tool_use_id":"s1","content":"[{'text': []}]"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"s1","name":"web_search_prime"}}`,
+	)
+	if failedAt < 0 || state.Err == nil {
+		t.Fatalf("reopened search id accepted: failedAt=%d err=%v", failedAt, state.Err)
 	}
 }
 
