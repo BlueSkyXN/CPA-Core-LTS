@@ -55,7 +55,7 @@ Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_l
 
 ### Coding Plan 工具能力边界
 
-0.4.2 源码明确区分客户端执行的 function/custom/MCP 工具与 provider-native server tools：前者保留定义、schema 和成对历史。原生 `web_search_20250305` / `web_search_20260209` 经 2026-10-01 真实凭据探测确认由上游执行，插件定向放行并把回包（`web_search_prime` server_tool_use + assistant 侧按 `tool_use_id` 配对的裸 `tool_result`）折叠为单个 Responses `web_search_call`；其余 provider-native 工具仍在签名握手／模型请求前明确拒绝，给它们添加 `input_schema` 也不能绕过校验。无效函数定义按 `tools[index]` 指出字段，错误不回显调用者提供的名称、类型或 schema；不伪造搜索结果。
+0.4.2 源码明确区分客户端执行的 function/custom/MCP 工具与 provider-native server tools：前者保留定义、schema 和成对历史。原生 `web_search_20250305` / `web_search_20260209` 经 2026-10-01 真实凭据探测确认由上游执行，插件定向放行并把回包（`web_search_prime` server_tool_use + assistant 侧按 `tool_use_id` 配对的裸 `tool_result`）折叠为单个 Responses `web_search_call`（命中载荷在 Python-repr 载体形 `[{'text': [...]}]` 与无载体的双引号 JSON 形 `[[{...}]]` 之间交替，Core 两种都接受，其余形状显式失败）；其余 provider-native 工具仍在签名握手／模型请求前明确拒绝，给它们添加 `input_schema` 也不能绕过校验。无效函数定义按 `tools[index]` 指出字段，错误不回显调用者提供的名称、类型或 schema；不伪造搜索结果。
 
 插件模型 API 的可选 `ModelInfo.NativeCapabilities.WebSearch` 三态声明不变，ABI/schema 不变；旧插件缺省仍为未知。宿主深拷贝并保留此能力，Coding Plan 自 0.4.2 起对内置 allowlist ID 声明 `true`（真实上游探测支持），自定义 ID 保持保守。CPA-aware `/v1/models?client_version=cpa` 据此输出 `cpa_capabilities.web_search`。普通模型目录不会自动修改客户端本地配置。
 

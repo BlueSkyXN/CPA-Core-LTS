@@ -2,15 +2,18 @@ package claudecommon
 
 import "strings"
 
-// BigModel search hits arrive as one or more adjacent Python-repr container
-// values inside assistant-side bare tool_result blocks, shaped as
-// [{"text": [{"title", "link", "content", "refer"}]}]. This parser accepts
-// exactly that contract: bounded nesting, quoted strings with Python escapes,
-// numbers and the True/False/None literals. Accepted structure values are
-// strings only; scalars parse but never satisfy a string field. Anything
-// else - unknown tokens, truncated payloads, non-string hit or carrier
-// values, malformed numbers, excessive depth - fails loudly so callers never
-// mistake corruption for empty or partially-dropped results.
+// BigModel search hits arrive as one or more adjacent container values inside
+// assistant-side bare tool_result blocks. The upstream alternates between two
+// shapes: a Python-repr carrier form [{"text": [{"title", "link", "content",
+// "refer"}]}] and a double-quoted JSON form [[{"title", "link", "content",
+// "refer"}, ...]] without the carrier dict (both probe-confirmed against the
+// real upstream, 2026-10-01). This parser accepts exactly those contracts:
+// bounded nesting, quoted strings with Python escapes, numbers and the
+// True/False/None literals. Accepted structure values are strings only;
+// scalars parse but never satisfy a string field. Anything else - unknown
+// tokens, truncated payloads, non-string hit or carrier values, malformed
+// numbers, excessive depth - fails loudly so callers never mistake corruption
+// for empty or partially-dropped results.
 
 type BigModelSearchHit struct {
 	Title  string
@@ -339,12 +342,14 @@ func lowerHex(c byte) byte {
 	return c
 }
 
-// collectTextHits enforces the hit-list structure: every element of a
-// top-level container is either the {"text": [hit...]} carrier dict or an
-// empty list, and every value in a carrier or hit dict is a string (title and
-// link additionally required, link non-empty). A corrupt field type - a
-// numeric or list-valued refer/content - fails the whole payload instead of
-// being silently dropped as a "successful" parse with missing fields.
+// collectTextHits enforces the hit-list structure. Every element of a
+// top-level container is either the {"text": [hit...]} carrier dict (repr
+// shape), a possibly-empty list of hit dicts (JSON shape, where empty stays a
+// legitimate no-hit marker), and every value in a carrier or hit dict is a
+// string (title and link additionally required, link non-empty). A corrupt
+// field type - a numeric or list-valued refer/content - fails the whole
+// payload instead of being silently dropped as a "successful" parse with
+// missing fields.
 func collectTextHits(value any, hits *[]BigModelSearchHit) bool {
 	list, isList := value.([]any)
 	if !isList {
@@ -369,33 +374,42 @@ func collectTextHits(value any, hits *[]BigModelSearchHit) bool {
 					return false
 				}
 			}
-			for _, raw := range textList {
-				hit, isHit := raw.(map[string]any)
-				if !isHit {
-					return false
-				}
-				title, titleOK := hit["title"].(string)
-				link, linkOK := hit["link"].(string)
-				if !titleOK || !linkOK || link == "" {
-					return false
-				}
-				fields := map[string]string{}
-				for key, value := range hit {
-					text, isString := value.(string)
-					if !isString {
-						return false
-					}
-					fields[key] = text
-				}
-				*hits = append(*hits, BigModelSearchHit{Title: title, URL: link, Fields: fields})
+			if !collectHitList(textList, hits) {
+				return false
 			}
 		case []any:
-			if len(typed) != 0 {
+			if !collectHitList(typed, hits) {
 				return false
 			}
 		default:
 			return false
 		}
+	}
+	return true
+}
+
+// collectHitList validates one list of hit dicts; an empty list is valid and
+// yields no hits.
+func collectHitList(candidates []any, hits *[]BigModelSearchHit) bool {
+	for _, raw := range candidates {
+		hit, isHit := raw.(map[string]any)
+		if !isHit {
+			return false
+		}
+		title, titleOK := hit["title"].(string)
+		link, linkOK := hit["link"].(string)
+		if !titleOK || !linkOK || link == "" {
+			return false
+		}
+		fields := map[string]string{}
+		for key, value := range hit {
+			text, isString := value.(string)
+			if !isString {
+				return false
+			}
+			fields[key] = text
+		}
+		*hits = append(*hits, BigModelSearchHit{Title: title, URL: link, Fields: fields})
 	}
 	return true
 }

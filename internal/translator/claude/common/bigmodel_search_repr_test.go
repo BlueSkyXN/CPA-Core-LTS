@@ -1,6 +1,7 @@
 package claudecommon
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -210,6 +211,75 @@ func TestReprNumberGrammar(t *testing.T) {
 		if isReprNumber(token) {
 			t.Fatalf("invalid number token %q accepted", token)
 		}
+	}
+}
+
+// Real upstream alternates between the repr carrier shape and a
+// double-quoted JSON shape with no carrier dict (live capture 2026-10-01):
+// [[{"title","link","content","refer"}, ...]].
+const bigModelJSONShapeFixture = `[[{"title": "人民币汇率中间价", "link": "https://www.safe.gov.cn/AppStructured/hlw/RMBQuery.do", "content": "人民币汇率中间价 USD/CNY 6.7351", "refer": "ref_1"}, {"title": "美元兑人民币汇率 - 我查", "link": "https://chl.cn/huilv/?usd", "content": "1美元=6.7351元人民币", "refer": "ref_2"}]]`
+
+func TestBigModelJSONShapeHitsParse(t *testing.T) {
+	hits, ok := ParseBigModelSearchRepr(bigModelJSONShapeFixture)
+	if !ok || len(hits) != 2 {
+		t.Fatalf("JSON shape: ok=%v hits=%d", ok, len(hits))
+	}
+	if hits[0].Title != "人民币汇率中间价" || hits[0].URL != "https://www.safe.gov.cn/AppStructured/hlw/RMBQuery.do" ||
+		hits[0].Fields["content"] != "人民币汇率中间价 USD/CNY 6.7351" || hits[0].Fields["refer"] != "ref_1" {
+		t.Fatalf("JSON shape fields lost: %+v", hits[0])
+	}
+	// Adjacent empty padding after the JSON shape stays valid.
+	if _, ok = ParseBigModelSearchRepr(bigModelJSONShapeFixture + `[[]]`); !ok {
+		t.Fatal("JSON shape with adjacent empty padding rejected")
+	}
+	// Several hit lists inside one container are valid.
+	if hits, ok = ParseBigModelSearchRepr(`[[{"title": "A", "link": "https://e.com/a"}], [{"title": "B", "link": "https://e.com/b"}]]`); !ok || len(hits) != 2 {
+		t.Fatalf("multiple inner hit lists: ok=%v hits=%d", ok, len(hits))
+	}
+	// The corruption guards apply to the JSON shape exactly as to the repr shape.
+	if _, ok = ParseBigModelSearchRepr(`[[{"title": "T", "link": "https://e.com/a", "refer": 123}]]`); ok {
+		t.Fatal("JSON shape numeric refer accepted")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[[{"title": "T", "link": "https://e.com/a"}, "stray"]]`); ok {
+		t.Fatal("non-dict entry inside hit list accepted")
+	}
+	if _, ok = ParseBigModelSearchRepr(`[[]]`); !ok {
+		t.Fatal("empty-only JSON shape rejected")
+	}
+}
+
+// Live capture 2026-10-01 (UAT, real upstream): a leading text block, the
+// server_tool_use carrying its full input at start, the bare tool_result with
+// the JSON-shaped hit payload, then signed thinking and the final text.
+func TestBigModelJSONShapeRealStreamReplay(t *testing.T) {
+	content := fmt.Sprintf("%q", bigModelJSONShapeFixture)
+	state, failedAt := acceptLines(t,
+		`{"type":"message_start","message":{"id":"msg_json","type":"message","role":"assistant","content":[],"usage":{"input_tokens":11,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"先搜索。"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"call_c4e7c0e15537463b9ee991e3","name":"web_search_prime","input":{"search_query":"今日人民币对美元汇率中间价","search_recency_filter":"oneDay"}}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"查到了。"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"content_block_start","index":3,"content_block":{"type":"tool_result","tool_use_id":"call_c4e7c0e15537463b9ee991e3","content":`+content+`}}`,
+		`{"type":"content_block_stop","index":3}`,
+		`{"type":"content_block_start","index":4,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`{"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":"th"}}`,
+		`{"type":"content_block_delta","index":4,"delta":{"type":"signature_delta","signature":"sig"}}`,
+		`{"type":"content_block_stop","index":4}`,
+		`{"type":"content_block_start","index":5,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"今日中间价 6.7351。"}}`,
+		`{"type":"content_block_stop","index":5}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`,
+		`{"type":"message_stop"}`,
+	)
+	if failedAt >= 0 {
+		t.Fatalf("JSON-shape stream rejected at line %d: %v", failedAt, state.Err)
+	}
+	if !state.Terminal {
+		t.Fatal("stream did not reach terminal state")
 	}
 }
 

@@ -564,6 +564,48 @@ func TestBigModelSearchPrimeBareResultShape(t *testing.T) {
 	}
 }
 
+// The live upstream alternates to a double-quoted JSON hit payload with no
+// repr carrier (UAT capture 2026-10-01); folding must handle it identically.
+func TestBigModelJSONShapeBareResultFolding(t *testing.T) {
+	repr := `[[{"title": "人民币汇率中间价", "link": "https://www.safe.gov.cn/AppStructured/hlw/RMBQuery.do", "content": "USD/CNY 6.7351", "refer": "ref_1"}]]`
+	lines := []string{
+		`data: {"type":"message_start","message":{"id":"msg_json","usage":{"input_tokens":9,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"call_json1","name":"web_search_prime","input":{"search_query":"usd cny"}}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_result","tool_use_id":"call_json1","content":` + fmt.Sprintf("%q", repr) + `}}`,
+		`data: {"type":"content_block_stop","index":1}`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"6.7351"}}`,
+		`data: {"type":"content_block_stop","index":2}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`,
+		`data: {"type":"message_stop"}`,
+	}
+	out := ConvertClaudeResponseToOpenAIResponsesNonStream(
+		context.Background(), "claude-test", nil, nil, []byte(strings.Join(lines, "\n")), nil)
+	call := gjson.GetBytes(out, "output").Array()
+	var webCall gjson.Result
+	for _, item := range call {
+		if item.Get("type").String() == "web_search_call" {
+			webCall = item
+		}
+	}
+	if !webCall.Exists() {
+		t.Fatalf("no web_search_call item; output=%s", gjson.GetBytes(out, "output").Raw)
+	}
+	if got := webCall.Get("action.query").String(); got != "usd cny" {
+		t.Fatalf("action.query = %q", got)
+	}
+	if got := webCall.Get("results.0.url").String(); got != "https://www.safe.gov.cn/AppStructured/hlw/RMBQuery.do" {
+		t.Fatalf("results[0].url = %q", got)
+	}
+	if got := webCall.Get("results.0.refer").String(); got != "ref_1" {
+		t.Fatalf("results[0].refer = %q, want preserved source", got)
+	}
+	if got := webCall.Get("results.0.content").String(); got != "USD/CNY 6.7351" {
+		t.Fatalf("results[0].content = %q, want preserved body", got)
+	}
+}
+
 // The BigModel refer replay exception follows the explicit WebSearchReplay
 // protocol discriminator, not search capability: native Anthropic models are
 // search-capable too and must keep the strict encrypted_content replay rule
