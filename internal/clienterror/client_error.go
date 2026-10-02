@@ -99,6 +99,14 @@ func IsRequestFault(status int, err error) bool {
 	if hasModelNotFoundErrorBody(err) {
 		return false
 	}
+	// A specific access-program eligibility failure keeps its distinct handling
+	// even when the upstream pairs it with a generic request-fault type: the
+	// credential itself is healthy and another credential may have the program
+	// enabled, so the failure must stay rotatable. The cooldown skip is decided
+	// separately by IsAccessProgramNotEnabledBody callers.
+	if status == http.StatusForbidden && IsAccessProgramNotEnabledBody("", err.Error()) {
+		return false
+	}
 	if hasRequestFaultBody(err) {
 		return true
 	}

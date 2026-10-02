@@ -289,4 +289,17 @@ func TestIsAccessProgramNotEnabledBody(t *testing.T) {
 	if IsRequestFault(http.StatusForbidden, errors.New(`{"error":{"code":"`+code+`"}}`)) {
 		t.Fatal("access_program_not_enabled must not be classified as a request fault")
 	}
+	// The specific code must keep priority over a generic request-fault type the
+	// upstream may pair it with, so the conductor can still rotate credentials.
+	for _, errType := range []string{"invalid_request_error", "permission_error", "bad_request_error"} {
+		body := `{"error":{"type":"` + errType + `","code":"` + code + `","message":"The requested access program is not enabled."}}`
+		if IsRequestFault(http.StatusForbidden, errors.New(body)) {
+			t.Fatalf("403 access_program_not_enabled with type %q must stay rotatable", errType)
+		}
+	}
+	// The rotation exemption is scoped to 403; a non-403 pairing keeps the
+	// generic status classification (400 is a request fault by status).
+	if !IsRequestFault(http.StatusBadRequest, errors.New(`{"error":{"type":"invalid_request_error","code":"`+code+`"}}`)) {
+		t.Fatal("non-403 status pairing must keep the generic status classification")
+	}
 }

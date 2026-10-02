@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
@@ -111,18 +110,24 @@ func TestOAuthDaybreakBlueOfficialAlias(t *testing.T) {
 	if modelsRec.Code != http.StatusOK {
 		t.Fatalf("models status=%d body=%s", modelsRec.Code, modelsRec.Body.String())
 	}
-	if body := modelsRec.Body.String(); !strings.Contains(body, officialAlias) {
-		t.Fatalf("models list missing official alias: %s", body)
+	listed := false
+	for _, entry := range gjson.Get(modelsRec.Body.String(), "data").Array() {
+		if entry.Get("id").String() == officialAlias {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("models list missing official alias entry: %s", modelsRec.Body.String())
 	}
 }
 
 func assertBackingModelRelayed(t *testing.T, rec *httptest.ResponseRecorder, backingModel string) {
 	t.Helper()
 	body := rec.Body.String()
-	if !strings.Contains(body, backingModel) {
-		t.Fatalf("upstream backing model was rewritten to the alias in relayed response: %s", body)
+	if model := gjson.Get(body, "model").String(); model != backingModel {
+		t.Fatalf("relayed response model = %q, want upstream backing model %q: %s", model, backingModel, body)
 	}
-	if !strings.Contains(body, `"daybreak_blue"`) {
-		t.Fatalf("upstream access program echo was dropped from relayed response: %s", body)
+	if program := gjson.Get(body, "access_programs.cyber").String(); program != "daybreak_blue" {
+		t.Fatalf("relayed access program = %q, want daybreak_blue: %s", program, body)
 	}
 }

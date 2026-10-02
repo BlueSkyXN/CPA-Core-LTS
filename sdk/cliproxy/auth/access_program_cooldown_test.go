@@ -13,12 +13,15 @@ import (
 
 // accessProgramNotEnabledResultError mirrors what resultErrorFromError builds
 // from a codex terminal statusErr: the HTTP status from StatusCode() and the
-// raw upstream JSON body as the message, with no structured Code.
-func accessProgramNotEnabledResultError() *Error {
-	return &Error{
-		HTTPStatus: http.StatusForbidden,
-		Message:    `{"error":{"code":"access_program_not_enabled","message":"The cyber access program is not enabled for this account."}}`,
+// raw upstream JSON body as the message, with no structured Code. errType
+// varies because the upstream may pair the specific code with a generic
+// error.type; the classification must follow the code either way.
+func accessProgramNotEnabledResultError(errType string) *Error {
+	body := fmt.Sprintf(`{"error":{"code":"access_program_not_enabled","message":"The cyber access program is not enabled for this account."}}`)
+	if errType != "" {
+		body = fmt.Sprintf(`{"error":{"type":%q,"code":"access_program_not_enabled","message":"The requested access program is not enabled."}}`, errType)
 	}
+	return &Error{HTTPStatus: http.StatusForbidden, Message: body}
 }
 
 func TestManager_MarkResult_AccessProgramNotEnabledDoesNotCooldown(t *testing.T) {
@@ -26,22 +29,24 @@ func TestManager_MarkResult_AccessProgramNotEnabledDoesNotCooldown(t *testing.T)
 	quotaCooldownDisabled.Store(false)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
 
-	m := NewManager(nil, nil, nil)
-	auth := &Auth{ID: "auth-access-program", Provider: "codex"}
-	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
+	for _, errType := range []string{"", "permission_error", "invalid_request_error"} {
+		m := NewManager(nil, nil, nil)
+		auth := &Auth{ID: "auth-access-program-" + errType, Provider: "codex"}
+		if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+
+		model := "gpt-5.6-sol"
+		m.MarkResult(context.Background(), Result{
+			AuthID:   auth.ID,
+			Provider: auth.Provider,
+			Model:    model,
+			Success:  false,
+			Error:    accessProgramNotEnabledResultError(errType),
+		})
+
+		assertNoCooldown(t, m, auth.ID, model)
 	}
-
-	model := "gpt-5.6-sol"
-	m.MarkResult(context.Background(), Result{
-		AuthID:   auth.ID,
-		Provider: auth.Provider,
-		Model:    model,
-		Success:  false,
-		Error:    accessProgramNotEnabledResultError(),
-	})
-
-	assertNoCooldown(t, m, auth.ID, model)
 }
 
 func TestManager_MarkResult_AccessProgramNotEnabledAuthLevelDoesNotCooldown(t *testing.T) {
@@ -60,7 +65,7 @@ func TestManager_MarkResult_AccessProgramNotEnabledAuthLevelDoesNotCooldown(t *t
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Success:  false,
-		Error:    accessProgramNotEnabledResultError(),
+		Error:    accessProgramNotEnabledResultError(""),
 	})
 
 	assertNoCooldown(t, m, auth.ID, "")
@@ -97,7 +102,7 @@ func TestManager_MarkResult_OtherForbiddenStillCooldowns(t *testing.T) {
 }
 
 func TestShouldSkipCredentialCooldown_AccessProgramNotEnabled(t *testing.T) {
-	if !shouldSkipCredentialCooldown(accessProgramNotEnabledResultError()) {
+	if !shouldSkipCredentialCooldown(accessProgramNotEnabledResultError("")) {
 		t.Fatal("access_program_not_enabled must skip credential cooldown")
 	}
 	// The classification itself must not fire on request-fault program codes or
@@ -121,7 +126,25 @@ func TestShouldSkipCredentialCooldown_AccessProgramNotEnabled(t *testing.T) {
 // the requested access program returns 403, the conductor rotates to the next
 // credential for the same request, and neither the failing credential nor the
 // model state is cooled, so the base model stays usable on that credential.
+// The upstream may pair the specific code with a generic error.type; rotation
+// must follow the code, not collapse into a request-fault stop.
 func TestExecuteStream_AccessProgramNotEnabledRotatesWithoutCooling(t *testing.T) {
+	for _, errType := range []string{"", "permission_error", "invalid_request_error"} {
+		t.Run("type/"+nonEmpty(errType, "absent"), func(t *testing.T) {
+			runAccessProgramRotationCase(t, errType)
+		})
+	}
+}
+
+func nonEmpty(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func runAccessProgramRotationCase(t *testing.T, errType string) {
+	t.Helper()
 	previous := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
@@ -133,7 +156,7 @@ func TestExecuteStream_AccessProgramNotEnabledRotatesWithoutCooling(t *testing.T
 	reg := registry.GetGlobalRegistry()
 	auths := make([]*Auth, 0, 2)
 	for i, priority := range []int{100, 99} {
-		id := fmt.Sprintf("auth-access-program-rotate-%d", i+1)
+		id := fmt.Sprintf("auth-access-program-rotate-%s-%d", nonEmpty(errType, "absent"), i+1)
 		reg.RegisterClient(id, "codex", []*registry.ModelInfo{{ID: model}})
 		auth := &Auth{
 			ID:         id,
@@ -168,7 +191,7 @@ func TestExecuteStream_AccessProgramNotEnabledRotatesWithoutCooling(t *testing.T
 			}
 			mu.Unlock()
 			if auth.ID == nonEnabled && calls == 1 {
-				return nil, accessProgramNotEnabledResultError()
+				return nil, accessProgramNotEnabledResultError(errType)
 			}
 			return successStreamResult(), nil
 		},
