@@ -261,3 +261,32 @@ func TestIsClientCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestIsAccessProgramNotEnabledBody(t *testing.T) {
+	code := "access_program_not_enabled"
+	if !IsAccessProgramNotEnabledBody("", `{"error":{"code":"`+code+`","message":"program not enabled"}}`) {
+		t.Fatal("structured error.code body was not matched")
+	}
+	if !IsAccessProgramNotEnabledBody("", `{"code":"`+code+`","message":"program not enabled"}`) {
+		t.Fatal("top-level code body was not matched")
+	}
+	if !IsAccessProgramNotEnabledBody("", `{"response":{"error":{"code":"`+code+`"}}}`) {
+		t.Fatal("response.failed body was not matched")
+	}
+	if !IsAccessProgramNotEnabledBody("ACCESS_PROGRAM_NOT_ENABLED", "") {
+		t.Fatal("explicit code field was not matched")
+	}
+	if IsAccessProgramNotEnabledBody("", `{"error":{"code":"unsupported_access_program"}}`) {
+		t.Fatal("request-fault access program code must not match")
+	}
+	if IsAccessProgramNotEnabledBody("", "program not enabled for this account") {
+		t.Fatal("plain-text message must not match")
+	}
+	if IsAccessProgramNotEnabledBody("", `{"error":{"code":"`+code+`"}} extra`) {
+		t.Fatal("trailing non-JSON payload must not match")
+	}
+	// The failure must remain rotatable, i.e. not collapse into a request fault.
+	if IsRequestFault(http.StatusForbidden, errors.New(`{"error":{"code":"`+code+`"}}`)) {
+		t.Fatal("access_program_not_enabled must not be classified as a request fault")
+	}
+}

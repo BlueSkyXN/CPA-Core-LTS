@@ -116,6 +116,28 @@ func IsRequestFault(status int, err error) bool {
 	}
 }
 
+// IsAccessProgramNotEnabledBody matches the structured access_program_not_enabled
+// code the upstream returns when the calling account, workspace, or project has
+// not enabled the requested access program. Unlike the request-fault codes
+// above, the credential is healthy: another credential may have the program
+// enabled, so the failure must stay rotatable without a cooldown. The code and
+// message mirror the JSON body paths used by hasRequestFaultBody.
+func IsAccessProgramNotEnabledBody(code, message string) bool {
+	if strings.EqualFold(strings.TrimSpace(code), "access_program_not_enabled") {
+		return true
+	}
+	body := strings.TrimSpace(message)
+	if body == "" || !json.Valid([]byte(body)) {
+		return false
+	}
+	for _, path := range []string{"error.code", "code", "response.error.code", "body.error.code"} {
+		if strings.EqualFold(strings.TrimSpace(gjson.Get(body, path).String()), "access_program_not_enabled") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsItemNotPersisted matches the upstream 404 raised when a request references a
 // response item the upstream never stored because `store` was false. The upstream
 // sends this as a plain-text message rather than a JSON body, so it cannot be

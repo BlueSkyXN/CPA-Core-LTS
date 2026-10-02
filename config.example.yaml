@@ -1130,7 +1130,9 @@ nonstream-keepalive-interval: 0
 # payload:
 #   # Daybreak Blue injection for the oauth-model-alias "<base>-blue" recipe above.
 #   # scope: requested restricts the rule to calls that explicitly select the
-#   # virtual model, so the plain base model is never modified.
+#   # virtual model, so the plain base model is never modified. If the upstream
+#   # rejects the program (403 access_program_not_enabled) the proxy rotates to
+#   # another credential without cooling the base model on this one.
 #   override-raw:
 #     - models:
 #         - name: "gpt-5.6-sol-blue"

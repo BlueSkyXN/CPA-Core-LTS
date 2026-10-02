@@ -1652,6 +1652,12 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
+	if isAccessProgramNotEnabledResultError(err) {
+		// Another credential may have the program enabled, so the conductor
+		// still rotates; cooling the model would also block the standard
+		// treatment for the same base model on this credential.
+		return true
+	}
 	if isRequestScopedResultError(err) {
 		return true
 	}
@@ -1659,6 +1665,21 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 		return false
 	}
 	return isConnectionLifecycleResultError(err) || isTransientTransportResultError(err)
+}
+
+// isAccessProgramNotEnabledResultError matches the 403 the upstream returns when
+// the credential's account, workspace, or project has not enabled the requested
+// access program. It stays outside the request-fault classification so the
+// conductor can rotate to another credential; only the cooldown is skipped.
+func isAccessProgramNotEnabledResultError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	status := statusCodeFromResult(err)
+	if status != 0 && status != http.StatusForbidden {
+		return false
+	}
+	return clienterror.IsAccessProgramNotEnabledBody(err.Code, err.Message)
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must
