@@ -1156,12 +1156,17 @@ func TestManagerExecuteCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWi
 			{kind: "usage_limit"},
 		},
 		codexModelFallbackRetryBehaviorKey("auth-target-a", "gpt-target"): {
-			// The delays make both lanes deterministic: the hedge timer
-			// fires after the primary selected auth-target-a (hedgeDelay 10ms
-			// < delay 25ms) so it is not cancelled, and the distinct hedge
-			// winner on auth-target-b finishes after the primary abnormal
-			// (60ms > 25ms) so the shared usage accumulator already carries
-			// its tokens when the payload is built.
+			// The delays order the lanes by relative timing - the hedge timer
+			// is spaced after the primary's selection window (10ms < 25ms) so
+			// the primary is not cancelled pre-dispatch, and the distinct
+			// winner finishes after the primary abnormal (60ms > 25ms) so the
+			// shared usage accumulator normally already carries its tokens.
+			// Timers guarantee expiry, not another goroutine's progress; this
+			// is timing-based ordering, not event synchronization. Replacing
+			// the delays with explicit channel checkpoints (wait for primary
+			// selection before the hedge, wait for the loser's usage before
+			// building the winner payload, timeouts only as hang guards)
+			// remains a test follow-up.
 			{kind: "abnormal", delay: 25 * time.Millisecond, hedgeDelay: 10 * time.Millisecond, maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
 			{kind: "abnormal", delay: 25 * time.Millisecond, hedgeDelay: 10 * time.Millisecond, maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
 		},
@@ -1214,9 +1219,10 @@ func TestManagerExecuteCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWi
 		t.Fatalf("selected callbacks = %#v, want source attempts plus final target hedge winner", gotCallbacks)
 	}
 	// Same fixture race as the stream variant (see the comment there): the
-	// exclude-aware selector and the two-entry target-a sequence make both
-	// hedge-timer orderings converge; strict queues fail loudly if a call ever
-	// exceeds the configured behaviors again.
+	// exclude-aware selector, the two-entry target-a sequence and the spaced
+	// behavior delays address the identified sequence/budget flaws - timing
+	// based, not event synchronization; strict queues fail loudly if a call
+	// ever exceeds the configured behaviors again.
 	if violations := executor.queueViolationsSnapshot(); len(violations) > 0 {
 		t.Fatalf("unexpected mock queue exhaustion: %v", violations)
 	}
@@ -1293,10 +1299,11 @@ func TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndH
 	// primary legitimately consume that entry and hit the mock's empty-queue
 	// default success "ok". The manager stayed within its retry budget, so
 	// this was a fixture race, not an executor overrun. The selector now
-	// mirrors production exclude filtering, the sequence offers exactly the
-	// two budgeted target-a attempts, and behavior delays order the lanes
-	// deterministically (hedge after primary selection, distinct winner after
-	// the primary abnormal); strict queues keep future under-budgeting loud.
+	// mirrors production exclude filtering and the sequence offers exactly
+	// the two budgeted target-a attempts; behavior delays order the lanes by
+	// relative timing (see the behavior comment - not event synchronization;
+	// channel checkpoints remain a test follow-up). Strict queues keep
+	// future under-budgeting loud.
 	if violations := executor.queueViolationsSnapshot(); len(violations) > 0 {
 		t.Fatalf("unexpected mock queue exhaustion: %v", violations)
 	}
