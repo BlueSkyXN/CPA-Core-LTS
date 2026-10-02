@@ -667,6 +667,99 @@ func TestBigModelJSONEscapesFoldAndReplayChain(t *testing.T) {
 	}
 }
 
+// Per-event SSE through the response state machine with the escaped payload
+// (confirmation-round gap, 2026-10-02: the aggregated chain test above passes
+// param=nil, so the summary converter's state-machine block never runs and a
+// message_start without type/role would even be rejected here). Each event
+// must pass Accept, the folded response.completed must carry the decoded
+// fields, the item must replay back into Claude history, and the aggregated
+// path gets its own fresh state machine instance as a comparison.
+func TestBigModelJSONEscapesStateMachinePerEventChain(t *testing.T) {
+	repr := `[[{"title": "T\ud83d\ude00", "link": "https:\/\/example.com\/a", "content": "b\ud83d\ude00y", "refer": "ref_1"}]]`
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_esc2","type":"message","role":"assistant","content":[],"usage":{"input_tokens":9,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_esc2","name":"web_search_prime","input":{"search_query":"q"}}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"tool_result","tool_use_id":"srvtoolu_esc2","content":` + fmt.Sprintf("%q", repr) + `}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"done"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+		`{"type":"message_stop"}`,
+	}
+	state := &PluginResponseState{}
+	var param any = state
+	var last []byte
+	for _, ev := range events {
+		frames := ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, []byte("data: "+ev), &param)
+		if state.Err != nil {
+			t.Fatalf("state machine rejected event: %v\nevent: %s", state.Err, ev)
+		}
+		for _, frame := range frames {
+			for _, line := range strings.Split(string(frame), "\n") {
+				if strings.HasPrefix(line, "data:") {
+					last = []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+		}
+	}
+	if !state.Terminal {
+		t.Fatal("state machine did not reach terminal state")
+	}
+	var call gjson.Result
+	for _, item := range gjson.GetBytes(last, "response.output").Array() {
+		if item.Get("type").String() == "web_search_call" {
+			call = item
+		}
+	}
+	if !call.Exists() {
+		t.Fatalf("no web_search_call in response.completed; last=%s", string(last))
+	}
+	if got := call.Get("results.0.title").String(); got != "T\U0001F600" {
+		t.Fatalf("per-event folded title = %q, want decoded surrogate pair", got)
+	}
+	if got := call.Get("results.0.url").String(); got != "https://example.com/a" {
+		t.Fatalf("per-event folded url = %q, want decoded escaped slashes", got)
+	}
+	if got := call.Get("results.0.content").String(); got != "b\U0001F600y" {
+		t.Fatalf("per-event folded content = %q, want decoded surrogate pair", got)
+	}
+	if got := call.Get("results.0.refer").String(); got != "ref_1" {
+		t.Fatalf("per-event folded refer = %q", got)
+	}
+
+	raw := responsesRequestFromItems(call.Raw)
+	replay := &registry.ModelInfo{ID: "glm-5.3", NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true), WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
+	back := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("glm-5.3", raw, false, replay)
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.title").String(); got != "T\U0001F600" {
+		t.Fatalf("per-event replayed title = %q, want decoded surrogate pair", got)
+	}
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.url").String(); got != "https://example.com/a" {
+		t.Fatalf("per-event replayed url = %q, want decoded escaped slashes", got)
+	}
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.content").String(); got != "b\U0001F600y" {
+		t.Fatalf("per-event replayed content = %q, want decoded surrogate pair", got)
+	}
+	if got := gjson.GetBytes(back, "messages.0.content.1.content.0.refer").String(); got != "ref_1" {
+		t.Fatalf("per-event replayed refer = %q", got)
+	}
+
+	aggState := &PluginResponseState{}
+	var aggParam any = aggState
+	transcript := "data: " + strings.Join(events, "\n\ndata: ") + "\n\n"
+	aggregate := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, []byte(transcript), &aggParam)
+	if aggState.Err != nil || !aggState.Terminal {
+		t.Fatalf("aggregated state machine failed: err=%v terminal=%v", aggState.Err, aggState.Terminal)
+	}
+	if got := gjson.GetBytes(aggregate, `output.#(type=="web_search_call").results.0.url`).String(); got != "https://example.com/a" {
+		t.Fatalf("aggregated folded url = %q, want decoded escaped slashes; out=%s", got, gjson.GetBytes(aggregate, "output").Raw)
+	}
+	if got := gjson.GetBytes(aggregate, `output.#(type=="web_search_call").results.0.title`).String(); got != "T\U0001F600" {
+		t.Fatalf("aggregated folded title = %q, want decoded surrogate pair", got)
+	}
+}
+
 // The BigModel refer replay exception follows the explicit WebSearchReplay
 // protocol discriminator, not search capability: native Anthropic models are
 // search-capable too and must keep the strict encrypted_content replay rule
