@@ -1693,3 +1693,24 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream reads setup-token flags using the same lock as profile and device metadata writers, and shared-credential race tests pass.
+
+  - id: daybreak-blue-catalog-guard
+    reason: Approved Daybreak Blue Codex OAuth accounts need gpt-daybreak-blue-latest entries in both catalogs, but the shared upstream catalog does not ship them yet; runtime and CI catalog refresh would drop embedded-only entries. The embedded guard merge re-injects missing guard entries before a candidate catalog is accepted, and the remote entry wins once upstream ships the same model ID, so refresh cycles cannot silently remove Daybreak Blue routing.
+    introduced_in: f73fe7dcc655994da3c052e78766e923ac8f6345
+    affected_upstream_range: through 6fecc6e5567912661654a4eaf9b8f5436facd1c2 (upstream main, 2026-10-02); catalog content sourced from openai/codex models catalog and router-for-me/CLIProxyAPI#5274.
+    files:
+      - internal/registry/lts_catalog_guard.go
+      - internal/registry/lts_catalog_guard_test.go
+      - internal/registry/model_updater.go
+      - internal/registry/codex_client_models.go
+      - internal/registry/models/models.json
+      - internal/registry/models/codex_client_models.json
+      - .github/scripts/refresh-model-catalogs.sh
+    regression_tests:
+      - TestModelsCatalogRefreshMergesGuardModels
+      - TestModelsCatalogRemoteGuardModelWins
+      - TestCodexClientCatalogRefreshMergesGuardModels
+      - TestCodexClientCatalogRemoteGuardModelWins
+    upstream_issue_or_pr: router-for-me/CLIProxyAPI#5274
+    state: required
+    retire_when: The shared router-for-me/models catalog ships gpt-daybreak-blue-latest in the codex tier sections of models.json and in codex_client_models.json, and the embedded guard merge becomes a no-op on fresh remote candidates.
