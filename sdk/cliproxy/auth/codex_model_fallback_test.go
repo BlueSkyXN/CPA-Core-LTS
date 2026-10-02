@@ -235,14 +235,28 @@ type codexModelFallbackSequenceSelector struct {
 	byModel map[string][]string
 }
 
-func (s *codexModelFallbackSequenceSelector) Pick(_ context.Context, _ string, model string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+func (s *codexModelFallbackSequenceSelector) Pick(_ context.Context, _ string, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	// Mirror production selection, which filters the exclude set out of the
+	// candidate list before the selector runs: a hedged lane that excludes an
+	// auth must never be handed that auth's sequence entry. The previous
+	// burn-an-entry-on-excluded-probe behavior made these tests depend on
+	// whether the zero-delay hedge timer or the primary result won the first
+	// select iteration (root cause of the CI flake, see the hedge-winner
+	// tests below).
+	excluded := excludedAuthIDsFromMetadata(opts.Metadata)
 	s.mu.Lock()
 	sequence := s.byModel[model]
 	authID := ""
-	if len(sequence) > 0 {
-		authID = sequence[0]
-		s.byModel[model] = sequence[1:]
+	for len(sequence) > 0 {
+		candidate := sequence[0]
+		sequence = sequence[1:]
+		if _, skip := excluded[candidate]; skip {
+			continue
+		}
+		authID = candidate
+		break
 	}
+	s.byModel[model] = sequence
 	s.mu.Unlock()
 	if authID != "" {
 		return pickHedgedRetryTestAuth(auths, authID)
@@ -1136,22 +1150,28 @@ func TestCodexModelFallbackTargetSharesRequestRetryHedgeAndUsageBudget(t *testin
 }
 
 func TestManagerExecuteCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWinner(t *testing.T) {
-	executor := &codexModelFallbackRetryExecutor{behaviors: map[string][]codexModelFallbackRetryBehavior{
+	executor := &codexModelFallbackRetryExecutor{strictQueues: true, behaviors: map[string][]codexModelFallbackRetryBehavior{
 		codexModelFallbackRetryBehaviorKey("auth-source", "gpt-source"): {
 			{kind: "abnormal", maxRetries: 3},
 			{kind: "usage_limit"},
 		},
 		codexModelFallbackRetryBehaviorKey("auth-target-a", "gpt-target"): {
-			{kind: "abnormal", maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
-			{kind: "abnormal", maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
+			// The delays make both lanes deterministic: the hedge timer
+			// fires after the primary selected auth-target-a (hedgeDelay 10ms
+			// < delay 25ms) so it is not cancelled, and the distinct hedge
+			// winner on auth-target-b finishes after the primary abnormal
+			// (60ms > 25ms) so the shared usage accumulator already carries
+			// its tokens when the payload is built.
+			{kind: "abnormal", delay: 25 * time.Millisecond, hedgeDelay: 10 * time.Millisecond, maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
+			{kind: "abnormal", delay: 25 * time.Millisecond, hedgeDelay: 10 * time.Millisecond, maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
 		},
 		codexModelFallbackRetryBehaviorKey("auth-target-b", "gpt-target"): {
-			{kind: "usage"},
+			{kind: "usage", delay: 60 * time.Millisecond},
 		},
 	}}
 	selector := &codexModelFallbackSequenceSelector{byModel: map[string][]string{
 		"gpt-source": {"auth-source", "auth-source"},
-		"gpt-target": {"auth-target-a", "auth-target-a", "auth-target-a", "auth-target-b"},
+		"gpt-target": {"auth-target-a", "auth-target-a", "auth-target-b"},
 	}}
 	manager := newCodexModelFallbackRetryManagerWithSelector(t, executor, selector, []string{"gpt-target"},
 		codexModelFallbackAuthSpec{id: "auth-source", models: []string{"gpt-source"}},
@@ -1193,6 +1213,13 @@ func TestManagerExecuteCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWi
 	if len(gotCallbacks) != 3 || gotCallbacks[0] != "auth-source" || gotCallbacks[1] != "auth-source" || gotCallbacks[2] != "auth-target-b" {
 		t.Fatalf("selected callbacks = %#v, want source attempts plus final target hedge winner", gotCallbacks)
 	}
+	// Same fixture race as the stream variant (see the comment there): the
+	// exclude-aware selector and the two-entry target-a sequence make both
+	// hedge-timer orderings converge; strict queues fail loudly if a call ever
+	// exceeds the configured behaviors again.
+	if violations := executor.queueViolationsSnapshot(); len(violations) > 0 {
+		t.Fatalf("unexpected mock queue exhaustion: %v", violations)
+	}
 }
 
 func TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndHedgeWinner(t *testing.T) {
@@ -1202,16 +1229,16 @@ func TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndH
 			{kind: "usage_limit"},
 		},
 		codexModelFallbackRetryBehaviorKey("auth-target-stream-a", "gpt-target"): {
-			{kind: "abnormal", maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
-			{kind: "abnormal", maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
+			{kind: "abnormal", delay: 25 * time.Millisecond, hedgeDelay: 10 * time.Millisecond, maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
+			{kind: "abnormal", delay: 25 * time.Millisecond, hedgeDelay: 10 * time.Millisecond, maxRetries: 3, hedgeEnabled: true, hedgeMode: retryWithoutPenaltyHedgeModeQuality, requireDistinct: true},
 		},
 		codexModelFallbackRetryBehaviorKey("auth-target-stream-b", "gpt-target"): {
-			{kind: "usage"},
+			{kind: "usage", delay: 60 * time.Millisecond},
 		},
 	}}
 	selector := &codexModelFallbackSequenceSelector{byModel: map[string][]string{
 		"gpt-source": {"auth-source-stream", "auth-source-stream"},
-		"gpt-target": {"auth-target-stream-a", "auth-target-stream-a", "auth-target-stream-a", "auth-target-stream-b"},
+		"gpt-target": {"auth-target-stream-a", "auth-target-stream-a", "auth-target-stream-b"},
 	}}
 	manager := newCodexModelFallbackRetryManagerWithSelector(t, executor, selector, []string{"gpt-target"},
 		codexModelFallbackAuthSpec{id: "auth-source-stream", models: []string{"gpt-source"}},
@@ -1256,14 +1283,20 @@ func TestManagerExecuteStreamCodexModelFallbackSharesRemainingAbnormalBudgetAndH
 	if len(gotCallbacks) != 3 || gotCallbacks[0] != "auth-source-stream" || gotCallbacks[1] != "auth-source-stream" || gotCallbacks[2] != "auth-target-stream-b" {
 		t.Fatalf("stream selected callbacks = %#v, want source attempts plus final target hedge winner", gotCallbacks)
 	}
-	// This test has failed intermittently on CI (2026-10-01, three times:
-	// runs 36878009199, 36885579955 attempt 1 and 2) with payload "ok" - the
-	// mock's old empty-queue default, meaning some call hit an unconfigured or
-	// exhausted behavior queue. Strict mode turns that into a recorded
-	// violation with the call log so the next CI failure identifies the
-	// unexpected call instead of masquerading as a normal winner. Root cause
-	// (manager behavior vs fixture ordering) is still open; do not resolve it
-	// by rerunning.
+	// This test failed intermittently on CI (2026-10-01/02; runs 36878009199,
+	// 36885579955 and 36955791097 attempts 1-3, both stream and non-stream
+	// variants). Root cause (determined by tracing the mock selector and
+	// executor): with the old fixture, a zero hedge delay made the outcome
+	// depend on whether the hedge timer or the primary result won the wave's
+	// first select iteration. Timer-first burned the third target-a sequence
+	// entry on an excluded probe and passed; primary-first let the next wave's
+	// primary legitimately consume that entry and hit the mock's empty-queue
+	// default success "ok". The manager stayed within its retry budget, so
+	// this was a fixture race, not an executor overrun. The selector now
+	// mirrors production exclude filtering, the sequence offers exactly the
+	// two budgeted target-a attempts, and behavior delays order the lanes
+	// deterministically (hedge after primary selection, distinct winner after
+	// the primary abnormal); strict queues keep future under-budgeting loud.
 	if violations := executor.queueViolationsSnapshot(); len(violations) > 0 {
 		t.Fatalf("unexpected mock queue exhaustion: %v", violations)
 	}
