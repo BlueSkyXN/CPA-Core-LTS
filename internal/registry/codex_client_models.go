@@ -55,6 +55,7 @@ func GetCodexClientModelsSnapshot() ([]byte, uint64) {
 }
 
 func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
+	data = mergeGuardCodexClientModels(data)
 	if err := validateCodexClientModelsForLTS(data); err != nil {
 		return false, fmt.Errorf("%s: %w", source, err)
 	}

@@ -108,6 +108,8 @@ func (e statusAndUnwrapError) Unwrap() error { return e.cause }
 func TestIsRequestFaultStructuredIdentifiers(t *testing.T) {
 	for _, code := range []string{
 		"cyber_policy",
+		"invalid_access_program",
+		"unsupported_access_program",
 		"context_length_exceeded",
 		"message_too_big",
 		"string_above_max_length",

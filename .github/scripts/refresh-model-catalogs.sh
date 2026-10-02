@@ -13,7 +13,7 @@ trap 'rm -f "$codex_candidate" "$models_candidate"' EXIT
 # LTS-required model IDs must survive a catalog refresh. The embedded catalog is
 # kept when the remote copy is older or trimmed, mirroring the Codex client
 # catalog guard below.
-lts_required_models=("gpt-6-astra")
+lts_required_models=("gpt-6-astra" "gpt-daybreak-blue-latest")
 
 lts_models_present() {
   local candidate="$1" model
@@ -34,6 +34,7 @@ else
 fi
 
 if git show FETCH_HEAD:codex_client_models.json > "$codex_candidate" &&
+  lts_models_present "$codex_candidate" &&
   go run ./cmd/validate_codex_models --file "$codex_candidate"; then
 	mv "$codex_candidate" "$codex_catalog"
 	printf 'Refreshed validated Codex client model catalog.\n'

@@ -562,6 +562,31 @@ func TestCodexTerminalFailureErrClassifiesStatus(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name:       "invalid access program",
+			event:      `{"type":"error","error":{"type":"invalid_request_error","code":"invalid_access_program","message":"The selected model requires a different program value."}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid access program code only",
+			event:      `{"type":"response.failed","response":{"error":{"code":"invalid_access_program","message":"The selected model requires a different program value."}}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unsupported access program",
+			event:      `{"type":"error","error":{"type":"invalid_request_error","code":"unsupported_access_program","message":"Switch to a model that supports Daybreak."}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "access program not enabled",
+			event:      `{"type":"error","error":{"type":"permission_error","code":"access_program_not_enabled","message":"Project access missing."}}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "access program not enabled code only",
+			event:      `{"type":"response.failed","response":{"error":{"code":"access_program_not_enabled","message":"Project access missing."}}}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
 			name:       "authentication",
 			event:      `{"type":"response.failed","response":{"error":{"type":"authentication_error","code":"invalid_api_key","message":"Invalid token."}}}`,
 			wantStatus: http.StatusUnauthorized,

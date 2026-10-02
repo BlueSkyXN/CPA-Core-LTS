@@ -1039,6 +1039,14 @@ nonstream-keepalive-interval: 0
 #   codex:
 #     - name: "gpt-5"
 #       alias: "g5"
+#     # Daybreak Blue model-name recipe (approved Codex OAuth accounts): expose a
+#     # "<base>-blue" virtual model that reaches the upstream as the base model
+#     # with access_programs.cyber=daybreak_blue injected. The plain base model
+#     # keeps its default behavior. Requires the payload rule below.
+#     - name: "gpt-5.6-sol"
+#       alias: "gpt-5.6-sol-blue"
+#       fork: true
+#       display-name: "GPT-5.6 Sol (Daybreak Blue)"
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
@@ -1120,6 +1128,17 @@ nonstream-keepalive-interval: 0
 
 # Optional payload configuration
 # payload:
+#   # Daybreak Blue injection for the oauth-model-alias "<base>-blue" recipe above.
+#   # scope: requested restricts the rule to calls that explicitly select the
+#   # virtual model, so the plain base model is never modified.
+#   override-raw:
+#     - models:
+#         - name: "gpt-5.6-sol-blue"
+#           protocol: codex
+#           scope: requested
+#       params:
+#         access_programs:
+#           cyber: daybreak_blue
 #   default: # Default rules only set parameters when they are missing in the payload.
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
