@@ -59,7 +59,7 @@ func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, str
 	out, _ = sjson.SetBytes(out, "requestType", "web_search")
 	out = ensureAntigravityResponsesWebSearchTool(out, includedDomains)
 	out = ensureAntigravityResponsesWebSearchSystemInstruction(out)
-	return out
+	return thinking.ApplySummaryConfig(out, "antigravity", thinking.ExtractSummaryConfig(payload, "openai-response"))
 }
 
 func ensureAntigravityResponsesWebSearchTool(payload []byte, includedDomains []string) []byte {
@@ -147,6 +147,7 @@ func ConvertOpenAIResponsesRequestEnvelopeToAntigravity(_ context.Context, req s
 	req.Body = stripAntigravityResponsesGoogleSearch(req.Body)
 	req.Body = rewriteOpenAIResponsesReasoningForAntigravityClaude(req.Model, inputRawJSON, req.Body)
 	req.Body = ConvertGeminiRequestToAntigravity(req.Model, req.Body, req.Stream)
+	req.Body = thinking.ApplySummaryConfig(req.Body, "antigravity", thinking.ExtractSummaryConfig(inputRawJSON, "openai-response"))
 	req.Body = stripAntigravityResponsesGoogleSearch(req.Body)
 	return req
 }

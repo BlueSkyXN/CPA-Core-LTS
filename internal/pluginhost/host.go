@@ -21,14 +21,15 @@ import (
 )
 
 type loadedPlugin struct {
-	id         string
-	path       string
-	version    string
-	name       string
-	configYAML []byte
-	plugin     pluginapi.Plugin
-	registered bool
-	client     pluginClient
+	id               string
+	path             string
+	version          string
+	name             string
+	configYAML       []byte
+	plugin           pluginapi.Plugin
+	registered       bool
+	client           pluginClient
+	callbackInstance *hostCallbackInstance
 }
 
 type modelExecutor interface {
@@ -37,16 +38,19 @@ type modelExecutor interface {
 }
 
 type pluginUnloadTarget struct {
-	id      string
-	name    string
-	path    string
-	version string
-	client  pluginClient
+	id               string
+	name             string
+	path             string
+	version          string
+	client           pluginClient
+	callbackInstance *hostCallbackInstance
 }
 
 type pluginLoadRequest struct {
-	result         chan pluginLoadResult
-	cleanupStarted bool
+	result            chan pluginLoadResult
+	cleanupStarted    bool
+	closed            bool // Protected by Host.mu; rejects callbacks arriving after cleanup starts.
+	callbackInstances map[*hostCallbackInstance]struct{}
 }
 
 type pluginLoadResult struct {
@@ -90,6 +94,7 @@ type Host struct {
 	modelStreams      *modelStreamBridge
 	callbackContexts  *callbackContextRegistry
 	snapshot          atomic.Value
+	httpOperations    *hostHTTPOperationBridge
 }
 
 func New() *Host {
@@ -118,6 +123,7 @@ func New() *Host {
 		declaredSensitive:      make(map[string][]pluginapi.SensitiveEndpoint),
 		streams:                newStreamBridge(),
 		httpStreams:            newHostHTTPStreamBridge(),
+		httpOperations:         newHostHTTPOperationBridge(),
 		modelStreams:           newModelStreamBridge(),
 		callbackContexts:       newCallbackContextRegistry(),
 	}
@@ -417,6 +423,43 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	}
 }
 
+func (h *Host) registerHostCallbackInstance(pluginID string, instance *hostCallbackInstance) {
+	if h == nil || instance == nil {
+		return
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	h.mu.Lock()
+	if request := h.loading[pluginID]; request != nil {
+		if request.callbackInstances == nil {
+			request.callbackInstances = make(map[*hostCallbackInstance]struct{})
+		}
+		request.callbackInstances[instance] = struct{}{}
+		if request.closed {
+			instance.closed.Store(true)
+		}
+	}
+	h.mu.Unlock()
+}
+
+func markPluginLoadClosedLocked(request *pluginLoadRequest) []*hostCallbackInstance {
+	if request == nil {
+		return nil
+	}
+	request.closed = true
+	instances := make([]*hostCallbackInstance, 0, len(request.callbackInstances))
+	for instance := range request.callbackInstances {
+		instance.closed.Store(true)
+		instances = append(instances, instance)
+	}
+	return instances
+}
+
+func (h *Host) closeHostHTTPCallbackInstances(pluginID string, instances []*hostCallbackInstance) {
+	for _, instance := range instances {
+		h.closeHostHTTPCallbackInstance(pluginID, instance)
+	}
+}
+
 func (h *Host) startPluginLoad(ctx context.Context, file pluginFile, item runtimeItemConfig, request *pluginLoadRequest) {
 	if h == nil || request == nil || request.result == nil {
 		return
@@ -434,11 +477,13 @@ func (h *Host) startPluginLoad(ctx context.Context, file pluginFile, item runtim
 			request.result <- pluginLoadResult{err: fmt.Errorf("plugin loader returned nil client")}
 			return
 		}
+		guardedClient := newGuardedPluginClient(client)
 		loaded := &loadedPlugin{
-			id:      file.ID,
-			path:    file.Path,
-			version: file.Version,
-			client:  newGuardedPluginClient(client),
+			id:               file.ID,
+			path:             file.Path,
+			version:          file.Version,
+			client:           guardedClient,
+			callbackInstance: pluginCallbackInstance(guardedClient),
 		}
 		plugin, okCall := h.callRegister(ctx, loaded, item)
 		request.result <- pluginLoadResult{loaded: loaded, plugin: plugin, initialized: okCall}
@@ -470,7 +515,9 @@ func (h *Host) cleanupCanceledPluginLoad(id string, request *pluginLoadRequest) 
 		return
 	}
 	request.cleanupStarted = true
+	instances := markPluginLoadClosedLocked(request)
 	h.mu.Unlock()
+	h.closeHostHTTPCallbackInstances(id, instances)
 
 	go func() {
 		result := <-request.result
@@ -490,7 +537,9 @@ func (h *Host) cleanupPluginLoad(id string, request *pluginLoadRequest, loaded *
 		return
 	}
 	request.cleanupStarted = true
+	instances := markPluginLoadClosedLocked(request)
 	h.mu.Unlock()
+	h.closeHostHTTPCallbackInstances(id, instances)
 
 	h.finishPluginLoadCleanup(id, request, loaded)
 }
@@ -508,7 +557,9 @@ func (h *Host) cleanupPluginLoadAndWait(ctx context.Context, id string, request 
 		return
 	}
 	request.cleanupStarted = true
+	instances := markPluginLoadClosedLocked(request)
 	h.mu.Unlock()
+	h.closeHostHTTPCallbackInstances(id, instances)
 
 	done := make(chan struct{})
 	go func() {
@@ -549,6 +600,7 @@ func (h *Host) discardLoadedPlugin(loaded *loadedPlugin) {
 	if loaded == nil || loaded.client == nil {
 		return
 	}
+	h.closeHostHTTPCallbackInstance(loaded.id, loaded.callbackInstance)
 	shutdownPluginClient(context.Background(), loaded.client)
 }
 
@@ -613,15 +665,17 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	h.mu.Lock()
 	lp := h.loaded[id]
 	if lp != nil {
-		targets = append(targets, pluginUnloadTarget{id: lp.id, name: lp.name, path: lp.path, version: lp.version, client: lp.client})
+		targets = append(targets, pluginUnloadTarget{id: lp.id, name: lp.name, path: lp.path, version: lp.version, client: lp.client, callbackInstance: lp.callbackInstance})
 	}
 	for _, retired := range h.retired[id] {
 		if retired == nil {
 			continue
 		}
-		targets = append(targets, pluginUnloadTarget{id: retired.id, name: retired.name, path: retired.path, version: retired.version, client: retired.client})
+		targets = append(targets, pluginUnloadTarget{id: retired.id, name: retired.name, path: retired.path, version: retired.version, client: retired.client, callbackInstance: retired.callbackInstance})
 	}
-	if len(targets) == 0 {
+	request := h.loading[id]
+	instances := markPluginLoadClosedLocked(request)
+	if len(targets) == 0 && request == nil {
 		h.mu.Unlock()
 		return false
 	}
@@ -638,6 +692,16 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	h.snapshot.Store(&Snapshot{enabled: enabled, records: records})
 	h.mu.Unlock()
 
+	h.closeHostHTTPCallbackInstances(id, instances)
+	if len(targets) == 0 {
+		h.closeHostHTTPPluginResources(id, nil)
+	}
+	if request != nil {
+		h.cleanupCanceledPluginLoad(id, request)
+	}
+	for _, target := range targets {
+		h.httpOperations.detachInstance(target.id, target.callbackInstance)
+	}
 	h.refreshThinkingProviders(records)
 	h.RegisterFrontendAuthProviders()
 	for _, target := range targets {
@@ -645,6 +709,9 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 			shutdownPluginClient(ctx, target.client)
 		}
 		log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
+	}
+	for _, target := range targets {
+		h.httpOperations.detachInstance(target.id, target.callbackInstance)
 	}
 	return true
 }
@@ -664,21 +731,24 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 
 	targets := make([]pluginUnloadTarget, 0)
 	var loading map[string]*pluginLoadRequest
+	loadingInstances := make(map[string][]*hostCallbackInstance)
 	h.mu.Lock()
 	loading = make(map[string]*pluginLoadRequest, len(h.loading))
 	for id, request := range h.loading {
 		loading[id] = request
+		loadingInstances[id] = markPluginLoadClosedLocked(request)
 	}
 	for _, lp := range h.loaded {
 		if lp == nil || lp.client == nil {
 			continue
 		}
 		targets = append(targets, pluginUnloadTarget{
-			id:      lp.id,
-			name:    lp.name,
-			path:    lp.path,
-			version: lp.version,
-			client:  lp.client,
+			id:               lp.id,
+			name:             lp.name,
+			path:             lp.path,
+			version:          lp.version,
+			client:           lp.client,
+			callbackInstance: lp.callbackInstance,
 		})
 	}
 	for _, retiredPlugins := range h.retired {
@@ -687,11 +757,12 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 				continue
 			}
 			targets = append(targets, pluginUnloadTarget{
-				id:      lp.id,
-				name:    lp.name,
-				path:    lp.path,
-				version: lp.version,
-				client:  lp.client,
+				id:               lp.id,
+				name:             lp.name,
+				path:             lp.path,
+				version:          lp.version,
+				client:           lp.client,
+				callbackInstance: lp.callbackInstance,
 			})
 		}
 	}
@@ -713,6 +784,12 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	h.snapshot.Store(emptySnapshot())
 	h.mu.Unlock()
 
+	for id, instances := range loadingInstances {
+		h.closeHostHTTPCallbackInstances(id, instances)
+	}
+	for _, target := range targets {
+		h.httpOperations.detachInstance(target.id, target.callbackInstance)
+	}
 	h.refreshThinkingProviders(nil)
 	h.RegisterFrontendAuthProviders()
 	for id, request := range loading {

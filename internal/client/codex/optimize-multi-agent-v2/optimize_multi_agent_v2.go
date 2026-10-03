@@ -62,11 +62,23 @@ func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header,
 
 // RewriteCodexMultiAgentV2Input converts official Codex multi-agent input into
 // standard Responses API messages when multi-agent v2 optimization is enabled.
-func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
-	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
-		return payload
+// When isCompat is true, it proactively removes non-standard metadata fields
+// (author, recipient, internal_chat_message_metadata_passthrough) from agent_message
+// and regular message items, even if optimize-multi-agent-v2 is disabled.
+func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, isCompat ...bool) []byte {
+	compatMode := len(isCompat) > 0 && isCompat[0]
+	updated := payload
+	if codexMultiAgentV2Enabled(ctx, headers, cfg) {
+		if compatMode {
+			updated = rewriteCodexAgentMessageInput(updated, "user", "input_text")
+		} else {
+			updated = rewriteCodexAgentMessageInput(updated, "assistant", "output_text")
+		}
 	}
-	return rewriteCodexAgentMessageInput(payload, "assistant", "output_text")
+	if compatMode {
+		updated = stripCompatMessageMetadata(updated)
+	}
+	return updated
 }
 
 // RewriteCodexMultiAgentV2PortableInput converts proven plaintext agent messages
@@ -814,6 +826,35 @@ func rewriteCodexAgentMessageInput(payload []byte, role, contentType string) []b
 		for _, field := range []string{"author", "recipient", "id", "internal_chat_message_metadata_passthrough"} {
 			updated, errSet = sjson.DeleteBytes(updated, itemPath+"."+field)
 			if errSet != nil {
+				return payload
+			}
+		}
+	}
+	return updated
+}
+
+func stripCompatMessageMetadata(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return payload
+	}
+	updated := payload
+	for index, item := range input.Array() {
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if itemType == "agent_message" {
+			if _, ok := codexPlaintextAgentMessageText(item); !ok {
+				continue
+			}
+		} else if itemType != "message" && !(itemType == "" && item.Get("role").Type == gjson.String) {
+			continue
+		}
+		for _, field := range []string{"author", "recipient", "internal_chat_message_metadata_passthrough"} {
+			if !item.Get(field).Exists() {
+				continue
+			}
+			var err error
+			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d.%s", index, field))
+			if err != nil {
 				return payload
 			}
 		}

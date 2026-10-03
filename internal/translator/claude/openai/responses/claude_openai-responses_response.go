@@ -569,8 +569,10 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		idx := int(root.Get("index").Int())
 		typ := cb.Get("type").String()
 
-		// Finalize any previous assistant message
-		out = append(out, st.finalizeAssistantMessage(nextSeq)...)
+		// Keep adjacent text blocks in the same assistant message.
+		if typ != "text" {
+			out = append(out, st.finalizeAssistantMessage(nextSeq)...)
+		}
 		// Finalize previous reasoning item
 		if st.ReasoningActive || st.ReasoningItemID != "" {
 			out = append(out, st.finalizeReasoningItem("completed", nextSeq)...)
@@ -1089,11 +1091,19 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 
 	addContentBlock := func(cb gjson.Result, idx int, complete bool) {
 		typ := cb.Get("type").String()
+		if typ != "text" {
+			activeMessageItem = nil
+		}
 		switch typ {
 		case "text":
-			item := newOutputItem("message", idx)
-			item.id = fmt.Sprintf("msg_%s_%d", responseID, messageCount)
-			messageCount++
+			item := activeMessageItem
+			if item == nil {
+				item = newOutputItem("message", idx)
+				item.id = fmt.Sprintf("msg_%s_%d", responseID, messageCount)
+				messageCount++
+			} else {
+				blockToItem[idx] = item
+			}
 			if len(pendingAnnotations) > 0 {
 				item.annotations = append(item.annotations, pendingAnnotations...)
 				pendingAnnotations = nil

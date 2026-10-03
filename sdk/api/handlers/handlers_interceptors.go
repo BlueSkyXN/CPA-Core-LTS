@@ -382,7 +382,7 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 		return
 	}
 	headers := mergeRequestInterceptorHeaders(req.Headers, resp.Headers, resp.ClearHeaders)
-	body := cloneBytes(req.Body)
+	var body []byte
 	var originalRequest []byte
 	originalRequestReplaced := false
 	if len(resp.Body) > 0 {
@@ -409,11 +409,11 @@ func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecu
 	if !c.set {
 		return req, opts
 	}
-	req.Payload = cloneBytes(c.body)
-	opts.Headers = cloneHeader(c.headers)
 	if c.originalRequestReplaced {
+		req.Payload = cloneBytes(c.body)
 		opts.OriginalRequest = cloneBytes(c.originalRequest)
 	}
+	opts.Headers = cloneHeader(c.headers)
 	return req, opts
 }
 
@@ -486,7 +486,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		RequestedModel: requestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneHeader(opts.Headers),
-		Body:           cloneBytes(req.Payload),
+		Body:           req.Payload,
 		Metadata:       opts.Metadata,
 	}, skipPluginID)
 	opts.Headers = finalInterceptorHeaders(opts.Headers, resp.Headers)
@@ -568,7 +568,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		RequestedModel: req.RequestedModel,
 		Stream:         req.Stream,
 		Headers:        cloneHeader(req.Headers),
-		Body:           cloneBytes(req.Body),
+		Body:           req.Body,
 		Metadata:       req.Metadata,
 	}, skipPluginID)
 	return coreexecutor.RequestAfterAuthInterceptResponse{
