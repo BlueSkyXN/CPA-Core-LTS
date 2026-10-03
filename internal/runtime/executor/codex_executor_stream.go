@@ -293,6 +293,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		if !bootstrapReleased {
 			closeResponseBody()
+			if len(bootstrapLines) == 0 && ctx.Err() == nil {
+				emptyErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before first payload"}
+				helps.RecordAPIResponseError(ctx, e.cfg, emptyErr)
+				reporter.PublishFailure(ctx, emptyErr)
+				return nil, emptyErr
+			}
 			if errScan := scanner.Err(); errScan != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
@@ -399,6 +405,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			case <-ctx.Done():
 			}
 		}
+		rawLinesSeen := 0
 		bootstrapLineIndex := 0
 		nextLine := func() ([]byte, bool) {
 			if bootstrapLineIndex < len(bootstrapLines) {
@@ -416,6 +423,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if !ok {
 				break
 			}
+			rawLinesSeen++
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			var translatedLine []byte
@@ -591,6 +599,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			helps.RecordAPIResponseError(ctx, e.cfg, bufferLimitErr)
 			reporter.PublishFailure(ctx, bufferLimitErr)
 			emitError(bufferLimitErr)
+			return
+		}
+		if rawLinesSeen == 0 {
+			emptyErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before first payload"}
+			helps.RecordAPIResponseError(ctx, e.cfg, emptyErr)
+			reporter.PublishFailure(ctx, emptyErr)
+			emitError(emptyErr)
 			return
 		}
 		streamErr := newCodexIncompleteStreamError()

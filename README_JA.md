@@ -1,3 +1,5 @@
+> **v8 開発ブランチ：** 設定パス、維持される v0 API、旧 Panel の書き込み保護、ロールバック要件は [LTS v8 互換性](docs/lts/v8-development-compatibility.md) を参照してください。リリース済み更新ではありません。
+
 # CPA Core LTS
 
 [English](README.md) | [中文](README_CN.md) | 日本語

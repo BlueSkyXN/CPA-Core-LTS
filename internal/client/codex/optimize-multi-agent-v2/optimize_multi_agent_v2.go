@@ -68,7 +68,7 @@ func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header,
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, isCompat ...bool) []byte {
 	compatMode := len(isCompat) > 0 && isCompat[0]
 	updated := payload
-	if codexMultiAgentV2Enabled(ctx, headers, cfg) {
+	if codexMultiAgentV2Enabled(ctx, headers, cfg) || (compatMode && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers))) {
 		if compatMode {
 			updated = rewriteCodexAgentMessageInput(updated, "user", "input_text")
 		} else {
@@ -123,10 +123,6 @@ func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Hea
 // multi-agent input while preserving request-scoped translation metadata.
 func TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
 	if from == sdktranslator.FormatOpenAIResponse {
-		if cfg != nil && cfg.OAuthOnlyFields["codex.optimize-multi-agent-v2"] {
-			// OAuth-only tool preparation is deferred until credential selection.
-			req.Body, _ = PrepareCodexMultiAgentV2Tools(ctx, headers, req.Body, cfg.Codex.OptimizeMultiAgentV2, cfg.Home.Enabled)
-		}
 		req.Body = RewriteCodexOrphanDelegationInputForConfig(ctx, headers, req.Body, cfg)
 		if to != sdktranslator.FormatCodex && to != sdktranslator.FormatOpenAIResponse && codexMultiAgentV2Enabled(ctx, headers, cfg) {
 			// 保留非 Responses 目标的用户轮次边界。
@@ -173,7 +169,7 @@ func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, 
 	if codexMultiAgentV2ToolsPrepared(ctx) {
 		updated = rewriteCodexMultiAgentMessageEncryption(updated)
 	} else {
-		updated, _ = PrepareCodexMultiAgentV2Tools(ctx, headers, updated, cfg.Codex.OptimizeMultiAgentV2, cfg.Home.Enabled)
+		updated, _ = PrepareCodexMultiAgentV2Tools(ctx, headers, updated, cfg.Client.Codex.OptimizeMultiAgentV2, cfg.Home.Enabled)
 	}
 	toolPaths := codexSpawnAgentToolPaths(updated)
 	if len(toolPaths) == 0 || hasCodexOptimizedCollaborationConflict(updated) {
@@ -183,7 +179,7 @@ func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, 
 }
 
 func codexMultiAgentV2Enabled(ctx context.Context, headers http.Header, cfg *config.Config) bool {
-	return cfg != nil && codexMultiAgentV2ClientEnabled(ctx, headers, cfg.Codex.OptimizeMultiAgentV2)
+	return cfg != nil && codexMultiAgentV2ClientEnabled(ctx, headers, cfg.Client.Codex.OptimizeMultiAgentV2)
 }
 
 func codexMultiAgentV2ClientEnabled(ctx context.Context, headers http.Header, enabled bool) bool {

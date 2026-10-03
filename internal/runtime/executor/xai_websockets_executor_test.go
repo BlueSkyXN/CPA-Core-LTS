@@ -564,7 +564,7 @@ func TestXAIWebsocketsExecuteStreamRestoresPlaintextMultiAgentMarker(t *testing.
 	}))
 	defer server.Close()
 
-	exec := NewXAIWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	exec := NewXAIWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
 	auth := &cliproxyauth.Auth{
 		Provider: "xai",
 		Attributes: map[string]string{

@@ -345,7 +345,7 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 func TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	exec := NewXAIExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
 	payload := []byte(`{
 		"model":"grok-4.5",
 		"input":[{
@@ -395,7 +395,7 @@ func TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage(t 
 func TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	exec := NewXAIExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
 	payload := []byte(`{"model":"grok-4.5","input":[{
 		"type":"agent_message","id":"amsg_opaque","author":"/root","recipient":"/root/worker",
 		"content":[{"type":"input_text","text":"Payload:\n"},{"type":"encrypted_content","encrypted_content":"gAAAAABopaque"}],
@@ -430,7 +430,7 @@ func TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage(t *t
 func TestXAIExecutorPrepareResponsesRequestRecordsPlaintextMultiAgentProvenance(t *testing.T) {
 	t.Parallel()
 
-	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	exec := NewXAIExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
 	payload := []byte(`{"model":"grok-4.5","tools":[
 		{"type":"namespace","name":"collaboration","tools":[
 			{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
@@ -584,7 +584,7 @@ func TestXAIExecutorExecuteRestoresPlaintextMultiAgentMarker(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	exec := NewXAIExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
 	auth := &cliproxyauth.Auth{Provider: "xai", Attributes: map[string]string{"base_url": server.URL}, Metadata: map[string]any{"access_token": "xai-token"}}
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{Model: "grok-4.5", Payload: xaiMultiAgentV2TestPayload()}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Headers: http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},
@@ -604,7 +604,7 @@ func TestXAIExecutorExecuteStreamRestoresPlaintextMultiAgentMarker(t *testing.T)
 	}))
 	defer server.Close()
 
-	exec := NewXAIExecutor(&config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+	exec := NewXAIExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
 	auth := &cliproxyauth.Auth{Provider: "xai", Attributes: map[string]string{"base_url": server.URL}, Metadata: map[string]any{"access_token": "xai-token"}}
 	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{Model: "grok-4.5", Payload: xaiMultiAgentV2TestPayload()}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Stream: true, Headers: http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}},

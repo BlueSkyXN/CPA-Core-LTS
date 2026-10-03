@@ -221,22 +221,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
-	// Only conflicting legacy fields are removed on load. A legacy-only document
-	// stays legacy until a v8 configuration write explicitly migrates it.
-	current, errRead := os.ReadFile(configFile)
-	if errRead != nil {
-		return nil, errRead
-	}
-	cleaned, changed, errLayout := NormalizeConfigLayout(current, false)
-	if errLayout != nil {
-		return nil, errLayout
-	}
-	if changed {
-		if errWrite := os.WriteFile(configFile, cleaned, 0600); errWrite != nil {
-			return nil, fmt.Errorf("clean conflicting config fields: %w", errWrite)
-		}
-	}
-
 	// Return the populated configuration struct.
 	return &cfg, nil
 }

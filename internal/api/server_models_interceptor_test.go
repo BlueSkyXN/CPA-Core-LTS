@@ -183,6 +183,9 @@ func TestModelsEndpoint_ExposesResponseToPluginInterceptors_CodexClientVersion(t
 		}
 		t.Run(name, func(t *testing.T) {
 			server := newTestServer(t)
+			updatedCfg := *server.cfg
+			updatedCfg.Client.Codex.EnableApplyPatch = true
+			server.UpdateClients(&updatedCfg)
 			server.handlers.AuthManager.RegisterExecutor(executor.NewOpenAICompatExecutor("interceptor-patch", &config.Config{}))
 			modelRegistry := registry.GetGlobalRegistry()
 			modelRegistry.RegisterClient("interceptor-patch-models", "interceptor-patch", []*registry.ModelInfo{{ID: "interceptor-patch-supported"}})

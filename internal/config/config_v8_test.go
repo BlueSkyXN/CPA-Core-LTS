@@ -70,8 +70,8 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	if cfg.Port != 8317 || len(cfg.APIKeys) != 3 || len(cfg.GeminiKey) != 3 || len(cfg.CodexKey) != 1 || len(cfg.ClaudeKey) != 2 || len(cfg.VertexCompatAPIKey) != 1 || len(cfg.XAIKey) != 1 || len(cfg.MetaKey) != 1 || len(cfg.InteractionsKey) != 1 || len(cfg.OpenAICompatibility) != 1 {
 		t.Fatal("v8 example fields did not reach runtime config")
 	}
-	if !cfg.QuotaExceeded.AntigravityCredits || cfg.QuotaExceeded.SwitchProject || cfg.QuotaExceeded.SwitchPreviewModel {
-		t.Fatal("legacy-only quota examples must remain commented")
+	if !cfg.QuotaExceeded.AntigravityCredits || !cfg.QuotaExceeded.SwitchProject || !cfg.QuotaExceeded.SwitchPreviewModel {
+		t.Fatal("LTS quota defaults must remain enabled")
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err = os.WriteFile(path, data, 0600); err != nil {
@@ -104,7 +104,7 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	}
 }
 
-func TestV8PresencePrecedenceAndCleanup(t *testing.T) {
+func TestV8PresencePrecedenceWithoutStartupCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw string
 		retry     int
@@ -130,16 +130,10 @@ func TestV8PresencePrecedenceAndCleanup(t *testing.T) {
 				t.Fatalf("unexpected effective config: retry=%d cooling=%v keys=%d", cfg.RequestRetry, cfg.DisableCooling, len(cfg.APIKeys))
 			}
 			saved, _ := os.ReadFile(path)
-			if tc.unchanged && string(saved) != tc.raw {
-				t.Fatal("legacy config was rewritten")
+			if string(saved) != tc.raw {
+				t.Fatal("config load changed document layout")
 			}
-			if !tc.unchanged {
-				var doc yaml.Node
-				_ = yaml.Unmarshal(saved, &doc)
-				if yamlPath(doc.Content[0], "request-retry") != nil || legacyPath(doc.Content[0], "api-keys") != nil || yamlPath(doc.Content[0], "disable-cooling") != nil {
-					t.Fatal("conflicting legacy fields remain")
-				}
-			}
+
 		})
 	}
 }
@@ -506,7 +500,7 @@ proxy-url: old
 	if err = ValidateV8Config(saved); err != nil {
 		t.Fatalf("saved migration is invalid: %v", err)
 	}
-	for _, key := range []string{"auth", "ampcode", "amp-upstream-url", "amp-upstream-api-key", "generative-language-api-key", "home"} {
+	for _, key := range []string{"auth", "ampcode.old", "amp-upstream-url", "amp-upstream-api-key", "generative-language-api-key", "home"} {
 		if !strings.Contains(string(saved), "# "+key+":") {
 			t.Errorf("obsolete setting %s was discarded rather than commented", key)
 		}
@@ -525,10 +519,10 @@ func TestV8MigrationPreservesEmptyLegacyContainers(t *testing.T) {
 		{"streaming", "requests.streaming"}, {"payload", "requests.payload"},
 		{"codex", "oauth.providers.codex"}, {"codex.live-media-relay", "oauth.providers.codex.live-media-relay"},
 		{"codex-header-defaults", "oauth.providers.codex.header-defaults"},
-		{"claude", "oauth.providers.claude"}, {"claude-code", "oauth.providers.claude.claude-code"},
-		{"claude-header-defaults", "oauth.providers.claude.header-defaults"},
+		{"claude", "upstream.claude"}, {"claude-code", "upstream.claude"},
+		{"claude-header-defaults", "upstream.claude.header-defaults"},
 		{"antigravity", "oauth.providers.antigravity"}, {"antigravity.connection-pool", "oauth.providers.antigravity.connection-pool"},
-		{"xai", "oauth.providers.xai"}, {"devin", "oauth.providers.devin"},
+		{"xai", "upstream.xai"}, {"devin", "oauth.providers.devin"},
 	} {
 		for _, empty := range []string{"{}", "null"} {
 			t.Run(section.old+"/"+empty, func(t *testing.T) {
@@ -919,8 +913,10 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 			if other := yamlPath(effective, "other.secret-key"); other != nil && other.Value != secret {
 				t.Fatal("hashing mutated another use of the shared anchor")
 			}
-			if tc.path == "management" && yamlPath(effective, "remote-management.secret-key") != nil {
-				t.Fatal("hashing left a conflicting legacy secret")
+			if tc.name == "v8 wins legacy" {
+				if legacy := yamlPath(effective, "remote-management.secret-key"); legacy == nil || legacy.Value != "stale-secret" {
+					t.Fatal("hashing rewrote the ignored legacy document")
+				}
 			}
 			reloaded, err := LoadConfig(path)
 			if err != nil {

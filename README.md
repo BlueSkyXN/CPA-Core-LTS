@@ -1,3 +1,5 @@
+> **v8 development branch:** See [LTS v8 compatibility](docs/lts/v8-development-compatibility.md) for configuration paths, retained v0 APIs, cached-Panel write protection, and rollback requirements. This branch is not a released upgrade.
+
 # CPA Core LTS
 
 English | [中文](README_CN.md) | [日本語](README_JA.md)

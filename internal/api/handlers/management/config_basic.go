@@ -99,6 +99,17 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 }
 
 func WriteConfig(path string, data []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if len(doc.Content) > 0 && config.IsV8ConfigLayout(doc.Content[0]) {
+		var err error
+		data, _, err = config.NormalizeConfigLayout(data, true)
+		if err != nil {
+			return err
+		}
+	}
 	data = config.NormalizeCommentIndentation(data)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
@@ -155,6 +166,22 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	current, err := os.ReadFile(h.configFilePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
+		return
+	}
+	var currentDoc, incomingDoc yaml.Node
+	if yaml.Unmarshal(current, &currentDoc) != nil || yaml.Unmarshal(body, &incomingDoc) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml"})
+		return
+	}
+	// Cached legacy editors cannot safely replace a grouped configuration tree.
+	if (len(currentDoc.Content) > 0 && config.IsV8ConfigLayout(currentDoc.Content[0])) ||
+		(len(incomingDoc.Content) > 0 && config.IsV8ConfigLayout(incomingDoc.Content[0])) {
+		c.JSON(http.StatusConflict, gin.H{"error": "unsupported_config_layout", "message": "Use the v8 configuration API to edit this layout."})
+		return
+	}
 	if h.authManager != nil {
 		if err := h.authManager.CheckFlowControlConfig(validatedCfg); err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "flow_control_update_rejected", "message": err.Error()})
@@ -171,7 +198,12 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
 	}
+	if h.cfg != nil {
+		newCfg.Home = h.cfg.Home
+	}
 	h.cfg = newCfg
+	snapshot := h.reloadSnapshotConfigLocked()
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 

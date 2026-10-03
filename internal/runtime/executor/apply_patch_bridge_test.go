@@ -172,7 +172,11 @@ func newApplyPatchTestGateway(t *testing.T, exec cliproxyauth.ProviderExecutor, 
 	}
 	registry.GetGlobalRegistry().RegisterClient(auth.ID, exec.Identifier(), []*registry.ModelInfo{{ID: "test"}})
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Client: sdkconfig.ClientConfig{
+			Codex: sdkconfig.CodexClientConfig{EnableApplyPatch: true},
+		},
+	}, manager)
 	router := gin.New()
 	router.POST("/v1/responses", openai.NewOpenAIResponsesAPIHandler(base).Responses)
 	router.GET("/v1/models", openai.NewOpenAIAPIHandler(base).OpenAIModels)

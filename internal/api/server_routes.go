@@ -752,7 +752,11 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 	if s.handlers != nil {
 		manager = s.handlers.AuthManager
 	}
-	payload := codexmodels.BuildResponseForClientWithToolCapabilities(models, nil, webSearchCapabilityForModel, homeApplyPatchCapabilityForModel(entries, manager), s.cfg.Codex.OptimizeMultiAgentV2, clientVersion)
+	var applyPatchCapabilityForModel codexmodels.ApplyPatchCapabilityForModelFunc
+	if s.cfg.Client.Codex.EnableApplyPatch {
+		applyPatchCapabilityForModel = homeApplyPatchCapabilityForModel(entries, manager)
+	}
+	payload := codexmodels.BuildResponseForClientWithToolCapabilities(models, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, s.cfg.Client.Codex.OptimizeMultiAgentV2, clientVersion)
 	body, errMarshal := codexmodels.MarshalCompact(payload)
 	if errMarshal != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMarshal.Error()})

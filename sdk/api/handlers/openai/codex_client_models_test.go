@@ -29,7 +29,7 @@ func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 		{name: "enabled", enabled: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			base.Cfg.CodexOptimizeMultiAgentV2 = tt.enabled
+			base.Cfg.Client.Codex.OptimizeMultiAgentV2 = tt.enabled
 			response := handler.codexClientModelsResponse()
 			models, ok := response["models"].([]map[string]any)
 			if !ok {
@@ -338,12 +338,35 @@ func TestCodexClientModelsApplyPatchRouting(t *testing.T) {
 		}
 		t.Fatalf("missing model %q", id)
 	}
-	// A provider label alone is not an executor capability claim.
-	assertPatch(t, handler.codexClientModelsResponse("0.153.4"), "gpt-5.5", nil)
+	// Models that natively declare freeform apply_patch advertise it by default under pure Codex routes.
+	assertPatch(t, handler.codexClientModelsResponse("0.153.4"), "gpt-5.5", "freeform")
 	manager.RegisterExecutor(executor.NewCodexAutoExecutor(&config.Config{}))
 	manager.RegisterExecutor(executor.NewOpenAICompatExecutor("catalog-custom", &config.Config{}))
 	manager.RegisterExecutor(catalogUnknownExecutor{executor.NewOpenAICompatExecutor("catalog-remote", &config.Config{})})
 	manager.RegisterExecutor(catalogUnsupportedExecutor{executor.NewOpenAICompatExecutor("catalog-disabled", &config.Config{})})
+	enabledCfg := &config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{EnableApplyPatch: true}}}
+	for _, cfg := range []*config.SDKConfig{nil, {}, enabledCfg, {}} {
+		handler.UpdateClients(cfg)
+		for _, version := range []string{"", "0.137.0", "0.153.4", "cpa"} {
+			response := handler.codexClientModelsResponse(version)
+			for _, entry := range response["models"].([]map[string]any) {
+				want := any(nil)
+				if cfg == enabledCfg {
+					switch entry["slug"] {
+					case "gpt-5.5", "gpt-reserve", "catalog-patch-synthetic", "catalog-patch-alias", "catalog-patch-mixed":
+						want = "freeform"
+					}
+				} else {
+					switch entry["slug"] {
+					case "gpt-5.5", "gpt-reserve":
+						want = "freeform"
+					}
+				}
+				assertPatch(t, response, entry["slug"].(string), want)
+			}
+		}
+	}
+	handler.UpdateClients(enabledCfg)
 	for _, version := range []string{"", "0.137.0", "0.153.4", "cpa"} {
 		t.Run(version, func(t *testing.T) {
 			response := handler.codexClientModelsResponse(version)
@@ -357,7 +380,7 @@ func TestCodexClientModelsApplyPatchRouting(t *testing.T) {
 	}
 	manager.RegisterExecutor(catalogUnknownExecutor{executor.NewCodexAutoExecutor(&config.Config{})})
 	assertPatch(t, handler.codexClientModelsResponse("0.153.4"), "gpt-5.5", nil)
-	withoutManager := NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil))
+	withoutManager := NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(enabledCfg, nil))
 	assertPatch(t, withoutManager.codexClientModelsResponse("0.153.4"), "catalog-patch-synthetic", nil)
 
 }

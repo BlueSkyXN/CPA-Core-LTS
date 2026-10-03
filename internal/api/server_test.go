@@ -2751,7 +2751,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		modelRegistry.UnregisterClient(clientID)
 	})
 
-	server := newTestServer(t)
+	cfg := &proxyconfig.Config{SDKConfig: sdkconfig.SDKConfig{APIKeys: []string{"test-key"}}}
+	cfg.Client.Codex.EnableApplyPatch = true
+	server := newTestServerWithConfig(t, cfg)
 	server.handlers.AuthManager.RegisterExecutor(executor.NewCodexAutoExecutor(&proxyconfig.Config{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?client_version", nil)
@@ -4091,6 +4093,7 @@ func newHomeCatalogClient(t *testing.T, payload string) *home.Client {
 func TestModelsWithClientVersionHomeApplyPatchRouting(t *testing.T) {
 	server := newTestServer(t)
 	server.cfg.Home.Enabled = true
+	server.cfg.Client.Codex.EnableApplyPatch = true
 	// Exercise the production models router without unrelated heartbeat readiness.
 	engine := gin.New()
 	engine.GET("/v1/models", server.unifiedModelsHandler(nil, nil))
@@ -4195,6 +4198,9 @@ func TestModelsWithClientVersionApplyPatchRequiresExecutor(t *testing.T) {
 	modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{{ID: "gpt-5.5"}, {ID: "http-patch-synthetic"}})
 	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
 	server := newTestServer(t)
+	updatedCfg := *server.cfg
+	updatedCfg.Client.Codex.EnableApplyPatch = true
+	server.UpdateClients(&updatedCfg)
 	for _, version := range []string{"", "0.137.0", "0.153.4", "cpa"} {
 		request := httptest.NewRequest(http.MethodGet, "/v1/models?client_version="+version, nil)
 		request.Header.Set("Authorization", "Bearer test-key")

@@ -422,8 +422,8 @@ func TestKimiClaudeAuthUsesRequestLocalBaseURL(t *testing.T) {
 	if delegated == nil || delegated == original {
 		t.Fatalf("kimiClaudeAuth() = %#v, want an independent clone", delegated)
 	}
-	if got := delegated.Attributes["base_url"]; got != kimiauth.KimiAPIBaseURL {
-		t.Fatalf("delegated base_url = %q, want %q", got, kimiauth.KimiAPIBaseURL)
+	if got := delegated.Attributes["base_url"]; got != "https://example.invalid" {
+		t.Fatalf("delegated base_url = %q, want custom endpoint", got)
 	}
 	if got := delegated.Attributes["custom"]; got != "value" {
 		t.Fatalf("delegated custom attribute = %q, want value", got)
