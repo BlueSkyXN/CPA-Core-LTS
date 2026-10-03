@@ -1,6 +1,6 @@
 # v8 开发线兼容边界
 
-本开发线从 v7 LTS `572f8fade2c11aa52bd06c59930b8dd89e1b748c` 开始，按 protected full-sync 接入官方 `2044a01f422998de79a5da8015141b878886534d`（v8.0.12）。`v8-dev` 是隔离评审目标，不是已发布版本；不得据此推断 main、UAT 或 PRO 已升级 v8。
+本开发线从 v7 LTS `572f8fade2c11aa52bd06c59930b8dd89e1b748c` 开始，按 protected full-sync 接入官方 `2044a01f422998de79a5da8015141b878886534d`（v8.0.12），随后跟进到 `d7914afdedca7af95ee974a42453dc49fc1388ce`；11 条新增提交与保护审查见 [follow-up intake](v8-intake-20261003-followup.md)。`v8-dev` 是隔离评审目标，不是已发布版本；不得据此推断 main、UAT 或 PRO 已升级 v8。
 
 ## 配置与 API
 
