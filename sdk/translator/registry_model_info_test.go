@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	modelregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	modelregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

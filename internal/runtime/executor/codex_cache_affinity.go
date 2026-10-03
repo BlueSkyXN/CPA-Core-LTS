@@ -10,12 +10,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	authpkg "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	execpkg "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	session "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
-	translator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	authpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	session "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

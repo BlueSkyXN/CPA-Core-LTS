@@ -4,8 +4,8 @@ import (
 	"regexp"
 	"strings"
 
-	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

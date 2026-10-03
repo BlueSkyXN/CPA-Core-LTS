@@ -4,17 +4,17 @@ import (
 	"context"
 	"net/http"
 
-	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/optimize-multi-agent-v2"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	openaichatclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/chat-completions"
-	responsesclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/openai/responses"
-	codexclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/codex/claude"
-	geminiclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/claude"
-	interactionsclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/interactions/claude"
-	openaiclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/claude"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	openaichatclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/chat-completions"
+	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
+	codexclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/codex/claude"
+	geminiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/claude"
+	interactionsclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/interactions/claude"
+	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // RewriteCodexSpawnAgentDescription optimizes spawn_agent definitions for
@@ -45,6 +45,15 @@ func RewriteCodexOrphanDelegationInput(ctx context.Context, headers http.Header,
 // TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
+	return TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx, headers, cfg, "", from, to, model, payload, stream)
+}
+
+// TranslateRequestWithCodexMultiAgentV2ForExecutor applies Codex client
+// compatibility while respecting the actual target executor identity.
+func TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx context.Context, headers http.Header, cfg *config.Config, targetExecutor string, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
+	if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+		payload = NormalizeCodexToolIntegerTypes(payload, headers)
+	}
 	return multiagentv2.TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
 }
 
@@ -116,18 +125,38 @@ func TranslateRequestPairWithAPIKeyModelCompatibilityAndUpdateIntent(ctx context
 // TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent returns the
 // plugin normalizer's request-scoped update decision for Responses targets.
 func TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) ([]byte, bool) {
+	return TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor(ctx, headers, cfg, "", from, to, model, payload, stream, isCompat)
+}
+
+// TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor
+// translates a request while applying client schema compatibility for the
+// actual target executor.
+func TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor(ctx context.Context, headers http.Header, cfg *config.Config, targetExecutor string, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) ([]byte, bool) {
 	if !isCompat || (to == sdktranslator.FormatCodex && from != sdktranslator.FormatClaude) {
-		translated := TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, headers, cfg, from, to, sdktranslator.RequestEnvelope{Format: from, Model: model, Stream: stream, Body: payload})
+		translated := sdktranslator.RequestEnvelope{Format: from, Model: model, Stream: stream, Body: payload}
+		if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+			translated.Body = NormalizeCodexToolIntegerTypes(translated.Body, headers)
+		}
+		translated = multiagentv2.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, headers, cfg, from, to, translated)
 		return translated.Body, translated.ConfigurationUpdatesChanged
 	}
-	return TranslateRequestWithAPIKeyModelCompatibility(ctx, headers, cfg, from, to, model, payload, stream, isCompat), false
+	return TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx, headers, cfg, targetExecutor, from, to, model, payload, stream, isCompat), false
 }
 
 // TranslateRequestWithAPIKeyModelCompatibility applies compatibility-aware
 // request translators when a configured API-key model enables compatibility mode.
 func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) []byte {
+	return TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx, headers, cfg, "", from, to, model, payload, stream, isCompat)
+}
+
+// TranslateRequestWithAPIKeyModelCompatibilityForExecutor applies compatibility-aware
+// request translation while preserving the actual target executor's schema policy.
+func TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx context.Context, headers http.Header, cfg *config.Config, targetExecutor string, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) []byte {
+	if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
+		payload = NormalizeCodexToolIntegerTypes(payload, headers)
+	}
 	if !isCompat {
-		return TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
+		return TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx, headers, cfg, targetExecutor, from, to, model, payload, stream)
 	}
 	if from == sdktranslator.FormatOpenAIResponse {
 		payload = RewriteCodexOrphanDelegationInput(ctx, headers, payload, cfg)
@@ -151,7 +180,7 @@ func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers h
 	case from == sdktranslator.FormatOpenAIResponse && to == sdktranslator.FormatClaude:
 		translated = responsesclaude.ConvertOpenAIResponsesRequestToClaudeWithCompat(model, payload, stream)
 	default:
-		return TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
+		return TranslateRequestWithCodexMultiAgentV2ForExecutor(ctx, headers, cfg, targetExecutor, from, to, model, payload, stream)
 	}
 
 	summaryConfig := thinking.ExtractTranslatedSummaryConfig(payload, from.String(), to.String())
@@ -172,12 +201,16 @@ func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, 
 }
 
 // OptimizeCodexMultiAgentV2RequestForAuth applies the standard Codex MultiAgentV2
-// request optimization and, when the selected codex-api-key model has is-compat
-// enabled, also converts agent_message items into portable message/user input,
+// request optimization and uses the execution attempt's resolved compatibility
+// flag to convert agent_message items into portable message/user input,
 // proactively stripping author, recipient, and internal passthrough metadata.
-func OptimizeCodexMultiAgentV2RequestForAuth(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, auth *cliproxyauth.Auth, model string) ([]byte, bool) {
+func OptimizeCodexMultiAgentV2RequestForAuth(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, auth *cliproxyauth.Auth, isCompat bool) ([]byte, bool) {
+	if auth != nil && auth.AuthKind() == cliproxyauth.AuthKindAPIKey {
+		cfg = cfg.ForAPIKey()
+	}
+	payload = multiagentv2.RewriteCodexOrphanDelegationInputForConfig(ctx, headers, payload, cfg)
 	updated, optimized := multiagentv2.OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
-	if cliproxyauth.CodexAPIKeyModelIsCompat(cfg, auth, model) {
+	if isCompat {
 		updated = multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, updated, cfg, true)
 	}
 	return updated, optimized
