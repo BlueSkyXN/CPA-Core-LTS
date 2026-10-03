@@ -37,4 +37,4 @@ These are local/synthetic checks. Full native plugin combinations on every platf
 
 Official `upstream/dev` was `0594a632d935947002e9fae7908b5e8ea7cb0ff1`, with four history commits not in the frozen main target: `8a945b3f` (Claude 4.6 restoration), `9b9c2bdf` and `174248ca` (CAQS replay), and merge `0594a632`. They are not included and require a separate main/intake decision.
 
-Panel official main is frozen at `752e0ee772220ce49aae1221a3f39f23236590d7`; its 92-item selective-port ledger explicitly distinguishes accepted fixes from deferred new provider/policy/credential-mutation/consumption UI. A matching Panel build is not a claim of complete official UI parity or unrestricted multi-writer configuration safety.
+Panel official main is frozen at `ee79a794526a30c03748a8864a9ac6589a31833b`; its 94-item selective-port ledger explicitly distinguishes accepted fixes from deferred new provider/policy/credential-mutation/consumption UI. A matching Panel build is not a claim of complete official UI parity or unrestricted multi-writer configuration safety.
