@@ -21,6 +21,7 @@ import (
 type codexWebsocketConnectionKey struct {
 	authID                string
 	wsURL                 string
+	proxyURL              string
 	baseModel             string
 	overrideHeaderProfile [sha256.Size]byte
 }

@@ -175,6 +175,7 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 		return cliproxyexecutor.Response{}, errPreflight
 	}
 	req, opts = ensureExecutionRequestID(req, opts)
+	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = withPreDispatchSelection(ctx)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
@@ -201,6 +202,7 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 		return cliproxyexecutor.Response{}, errPreflight
 	}
 	req, opts = ensureExecutionRequestID(req, opts)
+	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = withPreDispatchSelection(ctx)
 	normalized := m.normalizeProviders(providers)
@@ -280,6 +282,7 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 		return nil, errPreflight
 	}
 	req, opts = ensureExecutionRequestID(req, opts)
+	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	ctx = withPreDispatchSelection(ctx)
 	if m.HomeEnabled() {

@@ -203,12 +203,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			rawLine := bytes.Clone(scanner.Bytes())
 			bootstrapLines = append(bootstrapLines, rawLine)
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
-			translatedLine := bytes.Clone(line)
+			var translatedLine []byte
 			bufferable := false
-			if transformedLine, transformed := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); transformed {
+			if transformedLine, transformed := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); transformed {
 				translatedLine = transformedLine
 				bufferable = true
 			} else if !bytes.HasPrefix(line, dataTag) {
+				translatedLine = bytes.Clone(line)
 				// SSE comments, event/id/retry lines and blank separators are held
 				// with the data frame they describe and spend the same budgets.
 				bufferable = true
@@ -415,7 +416,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			translatedLine := bytes.Clone(line)
+			var translatedLine []byte
 			flushAfterLine := false
 			var completedData []byte
 			var usageDetail usage.Detail
@@ -424,7 +425,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			terminalSuccess := false
 			cacheReasoningReplay := false
 
-			if transformed, ok := grokbuild.TransformKeepaliveSSELine(translatedLine, isGrokClient); ok {
+			if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
 				translatedLine = transformed
 			} else if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
@@ -503,6 +504,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					translatedLine = append([]byte("data: "), data...)
 					flushAfterLine = buffering
 				}
+			} else {
+				translatedLine = bytes.Clone(line)
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
