@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -132,6 +133,13 @@ func TestCodexExecutorDropsUnsupportedReasoningSummaryAfterPayloadOverride(t *te
 }
 
 func TestCodexExecutorSparkMaxReasoningEffortRemainsRejected(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const clientID = "spark-reasoning-compat"
+	modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{{
+		ID:       "gpt-5.3-codex-spark",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+	}})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected upstream request for locally invalid Spark effort")
 		w.WriteHeader(http.StatusInternalServerError)

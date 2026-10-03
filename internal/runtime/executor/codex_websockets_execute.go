@@ -178,6 +178,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	connectionKey := newCodexWebsocketConnectionKey(authID, wsURL, baseModel, modelHeaderProfile.digest)
+	connectionKey.proxyURL = executionProxyURL(ctx, e.cfg, auth)
 	var connection codexWebsocketConnectionRef
 	var closer *websocketConnectionCloser
 	var respHS *http.Response

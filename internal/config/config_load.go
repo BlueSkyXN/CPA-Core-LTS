@@ -102,6 +102,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if err = cfg.Codex.DesktopToolOverlay.normalizeAndValidate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
+		return nil, errValidate
+	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {

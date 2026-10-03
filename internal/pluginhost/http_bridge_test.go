@@ -1586,3 +1586,19 @@ func TestHostHTTPCredentialRedactionIncludesPluginDeclarations(t *testing.T) {
 		t.Fatal("built-in rules must stay in effect alongside declarations")
 	}
 }
+
+func TestHostHTTPClientOmittedProxyClearsAmbientRequestProxy(t *testing.T) {
+	ambient := cliproxyexecutor.WithRequestProxyURL(context.Background(), "http://ambient-proxy.example:8081")
+	client := &hostHTTPClient{}
+	cleared := client.proxyContext(ambient)
+	if got := cliproxyexecutor.RequestProxyURL(cleared); got != "" {
+		t.Fatalf("ambient proxy = %q, want cleared", got)
+	}
+
+	override := client
+	override.requestProxyURL = "http://request-proxy.example:8082"
+	replaced := override.proxyContext(ambient)
+	if got := cliproxyexecutor.RequestProxyURL(replaced); got != override.requestProxyURL {
+		t.Fatalf("request proxy = %q, want %q", got, override.requestProxyURL)
+	}
+}

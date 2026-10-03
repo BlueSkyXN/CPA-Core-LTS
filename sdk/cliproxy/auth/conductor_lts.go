@@ -817,6 +817,10 @@ func recomputeAggregatedAvailability(auth *Auth, now time.Time) {
 	if auth == nil {
 		return
 	}
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+		auth.Unavailable = true
+		return
+	}
 	if len(auth.ModelStates) == 0 {
 		clearAggregatedAvailability(auth)
 		return

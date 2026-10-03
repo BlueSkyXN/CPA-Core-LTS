@@ -10,6 +10,14 @@ port: 8317
 # value to allow larger bounded multimodal requests; 0 or negative values use the default.
 api-request-body-max-bytes: 16777216
 
+# IP addresses or CIDRs of proxies allowed to supply forwarded client IP headers.
+# An empty list (the default) does not trust forwarded headers. Restart after changing this setting.
+trusted-proxies: []
+# Example:
+# trusted-proxies:
+#   - 127.0.0.1
+#   - 192.0.2.0/24
+
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:
   enable: false
@@ -645,6 +653,7 @@ nonstream-keepalive-interval: 0
 #     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/gpt-5-codex" to target this credential
 #     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
+#     disable-codex-cloaking: false # optional override: true disables cloaking, false enables it; omit to inherit global
 #     request-retry: 3 # optional: per-auth override of the global request-retry; omit to inherit global; 0 or a negative value disables retries
 #     request-scoped-errors: # optional: custom rules to classify upstream errors by status and body patterns
 #       - status: 400
@@ -861,7 +870,7 @@ nonstream-keepalive-interval: 0
 # enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
 # the same exact software baseline rather than learning newer client versions.
 # claude-header-defaults:
-#   user-agent: "claude-cli/2.1.258 (external, cli)"
+#   user-agent: "claude-cli/2.1.280 (external, cli)"
 #   package-version: "0.112.1"
 #   runtime-version: "v26.3.0"
 #   os: "MacOS"
