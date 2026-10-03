@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // embeddingsRequestPayload 校验并规范化 embeddings 请求：模型必须是账号目录中的

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	executor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	executor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/flowcontrol"
 )
 
 // Integration tests use the real Manager and routing fixtures. They require the

@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
-	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func init() {

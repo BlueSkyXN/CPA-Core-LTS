@@ -1,3 +1,5 @@
+> v8 开发线：本文的 `codex.abnormal-reasoning-retry` 继续作为 legacy 读取别名；canonical YAML 路径为 `upstream.codex.abnormal-reasoning-retry`，策略语义不变。详见 [v8 兼容说明](v8-development-compatibility.md)。
+
 # Codex Client Context Degradation Defense
 
 CPA-Core-LTS 针对 Codex 上游 reasoning 截断（516/1034 现象）的多层防御机制。

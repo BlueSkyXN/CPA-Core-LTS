@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -182,10 +182,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		// Initialize continuity and diagnostics if cloaked and eligible.
 		if cloaked {
 			existingPrevReq, existingPromptID := helps.ExtractClaudeBillingTags(body)
-			prevReq, promptID, cCtx, ok := resolveClaudeContinuityTags(ctx, auth, incomingHeaders, body, confirmedClaudeCode, existingPrevReq, existingPromptID)
+			prevReq, promptID, cCtx, ok := resolveClaudeContinuityTags(ctx, e.cfg, auth, incomingHeaders, body, confirmedClaudeCode, existingPrevReq, existingPromptID)
 			if ok {
 				if continuityCtx != nil {
 					*continuityCtx = cCtx
+				}
+				if cCtx.PinnedDate != "" {
+					body = injectClaudeCodeCurrentDate(body, cCtx.PinnedDate)
 				}
 				body = helps.InjectClaudeBillingTags(body, prevReq, promptID)
 				if fp.InjectDiagnostics && isAnthropicUpstreamBase(baseURL) {
@@ -475,6 +478,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(decodedBody)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		helps.InitializeApplyPatchStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), bodyForTranslation, &param)
 		var upstreamMessageID string
 		upstreamCompleted := false
 		for scanner.Scan() {
@@ -494,16 +498,17 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				to,
 				responseFormat,
 				req.Model,
-				opts.OriginalRequest,
+				helps.ApplyPatchOriginalRequest(req, opts),
 				bodyForTranslation,
 				bytes.Clone(line),
 				&param,
 			)
-			if responseFormat == sdktranslator.FormatOpenAIResponse {
+			if responseFormat == sdktranslator.FormatOpenAIResponse && helps.ApplyPatchTranslationError(param) == nil {
 				for i, chunk := range chunks {
 					chunks[i] = helps.EnsureResponsesUsageDetails(chunk)
 				}
 			}
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -512,9 +517,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					return
 				}
 			}
+			if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+				return
+			}
 			if upstreamCompleted {
 				break
 			}
+		}
+		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+			return
 		}
 		if !upstreamCompleted {
 			if emitCancellation(scanner.Err()) {
