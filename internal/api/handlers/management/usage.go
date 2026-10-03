@@ -275,6 +275,8 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"outbound_service_tier",
 					"response_service_tier",
 					"effective_service_tier",
+					"response_cyber_program",
+
 					"tokens",
 					"failed",
 					"generate",

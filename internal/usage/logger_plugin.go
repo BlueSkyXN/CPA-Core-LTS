@@ -127,6 +127,7 @@ type RequestDetail struct {
 	OutboundServiceTier  string     `json:"outbound_service_tier,omitempty"`
 	ResponseServiceTier  string     `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string     `json:"effective_service_tier,omitempty"`
+	ResponseCyberProgram string     `json:"response_cyber_program,omitempty"`
 	Tokens               TokenStats `json:"tokens"`
 	Failed               bool       `json:"failed"`
 	Generate             bool       `json:"generate"`
@@ -611,6 +612,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		responseServiceTier = strings.TrimSpace(record.Detail.ResponseServiceTier)
 	}
 	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
+	responseCyberProgram := record.ResponseCyberProgram
+	if responseCyberProgram == "" {
+		responseCyberProgram = record.Detail.ResponseCyberProgram
+	}
 	requestDetail := RequestDetail{
 		Timestamp:            timestamp,
 		LatencyMs:            normaliseLatency(record.Latency),
@@ -625,6 +630,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		OutboundServiceTier:  outboundServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
+		ResponseCyberProgram: coreusage.CanonicalResponseCyberProgram(responseCyberProgram),
 		Tokens:               detail,
 		Failed:               failed,
 		Generate:             coreusage.GenerateEnabled(record.Generate),
@@ -996,6 +1002,7 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 	}
 	detail.OutboundServiceTier = strings.TrimSpace(detail.OutboundServiceTier)
 	detail.EffectiveServiceTier = coreusage.CanonicalEffectiveServiceTier(detail.EffectiveServiceTier)
+	detail.ResponseCyberProgram = coreusage.CanonicalResponseCyberProgram(detail.ResponseCyberProgram)
 	return detail
 }
 

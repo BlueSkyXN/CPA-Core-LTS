@@ -2520,6 +2520,7 @@ func TestUsageAdapterPreservesServiceTierMetadata(t *testing.T) {
 		ServiceTier:          "priority",
 		RequestServiceTier:   "priority",
 		OutboundServiceTier:  " Scale ",
+		ResponseCyberProgram: "daybreak_blue",
 		ResponseServiceTier:  "default",
 		EffectiveServiceTier: "standard",
 	})
@@ -2529,6 +2530,9 @@ func TestUsageAdapterPreservesServiceTierMetadata(t *testing.T) {
 	}
 	if got.RequestServiceTier != "priority" {
 		t.Fatalf("plugin RequestServiceTier = %q, want priority", got.RequestServiceTier)
+	}
+	if got.ResponseCyberProgram != "daybreak_blue" {
+		t.Fatalf("plugin ResponseCyberProgram = %q", got.ResponseCyberProgram)
 	}
 	if got.OutboundServiceTier != "Scale" {
 		t.Fatalf("plugin OutboundServiceTier = %q, want Scale", got.OutboundServiceTier)

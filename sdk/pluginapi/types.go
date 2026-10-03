@@ -1679,6 +1679,8 @@ type UsageRecord struct {
 	EffectiveServiceTier string `json:"EffectiveServiceTier,omitempty"`
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
 	ResponseModel string `json:"ResponseModel,omitempty"`
+	// ResponseCyberProgram is selected by the upstream, independent of speed tier.
+	ResponseCyberProgram string `json:"ResponseCyberProgram,omitempty"`
 	// Generate reports whether the client requested actual generation.
 	// The host normalizes omitted usage.Record values to true before delivery.
 	Generate bool

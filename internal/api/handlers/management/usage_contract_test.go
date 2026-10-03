@@ -120,6 +120,11 @@ func TestUsageManagementResponseShapeAndImportExportRoundTrip(t *testing.T) {
 		t.Fatalf("marshal re-exported usage: %v", err)
 	}
 	requireCanonicalReasoningEffortJSON(t, reimportedJSON, "usage re-exported after import")
+	for name, data := range map[string][]byte{"GET": getJSON, "export": exportedJSON, "reimport": reimportedJSON} {
+		if !bytes.Contains(data, []byte(`"response_cyber_program":"daybreak_blue"`)) {
+			t.Fatalf("%s lost response_cyber_program", name)
+		}
+	}
 }
 
 func TestUsageManagementTimingV3MatrixAndAtomicRejection(t *testing.T) {
@@ -1316,6 +1321,7 @@ func recordPanelContractUsage(stats *usage.RequestStatistics) {
 		OutboundServiceTier:  "priority",
 		ResponseServiceTier:  "standard",
 		EffectiveServiceTier: "standard",
+		ResponseCyberProgram: "daybreak_blue",
 		Generate:             coreusage.GenerateFlag(false),
 		RequestedAt:          time.Date(2026, 6, 10, 11, 30, 0, 0, time.UTC),
 		Latency:              2 * time.Second,

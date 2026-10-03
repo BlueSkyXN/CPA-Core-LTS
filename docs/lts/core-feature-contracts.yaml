@@ -83,6 +83,7 @@ features:
       - outbound_service_tier
       - response_service_tier
       - effective_service_tier
+      - response_cyber_program
       - generate
       - success_count
       - failure_count
@@ -150,6 +151,7 @@ features:
       - outbound_service_tier
       - response_service_tier
       - effective_service_tier
+      - response_cyber_program
       - generate
       - CanonicalExportVersion
       - TimingVersionV1
@@ -502,6 +504,7 @@ features:
       - auth_index
       - outbound_service_tier
       - effective_service_tier
+      - response_cyber_program
       - generate
     validation:
       - go test ./internal/redisqueue ./internal/api -run 'Redis|redis|Usage|usage'

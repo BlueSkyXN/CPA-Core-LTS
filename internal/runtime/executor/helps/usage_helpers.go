@@ -67,7 +67,8 @@ type UsageReporter struct {
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
-	responseModel string
+	responseModel        string
+	responseCyberProgram string
 	// responseModelFinal marks that a terminal event already reported the served
 	// model, so later frames skip parsing entirely.
 	responseModelFinal atomic.Bool
@@ -231,10 +232,8 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 	if r == nil || r.responseModelFinal.Load() {
 		return
 	}
-	provider := ""
-	if r != nil {
-		provider = r.provider
-	}
+	r.observeResponseCyberProgram(payload)
+	provider := r.provider
 	served, terminal := extractResponseModelEvent(payload, provider)
 	if served == "" {
 		if terminal {
@@ -837,7 +836,13 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	responseModel := ""
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		if detail.ResponseCyberProgram == "" {
+			detail.ResponseCyberProgram = r.snapshotResponseCyberProgram()
+		}
+	} else {
+		detail.ResponseCyberProgram = ""
 	}
+	detail.ResponseCyberProgram = usage.CanonicalResponseCyberProgram(detail.ResponseCyberProgram)
 	return usage.Record{
 		Provider:            r.provider,
 		BaseURL:             r.baseURL,
@@ -863,18 +868,19 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 			detail.ResponseServiceTier,
 			r.outboundTier,
 		),
-		ResponseModel: responseModel,
-		Generate:      usage.GenerateFlag(r.generate),
-		Stream:        r.stream,
-		RequestedAt:   r.requestedAt,
-		Latency:       r.latency(),
-		TimingVersion: timing.TimingVersion,
-		TTFB:          timing.TTFB,
-		TTFT:          timing.TTFT,
-		TTFA:          timing.TTFA,
-		Failed:        failed,
-		Fail:          fail,
-		Detail:        detail,
+		ResponseCyberProgram: detail.ResponseCyberProgram,
+		ResponseModel:        responseModel,
+		Generate:             usage.GenerateFlag(r.generate),
+		Stream:               r.stream,
+		RequestedAt:          r.requestedAt,
+		Latency:              r.latency(),
+		TimingVersion:        timing.TimingVersion,
+		TTFB:                 timing.TTFB,
+		TTFT:                 timing.TTFT,
+		TTFA:                 timing.TTFA,
+		Failed:               failed,
+		Fail:                 fail,
+		Detail:               detail,
 	}
 }
 
@@ -1081,14 +1087,24 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
 		return
 	}
 	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
-	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) {
+	responseCyberProgram := detail.ResponseCyberProgram
+	if (responseServiceTier == "" && responseCyberProgram == "") || hasNonZeroTokenUsage(detail) {
 		preservedTier := b.detail.ResponseServiceTier
+		preservedProgram := b.detail.ResponseCyberProgram
 		b.detail = detail
 		if b.detail.ResponseServiceTier == "" {
 			b.detail.ResponseServiceTier = preservedTier
 		}
+		if b.detail.ResponseCyberProgram == "" {
+			b.detail.ResponseCyberProgram = preservedProgram
+		}
 	} else {
-		b.detail.ResponseServiceTier = responseServiceTier
+		if responseServiceTier != "" {
+			b.detail.ResponseServiceTier = responseServiceTier
+		}
+		if responseCyberProgram != "" {
+			b.detail.ResponseCyberProgram = responseCyberProgram
+		}
 	}
 	b.ok = true
 }
@@ -1112,7 +1128,8 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 			b.responseModel = model
 		}
 	}
-	if !hasUsageCandidate && !hasTierCandidate {
+	hasProgramCandidate := bytes.Contains(payload, responseAccessProgramsMarker)
+	if !hasUsageCandidate && !hasTierCandidate && !hasProgramCandidate {
 		return
 	}
 	if !gjson.ValidBytes(payload) {
@@ -1131,7 +1148,10 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 	if hasTierCandidate {
 		detail.ResponseServiceTier = extractResponseServiceTierFromValidJSON(payload)
 	}
-	b.Observe(detail, usageOK || detail.ResponseServiceTier != "")
+	if hasProgramCandidate {
+		detail.ResponseCyberProgram = extractResponseCyberProgram(payload)
+	}
+	b.Observe(detail, usageOK || detail.ResponseServiceTier != "" || detail.ResponseCyberProgram != "")
 }
 
 // ObserveClaudeStream records and merges usage from a Claude SSE line.
@@ -1192,16 +1212,21 @@ func (b *StreamUsageBuffer) ResponseModel() string {
 }
 
 func ParseCodexUsage(data []byte) (usage.Detail, bool) {
+	if !gjson.GetBytes(data, "response").IsObject() {
+		return usage.Detail{}, false
+	}
 	responseServiceTier := extractResponseServiceTier(data)
+	responseCyberProgram := extractResponseCyberProgram(data)
 	usageNode := gjson.ParseBytes(data).Get("response.usage")
 	if !hasOpenAIStyleUsageTokenFields(usageNode) {
-		if responseServiceTier == "" {
+		if responseServiceTier == "" && responseCyberProgram == "" {
 			return usage.Detail{}, false
 		}
-		return usage.Detail{ResponseServiceTier: responseServiceTier}, true
+		return usage.Detail{ResponseServiceTier: responseServiceTier, ResponseCyberProgram: responseCyberProgram}, true
 	}
 	detail := parseOpenAIStyleUsageNode(usageNode)
 	detail.ResponseServiceTier = responseServiceTier
+	detail.ResponseCyberProgram = responseCyberProgram
 	return detail, true
 }
 
@@ -1242,12 +1267,14 @@ func ParseCodexImageToolUsage(data []byte) (usage.Detail, bool) {
 
 func ParseOpenAIUsage(data []byte) usage.Detail {
 	responseServiceTier := extractResponseServiceTier(data)
+	responseCyberProgram := extractResponseCyberProgram(data)
 	usageNode := gjson.ParseBytes(data).Get("usage")
 	if !hasOpenAIStyleUsageTokenFields(usageNode) {
-		return usage.Detail{ResponseServiceTier: responseServiceTier}
+		return usage.Detail{ResponseServiceTier: responseServiceTier, ResponseCyberProgram: responseCyberProgram}
 	}
 	detail := parseOpenAIStyleUsageNode(usageNode)
 	detail.ResponseServiceTier = responseServiceTier
+	detail.ResponseCyberProgram = responseCyberProgram
 	return detail
 }
 
@@ -1368,17 +1395,9 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return usage.Detail{}, false
 	}
-	responseServiceTier := extractResponseServiceTier(payload)
+	detail := ParseOpenAIUsage(payload)
 	usageNode := gjson.GetBytes(payload, "usage")
-	if !hasOpenAIStyleUsageTokenFields(usageNode) {
-		if responseServiceTier == "" {
-			return usage.Detail{}, false
-		}
-		return usage.Detail{ResponseServiceTier: responseServiceTier}, true
-	}
-	detail := parseOpenAIStyleUsageNode(usageNode)
-	detail.ResponseServiceTier = responseServiceTier
-	return detail, true
+	return detail, hasOpenAIStyleUsageTokenFields(usageNode) || detail.ResponseServiceTier != "" || detail.ResponseCyberProgram != ""
 }
 
 func ParseClaudeUsage(data []byte) usage.Detail {
