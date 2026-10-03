@@ -147,3 +147,22 @@ func TestV8LTSSharedStructExplicitEmptyWinsLegacy(t *testing.T) {
 		}
 	}
 }
+
+func TestV8EmptyOAuthContainerDoesNotEraseSharedLegacyPolicy(t *testing.T) {
+	raw := []byte("codex: {client-metadata: {mode: strict, workspace-policy: drop}, response-steering: true}\noauth: {providers: {codex: {}}}\n")
+	cfg, err := ParseConfigBytes(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ForAPIKey().Codex.ClientMetadata.Mode != "strict" || !cfg.ForAPIKey().Codex.ResponseSteering {
+		t.Fatal("empty OAuth container erased shared legacy policy")
+	}
+	normalized, _, err := NormalizeConfigLayout(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = ParseConfigBytes(normalized)
+	if err != nil || cfg.ForAPIKey().Codex.ClientMetadata.Mode != "strict" || !cfg.ForAPIKey().Codex.ResponseSteering {
+		t.Fatal("migration erased shared policy", err)
+	}
+}

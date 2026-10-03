@@ -356,9 +356,8 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 	// Explicit empty struct containers reset legacy leaves instead of inheriting them.
 	for _, path := range v8StructPaths {
 		if value := yamlPath(root, path.current); value != nil && (value.Tag == "!!null" || (value.Kind == yaml.MappingNode && len(value.Content) == 0)) {
-			copy := copyYAMLPathValue(root, path.current)
 			deleteYAMLPath(root, path.current)
-			setYAMLPathWithComments(root, path.old, copy)
+			clearV8StructLegacyLeaves(root, path)
 		}
 	}
 	for _, path := range v8Paths {
@@ -378,6 +377,18 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 		}
 	}
 	return root, nil
+}
+
+func clearV8StructLegacyLeaves(root *yaml.Node, container configPath) bool {
+	changed := false
+	for _, leaf := range v8Paths {
+		if strings.HasPrefix(leaf.old, container.old+".") && strings.HasPrefix(leaf.current, container.current+".") {
+			if deleteYAMLPath(root, leaf.old) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 var sharedKeyFields = map[string]bool{
@@ -506,7 +517,7 @@ func NormalizeConfigLayout(data []byte, migrate bool) ([]byte, bool, error) {
 	}
 	for _, path := range v8StructPaths {
 		if value := yamlPath(root, path.current); value != nil && (value.Tag == "!!null" || (value.Kind == yaml.MappingNode && len(value.Content) == 0)) {
-			if deleteYAMLPath(root, path.old) {
+			if clearV8StructLegacyLeaves(root, path) {
 				changed = true
 			}
 		}
