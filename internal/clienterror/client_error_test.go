@@ -221,6 +221,9 @@ func TestIsRequestFault(t *testing.T) {
 		{name: "transport", status: http.StatusBadGateway, err: errors.New("unexpected EOF")},
 		{name: "invalid JSON body", status: http.StatusBadGateway, err: errors.New(`{"error":`)},
 		{name: "nil", status: 0},
+		{name: "bad request without error", status: http.StatusBadRequest, want: true},
+		{name: "forbidden without error", status: http.StatusForbidden},
+		{name: "bad gateway without error", status: http.StatusBadGateway},
 	}
 
 	for _, tc := range tests {

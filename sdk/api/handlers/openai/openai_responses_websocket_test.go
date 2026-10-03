@@ -2879,6 +2879,7 @@ func TestResponsesUpstreamErrorBodyDrivesExposure(t *testing.T) {
 			body:   `{"error":{"message":"websocket: close 1006 (abnormal closure): unexpected EOF","type":"server_error","code":"internal_server_error"}}`,
 		},
 		{name: "no error message", status: 0, body: ""},
+		{name: "forbidden without error message", status: http.StatusForbidden},
 	}
 
 	for _, tc := range tests {

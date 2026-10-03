@@ -1,7 +1,11 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"testing"
 )
 
@@ -109,6 +113,103 @@ func TestModelsCatalogRemoteGuardModelWins(t *testing.T) {
 	}
 	if got.Description != "remote-authoritative" {
 		t.Fatalf("remote guard entry did not win: %q", got.Description)
+	}
+}
+
+func TestModelsCatalogRemoteRefreshMergesGuardModels(t *testing.T) {
+	withCatalogStores(t)
+	priorURLs := modelsURLs
+	refreshCallbackMu.Lock()
+	priorCallback := refreshCallback
+	priorPending := pendingRefreshChanges
+	refreshCallback = nil
+	pendingRefreshChanges = nil
+	refreshCallbackMu.Unlock()
+	t.Cleanup(func() {
+		modelsURLs = priorURLs
+		refreshCallbackMu.Lock()
+		refreshCallback = priorCallback
+		pendingRefreshChanges = priorPending
+		refreshCallbackMu.Unlock()
+	})
+
+	for _, refresh := range []struct {
+		name string
+		run  func(context.Context)
+	}{
+		{"startup", tryStartupRefresh},
+		{"periodic", tryPeriodicRefresh},
+	} {
+		for _, remoteBlue := range []bool{false, true} {
+			name := "missing-guard"
+			if remoteBlue {
+				name = "remote-guard-wins"
+			}
+			t.Run(refresh.name+"/"+name, func(t *testing.T) {
+				if err := loadModelsFromBytes(embeddedModelsJSON, "test-reset"); err != nil {
+					t.Fatal(err)
+				}
+				var candidate staticModelsJSON
+				if err := json.Unmarshal(catalogWithoutBlue(t), &candidate); err != nil {
+					t.Fatal(err)
+				}
+				modelSectionFind(t, candidate.CodexPro, "gpt-6-astra").Description = "remote-updated"
+				if remoteBlue {
+					entry := *modelSectionFind(t, getModels().CodexPro, "gpt-daybreak-blue-latest")
+					entry.Description = "remote-authoritative"
+					candidate.CodexPro = append(candidate.CodexPro, &entry)
+				}
+				data, err := json.Marshal(candidate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write(data)
+				}))
+				defer server.Close()
+				modelsURLs = []string{server.URL}
+				var changedProviders []string
+				var notifiedCatalog *staticModelsJSON
+				SetModelRefreshCallback(func(changed []string) {
+					changedProviders = append(changedProviders, changed...)
+					notifiedCatalog = getModels()
+				})
+
+				refresh.run(context.Background())
+
+				if !slices.Contains(changedProviders, "codex") || notifiedCatalog == nil {
+					t.Fatalf("Codex model refresh was not notified: %v", changedProviders)
+				}
+				for _, tier := range []struct {
+					name   string
+					models []*ModelInfo
+				}{
+					{"codex-team", notifiedCatalog.CodexTeam},
+					{"codex-plus", notifiedCatalog.CodexPlus},
+					{"codex-pro", notifiedCatalog.CodexPro},
+				} {
+					count := 0
+					for _, model := range tier.models {
+						if model != nil && model.ID == "gpt-daybreak-blue-latest" {
+							count++
+							if remoteBlue && tier.name == "codex-pro" && model.Description != "remote-authoritative" {
+								t.Errorf("remote guard entry did not win: %q", model.Description)
+							}
+						}
+					}
+					if count != 1 {
+						t.Errorf("%s guard entries at refresh notification = %d, want 1", tier.name, count)
+					}
+				}
+				if modelSectionHasID(notifiedCatalog.CodexFree, "gpt-daybreak-blue-latest") {
+					t.Error("codex-free unexpectedly received guard model")
+				}
+				if got := modelSectionFind(t, notifiedCatalog.CodexPro, "gpt-6-astra").Description; got != "remote-updated" {
+					t.Errorf("unrelated remote update was lost: %q", got)
+				}
+			})
+		}
 	}
 }
 

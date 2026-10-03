@@ -104,7 +104,7 @@ func IsRequestFault(status int, err error) bool {
 	// credential itself is healthy and another credential may have the program
 	// enabled, so the failure must stay rotatable. The cooldown skip is decided
 	// separately by IsAccessProgramNotEnabledBody callers.
-	if status == http.StatusForbidden && IsAccessProgramNotEnabledBody("", err.Error()) {
+	if status == http.StatusForbidden && err != nil && IsAccessProgramNotEnabledBody("", err.Error()) {
 		return false
 	}
 	if hasRequestFaultBody(err) {

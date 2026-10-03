@@ -184,6 +184,7 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			log.Warnf("models parse failed from %s: %v", url, err)
 			continue
 		}
+		mergeGuardModelsIntoCandidate(&parsed)
 		if err := validateModelsCatalog(&parsed); err != nil {
 			log.Warnf("models validate failed from %s: %v", url, err)
 			continue

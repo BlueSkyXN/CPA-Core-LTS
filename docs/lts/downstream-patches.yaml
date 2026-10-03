@@ -1712,6 +1712,7 @@ patches:
     regression_tests:
       - TestModelsCatalogRefreshMergesGuardModels
       - TestModelsCatalogRemoteGuardModelWins
+      - TestModelsCatalogRemoteRefreshMergesGuardModels
       - TestCodexClientCatalogRefreshMergesGuardModels
       - TestCodexClientCatalogRemoteGuardModelWins
       - TestMergeLTSModelsCatalogFileRestoresMissingGuardTiers
@@ -1735,6 +1736,7 @@ patches:
       - internal/runtime/executor/codex_executor_stream_output_test.go
       - sdk/cliproxy/auth/conductor_cooldown.go
       - sdk/cliproxy/auth/access_program_cooldown_test.go
+      - sdk/cliproxy/daybreak_blue_rotation_test.go
     regression_tests:
       - TestIsRequestFaultStructuredIdentifiers
       - TestIsAccessProgramNotEnabledBody
@@ -1743,6 +1745,7 @@ patches:
       - TestManager_MarkResult_OtherForbiddenStillCooldowns
       - TestShouldSkipCredentialCooldown_AccessProgramNotEnabled
       - TestExecuteStream_AccessProgramNotEnabledRotatesWithoutCooling
+      - TestOAuthDaybreakBlueVirtualAliasRotation
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#5274
     state: required
     retire_when: Upstream classifies access-program error codes with equivalent request-fault, rotation-without-cooldown, and terminal status semantics, and the LTS-specific skip is redundant.
