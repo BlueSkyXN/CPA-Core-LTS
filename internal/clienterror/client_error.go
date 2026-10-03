@@ -17,6 +17,8 @@ const StatusClientClosedRequest = 499
 
 var requestFaultCodes = map[string]struct{}{
 	"cyber_policy":                {},
+	"invalid_access_program":      {},
+	"unsupported_access_program":  {},
 	"context_length_exceeded":     {},
 	"message_too_big":             {},
 	"string_above_max_length":     {},
@@ -97,6 +99,14 @@ func IsRequestFault(status int, err error) bool {
 	if hasModelNotFoundErrorBody(err) {
 		return false
 	}
+	// A specific access-program eligibility failure keeps its distinct handling
+	// even when the upstream pairs it with a generic request-fault type: the
+	// credential itself is healthy and another credential may have the program
+	// enabled, so the failure must stay rotatable. The cooldown skip is decided
+	// separately by IsAccessProgramNotEnabledBody callers.
+	if status == http.StatusForbidden && err != nil && IsAccessProgramNotEnabledBody("", err.Error()) {
+		return false
+	}
 	if hasRequestFaultBody(err) {
 		return true
 	}
@@ -112,6 +122,28 @@ func IsRequestFault(status int, err error) bool {
 	default:
 		return false
 	}
+}
+
+// IsAccessProgramNotEnabledBody matches the structured access_program_not_enabled
+// code the upstream returns when the calling account, workspace, or project has
+// not enabled the requested access program. Unlike the request-fault codes
+// above, the credential is healthy: another credential may have the program
+// enabled, so the failure must stay rotatable without a cooldown. The code and
+// message mirror the JSON body paths used by hasRequestFaultBody.
+func IsAccessProgramNotEnabledBody(code, message string) bool {
+	if strings.EqualFold(strings.TrimSpace(code), "access_program_not_enabled") {
+		return true
+	}
+	body := strings.TrimSpace(message)
+	if body == "" || !json.Valid([]byte(body)) {
+		return false
+	}
+	for _, path := range []string{"error.code", "code", "response.error.code", "body.error.code"} {
+		if strings.EqualFold(strings.TrimSpace(gjson.Get(body, path).String()), "access_program_not_enabled") {
+			return true
+		}
+	}
+	return false
 }
 
 // IsItemNotPersisted matches the upstream 404 raised when a request references a

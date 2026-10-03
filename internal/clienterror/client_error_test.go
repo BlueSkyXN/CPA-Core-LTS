@@ -108,6 +108,8 @@ func (e statusAndUnwrapError) Unwrap() error { return e.cause }
 func TestIsRequestFaultStructuredIdentifiers(t *testing.T) {
 	for _, code := range []string{
 		"cyber_policy",
+		"invalid_access_program",
+		"unsupported_access_program",
 		"context_length_exceeded",
 		"message_too_big",
 		"string_above_max_length",
@@ -219,6 +221,9 @@ func TestIsRequestFault(t *testing.T) {
 		{name: "transport", status: http.StatusBadGateway, err: errors.New("unexpected EOF")},
 		{name: "invalid JSON body", status: http.StatusBadGateway, err: errors.New(`{"error":`)},
 		{name: "nil", status: 0},
+		{name: "bad request without error", status: http.StatusBadRequest, want: true},
+		{name: "forbidden without error", status: http.StatusForbidden},
+		{name: "bad gateway without error", status: http.StatusBadGateway},
 	}
 
 	for _, tc := range tests {
@@ -257,5 +262,47 @@ func TestIsClientCancellation(t *testing.T) {
 				t.Fatalf("IsClientCancellation(%d, %v) = %t, want %t", tc.status, tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsAccessProgramNotEnabledBody(t *testing.T) {
+	code := "access_program_not_enabled"
+	if !IsAccessProgramNotEnabledBody("", `{"error":{"code":"`+code+`","message":"program not enabled"}}`) {
+		t.Fatal("structured error.code body was not matched")
+	}
+	if !IsAccessProgramNotEnabledBody("", `{"code":"`+code+`","message":"program not enabled"}`) {
+		t.Fatal("top-level code body was not matched")
+	}
+	if !IsAccessProgramNotEnabledBody("", `{"response":{"error":{"code":"`+code+`"}}}`) {
+		t.Fatal("response.failed body was not matched")
+	}
+	if !IsAccessProgramNotEnabledBody("ACCESS_PROGRAM_NOT_ENABLED", "") {
+		t.Fatal("explicit code field was not matched")
+	}
+	if IsAccessProgramNotEnabledBody("", `{"error":{"code":"unsupported_access_program"}}`) {
+		t.Fatal("request-fault access program code must not match")
+	}
+	if IsAccessProgramNotEnabledBody("", "program not enabled for this account") {
+		t.Fatal("plain-text message must not match")
+	}
+	if IsAccessProgramNotEnabledBody("", `{"error":{"code":"`+code+`"}} extra`) {
+		t.Fatal("trailing non-JSON payload must not match")
+	}
+	// The failure must remain rotatable, i.e. not collapse into a request fault.
+	if IsRequestFault(http.StatusForbidden, errors.New(`{"error":{"code":"`+code+`"}}`)) {
+		t.Fatal("access_program_not_enabled must not be classified as a request fault")
+	}
+	// The specific code must keep priority over a generic request-fault type the
+	// upstream may pair it with, so the conductor can still rotate credentials.
+	for _, errType := range []string{"invalid_request_error", "permission_error", "bad_request_error"} {
+		body := `{"error":{"type":"` + errType + `","code":"` + code + `","message":"The requested access program is not enabled."}}`
+		if IsRequestFault(http.StatusForbidden, errors.New(body)) {
+			t.Fatalf("403 access_program_not_enabled with type %q must stay rotatable", errType)
+		}
+	}
+	// The rotation exemption is scoped to 403; a non-403 pairing keeps the
+	// generic status classification (400 is a request fault by status).
+	if !IsRequestFault(http.StatusBadRequest, errors.New(`{"error":{"type":"invalid_request_error","code":"`+code+`"}}`)) {
+		t.Fatal("non-403 status pairing must keep the generic status classification")
 	}
 }

@@ -1039,6 +1039,14 @@ nonstream-keepalive-interval: 0
 #   codex:
 #     - name: "gpt-5"
 #       alias: "g5"
+#     # Daybreak Blue model-name recipe (approved Codex OAuth accounts): expose a
+#     # "<base>-blue" virtual model that reaches the upstream as the base model
+#     # with access_programs.cyber=daybreak_blue injected. The plain base model
+#     # keeps its default behavior. Requires the payload rule below.
+#     - name: "gpt-5.6-sol"
+#       alias: "gpt-5.6-sol-blue"
+#       fork: true
+#       display-name: "GPT-5.6 Sol (Daybreak Blue)"
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
@@ -1164,6 +1172,18 @@ nonstream-keepalive-interval: 0
 #       params:
 #         max_tokens: 128000 # override the final Claude Messages output budget after protocol translation
 #   override-raw: # Override raw rules always set parameters using raw JSON (must be valid JSON).
+#     # Daybreak Blue injection for the oauth-model-alias "<base>-blue" recipe above.
+#     # scope: requested restricts the rule to calls that explicitly select the
+#     # virtual model, so the plain base model is never modified. If the upstream
+#     # rejects the program (403 access_program_not_enabled) the proxy rotates to
+#     # another credential without cooling the base model on this one.
+#     - models:
+#         - name: "gpt-5.6-sol-blue"
+#           protocol: codex
+#           scope: requested
+#       params:
+#         access_programs:
+#           cyber: daybreak_blue
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
 #           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity

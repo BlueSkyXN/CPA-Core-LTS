@@ -1,0 +1,299 @@
+package registry
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"testing"
+)
+
+func withCatalogStores(t *testing.T) {
+	t.Helper()
+	priorModels := getModels()
+	priorClient, priorRevision := GetCodexClientModelsSnapshot()
+	t.Cleanup(func() {
+		modelsCatalogStore.mu.Lock()
+		modelsCatalogStore.data = priorModels
+		modelsCatalogStore.mu.Unlock()
+		codexClientCatalogStore.mu.Lock()
+		codexClientCatalogStore.data = priorClient
+		codexClientCatalogStore.revision = priorRevision
+		codexClientCatalogStore.mu.Unlock()
+	})
+}
+
+func catalogWithoutBlue(t *testing.T) []byte {
+	t.Helper()
+	embedded := embeddedModelsSnapshot()
+	for _, tier := range []*[]*ModelInfo{&embedded.CodexFree, &embedded.CodexTeam, &embedded.CodexPlus, &embedded.CodexPro} {
+		kept := (*tier)[:0]
+		for _, model := range *tier {
+			if model != nil && model.ID == "gpt-daybreak-blue-latest" {
+				continue
+			}
+			kept = append(kept, model)
+		}
+		*tier = kept
+	}
+	data, err := json.Marshal(embedded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func clientCatalogWithoutBlue(t *testing.T) []byte {
+	t.Helper()
+	var payload codexClientModelsPayload
+	if err := json.Unmarshal(embeddedCodexClientModelsJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	kept := payload.Models[:0]
+	for _, model := range payload.Models {
+		if slug, _ := model["slug"].(string); slug == "gpt-daybreak-blue-latest" {
+			continue
+		}
+		kept = append(kept, model)
+	}
+	payload.Models = kept
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestModelsCatalogRefreshMergesGuardModels(t *testing.T) {
+	withCatalogStores(t)
+
+	if err := loadModelsFromBytes(catalogWithoutBlue(t), "test-remote-without-blue"); err != nil {
+		t.Fatalf("load remote catalog without blue: %v", err)
+	}
+	for _, tier := range []struct {
+		name   string
+		models []*ModelInfo
+	}{
+		{"codex-team", getModels().CodexTeam},
+		{"codex-plus", getModels().CodexPlus},
+		{"codex-pro", getModels().CodexPro},
+	} {
+		if !modelSectionHasID(tier.models, "gpt-daybreak-blue-latest") {
+			t.Fatalf("%s lost guard model after refresh", tier.name)
+		}
+	}
+	if modelSectionHasID(getModels().CodexFree, "gpt-daybreak-blue-latest") {
+		t.Fatal("codex-free unexpectedly received guard model")
+	}
+}
+
+func TestModelsCatalogRemoteGuardModelWins(t *testing.T) {
+	withCatalogStores(t)
+
+	remote := catalogWithoutBlue(t)
+	var parsed staticModelsJSON
+	if err := json.Unmarshal(remote, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	remoteEntry := *modelSectionFind(t, parsed.CodexPro, "gpt-6-astra")
+	remoteEntry.ID = "gpt-daybreak-blue-latest"
+	remoteEntry.Description = "remote-authoritative"
+	parsed.CodexPro = append(parsed.CodexPro, &remoteEntry)
+	data, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loadModelsFromBytes(data, "test-remote-with-blue"); err != nil {
+		t.Fatalf("load remote catalog with blue: %v", err)
+	}
+	got := modelSectionFind(t, getModels().CodexPro, "gpt-daybreak-blue-latest")
+	if got == nil {
+		t.Fatal("remote blue entry missing")
+	}
+	if got.Description != "remote-authoritative" {
+		t.Fatalf("remote guard entry did not win: %q", got.Description)
+	}
+}
+
+func TestModelsCatalogRemoteRefreshMergesGuardModels(t *testing.T) {
+	withCatalogStores(t)
+	priorURLs := modelsURLs
+	refreshCallbackMu.Lock()
+	priorCallback := refreshCallback
+	priorPending := pendingRefreshChanges
+	refreshCallback = nil
+	pendingRefreshChanges = nil
+	refreshCallbackMu.Unlock()
+	t.Cleanup(func() {
+		modelsURLs = priorURLs
+		refreshCallbackMu.Lock()
+		refreshCallback = priorCallback
+		pendingRefreshChanges = priorPending
+		refreshCallbackMu.Unlock()
+	})
+
+	for _, refresh := range []struct {
+		name string
+		run  func(context.Context)
+	}{
+		{"startup", tryStartupRefresh},
+		{"periodic", tryPeriodicRefresh},
+	} {
+		for _, remoteBlue := range []bool{false, true} {
+			name := "missing-guard"
+			if remoteBlue {
+				name = "remote-guard-wins"
+			}
+			t.Run(refresh.name+"/"+name, func(t *testing.T) {
+				if err := loadModelsFromBytes(embeddedModelsJSON, "test-reset"); err != nil {
+					t.Fatal(err)
+				}
+				var candidate staticModelsJSON
+				if err := json.Unmarshal(catalogWithoutBlue(t), &candidate); err != nil {
+					t.Fatal(err)
+				}
+				modelSectionFind(t, candidate.CodexPro, "gpt-6-astra").Description = "remote-updated"
+				if remoteBlue {
+					entry := *modelSectionFind(t, getModels().CodexPro, "gpt-daybreak-blue-latest")
+					entry.Description = "remote-authoritative"
+					candidate.CodexPro = append(candidate.CodexPro, &entry)
+				}
+				data, err := json.Marshal(candidate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write(data)
+				}))
+				defer server.Close()
+				modelsURLs = []string{server.URL}
+				var changedProviders []string
+				var notifiedCatalog *staticModelsJSON
+				SetModelRefreshCallback(func(changed []string) {
+					changedProviders = append(changedProviders, changed...)
+					notifiedCatalog = getModels()
+				})
+
+				refresh.run(context.Background())
+
+				if !slices.Contains(changedProviders, "codex") || notifiedCatalog == nil {
+					t.Fatalf("Codex model refresh was not notified: %v", changedProviders)
+				}
+				for _, tier := range []struct {
+					name   string
+					models []*ModelInfo
+				}{
+					{"codex-team", notifiedCatalog.CodexTeam},
+					{"codex-plus", notifiedCatalog.CodexPlus},
+					{"codex-pro", notifiedCatalog.CodexPro},
+				} {
+					count := 0
+					for _, model := range tier.models {
+						if model != nil && model.ID == "gpt-daybreak-blue-latest" {
+							count++
+							if remoteBlue && tier.name == "codex-pro" && model.Description != "remote-authoritative" {
+								t.Errorf("remote guard entry did not win: %q", model.Description)
+							}
+						}
+					}
+					if count != 1 {
+						t.Errorf("%s guard entries at refresh notification = %d, want 1", tier.name, count)
+					}
+				}
+				if modelSectionHasID(notifiedCatalog.CodexFree, "gpt-daybreak-blue-latest") {
+					t.Error("codex-free unexpectedly received guard model")
+				}
+				if got := modelSectionFind(t, notifiedCatalog.CodexPro, "gpt-6-astra").Description; got != "remote-updated" {
+					t.Errorf("unrelated remote update was lost: %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestCodexClientCatalogRefreshMergesGuardModels(t *testing.T) {
+	withCatalogStores(t)
+
+	if _, err := loadCodexClientModelsFromBytes(clientCatalogWithoutBlue(t), "test-remote-without-blue"); err != nil {
+		t.Fatalf("load client catalog without blue: %v", err)
+	}
+	var payload codexClientModelsPayload
+	if err := json.Unmarshal(GetCodexClientModelsJSON(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, model := range payload.Models {
+		if slug, _ := model["slug"].(string); slug == "gpt-daybreak-blue-latest" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("client catalog lost guard model after refresh")
+	}
+}
+
+func TestCodexClientCatalogRemoteGuardModelWins(t *testing.T) {
+	withCatalogStores(t)
+
+	var payload codexClientModelsPayload
+	if err := json.Unmarshal(clientCatalogWithoutBlue(t), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var embedded codexClientModelsPayload
+	if err := json.Unmarshal(embeddedCodexClientModelsJSON, &embedded); err != nil {
+		t.Fatal(err)
+	}
+	var remoteEntry map[string]any
+	for _, model := range embedded.Models {
+		if slug, _ := model["slug"].(string); slug == "gpt-daybreak-blue-latest" {
+			clone := make(map[string]any, len(model))
+			for key, value := range model {
+				clone[key] = value
+			}
+			remoteEntry = clone
+			break
+		}
+	}
+	if remoteEntry == nil {
+		t.Fatal("embedded blue entry missing")
+	}
+	remoteEntry["display_name"] = "Daybreak Blue (remote)"
+	remoteEntry["description"] = "remote-authoritative"
+	payload.Models = append(payload.Models, remoteEntry)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCodexClientModelsFromBytes(data, "test-remote-with-blue"); err != nil {
+		t.Fatalf("load client catalog with remote blue: %v", err)
+	}
+	var stored codexClientModelsPayload
+	if err := json.Unmarshal(GetCodexClientModelsJSON(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, model := range stored.Models {
+		if slug, _ := model["slug"].(string); slug == "gpt-daybreak-blue-latest" {
+			count++
+			if name, _ := model["display_name"].(string); name != "Daybreak Blue (remote)" {
+				t.Fatalf("remote entry did not win: %v", model["display_name"])
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("guard slug count = %d, want 1", count)
+	}
+}
+
+func modelSectionFind(t *testing.T, models []*ModelInfo, id string) *ModelInfo {
+	t.Helper()
+	for _, model := range models {
+		if model != nil && model.ID == id {
+			return model
+		}
+	}
+	t.Fatalf("model %q not found", id)
+	return nil
+}
