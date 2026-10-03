@@ -244,6 +244,8 @@ require_grep 'json:"upstream_model,omitempty"' internal/usage internal/redisqueu
 require_grep 'json:"outbound_service_tier,omitempty"' internal/usage internal/redisqueue
 require_grep 'json:"response_service_tier,omitempty"' internal/usage
 require_grep 'json:"effective_service_tier,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"response_cyber_program,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"ResponseCyberProgram,omitempty"' sdk/pluginapi/types.go
 forbid_grep 'BillingBasis|billing_basis' sdk/cliproxy/usage internal/runtime/executor/helps/usage_helpers.go internal/usage/logger_plugin.go internal/redisqueue/plugin.go internal/pluginhost sdk/pluginapi
 require_grep 'json:"EffectiveServiceTier,omitempty"' sdk/pluginapi/types.go
 require_grep 'json:"RequestServiceTier,omitempty"' sdk/pluginapi/types.go

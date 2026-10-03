@@ -63,6 +63,9 @@ type Record struct {
 	EffectiveServiceTier string
 	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
 	ResponseModel string
+	// ResponseCyberProgram is response-authoritative: daybreak_blue, standard,
+	// or unknown for an unrecognized value. Empty means no upstream evidence.
+	ResponseCyberProgram string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -128,15 +131,30 @@ type Failure struct {
 
 // Detail holds the token usage breakdown.
 type Detail struct {
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
-	TotalTokens         int64
-	TokenBreakdown      TokenBreakdown
-	ResponseServiceTier string
+	InputTokens          int64
+	OutputTokens         int64
+	ReasoningTokens      int64
+	CachedTokens         int64
+	CacheReadTokens      int64
+	CacheCreationTokens  int64
+	TotalTokens          int64
+	TokenBreakdown       TokenBreakdown
+	ResponseServiceTier  string
+	ResponseCyberProgram string
+}
+
+// CanonicalResponseCyberProgram never infers an access program from a request or model name.
+func CanonicalResponseCyberProgram(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case "daybreak_blue":
+		return "daybreak_blue"
+	case "standard":
+		return "standard"
+	default:
+		return "unknown"
+	}
 }
 
 // CanonicalEffectiveServiceTier returns the stable usage representation for a

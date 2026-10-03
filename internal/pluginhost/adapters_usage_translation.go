@@ -182,6 +182,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		ResponseServiceTier:  record.ResponseServiceTier,
 		EffectiveServiceTier: record.EffectiveServiceTier,
 		ResponseModel:        record.ResponseModel,
+		ResponseCyberProgram: coreusage.CanonicalResponseCyberProgram(record.ResponseCyberProgram),
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		Stream:               record.Stream,
 		RequestedAt:          record.RequestedAt,

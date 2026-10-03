@@ -72,6 +72,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	outboundServiceTier := strings.TrimSpace(record.OutboundServiceTier)
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	effectiveServiceTier := coreusage.CanonicalEffectiveServiceTier(record.EffectiveServiceTier)
+	responseCyberProgram := record.ResponseCyberProgram
+	if responseCyberProgram == "" {
+		responseCyberProgram = record.Detail.ResponseCyberProgram
+	}
+
 	responseModel := strings.TrimSpace(record.ResponseModel)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
 	sessionID := strings.TrimSpace(record.SessionID)
@@ -160,6 +165,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		OutboundServiceTier:  outboundServiceTier,
 		ResponseServiceTier:  responseServiceTier,
 		EffectiveServiceTier: effectiveServiceTier,
+		ResponseCyberProgram: coreusage.CanonicalResponseCyberProgram(responseCyberProgram),
 		SessionID:            sessionID,
 		ParentSessionID:      parentSessionID,
 		NodeKind:             strings.TrimSpace(clientRequestMetadata.NodeKind),
@@ -192,6 +198,7 @@ type queuedUsageDetail struct {
 	OutboundServiceTier  string                   `json:"outbound_service_tier,omitempty"`
 	ResponseServiceTier  string                   `json:"response_service_tier,omitempty"`
 	EffectiveServiceTier string                   `json:"effective_service_tier,omitempty"`
+	ResponseCyberProgram string                   `json:"response_cyber_program,omitempty"`
 	SessionID            string                   `json:"session_id,omitempty"`
 	ParentSessionID      string                   `json:"parent_session_id,omitempty"`
 	NodeKind             string                   `json:"node_kind,omitempty"`

@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 
 	coreapi "github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -125,6 +128,9 @@ func testOAuthDaybreakBlueVirtualAliasRotation(t *testing.T, stream bool, errorT
 			firstID = auth.ID
 		}
 	}
+	capture := &daybreakUsageCapture{records: make(chan usage.Record, 8)}
+	usage.RegisterNamedPlugin(t.Name(), capture)
+	t.Cleanup(func() { usage.RegisterNamedPlugin(t.Name(), &daybreakUsageCapture{}) })
 	handler := coreapi.NewServer(cfg, manager, nil, "", coreapi.WithRequestLoggerFactory(nil)).Handler()
 	post := func(model string) gjson.Result {
 		t.Helper()
@@ -169,6 +175,19 @@ func testOAuthDaybreakBlueVirtualAliasRotation(t *testing.T, stream bool, errorT
 	if plainResponse.Get("model").String() != baseModel || plainResponse.Get("access_programs").Exists() {
 		t.Fatalf("plain response unexpectedly changed: %s", plainResponse.Raw)
 	}
+	for _, expected := range []struct {
+		failed  bool
+		program string
+	}{{true, ""}, {false, "daybreak_blue"}, {false, ""}} {
+		select {
+		case record := <-capture.records:
+			if record.Failed != expected.failed || record.ResponseCyberProgram != expected.program {
+				t.Fatalf("usage failed/program=%t/%q, want %t/%q", record.Failed, record.ResponseCyberProgram, expected.failed, expected.program)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("usage record was not delivered")
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	want := []attempt{
@@ -183,5 +202,17 @@ func testOAuthDaybreakBlueVirtualAliasRotation(t *testing.T, stream bool, errorT
 		if attempts[i] != want[i] {
 			t.Fatalf("attempt %d = %+v, want %+v", i, attempts[i], want[i])
 		}
+	}
+}
+
+type daybreakUsageCapture struct{ records chan usage.Record }
+
+func (c *daybreakUsageCapture) HandleUsage(_ context.Context, record usage.Record) {
+	if !strings.HasPrefix(record.AuthID, "daybreak-rotation-") {
+		return
+	}
+	select {
+	case c.records <- record:
+	default:
 	}
 }

@@ -164,6 +164,9 @@ func MergeStreamUsageDetail(existing, update usage.Detail) usage.Detail {
 	if merged.ResponseServiceTier == "" {
 		merged.ResponseServiceTier = existing.ResponseServiceTier
 	}
+	if merged.ResponseCyberProgram == "" {
+		merged.ResponseCyberProgram = existing.ResponseCyberProgram
+	}
 
 	inputSource := update
 	if update.InputTokens == 0 && update.CacheReadTokens == 0 && update.CacheCreationTokens == 0 && update.CachedTokens == 0 {
