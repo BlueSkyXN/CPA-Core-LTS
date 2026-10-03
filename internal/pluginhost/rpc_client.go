@@ -21,6 +21,7 @@ type rpcPluginAdapter struct {
 	host          *Host
 	client        pluginClient
 	schemaVersion uint32
+	instance      *hostCallbackInstance
 }
 
 type rpcAuthProvider struct {
@@ -100,7 +101,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		// Missing schema_version is treated as the original contract.
 		schemaVersion = 1
 	}
-	adapter := &rpcPluginAdapter{id: id, host: host, client: client, schemaVersion: schemaVersion}
+	adapter := &rpcPluginAdapter{id: id, host: host, client: client, schemaVersion: schemaVersion, instance: pluginCallbackInstance(client)}
 	plugin := pluginapi.Plugin{
 		Metadata:      resp.Metadata,
 		SchemaVersion: schemaVersion,
@@ -488,7 +489,7 @@ func (a *rpcPluginAdapter) openHostCallbackContext(ctx context.Context) (string,
 	if a == nil || a.host == nil {
 		return "", func() {}
 	}
-	return a.host.openCallbackContextForPlugin(ctx, a.id)
+	return a.host.openCallbackContextForPluginInstance(ctx, a.id, a.instance)
 }
 
 func (a *rpcPluginAdapter) RegisterModels(ctx context.Context, req pluginapi.ModelRegistrationRequest) (pluginapi.ModelRegistrationResponse, error) {

@@ -354,7 +354,7 @@ func applyRequestAfterAuthInterceptorWithManager(m *Manager, ctx context.Context
 		RequestedModel: requestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneRequestHeaders(opts.Headers),
-		Body:           bytes.Clone(req.Payload),
+		Body:           req.Payload,
 		Metadata:       opts.Metadata,
 	})
 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
@@ -621,9 +621,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
-			if !restoreExecutionModel {
-				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
-			}
+			execReq = attachResolvedExecutionModelInfo(routing, execReq, auth, routeModel, upstreamModel, restoreExecutionModel)
 			admittedCtx, errAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 			if errAdmission != nil {
 				m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
@@ -890,9 +888,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
-			if !restoreExecutionModel {
-				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
-			}
+			execReq = attachResolvedExecutionModelInfo(routing, execReq, auth, routeModel, upstreamModel, restoreExecutionModel)
 			admittedCtx, errAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 			if errAdmission != nil {
 				m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
@@ -1285,7 +1281,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execCtx = contextWithAuthGeneration(execCtx, auth)
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
 		if selection != nil && !restoreExecutionModel {
-			execReq = attachResolvedHomeModelInfo(execReq, selection.modelInfo)
+			execReq = attachResolvedHomeModelInfo(execReq, selection.modelInfo, selection.configurationUpdateSupport)
 		}
 		streamExecutionModel := ""
 		if restoreExecutionModel {

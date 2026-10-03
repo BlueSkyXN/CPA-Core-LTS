@@ -130,6 +130,21 @@ func ExtractExplicitSummaryConfig(body []byte, format string) SummaryConfig {
 	return config
 }
 
+// ExtractTranslatedSummaryConfig preserves the source protocol's visibility
+// contract, including OpenAI Chat's effort-to-summary compatibility behavior.
+func ExtractTranslatedSummaryConfig(body []byte, sourceFormat, targetFormat string) SummaryConfig {
+	return ExtractSummaryConfig(body, sourceFormat)
+}
+
+// ApplyTranslatedSummaryToClaude copies source visibility intent onto a Claude body.
+func ApplyTranslatedSummaryToClaude(out, source []byte, sourceFormat, model string) []byte {
+	config := ExtractTranslatedSummaryConfig(source, sourceFormat, "claude")
+	if config.Mode == SummaryUnspecified {
+		return out
+	}
+	return ApplySummaryConfigForModel(out, "claude", model, config)
+}
+
 // ApplySummaryConfig writes canonical summary intent in the target protocol.
 func ApplySummaryConfig(body []byte, format string, config SummaryConfig) []byte {
 	return ApplySummaryConfigForModel(body, format, "", config)

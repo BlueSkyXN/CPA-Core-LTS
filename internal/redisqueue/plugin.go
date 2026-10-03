@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -54,6 +55,14 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	apiKey := strings.TrimSpace(record.APIKey)
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+	traceID := strings.TrimSpace(record.TraceID)
+	if traceID == "" {
+		traceID = requestID
+	}
+	executionID := strings.TrimSpace(record.RequestID)
+	if executionID == "" {
+		executionID = uuid.NewString()
+	}
 	reasoningEffort := strings.TrimSpace(record.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
@@ -173,6 +182,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		IsFork:               clientRequestMetadata.IsFork,
 		IsCompaction:         clientRequestMetadata.IsCompaction,
 		ResponseModel:        responseModel,
+		ExecutionID:          executionID,
+		TraceID:              traceID,
 	})
 	if err != nil {
 		return
@@ -206,6 +217,8 @@ type queuedUsageDetail struct {
 	IsFork               bool                     `json:"is_fork,omitempty"`
 	IsCompaction         bool                     `json:"is_compaction,omitempty"`
 	ResponseModel        string                   `json:"response_model,omitempty"`
+	ExecutionID          string                   `json:"execution_id,omitempty"`
+	TraceID              string                   `json:"trace_id,omitempty"`
 }
 
 type requestDetail struct {

@@ -105,9 +105,11 @@ func (h *Host) InterceptRequestAfterAuthExcept(ctx context.Context, req pluginap
 func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest, method string, skipPluginID string) pluginapi.RequestInterceptResponse {
 	current := pluginapi.RequestInterceptResponse{
 		Headers: cloneHeader(req.Headers),
-		Body:    bytes.Clone(req.Body),
 	}
 	skipPluginID = strings.TrimSpace(skipPluginID)
+	currentBase := req.Body
+	bodyModified := false
+
 	for _, record := range h.activeRecords() {
 		interceptor := record.plugin.Capabilities.RequestInterceptor
 		if h.isPluginFused(record.id) || interceptor == nil || record.id == skipPluginID {
@@ -119,12 +121,17 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 		}
 		nextReq := req
 		nextReq.Headers = cloneHeader(current.Headers)
-		nextReq.Body = bytes.Clone(current.Body)
+		if len(currentBase) > 0 {
+			nextReq.Body = bytes.Clone(currentBase)
+		} else {
+			nextReq.Body = nil
+		}
 		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
 		if resp, ok := h.callRequestInterceptor(ctx, record, method, call, nextReq); ok {
 			current.Headers = mergeHeaders(current.Headers, resp.Headers, resp.ClearHeaders)
 			if len(resp.Body) > 0 {
-				current.Body = bytes.Clone(resp.Body)
+				currentBase = bytes.Clone(resp.Body)
+				bodyModified = true
 			}
 			if resp.Terminate {
 				current.Terminate = true
@@ -134,6 +141,9 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 				break
 			}
 		}
+	}
+	if bodyModified {
+		current.Body = currentBase
 	}
 	return current
 }

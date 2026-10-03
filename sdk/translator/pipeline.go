@@ -15,6 +15,8 @@ type RequestEnvelope struct {
 	// ModelInfo is authoritative for the selected route, including empty capabilities.
 	// Nil preserves metadata-free translation; transforms must not mutate this definition.
 	ModelInfo *registry.ModelInfo
+	// ConfigurationUpdatesChanged reports that a plugin normalizer modified Responses updates.
+	ConfigurationUpdatesChanged bool
 }
 
 // ResponseEnvelope represents a response in the translation pipeline.

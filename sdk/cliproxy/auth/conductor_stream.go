@@ -240,9 +240,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			m.abandonCodexRateLimitContinuityAttempt(ctx)
 			return nil, codexRateLimitObservationPendingError{confirmed: confirmed}
 		}
-		if executionModel == "" {
-			execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, execModel)
-		}
+		execReq = attachResolvedExecutionModelInfo(routing, execReq, auth, routeModel, execModel, executionModel != "")
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}

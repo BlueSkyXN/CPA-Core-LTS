@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -27,6 +28,8 @@ import (
 )
 
 type UsageReporter struct {
+	requestID             string
+	traceID               string
 	sessionID             string
 	parentSessionID       string
 	provider              string
@@ -115,7 +118,13 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 			}
 		}
 	}
+	traceID := usage.TraceIDFromContext(ctx)
+	if traceID == "" {
+		traceID = internallogging.GetRequestID(ctx)
+	}
 	reporter := &UsageReporter{
+		requestID:       uuid.NewString(),
+		traceID:         traceID,
 		provider:        provider,
 		baseURL:         usage.SafeBaseURL(baseURL),
 		model:           model,
@@ -711,6 +720,7 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	// response.model is not evidence for the additional model, so do not copy it
 	// into a field consumers compare with this record's Model.
 	record.UpstreamModel = ""
+	record.RequestID = uuid.NewString()
 	return record, true
 }
 
@@ -815,6 +825,22 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 	usage.PublishRecord(ctx, record)
 }
 
+// RequestID returns the execution instance request ID for this reporter.
+func (r *UsageReporter) RequestID() string {
+	if r == nil {
+		return ""
+	}
+	return r.requestID
+}
+
+// TraceID returns the parent inbound request ID for this reporter.
+func (r *UsageReporter) TraceID() string {
+	if r == nil {
+		return ""
+	}
+	return r.traceID
+}
+
 func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
 	var fail usage.Failure
 	if len(failures) > 0 {
@@ -844,6 +870,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	}
 	detail.ResponseCyberProgram = usage.CanonicalResponseCyberProgram(detail.ResponseCyberProgram)
 	return usage.Record{
+		RequestID:           r.requestID,
+		TraceID:             r.traceID,
 		Provider:            r.provider,
 		BaseURL:             r.baseURL,
 		ExecutorType:        r.executorType,
