@@ -31,11 +31,11 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	reloads := make(chan *config.Config, 8)
 	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) { reloads <- cfg })
 	router := gin.New()
-	router.GET("/v8/management/config", h.ConfigV8)
-	router.PATCH("/v8/management/config", h.ConfigV8)
-	router.PUT("/v8/management/config.yaml", h.ConfigV8)
-	router.PUT("/v8/management/config/*path", h.ConfigV8)
-	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+	router.GET("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.PATCH("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.PUT("/v8/management/config.yaml", h.configV8WithCurrentRevisionForTest(t))
+	router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.DELETE("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	router.PUT("/v0/management/request-retry", h.PutRequestRetry)
 	request := func(method, url, body string, status int) {
 		t.Helper()
@@ -126,10 +126,10 @@ func TestConfigV8CommentsUnknownLegacySectionsOnWrite(t *testing.T) {
 	cfg.Home = config.HomeConfig{Enabled: true, Host: "runtime.example"}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	router := gin.New()
-	router.GET("/v8/management/config", h.ConfigV8)
-	router.PATCH("/v8/management/config", h.ConfigV8)
-	router.PUT("/v8/management/config/*path", h.ConfigV8)
-	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+	router.GET("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.PATCH("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.DELETE("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	request := func(method, url, body string, status int) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -195,10 +195,10 @@ func TestConfigV8CommentsUnknownNestedFieldsOnWrite(t *testing.T) {
 	}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	router := gin.New()
-	router.GET("/v8/management/config", h.ConfigV8)
-	router.PATCH("/v8/management/config", h.ConfigV8)
-	router.PUT("/v8/management/config/*path", h.ConfigV8)
-	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+	router.GET("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.PATCH("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.DELETE("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	request := func(method, url, body string, status int) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -259,7 +259,7 @@ func TestV8NestedWriteMigratesOnlyOnSuccess(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: path}
 			router := gin.New()
-			router.PUT("/v8/management/config/*path", h.ConfigV8)
+			router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/v8/management/config/routing/retry/request-retry", strings.NewReader(tc.body)))
 			if recorder.Code != tc.status {
@@ -280,9 +280,9 @@ func TestV8MigrationReloadSnapshotMatchesDisk(t *testing.T) {
 		migrated                bool
 	}{
 		{"legacy", "/v0/management/debug", "/v0/management/debug", `{"value":true}`, func(h *Handler) gin.HandlerFunc { return h.PutDebug }, false},
-		{"v8 logs", "/v8/management/config/*path", "/v8/management/config/observability/logs/debug", `true`, func(h *Handler) gin.HandlerFunc { return h.ConfigV8 }, true},
-		{"v8 plugin", "/v8/management/config/*path", "/v8/management/config/plugins/configs/test-plugin/enabled", `false`, func(h *Handler) gin.HandlerFunc { return h.ConfigV8 }, true},
-		{"v8 config", "/v8/management/config", "/v8/management/config", `{"observability":{"logs":{"debug":true}}}`, func(h *Handler) gin.HandlerFunc { return h.ConfigV8 }, true},
+		{"v8 logs", "/v8/management/config/*path", "/v8/management/config/observability/logs/debug", `true`, func(h *Handler) gin.HandlerFunc { return h.configV8WithCurrentRevisionForTest(t) }, true},
+		{"v8 plugin", "/v8/management/config/*path", "/v8/management/config/plugins/configs/test-plugin/enabled", `false`, func(h *Handler) gin.HandlerFunc { return h.configV8WithCurrentRevisionForTest(t) }, true},
+		{"v8 config", "/v8/management/config", "/v8/management/config", `{"observability":{"logs":{"debug":true}}}`, func(h *Handler) gin.HandlerFunc { return h.configV8WithCurrentRevisionForTest(t) }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
@@ -406,8 +406,8 @@ func TestConfigV8DeleteLastField(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: file}
 			router := gin.New()
-			router.DELETE("/v8/management/config/*path", h.ConfigV8)
-			router.GET("/v8/management/config/*path", h.ConfigV8)
+			router.DELETE("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+			router.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			url := "/v8/management/config/" + tc.path
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, url, nil))
@@ -466,7 +466,7 @@ func TestConfigV8ReplaceEmptyGroup(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: path}
 			r := gin.New()
-			r.PUT("/v8/management/config/*path", h.ConfigV8)
+			r.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/v8/management/config/"+tc.path, strings.NewReader(`{}`)))
 			if w.Code != http.StatusOK {
@@ -506,8 +506,8 @@ func TestConfigV8EmptyExcludedModelsSurvivesSave(t *testing.T) {
 			router := gin.New()
 			router.PUT("/v0/management/debug", h.PutDebug)
 			router.PUT("/v0/management/oauth-excluded-models", h.PutOAuthExcludedModels)
-			router.PUT("/v8/management/config/*path", h.ConfigV8)
-			router.GET("/v8/management/config/*path", h.ConfigV8)
+			router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+			router.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodPut, tc.path, strings.NewReader(tc.body)))
 			if response.Code != http.StatusOK {
@@ -568,11 +568,11 @@ func TestConfigV8JSONTURNSecrets(t *testing.T) {
 	}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	r := gin.New()
-	r.GET("/v8/management/config", h.ConfigV8)
-	r.PUT("/v8/management/config", h.ConfigV8)
-	r.GET("/v8/management/config.yaml", h.ConfigV8)
-	r.GET("/v8/management/config/*path", h.ConfigV8)
-	r.PUT("/v8/management/config/*path", h.ConfigV8)
+	r.GET("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	r.PUT("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	r.GET("/v8/management/config.yaml", h.configV8WithCurrentRevisionForTest(t))
+	r.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	r.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	for _, url := range []string{"/v8/management/config", "/v8/management/config/oauth/providers/codex/live-media-relay/ice-servers"} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
@@ -654,8 +654,8 @@ plugins:
 	reloads := make(chan *config.Config, 8)
 	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) { reloads <- cfg })
 	router := gin.New()
-	router.DELETE("/v8/management/config/*path", h.ConfigV8)
-	router.GET("/v8/management/config/*path", h.ConfigV8)
+	router.DELETE("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	request := func(method, path string, status int, body string) {
 		t.Helper()
 		w := httptest.NewRecorder()

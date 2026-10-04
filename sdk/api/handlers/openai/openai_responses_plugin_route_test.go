@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -85,13 +87,15 @@ func TestResponsesStreamTrueReachesPluginExecutorStream(t *testing.T) {
 }
 
 func TestResponsesWithoutStreamParsesPluginUsage(t *testing.T) {
-	plugin := &responsesUsageCapture{records: make(chan usage.Record, 4)}
+	traceID := uuid.NewString()
+	plugin := &responsesUsageCapture{traceID: traceID, records: make(chan usage.Record, 4)}
 	usage.RegisterNamedPlugin("test-responses-plugin-route-usage", plugin)
 	t.Cleanup(func() {
 		usage.RegisterNamedPlugin("test-responses-plugin-route-usage", responsesUsageNop{})
 	})
 
 	handler, host, ctx := newResponsesPluginRouteContext(t, `{"model":"commandcode/deepseek/deepseek-v4.1-flash","input":[{"role":"user","type":"message","content":"Write me a poem"}]}`)
+	ctx.Request = ctx.Request.WithContext(logging.WithRequestID(ctx.Request.Context(), traceID))
 	host.execPayload = []byte(`{"id":"resp_1","object":"response","service_tier":"default","usage":{"input_tokens":34,"output_tokens":499,"total_tokens":533}}`)
 	handler.Responses(ctx)
 	if host.executeCalls != 1 || host.streamCalls != 0 {
@@ -118,11 +122,12 @@ func TestResponsesWithoutStreamParsesPluginUsage(t *testing.T) {
 }
 
 type responsesUsageCapture struct {
+	traceID string
 	records chan usage.Record
 }
 
 func (p *responsesUsageCapture) HandleUsage(_ context.Context, record usage.Record) {
-	if record.Provider != "commandcode" {
+	if record.Provider != "commandcode" || record.TraceID != p.traceID {
 		return
 	}
 	select {
@@ -134,3 +139,51 @@ func (p *responsesUsageCapture) HandleUsage(_ context.Context, record usage.Reco
 type responsesUsageNop struct{}
 
 func (responsesUsageNop) HandleUsage(context.Context, usage.Record) {}
+
+type responsesUsageQueueBarrier struct {
+	requestID string
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (b *responsesUsageQueueBarrier) HandleUsage(_ context.Context, record usage.Record) {
+	if record.RequestID == b.requestID {
+		close(b.entered)
+		<-b.release
+	}
+}
+
+func TestResponsesUsageCaptureIgnoresQueuedPreviousRequest(t *testing.T) {
+	barrier := &responsesUsageQueueBarrier{requestID: uuid.NewString(), entered: make(chan struct{}), release: make(chan struct{})}
+	usage.RegisterNamedPlugin(t.Name(), barrier)
+	defer usage.RegisterNamedPlugin(t.Name(), responsesUsageNop{})
+	defer close(barrier.release)
+	usage.PublishRecord(context.Background(), usage.Record{RequestID: barrier.requestID})
+	select {
+	case <-barrier.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out installing dispatch barrier")
+	}
+	oldHandler, _, oldCtx := newResponsesPluginRouteContext(t, `{"model":"commandcode/deepseek/deepseek-v4.1-flash","input":"previous","stream":true}`)
+	oldCtx.Request = oldCtx.Request.WithContext(logging.WithRequestID(oldCtx.Request.Context(), uuid.NewString()))
+	oldHandler.Responses(oldCtx)
+
+	traceID := uuid.NewString()
+	capture := &responsesUsageCapture{traceID: traceID, records: make(chan usage.Record, 4)}
+	usage.RegisterNamedPlugin(t.Name()+"-capture", capture)
+	t.Cleanup(func() { usage.RegisterNamedPlugin(t.Name()+"-capture", responsesUsageNop{}) })
+	handler, host, ctx := newResponsesPluginRouteContext(t, `{"model":"commandcode/deepseek/deepseek-v4.1-flash","input":"current"}`)
+	ctx.Request = ctx.Request.WithContext(logging.WithRequestID(ctx.Request.Context(), traceID))
+	host.execPayload = []byte(`{"id":"current","object":"response","usage":{"input_tokens":34,"output_tokens":499,"total_tokens":533}}`)
+	handler.Responses(ctx)
+	// Release the queued stream record only after the next test's capture exists.
+	barrier.release <- struct{}{}
+	select {
+	case record := <-capture.records:
+		if record.Stream || record.Detail.TotalTokens != 533 || record.TraceID != traceID {
+			t.Fatal("capture accepted usage from the preceding request")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for this request's usage")
+	}
+}

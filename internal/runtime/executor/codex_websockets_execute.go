@@ -411,14 +411,20 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				identityState.affinity.complete(payload)
 				cacheCodexReasoningReplayFromCompleted(replayScope, payload)
 			}
-			if detail, ok := helps.ParseCodexUsage(payload); ok {
+			detail, hasUsage := helps.ParseCodexUsage(payload)
+			var param any
+			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
+			out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, clientBody, clientPayload, &param)
+			if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
+				err = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+				reporter.PublishFailureWithDetail(ctx, detail, err)
+				return cliproxyexecutor.Response{}, err
+			}
+			if hasUsage {
 				reporter.Publish(ctx, detail)
 			} else {
 				reporter.EnsurePublished(ctx)
 			}
-			var param any
-			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
-			out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, clientBody, clientPayload, &param)
 			if responseFormat == sdktranslator.FormatOpenAIResponse {
 				out = helps.EnsureResponsesUsageDetails(out)
 			}

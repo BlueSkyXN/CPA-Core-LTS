@@ -80,7 +80,7 @@ plugins:
 	}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	router := gin.New()
-	router.PATCH("/v8/config", h.ConfigV8)
+	router.PATCH("/v8/config", h.configV8WithCurrentRevisionForTest(t))
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v8/config", strings.NewReader(`{"server":{"port":8318}}`)))
 	if w.Code != 200 {
@@ -113,9 +113,9 @@ func TestV8OpaquePluginYAMLRejectsLossyJSONView(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: path}
 			router := gin.New()
-			router.GET("/v8/config", h.ConfigV8)
-			router.GET("/v8/config.yaml", h.ConfigV8)
-			router.PATCH("/v8/config", h.ConfigV8)
+			router.GET("/v8/config", h.configV8WithCurrentRevisionForTest(t))
+			router.GET("/v8/config.yaml", h.configV8WithCurrentRevisionForTest(t))
+			router.PATCH("/v8/config", h.configV8WithCurrentRevisionForTest(t))
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v8/config", nil))
 			if w.Code != http.StatusUnprocessableEntity {

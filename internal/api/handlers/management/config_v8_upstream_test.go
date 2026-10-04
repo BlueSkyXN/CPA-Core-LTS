@@ -25,7 +25,7 @@ func TestConfigV8SharedUpstreamRoundTrip(t *testing.T) {
 	h := &Handler{cfg: cfg, configFilePath: file}
 	router := gin.New()
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete} {
-		router.Handle(method, "/v8/management/config/*path", h.ConfigV8)
+		router.Handle(method, "/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	}
 	request := func(method, path, body string, want int) string {
 		t.Helper()

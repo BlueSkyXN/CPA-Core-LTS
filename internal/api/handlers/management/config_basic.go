@@ -171,6 +171,9 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
 		return
 	}
+	if !checkConfigRevision(c, current, false) {
+		return
+	}
 	var currentDoc, incomingDoc yaml.Node
 	if yaml.Unmarshal(current, &currentDoc) != nil || yaml.Unmarshal(body, &incomingDoc) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml"})
@@ -204,12 +207,15 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	h.cfg = newCfg
 	snapshot := h.reloadSnapshotConfigLocked()
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
+	c.Header("ETag", "")
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
 // It preserves comments and original formatting/styles.
 func (h *Handler) GetConfigYAML(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	data, err := os.ReadFile(h.configFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -219,6 +225,7 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
+	c.Header("ETag", configRevision(data))
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Content-Type-Options", "nosniff")

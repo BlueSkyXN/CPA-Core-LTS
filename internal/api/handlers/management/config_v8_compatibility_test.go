@@ -47,7 +47,7 @@ func TestConfigV8HistoricalFieldPaths(t *testing.T) {
 			h := &Handler{cfg: cfg, configFilePath: file}
 			router := gin.New()
 			for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete} {
-				router.Handle(method, "/v8/management/config/*path", h.ConfigV8)
+				router.Handle(method, "/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			}
 			request := func(method, path, body string, want int) string {
 				t.Helper()
@@ -106,8 +106,8 @@ func TestConfigV8HistoricalProviderSubtrees(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: file}
 			router := gin.New()
-			router.GET("/v8/management/config/*path", h.ConfigV8)
-			router.Handle(tc.method, "/v8/management/config/*path", h.ConfigV8)
+			router.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+			router.Handle(tc.method, "/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			view := httptest.NewRecorder()
 			router.ServeHTTP(view, httptest.NewRequest(http.MethodGet, "/v8/management/config/oauth/providers/codex", nil))
 			var provider map[string]any
@@ -165,7 +165,7 @@ func TestConfigV8HistoricalConfigurationBodies(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: file}
 			router := gin.New()
-			router.Handle(tc.method, "/v8/management/"+tc.route, h.ConfigV8)
+			router.Handle(tc.method, "/v8/management/"+tc.route, h.configV8WithCurrentRevisionForTest(t))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(tc.method, "/v8/management/"+tc.route, strings.NewReader(tc.body)))
 			if response.Code != http.StatusOK {
@@ -282,7 +282,7 @@ func TestConfigV8HistoricalNullContainerPatch(t *testing.T) {
 	}
 	h := &Handler{cfg: cfg, configFilePath: file}
 	router := gin.New()
-	router.PATCH("/v8/management/config", h.ConfigV8)
+	router.PATCH("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
 	response := httptest.NewRecorder()
 	body := `{"oauth":{"providers":{"claude":{"header-defaults":null}}}}`
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/v8/management/config", strings.NewReader(body)))
@@ -348,7 +348,7 @@ func TestConfigV8FieldUpdatesKeepComments(t *testing.T) {
 				}
 				h := &Handler{cfg: cfg, configFilePath: file}
 				router := gin.New()
-				router.Handle(method, "/v8/management/config/*path", h.ConfigV8)
+				router.Handle(method, "/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 				for _, body := range []string{"false", "null", "true"} {
 					response := httptest.NewRecorder()
 					router.ServeHTTP(response, httptest.NewRequest(method, "/v8/management/config/"+path, strings.NewReader(body)))

@@ -106,7 +106,7 @@ func TestV8FlowConfigSaveRejectsInapplicableHistoryBeforeWriting(t *testing.T) {
 	}
 	h := NewHandler(cfg, path, manager)
 	router := gin.New()
-	router.PATCH("/v8/config", h.ConfigV8)
+	router.PATCH("/v8/config", h.configV8WithCurrentRevisionForTest(t))
 	w := httptest.NewRecorder()
 	body := `{"flow-control":{"version":3,"enabled":true,"rules":[{"id":"execution","stage":"attempt","scope":"global","model":"other-test","max-concurrent":2,"windows":[{"requests":20,"period-ms":60000}]}]}}`
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v8/config", strings.NewReader(body)))

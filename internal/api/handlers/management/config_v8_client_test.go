@@ -31,9 +31,9 @@ func TestConfigV8ClientMultiAgentMigration(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: path}
 			router := gin.New()
-			router.GET("/v8/management/config/*path", h.ConfigV8)
-			router.PUT("/v8/management/config/*path", h.ConfigV8)
-			router.DELETE("/v8/management/config/*path", h.ConfigV8)
+			router.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+			router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+			router.DELETE("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 			request := func(method, url, body string, wantStatus int) string {
 				t.Helper()
 				recorder := httptest.NewRecorder()

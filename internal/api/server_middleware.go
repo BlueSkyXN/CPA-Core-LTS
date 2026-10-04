@@ -24,6 +24,7 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-HOME-BUILD-DATE",
 	"X-SERVER-VERSION",
 	"X-SERVER-BUILD-DATE",
+	"ETag",
 	"Location",
 	"Retry-After",
 	"X-Request-Id",

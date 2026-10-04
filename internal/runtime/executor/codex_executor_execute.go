@@ -241,9 +241,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 				err = errRetry
 				return resp, err
 			}
-			reporter.Publish(ctx, detail)
 		}
-		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 
 		if eventType == "response.completed" {
 			identityState.affinity.complete(completedData)
@@ -255,8 +253,15 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
 		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
 		if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
-			return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+			err = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+			reporter.PublishFailureWithDetail(ctx, completedUsage, err)
+			publishCodexImageToolUsage(ctx, reporter, body, eventData)
+			return cliproxyexecutor.Response{}, err
 		}
+		if completedUsageOK {
+			reporter.Publish(ctx, completedUsage)
+		}
+		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 		if responseFormat == sdktranslator.FormatOpenAIResponse {
 			out = helps.EnsureResponsesUsageDetails(out)
 		}
@@ -388,7 +393,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	clientData := applyCodexIdentityExposeResponsePayload(upstreamData, identityState)
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientData, &param)
 	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		err = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		reporter.PublishFailureWithDetail(ctx, helps.ParseOpenAIUsage(upstreamData), err)
+		return cliproxyexecutor.Response{}, err
 	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(upstreamData))
 	if responseFormat == sdktranslator.FormatOpenAIResponse {

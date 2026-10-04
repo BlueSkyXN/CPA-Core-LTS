@@ -90,11 +90,11 @@ api-keys:
 	h := &Handler{cfg: cfg, configFilePath: path, authManager: manager}
 
 	router := gin.New()
-	router.GET("/v8/management/config", h.ConfigV8)
-	router.GET("/v8/management/config.yaml", h.ConfigV8)
-	router.GET("/v8/management/config/*path", h.ConfigV8)
-	router.PUT("/v8/management/config/*path", h.ConfigV8)
-	router.PATCH("/v8/management/config", h.ConfigV8)
+	router.GET("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
+	router.GET("/v8/management/config.yaml", h.configV8WithCurrentRevisionForTest(t))
+	router.GET("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.PATCH("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
 
 	// 1. GET /v8/management/config/api-keys/codex
 	rec := httptest.NewRecorder()
@@ -234,7 +234,7 @@ api-keys:
 	// 7. Fallback when authManager is nil
 	hNoManager := &Handler{cfg: cfg, configFilePath: path, authManager: nil}
 	routerNoManager := gin.New()
-	routerNoManager.GET("/v8/management/config/*path", hNoManager.ConfigV8)
+	routerNoManager.GET("/v8/management/config/*path", hNoManager.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/codex", nil)
@@ -284,7 +284,7 @@ api-keys:
 
 	hMeta := &Handler{cfg: metaCfg, configFilePath: metaPath, authManager: metaManager}
 	routerMeta := gin.New()
-	routerMeta.GET("/v8/management/config/*path", hMeta.ConfigV8)
+	routerMeta.GET("/v8/management/config/*path", hMeta.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/meta", nil)
@@ -341,7 +341,7 @@ api-keys:
 
 	hProxy := &Handler{cfg: proxyCfg, configFilePath: proxyPath, authManager: proxyManager}
 	routerProxy := gin.New()
-	routerProxy.GET("/v8/management/config/*path", hProxy.ConfigV8)
+	routerProxy.GET("/v8/management/config/*path", hProxy.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/vertex", nil)
@@ -391,8 +391,8 @@ api-keys:
 	}
 	hPlugin := &Handler{cfg: pluginCfg, configFilePath: pluginPath}
 	routerPlugin := gin.New()
-	routerPlugin.GET("/v8/management/config/*path", hPlugin.ConfigV8)
-	routerPlugin.PUT("/v8/management/config/*path", hPlugin.ConfigV8)
+	routerPlugin.GET("/v8/management/config/*path", hPlugin.configV8WithCurrentRevisionForTest(t))
+	routerPlugin.PUT("/v8/management/config/*path", hPlugin.configV8WithCurrentRevisionForTest(t))
 
 	// Fetch codex keys with auth_index injected
 	rec = httptest.NewRecorder()
@@ -468,7 +468,7 @@ api-keys:
 
 	hDup := &Handler{cfg: dupVertexCfg, configFilePath: dupVertexPath, authManager: dupManager}
 	routerDup := gin.New()
-	routerDup.GET("/v8/management/config/*path", hDup.ConfigV8)
+	routerDup.GET("/v8/management/config/*path", hDup.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/vertex", nil)
@@ -526,7 +526,7 @@ api-keys:
 
 	hPrefix := &Handler{cfg: prefixCfg, configFilePath: prefixPath, authManager: prefixManager}
 	routerPrefix := gin.New()
-	routerPrefix.GET("/v8/management/config/*path", hPrefix.ConfigV8)
+	routerPrefix.GET("/v8/management/config/*path", hPrefix.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/codex", nil)
@@ -591,7 +591,7 @@ api-keys:
 
 	hGemini := &Handler{cfg: geminiCfg, configFilePath: geminiPath, authManager: geminiManager}
 	routerGemini := gin.New()
-	routerGemini.GET("/v8/management/config/*path", hGemini.ConfigV8)
+	routerGemini.GET("/v8/management/config/*path", hGemini.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/gemini", nil)
@@ -666,7 +666,7 @@ api-keys:
 
 	hMixed := &Handler{cfg: compatMixedCfg, configFilePath: compatMixedPath, authManager: mixedManager}
 	routerMixed := gin.New()
-	routerMixed.GET("/v8/management/config/*path", hMixed.ConfigV8)
+	routerMixed.GET("/v8/management/config/*path", hMixed.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/openai-compatibility", nil)
@@ -725,7 +725,7 @@ api-keys:
 
 	hEmpty := &Handler{cfg: emptyKeyCfg, configFilePath: emptyKeyPath}
 	routerEmpty := gin.New()
-	routerEmpty.GET("/v8/management/config/*path", hEmpty.ConfigV8)
+	routerEmpty.GET("/v8/management/config/*path", hEmpty.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/gemini", nil)
@@ -778,7 +778,7 @@ api-keys:
 
 	hMulti := &Handler{cfg: multiEmptyCfg, configFilePath: multiEmptyPath}
 	routerMulti := gin.New()
-	routerMulti.GET("/v8/management/config/*path", hMulti.ConfigV8)
+	routerMulti.GET("/v8/management/config/*path", hMulti.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/openai-compatibility", nil)
@@ -847,7 +847,7 @@ api-keys:
 
 	hGProxy := &Handler{cfg: geminiProxyCfg, configFilePath: geminiProxyPath, authManager: gProxyManager}
 	routerGProxy := gin.New()
-	routerGProxy.GET("/v8/management/config/*path", hGProxy.ConfigV8)
+	routerGProxy.GET("/v8/management/config/*path", hGProxy.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/gemini", nil)
@@ -919,7 +919,7 @@ api-keys:
 
 	hDupGroup := &Handler{cfg: compatDupGroupCfg, configFilePath: compatDupGroupPath, authManager: dupGroupManager}
 	routerDupGroup := gin.New()
-	routerDupGroup.GET("/v8/management/config/*path", hDupGroup.ConfigV8)
+	routerDupGroup.GET("/v8/management/config/*path", hDupGroup.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/openai-compatibility", nil)
@@ -988,7 +988,7 @@ api-keys:
 
 	hGPrefix := &Handler{cfg: geminiPrefixCfg, configFilePath: geminiPrefixPath, authManager: gPrefixManager}
 	routerGPrefix := gin.New()
-	routerGPrefix.GET("/v8/management/config/*path", hGPrefix.ConfigV8)
+	routerGPrefix.GET("/v8/management/config/*path", hGPrefix.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/gemini", nil)
@@ -1055,7 +1055,7 @@ api-keys:
 
 	hUnnamed := &Handler{cfg: unnamedCfg, configFilePath: unnamedPath, authManager: unnamedManager}
 	routerUnnamed := gin.New()
-	routerUnnamed.GET("/v8/management/config/*path", hUnnamed.ConfigV8)
+	routerUnnamed.GET("/v8/management/config/*path", hUnnamed.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/openai-compatibility", nil)
@@ -1120,7 +1120,7 @@ api-keys:
 
 	hClaudeEmpty := &Handler{cfg: claudeEmptyCfg, configFilePath: claudeEmptyPath, authManager: claudeEmptyManager}
 	routerClaudeEmpty := gin.New()
-	routerClaudeEmpty.GET("/v8/management/config/*path", hClaudeEmpty.ConfigV8)
+	routerClaudeEmpty.GET("/v8/management/config/*path", hClaudeEmpty.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/claude", nil)
@@ -1190,7 +1190,7 @@ api-keys:
 
 	hCodexEmpty := &Handler{cfg: codexEmptyCfg, configFilePath: codexEmptyPath}
 	routerCodexEmpty := gin.New()
-	routerCodexEmpty.GET("/v8/management/config/*path", hCodexEmpty.ConfigV8)
+	routerCodexEmpty.GET("/v8/management/config/*path", hCodexEmpty.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/codex", nil)
@@ -1249,7 +1249,7 @@ api-keys:
 
 	hMetaFiltered := &Handler{cfg: metaFilteredCfg, configFilePath: metaFilteredPath}
 	routerMetaFiltered := gin.New()
-	routerMetaFiltered.GET("/v8/management/config/*path", hMetaFiltered.ConfigV8)
+	routerMetaFiltered.GET("/v8/management/config/*path", hMetaFiltered.configV8WithCurrentRevisionForTest(t))
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/meta", nil)

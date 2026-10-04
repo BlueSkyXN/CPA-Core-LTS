@@ -26,6 +26,10 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
 		return
 	}
+	c.Header("ETag", configRevision(data))
+	if c.Request.Method != http.MethodGet && !checkConfigRevision(c, data, true) {
+		return
+	}
 	data, _, err = config.NormalizeConfigLayout(data, true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config", "message": err.Error()})
@@ -200,6 +204,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	h.cfg = next
 	snapshot := h.reloadSnapshotConfigLocked()
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
+	c.Header("ETag", "")
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
 }
 

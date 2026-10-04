@@ -103,6 +103,17 @@ func TestManagementV8IndependentContract(t *testing.T) {
 		req := httptest.NewRequest(method, url, strings.NewReader(body))
 		req.RemoteAddr = "127.0.0.1:1234"
 		req.Header.Set("Authorization", "Bearer test-password")
+		if method != http.MethodGet && strings.HasPrefix(url, "/v8/management/config") {
+			read := httptest.NewRequest(http.MethodGet, "/v8/management/config.yaml", nil)
+			read.RemoteAddr = req.RemoteAddr
+			read.Header.Set("Authorization", "Bearer test-password")
+			view := httptest.NewRecorder()
+			s.engine.ServeHTTP(view, read)
+			if view.Code != http.StatusOK || view.Header().Get("ETag") == "" {
+				t.Fatal("configuration revision unavailable")
+			}
+			req.Header.Set("If-Match", view.Header().Get("ETag"))
+		}
 		response := httptest.NewRecorder()
 		s.engine.ServeHTTP(response, req)
 		if response.Code != status {

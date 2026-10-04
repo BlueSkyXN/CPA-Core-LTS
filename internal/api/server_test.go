@@ -2173,6 +2173,9 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 			exposedHeaders[headerName] = struct{}{}
 		}
 	}
+	if _, ok := exposedHeaders["etag"]; !ok {
+		t.Fatal("configuration revisions must be readable by cross-origin Panel clients")
+	}
 	for _, headerName := range corsExposedResponseHeaders {
 		if _, ok := exposedHeaders[strings.ToLower(headerName)]; !ok {
 			t.Fatalf("Access-Control-Expose-Headers missing %s: %q", headerName, rr.Header().Get("Access-Control-Expose-Headers"))
