@@ -111,6 +111,8 @@ codex:
 | mixed pool | 同时有 non-special 和 special | `delivery-policy` | `best-non-special` | 有正常回答就别交出 516/1034。 |
 | all-special exhausted | 重试耗尽，全部 516/1034 | `fallback-policy`（需 `exhausted-behavior: pass-through`） | `best-special` | 没有正常回答时，挑一个相对能用的，避免直接报错。 |
 
+候选池只收录能成功转换为客户端协议的响应：非流式 attempt 的转换若报告 tool-input 错误或输出为空，该 attempt 不会成为 pass-through 兜底候选；耗尽时若没有可交付候选，客户端收到错误而不是空的成功响应。post-hedge usage 聚合（finalizer）重新转换失败时，保留已校验的原始响应，只是不做 usage 聚合。
+
 #### `delivery-policy` 怎么选
 
 | 选项 | 含义 | 适用场景 | 不建议 |

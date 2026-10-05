@@ -183,22 +183,6 @@ upstream:
         # "auto" behavior (cloak only non-Claude-Code clients).
         disable-claude-cloak-mode: false
     xai:
-        # Antigravity provider behavior.
-        # antigravity:
-        #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
-        #     - "API"
-        #     - "proxy"
-        #   connection-pool:             # optional: upstream HTTP connection pool settings
-        #     enabled: false             # whether to enable connection pooling (default: false; set to true to enable connection pooling)
-        #     idle-conn-timeout: "30s"   # idle keep-alive timeout (default: 30s, capped at 210s)
-        #     max-idle-conns-per-host: 2 # max idle connections per host per credential (default: 2)
-
-        # Devin provider behavior.
-        # devin:
-        #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions and prompts
-        #     - "API"
-        #     - "proxy"
-
         # xAI provider behavior.
 
 
@@ -442,8 +426,11 @@ upstream:
 
 
         # Experimental full-duplex Codex Responses WebSocket steering (default: false).
-        # Keeps one upstream account/model per socket; accepted input is never replayed.
-        # See STEERING.md for limitations.
+        # Requires the Responses WebSocket endpoint and a credential with upstream WebSocket support.
+        # Boundaries: each socket stays bound to one account/model; once a response is visible
+        # downstream there is no reconnect, cross-account failover or replay of accepted input;
+        # later creates on the socket do not re-enter per-request plugin interception, so use it
+        # for native Codex traffic without per-request plugins.
         response-steering: false
 access:
     # API keys for authentication
@@ -520,6 +507,18 @@ oauth:
     providers:
         antigravity:
             antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
+            # sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
+            #   - "API"
+            #   - "proxy"
+            # connection-pool:             # optional: upstream HTTP connection pool settings
+            #   enabled: false             # whether to enable connection pooling (default: false; set to true to enable connection pooling)
+            #   idle-conn-timeout: "30s"   # idle keep-alive timeout (default: 30s, capped at 210s)
+            #   max-idle-conns-per-host: 2 # max idle connections per host per credential (default: 2)
+        # Devin provider behavior.
+        # devin:
+        #     sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions and prompts
+        #         - "API"
+        #         - "proxy"
         aistudio:
             # When true, enable authentication for the WebSocket API (/v1/ws).
             ws-auth: true

@@ -14,12 +14,12 @@ import (
     "errors"
     "time"
 
-    "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+    "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
     "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 ```
 
-注意模块路径包含 `/v7`。
+注意模块路径包含 `/v8`。外部模块不能导入 `internal/` 包，请使用公开的 `sdk/config` 包加载配置。
 
 ## 最小可用示例
 

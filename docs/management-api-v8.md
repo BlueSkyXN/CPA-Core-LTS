@@ -57,8 +57,26 @@ request retries while preserving other settings:
 }
 ```
 
+### Revisions
+
+Every configuration response carries an `ETag` with the revision of the stored
+file. PUT, PATCH, and DELETE under `/config`, `/config.yaml`, and
+`/config/<section>/<field>` require exactly one strong `If-Match` header equal
+to the current revision. A missing header returns `428`
+(`config_revision_required`); a stale revision or several `If-Match` values
+return `412` (`config_revision_conflict`). A successful write returns an empty
+`ETag`, so read the configuration again before the next write.
+
 JSON reads omit TURN usernames and credentials under
 `oauth.providers.codex.live-media-relay.ice-servers`; YAML reads include them.
+A JSON write that omits those secrets keeps the stored values for servers with
+the same URL list. If several stored servers share a URL list and the write
+changes how many of them remain, the write is rejected with `422`
+(`ambiguous_turn_credentials`); send the credentials explicitly or use YAML.
+
+JSON reads return `422` (`config_not_json_compatible`) when the requested
+subtree contains non-string mapping keys, for example inside an opaque plugin
+configuration; use the YAML endpoint for such documents.
 The Home-owned revision fields
 `credentials.concurrency.lifecycle-config-revision`,
 `credentials.concurrency.observation-barrier-revision`, and `plugins.auth-revision`
@@ -152,12 +170,12 @@ Legacy flat configuration endpoints such as `/debug`, `/request-retry`, and
 `/v0/management/api-keys` continues to manage client authentication keys; the v8
 equivalent is `/v8/management/config/access/api-keys`.
 
-Legacy-only configuration files keep their layout until a successful v8
-configuration write. When both layouts specify a field, the new field takes
-precedence and its legacy equivalent is removed. V0 setters keep legacy-only
-files in their original layout; existing v8 files are saved in the latest v8
-layout. `PUT /v0/management/config.yaml` still replaces the complete file and
-accepts legacy, new, or mixed layouts, normalizing v8 documents on save.
+CPA-Core-LTS and its companion CPA-Panel-LTS target the v8 configuration
+layout. Write new configurations in the v8 layout described above; legacy and
+mixed layouts are read for diagnostics but are not a supported configuration
+contract. `PUT /v0/management/config.yaml` rejects documents that would
+replace an existing or new v8 layout with `409` (`unsupported_config_layout`);
+use the v8 configuration endpoints instead.
 
 Plugin OAuth uses the shared v8 login endpoint. Other plugin-defined HTTP
 extensions retain their declared `/v0/management` routes.

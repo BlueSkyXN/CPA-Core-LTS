@@ -14,12 +14,12 @@ import (
     "errors"
     "time"
 
-    "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+    "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
     "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 ```
 
-Note the `/v7` module path.
+Note the `/v8` module path. External modules cannot import `internal/` packages; use the public `sdk/config` package for configuration loading.
 
 ## Minimal Embed
 
