@@ -624,6 +624,50 @@ func TestConfigV8JSONTURNSecrets(t *testing.T) {
 	}
 }
 
+// F05: deleting one of two ICE servers that share URLs must not silently
+// restore the deleted entry's credentials onto the survivor.
+func TestConfigV8JSONTURNSecretsRejectAmbiguousRestore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`oauth:
+  providers:
+    codex:
+      live-media-relay:
+        ice-servers:
+          - {urls: ['turn:example.invalid:3478'], username: test-relay-user, credential: test-relay-password}
+          - {urls: ['turn:example.invalid:3478'], username: test-relay-user-2, credential: test-relay-password-2}
+`)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	r := gin.New()
+	r.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/v8/management/config/oauth/providers/codex/live-media-relay/ice-servers", strings.NewReader(`[{"urls":["turn:example.invalid:3478"]}]`)))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "ambiguous_turn_credentials") {
+		t.Fatalf("status=%d body=%s, want 422 ambiguous_turn_credentials", w.Code, w.Body.String())
+	}
+	if data, _ := os.ReadFile(path); string(data) != string(raw) {
+		t.Fatal("rejected write modified the stored configuration")
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/v8/management/config/oauth/providers/codex/live-media-relay/ice-servers", strings.NewReader(`[{"urls":["turn:example.invalid:3478"],"username":"explicit-user","credential":"explicit-password"}]`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("explicit credentials status=%d body=%s", w.Code, w.Body.String())
+	}
+	loaded, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if servers := loaded.Codex.LiveMediaRelay.ICEServers; len(servers) != 1 || servers[0].Username != "explicit-user" {
+		t.Fatalf("explicit credentials not saved: %+v", servers)
+	}
+}
+
 func TestConfigV8DeletePreservesDocumentPresence(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	file := filepath.Join(t.TempDir(), "config.yaml")

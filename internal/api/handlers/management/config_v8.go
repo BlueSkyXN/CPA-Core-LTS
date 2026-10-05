@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -148,7 +149,10 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		return
 	}
 	if !yamlRequest && c.Request.Method != http.MethodDelete {
-		preserveV8TURNSecrets(root, before)
+		if errTURN := preserveV8TURNSecrets(root, before); errTURN != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "ambiguous_turn_credentials", "message": errTURN.Error()})
+			return
+		}
 	}
 	// Revisions are owned by Home and must not become ordinary editable settings.
 	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision"} {
@@ -234,11 +238,29 @@ var v8ICEServersPath = []string{"oauth", "providers", "codex", "live-media-relay
 // writes that JSON back, matching by endpoint rather than array position so a
 // changed URL cannot inherit credentials for a different server. Explicit empty
 // strings/null clear a secret; YAML writes retain full replacement semantics.
-func preserveV8TURNSecrets(root, before *yaml.Node) {
+// When several stored servers share the same URL list and the write adds or
+// removes entries for that list, redacted JSON can no longer tell which entry
+// survived, so omitted secrets are rejected instead of guessing. An unchanged
+// count keeps the order-preserving round trip.
+func preserveV8TURNSecrets(root, before *yaml.Node) error {
 	next := configV8Node(root, v8ICEServersPath)
 	previous := configV8Node(before, v8ICEServersPath)
 	if next == nil || previous == nil || next.Kind != yaml.SequenceNode || previous.Kind != yaml.SequenceNode {
-		return
+		return nil
+	}
+	urlCounts := make(map[string]int, len(previous.Content))
+	for _, old := range previous.Content {
+		var previousURLs []string
+		if oldURLs := configV8Node(old, []string{"urls"}); oldURLs != nil && oldURLs.Decode(&previousURLs) == nil {
+			urlCounts[strings.Join(previousURLs, "\x00")]++
+		}
+	}
+	nextCounts := make(map[string]int, len(next.Content))
+	for _, server := range next.Content {
+		var nextURLs []string
+		if urls := configV8Node(server, []string{"urls"}); urls != nil && urls.Decode(&nextURLs) == nil {
+			nextCounts[strings.Join(nextURLs, "\x00")]++
+		}
 	}
 	matched := make([]bool, len(previous.Content))
 	for _, server := range next.Content {
@@ -249,6 +271,11 @@ func preserveV8TURNSecrets(root, before *yaml.Node) {
 		var newURLs []string
 		if urls.Decode(&newURLs) != nil {
 			continue
+		}
+		omitsSecret := configV8Node(server, []string{"username"}) == nil || configV8Node(server, []string{"credential"}) == nil
+		key := strings.Join(newURLs, "\x00")
+		if omitsSecret && urlCounts[key] > 1 && nextCounts[key] != urlCounts[key] {
+			return fmt.Errorf("multiple stored ICE servers share urls %v; provide username and credential explicitly or use the YAML endpoint", newURLs)
 		}
 		for i, old := range previous.Content {
 			if matched[i] {
@@ -270,6 +297,7 @@ func preserveV8TURNSecrets(root, before *yaml.Node) {
 			break
 		}
 	}
+	return nil
 }
 
 func configV8Node(root *yaml.Node, parts []string) *yaml.Node {
