@@ -43,7 +43,7 @@ Codex API-key 请求创建独立配置视图，共享 affinity store/generation�
 
 零上游字节断流可在输出承诺前 failover；已见 protocol frame 的不完整响应保留 LTS request-scoped 边界。不能因本地转换错误换号或 cooldown。
 
-本轮修复与验证边界见 [2026-10-04 review fixes](v8-review-fixes-20261004.md)，包括尚未通过的 authenticated GUI 回归；不能用 API 测试替代该验收。
+v8-only 跟进修复见 [2026-10-05 v8-native fixes](v8-native-fixes-20261005.md)；上一轮修复与验证边界见 [2026-10-04 review fixes](v8-review-fixes-20261004.md)，包括尚未通过的 authenticated GUI 回归；不能用 API 测试替代该验收。
 
 ## 交付与恢复
 
