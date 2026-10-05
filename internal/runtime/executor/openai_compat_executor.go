@@ -1189,6 +1189,14 @@ func (e statusErr) ModelFallbackReason() string { return e.modelFallbackReason }
 func (e statusErr) CodexRateLimitClass() string { return e.codexRateLimitClass }
 func (e statusErr) IsCredentialScoped() bool    { return e.credentialScoped }
 
+// IsRequestScoped marks local translation failures of an otherwise completed
+// upstream response. The credential and model are healthy, so the manager must
+// neither cool them down nor replay the paid upstream call on another
+// credential. Every executor reports this condition with the shared sentinel.
+func (e statusErr) IsRequestScoped() bool {
+	return e.code == http.StatusBadGateway && e.msg == helps.ApplyPatchUpstreamErrorMessage
+}
+
 const openAICompatTPMFallbackRetryAfter = time.Minute
 
 func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {

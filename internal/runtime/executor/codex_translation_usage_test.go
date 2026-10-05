@@ -100,6 +100,8 @@ func TestCodexNonStreamTranslationUsageOutcome(t *testing.T) {
 						}
 					} else if coded, ok := err.(interface{ StatusCode() int }); !ok || coded.StatusCode() != http.StatusBadGateway || len(resp.Payload) != 0 {
 						t.Fatalf("failed translation must return empty 502: error=%v, bytes=%d", err, len(resp.Payload))
+					} else if scoped, okScoped := errors.AsType[cliproxyexecutor.RequestScopedError](err); !okScoped || !scoped.IsRequestScoped() {
+						t.Fatalf("failed translation must be request-scoped: error=%v", err)
 					}
 					// A FIFO marker observes every publication, including deferred failure reporting.
 					coreusage.PublishRecord(ctx, coreusage.Record{Alias: alias, Model: "dispatch-barrier"})
