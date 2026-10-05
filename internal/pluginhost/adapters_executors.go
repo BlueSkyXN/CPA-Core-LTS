@@ -1343,6 +1343,22 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 			return coreexecutor.Response{}, err
 		}
 	}
+	if translated == nil && prepared.requestedFormat != "" && prepared.outputFormat != prepared.requestedFormat {
+		// Convert before reporting success: a translator tool-input failure or
+		// empty output is a request-scoped failure of a completed plugin call.
+		var param any
+		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, &param)
+		if helps.ApplyPatchTranslationError(param) != nil || len(translated) == 0 {
+			err = pluginResponseConversionError()
+			if reporter != nil {
+				if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
+					reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
+				}
+				reporter.PublishFailureWithDetail(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload), err)
+			}
+			return coreexecutor.Response{}, err
+		}
+	}
 	if reporter != nil {
 		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)

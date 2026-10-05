@@ -32,6 +32,13 @@ func claudePluginConversionError() error {
 	return coreauth.NewRequestScopedError("invalid or unsupported Anthropic plugin response", http.StatusBadGateway)
 }
 
+// pluginResponseConversionError reports a completed plugin response that the
+// host could not convert to the client protocol. It must not penalize the
+// credential or replay the plugin call.
+func pluginResponseConversionError() error {
+	return coreauth.NewRequestScopedError("invalid or unsupported plugin response", http.StatusBadGateway)
+}
+
 func (p *claudePluginSSE) feed(chunk []byte, emit func([]byte, string) error) error {
 	for len(chunk) > 0 {
 		if p.cr {
