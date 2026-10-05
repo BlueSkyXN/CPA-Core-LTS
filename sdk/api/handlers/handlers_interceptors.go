@@ -507,7 +507,10 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		req.Payload = cloneBytes(resp.Body)
 		opts.OriginalRequest = cloneBytes(resp.Body)
 	}
-	if strings.TrimSpace(resp.Path) != "" {
+	if strings.TrimSpace(resp.Path) != "" && !resp.Terminate {
+		if errPath := coreexecutor.ValidateRequestPathOverride(coreexecutor.RequestPathFromMetadata(opts.Metadata), resp.Path); errPath != nil {
+			return req, opts, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: errPath}
+		}
 		if opts.Metadata == nil {
 			opts.Metadata = make(map[string]any, 1)
 		} else {

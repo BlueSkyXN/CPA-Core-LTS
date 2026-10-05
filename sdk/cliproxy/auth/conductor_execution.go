@@ -363,7 +363,10 @@ func applyRequestAfterAuthInterceptorWithManager(m *Manager, ctx context.Context
 		req.Payload = bytes.Clone(resp.Body)
 		opts.OriginalRequest = bytes.Clone(resp.Body)
 	}
-	if path := strings.TrimSpace(resp.Path); path != "" {
+	if path := strings.TrimSpace(resp.Path); path != "" && !resp.Terminate {
+		if errPath := cliproxyexecutor.ValidateRequestPathOverride(cliproxyexecutor.RequestPathFromMetadata(opts.Metadata), path); errPath != nil {
+			return req, opts, errPath
+		}
 		if opts.Metadata == nil {
 			opts.Metadata = make(map[string]any, 1)
 		} else {
