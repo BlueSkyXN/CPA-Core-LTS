@@ -372,6 +372,14 @@ func (b *ApplyPatchResponsesBridge) snapshot(r *responsesPatchRecord, arguments 
 	if !strings.HasPrefix(decoder.Input(), r.state.Decoder.Input()) {
 		return errors.New("apply_patch snapshot conflicts with streamed input")
 	}
+	// Streamed arguments that already form a complete JSON document are the
+	// final input; a different (even prefix-extended) snapshot is inconsistent.
+	if r.source != "" {
+		var streamed ApplyPatchInputDecoder
+		if _, errStreamed := streamed.Finish(r.source); errStreamed == nil && streamed.Input() != decoder.Input() {
+			return errors.New("apply_patch snapshot conflicts with completed streamed arguments")
+		}
+	}
 	r.snapshot = arguments.String()
 	r.hasSnapshot = true
 	return nil

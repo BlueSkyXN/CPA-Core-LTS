@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"strings"
 	"time"
 
@@ -31,10 +32,13 @@ type toolCallStreamState struct {
 	InputStarted     bool
 	InputClosed      bool
 	Done             bool
+	// StreamedInput holds the raw apply_patch input already sent as deltas.
+	StreamedInput string
 }
 
 // ConvertCliToOpenAIParams holds parameters for response conversion.
 type ConvertCliToOpenAIParams struct {
+	translatorcommon.ApplyPatchErrorState
 	ServiceTier           string
 	ResponseID            string
 	CreatedAt             int64
@@ -239,6 +243,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		}
 		state.ArgumentsEmitted = true
 		if state.Patch {
+			state.StreamedInput += deltaValue
 			deltaValue = applypatch.EscapeInputFragment(deltaValue)
 			if !state.InputStarted {
 				deltaValue = `{"input":"` + deltaValue
@@ -268,7 +273,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		state.ArgumentsEmitted = true
 		fullArgs := rootResult.Get(fullArgsField).String()
 		if state.Patch {
-			fullArgs = finishPatchChatArguments(state, fullArgs)
+			fullArgs = finishPatchChatArguments(p, state, fullArgs)
 		}
 		if fullArgs == "" {
 			return [][]byte{}
@@ -341,7 +346,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			state.ArgumentsEmitted = true
 			fullArgs := codexToolCallArguments(itemResult)
 			if state.Patch {
-				fullArgs = finishPatchChatArguments(state, fullArgs)
+				fullArgs = finishPatchChatArguments(p, state, fullArgs)
 			}
 			if fullArgs == "" {
 				return [][]byte{}
@@ -375,7 +380,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 
 		fullArgs := codexToolCallArguments(itemResult)
 		if state.Patch {
-			fullArgs = finishPatchChatArguments(state, fullArgs)
+			fullArgs = finishPatchChatArguments(p, state, fullArgs)
 		}
 		functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", fullArgs)
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
@@ -729,13 +734,27 @@ func isOriginalCustomPatch(original []byte, item gjson.Result) bool {
 	return ok && applypatch.IsCustomTool(winner.Tool)
 }
 
-func finishPatchChatArguments(state *toolCallStreamState, input string) string {
+// finishPatchChatArguments closes streamed apply_patch arguments. A completed
+// input that extends the streamed deltas contributes its missing tail; one
+// that conflicts with them is a tool-input failure rather than a truncation.
+func finishPatchChatArguments(p *ConvertCliToOpenAIParams, state *toolCallStreamState, input string) string {
 	if state.InputClosed {
 		return ""
 	}
 	state.InputClosed = true
-	if state.InputStarted {
+	if !state.InputStarted {
+		return applypatch.WrapInput(input)
+	}
+	if input == "" || input == state.StreamedInput {
 		return `"}`
 	}
-	return applypatch.WrapInput(input)
+	if strings.HasPrefix(input, state.StreamedInput) {
+		tail := input[len(state.StreamedInput):]
+		state.StreamedInput = input
+		return applypatch.EscapeInputFragment(tail) + `"}`
+	}
+	if p != nil {
+		p.SetToolInputError(errors.New("apply_patch completed input conflicts with streamed input"))
+	}
+	return ""
 }
