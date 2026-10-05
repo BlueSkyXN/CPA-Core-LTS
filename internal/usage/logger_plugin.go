@@ -593,10 +593,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if statsKey == "" {
 		statsKey = resolveAPIIdentifier(ctx, record)
 	}
-	failed := record.Failed
-	if !failed {
-		failed = !resolveSuccess(ctx)
-	}
+	// The outcome belongs to this attempt. Re-reading the final inbound status
+	// would flip earlier successful attempts and independent tool usage
+	// depending on when the asynchronous sink consumes the record.
+	failed := recordFailed(record)
 	failureReason, failureStatus := safeFailureDetail(record, failed)
 	modelName := record.Model
 	if modelName == "" {
@@ -1117,12 +1117,8 @@ func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
 	return "unknown"
 }
 
-func resolveSuccess(ctx context.Context) bool {
-	status := internallogging.GetResponseStatus(ctx)
-	if status == 0 {
-		return true
-	}
-	return status < httpStatusBadRequest
+func recordFailed(record coreusage.Record) bool {
+	return record.Failed || record.Fail.StatusCode >= httpStatusBadRequest
 }
 
 const httpStatusBadRequest = 400

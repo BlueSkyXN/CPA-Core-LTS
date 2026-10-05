@@ -243,6 +243,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 					}
 				}
 				reporter.PublishFailureWithDetail(ctx, detail, errRetry)
+				// The image tool ran upstream regardless of the reasoning retry.
+				publishCodexImageToolUsage(ctx, reporter, body, eventData)
 				err = errRetry
 				return resp, err
 			}
@@ -264,6 +266,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 		if completedUsageOK {
 			reporter.Publish(ctx, completedUsage)
+		} else {
+			// A completed response without usage is still a successful request.
+			reporter.EnsurePublished(ctx)
 		}
 		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 		if responseFormat == sdktranslator.FormatOpenAIResponse {

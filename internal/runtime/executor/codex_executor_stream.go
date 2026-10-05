@@ -538,6 +538,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						retryErr = errWithFallback
 					}
 					reporter.PublishFailureWithDetail(ctx, usageDetail, retryErr)
+					if len(completedData) > 0 {
+						publishCodexImageToolUsage(ctx, reporter, body, completedData)
+					}
 				}
 				bufferedChunks = nil
 				emitError(retryErr)

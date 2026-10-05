@@ -120,10 +120,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		}
 	}
 
-	failed := record.Failed
-	if !failed {
-		failed = !resolveSuccess(ctx)
-	}
+	// Derive the outcome from the record itself; the final inbound status may
+	// belong to a later attempt of the same request.
+	failed := record.Failed || record.Fail.StatusCode >= httpStatusBadRequest
 	fail := resolveFail(ctx, record, failed)
 
 	stream := record.Stream
@@ -308,14 +307,6 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
 		fail.StatusCode = 500
 	}
 	return fail
-}
-
-func resolveSuccess(ctx context.Context) bool {
-	status := internallogging.GetResponseStatus(ctx)
-	if status == 0 {
-		return true
-	}
-	return status < httpStatusBadRequest
 }
 
 func resolveEndpoint(ctx context.Context) string {
