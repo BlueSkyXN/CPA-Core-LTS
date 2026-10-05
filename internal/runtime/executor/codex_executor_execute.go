@@ -218,24 +218,29 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			completedUsage = detail
 			completedUsageOK = true
 			responseFinalizer = cliproxyexecutor.RetryWithoutPenaltyResponseFinalizer(func(base cliproxyexecutor.Response, previous cliproxyexecutor.RetryWithoutPenaltyUsageSnapshot) cliproxyexecutor.Response {
-				var finalizerParam any
 				finalCompletedData := patchCodexAbnormalReasoningClientUsageWithSnapshot(completedData, previous, abnormalRetry.clientUsageAggregation)
 				finalCompletedData = applyCodexIdentityExposeResponsePayload(finalCompletedData, identityState)
-				base.Payload = sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, finalCompletedData, &finalizerParam)
+				// base already carries a validated translation; keep it rather than
+				// delivering an empty or partially converted aggregate.
+				if out, ok := translateCodexNonStreamChecked(ctx, to, responseFormat, req.Model, originalPayload, body, finalCompletedData); ok {
+					base.Payload = out
+				}
 				return base
 			})
 			if errRetry := abnormalRetry.RetryError(detail, reporter.ReasoningEffort()); errRetry != nil {
-				var param any
 				clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 				clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
-				out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
-				fallbackResp := cliproxyexecutor.Response{
-					Payload:  out,
-					Headers:  httpResp.Header.Clone(),
-					Metadata: codexAbnormalReasoningRetryResponseMetadata(detail, responseFinalizer, abnormalRetry),
-				}
-				if errWithFallback := abnormalRetry.RetryErrorWithFallbackResponse(detail, reporter.ReasoningEffort(), fallbackResp); errWithFallback != nil {
-					errRetry = errWithFallback
+				// Only a validated translation may become a pass-through fallback;
+				// otherwise exhaustion must surface an error, not an empty success.
+				if out, ok := translateCodexNonStreamChecked(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData); ok {
+					fallbackResp := cliproxyexecutor.Response{
+						Payload:  out,
+						Headers:  httpResp.Header.Clone(),
+						Metadata: codexAbnormalReasoningRetryResponseMetadata(detail, responseFinalizer, abnormalRetry),
+					}
+					if errWithFallback := abnormalRetry.RetryErrorWithFallbackResponse(detail, reporter.ReasoningEffort(), fallbackResp); errWithFallback != nil {
+						errRetry = errWithFallback
+					}
 				}
 				reporter.PublishFailureWithDetail(ctx, detail, errRetry)
 				err = errRetry
@@ -248,11 +253,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 		}
 
-		var param any
 		clientCompletedData := patchCodexAbnormalReasoningClientUsage(completedData, opts.Metadata, abnormalRetry.clientUsageAggregation)
 		clientCompletedData = applyCodexIdentityExposeResponsePayload(clientCompletedData, identityState)
-		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
-		if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
+		out, translated := translateCodexNonStreamChecked(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData)
+		if !translated {
 			err = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
 			reporter.PublishFailureWithDetail(ctx, completedUsage, err)
 			publishCodexImageToolUsage(ctx, reporter, body, eventData)
@@ -403,4 +407,16 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
+}
+
+// translateCodexNonStreamChecked converts a completed Codex response and
+// reports whether the result is deliverable. Empty output or a translator
+// tool-input failure means the conversion must not be treated as success.
+func translateCodexNonStreamChecked(ctx context.Context, from, to sdktranslator.Format, model string, originalPayload, body, completed []byte) ([]byte, bool) {
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, from, to, model, originalPayload, body, completed, &param)
+	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
