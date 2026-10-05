@@ -290,6 +290,17 @@ func (m *Manager) updateWithBase(ctx context.Context, auth *Auth, expectedGenera
 				if len(resumed) > 0 {
 					cooldownStateChanged = true
 				}
+			} else if hasUnauthorizedAuthFailure(existing) {
+				// Re-synthesizing the same credentials (metadata, note or model
+				// settings edits) must not revive a credential whose refresh token
+				// was rejected; only new credential material clears this state.
+				auth.Unavailable = true
+				auth.Status = existing.Status
+				auth.StatusMessage = existing.StatusMessage
+				auth.LastError = cloneError(existing.LastError)
+				auth.NextRefreshAfter = time.Time{}
+				auth.NextRetryAfter = time.Time{}
+				cooldownStateChanged = true
 			}
 			if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
 				auth.Unavailable = existing.Unavailable
