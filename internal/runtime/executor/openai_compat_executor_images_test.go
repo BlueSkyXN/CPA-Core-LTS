@@ -184,3 +184,43 @@ func TestOpenAICompatExecutor_ImageEndpointPath_HonorsOverriddenRequestPath_Issu
 		t.Fatalf("upstream path = %q, want /images/generations", requestedPath)
 	}
 }
+
+// F13: a non-2xx image response must be returned as a status error so the
+// auth conductor and usage statistics observe the upstream failure.
+func TestOpenAICompatExecutor_ImageNon2xxReturnsStatusError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","code":"rate_limit"}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{Name: "compat"}},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "openai-compatibility",
+		Attributes: map[string]string{
+			"base_url":     server.URL,
+			"api_key":      "test-key",
+			"compat_name":  "compat",
+			"provider_key": "compat",
+		},
+	}
+	for _, path := range []string{"/v1/images/generations", "/v1/images/edits"} {
+		resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "gpt-image-2.5",
+			Payload: []byte(`{"model":"gpt-image-2.5","prompt":"a red apple"}`),
+		}, cliproxyexecutor.Options{
+			SourceFormat: sdktranslator.FromString("openai-image"),
+			Metadata:     map[string]any{cliproxyexecutor.RequestPathMetadataKey: path},
+		})
+		coded, ok := err.(interface{ StatusCode() int })
+		if !ok || coded.StatusCode() != http.StatusTooManyRequests {
+			t.Fatalf("%s: err=%v, want 429 status error", path, err)
+		}
+		if len(resp.Payload) != 0 {
+			t.Fatalf("%s: error body leaked as success payload: %s", path, resp.Payload)
+		}
+	}
+}

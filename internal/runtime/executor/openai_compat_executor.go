@@ -308,6 +308,14 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		// Upstream image errors must reach the auth conductor and usage
+		// statistics as failures, not as successful pass-through payloads.
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
+		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, body)
+		return resp, err
+	}
+
 	reporter.ObserveResponseModel(body)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	reporter.EnsurePublished(ctx)
