@@ -139,8 +139,7 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	}
 	// Resolve aliases and merge keys before updating a path. Otherwise replacing
 	// an alias with a mapping drops inherited siblings or mutates a shared anchor.
-	var decoded map[string]any
-	if err = root.Decode(&decoded); err != nil {
+	if err = decodeConfigShape(root.Content[0]); err != nil {
 		return err
 	}
 	root.Content[0] = expandConfigAliases(root.Content[0])

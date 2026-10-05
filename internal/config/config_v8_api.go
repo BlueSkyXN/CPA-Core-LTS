@@ -39,7 +39,7 @@ func ProjectV8ConfigAliases(root *yaml.Node, path string) {
 // canonical value already present in the stored configuration.
 func NormalizeV8ConfigAliases(root *yaml.Node) error {
 	var shape any
-	if err := root.Decode(&shape); err != nil {
+	if err := withoutPluginConfigs(root).Decode(&shape); err != nil {
 		return err
 	}
 	*root = *expandConfigAliases(root)

@@ -283,8 +283,7 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 	}
 	// Decode once before transformation to reject duplicate keys even when a
 	// winning v8 value would otherwise hide the malformed legacy subtree.
-	var shape map[string]any
-	if err := node.Decode(&shape); err != nil {
+	if err := decodeConfigShape(node); err != nil {
 		return nil, err
 	}
 	node = expandConfigAliases(node)
@@ -867,15 +866,15 @@ func preserveV8Comments(dst, src *yaml.Node) {
 // removed legacy anchor would produce an unreadable file, and updating a shared
 // anchor in place could unintentionally change an unrelated setting.
 // Callers first decode the document so yaml.v3 rejects cyclic/invalid aliases.
-func expandConfigAliases(node *yaml.Node) *yaml.Node {
+func expandYAMLAliases(node *yaml.Node) *yaml.Node {
 	if node.Kind == yaml.AliasNode {
-		return expandConfigAliases(node.Alias)
+		return expandYAMLAliases(node.Alias)
 	}
 	copy := *node
 	copy.Anchor = ""
 	copy.Content = make([]*yaml.Node, len(node.Content))
 	for i, child := range node.Content {
-		copy.Content[i] = expandConfigAliases(child)
+		copy.Content[i] = expandYAMLAliases(child)
 	}
 	if copy.Kind != yaml.MappingNode {
 		return &copy
@@ -892,7 +891,7 @@ func expandConfigAliases(node *yaml.Node) *yaml.Node {
 		}
 		for _, mapping := range mappings {
 			for j := 0; j < len(mapping.Content); j += 2 {
-				if findMapKeyIndex(&copy, mapping.Content[j].Value) < 0 {
+				if findMergeKeyIndex(&copy, mapping.Content[j]) < 0 {
 					copy.Content = append(copy.Content, mapping.Content[j], mapping.Content[j+1])
 				}
 			}
