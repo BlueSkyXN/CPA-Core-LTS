@@ -186,6 +186,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			tasks = append(tasks, modelRegistrationTask{
 				phase:    modelRegistrationPhase(authForRegistration),
 				category: modelRegistrationCategory(authForRegistration),
+				authID:   authID,
 				run: func(compatCache *openAICompatibilityRegistrationCache) {
 					if s.shouldSkipModelRegistration(authID, expectedGeneration, expectedDisabled) {
 						return

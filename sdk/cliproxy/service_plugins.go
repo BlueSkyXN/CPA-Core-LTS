@@ -31,8 +31,10 @@ const (
 type modelRegistrationTask struct {
 	phase    int
 	category string
-	run      func(*openAICompatibilityRegistrationCache)
-	done     func()
+	// authID identifies auth-update tasks for test hooks; empty otherwise.
+	authID string
+	run    func(*openAICompatibilityRegistrationCache)
+	done   func()
 }
 
 type executorRegistrationOptions struct {
@@ -51,8 +53,8 @@ var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Mana
 
 // modelRegistrationTaskHook, if set, runs after auth-update commits and before
 // model registration workers start. Tests use it to prove registration no longer
-// holds authUpdateMu.
-var modelRegistrationTaskHook func()
+// holds authUpdateMu. authID is empty for tasks not tied to one auth update.
+var modelRegistrationTaskHook func(authID string)
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
 // This allows external code to monitor API usage and token consumption.
@@ -260,7 +262,7 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
 						default:
 						}
 						if modelRegistrationTaskHook != nil {
-							modelRegistrationTaskHook()
+							modelRegistrationTaskHook(task.authID)
 						}
 						task.run(compatCache)
 					}(task)
