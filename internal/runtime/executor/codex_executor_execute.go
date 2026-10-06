@@ -207,6 +207,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		if helps.IsCodexTerminalEmptyIncomplete(eventData, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 			err = newCodexEmptyIncompleteStreamError()
+			detail, _ := helps.ParseCodexUsage(eventData)
+			reporter.PublishFailureWithDetail(ctx, detail, err)
 			return resp, err
 		}
 

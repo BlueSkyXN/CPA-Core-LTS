@@ -403,7 +403,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				}
 				streamErr := newCodexEmptyIncompleteStreamError()
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				detail, _ := helps.ParseCodexUsage(payload)
+				reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 				return resp, streamErr
 			}
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)

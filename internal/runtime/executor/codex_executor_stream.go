@@ -258,7 +258,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					closeResponseBody()
 					streamErr := newCodexEmptyIncompleteStreamError()
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
+					detail, _ := helps.ParseCodexUsage(data)
+					reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 					return nil, streamErr
 				}
 				bufferable = isCodexBootstrapBufferableEvent(eventType, data)
@@ -462,7 +463,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if helps.IsCodexTerminalEmptyIncomplete(data, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 					streamErr := newCodexEmptyIncompleteStreamError()
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
+					detail, _ := helps.ParseCodexUsage(data)
+					reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 					emitError(streamErr)
 					return
 				}

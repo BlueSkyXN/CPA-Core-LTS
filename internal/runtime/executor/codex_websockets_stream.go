@@ -464,7 +464,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if helps.IsCodexTerminalEmptyIncomplete(payload, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 				streamErr := newCodexEmptyIncompleteStreamError()
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				detail, _ := helps.ParseCodexUsage(payload)
+				reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, connection, "terminal_empty_incomplete", streamErr)
 					sess.clearActiveConnection(connection, readCh)
@@ -711,7 +712,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if helps.IsCodexTerminalEmptyIncomplete(payload, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 				streamErr := newCodexEmptyIncompleteStreamError()
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				detail, _ := helps.ParseCodexUsage(payload)
+				reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, connection, "terminal_empty_incomplete", streamErr)
 					unlockStreamSession()
