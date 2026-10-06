@@ -224,22 +224,32 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 }
 
 func configV8StringMapKeys(node *yaml.Node) bool {
+	return configV8StringMapKeysVisit(node, map[*yaml.Node]struct{}{})
+}
+
+// configV8StringMapKeysVisit checks each alias target once. It runs before value.Decode, so it
+// must not re-expand shared anchors that Decode's alias-ratio guard would otherwise reject.
+func configV8StringMapKeysVisit(node *yaml.Node, seen map[*yaml.Node]struct{}) bool {
 	if node == nil {
 		return true
 	}
 	if node.Kind == yaml.AliasNode {
-		return configV8StringMapKeys(node.Alias)
+		if _, ok := seen[node.Alias]; ok {
+			return true
+		}
+		seen[node.Alias] = struct{}{}
+		return configV8StringMapKeysVisit(node.Alias, seen)
 	}
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(node.Content); i += 2 {
-			if node.Content[i].Tag != "!!str" || !configV8StringMapKeys(node.Content[i+1]) {
+			if node.Content[i].Tag != "!!str" || !configV8StringMapKeysVisit(node.Content[i+1], seen) {
 				return false
 			}
 		}
 		return true
 	}
 	for _, child := range node.Content {
-		if !configV8StringMapKeys(child) {
+		if !configV8StringMapKeysVisit(child, seen) {
 			return false
 		}
 	}

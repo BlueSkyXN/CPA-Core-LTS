@@ -1,16 +1,19 @@
 package management
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/tidwall/gjson"
+	"gopkg.in/yaml.v3"
 )
 
 func TestConfigV8OpaquePluginJSONBoundary(t *testing.T) {
@@ -76,6 +79,40 @@ func TestConfigV8OpaquePluginJSONBoundary(t *testing.T) {
 			saved, err := os.ReadFile(path)
 			if err != nil || string(saved) != raw {
 				t.Fatal("configuration reads changed the stored document")
+			}
+		})
+	}
+}
+
+func TestConfigV8StringMapKeysVisitsSharedAliasesOnce(t *testing.T) {
+	// Nine levels of ten-fold alias fan-out expand to 10^9 nodes if aliases are re-walked.
+	var b strings.Builder
+	b.WriteString("l0: &l0 {k: v}\n")
+	for level := 1; level <= 9; level++ {
+		fmt.Fprintf(&b, "l%d: &l%d [%s]\n", level, level, strings.TrimSuffix(strings.Repeat(fmt.Sprintf("*l%d, ", level-1), 10), ", "))
+	}
+	for _, tc := range []struct {
+		name string
+		leaf string
+		want bool
+	}{
+		{"string keys", "l0: &l0 {k: v}\n", true},
+		{"integer key", "l0: &l0 {1: v}\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc yaml.Node
+			if err := yaml.Unmarshal([]byte(strings.Replace(b.String(), "l0: &l0 {k: v}\n", tc.leaf, 1)), &doc); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan bool, 1)
+			go func() { done <- configV8StringMapKeys(&doc) }()
+			select {
+			case got := <-done:
+				if got != tc.want {
+					t.Fatalf("configV8StringMapKeys = %v, want %v", got, tc.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("alias fan-out was expanded instead of visited once")
 			}
 		})
 	}

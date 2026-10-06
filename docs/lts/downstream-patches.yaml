@@ -1751,7 +1751,7 @@ patches:
     retire_when: Upstream classifies access-program error codes with equivalent request-fault, rotation-without-cooldown, and terminal status semantics, and the LTS-specific skip is redundant.
 
   - id: v8-plugin-config-opaque-yaml
-    reason: The upstream v8 layout preprocessing decodes the whole document into map[string]any and expands aliases across every subtree, so plugin-owned plugins.configs YAML with composite keys or tag-distinct keys is rejected at load time and merge keys drop typed keys. LTS keeps plugins.configs opaque to these helpers, matching the v7 loader, while still rejecting recursive aliases. Management JSON checks non-string keys before decoding, including alias targets, so valid opaque YAML reports 422 config_not_json_compatible instead of 500 and unrelated revisioned provider subtrees remain readable.
+    reason: The upstream v8 layout preprocessing decodes the whole document into map[string]any and expands aliases across every subtree, so plugin-owned plugins.configs YAML with composite keys or tag-distinct keys is rejected at load time and merge keys drop typed keys. LTS keeps plugins.configs opaque to these helpers, matching the v7 loader, while still rejecting recursive aliases. Management JSON checks non-string keys before decoding, including alias targets visited once each so shared anchors cannot fan out before Decode's alias-ratio guard, so valid opaque YAML reports 422 config_not_json_compatible instead of 500 and unrelated revisioned provider subtrees remain readable.
     introduced_in: bc69bfb9
     affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); flattenV8 whole-tree Decode and expandConfigAliases are upstream v8 code.
     files:
@@ -1764,6 +1764,7 @@ patches:
       - internal/api/handlers/management/config_v8_opaque_test.go
     regression_tests:
       - TestConfigV8OpaquePluginJSONBoundary
+      - TestConfigV8StringMapKeysVisitsSharedAliasesOnce
       - TestPluginConfigsStayOpaqueToV8LayoutHelpers
       - TestPluginConfigsExternalAnchorIsExpandedForSave
       - TestPluginConfigsRecursiveAliasRejected
