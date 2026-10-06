@@ -93,8 +93,14 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 	}
 	for _, v := range messages {
 		m, ok := v.(map[string]any)
-		if !ok || (m["role"] != "user" && m["role"] != "assistant") {
+		if !ok || (m["role"] != "user" && m["role"] != "assistant" && m["role"] != "system") {
 			return nil, problem(400, "invalid_request", "Unsupported message role")
+		}
+		if m["role"] == "system" {
+			if err := validateSystemMessageContent(m["content"]); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		if _, ok := m["content"].(string); ok {
 			continue
