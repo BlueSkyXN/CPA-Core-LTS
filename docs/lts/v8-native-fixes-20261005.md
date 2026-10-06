@@ -16,6 +16,7 @@ PR #290 remains a draft against `v8-dev`. This round follows the 2026-10-05 prod
 | Plugins | The generic plugin executor adapter converts responses with a checked state before reporting success; conversion failures are request-scoped 502s with failed usage. | LTS |
 | Images | OpenAI-compatible non-stream image generations/edits return the provider status error for non-2xx responses. | upstream |
 | Management | Redacted TURN credential restores that cannot be matched (duplicate URL lists whose entry count changed) fail with 422 `ambiguous_turn_credentials`. | upstream v8 |
+| Management | A complete `PUT /v8/management/config.yaml` keeps document-level head and trailing comments (found by the real-Core Panel smoke). | upstream v8 |
 | Interceptors | `Path` overrides must keep the operation (or switch image generations/edits); others fail with a request-scoped `RequestPathOverrideError`. | upstream |
 | Translators | apply_patch bridges reject final snapshots that disagree with completed streamed arguments; Codex to Chat Completions completes a missing tail instead of truncating, and reports conflicts as tool-input errors. | upstream |
 | Docs | `config.example.yaml` Antigravity/Devin examples moved under `oauth.providers`; response-steering boundaries inline; `management-api-v8.md` documents revisions/If-Match and the v8-only contract; SDK docs use `/v8` and `sdk/config`. | mixed |

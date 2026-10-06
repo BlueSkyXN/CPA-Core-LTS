@@ -1872,3 +1872,16 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream usage queue uses the record's own outcome and the regression passes without this delta.
+
+  - id: v8-yaml-replace-document-comments
+    reason: Upstream v8 complete YAML replacement copies only the root mapping into the stored document, dropping document-level head comments and blank-line-separated trailing comments; the companion Panel visual save emits that shape, so user comments disappear on save.
+    introduced_in: 4ce50920
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - internal/api/handlers/management/config_v8.go
+      - internal/api/handlers/management/config_v8_test.go
+    regression_tests:
+      - TestConfigV8YAMLReplaceKeepsDocumentComments
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream complete YAML replacement preserves document head and foot comments and the regression passes without this delta.
