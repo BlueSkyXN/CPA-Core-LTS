@@ -2,6 +2,11 @@ module github.com/router-for-me/CLIProxyAPI/v7
 
 go 1.26.0
 
+ignore (
+	./local
+	./tmp
+)
+
 require (
 	github.com/andybalholm/brotli v1.0.6
 	github.com/atotto/clipboard v0.1.4
