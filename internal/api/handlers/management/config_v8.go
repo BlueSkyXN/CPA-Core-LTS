@@ -69,13 +69,17 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return
 		}
+		if !configV8StringMapKeys(value) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "config_not_json_compatible", "message": "Use the YAML configuration endpoint for this document."})
+			return
+		}
 		var result any
 		if err = value.Decode(&result); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode_failed"})
 			return
 		}
 		encoded, errJSON := json.Marshal(result)
-		if errJSON != nil || !configV8StringMapKeys(value) {
+		if errJSON != nil {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "config_not_json_compatible", "message": "Use the YAML configuration endpoint for this document."})
 			return
 		}
@@ -222,6 +226,9 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 func configV8StringMapKeys(node *yaml.Node) bool {
 	if node == nil {
 		return true
+	}
+	if node.Kind == yaml.AliasNode {
+		return configV8StringMapKeys(node.Alias)
 	}
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(node.Content); i += 2 {
