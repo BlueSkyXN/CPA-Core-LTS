@@ -800,3 +800,37 @@ plugins:
 		request(http.MethodDelete, path, http.StatusNotFound, "")
 	}
 }
+
+// A complete YAML replacement must keep document-level comments, including a
+// trailing comment separated from the last setting by a blank line.
+func TestConfigV8YAMLReplaceKeepsDocumentComments(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("config-version: 8\nserver: {port: 8317}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	r := gin.New()
+	r.PUT("/v8/management/config.yaml", h.configV8WithCurrentRevisionForTest(t))
+	body := "# head marker\n\nconfig-version: 8\nserver:\n  port: 8318\n\n# trailing marker\n"
+	req := httptest.NewRequest(http.MethodPut, "/v8/management/config.yaml", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/yaml")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d body=%s", w.Code, w.Body.String())
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"# head marker", "# trailing marker", "port: 8318"} {
+		if !strings.Contains(string(saved), marker) {
+			t.Fatalf("saved config lost %q:\n%s", marker, saved)
+		}
+	}
+}

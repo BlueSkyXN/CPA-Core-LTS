@@ -142,6 +142,13 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 				update.Content[0].FootComment = dst.FootComment
 			}
 			*dst = *update.Content[0]
+			if len(parts) == 0 {
+				// A complete replacement owns the document-level comments too;
+				// yaml.v3 attaches a blank-line-separated trailing comment to the
+				// document node rather than the root mapping.
+				doc.HeadComment = update.HeadComment
+				doc.FootComment = update.FootComment
+			}
 		}
 	}
 	if err = config.NormalizeV8ConfigAliases(root); err != nil {
