@@ -1907,14 +1907,18 @@ patches:
     retire_when: All Codex empty-incomplete exits retain upstream usage and response tier in one failed attempt record, preserve error delivery semantics, and the regression passes without this delta.
 
   - id: openai-compat-complete-sse-usage
-    reason: Per-line observation misses response model, service tier and usage split across multiple SSE data lines, and can trust metadata from an invalid event. LTS observes only assembled and validated events while retaining failure attribution and exactly-once usage publication.
+    reason: Per-line observation misses response model, service tier and usage split across multiple SSE data lines, and can trust metadata from an invalid event. LTS observes only assembled and validated events. Stream errors, read failures, missing terminators and apply_patch translation failures publish the observed usage buffer before output can be canceled, including EOF and synthetic-DONE finalization. Each actual upstream attempt retains its own failed consumption record without duplicate publication.
     introduced_in: 0e42cc06
     affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); V8 adaptation of LTS mainline fix 2db456f1.
     files:
       - internal/runtime/executor/openai_compat_executor.go
+      - internal/runtime/executor/helps/apply_patch.go
       - internal/runtime/executor/openai_compat_executor_usage_test.go
+      - internal/runtime/executor/openai_compat_executor_failure_usage_test.go
     regression_tests:
       - TestOpenAICompatExecutorChatCompletionUsageObservesCompleteFrames
+      - TestOpenAICompatStreamFailurePreservesObservedUsage
+      - TestOpenAICompatStreamFailureKeepsSeparateAttempts
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: OpenAI-compatible stream observation follows validated SSE event boundaries with equivalent model, tier, failure and token attribution, and the regression passes without this delta.

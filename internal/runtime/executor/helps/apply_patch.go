@@ -31,18 +31,22 @@ func FinalizeApplyPatchStream(param any) [][]byte {
 }
 
 // RecordApplyPatchStreamFailure records validation before delivery can be canceled.
-func RecordApplyPatchStreamFailure(ctx context.Context, param any, reporter *UsageReporter, gatewayErr error) bool {
+func RecordApplyPatchStreamFailure(ctx context.Context, param any, reporter *UsageReporter, gatewayErr error, streamUsage ...*StreamUsageBuffer) bool {
 	if ApplyPatchTranslationError(param) == nil {
 		return false
 	}
-	reporter.PublishFailure(ctx, gatewayErr)
+	if len(streamUsage) > 0 && streamUsage[0] != nil {
+		streamUsage[0].PublishFailure(ctx, reporter, gatewayErr)
+	} else {
+		reporter.PublishFailure(ctx, gatewayErr)
+	}
 	return true
 }
 
 // StopApplyPatchStream propagates a retained failure after its one translated frame.
 // The caller supplies its existing sanitized gateway status error.
-func StopApplyPatchStream(ctx context.Context, param any, reporter *UsageReporter, out chan<- cliproxyexecutor.StreamChunk, gatewayErr error) bool {
-	if !RecordApplyPatchStreamFailure(ctx, param, reporter, gatewayErr) {
+func StopApplyPatchStream(ctx context.Context, param any, reporter *UsageReporter, out chan<- cliproxyexecutor.StreamChunk, gatewayErr error, streamUsage ...*StreamUsageBuffer) bool {
+	if !RecordApplyPatchStreamFailure(ctx, param, reporter, gatewayErr, streamUsage...) {
 		return false
 	}
 	select {
@@ -53,9 +57,9 @@ func StopApplyPatchStream(ctx context.Context, param any, reporter *UsageReporte
 }
 
 // EndApplyPatchStream checks EOF before any synthetic success or usage publication.
-func EndApplyPatchStream(ctx context.Context, param any, reporter *UsageReporter, out chan<- cliproxyexecutor.StreamChunk, gatewayErr error) bool {
+func EndApplyPatchStream(ctx context.Context, param any, reporter *UsageReporter, out chan<- cliproxyexecutor.StreamChunk, gatewayErr error, streamUsage ...*StreamUsageBuffer) bool {
 	chunks := FinalizeApplyPatchStream(param)
-	RecordApplyPatchStreamFailure(ctx, param, reporter, gatewayErr)
+	RecordApplyPatchStreamFailure(ctx, param, reporter, gatewayErr, streamUsage...)
 	for _, chunk := range chunks {
 		select {
 		case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
@@ -63,7 +67,7 @@ func EndApplyPatchStream(ctx context.Context, param any, reporter *UsageReporter
 			return true
 		}
 	}
-	return StopApplyPatchStream(ctx, param, reporter, out, gatewayErr)
+	return StopApplyPatchStream(ctx, param, reporter, out, gatewayErr, streamUsage...)
 }
 
 // ApplyPatchRequested resolves only original winning custom declarations.

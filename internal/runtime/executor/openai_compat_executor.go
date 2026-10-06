@@ -556,7 +556,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				loggedErr = statusErr{code: streamErr.code, msg: "upstream stream returned an error payload"}
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, loggedErr)
-			reporter.PublishFailure(ctx, loggedErr)
+			streamUsage.PublishFailure(ctx, reporter, loggedErr)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
@@ -606,7 +606,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 			streamLine := append([]byte("data: "), dataPayload...)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, streamLine, &param, claudeInputTokens)
-			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, &streamUsage)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -657,7 +657,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errScan == nil && !seenDone && !streamFailed && !streamAborted && len(frameData) > 0 {
 			_ = processFrame()
 		}
-		if !streamFailed && !streamAborted && helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+		if !streamFailed && !streamAborted && helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, &streamUsage) {
 			return
 		}
 		if streamFailed || streamAborted {
@@ -665,7 +665,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 		if errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			streamUsage.PublishFailure(ctx, reporter, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -676,7 +676,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			if responseFormat == sdktranslator.FormatOpenAIResponse {
 				streamErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before [DONE]"}
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				streamUsage.PublishFailure(ctx, reporter, streamErr)
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
@@ -686,13 +686,17 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 			// Other protocols retain compatibility with providers that omit [DONE].
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("data: [DONE]"), &param, claudeInputTokens)
-			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, &streamUsage)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
 					return
 				}
+			}
+			if helps.ApplyPatchTranslationError(param) != nil {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, false)
+				return
 			}
 		}
 		// Ensure we record the request if no usage chunk was ever seen.
