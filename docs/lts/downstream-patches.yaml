@@ -1888,3 +1888,32 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream complete YAML replacement preserves document head and foot comments and the regression passes without this delta.
+
+  - id: codex-empty-incomplete-failure-usage
+    reason: Empty response.incomplete means zero output, not zero upstream consumption. Codex HTTP and WebSocket non-stream, streaming and bootstrap paths returned or published failures before parsing terminal usage. LTS preserves input and cached tokens, normalized totals and response service tier in the single failed attempt record without changing request-scoped 502 delivery or connection cleanup.
+    introduced_in: b44f7088
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); Codex terminal execution paths on the V8 LTS branch.
+    files:
+      - internal/runtime/executor/codex_executor_execute.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_websockets_execute.go
+      - internal/runtime/executor/codex_websockets_stream.go
+      - internal/runtime/executor/codex_empty_incomplete_usage_test.go
+    regression_tests:
+      - TestCodexEmptyIncompletePreservesFailureUsage
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: All Codex empty-incomplete exits retain upstream usage and response tier in one failed attempt record, preserve error delivery semantics, and the regression passes without this delta.
+
+  - id: openai-compat-complete-sse-usage
+    reason: Per-line observation misses response model, service tier and usage split across multiple SSE data lines, and can trust metadata from an invalid event. LTS observes only assembled and validated events while retaining failure attribution and exactly-once usage publication.
+    introduced_in: 0e42cc06
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); V8 adaptation of LTS mainline fix 2db456f1.
+    files:
+      - internal/runtime/executor/openai_compat_executor.go
+      - internal/runtime/executor/openai_compat_executor_usage_test.go
+    regression_tests:
+      - TestOpenAICompatExecutorChatCompletionUsageObservesCompleteFrames
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: OpenAI-compatible stream observation follows validated SSE event boundaries with equivalent model, tier, failure and token attribution, and the regression passes without this delta.
