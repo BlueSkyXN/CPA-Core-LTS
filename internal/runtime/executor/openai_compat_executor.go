@@ -545,7 +545,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				loggedErr = statusErr{code: streamErr.code, msg: "upstream stream returned an error payload"}
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, loggedErr)
-			reporter.PublishFailure(ctx, loggedErr)
+			streamUsage.PublishFailure(ctx, reporter, loggedErr)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
@@ -646,7 +646,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 		if errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			streamUsage.PublishFailure(ctx, reporter, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -657,7 +657,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			if responseFormat == sdktranslator.FormatOpenAIResponse {
 				streamErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before [DONE]"}
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				streamUsage.PublishFailure(ctx, reporter, streamErr)
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
