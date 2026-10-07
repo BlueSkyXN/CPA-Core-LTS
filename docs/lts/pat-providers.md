@@ -53,6 +53,10 @@ Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 
 
 Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_logging_disabled` 布尔字段是日志审计确认门，`upstream`/`models`/`model_limits` 为可选覆盖。Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。提示词固定透传，旧私有配置和提示词覆盖字段明确拒绝。日志确认改为 false 或清除并成功热重载后，缓存凭据失效且调用被阻止。同一 AuthID 可以更新 key/device ID；有在途请求时暂拒凭据切换，删除账号会在取消和清理完成后释放绑定，允许添加替代账号。Panel 表单要求插件 ≥0.4.0，按实际 upstream 显示端点，并移除旧账号的 config_file 引用。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
 
+### Coding Plan 原生 Messages
+
+0.4.3 源码允许原生 `messages[].role=system`，保留消息次序、文本、`clear_at`、消息级 `output_config` 和 `tool_addition`/`tool_removal`，不把系统消息改成 user 或移至顶层，也不引入压缩／历史引擎。内联工具定义仍复用既有工具校验，不能绕过不支持的 server-tool 限制。客户端请求的系统消息相关 beta header 按插件 README 中的明确列表合并；账号凭据、zcode 签名身份、端点和统计归属不变，不透传客户端鉴权或无关 beta。本地合成测试覆盖动态库经 `/v1/messages` 的 JSON/SSE 透传、工具历史和单次 usage；不代表已发布部署、真实 `/compact` 成功或 50% 加成权益验收。
+
 ### Coding Plan 工具能力边界
 
 0.4.2 源码明确区分客户端执行的 function/custom/MCP 工具与 provider-native server tools：前者保留定义、schema 和成对历史。原生 `web_search_20250305` / `web_search_20260209` 经 2026-10-01 真实凭据探测确认由上游执行，插件定向放行并把回包（`web_search_prime` server_tool_use + assistant 侧按 `tool_use_id` 配对的裸 `tool_result`）折叠为单个 Responses `web_search_call`（命中载荷在 Python-repr 载体形 `[{'text': [...]}]` 与无载体的双引号 JSON 形 `[[{...}]]` 之间交替，Core 两种都接受（字符串转义取两方言并集：repr 的 \xNN/\U… 与 JSON 的 \/、成对 \uXXXX 代理对；孤立代理与未知转义仍拒绝），其余形状显式失败）；其余 provider-native 工具仍在签名握手／模型请求前明确拒绝，给它们添加 `input_schema` 也不能绕过校验。无效函数定义按 `tools[index]` 指出字段，错误不回显调用者提供的名称、类型或 schema；不伪造搜索结果。

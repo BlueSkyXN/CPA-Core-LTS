@@ -270,7 +270,7 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	headers := identityHeaders(c)
+	headers := modelHeaders(c, req.Headers)
 	for k, v := range signed {
 		headers[k] = v
 	}
