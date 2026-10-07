@@ -59,6 +59,30 @@
 
 凭据随 auth 文件保存（与 Qoder/CodeBuddy PAT 同模式）；内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型，1M 上下文、128k 输出、low/high/max 思考档。上传前在 **Plugins → Edit config** 把 `host_logging_disabled` 设为 true（日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志。撤销或清除后，成功热重载会阻止后续调用）。可选 `upstream: zai` 切国际区端点。之后 Check readiness 选择账号做本地诊断；容器重建后账号随 auth 目录持久化。0.3.x 的 `config_file` 引用和 `docker-compose.coding-plan.yml` 已移除；旧账号引用与旧插件配置字段会得到明确报错。新版 Panel 要求插件 ≥0.4.0，编辑账号会移除旧引用；管理员还需清理插件配置中的旧字段。同一账号可更新 key/device ID，删除旧账号并完成请求清理后可添加替代账号。
 
+### 从本机 ZCode 获取凭据（macOS）
+
+在**安装了 ZCode 的 Mac 终端**执行，不是在 Core 服务器或容器里执行。下面的命令使用 macOS 自带的 `plutil`、`tee`、`pbcopy`，读取默认 `~/.zcode/v2/` 数据目录，无需 Python、jq 或其他安装。
+
+**API key（国内 bigmodel）：**
+
+```sh
+(v=$(plutil -extract provider.builtin:bigmodel-coding-plan.options.apiKey raw -expect string "$HOME/.zcode/v2/config.json") && [ -n "$v" ] && [ "${v#enc:}" = "$v" ] && printf '%s\n' "$v" | tee /dev/tty | pbcopy)
+```
+
+国际区 z.ai 用户将 `builtin:bigmodel-coding-plan` 换成 `builtin:zai-coding-plan`；账号区域须与插件 `upstream` 的 `bigmodel` / `zai` 一致。切换命令不会修改服务器配置。
+
+**设备标识（device ID）：**
+
+```sh
+(v=$(plutil -extract deviceMid raw -expect string "$HOME/.zcode/v2/telemetry-state.json") && [ -n "$v" ] && [ "${v#enc:}" = "$v" ] && printf '%s\n' "$v" | tee /dev/tty | pbcopy)
+```
+
+先运行 API key 命令并粘贴到表单，再运行设备标识命令，避免剪贴板被覆盖。**成功时会在终端显示完整值并复制到剪贴板，请勿录屏、截图外发或在共享终端执行。** 命令只读取文件，不修改 ZCode 配置、不上传凭据。
+
+文件或字段不存在、不是字符串、为空或以 `enc:` 开头时，命令会在显示和复制之前停止；空值/加密检查静默停止，读取失败可能显示本地错误。不要把错误信息当作 key。请核对客户端数据目录、账号区域和已保存的账号；不同客户端版本或自定义目录不保证提供这些字段。这里读取的是已保存的 API key，不是 OAuth token，也不做解密；提取成功和 Check readiness 均不代表真实上游验证或套餐权益有效。
+
+配套 Panel 的 Coding Plan 添加/编辑账号表单提供“从本机 ZCode 获取（macOS）”帮助区和两个“复制命令”按钮。识别浏览器为 Mac 时默认展开，其他设备仍可手动查看；识别的是浏览器设备，不是 Core 服务器。Panel 不读取本机文件、不自动执行命令，也不自动读取剪贴板中的凭据。
+
 ## Panel 配套与升级
 
 Core 保持从 CPA-Panel-LTS 下载 `management.html` 的既有机制。发布这套功能时需要先准备包含 PAT UI 和通用插件就绪诊断（Panel PR #95）及 Coding Plan 表单（Panel PR #96）的 Panel Release，并记录验证过的 Panel tag/SHA；不能把旧 Panel 当作完整验收。
