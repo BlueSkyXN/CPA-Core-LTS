@@ -1,6 +1,6 @@
 # Coding Plan native Go plugin
 
-`zcode-coding-plan` v0.4.2 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
+`zcode-coding-plan` v0.4.3 is a single-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
 
 The plugin supports direct Anthropic Messages with Core's Responses HTTP JSON/SSE adapter and same-connection WebSocket continuation. The matching Core source also provides Chat Completions JSON/SSE conversion; updating the plugin alone on an older Core does not add that adapter. It does not execute tools, maintain another chat history, discover accounts, scan official application directories, query quota or implement interactive login. Use only credentials and client identity you are authorized to use. Local synthetic acceptance is not proof of upstream acceptance, pricing or production logging safety.
 
@@ -66,11 +66,52 @@ Panel **Plugins → Edit config** exposes the four public fields (host_logging_d
 
 Configuration saved means the existing PATCH persisted its fields, not that asynchronous runtime reconfiguration succeeded. Check registration/effective status and explicit readiness separately. Reconfiguration rejects active requests and preserves the plugin's old memory snapshot on failure; Core's existing reload behavior is unchanged.
 
+### Get credentials from local ZCode on macOS
+
+If you already use ZCode on your Mac, you can read the saved Coding Plan API key and device ID from its default `~/.zcode/v2/` data directory. These commands use only macOS tools (`plutil`, `tee`, `pbcopy`); no Python, jq or additional installation is needed. Run them in **your Mac terminal**, not on the Core server or inside its container.
+
+**API key (China / bigmodel):**
+
+```sh
+(v=$(plutil -extract provider.builtin:bigmodel-coding-plan.options.apiKey raw -expect string "$HOME/.zcode/v2/config.json") && [ -n "$v" ] && [ "${v#enc:}" = "$v" ] && printf '%s\n' "$v" | tee /dev/tty | pbcopy)
+```
+
+For an international z.ai account, replace `builtin:bigmodel-coding-plan` with `builtin:zai-coding-plan`. Match the account to the plugin's `upstream` (`bigmodel` or `zai`); choosing a command does not change the server's upstream.
+
+**Device ID:**
+
+```sh
+(v=$(plutil -extract deviceMid raw -expect string "$HOME/.zcode/v2/telemetry-state.json") && [ -n "$v" ] && [ "${v#enc:}" = "$v" ] && printf '%s\n' "$v" | tee /dev/tty | pbcopy)
+```
+
+Run the API key command and paste the result into its form field before running the device ID command, which replaces the clipboard. **Successful commands display the full value in the terminal and copy it to the clipboard. Do not record your screen, share screenshots or use a shared terminal.** They do not change ZCode's files or upload credentials.
+
+A missing file/key, a non-string or empty value, or an `enc:` encrypted value stops the command before display/copy. The empty/encrypted checks stop silently; a failed extraction may show a local error. Do not paste error output as an API key. Check the client data directory, region and saved account; clients using another directory or storage format may not expose these fields. This reads an already-saved key, not an OAuth token or encrypted credential, and does not decrypt anything. Extraction and local readiness do not establish key validity, subscription entitlement or upstream acceptance.
+
+The companion Panel's Coding Plan account form provides a **Get credentials from local ZCode (macOS)** help section with separate **Copy command** buttons. It opens by default when the browser appears to run on macOS and remains manually expandable on other devices. Browser detection does not describe the Core host OS. Panel only copies command text; it does not read local files, run commands or read credentials from the clipboard automatically.
+
 ## Supported request shape
 
 Caller system prompts are preserved. Template files, prompt modes and per-request prompt selection were removed. `x_coding_plan` is rejected and `X-Coding-Plan-Prompt` no longer selects a policy. Controls stripped from the effective Core payload are never restored from `OriginalRequest`.
 
 The built-in GLM models accept `low`, `high` and `max` effort. Native Messages may supply `reasoning_effort` or `output_config.effort`; Responses supplies `reasoning.effort`, and Chat Completions supplies `reasoning_effort`, which Core translates before plugin execution. Responses and Chat use the selected account/model capabilities, not another provider's same-name model. The plugin normalizes the effective control to `reasoning_effort` plus `thinking.type=enabled`, without inventing token budgets. Conflicting fields, unsupported levels, manual budgets and disabled thinking are rejected. Omitting controls preserves the upstream default. Optional custom model IDs do not inherit unverified built-in thinking/image capabilities.
+
+### Native Messages and Claude Code compaction
+
+Native `/v1/messages` requests stay in Anthropic format. The plugin accepts `user`, `assistant` and `system` roles and preserves message order, system text blocks, `clear_at`, per-message `output_config`, and `tool_addition`/`tool_removal` blocks. It does not move system messages into the top-level prompt, turn them into user messages, or flatten tool changes. Empty-content effort messages are preserved. Inline tool definitions use the same validation as top-level tools, including rejection of unsupported provider-native tools. Placement, tool-reference resolution and model-specific extension support are decided by the upstream; existing size, cache and tool-result pairing checks still apply.
+
+The fixed zcode identity and default `mid-conversation-system-2026-04-07` beta remain unchanged. Caller-requested values from this list are merged into the model request's `Anthropic-Beta` header, without duplication:
+
+- `mid-conversation-system-2026-04-07`
+- `mid-conversation-system-clear-at-2026-08-21`
+- `mid-conversation-output-config-2026-07-01`
+- `per-turn-control-2026-07-01`
+- `mid-conversation-tool-changes-2026-07-01`
+- `inline-tools-2026-09-15`
+
+Other caller headers and beta values do not replace provider credentials or identity. These headers are forwarded only when requested, not synthesized from message content. Per-message controls are not folded into the existing top-level GLM thinking normalization. The plugin still performs its existing metadata and top-level control handling, so passthrough means preserving JSON message semantics, not byte-identical request bodies.
+
+This removes the plugin-local `Unsupported message role` failure for system messages used in Claude Code history and compaction requests. It does not add Anthropic server-side compaction or prove that BigModel/Z.AI accepts every extension. The dynamic-library tests verify native JSON/SSE dispatch, unchanged history, zcode signing and single usage attribution using a synthetic upstream; real `/compact`, extension semantics and billing entitlement require separate deployment acceptance. `unknown provider for model glm5-3` is a separate routing error: use a registered model ID such as `glm-5.3`, unless an explicit alias was configured.
 
 ### Reasoning display compatibility
 

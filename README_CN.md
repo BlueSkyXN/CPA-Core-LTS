@@ -1,3 +1,5 @@
+> **v8 开发分支：** 配置路径、保留的 v0 API、旧面板禁写保护及回退要求见 [LTS v8 兼容说明](docs/lts/v8-development-compatibility.md)。本分支不代表已发布升级。
+
 # CPA Core LTS
 
 [English](README.md) | 中文 | [日本語](README_JA.md)

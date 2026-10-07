@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	executor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	executor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 type flowSaveExecutor struct{}
@@ -68,6 +68,48 @@ func TestFlowConfigSaveRejectsInapplicableHistoryBeforeWriting(t *testing.T) {
 	c.Request = httptest.NewRequest("PUT", "/config.yaml", strings.NewReader(strings.ReplaceAll(string(original), "model: public-test", "model: other-test")))
 	c.Request.Header.Set("Content-Type", "application/yaml")
 	h.PutConfigYAML(c)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatal("rejected policy overwrote configuration file", err)
+	}
+	if !manager.FlowControlPolicy().Enabled {
+		t.Fatal("save rejection disabled the running policy")
+	}
+}
+
+func TestV8FlowConfigSaveRejectsInapplicableHistoryBeforeWriting(t *testing.T) {
+	original := []byte("port: 8317\nflow-control:\n  version: 3\n  enabled: true\n  rules:\n    - id: execution\n      stage: attempt\n      scope: global\n      model: public-test\n      max-concurrent: 2\n      windows:\n        - requests: 20\n          period-ms: 60000\n")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	defer manager.CloseFlowControl()
+	manager.SetConfig(cfg)
+	e := &flowSaveExecutor{}
+	manager.RegisterExecutor(e)
+	a, err := manager.Register(context.Background(), &coreauth.Auth{ID: t.Name(), Provider: e.Identifier(), Status: coreauth.StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(a.ID, e.Identifier(), []*registry.ModelInfo{{ID: "public-test"}})
+	defer registry.GetGlobalRegistry().UnregisterClient(a.ID)
+	if _, err := manager.Execute(context.Background(), []string{e.Identifier()}, executor.Request{Model: "public-test"}, executor.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(cfg, path, manager)
+	router := gin.New()
+	router.PATCH("/v8/config", h.configV8WithCurrentRevisionForTest(t))
+	w := httptest.NewRecorder()
+	body := `{"flow-control":{"version":3,"enabled":true,"rules":[{"id":"execution","stage":"attempt","scope":"global","model":"other-test","max-concurrent":2,"windows":[{"requests":20,"period-ms":60000}]}]}}`
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v8/config", strings.NewReader(body)))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}

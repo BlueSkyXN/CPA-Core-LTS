@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -464,7 +464,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if helps.IsCodexTerminalEmptyIncomplete(payload, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 				streamErr := newCodexEmptyIncompleteStreamError()
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				detail, _ := helps.ParseCodexUsage(payload)
+				reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, connection, "terminal_empty_incomplete", streamErr)
 					sess.clearActiveConnection(connection, readCh)
@@ -711,7 +712,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if helps.IsCodexTerminalEmptyIncomplete(payload, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
 				streamErr := newCodexEmptyIncompleteStreamError()
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				detail, _ := helps.ParseCodexUsage(payload)
+				reporter.PublishFailureWithDetail(ctx, detail, streamErr)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, connection, "terminal_empty_incomplete", streamErr)
 					unlockStreamSession()
@@ -741,11 +743,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 			}
 
-			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
 			if cliproxyexecutor.DownstreamWebsocket(ctx) {
 				if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
-					clientPayload = applyCodexIdentityExposeResponsePayload(completedPayload, identityState)
+					payload = completedPayload
 				}
+				clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
 				downstreamPayload := helps.EnsureResponsesUsageDetails(clientPayload)
 				if !send(cliproxyexecutor.StreamChunk{Payload: downstreamPayload}) {
 					terminateReason = "context_done"
@@ -763,7 +765,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				payload = completedPayload
 			}
 			eventType = gjson.GetBytes(payload, "type").String()
-			clientPayload = applyCodexIdentityExposeResponsePayload(payload, identityState)
+			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
 			line := encodeCodexWebsocketAsSSE(clientPayload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
 			for i := range chunks {
@@ -785,16 +787,16 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 // codexWebsocketPrepared contains the request pipeline output shared by the
 // ordinary per-response stream and subsequent creates on a duplex connection.
 type codexWebsocketPrepared struct {
+	identityState        codexIdentityConfuseState
+	upstreamBody         []byte
 	from                 sdktranslator.Format
 	responseFormat       sdktranslator.Format
 	to                   sdktranslator.Format
 	preserveNativeOutput bool
 	originalPayload      []byte
 	clientBody           []byte
-	upstreamBody         []byte
 	wsURL                string
 	wsHeaders            http.Header
-	identityState        codexIdentityConfuseState
 	replayScope          codexReasoningReplayScope
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
@@ -832,7 +834,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequestForExecutor(e.cfg, "codex-websockets", baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
 	body = normalizeCodexInstructions(body, preserveNativeOutput)
@@ -843,7 +845,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)
-	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
+	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
 	var replayScope codexReasoningReplayScope
 	var skipReplay bool
 	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
@@ -905,9 +907,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		originalPayload:      originalPayload,
 		clientBody:           clientBody,
 		upstreamBody:         upstreamBody,
+		identityState:        identityState,
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,
-		identityState:        identityState,
 		replayScope:          replayScope,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,

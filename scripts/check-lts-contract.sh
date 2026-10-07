@@ -52,7 +52,7 @@ forbid_grep_ci() {
 }
 
 module_path="$(sed -n 's/^module //p' go.mod)"
-if [ "$module_path" != "github.com/router-for-me/CLIProxyAPI/v7" ]; then
+if [ "$module_path" != "github.com/router-for-me/CLIProxyAPI/v8" ]; then
   echo "unexpected Go module path: $module_path" >&2
   exit 1
 fi
@@ -86,7 +86,7 @@ forbid_grep_ci '(^|[^[:alnum:]_])(sponsor(ship)?|affiliate)([^[:alnum:]_]|$)|赞
   README.md README_CN.md README_JA.md
 
 if git grep -n "github.com/router-for-me/CLIProxyAPI/v6" -- . ':(exclude)scripts/check-lts-contract.sh'; then
-  echo "legacy v6 module path references found; CPA-Core-LTS now follows upstream /v7" >&2
+  echo "legacy v6 module path references found; CPA-Core-LTS now follows upstream /v8" >&2
   exit 1
 fi
 
@@ -122,6 +122,11 @@ grep -R "/v0/management/usage/import" -n \
   --exclude-dir=node_modules \
   >/dev/null
 
+require_path docs/lts/v8-development-compatibility.md
+require_grep 'unsupported_config_layout' internal/api/handlers/management/config_basic.go
+require_grep 'CheckFlowControlConfig' internal/api/handlers/management/config_v8.go
+require_grep 'upstream.codex.client-metadata' internal/config/config_v8.go
+require_grep 'config_not_json_compatible' internal/api/handlers/management/config_v8.go
 require_path internal/api/handlers/management/usage.go
 require_path internal/api/handlers/management/usage_contract_test.go
 require_path internal/runtime/executor/helps/usage_helpers.go

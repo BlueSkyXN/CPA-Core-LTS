@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -181,12 +181,14 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 		)
 		if err == nil {
 			w.streamWriter = streamWriter
-			w.chunkChannel = make(chan []byte, 100) // Buffered channel for async writes
+			chunks := make(chan []byte, 100) // Buffered channel for async writes
+			w.chunkChannel = chunks
 			doneChan := make(chan struct{})
 			w.streamDone = doneChan
 
-			// Start async chunk processor
-			go w.processStreamingChunks(doneChan)
+			// Start async chunk processor. It receives the channel and writer
+			// directly so Finalize clearing the fields cannot race with startup.
+			go processStreamingChunks(doneChan, chunks, streamWriter)
 
 			// Write status immediately
 			_ = streamWriter.WriteStatus(statusCode, w.headers)
@@ -265,19 +267,19 @@ func (w *ResponseWriterWrapper) detectStreaming(contentType string) bool {
 
 // processStreamingChunks runs in a separate goroutine to process response chunks from the chunkChannel.
 // It asynchronously writes each chunk to the streaming log writer.
-func (w *ResponseWriterWrapper) processStreamingChunks(done chan struct{}) {
+func processStreamingChunks(done chan struct{}, chunks <-chan []byte, writer logging.StreamingLogWriter) {
 	if done == nil {
 		return
 	}
 
 	defer close(done)
 
-	if w.streamWriter == nil || w.chunkChannel == nil {
+	if writer == nil || chunks == nil {
 		return
 	}
 
-	for chunk := range w.chunkChannel {
-		w.streamWriter.WriteChunkAsync(chunk)
+	for chunk := range chunks {
+		writer.WriteChunkAsync(chunk)
 	}
 }
 

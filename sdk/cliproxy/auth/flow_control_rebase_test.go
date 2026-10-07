@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	executor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/flowcontrol"
+	executor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/flowcontrol"
 )
 
 type flowRebasePreparingExecutor struct {

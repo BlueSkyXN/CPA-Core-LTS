@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestReadRequestBodyRejectsIdentityBodyOverLimit(t *testing.T) {

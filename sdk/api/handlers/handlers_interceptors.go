@@ -2,16 +2,18 @@ package handlers
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/net/context"
 )
 
@@ -375,6 +377,7 @@ type requestAfterAuthCapture struct {
 	body                    []byte
 	originalRequest         []byte
 	originalRequestReplaced bool
+	path                    string
 }
 
 func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterceptRequest, resp coreexecutor.RequestAfterAuthInterceptResponse) {
@@ -390,6 +393,7 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 		originalRequest = cloneBytes(resp.Body)
 		originalRequestReplaced = true
 	}
+	path := strings.TrimSpace(resp.Path)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -398,6 +402,7 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 	c.body = body
 	c.originalRequest = originalRequest
 	c.originalRequestReplaced = originalRequestReplaced
+	c.path = path
 }
 
 func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Request, coreexecutor.Options) {
@@ -414,6 +419,14 @@ func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecu
 		opts.OriginalRequest = cloneBytes(c.originalRequest)
 	}
 	opts.Headers = cloneHeader(c.headers)
+	if c.path != "" {
+		if opts.Metadata == nil {
+			opts.Metadata = make(map[string]any, 1)
+		} else {
+			opts.Metadata = maps.Clone(opts.Metadata)
+		}
+		opts.Metadata[coreexecutor.RequestPathMetadataKey] = c.path
+	}
 	return req, opts
 }
 
@@ -494,6 +507,17 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		req.Payload = cloneBytes(resp.Body)
 		opts.OriginalRequest = cloneBytes(resp.Body)
 	}
+	if strings.TrimSpace(resp.Path) != "" && !resp.Terminate {
+		if errPath := coreexecutor.ValidateRequestPathOverride(coreexecutor.RequestPathFromMetadata(opts.Metadata), resp.Path); errPath != nil {
+			return req, opts, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: errPath}
+		}
+		if opts.Metadata == nil {
+			opts.Metadata = make(map[string]any, 1)
+		} else {
+			opts.Metadata = maps.Clone(opts.Metadata)
+		}
+		opts.Metadata[coreexecutor.RequestPathMetadataKey] = strings.TrimSpace(resp.Path)
+	}
 	if resp.Terminate {
 		return req, opts, requestTerminationError(resp)
 	}
@@ -572,6 +596,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		Metadata:       req.Metadata,
 	}, skipPluginID)
 	return coreexecutor.RequestAfterAuthInterceptResponse{
+		Path:            strings.TrimSpace(resp.Path),
 		Headers:         resp.Headers,
 		Body:            resp.Body,
 		ClearHeaders:    resp.ClearHeaders,

@@ -1,3 +1,5 @@
+> v8 开发线：本文的 `codex.abnormal-reasoning-retry` 继续作为 legacy 读取别名；canonical YAML 路径为 `upstream.codex.abnormal-reasoning-retry`，策略语义不变。详见 [v8 兼容说明](v8-development-compatibility.md)。
+
 # Codex Client Context Degradation Defense
 
 CPA-Core-LTS 针对 Codex 上游 reasoning 截断（516/1034 现象）的多层防御机制。
@@ -108,6 +110,8 @@ codex:
 | --- | --- | --- | --- | --- |
 | mixed pool | 同时有 non-special 和 special | `delivery-policy` | `best-non-special` | 有正常回答就别交出 516/1034。 |
 | all-special exhausted | 重试耗尽，全部 516/1034 | `fallback-policy`（需 `exhausted-behavior: pass-through`） | `best-special` | 没有正常回答时，挑一个相对能用的，避免直接报错。 |
+
+候选池只收录能成功转换为客户端协议的响应：非流式 attempt 的转换若报告 tool-input 错误或输出为空，该 attempt 不会成为 pass-through 兜底候选；耗尽时若没有可交付候选，客户端收到错误而不是空的成功响应。post-hedge usage 聚合（finalizer）重新转换失败时，保留已校验的原始响应，只是不做 usage 聚合。
 
 #### `delivery-policy` 怎么选
 

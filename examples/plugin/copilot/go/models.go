@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // copilotCatalogModel 对齐上游 GET /models 的 OpenAI 形状；未知字段整体忽略。

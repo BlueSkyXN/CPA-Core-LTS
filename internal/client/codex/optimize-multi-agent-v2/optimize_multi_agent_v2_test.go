@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -259,7 +259,7 @@ func TestRewriteCodexMultiAgentV2MessageEncryptionNamespacesAndToolNames(t *test
 		{"type":"function","name":"spawn_agent","parameters":{"properties":{"message":{"encrypted":true}}}}
 	]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexMultiAgentV2MessageEncryption(context.Background(), headers, payload, cfg)
 
 	for _, path := range []string{
@@ -289,7 +289,7 @@ func TestRewriteCodexMultiAgentV2MessageEncryptionAdditionalToolsAndGates(t *tes
 
 	payload := []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"properties":{"message":{"encrypted":true},"data":{"encrypted":"keep"}}}}]}]}]}`)
 	headers := http.Header{"User-Agent": []string{"codex-tui/0.145.0"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexMultiAgentV2MessageEncryption(context.Background(), headers, payload, cfg)
 	if marker := gjson.GetBytes(got, "input.0.tools.0.tools.0.parameters.properties.message.encrypted"); marker.Exists() {
 		t.Fatalf("additional_tools marker was preserved: %s", got)
@@ -341,7 +341,7 @@ func TestOptimizeCodexMultiAgentV2RequestSkipsNamespaceConflict(t *testing.T) {
 
 	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]},{"type":"namespace","name":"collaboration-optimize","tools":[]}]}`)
 	headers := http.Header{"User-Agent": []string{"codex-tui/0.154.0"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 	if optimized {
 		t.Fatal("namespace conflict unexpectedly enabled optimization")
@@ -356,7 +356,7 @@ func TestOptimizeCodexMultiAgentV2RequestSkipsDotPrefixConflict(t *testing.T) {
 
 	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]},{"type":"function","name":"collaboration-optimize.tool"}]}`)
 	headers := http.Header{"User-Agent": []string{"codex-tui/0.154.0"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 	if optimized {
 		t.Fatal("dot prefix conflict unexpectedly enabled optimization")
@@ -419,7 +419,7 @@ func TestRewriteCodexSpawnAgentDescriptionEnabledOptimizesTool(t *testing.T) {
 
 	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","description":"Spawns an agent.","parameters":{"properties":{"message":{"type":"string","encrypted":true}}}}]}]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 	if !optimized {
 		t.Fatal("collaboration namespace was not marked optimized")
@@ -480,7 +480,7 @@ func TestOptimizeCodexMultiAgentV2RequestSkipsPreparedToolRefresh(t *testing.T) 
 	ctx := context.WithValue(context.Background(), "gin", ginContext)
 
 	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","description":"Available model overrides (optional; inherited parent model is preferred):\n- old-model: Old model.\nSpawns an agent.","parameters":{"properties":{"message":{"encrypted":true}}}}]}]}`)
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(ctx, nil, payload, cfg)
 	if !optimized {
 		t.Fatal("collaboration namespace was not optimized")
@@ -498,7 +498,7 @@ func TestOptimizeCodexMultiAgentV2RequestPreservesNativeAgentMessage(t *testing.
 
 	payload := []byte(`{"input":[{"type":"agent_message","id":"amsg_1","author":"/root","recipient":"/root/worker","content":[{"type":"input_text","text":"Payload:\n"},{"type":"encrypted_content","encrypted_content":"delegated task"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_1"}}]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, namespaceOptimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 	if namespaceOptimized {
 		t.Fatal("payload without spawn_agent unexpectedly optimized a namespace")
@@ -619,7 +619,7 @@ func TestRewriteCodexMultiAgentV2InputRewritesAgentMessage(t *testing.T) {
 		"internal_chat_message_metadata_passthrough":{"turn_id":"turn_1"}
 	}]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg)
 
 	if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "message" {
@@ -673,7 +673,7 @@ func TestRewriteCodexMultiAgentV2Input_StripsAuthorAndRecipient_Issue6136(t *tes
 
 	t.Run("compat mode strips ordinary message metadata without rewriting opaque agents", func(t *testing.T) {
 		headers := http.Header{"User-Agent": []string{"curl/8.7.1"}}
-		cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+		cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, true)
 
 		if gjson.GetBytes(got, "input.0").Raw != gjson.GetBytes(payload, "input.0").Raw {
@@ -705,7 +705,7 @@ func TestRewriteCodexMultiAgentV2Input_StripsAuthorAndRecipient_Issue6136(t *tes
 
 	t.Run("non-compat mode preserves author and recipient on all items", func(t *testing.T) {
 		headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-		cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+		cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, false)
 
 		if author := gjson.GetBytes(got, "input.0.author").String(); author != "/root" {
@@ -726,6 +726,60 @@ func TestRewriteCodexMultiAgentV2Input_StripsAuthorAndRecipient_Issue6136(t *tes
 	})
 }
 
+func TestRewriteCodexMultiAgentV2Input_CompatModeWithoutOptimize_Issue6233(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"model":"gpt-6-luna","input":[{
+		"type":"agent_message",
+		"id":"amsg_probe",
+		"author":"/root/worker",
+		"recipient":"/root",
+		"content":[
+			{"type":"input_text","text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\ndone"},
+			{"type":"input_text","text":"test task payload"}
+		],
+		"internal_chat_message_metadata_passthrough":{"turn_id":"turn_probe"}
+	}]}`)
+
+	t.Run("compat mode converts agent_message to message/user and normalizes content even when optimize is false", func(t *testing.T) {
+		headers := http.Header{"User-Agent": []string{"Codex Desktop/0.158.0-alpha.2.1"}}
+		// Compatibility mode still works when client multi-agent optimization is disabled.
+		cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: false}}}}
+		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, true)
+
+		// Item 0: must be converted to message with role user
+		messageType := gjson.GetBytes(got, "input.0.type").String()
+		if messageType != "message" {
+			t.Fatalf("input.0.type = %q, want message (must not stay agent_message without author)", messageType)
+		}
+		role := gjson.GetBytes(got, "input.0.role").String()
+		if role != "user" {
+			t.Fatalf("input.0.role = %q, want user", role)
+		}
+
+		// Proven plaintext is combined into portable input_text.
+		contentType := gjson.GetBytes(got, "input.0.content.0.type").String()
+		if contentType != "input_text" {
+			t.Fatalf("input.0.content.0.type = %q, want input_text", contentType)
+		}
+		contentText := gjson.GetBytes(got, "input.0.content.0.text").String()
+		if contentText != "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\ndone\ntest task payload" {
+			t.Fatalf("input.0.content.0.text = %q, want test task payload", contentText)
+		}
+
+		// Non-standard metadata must be stripped
+		if author := gjson.GetBytes(got, "input.0.author"); author.Exists() {
+			t.Fatalf("input.0.author was not stripped; got=%s", author.String())
+		}
+		if recipient := gjson.GetBytes(got, "input.0.recipient"); recipient.Exists() {
+			t.Fatalf("input.0.recipient was not stripped; got=%s", recipient.String())
+		}
+		if passthrough := gjson.GetBytes(got, "input.0.internal_chat_message_metadata_passthrough"); passthrough.Exists() {
+			t.Fatalf("input.0.internal_chat_message_metadata_passthrough was not stripped; got=%s", passthrough.String())
+		}
+	})
+}
+
 func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 	t.Parallel()
 
@@ -738,13 +792,13 @@ func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 	}{
 		{
 			name:      "Codex Desktop enabled",
-			cfg:       &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}},
+			cfg:       &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}},
 			userAgent: "Codex Desktop/0.146.0-alpha.3",
 			want:      true,
 		},
 		{
 			name:      "codex tui enabled",
-			cfg:       &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}},
+			cfg:       &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}},
 			userAgent: "codex-tui/0.154.0",
 			want:      true,
 		},
@@ -755,7 +809,7 @@ func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 		},
 		{
 			name:      "unrelated client",
-			cfg:       &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}},
+			cfg:       &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}},
 			userAgent: "curl/8.7.1",
 		},
 		{
@@ -788,7 +842,7 @@ func TestRewriteCodexMultiAgentV2InputFailsClosedForOpaqueOrInvalidContent(t *te
 		{"type":"agent_message","content":[{"type":"output_text","text":"wrong union"}]}
 	]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg)
 	if string(got) != string(payload) {
 		t.Fatalf("opaque or invalid agent_message was rewritten: %s", got)
@@ -797,7 +851,7 @@ func TestRewriteCodexMultiAgentV2InputFailsClosedForOpaqueOrInvalidContent(t *te
 
 func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
 	payload := []byte(`{"model":"test-model","input":[{"type":"agent_message","content":[{"type":"input_text","text":"task"}]}]}`)
-	enabledCfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	enabledCfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	eligibleHeaders := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
 
 	translations := []struct {
@@ -880,7 +934,7 @@ func TestRewriteCodexSpawnAgentDescriptionIgnoresOtherUserAgent(t *testing.T) {
 
 	payload := []byte(`{"tools":[{"type":"function","name":"spawn_agent","description":"unchanged"}]}`)
 	headers := http.Header{"User-Agent": []string{"curl/8.7.1"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexSpawnAgentDescription(context.Background(), headers, payload, cfg)
 	if string(got) != string(payload) {
 		t.Fatalf("payload changed for unrelated User-Agent: %s", got)
@@ -995,7 +1049,7 @@ func TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionWithoutSpawnAgent(t *t
 		]
 	}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 
 	if optimized {
@@ -1022,7 +1076,7 @@ func TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionInAdditionalTools(t *t
 		]
 	}`)
 	headers := http.Header{"User-Agent": []string{"codex-tui/0.154.0"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, _ := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 
 	for _, path := range []string{"input.0.tools.0.tools.0", "input.0.tools.0.tools.1"} {
@@ -1045,7 +1099,7 @@ func TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionFromAllThreeToolsWithS
 		]
 	}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 
 	if !optimized {
@@ -1076,7 +1130,7 @@ func TestOptimizeCodexMultiAgentV2RequestIgnoresUnconfirmedSameNameTools(t *test
 		]}
 	]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got, optimized := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 	if optimized {
 		t.Fatal("unconfirmed same-name tools unexpectedly optimized a namespace")
@@ -1244,7 +1298,7 @@ func BenchmarkOptimizeCodexMultiAgentV2Request(b *testing.B) {
 		]
 	}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	ctx := context.Background()
 
 	b.ReportAllocs()

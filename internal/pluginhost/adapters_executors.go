@@ -13,15 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -1334,6 +1334,22 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, &param)
 		if checked.Err != nil || !validClaudePluginOpenAIJSON(prepared, translated) {
 			err = claudePluginConversionError()
+			if reporter != nil {
+				if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
+					reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
+				}
+				reporter.PublishFailureWithDetail(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload), err)
+			}
+			return coreexecutor.Response{}, err
+		}
+	}
+	if translated == nil && prepared.requestedFormat != "" && prepared.outputFormat != prepared.requestedFormat {
+		// Convert before reporting success: a translator tool-input failure or
+		// empty output is a request-scoped failure of a completed plugin call.
+		var param any
+		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, &param)
+		if helps.ApplyPatchTranslationError(param) != nil || len(translated) == 0 {
+			err = pluginResponseConversionError()
 			if reporter != nil {
 				if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 					reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)

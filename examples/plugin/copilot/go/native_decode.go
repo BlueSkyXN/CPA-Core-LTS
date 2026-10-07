@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // 共用已验证的 Chat 投影语义；事件只存在于 Go 内存，不经过外部 runner。

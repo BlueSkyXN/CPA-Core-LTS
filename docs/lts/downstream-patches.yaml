@@ -1749,3 +1749,176 @@ patches:
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#5274
     state: required
     retire_when: Upstream classifies access-program error codes with equivalent request-fault, rotation-without-cooldown, and terminal status semantics, and the LTS-specific skip is redundant.
+
+  - id: v8-plugin-config-opaque-yaml
+    reason: The upstream v8 layout preprocessing decodes the whole document into map[string]any and expands aliases across every subtree, so plugin-owned plugins.configs YAML with composite keys or tag-distinct keys is rejected at load time and merge keys drop typed keys. LTS keeps plugins.configs opaque to these helpers, matching the v7 loader, while still rejecting recursive aliases. Management JSON checks non-string keys before decoding, including alias targets visited once each so shared anchors cannot fan out before Decode's alias-ratio guard, so valid opaque YAML reports 422 config_not_json_compatible instead of 500 and unrelated revisioned provider subtrees remain readable.
+    introduced_in: bc69bfb9
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); flattenV8 whole-tree Decode and expandConfigAliases are upstream v8 code.
+    files:
+      - internal/config/config_v8.go
+      - internal/config/config_v8_plugin_opaque.go
+      - internal/config/config_v8_plugin_opaque_test.go
+      - internal/config/config_yaml.go
+      - internal/config/config_v8_api.go
+      - internal/api/handlers/management/config_v8.go
+      - internal/api/handlers/management/config_v8_opaque_test.go
+    regression_tests:
+      - TestConfigV8OpaquePluginJSONBoundary
+      - TestConfigV8StringMapKeysVisitsSharedAliasesOnce
+      - TestPluginConfigsStayOpaqueToV8LayoutHelpers
+      - TestPluginConfigsExternalAnchorIsExpandedForSave
+      - TestPluginConfigsRecursiveAliasRejected
+      - TestMergeKeyEqualityUsesTag
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream v8 config loading leaves plugins.configs opaque (no whole-tree map decode or alias expansion inside it) and uses typed key equality for merges, and these regressions pass without the LTS helpers.
+
+  - id: translation-failure-request-scoped
+    reason: Executors report local conversion failures of a completed upstream response (empty output or translator ToolInputError) with the shared ApplyPatchUpstreamErrorMessage 502. Upstream treats that as an upstream failure, cooling down the healthy credential/model and replaying the paid call on another credential. LTS marks the sentinel as request-scoped so the failure is delivered once with its usage and never penalizes or rotates credentials.
+    introduced_in: daca11c7
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); statusErr and the sentinel 502 sites are upstream executor code.
+    files:
+      - internal/runtime/executor/openai_compat_executor.go
+      - internal/runtime/executor/codex_translation_request_scoped_test.go
+      - internal/runtime/executor/codex_translation_usage_test.go
+    regression_tests:
+      - TestCodexTranslationFailureDoesNotRotateOrCooldown
+      - TestCodexNonStreamTranslationUsageOutcome
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream classifies local translation failures as request-scoped (no cooldown, no credential rotation) and the regressions pass without the statusErr IsRequestScoped override.
+
+  - id: openai-compat-image-status-errors
+    reason: Upstream OpenAICompatExecutor non-stream image generations/edits ignore the upstream HTTP status, returning an error body with a nil error and a successful usage record, which skips retry/refresh/cooldown and counts failures as success in LTS statistics.
+    introduced_in: 624d0954
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - internal/runtime/executor/openai_compat_executor.go
+      - internal/runtime/executor/openai_compat_executor_images_test.go
+    regression_tests:
+      - TestOpenAICompatExecutor_ImageNon2xxReturnsStatusError
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream returns a provider status error for non-2xx image responses and the regression passes without this delta.
+
+  - id: v8-turn-credential-ambiguity
+    reason: Upstream v8 JSON config writes restore redacted ICE server credentials by matching URL lists; when two stored servers share URLs and one is removed, the survivor silently inherits the other entry's credentials. LTS rejects such ambiguous writes with 422 ambiguous_turn_credentials while keeping the order-preserving round trip.
+    introduced_in: 1c82e0ca
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); preserveV8TURNSecrets is upstream v8 management code.
+    files:
+      - internal/api/handlers/management/config_v8.go
+      - internal/api/handlers/management/config_v8_test.go
+    regression_tests:
+      - TestConfigV8JSONTURNSecretsRejectAmbiguousRestore
+      - TestConfigV8JSONTURNSecrets
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream refuses or disambiguates redacted TURN credential restores for duplicate URL lists and both regressions pass without this delta.
+
+  - id: interceptor-path-override-validation
+    reason: Upstream RequestInterceptResponse.Path only rewrites request_path metadata, so a plugin switching a request to another protocol operation silently executes the original operation with mismatched translation. LTS accepts only same-path and image generations/edits overrides and rejects others with a request-scoped error before execution.
+    introduced_in: 38d88018
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - sdk/cliproxy/executor/request_path.go
+      - sdk/cliproxy/executor/request_path_test.go
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/request_path_override_test.go
+      - sdk/api/handlers/handlers_interceptors.go
+    regression_tests:
+      - TestValidateRequestPathOverride
+      - TestAfterAuthInterceptorRejectsIncompatiblePathOverride
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream either routes Path overrides to the target operation or rejects incompatible ones, and the regressions pass without this delta.
+
+  - id: apply-patch-final-snapshot-consistency
+    reason: Upstream non-native apply_patch bridging accepts a final snapshot that extends already-complete streamed arguments, and the Codex to Chat Completions converter closes a truncated prefix when the completed input is longer than the streamed deltas. LTS fails inconsistent snapshots and completes the missing tail (or reports a tool-input error on conflict).
+    introduced_in: dc17ccd0
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - internal/translator/common/apply_patch_responses.go
+      - internal/translator/common/apply_patch_responses_snapshot_test.go
+      - internal/translator/codex/openai/chat-completions/codex_openai_response.go
+      - internal/translator/codex/openai/chat-completions/codex_openai_patch_snapshot_test.go
+    regression_tests:
+      - TestApplyPatchResponsesBridgeRejectsSnapshotExtendingCompletedStream
+      - TestApplyPatchResponsesBridgeAcceptsMatchingSnapshotAfterCompletedStream
+      - TestApplyPatchChatStreamCompletesMissingTail
+      - TestApplyPatchChatStreamConflictingCompletionFails
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream enforces final-snapshot consistency in both converters and the regressions pass without this delta.
+
+  - id: terminal-unauthorized-same-credential-update
+    reason: Upstream updateInternal replaces availability fields when an auth is re-synthesized with unchanged credentials, reviving a credential whose refresh token was rejected (401 + invalid_grant) so it is selected and refreshed again. LTS preserves the terminal unauthorized state until credential material changes.
+    introduced_in: 6b7a53ea
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - sdk/cliproxy/auth/conductor_lifecycle.go
+      - sdk/cliproxy/auth/conductor_unauthorized_resynthesis_test.go
+    regression_tests:
+      - TestManager_Update_SameCredentialsKeepsTerminalUnauthorized
+      - TestManager_Update_NewCredentialsClearsTerminalUnauthorized
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream keeps terminal unauthorized state across same-credential updates and the regressions pass without this delta.
+
+  - id: usage-queue-record-outcome
+    reason: The upstream usage queue derives failed/success from the final inbound HTTP status at consume time, so earlier successful attempts and independent tool usage flip depending on asynchronous timing. LTS derives the outcome from the record itself (Failed or Fail.StatusCode >= 400), matching the LTS statistics logger.
+    introduced_in: 7552186c
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - internal/redisqueue/plugin.go
+      - internal/redisqueue/plugin_outcome_test.go
+    regression_tests:
+      - TestUsageQueuePluginOutcomeComesFromRecordNotFinalStatus
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream usage queue uses the record's own outcome and the regression passes without this delta.
+
+  - id: v8-yaml-replace-document-comments
+    reason: Upstream v8 complete YAML replacement copies only the root mapping into the stored document, dropping document-level head comments and blank-line-separated trailing comments; the companion Panel visual save emits that shape, so user comments disappear on save.
+    introduced_in: 4ce50920
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main).
+    files:
+      - internal/api/handlers/management/config_v8.go
+      - internal/api/handlers/management/config_v8_test.go
+    regression_tests:
+      - TestConfigV8YAMLReplaceKeepsDocumentComments
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream complete YAML replacement preserves document head and foot comments and the regression passes without this delta.
+
+  - id: codex-empty-incomplete-failure-usage
+    reason: Empty response.incomplete means zero output, not zero upstream consumption. Codex HTTP and WebSocket non-stream, streaming and bootstrap paths returned or published failures before parsing terminal usage. LTS preserves input and cached tokens, normalized totals and response service tier in the single failed attempt record without changing request-scoped 502 delivery or connection cleanup.
+    introduced_in: b44f7088
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); Codex terminal execution paths on the V8 LTS branch.
+    files:
+      - internal/runtime/executor/codex_executor_execute.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_websockets_execute.go
+      - internal/runtime/executor/codex_websockets_stream.go
+      - internal/runtime/executor/codex_empty_incomplete_usage_test.go
+    regression_tests:
+      - TestCodexEmptyIncompletePreservesFailureUsage
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: All Codex empty-incomplete exits retain upstream usage and response tier in one failed attempt record, preserve error delivery semantics, and the regression passes without this delta.
+
+  - id: openai-compat-complete-sse-usage
+    reason: Per-line observation misses response model, service tier and usage split across multiple SSE data lines, and can trust metadata from an invalid event. LTS observes only assembled and validated events. Stream errors, read failures, missing terminators and apply_patch translation failures publish the observed usage buffer before output can be canceled, including EOF and synthetic-DONE finalization. Each actual upstream attempt retains its own failed consumption record without duplicate publication.
+    introduced_in: 0e42cc06
+    affected_upstream_range: through d7914afdedca7af95ee974a42453dc49fc1388ce (upstream main); V8 adaptation of LTS mainline fix 2db456f1.
+    files:
+      - internal/runtime/executor/openai_compat_executor.go
+      - internal/runtime/executor/helps/apply_patch.go
+      - internal/runtime/executor/openai_compat_executor_usage_test.go
+      - internal/runtime/executor/openai_compat_executor_failure_usage_test.go
+    regression_tests:
+      - TestOpenAICompatExecutorChatCompletionUsageObservesCompleteFrames
+      - TestOpenAICompatStreamFailurePreservesObservedUsage
+      - TestOpenAICompatStreamFailureKeepsSeparateAttempts
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: OpenAI-compatible stream observation follows validated SSE event boundaries with equivalent model, tier, failure and token attribution, and the regression passes without this delta.

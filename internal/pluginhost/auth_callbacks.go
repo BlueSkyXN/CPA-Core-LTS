@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type rpcHostAuthGetRequest struct {
@@ -206,6 +206,12 @@ func (h *Host) listAuthFilesFromDisk() ([]pluginapi.HostAuthFileEntry, error) {
 				if websockets, okWebsockets := parseWebsocketsValue(metadata["websockets"]); okWebsockets {
 					fileEntry.Websockets = websockets
 				}
+				if disabled, okDisabled := parseBoolValue(metadata["disabled"]); okDisabled && disabled {
+					fileEntry.Disabled = true
+					fileEntry.Status = string(coreauth.StatusDisabled)
+				} else {
+					fileEntry.Status = string(coreauth.StatusActive)
+				}
 			}
 		}
 		files = append(files, fileEntry)
@@ -334,12 +340,19 @@ func (h *Host) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, 
 	if authID == "" {
 		authID = path
 	}
+	status := coreauth.StatusActive
+	disabled := false
+	if d, okDisabled := parseBoolValue(metadata["disabled"]); okDisabled && d {
+		disabled = true
+		status = coreauth.StatusDisabled
+	}
 	auth := &coreauth.Auth{
 		ID:       authID,
 		Provider: provider,
 		FileName: filepath.Base(path),
 		Label:    label,
-		Status:   coreauth.StatusActive,
+		Status:   status,
+		Disabled: disabled,
 		Attributes: map[string]string{
 			"path":   path,
 			"source": path,
@@ -626,7 +639,7 @@ func parsePriorityValue(raw any) (int, bool) {
 	return 0, false
 }
 
-func parseWebsocketsValue(raw any) (bool, bool) {
+func parseBoolValue(raw any) (bool, bool) {
 	switch v := raw.(type) {
 	case bool:
 		return v, true
@@ -637,6 +650,10 @@ func parseWebsocketsValue(raw any) (bool, bool) {
 		}
 	}
 	return false, false
+}
+
+func parseWebsocketsValue(raw any) (bool, bool) {
+	return parseBoolValue(raw)
 }
 
 func bytesTrimSpace(raw []byte) []byte {

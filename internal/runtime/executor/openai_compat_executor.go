@@ -16,13 +16,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -137,11 +137,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth, req), baseModel, requestedModel) {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
 	}
 	if opts.Alt != "responses/compact" {
-		useMCT := helps.ShouldUseMaxCompletionTokensForModel(e.resolveCompatConfig(auth), baseModel, requestedModel)
+		useMCT := helps.ShouldUseMaxCompletionTokensForModel(e.resolveCompatConfig(auth, req), baseModel, requestedModel)
 		translated = helps.NormalizeOpenAIMaxTokens(translated, useMCT)
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
 		if err != nil {
@@ -216,12 +216,14 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 	reporter.ObserveResponseModel(body)
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
-	reporter.EnsurePublished(ctx)
 	// Translate response back to source format when needed
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, body, &param)
+	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, body, &param)
+	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+	}
+	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	if responseFormat == sdktranslator.FormatOpenAIResponse {
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
@@ -305,6 +307,14 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		// Upstream image errors must reach the auth conductor and usage
+		// statistics as failures, not as successful pass-through payloads.
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
+		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, body)
+		return resp, err
+	}
 
 	reporter.ObserveResponseModel(body)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
@@ -449,11 +459,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth, req), baseModel, requestedModel) {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
 	}
 	if opts.Alt != "responses/compact" {
-		useMCT := helps.ShouldUseMaxCompletionTokensForModel(e.resolveCompatConfig(auth), baseModel, requestedModel)
+		useMCT := helps.ShouldUseMaxCompletionTokensForModel(e.resolveCompatConfig(auth, req), baseModel, requestedModel)
 		translated = helps.NormalizeOpenAIMaxTokens(translated, useMCT)
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
 		if err != nil {
@@ -531,6 +541,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
+		helps.InitializeApplyPatchStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, &param)
 		var streamUsage helps.StreamUsageBuffer
 		var seenDone bool
 		var streamFailed bool
@@ -545,7 +556,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				loggedErr = statusErr{code: streamErr.code, msg: "upstream stream returned an error payload"}
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, loggedErr)
-			reporter.PublishFailure(ctx, loggedErr)
+			streamUsage.PublishFailure(ctx, reporter, loggedErr)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
@@ -585,6 +596,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				return true
 			}
 			if !isDone {
+				reporter.ObserveResponseModel(dataPayload)
+				streamUsage.ObserveOpenAIStream(dataPayload)
 				if streamErr, isError := openAICompatStreamDataError(dataPayload, eventName); isError {
 					publishStreamError(streamErr, true)
 					return true
@@ -592,7 +605,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 
 			streamLine := append([]byte("data: "), dataPayload...)
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, streamLine, &param, claudeInputTokens)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, streamLine, &param, claudeInputTokens)
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, &streamUsage)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -600,6 +614,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 					streamAborted = true
 					return true
 				}
+			}
+			if helps.ApplyPatchTranslationError(param) != nil {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, false)
+				return true
 			}
 			if isDone {
 				seenDone = true
@@ -612,8 +630,6 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			reporter.ObserveResponseModel(line)
-			streamUsage.ObserveOpenAIStream(line)
 			trimmedLine := bytes.TrimSpace(line)
 			if len(trimmedLine) == 0 {
 				if processFrame() {
@@ -641,12 +657,15 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errScan == nil && !seenDone && !streamFailed && !streamAborted && len(frameData) > 0 {
 			_ = processFrame()
 		}
+		if !streamFailed && !streamAborted && helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, &streamUsage) {
+			return
+		}
 		if streamFailed || streamAborted {
 			return
 		}
 		if errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			streamUsage.PublishFailure(ctx, reporter, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -657,7 +676,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			if responseFormat == sdktranslator.FormatOpenAIResponse {
 				streamErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before [DONE]"}
 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-				reporter.PublishFailure(ctx, streamErr)
+				streamUsage.PublishFailure(ctx, reporter, streamErr)
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 				case <-ctx.Done():
@@ -666,13 +685,18 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 
 			// Other protocols retain compatibility with providers that omit [DONE].
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("data: [DONE]"), &param, claudeInputTokens)
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, &streamUsage)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
 					return
 				}
+			}
+			if helps.ApplyPatchTranslationError(param) != nil {
+				publishStreamError(statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, false)
+				return
 			}
 		}
 		// Ensure we record the request if no usage chunk was ever seen.
@@ -986,7 +1010,7 @@ func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, bou
 }
 
 func (e *OpenAICompatExecutor) applyPromptCacheKey(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, baseModel string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, translated []byte) ([]byte, error) {
-	compat := e.resolveCompatConfig(auth)
+	compat := e.resolveCompatConfig(auth, req)
 	if compat == nil || !compat.SupportPromptCacheKey {
 		return translated, nil
 	}
@@ -1041,9 +1065,40 @@ func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (base
 	return
 }
 
-func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
+func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req cliproxyexecutor.Request) *config.OpenAICompatibility {
 	if auth == nil || e.cfg == nil {
 		return nil
+	}
+	if e.cfg.Home.Enabled {
+		// Home excludes provider credentials from the global configuration. These
+		// non-secret options belong to the credential selected for this attempt.
+		var options struct {
+			SupportPromptCacheKey bool                              `json:"support-prompt-cache-key"`
+			Models                []config.OpenAICompatibilityModel `json:"models"`
+		}
+		present := false
+		if rawOptions, exists := auth.Metadata["credential_options"]; exists {
+			if data, errMarshal := json.Marshal(rawOptions); errMarshal == nil {
+				present = json.Unmarshal(data, &options) == nil
+			}
+		}
+		if raw, exists := auth.Attributes["support_prompt_cache_key"]; exists {
+			if value, errParse := strconv.ParseBool(raw); errParse == nil {
+				options.SupportPromptCacheKey = value
+				present = true
+			}
+		}
+		if model, ok := cliproxyauth.ResolvedHomeModelOptions(req); ok {
+			options.Models = []config.OpenAICompatibilityModel{model}
+			present = true
+		}
+		if present {
+			return &config.OpenAICompatibility{
+				Name:                  auth.Attributes["compat_name"],
+				SupportPromptCacheKey: options.SupportPromptCacheKey,
+				Models:                options.Models,
+			}
+		}
 	}
 	if auth.AuthSourceKind() == cliproxyauth.AuthSourceConfig && auth.Attributes != nil {
 		if rawIndex := strings.TrimSpace(auth.Attributes["config_index"]); rawIndex != "" {
@@ -1146,6 +1201,14 @@ func (e statusErr) ModelFallbackReason() string { return e.modelFallbackReason }
 func (e statusErr) CodexRateLimitClass() string { return e.codexRateLimitClass }
 func (e statusErr) IsCredentialScoped() bool    { return e.credentialScoped }
 
+// IsRequestScoped marks local translation failures of an otherwise completed
+// upstream response. The credential and model are healthy, so the manager must
+// neither cool them down nor replay the paid upstream call on another
+// credential. Every executor reports this condition with the shared sentinel.
+func (e statusErr) IsRequestScoped() bool {
+	return e.code == http.StatusBadGateway && e.msg == helps.ApplyPatchUpstreamErrorMessage
+}
+
 const openAICompatTPMFallbackRetryAfter = time.Minute
 
 func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {
@@ -1187,3 +1250,6 @@ func openAICompatRetryAfter(status int, headers http.Header, body []byte, now ti
 	}
 	return nil
 }
+
+// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
+func (e *OpenAICompatExecutor) SupportsApplyPatch() bool { return e != nil }

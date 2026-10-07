@@ -5,13 +5,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -186,6 +186,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			tasks = append(tasks, modelRegistrationTask{
 				phase:    modelRegistrationPhase(authForRegistration),
 				category: modelRegistrationCategory(authForRegistration),
+				authID:   authID,
 				run: func(compatCache *openAICompatibilityRegistrationCache) {
 					if s.shouldSkipModelRegistration(authID, expectedGeneration, expectedDisabled) {
 						return

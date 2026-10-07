@@ -10,19 +10,20 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 type xaiPreparedRequest struct {
+	applyPatch               *helps.ApplyPatchResponsesState
 	baseModel                string
 	from                     sdktranslator.Format
 	responseFormat           sdktranslator.Format
@@ -70,9 +71,9 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := bytes.Clone(originalPayloadSource)
-	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, stream, helps.APIKeyModelIsCompat(req))
+	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx, opts.Headers, e.cfg, e.Identifier(), from, to, baseModel, originalPayload, stream, helps.APIKeyModelIsCompat(req))
 	originalTranslated = preserveXAIResponsesOutputControls(originalTranslated, originalPayload, from)
-	body, updatesChanged := helps.TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, opts.Headers, e.cfg, from, to, baseModel, bytes.Clone(req.Payload), stream, helps.APIKeyModelIsCompat(req))
+	body, updatesChanged := helps.TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntentForExecutor(ctx, opts.Headers, e.cfg, e.Identifier(), from, to, baseModel, bytes.Clone(req.Payload), stream, helps.APIKeyModelIsCompat(req))
 	body = preserveXAIResponsesOutputControls(body, req.Payload, from)
 
 	var err error
@@ -83,7 +84,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequestForExecutor(e.cfg, e.Identifier(), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.SetBoolIfDifferent(body, "stream", stream)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
@@ -94,9 +95,20 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	beforeMultiAgentEncryption := bytes.Clone(body)
 	body = helps.RewriteCodexMultiAgentV2MessageEncryption(ctx, opts.Headers, body, e.cfg)
 	plaintextMultiAgentTools := collectXAIPlaintextMultiAgentTools(beforeMultiAgentEncryption, body)
+	applyPatch := helps.NewApplyPatchResponsesState(from, originalPayload, originalTranslated)
+	var errNormalizePatch error
+	body, errNormalizePatch = helps.NormalizeApplyPatchResponsesRequest(body, originalPayload)
+	if errNormalizePatch != nil {
+		return nil, errNormalizePatch
+	}
 	willInjectXSearch := e.cfg != nil && e.cfg.XAI.InjectXSearch
 	shouldFold := xaiShouldFoldNamespaceTools(body, willInjectXSearch)
 	namespaceTools := collectXAINamespaceToolRefsWithFold(body, shouldFold)
+	for name, ref := range namespaceTools {
+		if ref.isDispatcher {
+			applyPatch.AddDispatcher(name, ref.namespace)
+		}
+	}
 	// Collect before normalizeXAITools flattens namespace wrappers so keys match
 	// the post-restore (namespace, short-name) shape used by the response filter.
 	clientDeclaredTools := collectXAIClientDeclaredToolKeys(body)
@@ -150,6 +162,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	}
 
 	return &xaiPreparedRequest{
+		applyPatch:               applyPatch,
 		baseModel:                baseModel,
 		from:                     from,
 		responseFormat:           responseFormat,
@@ -1571,9 +1584,6 @@ func normalizeXAITool(tool gjson.Result, namespaceName string, keepImageGenerati
 		return nil, true, true
 	}
 	if toolType == xaiImageGenerationToolType && !keepImageGeneration {
-		return nil, true, true
-	}
-	if toolType == xaiCustomToolType && tool.Get("name").String() == "apply_patch" {
 		return nil, true, true
 	}
 
