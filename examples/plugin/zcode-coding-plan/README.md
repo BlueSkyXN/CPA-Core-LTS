@@ -66,6 +66,30 @@ Panel **Plugins → Edit config** exposes the four public fields (host_logging_d
 
 Configuration saved means the existing PATCH persisted its fields, not that asynchronous runtime reconfiguration succeeded. Check registration/effective status and explicit readiness separately. Reconfiguration rejects active requests and preserves the plugin's old memory snapshot on failure; Core's existing reload behavior is unchanged.
 
+### Get credentials from local ZCode on macOS
+
+If you already use ZCode on your Mac, you can read the saved Coding Plan API key and device ID from its default `~/.zcode/v2/` data directory. These commands use only macOS tools (`plutil`, `tee`, `pbcopy`); no Python, jq or additional installation is needed. Run them in **your Mac terminal**, not on the Core server or inside its container.
+
+**API key (China / bigmodel):**
+
+```sh
+(v=$(plutil -extract provider.builtin:bigmodel-coding-plan.options.apiKey raw -expect string "$HOME/.zcode/v2/config.json") && [ -n "$v" ] && [ "${v#enc:}" = "$v" ] && printf '%s\n' "$v" | tee /dev/tty | pbcopy)
+```
+
+For an international z.ai account, replace `builtin:bigmodel-coding-plan` with `builtin:zai-coding-plan`. Match the account to the plugin's `upstream` (`bigmodel` or `zai`); choosing a command does not change the server's upstream.
+
+**Device ID:**
+
+```sh
+(v=$(plutil -extract deviceMid raw -expect string "$HOME/.zcode/v2/telemetry-state.json") && [ -n "$v" ] && [ "${v#enc:}" = "$v" ] && printf '%s\n' "$v" | tee /dev/tty | pbcopy)
+```
+
+Run the API key command and paste the result into its form field before running the device ID command, which replaces the clipboard. **Successful commands display the full value in the terminal and copy it to the clipboard. Do not record your screen, share screenshots or use a shared terminal.** They do not change ZCode's files or upload credentials.
+
+A missing file/key, a non-string or empty value, or an `enc:` encrypted value stops the command before display/copy. The empty/encrypted checks stop silently; a failed extraction may show a local error. Do not paste error output as an API key. Check the client data directory, region and saved account; clients using another directory or storage format may not expose these fields. This reads an already-saved key, not an OAuth token or encrypted credential, and does not decrypt anything. Extraction and local readiness do not establish key validity, subscription entitlement or upstream acceptance.
+
+The companion Panel's Coding Plan account form provides a **Get credentials from local ZCode (macOS)** help section with separate **Copy command** buttons. It opens by default when the browser appears to run on macOS and remains manually expandable on other devices. Browser detection does not describe the Core host OS. Panel only copies command text; it does not read local files, run commands or read credentials from the clipboard automatically.
+
 ## Supported request shape
 
 Caller system prompts are preserved. Template files, prompt modes and per-request prompt selection were removed. `x_coding_plan` is rejected and `X-Coding-Plan-Prompt` no longer selects a policy. Controls stripped from the effective Core payload are never restored from `OriginalRequest`.
