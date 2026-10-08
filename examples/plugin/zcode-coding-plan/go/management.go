@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 type managementConfig struct {
@@ -66,25 +67,25 @@ func (r *pluginRuntime) resolveAuth(raw []byte) (authRecord, error) {
 func (r *pluginRuntime) reconfigure(cfg managementConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.active) > 0 || r.retiring {
+	if len(r.active) > 0 {
 		return problem(409, "busy", "Finish or cancel requests before reconfiguring")
 	}
-	var next *config
-	if r.config != nil && cfg.HostLoggingDisabled != nil && *cfg.HostLoggingDisabled {
-		next = defaultConfig()
-		if err := cfg.apply(next); err != nil {
-			return err
+	next := make(map[string]*accountState, len(r.accounts))
+	if cfg.HostLoggingDisabled != nil && *cfg.HostLoggingDisabled {
+		for id, account := range r.accounts {
+			c := defaultConfig()
+			if err := cfg.apply(c); err != nil {
+				return err
+			}
+			c.APIKey, c.DeviceID = account.config.APIKey, account.config.DeviceID
+			c.AccountScope = id
+			next[id] = &accountState{authID: id, authIndex: account.authIndex, config: c, signer: &signer{apiKey: c.APIKey, endpoint: c.Endpoint}}
 		}
-		next.APIKey, next.DeviceID = r.config.APIKey, r.config.DeviceID
-		next.AccountScope = r.authOwner
 	}
-	if r.signer != nil {
-		r.signer.close()
+	for _, account := range r.accounts {
+		r.clearAccountLocked(account)
 	}
-	r.management, r.config, r.signer = cfg, next, nil
-	if next != nil {
-		r.signer = &signer{apiKey: next.APIKey, endpoint: next.Endpoint}
-	}
+	r.management, r.accounts = cfg, next
 	r.accepting = true
 	return nil
 }
@@ -92,6 +93,8 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 	var req struct {
 		StorageJSON []byte
 		AuthID      string
+		AuthIndex   string
+		Purpose     string
 	}
 	if err := decode(raw, &req); err != nil {
 		return nil, err
@@ -102,13 +105,23 @@ func (r *pluginRuntime) readiness(raw []byte) (any, error) {
 	authState, message := "unknown", "Select an imported account; no remote request has been made"
 	ready := false
 	if len(req.StorageJSON) > 0 {
-		if _, err := r.configuration(req.StorageJSON, req.AuthID); err != nil {
+		if _, err := r.configurationForAuth(req.StorageJSON, req.AuthID, req.AuthIndex); err != nil {
 			authState = "not_ready"
 			message = safeError(err).Message
 		} else {
 			authState = "ready"
 			message = "Local configuration valid; remote acceptance and billing not verified"
 			ready = accepting
+			if req.Purpose == "admission" {
+				r.mu.Lock()
+				account := r.accounts[strings.TrimSpace(req.AuthID)]
+				if account == nil || account.retiring || !r.accepting || r.loggingAcknowledgedLocked() != nil {
+					authState, message, ready = "not_ready", "Account configuration changed before admission", false
+				} else if account.active >= account.config.MaxInflight {
+					authState, message, ready = "not_ready", "This account's local concurrency limit was reached", false
+				}
+				r.mu.Unlock()
+			}
 		}
 	}
 	protocol := map[bool]string{true: "ready", false: "not_ready"}[accepting]

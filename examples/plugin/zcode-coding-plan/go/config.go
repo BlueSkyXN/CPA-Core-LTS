@@ -81,7 +81,7 @@ func defaultConfig() *config {
 	c := &config{}
 	c.Upstream = "bigmodel"
 	c.Endpoint = upstreamEndpoint(c.Upstream)
-	c.MaxInflight = 2
+	c.MaxInflight = 10
 	c.AccountScope = "local-account"
 	c.Identity = defaultIdentity()
 	c.Models = append([]string(nil), builtinModels...)

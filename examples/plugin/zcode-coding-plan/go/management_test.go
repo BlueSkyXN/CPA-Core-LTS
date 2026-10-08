@@ -52,8 +52,8 @@ func TestManagementConfigAndReadiness(t *testing.T) {
 		t.Fatal("invalid reconfiguration replaced working snapshot")
 	}
 	other := []byte(`{"type":"zcode-coding-plan","api_key":"other-key.other-secret","device_id":"other-device"}`)
-	if _, err = r.configuration(other, "other-auth"); err == nil {
-		t.Fatal("second account accepted")
+	if second, err := r.configuration(other, "other-auth"); err != nil || second == c || second.APIKey == c.APIKey {
+		t.Fatal("second account was not independently configured", err)
 	}
 }
 func TestManagementReconfigureRejectsStaleAdmission(t *testing.T) {

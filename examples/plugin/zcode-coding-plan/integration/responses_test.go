@@ -151,13 +151,14 @@ func v2Events(reply string) string {
 }
 
 type v2Fixture struct {
-	host      *pluginhost.Host
-	router    *gin.Engine
-	transport *v2Transport
-	usage     *fixtureUsageSink
-	logs      []string
-	cfg       *config.Config
-	manager   *coreauth.Manager
+	host       *pluginhost.Host
+	router     *gin.Engine
+	transport  *v2Transport
+	usage      *fixtureUsageSink
+	logs       []string
+	cfg        *config.Config
+	manager    *coreauth.Manager
+	management *management.Handler
 }
 
 func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
@@ -245,6 +246,7 @@ func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
 	router.POST("/v1/responses", handler.Responses)
 	router.GET("/v1/responses/ws", handler.ResponsesWebsocket)
 	mgmt := management.NewHandlerWithoutConfigFilePath(cfg, manager)
+	f.management = mgmt
 	mgmt.SetPluginHost(h)
 	router.GET("/v0/management/plugins/:id/readiness", mgmt.GetPluginReadiness)
 	router.GET("/v0/management/plugins", mgmt.ListPlugins)
