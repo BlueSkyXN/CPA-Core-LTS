@@ -2,6 +2,6 @@
   "type": "zcode-coding-plan",
   "label": "Coding Plan",
   "api_key": "<YOUR_CODING_PLAN_API_KEY>",
-  "device_id": "<YOUR_DEVICE_ID_OR_LEAVE_BLANK_FOR_PANEL_AUTOFILL>",
+  "device_id": "<YOUR_STABLE_DEVICE_ID>",
   "request_retry": 0
 }

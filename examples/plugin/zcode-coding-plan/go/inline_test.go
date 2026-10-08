@@ -66,8 +66,8 @@ func TestInlineConfigurationRequiresLoggingAcknowledgement(t *testing.T) {
 		t.Fatal("default upstream endpoint missing")
 	}
 	second := []byte(`{"type":"zcode-coding-plan","api_key":"other-key.other-secret","device_id":"other-device"}`)
-	if _, err = r.configuration(second, "second-auth"); err == nil {
-		t.Fatal("second inline account accepted")
+	if other, err := r.configuration(second, "second-auth"); err != nil || other == c || other.AccountScope != "second-auth" {
+		t.Fatal("second inline account was not independently configured", err)
 	}
 	status, err := r.dispatch("executor.readiness", encode(map[string]any{"StorageJSON": inlineStorage(), "AuthID": "inline-auth"}))
 	if err != nil {
@@ -143,8 +143,8 @@ func TestInlineExecutionAndReconfigure(t *testing.T) {
 		t.Fatal("inline config lost after reconfigure", err)
 	}
 	r.mu.Lock()
-	key := r.config.APIKey
-	signer := r.signer
+	key := r.accounts["inline-auth"].config.APIKey
+	signer := r.accounts["inline-auth"].signer
 	r.mu.Unlock()
 	if key != "synthetic-key.synthetic-secret" || signer == nil {
 		t.Fatal("inline credential snapshot lost on reconfigure")

@@ -596,7 +596,7 @@ features:
     support: optional
     owner: cpa-core-lts
     upstream_relation: downstream-only
-    reason: Keep the single-account Coding Plan provider source, inline-only single-file credentials, stable account identity and revocable logging acknowledgement, default GLM model catalog and execution controls, synthetic acceptance fixtures, and explicit nested-module CI in the Core repository without a built-in vendor executor or runtime worker.
+    reason: Keep the multi-account Coding Plan provider source, inline-only single-file credentials, isolated account signers and lifecycle with ten in-flight requests per account, stable account identity and revocable logging acknowledgement, default GLM model catalog and execution controls, synthetic acceptance fixtures, and explicit nested-module CI in the Core repository without a built-in vendor executor or runtime worker.
     core_files:
       - examples/plugin/zcode-coding-plan/
       - examples/plugin/Makefile

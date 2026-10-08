@@ -21,6 +21,8 @@ import (
 	"time"
 )
 
+// 这里的 API key 是账号文件里的上游凭据，不是客户端访问 CPA 时使用的 key。
+// 当前插件只接受 id.secret 形式；签名私钥要另向上游握手获取，不能把 secret 当成私钥。
 func splitKey(value string) (string, string, error) {
 	parts := strings.Split(value, ".")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(value, " \t\r\n\x00") {
@@ -28,6 +30,9 @@ func splitKey(value string) (string, string, error) {
 	}
 	return parts[0], parts[1], nil
 }
+
+// 同一个 secret 派生两把不同用途的密钥：证明有权握手，以及解密上游返回的私钥。
+// salt 和 info 是协议约定，不能互换；它们与 ZCode 本地 credentials.json 的加密无关。
 func derive(secret, info string) []byte {
 	k, err := hkdf.Key(sha256.New, []byte(secret), []byte("WD_CLIENT_SIGN_KDF_SALT"), info, 32)
 	if err != nil {
@@ -42,6 +47,9 @@ func randomHex(n int) string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// 这里的 sig 是申请签名私钥时使用的 HMAC 凭证，不是模型请求的 X-Client-Sig。
+// 握手的 ts/nonce 与后续模型请求的 ts/nonce 各自生成，不共用一套值。
 func handshakePayload(apiKey, ts, nonce string) []byte {
 	id, secret, _ := splitKey(apiKey)
 	key := derive(secret, "getSignKey_hmac")
@@ -55,6 +63,9 @@ func handshakePayload(apiKey, ts, nonce string) []byte {
 		TS    string `json:"ts"`
 	}{apiKey, nonce, base64.StdEncoding.EncodeToString(h.Sum(nil)), ts})
 }
+
+// privateCipher 的线格式是 base64(12 字节 IV || 密文 || 16 字节认证标签)，AAD 为 id。
+// 解出的文本还需 base64 解码才是 PKCS8 私钥；任一认证/解析失败都不能继续发模型请求。
 func decryptKey(apiKey, text string) (ed25519.PrivateKey, error) {
 	id, secret, err := splitKey(apiKey)
 	if err != nil {
@@ -88,9 +99,15 @@ func decryptKey(apiKey, text string) (ed25519.PrivateKey, error) {
 	}
 	return private, nil
 }
+
+// X-Client-Sig 绑定这五段身份参数，不包含聊天正文或 device_id。
+// 换行、顺序和版本均是签名消息的一部分；版本必须与 headers 的 X-Client-Version 一致。
 func signMessage(key ed25519.PrivateKey, id, session, ts, nonce string) string {
 	return base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte(id+"\n"+ts+"\n3.14.3\n"+session+"\n"+nonce)))
 }
+
+// PoW 是独立于签名的小计算题：答案须满足同一 id/session/ts 下的哈希前 8 位为零。
+// 它不是私钥；同一题可以有多个有效答案，无需复现另一客户端找到的那个值。
 func pow(ctx context.Context, id, session, ts string) (string, error) {
 	h := sha256.Sum256([]byte(id + "\nzcode\n" + session + "\n" + ts))
 	seed := hex.EncodeToString(h[:])[:32]
@@ -121,6 +138,9 @@ type signer struct {
 }
 
 func (s *signer) close() { s.mu.Lock(); s.closed = true; clear(s.key); s.key = nil; s.mu.Unlock() }
+
+// 缓存的是可重复使用的签名私钥，不是某次请求的签名头；同一 signer 的并发首次请求共享一次握手。
+// 返回副本供调用方清零，避免破坏缓存；当前没有按时间过期或被上游拒绝后自动刷新的机制。
 func (s *signer) keyFor(ctx context.Context, handshake func() (ed25519.PrivateKey, error)) (ed25519.PrivateKey, error) {
 	s.mu.Lock()
 	if s.closed {
@@ -159,6 +179,9 @@ func (s *signer) keyFor(ctx context.Context, handshake func() (ed25519.PrivateKe
 		return append(ed25519.PrivateKey(nil), flight.key...), flight.err
 	}
 }
+
+// 握手向当前上游申请私钥，不调用模型，也不从本机 ZCode 提取旧签名。
+// 该请求携带完整上游凭据，禁止跟随重定向；失败时不降级为无签名模型请求。
 func (s *signer) handshake(r *pluginRuntime, e *execution) (ed25519.PrivateKey, error) {
 	u, _ := url.Parse(s.endpoint)
 	u.Path = "/api/paas/c1f3a7e2/v2/client"
@@ -193,6 +216,11 @@ func (s *signer) handshake(r *pluginRuntime, e *execution) (ed25519.PrivateKey, 
 	}
 	return decryptKey(s.apiKey, result.Data.Cipher)
 }
+
+// session 由调用方按本次会话提供，并与请求体中的 session_id 保持一致。
+// 私钥可以复用；每次模型请求重新生成 ts 和签名 nonce。
+// PoW 与签名共用 id/session/ts；PoW 候选串独立生成，不使用签名 nonce。
+// 输出头必须携带本次签名和 PoW 实际使用的参数。
 func (s *signer) headers(r *pluginRuntime, e *execution, session string) (http.Header, error) {
 	ctx := e.ctx
 	key, err := s.keyFor(ctx, func() (ed25519.PrivateKey, error) { return s.handshake(r, e) })
