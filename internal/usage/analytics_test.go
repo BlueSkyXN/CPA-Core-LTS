@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 func analyticsRead(t *testing.T, s *RequestStatistics, q QueryRequest) QueryAnalyticsResult {
@@ -119,6 +121,52 @@ func TestUsageAnalyticsCancelCapacityAndValidation(t *testing.T) {
 		t.Fatal("cached incomplete result")
 	}
 }
+func TestUsageAnalyticsThroughputBuckets(t *testing.T) {
+	s := NewRequestStatistics()
+	base := time.UnixMilli(1800000000000)
+	record := func(at time.Time, output, reasoning int64, latency, ttfb time.Duration, failed bool) {
+		s.Record(context.Background(), coreusage.Record{
+			APIKey: "throughput-fixture", Model: "gpt-test", RequestedAt: at, Latency: latency,
+			TimingVersion: usageTimingVersion,
+			TTFB:          ttfb,
+			Detail:        coreusage.Detail{InputTokens: 10, OutputTokens: output, ReasoningTokens: reasoning, TotalTokens: 10 + output},
+			Failed:        failed,
+		})
+	}
+	record(base, 200, 50, time.Second, 200*time.Millisecond, false)
+	record(base.Add(time.Minute), 100, 100, 2*time.Second, 2*time.Second, false)
+	record(base.Add(2*time.Minute), 80, 120, time.Second, 100*time.Millisecond, false)
+	record(base.Add(3*time.Minute), 60, 0, time.Second, 0, true)
+	record(base.Add(4*time.Minute), 0, 0, time.Second, 100*time.Millisecond, false)
+
+	cap := s.QueryCapabilities()
+	r := analyticsRead(t, s, QueryRequest{Bound: cap.Bound, NowMS: cap.NowMS, Timezone: "UTC"})
+	points := r.Data.Hour.Throughput
+	if len(points) != 1 || len(r.Data.Day.Throughput) != 1 {
+		t.Fatalf("throughput buckets: hour=%d day=%d", len(points), len(r.Data.Day.Throughput))
+	}
+	p := points[0]
+	if p.TimestampMS == 0 || p.AverageSamples != 4 || p.AverageTokens != 440 || p.AverageDurationMS != 5000 {
+		t.Fatalf("average series: %+v", p)
+	}
+	if p.OutputSamples != 2 || p.OutputTokens != 280 || p.DecodeDurationMS != 1700 {
+		t.Fatalf("output series: %+v", p)
+	}
+	if p.VisibleSamples != 3 || p.VisibleTokens != 210 || p.VisibleDurationMS != 4000 || p.ReasoningTokens != 150 || p.ReasoningDenominator != 360 {
+		t.Fatalf("visible series: %+v", p)
+	}
+	summary, err := s.QuerySummary(context.Background(), QueryRequest{Bound: cap.Bound, NowMS: cap.NowMS}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := summary.Totals
+	if m.OutputTPS.Numerator != p.OutputTokens || m.OutputTPS.Denominator != p.DecodeDurationMS || m.OutputTPS.Samples != p.OutputSamples ||
+		m.AverageTPS.Numerator != p.AverageTokens || m.AverageTPS.Denominator != p.AverageDurationMS ||
+		m.VisibleTPS.Numerator != p.VisibleTokens || m.ReasoningRatio.Numerator != p.ReasoningTokens {
+		t.Fatalf("throughput diverges from query metrics: %+v vs %+v", p, m)
+	}
+}
+
 func TestUsageAnalyticsWallClockDST(t *testing.T) {
 	tests := []struct {
 		zone  string

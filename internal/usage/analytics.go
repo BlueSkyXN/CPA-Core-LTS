@@ -49,6 +49,26 @@ type AnalyticsLatencySeries struct {
 	P99          []*float64 `json:"p99"`
 	Average      []*float64 `json:"average"`
 }
+
+// AnalyticsThroughputPoint is one bucket of the throughput trend. Each series
+// keeps the summed numerator and denominator of the same ratio QueryMetrics
+// reports, so a bucket's rate is tokens per second once scaled by 1000.
+// A zero denominator means the bucket has no measurable sample.
+type AnalyticsThroughputPoint struct {
+	TimestampMS          int64   `json:"timestampMs"`
+	OutputTokens         float64 `json:"outputTokens"`
+	DecodeDurationMS     float64 `json:"decodeDurationMs"`
+	OutputSamples        int64   `json:"outputSamples"`
+	AverageTokens        float64 `json:"averageTokens"`
+	AverageDurationMS    float64 `json:"averageDurationMs"`
+	AverageSamples       int64   `json:"averageSamples"`
+	VisibleTokens        float64 `json:"visibleTokens"`
+	VisibleDurationMS    float64 `json:"visibleDurationMs"`
+	VisibleSamples       int64   `json:"visibleSamples"`
+	ReasoningTokens      float64 `json:"reasoningTokens"`
+	ReasoningDenominator float64 `json:"reasoningDenominator"`
+	ReasoningSamples     int64   `json:"reasoningSamples"`
+}
 type AnalyticsCachePoint struct {
 	TimestampMS      int64    `json:"timestampMs"`
 	Requests         int64    `json:"requests"`
@@ -91,9 +111,10 @@ type AnalyticsErrors struct {
 	TopReasons     []AnalyticsErrorReason `json:"topReasons"`
 }
 type AnalyticsGrain struct {
-	Latency AnalyticsLatencySeries  `json:"latency"`
-	Cache   []AnalyticsCachePoint   `json:"cache"`
-	Errors  []AnalyticsFailurePoint `json:"errors"`
+	Latency    AnalyticsLatencySeries     `json:"latency"`
+	Cache      []AnalyticsCachePoint      `json:"cache"`
+	Errors     []AnalyticsFailurePoint    `json:"errors"`
+	Throughput []AnalyticsThroughputPoint `json:"throughput"`
 }
 type AnalyticsData struct {
 	Timings   AnalyticsTimings      `json:"timings"`
@@ -121,13 +142,43 @@ type QueryAnalyticsResult struct {
 	Options          *AnalyticsOptions `json:"options,omitempty"`
 }
 type analyticsBucket struct {
-	cache   AnalyticsCachePoint
-	errors  AnalyticsFailurePoint
-	samples []int64
+	cache      AnalyticsCachePoint
+	errors     AnalyticsFailurePoint
+	throughput AnalyticsThroughputPoint
+	samples    []int64
 }
 type analyticsSample struct{ latency, ttft, ttfa int64 }
 
 var analyticsEdges = []int64{0, 100, 250, 500, 1000, 2500, 5000, 10000}
+
+// analyticsAddThroughput accumulates one request into a bucket using the same
+// eligibility rules as QueryMetrics: successful requests with output tokens and
+// a positive latency contribute, the decode-window series additionally needs a
+// measured first byte that arrives before completion, and the visible series
+// needs reasoning tokens that do not exceed the reported output.
+func analyticsAddThroughput(p *AnalyticsThroughputPoint, d RequestDetail) {
+	t := d.Tokens
+	if t.OutputTokens <= 0 || d.LatencyMs <= 0 {
+		return
+	}
+	output, latency := float64(t.OutputTokens), float64(d.LatencyMs)
+	p.AverageTokens += output
+	p.AverageDurationMS += latency
+	p.AverageSamples++
+	if d.timingFieldPresent(timingTTFBPresent) && d.TTFBMs >= 0 && d.LatencyMs > d.TTFBMs {
+		p.OutputTokens += output
+		p.DecodeDurationMS += latency - float64(d.TTFBMs)
+		p.OutputSamples++
+	}
+	if t.ReasoningTokens <= t.OutputTokens {
+		p.VisibleTokens += output - float64(t.ReasoningTokens)
+		p.VisibleDurationMS += latency
+		p.VisibleSamples++
+		p.ReasoningTokens += float64(t.ReasoningTokens)
+		p.ReasoningDenominator += output
+		p.ReasoningSamples++
+	}
+}
 
 func analyticsRatio(n, d int64) *float64 {
 	if d == 0 {
@@ -242,7 +293,7 @@ func analyticsTimes(buckets map[int64]*analyticsBucket, first, last int64, q Que
 	return times
 }
 func finishAnalyticsGrain(ctx context.Context, buckets map[int64]*analyticsBucket, times []int64) (AnalyticsGrain, error) {
-	r := AnalyticsGrain{Latency: AnalyticsLatencySeries{Times: times, SampleCounts: []int{}, P50: []*float64{}, P95: []*float64{}, P99: []*float64{}, Average: []*float64{}}, Cache: []AnalyticsCachePoint{}, Errors: []AnalyticsFailurePoint{}}
+	r := AnalyticsGrain{Latency: AnalyticsLatencySeries{Times: times, SampleCounts: []int{}, P50: []*float64{}, P95: []*float64{}, P99: []*float64{}, Average: []*float64{}}, Cache: []AnalyticsCachePoint{}, Errors: []AnalyticsFailurePoint{}, Throughput: []AnalyticsThroughputPoint{}}
 	for _, t := range times {
 		if err := ctx.Err(); err != nil {
 			return r, err
@@ -263,6 +314,8 @@ func finishAnalyticsGrain(ctx context.Context, buckets map[int64]*analyticsBucke
 		b.errors.TimestampMS = t
 		b.errors.FailureRate = analyticsRatio(b.errors.Failures, b.errors.Requests)
 		r.Errors = append(r.Errors, b.errors)
+		b.throughput.TimestampMS = t
+		r.Throughput = append(r.Throughput, b.throughput)
 	}
 	return r, nil
 }
@@ -346,6 +399,7 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 			} else if d.LatencyMs >= 0 {
 				b.samples = append(b.samples, d.LatencyMs)
 			}
+			analyticsAddThroughput(&b.throughput, d)
 		}
 		c := &r.Data.Cache
 		c.Requests++

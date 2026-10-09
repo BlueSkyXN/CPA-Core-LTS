@@ -188,7 +188,7 @@ func (m *QueryMetrics) add(d RequestDetail, model string, rule QueryPriceRule, p
 		m.LatencyMS += float64(d.LatencyMs)
 		m.LatencySamples++
 	}
-	hasTTFB := d.TTFBMs >= 0 && (d.TTFBMs != 0 || d.timingFieldPresent(timingTTFBPresent))
+	hasTTFB := d.timingFieldPresent(timingTTFBPresent) && d.TTFBMs >= 0
 	if hasTTFB {
 		m.TTFBSamples++
 	}
