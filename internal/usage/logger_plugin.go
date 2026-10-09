@@ -75,6 +75,7 @@ type RequestStatistics struct {
 	mu              sync.RWMutex
 	queryGeneration string
 	querySequence   uint64
+	analytics       analyticsCache
 
 	totalRequests int64
 	successCount  int64

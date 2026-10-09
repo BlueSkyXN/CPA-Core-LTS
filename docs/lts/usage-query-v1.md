@@ -10,7 +10,7 @@
 
 | 方法与路径 | 行为 |
 | --- | --- |
-| `GET /usage/query/capabilities` | `version: 1`、不透明 `bound`、`now_ms`、模型目录、`max_page_size: 200` |
+| `GET /usage/query/capabilities` | `version: 1`、不透明 `bound`、`now_ms`、模型目录、`max_page_size: 200`、可选 `analytics_version: 1` 与 `max_analytics_rows` |
 | `POST /usage/query/summary` | 当前范围的 totals 和按 modules 选择的分组，不包含请求明细 |
 | `POST /usage/query/details` | 时间倒序、内部序号倒序的当前页；完整筛选结果的 total 和 metrics |
 | `POST /usage/query/pricing` | 与摘要相同的查询，加上按模型、tier 证据和上下文档位分类的计价事实汇总 |
@@ -31,6 +31,16 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 - 非法查询返回 400；实例或上界失效返回 409；15 秒查询预算或请求取消返回 408。单个请求体上限 2 MiB。
 - 新 Panel 只在能力端点 404 且同前缀旧管理接口正常时进入旧版模式。网络、5xx、解析失败不得触发全量 fallback。失效 bound 通过刷新会话恢复，不能拼接两代页面。
 
+## 精确看板分析 v1
+
+`POST /usage/query/analytics` 使用公共时间、快照与筛选字段，以及 `include_options`；拒绝分页 cursor、summary modules 和 pricing rules。能力通过 `analytics_version: 1` 声明，不改变 query/export 版本。
+
+一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors` 和 `hour/day` 两套趋势。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
+
+第一版容量上限：250,000 条匹配记录，每个粒度最多 4,096 个实际桶，模型和身份合计最多 8,192 项，错误原因最多 8,192 种。完整响应上限 4 MiB；超出返回 422 `usage_analytics_too_large`，不抽样、不截断。最多两个不同聚合任务并发，超过返回 429 `usage_analytics_busy`；同键请求共享计算，最后一个等待者退出后取消工作，15 秒预算继续生效。
+
+每个统计实例最多缓存 8 项 / 16 MiB 完整响应，TTL 4 分钟，按最近使用淘汰。缓存键包括 bound、时间、时区、筛选、参考时刻与 options；先验证 bound 再查缓存。新增/导入不改变旧快照，不清空其缓存；刷新建立新 bound。缓存不复制或持久化请求明细，不改变导入导出和 usage 记录路径。
+
 ## 动态计价
 
 Panel 规范化当前价格配置一次，并解析每个模型。`rules[model].long_threshold` 只表达本次有效长上下文阈值；关闭 GPT long band 或未匹配模型不发送阈值。Core 先逐条归一化 token、判断 tier/证据和上下文类别，再累计 prompt/cache-read/cache-write/output、请求数与总 token。
@@ -39,7 +49,7 @@ Panel 对每类使用原价格算法选取 status、单价和警告，再计算�
 
 ## HTTP 响应压缩
 
-上述七个 usage JSON 路由在鉴权之后按 `Accept-Encoding` 协商压缩：同权重时优先 Brotli level 4、Zstandard level 1、gzip level 3。显式 `q=0` 不会被通配符覆盖；显式更高权重的 `identity` 优先。没有可接受编码时返回 406，导入 handler 不会执行。
+包括 analytics 在内的 usage JSON 路由在鉴权之后按 `Accept-Encoding` 协商压缩：同权重时优先 Brotli level 4、Zstandard level 1、gzip level 3。显式 `q=0` 不会被通配符覆盖；显式更高权重的 `identity` 优先。没有可接受编码时返回 406，导入 handler 不会执行。
 
 客户端允许 identity 时，小于 1024 bytes 的响应不压缩；禁止 identity 时，小 JSON 也使用允许的编码。压缩层只保留不足 1024 bytes 的前置缓冲，超过阈值直接写入压缩器，不再复制完整快照。响应携带 `Vary: Accept-Encoding`，压缩后删除旧 `Content-Length`，已编码响应不重复压缩。JSON、状态码、POST 请求体和统计 schema 不变。
 

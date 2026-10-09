@@ -151,6 +151,11 @@ require_path .github/scripts/refresh-model-catalogs.sh
 require_grep "mgmt.GET(\"/usage\"" internal/api/server_management.go
 require_grep "mgmt.GET(\"/usage/export\"" internal/api/server_management.go
 require_grep "mgmt.POST(\"/usage/import\"" internal/api/server_management.go
+require_path internal/usage/analytics.go
+require_path internal/usage/analytics_cache.go
+require_path internal/usage/analytics_test.go
+require_grep 'analytics_version' internal/usage/query.go
+require_grep 'mgmt.POST("/usage/query/analytics"' internal/api/server_management.go
 require_path internal/usage/query.go
 require_path internal/api/handlers/management/usage_query.go
 require_path docs/lts/usage-query-v1.md

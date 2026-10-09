@@ -107,6 +107,7 @@ features:
       - /v0/management/usage/query/summary
       - /v0/management/usage/query/details
       - /v0/management/usage/query/pricing
+      - /v0/management/usage/query/analytics
       - /v0/management/usage-statistics-enabled
     core_files:
       - internal/api/server_management.go
@@ -117,6 +118,9 @@ features:
       - internal/api/usage_compression_test.go
       - internal/usage/query.go
       - internal/usage/query_test.go
+      - internal/usage/analytics.go
+      - internal/usage/analytics_cache.go
+      - internal/usage/analytics_test.go
       - docs/lts/usage-query-v1.md
       - internal/api/handlers/management/config_basic.go
       - internal/api/handlers/management/usage_contract_test.go
@@ -134,6 +138,8 @@ features:
       - 'mgmt.POST("/usage/query/summary"'
       - 'mgmt.POST("/usage/query/details"'
       - 'mgmt.POST("/usage/query/pricing"'
+      - 'mgmt.POST("/usage/query/analytics"'
+      - analytics_version
       - Accept-Encoding
       - Content-Encoding
       - 'mgmt.GET("/usage-statistics-enabled"'
