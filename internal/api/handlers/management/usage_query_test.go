@@ -32,3 +32,22 @@ func TestUsageQueryHTTPContract(t *testing.T) {
 		t.Fatal("capability contract")
 	}
 }
+
+func TestUsageAnalyticsHTTPContract(t *testing.T) {
+	h := &Handler{usageStats: usage.NewRequestStatistics()}
+	for _, test := range []struct {
+		body   string
+		status int
+	}{{`{}`, 200}, {`{"cursor":"x"}`, 400}, {`{"modules":["models"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/usage/query/analytics", strings.NewReader(test.body))
+		h.QueryUsageAnalytics(c)
+		if w.Code != test.status {
+			t.Fatalf("status %d, expected %d", w.Code, test.status)
+		}
+		if w.Code == 200 && (!strings.Contains(w.Body.String(), `"analytics_version":1`) || w.Header().Get("Cache-Control") != "no-store") {
+			t.Fatal("analytics envelope")
+		}
+	}
+}

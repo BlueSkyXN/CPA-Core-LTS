@@ -21,9 +21,10 @@ func (h *Handler) GetUsageQueryCapabilities(c *gin.Context) {
 	c.JSON(http.StatusOK, h.usageStats.QueryCapabilities())
 }
 
-func (h *Handler) QueryUsageSummary(c *gin.Context) { h.queryUsage(c, "summary") }
-func (h *Handler) QueryUsagePricing(c *gin.Context) { h.queryUsage(c, "pricing") }
-func (h *Handler) QueryUsageDetails(c *gin.Context) { h.queryUsage(c, "details") }
+func (h *Handler) QueryUsageSummary(c *gin.Context)   { h.queryUsage(c, "summary") }
+func (h *Handler) QueryUsagePricing(c *gin.Context)   { h.queryUsage(c, "pricing") }
+func (h *Handler) QueryUsageDetails(c *gin.Context)   { h.queryUsage(c, "details") }
+func (h *Handler) QueryUsageAnalytics(c *gin.Context) { h.queryUsage(c, "analytics") }
 
 func (h *Handler) queryUsage(c *gin.Context, operation string) {
 	if h == nil || h.usageStats == nil {
@@ -46,7 +47,9 @@ func (h *Handler) queryUsage(c *gin.Context, operation string) {
 	defer cancel()
 	var result any
 	var err error
-	if operation == "details" {
+	if operation == "analytics" {
+		result, err = h.usageStats.QueryAnalytics(ctx, q)
+	} else if operation == "details" {
 		result, err = h.usageStats.QueryDetails(ctx, q)
 	} else {
 		result, err = h.usageStats.QuerySummary(ctx, q, operation == "pricing")
@@ -55,6 +58,13 @@ func (h *Handler) queryUsage(c *gin.Context, operation string) {
 		status, code := http.StatusBadRequest, "usage_query_invalid"
 		if errors.Is(err, usage.ErrQueryExpired) {
 			status, code = http.StatusConflict, "usage_query_expired"
+		}
+		if errors.Is(err, usage.ErrAnalyticsTooLarge) {
+			status, code = http.StatusUnprocessableEntity, "usage_analytics_too_large"
+		}
+		if errors.Is(err, usage.ErrAnalyticsBusy) {
+			status, code = http.StatusTooManyRequests, "usage_analytics_busy"
+			c.Header("Retry-After", "2")
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			status, code = http.StatusRequestTimeout, "usage_query_timeout"

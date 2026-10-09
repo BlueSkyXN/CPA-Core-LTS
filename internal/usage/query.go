@@ -76,11 +76,13 @@ type queryCursor struct {
 }
 
 type QueryCapabilities struct {
-	Version     int      `json:"version"`
-	Bound       string   `json:"bound"`
-	NowMS       int64    `json:"now_ms"`
-	Models      []string `json:"models"`
-	MaxPageSize int      `json:"max_page_size"`
+	Version          int      `json:"version"`
+	Bound            string   `json:"bound"`
+	NowMS            int64    `json:"now_ms"`
+	Models           []string `json:"models"`
+	MaxPageSize      int      `json:"max_page_size"`
+	AnalyticsVersion int      `json:"analytics_version"`
+	MaxAnalyticsRows int      `json:"max_analytics_rows"`
 }
 
 func queryEncode(value any) string {
@@ -115,7 +117,7 @@ func (s *RequestStatistics) QueryCapabilities() QueryCapabilities {
 		models = append(models, name)
 	}
 	sort.Strings(models)
-	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize}
+	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows}
 }
 
 type QueryPriceGroup struct {
