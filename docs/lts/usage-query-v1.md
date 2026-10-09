@@ -35,7 +35,7 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 
 `POST /usage/query/analytics` 使用公共时间、快照与筛选字段，以及 `include_options`；拒绝分页 cursor、summary modules 和 pricing rules。能力通过 `analytics_version: 1` 声明，不改变 query/export 版本。
 
-一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors` 和 `hour/day` 两套趋势。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
+一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors` 和 `hour/day` 两套趋势。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。`hour/day.throughput` 逐桶累计与 `QueryMetrics` 相同的分子分母：输出 TPS 用首包之后的解码窗口（仅显式测量过且早于完成的首包时间），平均与可见 TPS 用总耗时，失败请求同样计入；分母为零表示该桶没有可测样本。速率为分子 / 分母 × 1000（token/秒）。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
 
 第一版容量上限：250,000 条匹配记录，每个粒度最多 4,096 个实际桶，模型和身份合计最多 8,192 项，错误原因最多 8,192 种。完整响应上限 4 MiB；超出返回 422 `usage_analytics_too_large`，不抽样、不截断。最多两个不同聚合任务并发，超过返回 429 `usage_analytics_busy`；同键请求共享计算，最后一个等待者退出后取消工作，15 秒预算继续生效。
 

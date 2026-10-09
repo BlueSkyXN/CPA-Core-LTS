@@ -6,12 +6,10 @@
     "to_ms": 1791507600011,
     "rows": [
       {
-        "timestamp": "2026-10-08T00:00:00.000Z",
+        "timestamp": "2026-10-08T00:00:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -21,46 +19,44 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
+        "failure_status": 429,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 0,
-        "failure_status": 429,
-        "failure_reason": "alpha"
+        "ttfa_ms": 0
       },
       {
         "timestamp": "2026-10-08T00:00:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T00:00:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -68,77 +64,72 @@
       },
       {
         "timestamp": "2026-10-08T00:00:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-08T00:00:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T00:00:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-08T00:00:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -146,39 +137,36 @@
       },
       {
         "timestamp": "2026-10-08T00:00:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2026-10-08T00:00:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -186,68 +174,61 @@
       },
       {
         "timestamp": "2026-10-08T00:00:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-08T00:00:00.010Z",
+        "timestamp": "2026-10-08T00:00:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T00:00:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-08T01:15:00.000Z",
+        "timestamp": "2026-10-08T01:15:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -257,6 +238,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -264,117 +247,107 @@
       },
       {
         "timestamp": "2026-10-08T01:15:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T01:15:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 100,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttfa_ms": 100
       },
       {
         "timestamp": "2026-10-08T01:15:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-08T01:15:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T01:15:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-08T01:15:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -382,37 +355,34 @@
       },
       {
         "timestamp": "2026-10-08T01:15:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T01:15:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -420,70 +390,63 @@
       },
       {
         "timestamp": "2026-10-08T01:15:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "timing_version": 1,
-        "ttfb_ms": 0,
-        "ttft_ms": 0,
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
         "failure_status": 429,
-        "failure_reason": "alpha"
-      },
-      {
-        "timestamp": "2026-10-08T01:15:00.010Z",
-        "source": "synthetic-0",
-        "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        }
-      },
-      {
-        "timestamp": "2026-10-08T01:15:00.011Z",
-        "source": "synthetic-1",
-        "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        },
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-09T01:00:00.000Z",
+        "timestamp": "2026-10-08T01:15:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
+        "failed": false,
+        "generate": true
+      },
+      {
+        "timestamp": "2026-10-08T01:15:00.011Z",
+        "latency_ms": 750,
+        "source": "synthetic-1",
+        "auth_index": "1",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
         "failed": false,
         "generate": true,
+        "timing_version": 1,
+        "ttfb_ms": 0,
+        "ttft_ms": 0
+      },
+      {
+        "timestamp": "2026-10-09T01:00:00Z",
         "latency_ms": 0,
+        "source": "synthetic-0",
+        "auth_index": "0",
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -493,6 +456,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -500,37 +465,33 @@
       },
       {
         "timestamp": "2026-10-09T01:00:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-09T01:00:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -538,79 +499,74 @@
       },
       {
         "timestamp": "2026-10-09T01:00:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-09T01:00:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2026-10-09T01:00:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-09T01:00:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -618,37 +574,34 @@
       },
       {
         "timestamp": "2026-10-09T01:00:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-09T01:00:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -656,62 +609,56 @@
       },
       {
         "timestamp": "2026-10-09T01:00:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-09T01:00:00.010Z",
+        "timestamp": "2026-10-09T01:00:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-09T01:00:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
-        "ttft_ms": 0,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttft_ms": 0
       }
     ],
     "expected": {
@@ -765,11 +712,11 @@
       "cache": {
         "requests": 36,
         "cachedRequests": 12,
-        "cacheHitRequestRatio": 0.3333333333333333,
         "inputTokens": 3600,
         "cacheReadTokens": 240,
         "cacheWriteTokens": 90,
-        "cacheReadRate": 0.06666666666666667
+        "cacheReadRate": 0.06666666666666667,
+        "cacheHitRequestRatio": 0.3333333333333333
       },
       "errors": {
         "totalRequests": 36,
@@ -1374,6 +1321,398 @@
             "failures": 2,
             "failureRate": 0.16666666666666666
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1791417600000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1791421200000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1791424800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791428400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791432000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791435600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791439200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791442800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791446400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791450000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791453600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791457200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791460800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791464400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791468000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791471600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791475200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791478800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791482400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791486000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791489600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791493200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791496800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791500400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791504000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791507600000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          }
         ]
       },
       "day": {
@@ -1436,6 +1775,38 @@
             "failures": 2,
             "failureRate": 0.16666666666666666
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1791417600000,
+            "outputTokens": 420,
+            "decodeDurationMs": 35198,
+            "outputSamples": 14,
+            "averageTokens": 660,
+            "averageDurationMs": 80896,
+            "averageSamples": 22,
+            "visibleTokens": 440,
+            "visibleDurationMs": 80896,
+            "visibleSamples": 22,
+            "reasoningTokens": 220,
+            "reasoningDenominator": 660,
+            "reasoningSamples": 22
+          },
+          {
+            "timestampMs": 1791504000000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          }
         ]
       }
     }
@@ -1447,12 +1818,10 @@
     "to_ms": 1793518200011,
     "rows": [
       {
-        "timestamp": "2026-11-01T04:30:00.000Z",
+        "timestamp": "2026-11-01T04:30:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -1462,46 +1831,44 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
+        "failure_status": 429,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 0,
-        "failure_status": 429,
-        "failure_reason": "alpha"
+        "ttfa_ms": 0
       },
       {
         "timestamp": "2026-11-01T04:30:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T04:30:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1509,77 +1876,72 @@
       },
       {
         "timestamp": "2026-11-01T04:30:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T04:30:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T04:30:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T04:30:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1587,39 +1949,36 @@
       },
       {
         "timestamp": "2026-11-01T04:30:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2026-11-01T04:30:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1627,68 +1986,61 @@
       },
       {
         "timestamp": "2026-11-01T04:30:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-11-01T04:30:00.010Z",
+        "timestamp": "2026-11-01T04:30:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T04:30:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-11-01T05:30:00.000Z",
+        "timestamp": "2026-11-01T05:30:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -1698,6 +2050,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1705,117 +2059,107 @@
       },
       {
         "timestamp": "2026-11-01T05:30:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T05:30:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 100,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttfa_ms": 100
       },
       {
         "timestamp": "2026-11-01T05:30:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T05:30:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T05:30:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T05:30:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1823,37 +2167,34 @@
       },
       {
         "timestamp": "2026-11-01T05:30:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T05:30:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1861,70 +2202,63 @@
       },
       {
         "timestamp": "2026-11-01T05:30:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "timing_version": 1,
-        "ttfb_ms": 0,
-        "ttft_ms": 0,
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
         "failure_status": 429,
-        "failure_reason": "alpha"
-      },
-      {
-        "timestamp": "2026-11-01T05:30:00.010Z",
-        "source": "synthetic-0",
-        "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        }
-      },
-      {
-        "timestamp": "2026-11-01T05:30:00.011Z",
-        "source": "synthetic-1",
-        "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        },
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-11-01T06:30:00.000Z",
+        "timestamp": "2026-11-01T05:30:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
+        "failed": false,
+        "generate": true
+      },
+      {
+        "timestamp": "2026-11-01T05:30:00.011Z",
+        "latency_ms": 750,
+        "source": "synthetic-1",
+        "auth_index": "1",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
         "failed": false,
         "generate": true,
+        "timing_version": 1,
+        "ttfb_ms": 0,
+        "ttft_ms": 0
+      },
+      {
+        "timestamp": "2026-11-01T06:30:00Z",
         "latency_ms": 0,
+        "source": "synthetic-0",
+        "auth_index": "0",
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -1934,6 +2268,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1941,37 +2277,33 @@
       },
       {
         "timestamp": "2026-11-01T06:30:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T06:30:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -1979,79 +2311,74 @@
       },
       {
         "timestamp": "2026-11-01T06:30:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T06:30:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2026-11-01T06:30:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T06:30:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2059,37 +2386,34 @@
       },
       {
         "timestamp": "2026-11-01T06:30:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T06:30:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2097,70 +2421,62 @@
       },
       {
         "timestamp": "2026-11-01T06:30:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-11-01T06:30:00.010Z",
+        "timestamp": "2026-11-01T06:30:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T06:30:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
-        "ttft_ms": 0,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttft_ms": 0
       },
       {
-        "timestamp": "2026-11-01T07:30:00.000Z",
+        "timestamp": "2026-11-01T07:30:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -2170,6 +2486,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2177,37 +2495,33 @@
       },
       {
         "timestamp": "2026-11-01T07:30:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T07:30:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2215,117 +2529,109 @@
       },
       {
         "timestamp": "2026-11-01T07:30:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T07:30:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T07:30:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-11-01T07:30:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
+        "failure_status": 429,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 1000,
-        "failure_status": 429,
-        "failure_reason": "alpha"
+        "ttfa_ms": 1000
       },
       {
         "timestamp": "2026-11-01T07:30:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T07:30:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2333,57 +2639,52 @@
       },
       {
         "timestamp": "2026-11-01T07:30:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-11-01T07:30:00.010Z",
+        "timestamp": "2026-11-01T07:30:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-11-01T07:30:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
@@ -2440,11 +2741,11 @@
       "cache": {
         "requests": 48,
         "cachedRequests": 16,
-        "cacheHitRequestRatio": 0.3333333333333333,
         "inputTokens": 4800,
         "cacheReadTokens": 320,
         "cacheWriteTokens": 120,
-        "cacheReadRate": 0.06666666666666667
+        "cacheReadRate": 0.06666666666666667,
+        "cacheHitRequestRatio": 0.3333333333333333
       },
       "errors": {
         "totalRequests": 48,
@@ -2566,6 +2867,53 @@
             "failures": 1,
             "failureRate": 0.08333333333333333
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1793505600000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1793509200000,
+            "outputTokens": 420,
+            "decodeDurationMs": 35198,
+            "outputSamples": 14,
+            "averageTokens": 660,
+            "averageDurationMs": 80896,
+            "averageSamples": 22,
+            "visibleTokens": 440,
+            "visibleDurationMs": 80896,
+            "visibleSamples": 22,
+            "reasoningTokens": 220,
+            "reasoningDenominator": 660,
+            "reasoningSamples": 22
+          },
+          {
+            "timestampMs": 1793516400000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          }
         ]
       },
       "day": {
@@ -2607,6 +2955,23 @@
             "failures": 7,
             "failureRate": 0.14583333333333334
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1793505600000,
+            "outputTokens": 840,
+            "decodeDurationMs": 70396,
+            "outputSamples": 28,
+            "averageTokens": 1320,
+            "averageDurationMs": 161792,
+            "averageSamples": 44,
+            "visibleTokens": 880,
+            "visibleDurationMs": 161792,
+            "visibleSamples": 44,
+            "reasoningTokens": 440,
+            "reasoningDenominator": 1320,
+            "reasoningSamples": 44
+          }
         ]
       }
     }
@@ -2618,12 +2983,10 @@
     "to_ms": 1791044400011,
     "rows": [
       {
-        "timestamp": "2026-10-03T14:45:00.000Z",
+        "timestamp": "2026-10-03T14:45:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -2633,46 +2996,44 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
+        "failure_status": 429,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 0,
-        "failure_status": 429,
-        "failure_reason": "alpha"
+        "ttfa_ms": 0
       },
       {
         "timestamp": "2026-10-03T14:45:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T14:45:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2680,77 +3041,72 @@
       },
       {
         "timestamp": "2026-10-03T14:45:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-03T14:45:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T14:45:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-03T14:45:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2758,39 +3114,36 @@
       },
       {
         "timestamp": "2026-10-03T14:45:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2026-10-03T14:45:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2798,68 +3151,61 @@
       },
       {
         "timestamp": "2026-10-03T14:45:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-03T14:45:00.010Z",
+        "timestamp": "2026-10-03T14:45:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T14:45:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-03T15:40:00.000Z",
+        "timestamp": "2026-10-03T15:40:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -2869,6 +3215,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2876,117 +3224,107 @@
       },
       {
         "timestamp": "2026-10-03T15:40:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T15:40:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 100,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttfa_ms": 100
       },
       {
         "timestamp": "2026-10-03T15:40:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-03T15:40:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T15:40:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-03T15:40:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -2994,37 +3332,34 @@
       },
       {
         "timestamp": "2026-10-03T15:40:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T15:40:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3032,70 +3367,63 @@
       },
       {
         "timestamp": "2026-10-03T15:40:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "timing_version": 1,
-        "ttfb_ms": 0,
-        "ttft_ms": 0,
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
         "failure_status": 429,
-        "failure_reason": "alpha"
-      },
-      {
-        "timestamp": "2026-10-03T15:40:00.010Z",
-        "source": "synthetic-0",
-        "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        }
-      },
-      {
-        "timestamp": "2026-10-03T15:40:00.011Z",
-        "source": "synthetic-1",
-        "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        },
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-03T16:20:00.000Z",
+        "timestamp": "2026-10-03T15:40:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
+        "failed": false,
+        "generate": true
+      },
+      {
+        "timestamp": "2026-10-03T15:40:00.011Z",
+        "latency_ms": 750,
+        "source": "synthetic-1",
+        "auth_index": "1",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
         "failed": false,
         "generate": true,
+        "timing_version": 1,
+        "ttfb_ms": 0,
+        "ttft_ms": 0
+      },
+      {
+        "timestamp": "2026-10-03T16:20:00Z",
         "latency_ms": 0,
+        "source": "synthetic-0",
+        "auth_index": "0",
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -3105,6 +3433,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3112,37 +3442,33 @@
       },
       {
         "timestamp": "2026-10-03T16:20:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T16:20:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3150,79 +3476,74 @@
       },
       {
         "timestamp": "2026-10-03T16:20:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-03T16:20:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2026-10-03T16:20:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2026-10-03T16:20:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3230,37 +3551,34 @@
       },
       {
         "timestamp": "2026-10-03T16:20:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T16:20:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3268,62 +3586,56 @@
       },
       {
         "timestamp": "2026-10-03T16:20:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2026-10-03T16:20:00.010Z",
+        "timestamp": "2026-10-03T16:20:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-03T16:20:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
-        "ttft_ms": 0,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttft_ms": 0
       }
     ],
     "expected": {
@@ -3377,11 +3689,11 @@
       "cache": {
         "requests": 36,
         "cachedRequests": 12,
-        "cacheHitRequestRatio": 0.3333333333333333,
         "inputTokens": 3600,
         "cacheReadTokens": 240,
         "cacheWriteTokens": 90,
-        "cacheReadRate": 0.06666666666666667
+        "cacheReadRate": 0.06666666666666667,
+        "cacheHitRequestRatio": 0.3333333333333333
       },
       "errors": {
         "totalRequests": 36,
@@ -3503,6 +3815,53 @@
             "failures": 2,
             "failureRate": 0.16666666666666666
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1791037800000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1791041400000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1791043200000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          }
         ]
       },
       "day": {
@@ -3544,6 +3903,23 @@
             "failures": 6,
             "failureRate": 0.16666666666666666
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1791034200000,
+            "outputTokens": 630,
+            "decodeDurationMs": 52797,
+            "outputSamples": 21,
+            "averageTokens": 990,
+            "averageDurationMs": 121344,
+            "averageSamples": 33,
+            "visibleTokens": 660,
+            "visibleDurationMs": 121344,
+            "visibleSamples": 33,
+            "reasoningTokens": 330,
+            "reasoningDenominator": 990,
+            "reasoningSamples": 33
+          }
         ]
       }
     }
@@ -3555,12 +3931,10 @@
     "to_ms": 1541426400011,
     "rows": [
       {
-        "timestamp": "2018-11-03T15:00:00.000Z",
+        "timestamp": "2018-11-03T15:00:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -3570,46 +3944,44 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
+        "failure_status": 429,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 0,
-        "failure_status": 429,
-        "failure_reason": "alpha"
+        "ttfa_ms": 0
       },
       {
         "timestamp": "2018-11-03T15:00:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-03T15:00:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3617,77 +3989,72 @@
       },
       {
         "timestamp": "2018-11-03T15:00:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2018-11-03T15:00:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-03T15:00:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2018-11-03T15:00:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3695,39 +4062,36 @@
       },
       {
         "timestamp": "2018-11-03T15:00:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2018-11-03T15:00:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3735,68 +4099,61 @@
       },
       {
         "timestamp": "2018-11-03T15:00:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2018-11-03T15:00:00.010Z",
+        "timestamp": "2018-11-03T15:00:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-03T15:00:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2018-11-04T14:00:00.000Z",
+        "timestamp": "2018-11-04T14:00:00Z",
+        "latency_ms": 0,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -3806,6 +4163,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3813,117 +4172,107 @@
       },
       {
         "timestamp": "2018-11-04T14:00:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-04T14:00:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
-        "ttfa_ms": 100,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttfa_ms": 100
       },
       {
         "timestamp": "2018-11-04T14:00:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2018-11-04T14:00:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-04T14:00:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2018-11-04T14:00:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3931,37 +4280,34 @@
       },
       {
         "timestamp": "2018-11-04T14:00:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-04T14:00:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -3969,70 +4315,63 @@
       },
       {
         "timestamp": "2018-11-04T14:00:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
-        "timing_version": 1,
-        "ttfb_ms": 0,
-        "ttft_ms": 0,
+        "failed": true,
+        "generate": true,
+        "failure_reason": "alpha",
         "failure_status": 429,
-        "failure_reason": "alpha"
-      },
-      {
-        "timestamp": "2018-11-04T14:00:00.010Z",
-        "source": "synthetic-0",
-        "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        }
-      },
-      {
-        "timestamp": "2018-11-04T14:00:00.011Z",
-        "source": "synthetic-1",
-        "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 750,
-        "tokens": {
-          "input_tokens": 100,
-          "output_tokens": 30,
-          "reasoning_tokens": 10,
-          "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
-          "total_tokens": 130
-        },
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2018-11-05T14:00:00.000Z",
+        "timestamp": "2018-11-04T14:00:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
+        "failed": false,
+        "generate": true
+      },
+      {
+        "timestamp": "2018-11-04T14:00:00.011Z",
+        "latency_ms": 750,
+        "source": "synthetic-1",
+        "auth_index": "1",
+        "tokens": {
+          "input_tokens": 100,
+          "output_tokens": 30,
+          "reasoning_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 130
+        },
         "failed": false,
         "generate": true,
+        "timing_version": 1,
+        "ttfb_ms": 0,
+        "ttft_ms": 0
+      },
+      {
+        "timestamp": "2018-11-05T14:00:00Z",
         "latency_ms": 0,
+        "source": "synthetic-0",
+        "auth_index": "0",
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
@@ -4042,6 +4381,8 @@
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -4049,37 +4390,33 @@
       },
       {
         "timestamp": "2018-11-05T14:00:00.001Z",
+        "latency_ms": 99,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 99,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-05T14:00:00.002Z",
+        "latency_ms": 100,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 100,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -4087,79 +4424,74 @@
       },
       {
         "timestamp": "2018-11-05T14:00:00.003Z",
+        "latency_ms": 249,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 249,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2018-11-05T14:00:00.004Z",
+        "latency_ms": 250,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 250,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
-        "failure_status": 500,
-        "failure_reason": "beta"
+        "failed": true,
+        "generate": true,
+        "failure_reason": "beta",
+        "failure_status": 500
       },
       {
         "timestamp": "2018-11-05T14:00:00.005Z",
+        "latency_ms": 500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
         "timestamp": "2018-11-05T14:00:00.006Z",
+        "latency_ms": 1000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 1000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -4167,37 +4499,34 @@
       },
       {
         "timestamp": "2018-11-05T14:00:00.007Z",
+        "latency_ms": 2500,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 2500,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-05T14:00:00.008Z",
+        "latency_ms": 5000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 5000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
           "cache_creation_tokens": 10,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0,
@@ -4205,62 +4534,56 @@
       },
       {
         "timestamp": "2018-11-05T14:00:00.009Z",
+        "latency_ms": 10000,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 10000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 20,
           "cache_read_tokens": 20,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": false,
+        "generate": true,
         "timing_version": 1,
         "ttfb_ms": 0,
         "ttft_ms": 0
       },
       {
-        "timestamp": "2018-11-05T14:00:00.010Z",
+        "timestamp": "2018-11-05T14:00:00.01Z",
+        "latency_ms": 20000,
         "source": "synthetic-0",
         "auth_index": "0",
-        "failed": false,
-        "generate": true,
-        "latency_ms": 20000,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2018-11-05T14:00:00.011Z",
+        "latency_ms": 750,
         "source": "synthetic-1",
         "auth_index": "1",
-        "failed": true,
-        "generate": true,
-        "latency_ms": 750,
         "tokens": {
           "input_tokens": 100,
           "output_tokens": 30,
           "reasoning_tokens": 10,
           "cached_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_creation_tokens": 0,
           "total_tokens": 130
         },
+        "failed": true,
+        "generate": true,
+        "failure_reason": "gamma",
         "timing_version": 1,
         "ttfb_ms": 0,
-        "ttft_ms": 0,
-        "failure_status": 0,
-        "failure_reason": "gamma"
+        "ttft_ms": 0
       }
     ],
     "expected": {
@@ -4314,11 +4637,11 @@
       "cache": {
         "requests": 36,
         "cachedRequests": 12,
-        "cacheHitRequestRatio": 0.3333333333333333,
         "inputTokens": 3600,
         "cacheReadTokens": 240,
         "cacheWriteTokens": 90,
-        "cacheReadRate": 0.06666666666666667
+        "cacheReadRate": 0.06666666666666667,
+        "cacheHitRequestRatio": 0.3333333333333333
       },
       "errors": {
         "totalRequests": 36,
@@ -5385,6 +5708,728 @@
             "failures": 2,
             "failureRate": 0.16666666666666666
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1541257200000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1541260800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541264400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541268000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541271600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541275200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541278800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541282400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541286000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541289600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541293200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541296800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541300400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541304000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541307600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541311200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541314800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541318400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541322000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541325600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541329200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541332800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541336400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541340000000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1541343600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541347200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541350800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541354400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541358000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541361600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541365200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541368800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541372400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541376000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541379600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541383200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541386800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541390400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541394000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541397600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541401200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541404800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541408400000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541412000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541415600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541419200000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541422800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1541426400000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          }
         ]
       },
       "day": {
@@ -5468,6 +6513,53 @@
             "failures": 2,
             "failureRate": 0.16666666666666666
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 1541214000000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1541300400000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          },
+          {
+            "timestampMs": 1541383200000,
+            "outputTokens": 210,
+            "decodeDurationMs": 17599,
+            "outputSamples": 7,
+            "averageTokens": 330,
+            "averageDurationMs": 40448,
+            "averageSamples": 11,
+            "visibleTokens": 220,
+            "visibleDurationMs": 40448,
+            "visibleSamples": 11,
+            "reasoningTokens": 110,
+            "reasoningDenominator": 330,
+            "reasoningSamples": 11
+          }
         ]
       }
     }
@@ -5475,34 +6567,38 @@
   {
     "name": "sparse",
     "timezone": "UTC",
+    "from_ms": null,
+    "to_ms": null,
     "rows": [
       {
         "timestamp": "2000-01-01T12:00:00Z",
+        "latency_ms": 1,
         "source": "synthetic",
         "auth_index": "1",
-        "failed": false,
-        "latency_ms": 1,
         "tokens": {
           "input_tokens": 0,
           "output_tokens": 0,
           "reasoning_tokens": 0,
           "cached_tokens": 0,
           "total_tokens": 0
-        }
+        },
+        "failed": false,
+        "generate": true
       },
       {
         "timestamp": "2026-10-08T12:00:00Z",
+        "latency_ms": 0,
         "source": "synthetic",
         "auth_index": "1",
-        "failed": true,
-        "latency_ms": 0,
         "tokens": {
           "input_tokens": 0,
           "output_tokens": 0,
           "reasoning_tokens": 0,
           "cached_tokens": 0,
           "total_tokens": 0
-        }
+        },
+        "failed": true,
+        "generate": true
       }
     ],
     "expected": {
@@ -5556,11 +6652,11 @@
       "cache": {
         "requests": 2,
         "cachedRequests": 0,
-        "cacheHitRequestRatio": 0,
         "inputTokens": 0,
         "cacheReadTokens": 0,
         "cacheWriteTokens": 0,
-        "cacheReadRate": null
+        "cacheReadRate": null,
+        "cacheHitRequestRatio": 0
       },
       "errors": {
         "totalRequests": 2,
@@ -5636,6 +6732,38 @@
             "failures": 1,
             "failureRate": 1
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 946728000000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791460800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          }
         ]
       },
       "day": {
@@ -5698,6 +6826,38 @@
             "failures": 1,
             "failureRate": 1
           }
+        ],
+        "throughput": [
+          {
+            "timestampMs": 946684800000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          },
+          {
+            "timestampMs": 1791417600000,
+            "outputTokens": 0,
+            "decodeDurationMs": 0,
+            "outputSamples": 0,
+            "averageTokens": 0,
+            "averageDurationMs": 0,
+            "averageSamples": 0,
+            "visibleTokens": 0,
+            "visibleDurationMs": 0,
+            "visibleSamples": 0,
+            "reasoningTokens": 0,
+            "reasoningDenominator": 0,
+            "reasoningSamples": 0
+          }
         ]
       }
     }
@@ -5705,20 +6865,23 @@
   {
     "name": "invalid-timestamp",
     "timezone": "UTC",
+    "from_ms": null,
+    "to_ms": null,
     "rows": [
       {
         "timestamp": "0001-01-01T00:00:00Z",
+        "latency_ms": 1,
         "source": "synthetic",
         "auth_index": "1",
-        "failed": false,
-        "latency_ms": 1,
         "tokens": {
           "input_tokens": 0,
           "output_tokens": 0,
           "reasoning_tokens": 0,
           "cached_tokens": 0,
           "total_tokens": 0
-        }
+        },
+        "failed": false,
+        "generate": true
       }
     ],
     "expected": {
@@ -5772,11 +6935,11 @@
       "cache": {
         "requests": 0,
         "cachedRequests": 0,
-        "cacheHitRequestRatio": null,
         "inputTokens": 0,
         "cacheReadTokens": 0,
         "cacheWriteTokens": 0,
-        "cacheReadRate": null
+        "cacheReadRate": null,
+        "cacheHitRequestRatio": null
       },
       "errors": {
         "totalRequests": 0,
@@ -5795,7 +6958,8 @@
           "average": []
         },
         "cache": [],
-        "errors": []
+        "errors": [],
+        "throughput": []
       },
       "day": {
         "latency": {
@@ -5807,13 +6971,16 @@
           "average": []
         },
         "cache": [],
-        "errors": []
+        "errors": [],
+        "throughput": []
       }
     }
   },
   {
     "name": "empty",
     "timezone": "UTC",
+    "from_ms": null,
+    "to_ms": null,
     "rows": [],
     "expected": {
       "timings": {
@@ -5866,11 +7033,11 @@
       "cache": {
         "requests": 0,
         "cachedRequests": 0,
-        "cacheHitRequestRatio": null,
         "inputTokens": 0,
         "cacheReadTokens": 0,
         "cacheWriteTokens": 0,
-        "cacheReadRate": null
+        "cacheReadRate": null,
+        "cacheHitRequestRatio": null
       },
       "errors": {
         "totalRequests": 0,
@@ -5889,7 +7056,8 @@
           "average": []
         },
         "cache": [],
-        "errors": []
+        "errors": [],
+        "throughput": []
       },
       "day": {
         "latency": {
@@ -5901,7 +7069,8 @@
           "average": []
         },
         "cache": [],
-        "errors": []
+        "errors": [],
+        "throughput": []
       }
     }
   }
