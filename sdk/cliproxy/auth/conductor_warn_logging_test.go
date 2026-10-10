@@ -855,3 +855,23 @@ func TestWarnLogUpstreamFailureSanitizesResponseHeaderExtras(t *testing.T) {
 	}
 	t.Fatalf("expected upstream failure Warn log, got logs: %#v", hook.AllEntries())
 }
+
+func TestSafeResponseHeaderTokenDropsOverlongValues(t *testing.T) {
+	// Pure allowed-charset input that only exceeds the length bound must drop
+	// the whole field; truncating would defeat the drop-not-truncate rule.
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"boundary_64", strings.Repeat("x", 64), strings.Repeat("x", 64)},
+		{"overlong_65", strings.Repeat("x", 65), ""},
+		{"overlong_alpha_100", strings.Repeat("envoy", 20), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := safeResponseHeaderToken(tc.value); got != tc.want {
+				t.Fatalf("safeResponseHeaderToken(%d chars) = %q, want %q", len(tc.value), got, tc.want)
+			}
+		})
+	}
+}

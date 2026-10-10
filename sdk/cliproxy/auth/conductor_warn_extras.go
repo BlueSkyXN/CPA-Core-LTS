@@ -42,16 +42,16 @@ func upstreamFailureWarnExtras(ctx context.Context, execOpts *cliproxyexecutor.O
 
 // safeResponseHeaderToken reduces an upstream response header value to a
 // bounded printable token. Values that still look secret-bearing after
-// SafeDiagnosticForLog redaction, or that contain characters outside the
-// conservative display set, drop the field entirely rather than leak or
-// truncate mid-secret.
+// SafeDiagnosticForLog redaction, exceed the length bound, or contain
+// characters outside the conservative display set drop the field entirely
+// rather than leak or truncate mid-secret.
 func safeResponseHeaderToken(value string) string {
 	sanitized := strings.TrimSpace(logging.SafeDiagnosticForLog(value))
 	if sanitized == "" {
 		return ""
 	}
-	if runes := []rune(sanitized); len(runes) > 64 {
-		sanitized = string(runes[:64])
+	if len([]rune(sanitized)) > 64 {
+		return ""
 	}
 	for i := 0; i < len(sanitized); i++ {
 		ch := sanitized[i]
