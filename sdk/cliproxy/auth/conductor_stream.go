@@ -135,7 +135,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			if chunk.Err != nil && !failed {
 				failed = true
 				if !isRetryWithoutPenaltyError(chunk.Err) {
-					warnLogUpstreamFailure(ctx, logEntryWithRequestID(ctx), provider, resultModel, auth, time.Since(streamStart), chunk.Err)
+					m.warnLogUpstreamFailure(ctx, logEntryWithRequestID(ctx), provider, resultModel, auth, time.Since(streamStart), chunk.Err, &opts, "")
 					rerr := resultErrorFromError(chunk.Err)
 					result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, opts)
 					result.RouteModel = routeModel
@@ -312,7 +312,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					}
 					durationRetry := time.Since(startRetry)
 					if errStream != nil {
-						warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationRetry, errStream)
+						m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationRetry, errStream, &execOpts, "")
 						if errCtx := ctx.Err(); errCtx != nil {
 							return nil, errCtx
 						}
@@ -324,10 +324,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 						return nil, errStream
 					}
 				} else {
-					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
+					m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream, &execOpts, "")
 				}
 			} else {
-				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
+				m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream, &execOpts, "")
 			}
 		}
 		if !ephemeralResult {
@@ -416,21 +416,21 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 							return nil, errCtx
 						}
 						bootstrapErr = retryErr
-						warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
+						m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr, &execOpts, "")
 						streamResult = &cliproxyexecutor.StreamResult{}
 					} else {
 						streamResult = retryStream
 						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
 						bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
 						if bootstrapErr != nil {
-							warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
+							m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr, &execOpts, "")
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr)
+					m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr, &execOpts, "")
 				}
 			} else {
-				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr)
+				m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr, &execOpts, "")
 			}
 			if hasUpstreamExecutionAttempt(bootstrapErr) {
 				upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
@@ -524,7 +524,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if hasUpstreamExecutionAttempt(emptyErr) {
 				upstreamErr = currentErr
 			}
-			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
+			m.warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr, &execOpts, "")
 			result := resultForAuthWithOptions(auth, provider, resultModel, false, resultErrorFromError(emptyErr), execOpts)
 			result.RouteModel = routeModel
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)

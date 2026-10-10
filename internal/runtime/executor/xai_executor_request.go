@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
@@ -298,9 +299,33 @@ func xaiBaseURLSource(baseURL string) string {
 	}
 }
 
-// logXAIResolvedBaseURL emits a console log for the resolved upstream base URL.
-func logXAIResolvedBaseURL(ctx context.Context, baseURL string) {
-	helps.LogWithRequestID(ctx).Infof("xai: resolved base URL source=%s", xaiBaseURLSource(baseURL))
+// xaiBaseURLLoggedPairs remembers which (credential, resolved base URL) pairs
+// have already been reported so the resolution line is emitted once per pair
+// per process instead of once per request. Pairs are keyed because chat and
+// compact transports legitimately resolve different URLs for the same
+// credential. The URL value itself is never logged.
+var xaiBaseURLLoggedPairs = struct {
+	sync.Mutex
+	seen map[string]struct{}
+}{seen: make(map[string]struct{})}
+
+// logXAIResolvedBaseURL emits a console log the first time a credential
+// resolves to a given upstream base URL; repeated resolutions stay silent.
+func logXAIResolvedBaseURL(ctx context.Context, auth *cliproxyauth.Auth, baseURL string) {
+	key := "anonymous"
+	if auth != nil && strings.TrimSpace(auth.ID) != "" {
+		key = auth.ID
+	}
+	key += "|" + xaiNormalizeBaseURL(baseURL)
+	xaiBaseURLLoggedPairs.Lock()
+	_, seen := xaiBaseURLLoggedPairs.seen[key]
+	if !seen {
+		xaiBaseURLLoggedPairs.seen[key] = struct{}{}
+	}
+	xaiBaseURLLoggedPairs.Unlock()
+	if !seen {
+		helps.LogWithRequestID(ctx).Infof("xai: resolved base URL source=%s", xaiBaseURLSource(baseURL))
+	}
 }
 
 func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, sessionID string, clientHeaders ...http.Header) {

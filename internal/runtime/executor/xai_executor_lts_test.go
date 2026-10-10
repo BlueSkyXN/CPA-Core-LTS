@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -291,12 +293,20 @@ func TestNormalizeXAIToolChoiceForTools_PreservesNoneButDropsParallelCallsWithou
 	}
 }
 
+func resetXAIBaseURLLoggedPairs(t *testing.T) {
+	t.Helper()
+	xaiBaseURLLoggedPairs.Lock()
+	xaiBaseURLLoggedPairs.seen = make(map[string]struct{})
+	xaiBaseURLLoggedPairs.Unlock()
+}
+
 func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	t.Cleanup(hook.Reset)
+	resetXAIBaseURLLoggedPairs(t)
 
 	customURL := "https://internal.example.test/private/v1"
-	logXAIResolvedBaseURL(context.Background(), customURL)
+	logXAIResolvedBaseURL(context.Background(), nil, customURL)
 
 	for _, entry := range hook.AllEntries() {
 		if !strings.Contains(entry.Message, "xai: resolved base URL") {
@@ -312,4 +322,34 @@ func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
 	}
 
 	t.Fatal("xAI resolution log entry not found")
+}
+
+func TestLogXAIResolvedBaseURLEmitsOncePerCredentialURLPair(t *testing.T) {
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+	resetXAIBaseURLLoggedPairs(t)
+
+	auth := &cliproxyauth.Auth{ID: "auth-xai-1"}
+	urlA := xaiauth.CLIChatProxyBaseURL
+	urlB := "https://internal.example.test/private/v1"
+
+	logXAIResolvedBaseURL(context.Background(), auth, urlA)
+	logXAIResolvedBaseURL(context.Background(), auth, urlA)
+	logXAIResolvedBaseURL(context.Background(), auth, urlA)
+	logXAIResolvedBaseURL(context.Background(), auth, urlB)
+	logXAIResolvedBaseURL(context.Background(), nil, urlA)
+
+	entries := 0
+	for _, entry := range hook.AllEntries() {
+		if !strings.Contains(entry.Message, "xai: resolved base URL") {
+			continue
+		}
+		entries++
+		if strings.Contains(entry.Message, urlB) {
+			t.Fatalf("xAI resolution log leaked custom URL: %q", entry.Message)
+		}
+	}
+	if entries != 3 {
+		t.Fatalf("xAI resolution log entries = %d, want 3 (auth+urlA once, auth+urlB once, anonymous+urlA once); entries: %#v", entries, hook.AllEntries())
+	}
 }

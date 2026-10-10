@@ -25,7 +25,7 @@ func (e *XAIExecutor) executeImages(ctx context.Context, auth *cliproxyauth.Auth
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL)
 	if endpointPath == "" {
 		endpointPath = xaiDefaultImageEndpointPath
 	}
@@ -81,7 +81,7 @@ func (e *XAIExecutor) executeVideos(ctx context.Context, auth *cliproxyauth.Auth
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL)
 
 	payload := normalizeXAIImageRefs(req.Payload)
 	method := http.MethodPost

@@ -2,12 +2,15 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -58,7 +61,7 @@ func TestWarnLogUpstreamFailureIncludesStructuredStatusCodeAndSafeDiagnostic(t *
 	hook := setupTestLoggerHook(t)
 	diagnostic := `  antigravity refresh: upstream request failed with status 400 error="invalid_request" error_description="Malformed request, retry & inspect"  `
 
-	warnLogUpstreamFailure(
+	NewManager(nil, nil, nil).warnLogUpstreamFailure(
 		context.Background(),
 		nil,
 		"antigravity",
@@ -66,6 +69,8 @@ func TestWarnLogUpstreamFailureIncludesStructuredStatusCodeAndSafeDiagnostic(t *
 		&Auth{ID: "auth-1", Provider: "antigravity"},
 		83*time.Millisecond,
 		statusErrorLogTestError{message: diagnostic, statusCode: http.StatusServiceUnavailable},
+		nil,
+		"",
 	)
 
 	for _, entry := range hook.AllEntries() {
@@ -87,7 +92,7 @@ func TestWarnLogUpstreamFailureUsesMarkedHomeDiagnostic(t *testing.T) {
 		statusCode: http.StatusServiceUnavailable,
 	}
 
-	warnLogUpstreamFailure(
+	NewManager(nil, nil, nil).warnLogUpstreamFailure(
 		context.Background(),
 		nil,
 		"antigravity",
@@ -95,6 +100,8 @@ func TestWarnLogUpstreamFailureUsesMarkedHomeDiagnostic(t *testing.T) {
 		&Auth{ID: "auth-1", Provider: "antigravity"},
 		129*time.Millisecond,
 		errRefresh,
+		nil,
+		"",
 	)
 
 	for _, entry := range hook.AllEntries() {
@@ -722,4 +729,90 @@ func (e *mockStreamErrorExecutor) CountTokens(ctx context.Context, auth *Auth, r
 
 func (e *mockStreamErrorExecutor) HttpRequest(ctx context.Context, auth *Auth, req *http.Request) (*http.Response, error) {
 	return nil, errors.New("not implemented")
+}
+
+func TestWarnLogUpstreamFailureAppendsRoutingDiagnostics(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+	log.SetLevel(log.InfoLevel)
+
+	ctx := syncMetadataSessionToContext(context.Background(), map[string]any{
+		cliproxyexecutor.CanonicalSessionIDMetadataKey: "codex:session-secret-value",
+	})
+	ctx = logging.WithResponseHeadersHolder(ctx)
+	logging.SetResponseHeaders(ctx, http.Header{"Server": {"envoy"}, "Cf-Ray": {"8abc123def-LAX"}})
+
+	turnState := "raw-turn-state-blob"
+	sum := sha256.Sum256([]byte(turnState))
+	turnFingerprint := "present:" + hex.EncodeToString(sum[:4])
+
+	m := NewManager(nil, nil, nil)
+	m.warnLogUpstreamFailure(
+		ctx,
+		nil,
+		"codex",
+		"gpt-6.1-sol",
+		&Auth{ID: "auth-1", Provider: "codex"},
+		83*time.Millisecond,
+		statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable},
+		&cliproxyexecutor.Options{Headers: http.Header{"X-Codex-Turn-State": {turnState}}},
+		"round=1 try=2",
+	)
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Level != log.WarnLevel || !strings.Contains(entry.Message, "upstream execution failed") {
+			continue
+		}
+		wantSession := "session=" + sessionLogIdentity("codex:session-secret-value")
+		if !strings.Contains(entry.Message, wantSession) {
+			t.Fatalf("Warn log missing %s: %s", wantSession, entry.Message)
+		}
+		if !strings.Contains(entry.Message, "turn="+turnFingerprint) {
+			t.Fatalf("Warn log missing turn fingerprint %s: %s", turnFingerprint, entry.Message)
+		}
+		if strings.Contains(entry.Message, turnState) {
+			t.Fatalf("Warn log exposed raw turn-state value: %s", entry.Message)
+		}
+		if !strings.Contains(entry.Message, "attempt=round=1 try=2") {
+			t.Fatalf("Warn log missing attempt field: %s", entry.Message)
+		}
+		if !strings.Contains(entry.Message, "server=envoy") || !strings.Contains(entry.Message, "cf_ray=8abc123def-LAX") {
+			t.Fatalf("Warn log missing upstream response headers: %s", entry.Message)
+		}
+		return
+	}
+	t.Fatalf("expected upstream failure Warn log, got logs: %#v", hook.AllEntries())
+}
+
+func TestWarnLogUpstreamFailureSuppressesRepeatAndLogsRecovery(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+	log.SetLevel(log.InfoLevel)
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-1", Provider: "codex"}
+	err := statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable}
+
+	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-6.1-sol", auth, time.Second, err, nil, "")
+	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-6.1-sol", auth, time.Second, err, nil, "")
+	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-5.6-luna", auth, time.Second, err, nil, "")
+	m.noteUpstreamRecovery(context.Background(), auth, "codex", "gpt-6.1-sol")
+	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-6.1-sol", auth, time.Second, err, nil, "")
+
+	warns, recoveries := 0, 0
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == log.WarnLevel && strings.Contains(entry.Message, "upstream execution failed") {
+			warns++
+		}
+		if entry.Level == log.InfoLevel && strings.Contains(entry.Message, "upstream recovered") {
+			recoveries++
+			if !strings.Contains(entry.Message, "suppressed=1") {
+				t.Fatalf("recovery line missing suppression count: %s", entry.Message)
+			}
+		}
+	}
+	if warns != 3 {
+		t.Fatalf("failure warn lines = %d, want 3 (initial, other model, post-recovery); logs: %#v", warns, hook.AllEntries())
+	}
+	if recoveries != 1 {
+		t.Fatalf("recovery lines = %d, want 1", recoveries)
+	}
 }

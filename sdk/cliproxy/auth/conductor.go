@@ -209,6 +209,10 @@ type Manager struct {
 	maxRetryCredentials atomic.Int32
 	maxRetryInterval    atomic.Int64
 
+	// upstreamFailures collapses repeated upstream failure warn lines per
+	// (provider, auth, model); see conductor_failure_state.go.
+	upstreamFailures upstreamFailureTracker
+
 	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value
 

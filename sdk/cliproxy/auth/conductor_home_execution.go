@@ -275,7 +275,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				if hasUpstreamExecutionAttempt(errExecute) {
 					upstreamErr = errExecute
 				}
-				warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
+				m.warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute, &execOpts, "")
 			}
 			result := resultForAuthWithOptions(preparedAuth, selection.Provider, resultModel, errExecute == nil, nil, execOpts)
 			result.RouteModel = routeModel

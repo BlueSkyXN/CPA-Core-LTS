@@ -32,7 +32,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL)
 
 	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
 	if err != nil {
@@ -147,7 +147,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	// Compact must not use xaiChatBaseURL: CLI chat-proxy returns 404 for
 	// /responses/compact and a 404 cools down the whole xAI auth pool.
 	baseURL := xaiCompactBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL)
 
 	prepared, err := e.prepareResponsesRequestTo(ctx, req, opts, false, sdktranslator.FormatOpenAIResponse)
 	if err != nil {

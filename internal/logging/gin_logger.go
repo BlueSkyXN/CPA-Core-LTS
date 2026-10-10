@@ -147,6 +147,22 @@ func SkipGinRequestLogging(c *gin.Context) {
 	c.Set(skipGinLogKey, true)
 }
 
+// SkipSuccessfulGetAccessLog returns a group middleware that suppresses the
+// Gin access log line for GET requests finishing with a 2xx status, mirroring
+// the healthz precedent in GinLogrusLogger. It is meant for read-heavy
+// management polling routes: mutating methods and non-2xx responses stay
+// logged. The skip flag is only read after c.Next(), so the decision always
+// reflects the final response status.
+func SkipSuccessfulGetAccessLog() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		status := c.Writer.Status()
+		if c.Request.Method == http.MethodGet && status >= http.StatusOK && status < http.StatusMultipleChoices {
+			SkipGinRequestLogging(c)
+		}
+	}
+}
+
 func shouldSkipGinRequestLogging(c *gin.Context) bool {
 	if c == nil {
 		return false
