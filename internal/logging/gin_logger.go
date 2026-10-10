@@ -147,6 +147,46 @@ func SkipGinRequestLogging(c *gin.Context) {
 	c.Set(skipGinLogKey, true)
 }
 
+// managementGETLogSkipExemptPrefixes and managementGETLogSkipExemptSuffixes
+// keep credential-lifecycle GET routes visible in the access log even on
+// success: auth file downloads, OAuth starts, and auth status probes are rare,
+// user-initiated, and security relevant rather than polling noise.
+var managementGETLogSkipExemptPrefixes = []string{
+	"/v0/management/auth-files/download",
+	"/v0/management/get-auth-status",
+}
+
+var managementGETLogSkipExemptSuffixes = []string{"-auth-url"}
+
+// SkipSuccessfulGetAccessLog returns a group middleware that suppresses the
+// Gin access log line for GET requests finishing with a 2xx status, mirroring
+// the healthz precedent in GinLogrusLogger. It is meant for read-heavy
+// management polling routes: mutating methods, non-2xx responses, and the
+// credential-lifecycle exemptions above stay logged. The skip flag is only
+// read after c.Next(), so the decision always reflects the final response
+// status.
+func SkipSuccessfulGetAccessLog() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		status := c.Writer.Status()
+		if c.Request.Method != http.MethodGet || status < http.StatusOK || status >= http.StatusMultipleChoices {
+			return
+		}
+		path := c.Request.URL.Path
+		for _, prefix := range managementGETLogSkipExemptPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				return
+			}
+		}
+		for _, suffix := range managementGETLogSkipExemptSuffixes {
+			if strings.HasSuffix(path, suffix) {
+				return
+			}
+		}
+		SkipGinRequestLogging(c)
+	}
+}
+
 func shouldSkipGinRequestLogging(c *gin.Context) bool {
 	if c == nil {
 		return false

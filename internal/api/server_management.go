@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -25,7 +26,10 @@ func (s *Server) registerManagementRoutes() {
 	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	// SkipSuccessfulGetAccessLog keeps management read polling (config,
+	// auth-files, usage queries) out of the console access log; writes and
+	// non-2xx reads stay visible.
+	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), logging.SkipSuccessfulGetAccessLog())
 	{
 		mgmt.GET("/usage", usageCompression(), s.mgmt.GetUsageStatistics)
 		mgmt.GET("/usage/export", usageCompression(), s.mgmt.ExportUsageStatistics)

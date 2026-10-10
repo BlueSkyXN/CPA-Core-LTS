@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
@@ -298,9 +299,38 @@ func xaiBaseURLSource(baseURL string) string {
 	}
 }
 
-// logXAIResolvedBaseURL emits a console log for the resolved upstream base URL.
-func logXAIResolvedBaseURL(ctx context.Context, baseURL string) {
-	helps.LogWithRequestID(ctx).Infof("xai: resolved base URL source=%s", xaiBaseURLSource(baseURL))
+const (
+	xaiBaseURLLogKindChat    = "chat"
+	xaiBaseURLLogKindCompact = "compact"
+)
+
+// xaiBaseURLLogState remembers the last resolved base URL per (credential,
+// transport kind). Chat and compact legitimately resolve different URLs for
+// the same credential, so the kind is part of the key. The resolution line is
+// emitted whenever the value changes — including a rollback to a previously
+// seen URL — so route switches stay observable while steady state stays
+// silent. The URL value itself is never logged.
+var xaiBaseURLLogState = struct {
+	sync.Mutex
+	last map[string]string
+}{last: make(map[string]string)}
+
+func logXAIResolvedBaseURL(ctx context.Context, auth *cliproxyauth.Auth, baseURL, kind string) {
+	key := "anonymous"
+	if auth != nil && strings.TrimSpace(auth.ID) != "" {
+		key = auth.ID
+	}
+	key += "|" + kind
+	resolved := xaiNormalizeBaseURL(baseURL)
+	xaiBaseURLLogState.Lock()
+	changed := xaiBaseURLLogState.last[key] != resolved
+	if changed {
+		xaiBaseURLLogState.last[key] = resolved
+	}
+	xaiBaseURLLogState.Unlock()
+	if changed {
+		helps.LogWithRequestID(ctx).Infof("xai: resolved base URL source=%s", xaiBaseURLSource(baseURL))
+	}
 }
 
 func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, sessionID string, clientHeaders ...http.Header) {

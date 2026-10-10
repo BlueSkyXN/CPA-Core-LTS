@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -291,12 +293,20 @@ func TestNormalizeXAIToolChoiceForTools_PreservesNoneButDropsParallelCallsWithou
 	}
 }
 
+func resetXAIBaseURLLogState(t *testing.T) {
+	t.Helper()
+	xaiBaseURLLogState.Lock()
+	xaiBaseURLLogState.last = make(map[string]string)
+	xaiBaseURLLogState.Unlock()
+}
+
 func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	t.Cleanup(hook.Reset)
+	resetXAIBaseURLLogState(t)
 
 	customURL := "https://internal.example.test/private/v1"
-	logXAIResolvedBaseURL(context.Background(), customURL)
+	logXAIResolvedBaseURL(context.Background(), nil, customURL, xaiBaseURLLogKindChat)
 
 	for _, entry := range hook.AllEntries() {
 		if !strings.Contains(entry.Message, "xai: resolved base URL") {
@@ -312,4 +322,37 @@ func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
 	}
 
 	t.Fatal("xAI resolution log entry not found")
+}
+
+func TestLogXAIResolvedBaseURLEmitsOnChangePerCredentialAndKind(t *testing.T) {
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+	resetXAIBaseURLLogState(t)
+
+	auth := &cliproxyauth.Auth{ID: "auth-xai-1"}
+	urlA := xaiauth.CLIChatProxyBaseURL
+	urlB := "https://internal.example.test/private/v1"
+
+	// Steady state stays silent; a route switch AND a rollback both log; chat
+	// and compact are independent keys; an anonymous credential is its own key.
+	logXAIResolvedBaseURL(context.Background(), auth, urlA, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlA, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlB, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlA, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlB, xaiBaseURLLogKindCompact)
+	logXAIResolvedBaseURL(context.Background(), nil, urlA, xaiBaseURLLogKindChat)
+
+	entries := 0
+	for _, entry := range hook.AllEntries() {
+		if !strings.Contains(entry.Message, "xai: resolved base URL") {
+			continue
+		}
+		entries++
+		if strings.Contains(entry.Message, urlB) {
+			t.Fatalf("xAI resolution log leaked custom URL: %q", entry.Message)
+		}
+	}
+	if entries != 5 {
+		t.Fatalf("xAI resolution log entries = %d, want 5 (chat first, switch to B, rollback to A, compact first, anonymous first); entries: %#v", entries, hook.AllEntries())
+	}
 }
