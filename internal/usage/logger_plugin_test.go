@@ -1065,13 +1065,23 @@ func TestExtractSafeFailureReasonSignatureMapping(t *testing.T) {
 		},
 		{
 			name: "io timeout",
-			body: `Get "https://api.example.com/v1": dial tcp: i/o timeout`,
+			body: `Get "https://api.example.com": dial tcp: i/o timeout`,
 			want: "io_timeout",
 		},
 		{
 			name: "tls handshake failure",
 			body: "remote error: tls: handshake failure",
 			want: "tls_handshake_failure",
+		},
+		{
+			name: "net/http TLS handshake timeout keeps TLS qualifier",
+			body: "net/http: TLS handshake timeout",
+			want: "tls_handshake_timeout",
+		},
+		{
+			name: "context deadline exceeded maps to stable token",
+			body: "context deadline exceeded",
+			want: "deadline_exceeded",
 		},
 		{
 			name: "dns failure",
@@ -1089,9 +1099,69 @@ func TestExtractSafeFailureReasonSignatureMapping(t *testing.T) {
 			want: "codex_abnormal_reasoning_response",
 		},
 		{
-			name: "free text without signature keeps legacy first-token behavior",
+			name: "json nested code wins over message text",
+			body: `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"try again later after connection refused"}}`,
+			want: "rate_limit_exceeded",
+		},
+		{
+			name: "json nested type only",
+			body: `{"error":{"type":"usage_limit_reached","message":"You've hit your usage limit."}}`,
+			want: "usage_limit_reached",
+		},
+		{
+			name: "json normalized executor code",
+			body: `{"error":{"type":"invalid_request_error","code":"context_too_large","message":"too long"}}`,
+			want: "context_too_large",
+		},
+		{
+			name: "json root code",
+			body: `{"code":"rate_limit_exceeded","message":"try later"}`,
+			want: "rate_limit_exceeded",
+		},
+		{
+			name: "json root type",
+			body: `{"type":"usage_limit_reached","message":"quota exhausted"}`,
+			want: "usage_limit_reached",
+		},
+		{
+			name: "json error as plain string",
+			body: `{"error":"rate_limited"}`,
+			want: "rate_limited",
+		},
+		{
+			name: "json numeric code is not a string reason",
+			body: `{"error":{"code":429}}`,
+			want: "",
+		},
+		{
+			name: "explicit application prefix survives free-text detail",
+			body: "invalid_request: field contains unexpected EOF",
+			want: "invalid_request",
+		},
+		{
+			name: "websocket wrapper prefix is not an application code",
+			body: "websocket: handshake timeout",
+			want: "",
+		},
+		{
+			name: "proxy handshake failure without TLS context stays unclassified",
+			body: "proxy negotiation error: SOCKS5 handshake failure",
+			want: "",
+		},
+		{
+			name: "single token body is the code itself",
+			body: "EOF",
+			want: "EOF",
+		},
+		{
+			name: "multi-word free text records no misleading first word",
 			body: "This request was rejected by the upstream service.",
-			want: "This",
+			want: "",
+		},
+		{
+			name: "status-only free text records no misleading first word",
+			body: "status 503",
+			want: "",
 		},
 		{
 			name: "free text with colon and unsafe prefix stays dropped",
