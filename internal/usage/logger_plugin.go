@@ -1069,22 +1069,125 @@ func safeFailureDetail(record coreusage.Record, failed bool) (string, int) {
 	return extractSafeFailureReason(record.Fail.Body), status
 }
 
+// failureReasonWrapperPrefixes are Go error wrapper namespaces and generic
+// labels whose colon prefix is a library artifact, not an application error
+// code: "tls: handshake failure" must not record reason "tls".
+var failureReasonWrapperPrefixes = map[string]struct{}{
+	"context": {}, "dial": {}, "http": {}, "http2": {}, "https": {},
+	"net": {}, "proxy": {}, "runtime": {}, "socks": {}, "socks5": {},
+	"tls": {}, "websocket": {},
+}
+
+// failureReasonSignatures maps distinctive free-text transport/upstream error
+// phrases to stable failure_reason tokens. It is the last-resort fallback:
+// structured JSON codes and explicit application prefixes win first, and a
+// body matching none of these entries records no reason rather than a
+// misleading first word. Signatures must stay specific (TLS handshake entries
+// keep their "tls" qualifier) so they cannot shadow application codes.
+var failureReasonSignatures = []struct {
+	signature string
+	class     string
+}{
+	{signature: "upstream connect error or disconnect/reset before headers", class: "upstream_connect_failure"},
+	{signature: "connection reset by peer", class: "connection_reset"},
+	{signature: "connection refused", class: "connection_refused"},
+	{signature: "tls: handshake failure", class: "tls_handshake_failure"},
+	{signature: "tls handshake timeout", class: "tls_handshake_timeout"},
+	{signature: "context deadline exceeded", class: "deadline_exceeded"},
+	{signature: "i/o timeout", class: "io_timeout"},
+	{signature: "no such host", class: "dns_failure"},
+	{signature: "unexpected eof", class: "unexpected_eof"},
+}
+
+// jsonFailureReason extracts an upstream application error code from a JSON
+// error body. Executors already normalize upstream errors into these fields
+// (e.g. classifyCodexStatusError writes error.code/error.type), so they
+// outrank every free-text heuristic. Only whole-body JSON objects are
+// considered; nested values must be strings and pass the safety filter.
+func jsonFailureReason(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if !strings.HasPrefix(trimmed, "{") {
+		return ""
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &root); err != nil {
+		return ""
+	}
+	nested := map[string]json.RawMessage{}
+	var nestedErrorString string
+	if raw, ok := root["error"]; ok {
+		var asString string
+		if json.Unmarshal(raw, &asString) == nil {
+			nestedErrorString = asString
+		} else {
+			_ = json.Unmarshal(raw, &nested)
+		}
+	}
+	for _, candidate := range []string{nestedErrorString} {
+		if reason := strings.TrimSpace(candidate); reason != "" && isSafeFailureReason(reason) {
+			return reason
+		}
+	}
+	for _, field := range []json.RawMessage{nested["code"], nested["type"], root["code"], root["type"]} {
+		var value string
+		if len(field) == 0 || json.Unmarshal(field, &value) != nil {
+			continue
+		}
+		if reason := strings.TrimSpace(value); reason != "" && isSafeFailureReason(reason) {
+			return reason
+		}
+	}
+	return ""
+}
+
+// prefixedFailureReason extracts an explicit "code: detail" prefix. Wrapper
+// namespaces (tls:, websocket:, ...) are rejected so transport-wrapped errors
+// fall through to signature classification instead of recording the wrapper.
+func prefixedFailureReason(body string) string {
+	idx := strings.Index(body, ":")
+	if idx <= 0 {
+		return ""
+	}
+	prefix := strings.TrimSpace(body[:idx])
+	if !isSafeFailureReason(prefix) {
+		return ""
+	}
+	if _, wrapper := failureReasonWrapperPrefixes[strings.ToLower(prefix)]; wrapper {
+		return ""
+	}
+	return prefix
+}
+
+func failureReasonClassFromSignature(body string) string {
+	lower := strings.ToLower(body)
+	for _, sig := range failureReasonSignatures {
+		if strings.Contains(lower, sig.signature) && isSafeFailureReason(sig.class) {
+			return sig.class
+		}
+	}
+	return ""
+}
+
 func extractSafeFailureReason(body string) string {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return ""
 	}
-	candidate := body
-	if idx := strings.Index(candidate, ":"); idx > 0 {
-		candidate = candidate[:idx]
-	} else if fields := strings.Fields(candidate); len(fields) > 0 {
-		candidate = fields[0]
+	if reason := jsonFailureReason(body); reason != "" {
+		return reason
 	}
-	candidate = strings.TrimSpace(candidate)
-	if !isSafeFailureReason(candidate) {
-		return ""
+	if reason := prefixedFailureReason(body); reason != "" {
+		return reason
 	}
-	return candidate
+	if reason := failureReasonClassFromSignature(body); reason != "" {
+		return reason
+	}
+	// A single-token body is itself the code; multi-word free text records no
+	// reason instead of a misleading first word like "context" or "status".
+	if !strings.ContainsAny(body, " \t\r\n") && isSafeFailureReason(body) {
+		return body
+	}
+	return ""
 }
 
 func isSafeFailureReason(value string) bool {
