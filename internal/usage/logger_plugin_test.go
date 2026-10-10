@@ -1036,3 +1036,113 @@ func requireMergeSnapshot(t *testing.T, stats *RequestStatistics, snapshot Stati
 	}
 	return result
 }
+
+func TestExtractSafeFailureReasonSignatureMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "envoy upstream connect failure full payload",
+			body: "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure",
+			want: "upstream_connect_failure",
+		},
+		{
+			name: "envoy payload embedded in transport wrapping",
+			body: `Post "https://chatgpt.com/backend-api/codex/responses": upstream connect error or disconnect/reset before headers. reset reason: remote connection failure`,
+			want: "upstream_connect_failure",
+		},
+		{
+			name: "connection refused",
+			body: `dial tcp 203.0.113.7:443: connect: connection refused`,
+			want: "connection_refused",
+		},
+		{
+			name: "connection reset by peer",
+			body: "read tcp 10.0.0.2:443: read: connection reset by peer",
+			want: "connection_reset",
+		},
+		{
+			name: "io timeout",
+			body: `Get "https://api.example.com/v1": dial tcp: i/o timeout`,
+			want: "io_timeout",
+		},
+		{
+			name: "tls handshake failure",
+			body: "remote error: tls: handshake failure",
+			want: "tls_handshake_failure",
+		},
+		{
+			name: "dns failure",
+			body: `dial tcp: lookup api.example.com: no such host`,
+			want: "dns_failure",
+		},
+		{
+			name: "unexpected eof",
+			body: "unexpected EOF",
+			want: "unexpected_eof",
+		},
+		{
+			name: "existing token prefix keeps passing through",
+			body: "codex_abnormal_reasoning_response: codex abnormal reasoning response discarded",
+			want: "codex_abnormal_reasoning_response",
+		},
+		{
+			name: "free text without signature keeps legacy first-token behavior",
+			body: "This request was rejected by the upstream service.",
+			want: "This",
+		},
+		{
+			name: "free text with colon and unsafe prefix stays dropped",
+			body: "upstream service error: please retry later",
+			want: "",
+		},
+		{
+			name: "whitespace only",
+			body: "   ",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractSafeFailureReason(tc.body); got != tc.want {
+				t.Fatalf("extractSafeFailureReason(%q) = %q, want %q", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRecordFailureReasonCollapsesEnvoyPayloadToClassToken(t *testing.T) {
+	prevEnabled := StatisticsEnabled()
+	SetStatisticsEnabled(true)
+	t.Cleanup(func() { SetStatisticsEnabled(prevEnabled) })
+
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "client-api-key",
+		Provider:    "codex",
+		Model:       "gpt-6.1-sol",
+		Source:      "auths/codex-pro.json",
+		AuthIndex:   "365cdd29b5ad861a",
+		RequestedAt: time.Date(2026, 10, 10, 4, 56, 13, 0, time.UTC),
+		Latency:     1055 * time.Millisecond,
+		Failed:      true,
+		Fail: coreusage.Failure{
+			Body:       "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure",
+			StatusCode: 503,
+		},
+	})
+
+	snapshot := stats.Snapshot()
+	details := snapshot.APIs["client-api-key"].Models["gpt-6.1-sol"].Details
+	if len(details) != 1 {
+		t.Fatalf("details length = %d, want 1", len(details))
+	}
+	if got := details[0].FailureReason; got != "upstream_connect_failure" {
+		t.Fatalf("failure_reason = %q, want upstream_connect_failure", got)
+	}
+	if got := details[0].FailureStatus; got != 503 {
+		t.Fatalf("failure_status = %d, want 503", got)
+	}
+}

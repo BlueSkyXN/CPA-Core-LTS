@@ -1069,10 +1069,42 @@ func safeFailureDetail(record coreusage.Record, failed bool) (string, int) {
 	return extractSafeFailureReason(record.Fail.Body), status
 }
 
+// failureReasonSignatures maps well-known upstream/transport error bodies to
+// stable failure_reason tokens so free-text payloads aggregate into one class
+// instead of being dropped by the charset filter. Longest signature first:
+// matching is case-insensitive substring and the first hit wins. Tokens must
+// still pass isSafeFailureReason as the last line of defense.
+var failureReasonSignatures = []struct {
+	signature string
+	class     string
+}{
+	{signature: "upstream connect error or disconnect/reset before headers", class: "upstream_connect_failure"},
+	{signature: "connection refused", class: "connection_refused"},
+	{signature: "connection reset by peer", class: "connection_reset"},
+	{signature: "i/o timeout", class: "io_timeout"},
+	{signature: "handshake failure", class: "tls_handshake_failure"},
+	{signature: "handshake timeout", class: "tls_handshake_timeout"},
+	{signature: "no such host", class: "dns_failure"},
+	{signature: "unexpected eof", class: "unexpected_eof"},
+}
+
+func failureReasonClassFromSignature(body string) string {
+	lower := strings.ToLower(body)
+	for _, sig := range failureReasonSignatures {
+		if strings.Contains(lower, sig.signature) && isSafeFailureReason(sig.class) {
+			return sig.class
+		}
+	}
+	return ""
+}
+
 func extractSafeFailureReason(body string) string {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return ""
+	}
+	if class := failureReasonClassFromSignature(body); class != "" {
+		return class
 	}
 	candidate := body
 	if idx := strings.Index(candidate, ":"); idx > 0 {
