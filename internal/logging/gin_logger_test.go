@@ -206,6 +206,9 @@ func TestSkipSuccessfulGetAccessLogSkipsOnlySuccessfulGets(t *testing.T) {
 	group.GET("/config", func(c *gin.Context) { c.Status(http.StatusOK) })
 	group.GET("/boom", func(c *gin.Context) { c.Status(http.StatusInternalServerError) })
 	group.POST("/config", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/auth-files/download", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/codex-auth-url", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/auth-files", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	perform := func(method, path string) {
 		req := httptest.NewRequest(method, path, nil)
@@ -216,6 +219,9 @@ func TestSkipSuccessfulGetAccessLogSkipsOnlySuccessfulGets(t *testing.T) {
 	perform(http.MethodGet, "/v0/management/config")
 	perform(http.MethodGet, "/v0/management/boom")
 	perform(http.MethodPost, "/v0/management/config")
+	perform(http.MethodGet, "/v0/management/auth-files/download")
+	perform(http.MethodGet, "/v0/management/codex-auth-url")
+	perform(http.MethodGet, "/v0/management/auth-files")
 
 	logged := map[string]bool{}
 	for _, entry := range hook.AllEntries() {
@@ -226,6 +232,12 @@ func TestSkipSuccessfulGetAccessLogSkipsOnlySuccessfulGets(t *testing.T) {
 			logged["get-500"] = true
 		case strings.Contains(entry.Message, `POST    "/v0/management/config"`):
 			logged["post-ok"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/auth-files/download"`):
+			logged["auth-download"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/codex-auth-url"`):
+			logged["oauth-start"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/auth-files"`):
+			logged["auth-poll"] = true
 		}
 	}
 	if logged["get-ok"] {
@@ -236,5 +248,14 @@ func TestSkipSuccessfulGetAccessLogSkipsOnlySuccessfulGets(t *testing.T) {
 	}
 	if !logged["post-ok"] {
 		t.Fatalf("successful management POST must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if !logged["auth-download"] {
+		t.Fatalf("auth file download must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if !logged["oauth-start"] {
+		t.Fatalf("OAuth start must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if logged["auth-poll"] {
+		t.Fatalf("auth-files polling GET must stay skipped; entries: %#v", hook.AllEntries())
 	}
 }

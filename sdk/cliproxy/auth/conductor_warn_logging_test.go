@@ -783,36 +783,75 @@ func TestWarnLogUpstreamFailureAppendsRoutingDiagnostics(t *testing.T) {
 	t.Fatalf("expected upstream failure Warn log, got logs: %#v", hook.AllEntries())
 }
 
-func TestWarnLogUpstreamFailureSuppressesRepeatAndLogsRecovery(t *testing.T) {
+func TestWarnLogUpstreamFailureLogsEveryAttemptWithoutSuppression(t *testing.T) {
 	hook := setupTestLoggerHook(t)
-	log.SetLevel(log.InfoLevel)
 
 	m := NewManager(nil, nil, nil)
 	auth := &Auth{ID: "auth-1", Provider: "codex"}
-	err := statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable}
+	call := func(model string, err error) {
+		m.warnLogUpstreamFailure(context.Background(), nil, "codex", model, auth, time.Second, err, nil, "")
+	}
 
-	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-6.1-sol", auth, time.Second, err, nil, "")
-	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-6.1-sol", auth, time.Second, err, nil, "")
-	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-5.6-luna", auth, time.Second, err, nil, "")
-	m.noteUpstreamRecovery(context.Background(), auth, "codex", "gpt-6.1-sol")
-	m.warnLogUpstreamFailure(context.Background(), nil, "codex", "gpt-6.1-sol", auth, time.Second, err, nil, "")
+	// Every upstream failure stays visible on its own line: repeated failures
+	// for the same auth/model, different error classes, and failures from a
+	// different session must never be collapsed, or an incident scoped to one
+	// session would disappear from the console.
+	call("gpt-6.1-sol", statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable})
+	call("gpt-6.1-sol", statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable})
+	call("gpt-6.1-sol", statusErrorLogTestError{message: "quota exhausted", statusCode: http.StatusTooManyRequests})
+	call("gpt-5.6-luna", statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable})
 
-	warns, recoveries := 0, 0
+	warns := 0
 	for _, entry := range hook.AllEntries() {
 		if entry.Level == log.WarnLevel && strings.Contains(entry.Message, "upstream execution failed") {
 			warns++
 		}
-		if entry.Level == log.InfoLevel && strings.Contains(entry.Message, "upstream recovered") {
-			recoveries++
-			if !strings.Contains(entry.Message, "suppressed=1") {
-				t.Fatalf("recovery line missing suppression count: %s", entry.Message)
-			}
+	}
+	if warns != 4 {
+		t.Fatalf("failure warn lines = %d, want 4 (no suppression); logs: %#v", warns, hook.AllEntries())
+	}
+}
+
+func TestWarnLogUpstreamFailureSanitizesResponseHeaderExtras(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+
+	ctx := logging.WithResponseHeadersHolder(context.Background())
+	secretMarker := "FAKE-review-marker"
+	logging.SetResponseHeaders(ctx, http.Header{
+		"Server": {"envoy access_token=" + secretMarker + " " + strings.Repeat("x", 1000)},
+		"Cf-Ray": {"8abc123def-LAX"},
+	})
+
+	m := NewManager(nil, nil, nil)
+	m.warnLogUpstreamFailure(
+		ctx,
+		nil,
+		"codex",
+		"gpt-6.1-sol",
+		&Auth{ID: "auth-1", Provider: "codex"},
+		83*time.Millisecond,
+		statusErrorLogTestError{message: "upstream timeout", statusCode: http.StatusServiceUnavailable},
+		nil,
+		"",
+	)
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Level != log.WarnLevel || !strings.Contains(entry.Message, "upstream execution failed") {
+			continue
 		}
+		if strings.Contains(entry.Message, secretMarker) {
+			t.Fatalf("Warn log leaked secret-bearing Server header: %s", entry.Message)
+		}
+		if len(entry.Message) > 600 {
+			t.Fatalf("Warn log extras not bounded: %d chars", len(entry.Message))
+		}
+		if !strings.Contains(entry.Message, "cf_ray=8abc123def-LAX") {
+			t.Fatalf("Warn log dropped the sanitized cf_ray extra: %s", entry.Message)
+		}
+		if strings.Contains(entry.Message, "server=") {
+			t.Fatalf("Warn log kept an unsanitizable Server header instead of dropping it: %s", entry.Message)
+		}
+		return
 	}
-	if warns != 3 {
-		t.Fatalf("failure warn lines = %d, want 3 (initial, other model, post-recovery); logs: %#v", warns, hook.AllEntries())
-	}
-	if recoveries != 1 {
-		t.Fatalf("recovery lines = %d, want 1", recoveries)
-	}
+	t.Fatalf("expected upstream failure Warn log, got logs: %#v", hook.AllEntries())
 }

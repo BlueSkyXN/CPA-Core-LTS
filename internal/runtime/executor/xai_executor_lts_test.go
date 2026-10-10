@@ -293,20 +293,20 @@ func TestNormalizeXAIToolChoiceForTools_PreservesNoneButDropsParallelCallsWithou
 	}
 }
 
-func resetXAIBaseURLLoggedPairs(t *testing.T) {
+func resetXAIBaseURLLogState(t *testing.T) {
 	t.Helper()
-	xaiBaseURLLoggedPairs.Lock()
-	xaiBaseURLLoggedPairs.seen = make(map[string]struct{})
-	xaiBaseURLLoggedPairs.Unlock()
+	xaiBaseURLLogState.Lock()
+	xaiBaseURLLogState.last = make(map[string]string)
+	xaiBaseURLLogState.Unlock()
 }
 
 func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	t.Cleanup(hook.Reset)
-	resetXAIBaseURLLoggedPairs(t)
+	resetXAIBaseURLLogState(t)
 
 	customURL := "https://internal.example.test/private/v1"
-	logXAIResolvedBaseURL(context.Background(), nil, customURL)
+	logXAIResolvedBaseURL(context.Background(), nil, customURL, xaiBaseURLLogKindChat)
 
 	for _, entry := range hook.AllEntries() {
 		if !strings.Contains(entry.Message, "xai: resolved base URL") {
@@ -324,20 +324,23 @@ func TestLogXAIResolvedBaseURLDoesNotExposeCustomURL(t *testing.T) {
 	t.Fatal("xAI resolution log entry not found")
 }
 
-func TestLogXAIResolvedBaseURLEmitsOncePerCredentialURLPair(t *testing.T) {
+func TestLogXAIResolvedBaseURLEmitsOnChangePerCredentialAndKind(t *testing.T) {
 	hook := logtest.NewLocal(log.StandardLogger())
 	t.Cleanup(hook.Reset)
-	resetXAIBaseURLLoggedPairs(t)
+	resetXAIBaseURLLogState(t)
 
 	auth := &cliproxyauth.Auth{ID: "auth-xai-1"}
 	urlA := xaiauth.CLIChatProxyBaseURL
 	urlB := "https://internal.example.test/private/v1"
 
-	logXAIResolvedBaseURL(context.Background(), auth, urlA)
-	logXAIResolvedBaseURL(context.Background(), auth, urlA)
-	logXAIResolvedBaseURL(context.Background(), auth, urlA)
-	logXAIResolvedBaseURL(context.Background(), auth, urlB)
-	logXAIResolvedBaseURL(context.Background(), nil, urlA)
+	// Steady state stays silent; a route switch AND a rollback both log; chat
+	// and compact are independent keys; an anonymous credential is its own key.
+	logXAIResolvedBaseURL(context.Background(), auth, urlA, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlA, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlB, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlA, xaiBaseURLLogKindChat)
+	logXAIResolvedBaseURL(context.Background(), auth, urlB, xaiBaseURLLogKindCompact)
+	logXAIResolvedBaseURL(context.Background(), nil, urlA, xaiBaseURLLogKindChat)
 
 	entries := 0
 	for _, entry := range hook.AllEntries() {
@@ -349,7 +352,7 @@ func TestLogXAIResolvedBaseURLEmitsOncePerCredentialURLPair(t *testing.T) {
 			t.Fatalf("xAI resolution log leaked custom URL: %q", entry.Message)
 		}
 	}
-	if entries != 3 {
-		t.Fatalf("xAI resolution log entries = %d, want 3 (auth+urlA once, auth+urlB once, anonymous+urlA once); entries: %#v", entries, hook.AllEntries())
+	if entries != 5 {
+		t.Fatalf("xAI resolution log entries = %d, want 5 (chat first, switch to B, rollback to A, compact first, anonymous first); entries: %#v", entries, hook.AllEntries())
 	}
 }

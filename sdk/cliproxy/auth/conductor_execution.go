@@ -2139,13 +2139,6 @@ func (m *Manager) warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, 
 		return
 	}
 	authIdent := formatAuthIdentity(auth, provider)
-	// Repeated failures for the same (provider, auth, model) are collapsed:
-	// only the transition into a failing state is logged, the recovery line is
-	// emitted from result attribution, and the per-request timeline lives in
-	// usage statistics.
-	if m != nil && !m.upstreamFailures.recordFailure(upstreamFailureKey(provider, authIdent, model)) {
-		return
-	}
 	if entry == nil {
 		if ctx != nil {
 			entry = logEntryWithRequestID(ctx)

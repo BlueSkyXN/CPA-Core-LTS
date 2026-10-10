@@ -299,31 +299,36 @@ func xaiBaseURLSource(baseURL string) string {
 	}
 }
 
-// xaiBaseURLLoggedPairs remembers which (credential, resolved base URL) pairs
-// have already been reported so the resolution line is emitted once per pair
-// per process instead of once per request. Pairs are keyed because chat and
-// compact transports legitimately resolve different URLs for the same
-// credential. The URL value itself is never logged.
-var xaiBaseURLLoggedPairs = struct {
-	sync.Mutex
-	seen map[string]struct{}
-}{seen: make(map[string]struct{})}
+const (
+	xaiBaseURLLogKindChat    = "chat"
+	xaiBaseURLLogKindCompact = "compact"
+)
 
-// logXAIResolvedBaseURL emits a console log the first time a credential
-// resolves to a given upstream base URL; repeated resolutions stay silent.
-func logXAIResolvedBaseURL(ctx context.Context, auth *cliproxyauth.Auth, baseURL string) {
+// xaiBaseURLLogState remembers the last resolved base URL per (credential,
+// transport kind). Chat and compact legitimately resolve different URLs for
+// the same credential, so the kind is part of the key. The resolution line is
+// emitted whenever the value changes — including a rollback to a previously
+// seen URL — so route switches stay observable while steady state stays
+// silent. The URL value itself is never logged.
+var xaiBaseURLLogState = struct {
+	sync.Mutex
+	last map[string]string
+}{last: make(map[string]string)}
+
+func logXAIResolvedBaseURL(ctx context.Context, auth *cliproxyauth.Auth, baseURL, kind string) {
 	key := "anonymous"
 	if auth != nil && strings.TrimSpace(auth.ID) != "" {
 		key = auth.ID
 	}
-	key += "|" + xaiNormalizeBaseURL(baseURL)
-	xaiBaseURLLoggedPairs.Lock()
-	_, seen := xaiBaseURLLoggedPairs.seen[key]
-	if !seen {
-		xaiBaseURLLoggedPairs.seen[key] = struct{}{}
+	key += "|" + kind
+	resolved := xaiNormalizeBaseURL(baseURL)
+	xaiBaseURLLogState.Lock()
+	changed := xaiBaseURLLogState.last[key] != resolved
+	if changed {
+		xaiBaseURLLogState.last[key] = resolved
 	}
-	xaiBaseURLLoggedPairs.Unlock()
-	if !seen {
+	xaiBaseURLLogState.Unlock()
+	if changed {
 		helps.LogWithRequestID(ctx).Infof("xai: resolved base URL source=%s", xaiBaseURLSource(baseURL))
 	}
 }

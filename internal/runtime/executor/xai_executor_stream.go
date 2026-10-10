@@ -26,7 +26,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, auth, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL, xaiBaseURLLogKindChat)
 
 	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
 	if err != nil {

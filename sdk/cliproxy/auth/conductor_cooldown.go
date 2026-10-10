@@ -851,7 +851,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
 			auth.Success++
-			m.noteUpstreamRecovery(ctx, auth, result.Provider, result.Model)
 		} else {
 			auth.Failed++
 		}
@@ -1213,7 +1212,6 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
 			auth.Success++
-			m.noteUpstreamRecovery(ctx, auth, result.Provider, result.Model)
 		} else {
 			auth.Failed++
 		}
