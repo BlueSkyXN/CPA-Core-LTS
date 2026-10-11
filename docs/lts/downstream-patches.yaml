@@ -1650,6 +1650,53 @@ patches:
     state: required
     retire_when: Upstream uses the shared response-header filtering and write-outcome lifecycle for model-list responses.
 
+  - id: codex-outbound-strategy
+    reason: Codex OAuth traffic to chatgpt.com should match the official Codex client on the wire. Large HTTP requests failed in some upstream regions while the same payload over websocket succeeded, and CPA differed from the official client in request-body encoding and Accept-Encoding. codex.outbound makes the upstream transport selectable for HTTP clients and aligns body compression and Accept-Encoding by default, each with an explicit rollback value; compressed requests still report their original size to usage.
+    introduced_in: 66b33b28a5aeee38137e297653b352d3b7323e28
+    affected_upstream_range: through 0adf70aa (LTS main, 2026-10-10); upstream keeps the upstream transport equal to the downstream one and sends uncompressed bodies with automatic gzip Accept-Encoding.
+    files:
+      - internal/config/codex_outbound.go
+      - internal/config/codex_outbound_test.go
+      - internal/config/config_types.go
+      - internal/config/config_load.go
+      - internal/config/parse.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_executor_compression.go
+      - internal/runtime/executor/codex_executor_execute.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_outbound_transport_test.go
+      - internal/runtime/executor/codex_outbound_compression_test.go
+      - internal/runtime/executor/codex_request_size_test.go
+      - internal/runtime/executor/helps/accept_encoding.go
+      - internal/runtime/executor/helps/accept_encoding_test.go
+      - internal/runtime/executor/helps/utls_client.go
+      - internal/runtime/executor/helps/usage_request_size.go
+      - internal/runtime/executor/helps/usage_request_size_test.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - config.example.yaml
+      - docs/lts/codex-outbound.md
+    regression_tests:
+      - TestCodexOutboundDefaultsToFollow
+      - TestCodexOutboundParsesModesAndThreshold
+      - TestCodexOutboundRejectsInvalidValues
+      - TestCodexOutboundCompressionAndAcceptEncoding
+      - TestCodexAutoExecutorOutboundTransportRouting
+      - TestCodexAutoExecutorOutboundWebsocketKeepsCompactOnHTTP
+      - TestCodexRequestCompressionEnabled
+      - TestIsCodexBackendResponsesURL
+      - TestCodexExecutorCompressesOptedInAPIKeyRequests
+      - TestCodexExecutorLeavesDefaultAPIKeyRequestsUncompressed
+      - TestCodexExecutorRetriesUncompressedAfter415
+      - TestPrepareCodexOutboundHTTPRequestAcceptEncodingMode
+      - TestNewChatGPTHTTP2TransportHonorsAcceptEncodingMode
+      - TestBuildConfigChangeDetailsCodexOutbound
+      - TestUsageReporterRecordsPayloadSizeOfEncodedRequest
+      - TestCodexExecutorRecordsPayloadAndWireSizeOfCompressedRequest
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream offers an equivalent outbound transport selection for HTTP clients and matches the official client's request-body encoding and Accept-Encoding.
+
   - id: credential-change-unauthorized-recovery
     reason: Credential replacement must clear the old unauthorized deadline without clearing unrelated model quota merely because its message contains unauthorized.
     introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
