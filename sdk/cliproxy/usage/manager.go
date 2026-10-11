@@ -95,6 +95,8 @@ type Record struct {
 	Failed bool
 	Fail   Failure
 	Detail Detail
+	// Size stores request/response byte counts measured for this request.
+	Size RequestSize
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

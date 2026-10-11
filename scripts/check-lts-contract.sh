@@ -235,6 +235,14 @@ require_grep "ttfb_ms" internal/usage internal/api/handlers/management
 require_grep "timing_version" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttft_ms" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttfa_ms" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "RequestSizeVersionV1" sdk/cliproxy/usage internal/usage
+require_grep 'json:"size_version,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"trace_id,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_transport,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_request_bytes,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_request_wire_bytes,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_response_bytes,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"request_size_version"' internal/usage
 require_grep "UserEndpoint" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep "UserEndpointUserAgent" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep 'case "amd64"' internal/auth/xai/types.go

@@ -26,6 +26,11 @@ func upstreamFailureWarnExtras(ctx context.Context, execOpts *cliproxyexecutor.O
 	if attempt = strings.TrimSpace(attempt); attempt != "" {
 		parts = append(parts, "attempt="+attempt)
 	}
+	if size, ok := logging.GetUpstreamRequestSize(ctx); ok {
+		if fields := size.LogFields(); fields != "" {
+			parts = append(parts, fields)
+		}
+	}
 	if headers := logging.GetResponseHeaders(ctx); len(headers) > 0 {
 		if server := safeResponseHeaderToken(headers.Get("Server")); server != "" {
 			parts = append(parts, "server="+server)

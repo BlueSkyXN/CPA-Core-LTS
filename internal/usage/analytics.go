@@ -116,13 +116,28 @@ type AnalyticsGrain struct {
 	Errors     []AnalyticsFailurePoint    `json:"errors"`
 	Throughput []AnalyticsThroughputPoint `json:"throughput"`
 }
+
+// AnalyticsRequestSize buckets requests by measured upstream request payload
+// size, falling back to wire size for encoded bodies. Edges are inclusive
+// lower bounds in bytes. It is omitted when no matching row carries a size
+// measurement; unmeasured rows only count toward Unmeasured.
+type AnalyticsRequestSize struct {
+	Edges             []int64 `json:"edges"`
+	Requests          []int64 `json:"requests"`
+	Failures          []int64 `json:"failures"`
+	WebsocketRequests []int64 `json:"websocketRequests"`
+	WebsocketFailures []int64 `json:"websocketFailures"`
+	SampleCount       int64   `json:"sampleCount"`
+	Unmeasured        int64   `json:"unmeasured"`
+}
 type AnalyticsData struct {
-	Timings   AnalyticsTimings      `json:"timings"`
-	Histogram AnalyticsHistogram    `json:"histogram"`
-	Cache     AnalyticsCacheSummary `json:"cache"`
-	Errors    AnalyticsErrors       `json:"errors"`
-	Hour      AnalyticsGrain        `json:"hour"`
-	Day       AnalyticsGrain        `json:"day"`
+	Timings     AnalyticsTimings      `json:"timings"`
+	Histogram   AnalyticsHistogram    `json:"histogram"`
+	Cache       AnalyticsCacheSummary `json:"cache"`
+	Errors      AnalyticsErrors       `json:"errors"`
+	Hour        AnalyticsGrain        `json:"hour"`
+	Day         AnalyticsGrain        `json:"day"`
+	RequestSize *AnalyticsRequestSize `json:"requestSize,omitempty"`
 }
 type AnalyticsOptions struct {
 	Models     []string        `json:"models"`
@@ -150,6 +165,46 @@ type analyticsBucket struct {
 type analyticsSample struct{ latency, ttft, ttfa int64 }
 
 var analyticsEdges = []int64{0, 100, 250, 500, 1000, 2500, 5000, 10000}
+
+var analyticsRequestSizeEdges = []int64{0, 64 << 10, 256 << 10, 512 << 10, 768 << 10, 1 << 20, 2 << 20}
+
+func newAnalyticsRequestSize() *AnalyticsRequestSize {
+	n := len(analyticsRequestSizeEdges)
+	return &AnalyticsRequestSize{
+		Edges:             append([]int64(nil), analyticsRequestSizeEdges...),
+		Requests:          make([]int64, n),
+		Failures:          make([]int64, n),
+		WebsocketRequests: make([]int64, n),
+		WebsocketFailures: make([]int64, n),
+	}
+}
+
+func analyticsAddRequestSize(r *AnalyticsRequestSize, d RequestDetail) {
+	bytes := d.UpstreamRequestBytes
+	if bytes <= 0 {
+		bytes = d.UpstreamRequestWireBytes
+	}
+	if d.SizeVersion != 1 || bytes <= 0 {
+		r.Unmeasured++
+		return
+	}
+	i := len(analyticsRequestSizeEdges) - 1
+	for i > 0 && bytes < analyticsRequestSizeEdges[i] {
+		i--
+	}
+	r.SampleCount++
+	r.Requests[i]++
+	websocket := d.UpstreamTransport == "websocket"
+	if websocket {
+		r.WebsocketRequests[i]++
+	}
+	if d.Failed {
+		r.Failures[i]++
+		if websocket {
+			r.WebsocketFailures[i]++
+		}
+	}
+}
 
 // analyticsAddThroughput accumulates one request into a bucket using the same
 // eligibility rules as QueryMetrics: successful requests with output tokens and
@@ -344,6 +399,7 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 	}
 	filter := q.Filter
 	filter.Identities = nil
+	requestSize := newAnalyticsRequestSize()
 	err := s.walkQuery(ctx, &q, func(api, model string, d RequestDetail) error {
 		if !queryTimeMatches(q, d) {
 			return nil
@@ -409,6 +465,7 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 		if d.Tokens.CacheReadTokens > 0 {
 			c.CachedRequests++
 		}
+		analyticsAddRequestSize(requestSize, d)
 		e := &r.Data.Errors
 		e.TotalRequests++
 		if d.Failed {
@@ -450,6 +507,9 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 	})
 	if err != nil {
 		return nil, err
+	}
+	if requestSize.SampleCount > 0 {
+		r.Data.RequestSize = requestSize
 	}
 	c := &r.Data.Cache
 	c.CacheReadRate = analyticsRatio(c.CacheReadTokens, c.InputTokens)

@@ -43,6 +43,9 @@ retained_capabilities:
       - ttfb_ms
       - ttft_ms
       - ttfa_ms
+      - RequestSizeVersionV1
+      - size_version
+      - upstream_request_bytes
       - uncached_input_tokens
       - schema_version
       - migrated_from_version
@@ -250,6 +253,8 @@ lts_owned_features:
       - ttfb_ms
       - ttft_ms
       - ttfa_ms
+      - size_version
+      - upstream_request_bytes
     validation:
       - redis-usage-queue-contract-tests
     conflict_policy: preserve_queue_without_replacing_full_usage
