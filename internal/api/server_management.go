@@ -89,6 +89,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
+		mgmt.POST("/proxy-url/test", s.mgmt.TestProxyURL)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
