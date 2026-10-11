@@ -68,6 +68,13 @@ type UsageReporter struct {
 	ttftSet             bool
 	once                sync.Once
 
+	// Inbound size is fixed at construction; upstreamAttempt is replaced by
+	// each provider attempt so the record describes the final one.
+	clientRequestBytes    int64
+	clientRequestEncoding string
+	sizeMu                sync.Mutex
+	upstreamAttempt       *upstreamSizeAttempt
+
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
 	responseModel        string
@@ -140,6 +147,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		generate:        usage.GenerateFromContext(ctx),
 		stream:          usage.StreamFromContext(ctx),
 	}
+	reporter.clientRequestBytes, reporter.clientRequestEncoding = clientRequestSizeFromContext(ctx)
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
@@ -547,6 +555,7 @@ func (r *UsageReporter) ObserveResponse(resp *http.Response) {
 	}
 	r.StartResponseTiming()
 	tracker := r.currentResponseTiming()
+	attempt := r.ensureUpstreamAttempt()
 	resp.Body = &usageTTFTReadCloser{
 		ReadCloser: resp.Body,
 		mark: func() {
@@ -556,6 +565,7 @@ func (r *UsageReporter) ObserveResponse(resp *http.Response) {
 			r.ObserveTokenEvent(true)
 		},
 		observe: func(payload []byte) {
+			attempt.responseBytes.Add(int64(len(payload)))
 			if tracker != nil {
 				tracker.observeBytes(payload)
 			}
@@ -611,6 +621,7 @@ func (r *UsageReporter) ObserveResponsePacketOnly(resp *http.Response) {
 	}
 	r.StartResponseTiming()
 	tracker := r.currentResponseTiming()
+	attempt := r.ensureUpstreamAttempt()
 	resp.Body = &usageTTFTReadCloser{
 		ReadCloser: resp.Body,
 		mark: func() {
@@ -620,6 +631,7 @@ func (r *UsageReporter) ObserveResponsePacketOnly(resp *http.Response) {
 			r.RecordFirstPacket()
 		},
 		observe: func(payload []byte) {
+			attempt.responseBytes.Add(int64(len(payload)))
 			if tracker != nil {
 				tracker.observeBytes(payload)
 			}
@@ -822,6 +834,15 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	if record.Size.Measured() {
+		internallogging.SetUpstreamRequestSize(ctx, internallogging.UpstreamRequestSize{
+			Transport:     record.Size.UpstreamTransport,
+			RequestBytes:  record.Size.UpstreamRequestBytes,
+			WireBytes:     record.Size.UpstreamRequestWireBytes,
+			Encoding:      record.Size.UpstreamRequestEncoding,
+			ResponseBytes: record.Size.UpstreamResponseBytes,
+		})
+	}
 	usage.PublishRecord(ctx, record)
 }
 
@@ -860,8 +881,12 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Additional-model records describe a side model (for example image tool
 	// usage) that the upstream response model does not identify.
 	responseModel := ""
+	// Byte counts belong to the primary model so side-model records do not
+	// double count the same HTTP exchange.
+	var size usage.RequestSize
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		size = r.requestSizeSnapshot()
 		if detail.ResponseCyberProgram == "" {
 			detail.ResponseCyberProgram = r.snapshotResponseCyberProgram()
 		}
@@ -909,6 +934,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Failed:               failed,
 		Fail:                 fail,
 		Detail:               detail,
+		Size:                 size,
 	}
 }
 
@@ -997,6 +1023,7 @@ type usageTTFTRoundTripper struct {
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.BeginResponseTiming()
+	t.reporter.beginUpstreamHTTPAttempt(req)
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		return resp, errRoundTrip

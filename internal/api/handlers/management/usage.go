@@ -285,6 +285,15 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"timing_version",
 					"ttft_ms",
 					"ttfa_ms",
+					"trace_id",
+					"size_version",
+					"client_request_bytes",
+					"client_request_encoding",
+					"upstream_transport",
+					"upstream_request_bytes",
+					"upstream_request_wire_bytes",
+					"upstream_request_encoding",
+					"upstream_response_bytes",
 				); err != nil {
 					return err
 				}

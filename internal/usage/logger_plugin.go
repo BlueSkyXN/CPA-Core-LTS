@@ -134,6 +134,18 @@ type RequestDetail struct {
 	Generate             bool       `json:"generate"`
 	FailureReason        string     `json:"failure_reason,omitempty"`
 	FailureStatus        int        `json:"failure_status,omitempty"`
+	// TraceID is the inbound request ID shared with request logs.
+	TraceID string `json:"trace_id,omitempty"`
+	// SizeVersion identifies the byte-count contract of the size fields
+	// below. Zero means that no size field was measured.
+	SizeVersion              uint32 `json:"size_version,omitempty"`
+	ClientRequestBytes       int64  `json:"client_request_bytes,omitempty"`
+	ClientRequestEncoding    string `json:"client_request_encoding,omitempty"`
+	UpstreamTransport        string `json:"upstream_transport,omitempty"`
+	UpstreamRequestBytes     int64  `json:"upstream_request_bytes,omitempty"`
+	UpstreamRequestWireBytes int64  `json:"upstream_request_wire_bytes,omitempty"`
+	UpstreamRequestEncoding  string `json:"upstream_request_encoding,omitempty"`
+	UpstreamResponseBytes    int64  `json:"upstream_response_bytes,omitempty"`
 
 	timingFieldsPresent timingFieldPresence
 	querySequence       uint64
@@ -637,7 +649,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		FailureReason:        failureReason,
 		FailureStatus:        failureStatus,
+		TraceID:              record.TraceID,
 	}
+	requestDetail.setRequestSize(record.Size.Canonical())
+	requestDetail = normaliseRequestSizeFields(requestDetail)
 	if record.TimingVersion == usageTimingVersion {
 		requestDetail.TimingVersion = usageTimingVersion
 		requestDetail.timingFieldsPresent |= timingVersionPresent
@@ -832,6 +847,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeRes
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				detail = normaliseServiceTierAliases(detail)
+				detail = normaliseRequestSizeFields(detail)
 				detail.UsageProvenance = coreusage.CanonicalUsageProvenance(detail.UsageProvenance)
 				if !validCanonicalTimingDetail(detail) {
 					return MergeResult{}, ErrInvalidCanonicalTimingStats
@@ -1004,6 +1020,48 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 	detail.OutboundServiceTier = strings.TrimSpace(detail.OutboundServiceTier)
 	detail.EffectiveServiceTier = coreusage.CanonicalEffectiveServiceTier(detail.EffectiveServiceTier)
 	detail.ResponseCyberProgram = coreusage.CanonicalResponseCyberProgram(detail.ResponseCyberProgram)
+	return detail
+}
+
+const maxTraceIDLength = 64
+
+func (d *RequestDetail) setRequestSize(size coreusage.RequestSize) {
+	d.SizeVersion = size.Version
+	d.ClientRequestBytes = size.ClientRequestBytes
+	d.ClientRequestEncoding = size.ClientRequestEncoding
+	d.UpstreamTransport = size.UpstreamTransport
+	d.UpstreamRequestBytes = size.UpstreamRequestBytes
+	d.UpstreamRequestWireBytes = size.UpstreamRequestWireBytes
+	d.UpstreamRequestEncoding = size.UpstreamRequestEncoding
+	d.UpstreamResponseBytes = size.UpstreamResponseBytes
+}
+
+func (d RequestDetail) requestSize() coreusage.RequestSize {
+	return coreusage.RequestSize{
+		Version:                  d.SizeVersion,
+		ClientRequestBytes:       d.ClientRequestBytes,
+		ClientRequestEncoding:    d.ClientRequestEncoding,
+		UpstreamTransport:        d.UpstreamTransport,
+		UpstreamRequestBytes:     d.UpstreamRequestBytes,
+		UpstreamRequestWireBytes: d.UpstreamRequestWireBytes,
+		UpstreamRequestEncoding:  d.UpstreamRequestEncoding,
+		UpstreamResponseBytes:    d.UpstreamResponseBytes,
+	}
+}
+
+// normaliseRequestSizeFields keeps size metadata diagnostic-only: details
+// with an unknown size contract drop the size fields instead of failing the
+// import, and a trace ID that cannot be a request ID is cleared.
+func normaliseRequestSizeFields(detail RequestDetail) RequestDetail {
+	detail.TraceID = strings.TrimSpace(detail.TraceID)
+	if len(detail.TraceID) > maxTraceIDLength || strings.ContainsAny(detail.TraceID, "/\\") {
+		detail.TraceID = ""
+	}
+	if detail.SizeVersion != coreusage.RequestSizeVersionV1 {
+		detail.setRequestSize(coreusage.RequestSize{})
+		return detail
+	}
+	detail.setRequestSize(detail.requestSize().Canonical())
 	return detail
 }
 

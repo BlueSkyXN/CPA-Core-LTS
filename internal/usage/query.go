@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata"
+
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 const QueryVersion = 1
@@ -83,6 +85,8 @@ type QueryCapabilities struct {
 	MaxPageSize      int      `json:"max_page_size"`
 	AnalyticsVersion int      `json:"analytics_version"`
 	MaxAnalyticsRows int      `json:"max_analytics_rows"`
+	// RequestSizeVersion advertises the detail size-field contract.
+	RequestSizeVersion uint32 `json:"request_size_version"`
 }
 
 func queryEncode(value any) string {
@@ -117,7 +121,7 @@ func (s *RequestStatistics) QueryCapabilities() QueryCapabilities {
 		models = append(models, name)
 	}
 	sort.Strings(models)
-	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows}
+	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows, coreusage.RequestSizeVersionV1}
 }
 
 type QueryPriceGroup struct {

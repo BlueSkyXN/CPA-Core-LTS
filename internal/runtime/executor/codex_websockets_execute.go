@@ -242,6 +242,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	reporter.ObserveUpstreamWebsocketRequest(len(wsReqBody))
 	if errSend := writeCodexWebsocketMessage(sess, connection.conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, connection.conn, errSend)
 		if sess != nil && !isEphemeralSession {
@@ -294,6 +295,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				requestSignal = retrySignal
 				restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
+				reporter.ObserveUpstreamWebsocketRequest(len(wsReqBodyRetry))
 				if errSendRetry := writeCodexWebsocketMessage(sess, connection.conn, wsReqBodyRetry); errSendRetry == nil {
 					wsReqBody = wsReqBodyRetry
 				} else {
@@ -358,6 +360,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 		reporter.MarkFirstResponseByte()
+		reporter.ObserveUpstreamResponseBytes(len(payload))
 		reporter.ObserveTimingMessage(to.String(), payload)
 		observeCodexTokenEvent(reporter, payload)
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
