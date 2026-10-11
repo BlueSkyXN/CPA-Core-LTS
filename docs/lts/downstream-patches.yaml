@@ -1749,3 +1749,27 @@ patches:
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#5274
     state: required
     retire_when: Upstream classifies access-program error codes with equivalent request-fault, rotation-without-cooldown, and terminal status semantics, and the LTS-specific skip is redundant.
+
+  - id: codex-permanent-refresh-failure
+    reason: A Codex refresh token reported expired, reused or invalidated cannot recover without re-login. Treating it as transient retried the token endpoint every few minutes and hid the condition until the access token expired. Typed classification stops in-round retries, backs off like invalid_grant while the access token stays usable, and Management exposes reauth_required so operators can re-login before expiry.
+    introduced_in: 68f355e94cc4e6754da75b22ed3c83f9190891ee
+    affected_upstream_range: through 0adf70aa (LTS main, 2026-10-10); upstream retries every refresh failure the same way.
+    files:
+      - internal/auth/codex/refresh_error.go
+      - internal/auth/codex/openai_auth.go
+      - internal/auth/codex/openai_auth_test.go
+      - sdk/cliproxy/auth/conductor_refresh.go
+      - sdk/cliproxy/auth/conductor_refresh_permanent_test.go
+      - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/auth_files_reauth_test.go
+    regression_tests:
+      - TestRefreshTokenErrorClassification
+      - TestRefreshTokensWithRetry_InvalidatedRefreshTokenAttemptsOnce
+      - TestRefreshAuthForRequest_PermanentRefreshFailureBacksOffWhileAccessTokenValid
+      - TestRefreshAuthForRequest_TransientRefreshFailureKeepsFixedRetry
+      - TestIsPermanentRefreshFailureUsesTypedClassification
+      - TestPermanentRefreshFailureSurvivesSuccessUntilCredentialReplaced
+      - TestListAuthFilesFlagsCredentialsNeedingReauth
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream classifies permanent Codex refresh failures without in-round retries and exposes an equivalent re-login signal through the Management auth-files API.
