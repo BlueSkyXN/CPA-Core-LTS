@@ -7,6 +7,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -242,7 +243,7 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, newRefreshTokenError(resp.StatusCode, body)
 	}
 
 	var tokenResp struct {
@@ -331,6 +332,10 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 func isNonRetryableRefreshErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	var refreshErr *RefreshTokenError
+	if errors.As(err, &refreshErr) && refreshErr.PermanentRefreshFailure() {
+		return true
 	}
 	raw := strings.ToLower(err.Error())
 	return strings.Contains(raw, "refresh_token_reused")

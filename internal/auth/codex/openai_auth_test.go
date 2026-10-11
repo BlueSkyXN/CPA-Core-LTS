@@ -2,8 +2,10 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,5 +193,64 @@ func TestNewCodexAuthWithProxyURL_OverrideProxyTakesPrecedence(t *testing.T) {
 	}
 	if proxyURL == nil || proxyURL.String() != "http://override.example.com:8081" {
 		t.Fatalf("proxy URL = %v, want http://override.example.com:8081", proxyURL)
+	}
+}
+
+func TestRefreshTokenErrorClassification(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		code      string
+		permanent bool
+	}{
+		{name: "invalidated nested", status: http.StatusUnauthorized, body: `{"error":{"message":"Your refresh token has been invalidated.","type":"invalid_request_error","code":"refresh_token_invalidated"}}`, code: RefreshTokenInvalidatedCode, permanent: true},
+		{name: "expired nested 400", status: http.StatusBadRequest, body: `{"error":{"code":"refresh_token_expired"}}`, code: RefreshTokenExpiredCode, permanent: true},
+		{name: "reused top-level", status: http.StatusBadRequest, body: `{"error":"invalid_grant","code":"refresh_token_reused"}`, code: RefreshTokenReusedCode, permanent: true},
+		{name: "any 401", status: http.StatusUnauthorized, body: `not json`, code: "", permanent: true},
+		{name: "server error", status: http.StatusInternalServerError, body: `{"error":{"code":"server_error"}}`, code: "server_error", permanent: false},
+		{name: "rate limited", status: http.StatusTooManyRequests, body: `{}`, code: "", permanent: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := newRefreshTokenError(tc.status, []byte(tc.body))
+			if err.Code != tc.code {
+				t.Fatalf("Code = %q, want %q", err.Code, tc.code)
+			}
+			if got := err.PermanentRefreshFailure(); got != tc.permanent {
+				t.Fatalf("PermanentRefreshFailure() = %v, want %v", got, tc.permanent)
+			}
+			wantMsg := "token refresh failed with status " + strconv.Itoa(tc.status) + ": " + tc.body
+			if err.Error() != wantMsg {
+				t.Fatalf("Error() = %q, want unchanged legacy text %q", err.Error(), wantMsg)
+			}
+		})
+	}
+}
+
+func TestRefreshTokensWithRetry_InvalidatedRefreshTokenAttemptsOnce(t *testing.T) {
+	resetCodexRefreshGroupForTest()
+	var calls int32
+	auth := &CodexAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				atomic.AddInt32(&calls, 1)
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Your refresh token has been invalidated. Please try signing in again.","type":"invalid_request_error","param":null,"code":"refresh_token_invalidated"}}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+
+	_, err := auth.RefreshTokensWithRetry(context.Background(), "dummy_refresh_token", 3)
+	var refreshErr *RefreshTokenError
+	if !errors.As(err, &refreshErr) || !refreshErr.PermanentRefreshFailure() {
+		t.Fatalf("error = %v, want a permanent *RefreshTokenError", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected 1 refresh attempt for an invalidated refresh token, got %d", got)
 	}
 }

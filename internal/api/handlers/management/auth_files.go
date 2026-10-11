@@ -723,6 +723,10 @@ func reconcileAuthFileCooldownState(auth *coreauth.Auth, now time.Time) (unavail
 	return unavailable, status, statusMessage, nextRetry
 }
 
+// authFileReauthRequiredMessage is shown when the last refresh was rejected as unrecoverable and no
+// other status message applies.
+const authFileReauthRequiredMessage = "refresh token rejected; re-login required"
+
 func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported ...map[string]struct{}) gin.H {
 	if auth == nil {
 		return nil
@@ -741,6 +745,13 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 		name = auth.ID
 	}
 	unavailable, status, statusMessage, nextRetryAfter := reconcileAuthFileCooldownState(auth, time.Now().UTC())
+	// RefreshFailures counts only refresh outcomes the token endpoint reported as unrecoverable
+	// (invalid grant or a permanent provider refresh error) and survives successful requests, so the
+	// credential stays flagged while its access token keeps working until expiry.
+	reauthRequired := auth.RefreshFailures > 0
+	if reauthRequired && strings.TrimSpace(statusMessage) == "" {
+		statusMessage = authFileReauthRequiredMessage
+	}
 	entry := gin.H{
 		"id":             auth.ID,
 		"auth_index":     auth.Index,
@@ -755,6 +766,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 		"runtime_only":   runtimeOnly,
 		"source":         "memory",
 		"size":           int64(0),
+	}
+	if reauthRequired {
+		entry["reauth_required"] = true
 	}
 	if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
 		entry["prefix"] = prefix
