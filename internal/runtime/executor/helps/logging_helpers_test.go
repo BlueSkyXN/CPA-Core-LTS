@@ -206,6 +206,9 @@ func TestRecordAPIRequestBoundsDeferredBodyWhenRequestLogDisabled(t *testing.T) 
 	if !bytes.Contains(captured, []byte("API REQUEST BODY TRUNCATED")) {
 		t.Fatalf("captured API request missing truncation marker: %q", captured[len(captured)-128:])
 	}
+	if !bytes.Contains(captured, fmt.Appendf(nil, "captured first %d of %d bytes]", safeDeferredBodyLimit, len(body))) {
+		t.Fatalf("truncation marker does not report the original body size: %q", captured[len(captured)-128:])
+	}
 }
 
 func TestRecordAPIRequestConcurrentDeferredRequests(t *testing.T) {
