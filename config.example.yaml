@@ -298,6 +298,25 @@ codex:
   identity-confuse: false
   # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
+  # Upstream transport strategy for Codex requests that arrive over HTTP. Websocket sessions are not
+  # affected and keep following each credential's websockets setting.
+  # outbound:
+  #   # follow (default): HTTP requests go upstream over HTTP, websocket sessions over websocket.
+  #   # websocket: send every HTTP request over the upstream Responses websocket and translate the
+  #   #   events back for the HTTP client (official Codex clients use websocket by default).
+  #   # auto: use the upstream websocket only once the request payload reaches websocket-threshold-bytes.
+  #   # Only credentials with websockets enabled are eligible; /responses/compact always stays on HTTP.
+  #   transport: follow
+  #   # Payload size in bytes at which auto mode switches to websocket. Default 786432 (768 KiB).
+  #   websocket-threshold-bytes: 786432
+  #   # Request-body compression for Codex OAuth HTTP /responses requests to the ChatGPT Codex backend.
+  #   # auto (default): zstd, like official Codex clients; none: send bodies uncompressed.
+  #   # A 415 response to a compressed body is retried once uncompressed. API-key credentials use
+  #   # their own codex-api-key request-compression setting instead.
+  #   request-compression: auto
+  #   # Accept-Encoding sent to chatgpt.com. official (default): send no Accept-Encoding, like official
+  #   # Codex clients; legacy: the transport requests gzip and decodes it transparently.
+  #   accept-encoding: official
   # Hold back the frames that carry nothing the client has seen - the handshake (response.created,
   # response.in_progress, the websocket metadata frames), keepalive heartbeats, and the *.added
   # announcements of an item or part that is still empty - until the upstream emits its first
@@ -658,6 +677,7 @@ nonstream-keepalive-interval: 0
 #     prefix: "test" # optional: require calls like "test/gpt-5-codex" to target this credential
 #     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
 #     disable-codex-cloaking: false # optional override: true disables cloaking, false enables it; omit to inherit global
+#     request-compression: none # optional: none (default) or zstd; use zstd only if base-url accepts Content-Encoding: zstd (e.g. another CPA)
 #     request-retry: 3 # optional: per-auth override of the global request-retry; omit to inherit global; 0 or a negative value disables retries
 #     request-scoped-errors: # optional: custom rules to classify upstream errors by status and body patterns
 #       - status: 400

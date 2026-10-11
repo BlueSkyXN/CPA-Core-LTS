@@ -93,6 +93,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if err := cfg.Codex.CacheAffinity.normalizeAndValidate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.Codex.Outbound.normalizeAndValidate(); err != nil {
+		return nil, err
+	}
+	if err := validateCodexKeyRequestCompression(cfg.CodexKey); err != nil {
+		return nil, err
+	}
 	if flowErr := cfg.ValidateFlowControl(); flowErr != nil {
 		return nil, flowErr
 	}

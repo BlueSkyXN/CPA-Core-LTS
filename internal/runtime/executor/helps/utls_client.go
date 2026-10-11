@@ -90,7 +90,7 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 		return nil, fmt.Errorf("utls: TLS handshake: %w", errHandshake)
 	}
 
-	tr := &http2.Transport{}
+	tr := newChatGPTHTTP2Transport(ctx)
 	h2Conn, errClientConn := tr.NewClientConn(tlsConn)
 	if errClientConn != nil {
 		if errClose := tlsConn.Close(); errClose != nil {
