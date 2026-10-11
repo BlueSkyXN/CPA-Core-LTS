@@ -1697,6 +1697,21 @@ patches:
     state: required
     retire_when: Upstream offers an equivalent outbound transport selection for HTTP clients and matches the official client's request-body encoding and Accept-Encoding.
 
+  - id: management-proxy-url-probe
+    reason: Operators need to validate a proxy URL from the Management Panel before saving it. The probe uses the submitted value only, never the saved configuration, exercises the proxy with a bounded request to a fixed target, and returns stable failure codes without echoing the proxy URL or credentials.
+    introduced_in: c59650ca925aebe9e079667ab00d65715125bb3b
+    affected_upstream_range: through a3a4686d (LTS main, 2026-10-11); upstream has no proxy probe endpoint.
+    files:
+      - internal/api/handlers/management/api_tools.go
+      - internal/api/handlers/management/api_tools_test.go
+      - internal/api/server_management.go
+    regression_tests:
+      - TestProxyURLProbe
+      - TestClassifyProxyProbeError
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream ships an equivalent Management proxy validation endpoint that does not echo proxy credentials.
+
   - id: credential-change-unauthorized-recovery
     reason: Credential replacement must clear the old unauthorized deadline without clearing unrelated model quota merely because its message contains unauthorized.
     introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
