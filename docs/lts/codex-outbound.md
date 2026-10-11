@@ -34,6 +34,8 @@ Codex OAuth credential 发往 chatgpt.com Codex backend 的出站行为，以官
 | Accept-Encoding | 不发送 | `accept-encoding: official`（不发送） | 已对齐；`legacy` 保留历史行为 |
 | 传输方式 | 默认 websocket，重试预算耗尽后整个会话回退 HTTP | `transport: follow` | 未改默认值：HTTP 下游转 websocket 时每个请求新建一条上游连接，握手开销尚无生产数据；需要时按部署开启 `auto` / `websocket` |
 | websocket 出站消息压缩 | 协商 permessage-deflate 后压缩每条出站消息 | 不压缩（仅协商，读取上游压缩消息） | 未对齐；需先确认上游是否接受 deflate，再以配置项形式提供 |
+| 客户端标识（User-Agent / Originator） | `{originator}/{version} ({OS} {版本}; {架构}) {终端}`，版本随 release 更新 | 下游为官方客户端时原样透传其 UA 与 Originator；其他客户端回退到内置 `codex-tui/<版本>`（与 upstream 一致） | 回退版本可能落后于官方最新 release；部署可用 `codex-header-defaults.user-agent` 设为官方最新版本的同格式 UA，实测后生效 |
+| Responses websocket `OpenAI-Beta` | `responses_websockets=2026-02-06` | 相同 | 已对齐 |
 
 已知且接受的差异：
 
