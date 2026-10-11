@@ -199,7 +199,7 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 		} else {
 			builder.Write(capturedInfo.Body)
 			if bodyTruncated {
-				builder.WriteString(fmt.Sprintf("\n[API REQUEST BODY TRUNCATED: captured first %d bytes]", captureLength))
+				builder.WriteString(fmt.Sprintf("\n[API REQUEST BODY TRUNCATED: captured first %d of %d bytes]", captureLength, len(info.Body)))
 			}
 		}
 		builder.WriteString("\n\n")
