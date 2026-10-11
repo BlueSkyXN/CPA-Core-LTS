@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -1052,4 +1054,122 @@ func buildProxyTransport(proxyStr string) *http.Transport {
 		return nil
 	}
 	return transport
+}
+
+const (
+	proxyProbeTimeout   = 10 * time.Second
+	proxyProbeTargetURL = "https://www.gstatic.com/generate_204"
+	proxyProbeBodyLimit = 256
+)
+
+type proxyProbeRequest struct {
+	Value *string `json:"value"`
+}
+
+type proxyProbeResult struct {
+	Status string `json:"status"`
+	Code   string `json:"code"`
+}
+
+// TestProxyURL probes the proxy value submitted with this request. It never reads or
+// writes the saved proxy configuration, and the response never echoes the proxy URL.
+func (h *Handler) TestProxyURL(c *gin.Context) {
+	var body proxyProbeRequest
+	if errBind := c.ShouldBindJSON(&body); errBind != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	result, status := probeProxyURL(c.Request.Context(), strings.TrimSpace(*body.Value))
+	c.JSON(status, result)
+}
+
+func probeProxyURL(ctx context.Context, raw string) (proxyProbeResult, int) {
+	setting, errParse := proxyutil.Parse(raw)
+	if errParse != nil || setting.Mode == proxyutil.ModeInvalid {
+		log.WithError(errParse).Debug("proxy probe rejected invalid proxy URL")
+		return proxyProbeResult{Status: "error", Code: "invalid_proxy_url"}, http.StatusBadRequest
+	}
+
+	switch setting.Mode {
+	case proxyutil.ModeInherit:
+		return proxyProbeResult{Status: "skipped", Code: "empty"}, http.StatusOK
+	case proxyutil.ModeDirect:
+		return proxyProbeResult{Status: "skipped", Code: "direct"}, http.StatusOK
+	case proxyutil.ModeProxy:
+		return probeConcreteProxy(ctx, raw)
+	default:
+		return proxyProbeResult{Status: "error", Code: "invalid_proxy_url"}, http.StatusBadRequest
+	}
+}
+
+func probeConcreteProxy(ctx context.Context, raw string) (proxyProbeResult, int) {
+	transport := buildProxyTransport(raw)
+	if transport == nil {
+		return proxyProbeResult{Status: "error", Code: "invalid_proxy_url"}, http.StatusBadRequest
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, proxyProbeTimeout)
+	defer cancel()
+
+	req, errRequest := http.NewRequestWithContext(probeCtx, http.MethodGet, proxyProbeTarget, nil)
+	if errRequest != nil {
+		log.WithError(errRequest).Debug("proxy probe request build failed")
+		return proxyProbeResult{Status: "error", Code: "probe_failed"}, http.StatusBadGateway
+	}
+
+	client := &http.Client{Transport: transport, Timeout: proxyProbeTimeout}
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		code := classifyProxyProbeError(errDo)
+		log.Debugf("proxy probe request failed: %s", code)
+		return proxyProbeResult{Status: "error", Code: code}, http.StatusBadGateway
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.WithError(errClose).Debug("proxy probe response close failed")
+		}
+	}()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, proxyProbeBodyLimit))
+
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return proxyProbeResult{Status: "error", Code: "proxy_auth_required"}, http.StatusBadGateway
+	}
+	return proxyProbeResult{Status: "ok", Code: "reachable"}, http.StatusOK
+}
+
+// proxyProbeTarget is fixed in production. Tests point it at a local server.
+var proxyProbeTarget = proxyProbeTargetURL
+
+func classifyProxyProbeError(err error) string {
+	if err == nil {
+		return "probe_failed"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return "timeout"
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return "connection_refused"
+	}
+
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "username/password authentication failed"):
+		return "proxy_auth_failed"
+	case strings.Contains(message, "tls"):
+		return "tls_failed"
+	case strings.Contains(message, "connection refused"),
+		strings.Contains(message, "no such host"),
+		strings.Contains(message, "network is unreachable"):
+		return "connection_refused"
+	default:
+		return "probe_failed"
+	}
 }
