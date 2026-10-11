@@ -875,3 +875,31 @@ func TestSafeResponseHeaderTokenDropsOverlongValues(t *testing.T) {
 		})
 	}
 }
+
+func TestWarnLogUpstreamFailureIncludesUpstreamRequestSize(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+	ctx := newUpstreamAttemptContext(context.Background())
+	logging.SetUpstreamRequestSize(ctx, logging.UpstreamRequestSize{Transport: "http", RequestBytes: 1050000, WireBytes: 1050000, ResponseBytes: 91})
+
+	NewManager(nil, nil, nil).warnLogUpstreamFailure(
+		ctx,
+		nil,
+		"codex",
+		"gpt-5.6",
+		&Auth{ID: "auth-1", Provider: "codex"},
+		time.Second,
+		statusErrorLogTestError{message: "upstream connect error or disconnect/reset before headers", statusCode: http.StatusServiceUnavailable},
+		nil,
+		"",
+	)
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == log.WarnLevel && strings.Contains(entry.Message, "upstream execution failed") {
+			if !strings.Contains(entry.Message, " transport=http req_bytes=1050000 resp_bytes=91 err=") {
+				t.Fatalf("warn log missing size fields: %s", entry.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected upstream failure Warn log, got logs: %#v", hook.AllEntries())
+}

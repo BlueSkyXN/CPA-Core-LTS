@@ -445,12 +445,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					reporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
 					reporter.SetTranslatedReasoningEffort(current.clientBody, current.to.String())
 					reporter.StartResponseTTFT()
+					reporter.ObserveUpstreamWebsocketTransport()
 				}
 				firstResponse = false
 				responseActive = true
 				outputItems = make(map[int64][]byte)
 				outputFallback = nil
 			}
+			reporter.ObserveUpstreamResponseBytes(len(payload))
 			observeCodexTokenEvent(reporter, payload)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)

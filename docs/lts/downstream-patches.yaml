@@ -1750,6 +1750,55 @@ patches:
     state: required
     retire_when: Upstream classifies access-program error codes with equivalent request-fault, rotation-without-cooldown, and terminal status semantics, and the LTS-specific skip is redundant.
 
+  - id: usage-request-size-fields
+    reason: Request body size and upstream transport are the decisive variables for diagnosing upstream connection failures on large Codex requests, but usage details, the usage queue and failure warns did not record them. Additive omitempty fields keep old exports, imports, queue consumers and Panel builds compatible.
+    introduced_in: e2d745d9e9148c45fa1ceb81f94ec234ea628ac2
+    affected_upstream_range: through 0adf70aa (LTS main, 2026-10-10); upstream has no per-request size or transport fields.
+    files:
+      - sdk/cliproxy/usage/request_size.go
+      - sdk/cliproxy/usage/manager.go
+      - internal/runtime/executor/helps/usage_request_size.go
+      - internal/runtime/executor/helps/usage_helpers.go
+      - internal/runtime/executor/codex_websockets_execute.go
+      - internal/runtime/executor/codex_websockets_stream.go
+      - internal/runtime/executor/codex_websockets_duplex.go
+      - internal/usage/logger_plugin.go
+      - internal/usage/query.go
+      - internal/usage/analytics.go
+      - internal/redisqueue/plugin.go
+      - internal/logging/upstream_size.go
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/conductor_warn_extras.go
+      - internal/api/handlers/management/usage.go
+      - sdk/cliproxy/usage/request_size_test.go
+      - internal/runtime/executor/helps/usage_request_size_test.go
+      - internal/runtime/executor/codex_request_size_test.go
+      - internal/usage/request_size_test.go
+      - internal/redisqueue/plugin_test.go
+      - internal/logging/upstream_size_test.go
+      - sdk/cliproxy/auth/conductor_warn_logging_test.go
+    regression_tests:
+      - TestRequestSizeCanonical
+      - TestUsageReporterRecordsHTTPRequestSize
+      - TestUsageReporterRecordsWebsocketRequestSize
+      - TestUsageReporterRequestSizeDescribesFinalAttempt
+      - TestUsageReporterRequestSizeSkipsAdditionalModelRecords
+      - TestCodexExecutorRecordsHTTPRequestSize
+      - TestCodexWebsocketsExecutorRecordsWebsocketRequestSize
+      - TestRequestStatisticsRecordMapsRequestSize
+      - TestRequestStatisticsUnsizedRecordOmitsSizeFields
+      - TestRequestSizeSurvivesExportImport
+      - TestRequestSizeImportNormalisation
+      - TestRequestSizeDoesNotChangeDedupIdentity
+      - TestUsageAnalyticsRequestSizeDistribution
+      - TestUsageAnalyticsOmitsRequestSizeWithoutMeasurements
+      - TestUsageQueuePluginEmitsRequestSizeFields
+      - TestUpstreamRequestSizeHolderIsPerAttempt
+      - TestWarnLogUpstreamFailureIncludesUpstreamRequestSize
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream ships equivalent per-request size and transport fields in its usage pipeline, or the LTS usage contract drops request size tracking by explicit decision.
+
   - id: codex-permanent-refresh-failure
     reason: A Codex refresh token reported expired, reused or invalidated cannot recover without re-login. Treating it as transient retried the token endpoint every few minutes and hid the condition until the access token expired. Typed classification stops in-round retries, backs off like invalid_grant while the access token stays usable, and Management exposes reauth_required so operators can re-login before expiry.
     introduced_in: 68f355e94cc4e6754da75b22ed3c83f9190891ee

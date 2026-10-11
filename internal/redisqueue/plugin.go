@@ -148,6 +148,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Stream:           stream,
 		Fail:             fail,
 		ResponseHeaders:  usageResponseHeaders(record.ResponseHeaders),
+		requestSize:      queuedRequestSize(record.Size),
 	}
 	if record.TimingVersion == coreusage.TimingVersionV1 {
 		detail.TimingVersion = record.TimingVersion
@@ -242,6 +243,33 @@ type requestDetail struct {
 	Stream           bool        `json:"stream"`
 	Fail             failDetail  `json:"fail"`
 	ResponseHeaders  http.Header `json:"response_headers,omitempty"`
+	requestSize
+}
+
+// requestSize mirrors the usage detail size fields; zero values are omitted.
+type requestSize struct {
+	SizeVersion              uint32 `json:"size_version,omitempty"`
+	ClientRequestBytes       int64  `json:"client_request_bytes,omitempty"`
+	ClientRequestEncoding    string `json:"client_request_encoding,omitempty"`
+	UpstreamTransport        string `json:"upstream_transport,omitempty"`
+	UpstreamRequestBytes     int64  `json:"upstream_request_bytes,omitempty"`
+	UpstreamRequestWireBytes int64  `json:"upstream_request_wire_bytes,omitempty"`
+	UpstreamRequestEncoding  string `json:"upstream_request_encoding,omitempty"`
+	UpstreamResponseBytes    int64  `json:"upstream_response_bytes,omitempty"`
+}
+
+func queuedRequestSize(size coreusage.RequestSize) requestSize {
+	size = size.Canonical()
+	return requestSize{
+		SizeVersion:              size.Version,
+		ClientRequestBytes:       size.ClientRequestBytes,
+		ClientRequestEncoding:    size.ClientRequestEncoding,
+		UpstreamTransport:        size.UpstreamTransport,
+		UpstreamRequestBytes:     size.UpstreamRequestBytes,
+		UpstreamRequestWireBytes: size.UpstreamRequestWireBytes,
+		UpstreamRequestEncoding:  size.UpstreamRequestEncoding,
+		UpstreamResponseBytes:    size.UpstreamResponseBytes,
+	}
 }
 
 type tokenStats struct {

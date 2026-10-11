@@ -61,15 +61,26 @@ features:
       - internal/usage/
       - internal/runtime/executor/helps/usage_helpers.go
       - internal/runtime/executor/helps/usage_timing.go
+      - internal/runtime/executor/helps/usage_request_size.go
       - sdk/cliproxy/usage/manager.go
+      - sdk/cliproxy/usage/request_size.go
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/usage_contract_test.go
       - internal/api/server_management.go
       - config.example.yaml
+      - docs/lts/usage-request-size.md
     required_markers:
       - usage-statistics-enabled
       - UsageReporter
       - RequestDetail
+      - RequestSizeVersionV1
+      - size_version
+      - trace_id
+      - client_request_bytes
+      - upstream_transport
+      - upstream_request_bytes
+      - upstream_request_wire_bytes
+      - upstream_response_bytes
       - auth_index
       - latency_ms
       - ttfb_ms
@@ -140,6 +151,8 @@ features:
       - 'mgmt.POST("/usage/query/pricing"'
       - 'mgmt.POST("/usage/query/analytics"'
       - analytics_version
+      - request_size_version
+      - requestSize
       - Accept-Encoding
       - Content-Encoding
       - 'mgmt.GET("/usage-statistics-enabled"'
@@ -507,6 +520,9 @@ features:
       - ttfb_ms
       - ttft_ms
       - ttfa_ms
+      - size_version
+      - upstream_transport
+      - upstream_request_bytes
       - auth_index
       - outbound_service_tier
       - effective_service_tier
