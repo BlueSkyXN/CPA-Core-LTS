@@ -33,8 +33,32 @@ func clientRequestSizeFromContext(ctx context.Context) (int64, string) {
 	return ginCtx.Request.ContentLength, usage.CanonicalContentEncoding(ginCtx.Request.Header.Get("Content-Encoding"))
 }
 
+type upstreamPayloadBytesKey struct{}
+
+// WithUpstreamPayloadBytes records the unencoded size of a request body the
+// caller sends with a Content-Encoding, so usage can report the payload size
+// next to the wire size. Unencoded requests ignore it.
+func WithUpstreamPayloadBytes(ctx context.Context, payloadBytes int) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if payloadBytes <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, upstreamPayloadBytesKey{}, int64(payloadBytes))
+}
+
+func upstreamPayloadBytes(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	n, _ := ctx.Value(upstreamPayloadBytesKey{}).(int64)
+	return n
+}
+
 // beginUpstreamHTTPAttempt starts byte accounting for one HTTP round trip.
-// The payload size is only known here when the body is sent unencoded.
+// An encoded body reports its payload size only when the caller recorded it
+// with WithUpstreamPayloadBytes.
 func (r *UsageReporter) beginUpstreamHTTPAttempt(req *http.Request) *upstreamSizeAttempt {
 	if r == nil {
 		return nil
@@ -47,6 +71,8 @@ func (r *UsageReporter) beginUpstreamHTTPAttempt(req *http.Request) *upstreamSiz
 		attempt.encoding = usage.CanonicalContentEncoding(req.Header.Get("Content-Encoding"))
 		if attempt.encoding == "" {
 			attempt.requestBytes = attempt.wireBytes
+		} else {
+			attempt.requestBytes = upstreamPayloadBytes(req.Context())
 		}
 	}
 	r.setUpstreamAttempt(attempt)

@@ -84,6 +84,9 @@ func prepareCodexOutboundHTTPRequest(cfg *config.Config, auth *cliproxyauth.Auth
 		return req, false
 	}
 	compressed := allowCompression && codexRequestCompressionEnabled(cfg, auth, rawURL) && compressCodexRequestBody(req, body)
+	if compressed {
+		req = req.WithContext(helps.WithUpstreamPayloadBytes(req.Context(), len(body)))
+	}
 	if cfg != nil && cfg.Codex.Outbound.EffectiveAcceptEncoding() == config.CodexAcceptEncodingOfficial {
 		req = req.WithContext(helps.WithoutAutoAcceptEncoding(req.Context()))
 	}

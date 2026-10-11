@@ -147,3 +147,50 @@ func TestUsageReporterRequestSizeSkipsAdditionalModelRecords(t *testing.T) {
 		t.Fatalf("primary request bytes = %d, want 512", got)
 	}
 }
+
+func TestUsageReporterRecordsPayloadSizeOfEncodedRequest(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", nil)
+	responseBody := "ok"
+	client := reporter.TrackHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return sizeTestResponse(req, responseBody), nil
+		}),
+	})
+	req, err := http.NewRequest(http.MethodPost, "https://example.invalid/v1/responses", strings.NewReader(strings.Repeat("z", 30)))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Content-Encoding", "zstd")
+	req = req.WithContext(WithUpstreamPayloadBytes(req.Context(), 500))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	got := reporter.buildRecord(usage.Detail{}, false).Size
+	if got.UpstreamRequestBytes != 500 || got.UpstreamRequestWireBytes != 30 || got.UpstreamRequestEncoding != "zstd" {
+		t.Fatalf("size = %+v, want payload 500, wire 30, encoding zstd", got)
+	}
+
+	// An unencoded request ignores a stale payload size and reports its own body.
+	reporter = NewUsageReporter(context.Background(), "codex", "gpt-5.6", nil)
+	client = reporter.TrackHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return sizeTestResponse(req, responseBody), nil
+		}),
+	})
+	req, _ = http.NewRequest(http.MethodPost, "https://example.invalid/v1/responses", strings.NewReader(strings.Repeat("u", 40)))
+	req = req.WithContext(WithUpstreamPayloadBytes(req.Context(), 500))
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	got = reporter.buildRecord(usage.Detail{}, false).Size
+	if got.UpstreamRequestBytes != 40 || got.UpstreamRequestWireBytes != 40 || got.UpstreamRequestEncoding != "" {
+		t.Fatalf("size = %+v, want payload and wire 40 without encoding", got)
+	}
+}

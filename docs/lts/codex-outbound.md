@@ -79,7 +79,7 @@ Codex 请求到达 CPA 时，下游可能是 HTTP（`POST /v1/responses` + SSE�
 
 - 压缩发生在请求头和请求体全部准备好之后；request-log / error-log 记录的仍是压缩前的原文，请求头中可见 `Content-Encoding: zstd`。
 - 上游对压缩请求返回 415 时，用原文自动重发一次并记录 warn。
-- 压缩只改变线上编码，不改变请求内容、usage 统计或下游响应。
+- 压缩只改变线上编码，不改变请求内容、token 统计或下游响应；usage 明细同时记录原文大小（`upstream_request_bytes`）、线上大小（`upstream_request_wire_bytes`）和编码（`upstream_request_encoding: zstd`）。
 
 ## 3. Accept-Encoding：`accept-encoding`
 
