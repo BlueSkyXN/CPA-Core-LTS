@@ -1103,11 +1103,35 @@ func probeProxyURL(ctx context.Context, raw string) (proxyProbeResult, int) {
 	}
 }
 
-func probeConcreteProxy(ctx context.Context, raw string) (proxyProbeResult, int) {
+var errProxyAuthRequired = errors.New("proxy authentication required")
+
+func buildProxyProbeTransport(raw string) *http.Transport {
 	transport := buildProxyTransport(raw)
+	if transport == nil {
+		return nil
+	}
+	previous := transport.OnProxyConnectResponse
+	transport.OnProxyConnectResponse = func(ctx context.Context, proxyURL *url.URL, req *http.Request, resp *http.Response) error {
+		if previous != nil {
+			if err := previous(ctx, proxyURL, req, resp); err != nil {
+				return err
+			}
+		}
+		// CONNECT 的非 200 响应会被 Transport 转为 error，在此保留鉴权分类。
+		if resp.StatusCode == http.StatusProxyAuthRequired {
+			return errProxyAuthRequired
+		}
+		return nil
+	}
+	return transport
+}
+
+func probeConcreteProxy(ctx context.Context, raw string) (proxyProbeResult, int) {
+	transport := buildProxyProbeTransport(raw)
 	if transport == nil {
 		return proxyProbeResult{Status: "error", Code: "invalid_proxy_url"}, http.StatusBadRequest
 	}
+	defer transport.CloseIdleConnections()
 
 	probeCtx, cancel := context.WithTimeout(ctx, proxyProbeTimeout)
 	defer cancel()
@@ -1144,6 +1168,9 @@ var proxyProbeTarget = proxyProbeTargetURL
 func classifyProxyProbeError(err error) string {
 	if err == nil {
 		return "probe_failed"
+	}
+	if errors.Is(err, errProxyAuthRequired) {
+		return "proxy_auth_required"
 	}
 
 	var netErr net.Error

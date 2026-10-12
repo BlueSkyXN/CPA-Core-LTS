@@ -1536,11 +1536,13 @@ func TestIsCodexQuotaResetConsumeAPICall(t *testing.T) {
 func TestProxyURLProbe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	var targetHits atomic.Int32
 	probeTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/generate_204" {
 			http.NotFound(w, r)
 			return
 		}
+		targetHits.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer probeTarget.Close()
@@ -1548,41 +1550,25 @@ func TestProxyURLProbe(t *testing.T) {
 	proxyProbeTarget = probeTarget.URL + "/generate_204"
 	defer func() { proxyProbeTarget = originalTarget }()
 
+	forwardTransport := &http.Transport{}
+	defer forwardTransport.CloseIdleConnections()
 	httpProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			http.Error(w, "connect required", http.StatusBadRequest)
+		if r.Method != http.MethodGet || r.URL.Host != probeTarget.Listener.Addr().String() {
+			t.Errorf("unexpected forward proxy request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		hijacker, ok := w.(http.Hijacker)
-		if !ok {
-			t.Errorf("proxy response writer does not support hijacking")
+		forward := r.Clone(r.Context())
+		forward.RequestURI = ""
+		resp, err := forwardTransport.RoundTrip(forward)
+		if err != nil {
+			t.Errorf("forward proxy request: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		clientConn, _, errHijack := hijacker.Hijack()
-		if errHijack != nil {
-			t.Errorf("hijack proxy connection: %v", errHijack)
-			return
-		}
-		defer clientConn.Close()
-
-		upstreamConn, errDial := net.Dial("tcp", probeTarget.Listener.Addr().String())
-		if errDial != nil {
-			t.Errorf("dial probe target: %v", errDial)
-			return
-		}
-		defer upstreamConn.Close()
-
-		errCopy := make(chan error, 2)
-		go func() {
-			_, err := io.Copy(upstreamConn, clientConn)
-			errCopy <- err
-		}()
-		go func() {
-			_, err := io.Copy(clientConn, upstreamConn)
-			errCopy <- err
-		}()
-		<-errCopy
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
 	}))
 	defer httpProxy.Close()
 
@@ -1640,6 +1626,9 @@ func TestProxyURLProbe(t *testing.T) {
 	}
 
 	assertProbe("http proxy", `{"value":"`+httpProxy.URL+`"}`, http.StatusOK, "ok", "reachable")
+	if targetHits.Load() != 1 {
+		t.Fatalf("HTTP proxy reached target %d times, want 1", targetHits.Load())
+	}
 	assertProbe("proxy auth", `{"value":"`+authProxy.URL+`"}`, http.StatusBadGateway, "error", "proxy_auth_required")
 	assertProbe("connection refused", `{"value":"http://127.0.0.1:1"}`, http.StatusBadGateway, "error", "connection_refused")
 	assertProbe("socks5", `{"value":"`+socksProxy.URL()+`"}`, http.StatusOK, "ok", "reachable")
@@ -1805,6 +1794,92 @@ func serveTestSOCKS5(conn net.Conn, password string) {
 	<-errCopy
 }
 
+func TestProxyProbeTransportHTTPSConnect(t *testing.T) {
+	var targetHits, connects atomic.Int32
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect || r.Host != target.Listener.Addr().String() {
+			t.Errorf("unexpected CONNECT request: %s %s", r.Method, r.Host)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		connects.Add(1)
+		upstream, err := net.Dial("tcp", target.Listener.Addr().String())
+		if err != nil {
+			t.Errorf("dial TLS target: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer upstream.Close()
+		client, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack proxy: %v", err)
+			return
+		}
+		defer client.Close()
+		_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		if err := buffered.Flush(); err != nil {
+			t.Errorf("CONNECT response: %v", err)
+			return
+		}
+		done := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(upstream, buffered); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+		<-done
+	}))
+	defer proxy.Close()
+	transport := buildProxyProbeTransport(proxy.URL)
+	if transport == nil {
+		t.Fatal("probe transport is nil")
+	}
+	defer transport.CloseIdleConnections()
+	transport.TLSClientConfig = target.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	client := &http.Client{Transport: transport, Timeout: proxyProbeTimeout}
+	resp, err := client.Get(target.URL + "/generate_204")
+	if err != nil {
+		t.Fatalf("HTTPS probe: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || connects.Load() != 1 || targetHits.Load() != 1 {
+		t.Fatalf("status=%d CONNECTs=%d target hits=%d", resp.StatusCode, connects.Load(), targetHits.Load())
+	}
+}
+
+func TestProxyURLProbeConnectAuthRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var connects atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			t.Errorf("proxy method=%s, want CONNECT", r.Method)
+		}
+		connects.Add(1)
+		w.Header().Set("Proxy-Authenticate", `Basic realm="test"`)
+		w.WriteHeader(http.StatusProxyAuthRequired)
+	}))
+	defer proxy.Close()
+	// 使用生产 HTTPS 目标；代理在 CONNECT 阶段拒绝，不会访问外部目标。
+	original := proxyProbeTarget
+	proxyProbeTarget = proxyProbeTargetURL
+	defer func() { proxyProbeTarget = original }()
+	router := gin.New()
+	router.POST("/proxy-url/test", (&Handler{}).TestProxyURL)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/proxy-url/test", strings.NewReader(`{"value":"`+proxy.URL+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	var result proxyProbeResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if connects.Load() != 1 || rec.Code != http.StatusBadGateway || result.Status != "error" || result.Code != "proxy_auth_required" {
+		t.Fatalf("connects=%d status=%d result=%+v", connects.Load(), rec.Code, result)
+	}
+}
+
 func TestClassifyProxyProbeError(t *testing.T) {
 	t.Parallel()
 
@@ -1816,6 +1891,7 @@ func TestClassifyProxyProbeError(t *testing.T) {
 		{name: "nil", err: nil, want: "probe_failed"},
 		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
 		{name: "socks auth", err: errors.New("username/password authentication failed"), want: "proxy_auth_failed"},
+		{name: "wrapped connect auth", err: &url.Error{Op: "Get", URL: "https://example.com", Err: fmt.Errorf("CONNECT: %w", errProxyAuthRequired)}, want: "proxy_auth_required"},
 		{name: "dial", err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}, want: "connection_refused"},
 		{name: "tls", err: errors.New("tls: handshake failure"), want: "tls_failed"},
 		{name: "other", err: errors.New("unexpected eof"), want: "probe_failed"},

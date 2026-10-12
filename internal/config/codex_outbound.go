@@ -128,14 +128,23 @@ func (c CodexOutboundConfig) EffectiveAcceptEncoding() string {
 	return CodexAcceptEncodingOfficial
 }
 
+// NormalizeCodexKeyRequestCompression 统一配置加载和 Management 写入的压缩模式校验。
+func NormalizeCodexKeyRequestCompression(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", CodexRequestCompressionNone, CodexRequestCompressionZstd:
+		return value, nil
+	default:
+		return "", fmt.Errorf("want none or zstd")
+	}
+}
+
 // validateCodexKeyRequestCompression normalizes codex-api-key request-compression values.
 func validateCodexKeyRequestCompression(entries []CodexKey) error {
 	for i := range entries {
-		value := strings.ToLower(strings.TrimSpace(entries[i].RequestCompression))
-		switch value {
-		case "", CodexRequestCompressionNone, CodexRequestCompressionZstd:
-		default:
-			return fmt.Errorf("invalid codex-api-key[%d].request-compression %q: want none or zstd", i, entries[i].RequestCompression)
+		value, err := NormalizeCodexKeyRequestCompression(entries[i].RequestCompression)
+		if err != nil {
+			return fmt.Errorf("invalid codex-api-key[%d].request-compression %q: %w", i, entries[i].RequestCompression, err)
 		}
 		entries[i].RequestCompression = value
 	}
