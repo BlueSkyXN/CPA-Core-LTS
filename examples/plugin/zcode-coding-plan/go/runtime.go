@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -68,17 +69,18 @@ func (r *pluginRuntime) configurationForAuth(raw []byte, authID, authIndex strin
 	if !r.accepting || account != nil && account.retiring {
 		return nil, problem(503, "unavailable", "Plugin account is stopping")
 	}
+	sameCredentials := account != nil && account.config != nil && account.config.APIKey == a.APIKey && account.config.DeviceID == a.DeviceID
 	if account != nil {
 		if authIndex != "" && account.authIndex != "" && authIndex != account.authIndex {
 			return nil, problem(409, "config_changed", "Host account identity changed")
 		}
-		if account.config != nil && account.config.APIKey == a.APIKey && account.config.DeviceID == a.DeviceID {
+		if sameCredentials && slices.Equal(account.config.ExtraModels, a.ExtraModels) {
 			if authIndex != "" {
 				account.authIndex = authIndex
 			}
 			return account.config, nil
 		}
-		if account.active > 0 {
+		if !sameCredentials && account.active > 0 {
 			return nil, problem(409, "busy", "Finish or cancel this account's requests before replacing its credentials")
 		}
 	}
@@ -86,20 +88,23 @@ func (r *pluginRuntime) configurationForAuth(raw []byte, authID, authIndex strin
 	if err = r.management.apply(c); err != nil {
 		return nil, err
 	}
+	c.applyExtraModels(a.ExtraModels)
 	c.APIKey, c.DeviceID = a.APIKey, a.DeviceID
 	c.AccountScope = authID
 	if account == nil {
 		account = &accountState{authID: authID}
 		r.accounts[authID] = account
 	}
-	if account.signer != nil {
+	if !sameCredentials && account.signer != nil {
 		account.signer.close()
 	}
 	if authIndex != "" {
 		account.authIndex = authIndex
 	}
 	account.config = c
-	account.signer = &signer{apiKey: c.APIKey, endpoint: c.Endpoint}
+	if !sameCredentials {
+		account.signer = &signer{apiKey: c.APIKey, endpoint: c.Endpoint}
+	}
 	return c, nil
 }
 func (r *pluginRuntime) admit(req executorRequest, c *config) (*execution, error) {
@@ -445,8 +450,8 @@ func modelList(c *config) []any {
 		if _, known := builtinModelLimits(m); known {
 			model["SupportedParameters"] = append(parameters, "reasoning_effort", "thinking")
 			model["Thinking"] = map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}
-			// Only probe-verified built-in IDs declare native search support;
-			// custom IDs stay unknown instead of inheriting the capability.
+			// 已知 GLM ID（包括高速变体）复用内置模板的搜索能力；
+			// 自定义 ID 保持未知，不按名称前缀继承能力。
 			// WebSearchReplay is the replay-protocol discriminator the host
 			// checks separately from search capability; the literal matches
 			// registry.NativeWebSearchReplayBigModel ("bigmodel").

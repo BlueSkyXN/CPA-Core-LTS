@@ -329,7 +329,7 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 	}
 	f.checkUsage(t, false)
 	before := len(f.transport.captured)
-	for _, control := range []string{`"reasoning":{"effort":"medium"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
+	for _, control := range []string{`"reasoning":{"effort":"ultra"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
 		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello",%s}`, v2Model, control))
 		if res.Code < 400 {
 			t.Fatalf("unsupported control accepted: %s", control)

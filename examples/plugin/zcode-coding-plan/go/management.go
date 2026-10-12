@@ -77,6 +77,7 @@ func (r *pluginRuntime) reconfigure(cfg managementConfig) error {
 			if err := cfg.apply(c); err != nil {
 				return err
 			}
+			c.applyExtraModels(account.config.ExtraModels)
 			c.APIKey, c.DeviceID = account.config.APIKey, account.config.DeviceID
 			c.AccountScope = id
 			next[id] = &accountState{authID: id, authIndex: account.authIndex, config: c, signer: &signer{apiKey: c.APIKey, endpoint: c.Endpoint}}

@@ -84,6 +84,11 @@ func TestInlineModelMetadata(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatal("default models missing")
 	}
+	c.applyExtraModels([]string{"glm-5.3-highspeed", "glm-5.3-flashx"})
+	list = modelList(c)
+	if len(list) != 4 {
+		t.Fatal("optional models missing")
+	}
 	for _, entry := range list {
 		m := entry.(map[string]any)
 		id := m["ID"].(string)
@@ -99,11 +104,15 @@ func TestInlineModelMetadata(t *testing.T) {
 			t.Fatal("thinking levels wrong for", id, thinking["Levels"])
 		}
 		input := m["SupportedInputModalities"].([]string)
-		if id == "glm-5.3" && len(input) != 1 {
+		if (id == "glm-5.3" || id == "glm-5.3-highspeed") && len(input) != 1 {
 			t.Fatal("glm-5.3 must be text-only")
 		}
-		if id == "glm-5.3-flash" && len(input) != 2 || (id == "glm-5.3-flash" && input[1] != "image") {
+		if (id == "glm-5.3-flash" || id == "glm-5.3-flashx") && (len(input) != 2 || input[1] != "image") {
 			t.Fatal("glm-5.3-flash must accept images")
+		}
+		native := m["NativeCapabilities"].(map[string]any)
+		if native["WebSearch"] != true || native["WebSearchReplay"] != "bigmodel" {
+			t.Fatal("GLM template lost native search capability")
 		}
 	}
 	legacy, ok := builtinModelLimits("GLM-5.3-Flash")
