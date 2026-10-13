@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -26,6 +27,7 @@ type ResponseTimingSnapshot struct {
 	TTFB          time.Duration
 	TTFT          time.Duration
 	TTFA          time.Duration
+	OutputTiming  *usage.OutputTiming
 }
 
 // responseTimingTracker measures one upstream attempt. It deliberately keeps
@@ -45,6 +47,10 @@ type responseTimingTracker struct {
 	ttfbSet bool
 	ttftSet bool
 	ttfaSet bool
+
+	lastPayload    time.Time
+	payloadCount   uint8
+	streamObserved bool
 
 	lineBuffer []byte
 	frameData  []byte
@@ -142,6 +148,27 @@ func (t *responseTimingTracker) snapshot() ResponseTimingSnapshot {
 		TTFB:          t.ttfb,
 		TTFT:          t.ttft,
 		TTFA:          t.ttfa,
+		OutputTiming:  t.outputTimingLocked(),
+	}
+}
+
+func (t *responseTimingTracker) outputTimingLocked() *usage.OutputTiming {
+	result := &usage.OutputTiming{Version: 1, Streamed: t.streamObserved}
+	// A single buffered read has no observable generation window.
+	if t.streamObserved && t.ttfbSet && t.payloadCount > 1 {
+		duration := t.lastPayload.Sub(t.started) - t.ttfb
+		if duration >= 0 {
+			ms := duration.Milliseconds()
+			result.DurationMS = &ms
+		}
+	}
+	return result
+}
+
+func (t *responseTimingTracker) recordPayloadLocked() {
+	t.lastPayload = time.Now()
+	if t.payloadCount < 2 {
+		t.payloadCount++
 	}
 }
 
@@ -153,6 +180,7 @@ func (t *responseTimingTracker) observeBytes(data []byte) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.recordPayloadLocked()
 	if !t.semanticEnabled || t.semanticDisabled || t.format == "" {
 		return
 	}
@@ -195,6 +223,7 @@ func (t *responseTimingTracker) observeMessage(data []byte) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.recordPayloadLocked()
 	if !t.semanticEnabled || t.semanticDisabled || t.format == "" || len(data) > responseTimingFrameMaxBytes {
 		return
 	}
@@ -206,6 +235,7 @@ func (t *responseTimingTracker) observeMessage(data []byte) {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) || !gjson.ValidBytes(trimmed) {
 		return
 	}
+	t.streamObserved = true
 	t.classifyLocked(trimmed)
 }
 
@@ -258,6 +288,7 @@ func (t *responseTimingTracker) processLineLocked(line []byte) {
 			return
 		}
 		if gjson.ValidBytes(t.frameData) {
+			t.streamObserved = true
 			t.classifyLocked(t.frameData)
 			t.frameData = nil
 		}

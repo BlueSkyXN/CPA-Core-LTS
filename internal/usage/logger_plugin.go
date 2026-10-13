@@ -4,6 +4,7 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -112,7 +113,8 @@ type RequestDetail struct {
 	// optional timing fields below. Zero is retained for migrated legacy rows.
 	TimingVersion uint32 `json:"timing_version,omitempty"`
 	// TTFBMs records the first upstream response byte/payload latency.
-	TTFBMs int64 `json:"ttfb_ms,omitempty"`
+	TTFBMs       int64                   `json:"ttfb_ms,omitempty"`
+	OutputTiming *coreusage.OutputTiming `json:"output_timing,omitempty"`
 	// TTFTMs records the first non-empty reasoning content latency.
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
 	// TTFAMs records the first non-empty assistant text latency.
@@ -212,6 +214,9 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	if raw, ok := fields["output_timing"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: output_timing must be an object", ErrInvalidCanonicalTimingStats)
+	}
 	*d = RequestDetail(decoded)
 	d.Generate = generate
 	var timingFields timingFieldPresence
@@ -473,6 +478,9 @@ func (snapshot StatisticsSnapshot) ValidateCanonicalTimingStats() error {
 }
 
 func validCanonicalTimingDetail(detail RequestDetail) bool {
+	if !validOutputTimingDetail(detail) {
+		return false
+	}
 	if detail.TimingVersion != 0 && detail.TimingVersion != usageTimingVersion {
 		return false
 	}
@@ -679,6 +687,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		}
 	}
 
+	requestDetail.OutputTiming = record.OutputTiming.Clone()
+	if !validOutputTimingDetail(requestDetail) {
+		requestDetail.OutputTiming = &coreusage.OutputTiming{Version: 1}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -710,7 +722,7 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	}
 	modelStatsValue.TotalRequests++
 	modelStatsValue.TotalTokens = addNonNegativeTokenCounts(modelStatsValue.TotalTokens, detail.Tokens.TotalTokens)
-	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+	modelStatsValue.Details = append(modelStatsValue.Details, cloneRequestDetail(detail))
 }
 
 // Counts reads the import receipt counters atomically without copying details.
@@ -1386,6 +1398,7 @@ func sumNonNegativeTokenCounts(tokens ...int64) (int64, bool) {
 
 func cloneRequestDetail(detail RequestDetail) RequestDetail {
 	detail.Tokens = cloneTokenStats(detail.Tokens)
+	detail.OutputTiming = detail.OutputTiming.Clone()
 	return detail
 }
 

@@ -198,6 +198,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		TTFB:                 record.TTFB,
 		TTFT:                 record.TTFT,
 		TTFA:                 record.TTFA,
+		OutputTiming:         pluginOutputTiming(record.OutputTiming),
 		Failed:               record.Failed,
 		SessionID:            sessionID,
 		ParentSessionID:      parentSessionID,
@@ -409,4 +410,12 @@ func (h *Host) callResponseTranslator(ctx context.Context, record capabilityReco
 		return nil, false
 	}
 	return bytes.Clone(resp.Body), true
+}
+
+func pluginOutputTiming(value *coreusage.OutputTiming) *pluginapi.UsageOutputTiming {
+	if value == nil {
+		return nil
+	}
+	copy := value.Clone()
+	return &pluginapi.UsageOutputTiming{Version: copy.Version, Streamed: copy.Streamed, DurationMS: copy.DurationMS}
 }

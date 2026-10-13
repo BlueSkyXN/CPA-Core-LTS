@@ -208,7 +208,7 @@ func analyticsAddRequestSize(r *AnalyticsRequestSize, d RequestDetail) {
 }
 
 // analyticsAddThroughput accumulates one request into a bucket using the same
-// eligibility rules as QueryMetrics: successful requests with output tokens and
+// eligibility rules as QueryMetrics: requests with output tokens and
 // a positive latency contribute, the decode-window series additionally needs a
 // measured first byte that arrives before completion, and the visible series
 // needs reasoning tokens that do not exceed the reported output.
@@ -221,9 +221,9 @@ func analyticsAddThroughput(p *AnalyticsThroughputPoint, d RequestDetail) {
 	p.AverageTokens += output
 	p.AverageDurationMS += latency
 	p.AverageSamples++
-	if d.timingFieldPresent(timingTTFBPresent) && d.TTFBMs >= 0 && d.LatencyMs > d.TTFBMs {
+	if duration, ok := outputDurationMS(d); ok {
 		p.OutputTokens += output
-		p.DecodeDurationMS += latency - float64(d.TTFBMs)
+		p.DecodeDurationMS += duration
 		p.OutputSamples++
 	}
 	if t.ReasoningTokens <= t.OutputTokens {

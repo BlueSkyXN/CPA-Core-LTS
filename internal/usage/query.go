@@ -200,8 +200,8 @@ func (m *QueryMetrics) add(d RequestDetail, model string, rule QueryPriceRule, p
 	if t.OutputTokens > 0 && d.LatencyMs > 0 {
 		output, latency := float64(t.OutputTokens), float64(d.LatencyMs)
 		addQueryRatio(&m.AverageTPS, output, latency)
-		if hasTTFB && d.LatencyMs > d.TTFBMs {
-			addQueryRatio(&m.OutputTPS, output, latency-float64(d.TTFBMs))
+		if duration, ok := outputDurationMS(d); ok {
+			addQueryRatio(&m.OutputTPS, output, duration)
 		}
 		if t.ReasoningTokens <= t.OutputTokens {
 			addQueryRatio(&m.VisibleTPS, output-float64(t.ReasoningTokens), latency)
@@ -709,6 +709,7 @@ func (s *RequestStatistics) QueryDetails(ctx context.Context, q QueryRequest) (*
 		r.NextCursor = queryEncode(queryCursor{q.Bound, filterID, last.Detail.Timestamp.UnixMilli(), last.Detail.querySequence})
 	}
 	for i := range r.Items {
+		r.Items[i].Detail = cloneRequestDetail(r.Items[i].Detail)
 		r.Items[i].ID = strconv.FormatUint(r.Items[i].Detail.querySequence, 10)
 	}
 	if r.Options != nil {

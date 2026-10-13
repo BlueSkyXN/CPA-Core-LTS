@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 type usageExportPayload struct {
@@ -265,6 +266,7 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"timestamp",
 					"latency_ms",
 					"ttfb_ms",
+					"output_timing",
 					"source",
 					"auth_index",
 					"alias",
@@ -335,6 +337,26 @@ func validateUsageImportRawShape(data []byte, version int) error {
 }
 
 func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int) error {
+	if raw, ok := detail["output_timing"]; ok {
+		if version == 1 {
+			return errUsageV1TimingSemanticsAmbiguous
+		}
+		if version == 2 {
+			return errUsageV2TimingSemanticsAmbiguous
+		}
+		var timing coreusage.OutputTiming
+		if err := json.Unmarshal(raw, &timing); err != nil || !timing.Valid() {
+			return errUsageV3TimingContractInvalid
+		}
+		if timing.DurationMS != nil {
+			latency, validLatency := rawNonNegativeInt64(detail["latency_ms"])
+			first, validFirst := rawNonNegativeInt64(detail["ttfb_ms"])
+			if !validLatency || !validFirst || first > latency || *timing.DurationMS > latency-first {
+				return errUsageV3TimingContractInvalid
+			}
+		}
+	}
+
 	_, hasTimingVersion := detail["timing_version"]
 	_, hasTTFB := detail["ttfb_ms"]
 	_, hasTTFT := detail["ttft_ms"]

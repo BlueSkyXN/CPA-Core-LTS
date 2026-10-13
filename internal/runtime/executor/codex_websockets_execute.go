@@ -184,6 +184,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var closer *websocketConnectionCloser
 	var respHS *http.Response
 	var errDial error
+	// Include cold connection setup, as the HTTP attempt timer does.
+	reporter.StartResponseTiming()
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		connection, closer = existingCodexWebsocketSessionConnection(sess, connectionKey)
@@ -217,7 +219,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
-	reporter.StartResponseTiming()
 	if isEphemeralSession {
 		defer func() {
 			reason := "completed"
@@ -263,6 +264,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
+			reporter.BeginResponseTiming()
 			connectionRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, connectionKey, wsHeaders)
 			if errDialRetry == nil && connectionRetry.conn != nil {
 				if errBind := sess.bindExecutionLifecycle(opts, connectionRetry.conn, closerRetry, req.Model); errBind != nil {
@@ -285,7 +287,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 					AuthValue: authValue,
 				})
 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
-				reporter.BeginResponseTiming()
 				retrySignal, errActive := sess.setActiveConnection(connectionRetry, readCh)
 				if errActive != nil {
 					return resp, errActive

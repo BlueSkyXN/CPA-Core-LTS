@@ -40,7 +40,7 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 
 聚合响应的 `options.efforts` 返回当前时间窗口内全部强度（含空字符串），不受模型、来源、层级或 effort 筛选缩窄。旧聚合响应缺少此字段时，Panel 可通过同一 bound/time window 的 `/usage/query/details` 读取已有 effort 目录，无需下载完整明细。
 
-一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors`、`hour/day` 两套趋势，以及存在体积测量时的 `requestSize` 分桶。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。`hour/day.throughput` 逐桶累计与 `QueryMetrics` 相同的分子分母：输出 TPS 用首包之后的解码窗口（仅显式测量过且早于完成的首包时间），平均与可见 TPS 用总耗时，失败请求同样计入；分母为零表示该桶没有可测样本。速率为分子 / 分母 × 1000（token/秒）。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
+一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors`、`hour/day` 两套趋势，以及存在体积测量时的 `requestSize` 分桶。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。`hour/day.throughput` 逐桶累计与 `QueryMetrics` 相同的分子分母：输出 TPS 优先使用 `output_timing` 的同次上游观测窗口，历史记录才使用首包之后的估算时长，平均与可见 TPS 用总耗时，失败请求同样计入；分母为零表示该桶没有可测样本。速率为分子 / 分母 × 1000（token/秒）。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
 
 第一版容量上限：250,000 条匹配记录，每个粒度最多 4,096 个实际桶，模型、身份和 effort 选项合计最多 8,192 项，错误原因最多 8,192 种。完整响应上限 4 MiB；超出返回 422 `usage_analytics_too_large`，不抽样、不截断。最多两个不同聚合任务并发，超过返回 429 `usage_analytics_busy`；同键请求共享计算，最后一个等待者退出后取消工作，15 秒预算继续生效。
 
@@ -67,3 +67,19 @@ Panel 对每类使用原价格算法选取 status、单价和警告，再计算�
 任何 Core 重启或 wrapper 重建前，都要确认统计保存位置在被重建实例之外。若要求升级零缺失，应在维护窗口暂停新流量、等待在途请求和 usage 分发排空、最终导出并校验，再重启、导入、对账及恢复流量。导出后到停止前的新增请求不能由旧备份恢复；不能仅以定时备份代替最终导出。现有自动保存流程只有经核对覆盖这个尾部窗口才可替代维护步骤。
 
 Core、Panel、HFS wrapper 可分批回滚。旧接口和导出版本未改变，因此旧 Panel 可连接新 Core，新 Panel 也保留明确的旧 Core 兼容路径。回滚或发布不授权删除历史、改 Secrets 或擅自重建生产 Space。
+
+
+## 输出窗口测量
+
+Canonical v3 明细新增可选 `output_timing`，不改变 `timing_version: 1` 或旧 timing/token 字段的含义：
+
+```json
+{"output_timing":{"version":1,"streamed":true,"duration_ms":800}}
+```
+
+- `streamed` 表示观测器识别到上游 SSE 或消息流；`duration_ms` 仅在同一次上游尝试至少有两次有效载荷观测、且首包时间已测得时提供，窗口为首包到最后一次有效载荷观测。单次整包读取、无起点的自动续接、前置失败等不伪造窗口。
+- `duration_ms` 为非负整数，不能超过 `latency_ms - ttfb_ms`；小于一毫秒的窗口可记录为零，但不计算 TPS。没有测到时省略 duration，不能当作零耗时。
+- 新 Core reporter 始终提供该元数据。对象存在时，无可用正窗口就不计输出 TPS；只有对象完全缺失的历史记录沿用 `latency_ms - ttfb_ms` 估算。明细、QueryMetrics、服务端趋势和 Panel 本地趋势使用相同资格规则。平均 TPS 仍使用 reporter 总耗时。
+- HTTP 与新建 WebSocket 的尝试计时从连接建立前开始；复用 WebSocket 不重复计入旧握手。重试使用新的尝试窗口，前置处理和前次失败不进入首包后窗口。
+- 这是 Core 观测的输出速率，仍受网络缓冲与下游反压影响，不是模型内部解码速度或完整客户端端到端速率。旧样本的估算偏差不能从现有数据补回；混合历史的汇总仍标为估算。
+- 字段随 Management 查询、export/import、SDK/plugin usage 和 usage queue 传递。Import 保持原子校验与原有去重身份；v1/v2 payload 不能携带这个新扩展。旧 Core/Panel 可忽略可选对象，但重新导出会丢失其测量信息。

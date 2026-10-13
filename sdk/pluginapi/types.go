@@ -1769,7 +1769,8 @@ type UsageRecord struct {
 	TTFT time.Duration `json:"TTFT,omitempty"`
 	// TTFA is the time from the upstream attempt start to the first non-empty
 	// user-visible assistant text event.
-	TTFA time.Duration `json:"TTFA,omitempty"`
+	TTFA         time.Duration      `json:"TTFA,omitempty"`
+	OutputTiming *UsageOutputTiming `json:"OutputTiming,omitempty"`
 	// Failed reports whether the request failed.
 	Failed bool
 	// Failure contains failure details when Failed is true.
@@ -1778,6 +1779,13 @@ type UsageRecord struct {
 	Detail UsageDetail
 	// ResponseHeaders contains selected upstream response headers.
 	ResponseHeaders http.Header
+}
+
+// UsageOutputTiming is the optional upstream output-window measurement.
+type UsageOutputTiming struct {
+	Version    uint32 `json:"version"`
+	Streamed   bool   `json:"streamed"`
+	DurationMS *int64 `json:"duration_ms,omitempty"`
 }
 
 // UsageFailure describes an upstream or executor failure.
