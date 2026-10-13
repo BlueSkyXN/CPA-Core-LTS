@@ -79,6 +79,8 @@ Codex 请求到达 CPA 时，下游可能是 HTTP（`POST /v1/responses` + SSE�
 | `codex-api-key` credential | 默认不压缩；仅当条目设置 `request-compression: zstd` 时压缩（适用于确认支持 zstd 的上游，例如另一台 CPA） |
 | `/responses/compact`、websocket、images 等其他端点 | 不压缩（官方客户端也不压缩） |
 
+`codex-api-key` 条目的 `request-compression` 可通过 `PUT/PATCH /v0/management/codex-api-key` 更新。接口与配置加载使用相同的归一化和校验规则：接受空字符串、`none`、`zstd`，忽略大小写及首尾空格；待保存条目包含非法值时返回 400，且不修改配置或触发重载。PATCH 省略该字段时保留原值，空字符串恢复默认的不压缩行为。
+
 - 压缩发生在请求头和请求体全部准备好之后；request-log / error-log 记录的仍是压缩前的原文，请求头中可见 `Content-Encoding: zstd`。
 - 上游对压缩请求返回 415 时，用原文自动重发一次并记录 warn。
 - 压缩只改变线上编码，不改变请求内容、token 统计或下游响应；usage 明细同时记录原文大小（`upstream_request_bytes`）、线上大小（`upstream_request_wire_bytes`）和编码（`upstream_request_encoding: zstd`）。
