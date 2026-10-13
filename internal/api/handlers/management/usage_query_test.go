@@ -15,7 +15,7 @@ func TestUsageQueryHTTPContract(t *testing.T) {
 	for _, test := range []struct {
 		body   string
 		status int
-	}{{`{}`, 200}, {`{"limit":201}`, 400}, {`{"modules":["invalid"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}, {`{"from_ms":2,"to_ms":1}`, 400}} {
+	}{{`{}`, 200}, {`{"filter":{"tier_flow":"fast_to_std","effort":"high"}}`, 200}, {`{"filter":{"tier_flow":"invalid"}}`, 400}, {`{"limit":201}`, 400}, {`{"modules":["invalid"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}, {`{"from_ms":2,"to_ms":1}`, 400}} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/usage/query/details", strings.NewReader(test.body))
@@ -38,7 +38,7 @@ func TestUsageAnalyticsHTTPContract(t *testing.T) {
 	for _, test := range []struct {
 		body   string
 		status int
-	}{{`{}`, 200}, {`{"cursor":"x"}`, 400}, {`{"modules":["models"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}} {
+	}{{`{}`, 200}, {`{"filter":{"tier_flow":"std_to_fast","effort":""}}`, 200}, {`{"filter":{"tier_flow":"invalid"}}`, 400}, {`{"cursor":"x"}`, 400}, {`{"modules":["models"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/usage/query/analytics", strings.NewReader(test.body))

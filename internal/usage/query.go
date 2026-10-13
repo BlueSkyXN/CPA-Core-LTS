@@ -38,6 +38,7 @@ type QueryFilter struct {
 	AuthIndex  *string         `json:"auth_index,omitempty"`
 	Identities []QueryIdentity `json:"identities,omitempty"`
 	Tier       string          `json:"tier,omitempty"`
+	TierFlow   string          `json:"tier_flow,omitempty"`
 	Effort     *string         `json:"effort,omitempty"`
 	Failed     *bool           `json:"failed,omitempty"`
 	Cached     *bool           `json:"cached,omitempty"`
@@ -252,17 +253,19 @@ func (m *QueryMetrics) finish() {
 	m.prices = nil
 }
 
+func classifyQueryServiceTier(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "priority", "fast":
+		return "fast"
+	case "standard", "default":
+		return "std"
+	}
+	return ""
+}
+
 // 与 Panel serviceTier.ts 相同：未知的高优先级证据阻止向低优先级 Fast 回退。
 func queryServiceTier(d RequestDetail) (string, string) {
-	classify := func(s string) string {
-		switch strings.ToLower(strings.TrimSpace(s)) {
-		case "priority", "fast":
-			return "fast"
-		case "standard", "default":
-			return "std"
-		}
-		return ""
-	}
+	classify := classifyQueryServiceTier
 	effective, response, outbound, request := strings.TrimSpace(d.EffectiveServiceTier), strings.TrimSpace(d.ResponseServiceTier), strings.TrimSpace(d.OutboundServiceTier), strings.TrimSpace(d.RequestServiceTier)
 	if request == "" {
 		request = strings.TrimSpace(d.ServiceTier)
@@ -288,6 +291,19 @@ func queryServiceTier(d RequestDetail) (string, string) {
 		}
 	}
 	return "std", "assumed"
+}
+
+// 请求档位与现有解析结果组成互斥分类；缺失请求档位归入解析后的单一档位。
+func queryServiceTierFlow(d RequestDetail) string {
+	tier, _ := queryServiceTier(d)
+	request := strings.TrimSpace(d.RequestServiceTier)
+	if request == "" {
+		request = d.ServiceTier
+	}
+	if requested := classifyQueryServiceTier(request); requested != "" && requested != tier {
+		return requested + "_to_" + tier
+	}
+	return tier
 }
 
 type QueryGroup struct {
@@ -332,6 +348,11 @@ func validateQuery(q *QueryRequest) (*time.Location, error) {
 		return nil, ErrQueryInvalid
 	}
 	if q.Filter.Tier != "" && q.Filter.Tier != "fast" && q.Filter.Tier != "std" {
+		return nil, ErrQueryInvalid
+	}
+	switch q.Filter.TierFlow {
+	case "", "fast", "std", "fast_to_std", "std_to_fast":
+	default:
 		return nil, ErrQueryInvalid
 	}
 	for _, rule := range q.Rules {
@@ -385,7 +406,10 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 			return false
 		}
 	}
-	if f.Effort != nil && strings.ToLower(strings.TrimSpace(d.ReasoningEffort)) != *f.Effort {
+	if f.TierFlow != "" && queryServiceTierFlow(d) != f.TierFlow {
+		return false
+	}
+	if f.Effort != nil && strings.ToLower(strings.TrimSpace(d.ReasoningEffort)) != strings.ToLower(strings.TrimSpace(*f.Effort)) {
 		return false
 	}
 	t := d.Tokens

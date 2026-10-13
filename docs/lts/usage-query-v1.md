@@ -25,7 +25,10 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 
 - `limit` 默认 100，最大 200；`cursor` 使用上页返回的 `next_cursor`。
 - 首次 `include_options: true` 返回仅受时间范围限制的模型、API、来源/凭据身份、effort 和字段可用性；翻页与其他筛选不必重复读取选项。
-- `filter` 支持 `model`、`api`、`auth_index`、来源与凭据配对的 `identities`、`tier`、`effort`、`failed`、`cached`，以及 token `metric` 的 `minimum`/`maximum`。metric 对齐 Panel 现有八种数值筛选。
+- `filter` 支持 `model`、`api`、`auth_index`、来源与凭据配对的 `identities`、`tier`、`tier_flow`、`effort`、`failed`、`cached`，以及 token `metric` 的 `minimum`/`maximum`。metric 对齐 Panel 现有八种数值筛选。
+- `tier` 保留按最终解析档位筛选的既有 `fast/std` 语义。`tier_flow` 为互斥的 `fast`、`std`、`fast_to_std`、`std_to_fast`：转换方向取客户端请求档位到现有证据链解析出的生效档位，转换请求不再计入单独的 `fast/std`。请求档位缺失或无法识别时，归入解析后的单一档位；生效证据缺失/未知时仍遵循原有 Std 兼容推定，分类不新增实际降级的证据。
+- `effort` 按去空白、不区分大小写的原始强度匹配；空字符串专门匹配缺失/空值，省略表示不限制。未知自定义强度保留，不根据模型名称推断。
+- `tier_flow` 是新增的查询字段；旧 Core 会明确拒绝，不应删除条件重试或显示未筛选结果。该筛选需要 Core 与 Panel 配套更新，旧 `tier` 调用继续兼容。
 - bound 固定实例代次和已记录序号上界；cursor 另绑定时间范围、筛选及排序位置。同一会话的摘要、费用和明细传递同一 bound。
 - 晚完成请求、历史导入只在下次建立 bound 后出现；重复导入不获得新序号。内部序号不进入旧快照或导出格式。
 - 非法查询返回 400；实例或上界失效返回 409；15 秒查询预算或请求取消返回 408。单个请求体上限 2 MiB。
@@ -35,9 +38,11 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 
 `POST /usage/query/analytics` 使用公共时间、快照与筛选字段，以及 `include_options`；拒绝分页 cursor、summary modules 和 pricing rules。能力通过 `analytics_version: 1` 声明，不改变 query/export 版本。
 
+聚合响应的 `options.efforts` 返回当前时间窗口内全部强度（含空字符串），不受模型、来源、层级或 effort 筛选缩窄。旧聚合响应缺少此字段时，Panel 可通过同一 bound/time window 的 `/usage/query/details` 读取已有 effort 目录，无需下载完整明细。
+
 一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors`、`hour/day` 两套趋势，以及存在体积测量时的 `requestSize` 分桶。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。`hour/day.throughput` 逐桶累计与 `QueryMetrics` 相同的分子分母：输出 TPS 用首包之后的解码窗口（仅显式测量过且早于完成的首包时间），平均与可见 TPS 用总耗时，失败请求同样计入；分母为零表示该桶没有可测样本。速率为分子 / 分母 × 1000（token/秒）。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
 
-第一版容量上限：250,000 条匹配记录，每个粒度最多 4,096 个实际桶，模型和身份合计最多 8,192 项，错误原因最多 8,192 种。完整响应上限 4 MiB；超出返回 422 `usage_analytics_too_large`，不抽样、不截断。最多两个不同聚合任务并发，超过返回 429 `usage_analytics_busy`；同键请求共享计算，最后一个等待者退出后取消工作，15 秒预算继续生效。
+第一版容量上限：250,000 条匹配记录，每个粒度最多 4,096 个实际桶，模型、身份和 effort 选项合计最多 8,192 项，错误原因最多 8,192 种。完整响应上限 4 MiB；超出返回 422 `usage_analytics_too_large`，不抽样、不截断。最多两个不同聚合任务并发，超过返回 429 `usage_analytics_busy`；同键请求共享计算，最后一个等待者退出后取消工作，15 秒预算继续生效。
 
 每个统计实例最多缓存 8 项 / 16 MiB 完整响应，TTL 4 分钟，按最近使用淘汰。缓存键包括 bound、时间、时区、筛选、参考时刻与 options；先验证 bound 再查缓存。新增/导入不改变旧快照，不清空其缓存；刷新建立新 bound。缓存不复制或持久化请求明细，不改变导入导出和 usage 记录路径。
 
