@@ -549,8 +549,15 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				ambiguous := failedID == "" && ((len(pending) > 0 && responseActive) || len(unacknowledgedSteers) > 0)
 				if len(pending) > 0 && !currentFailure && !ambiguous {
 					eventPrepared, pending = pending[0], pending[1:]
-					eventReporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth.Clone())
-					eventReporter.SetTranslatedReasoningEffort(eventPrepared.clientBody, eventPrepared.to.String())
+					eventReporter = pendingReporters[eventPrepared]
+					delete(pendingReporters, eventPrepared)
+					if eventReporter == nil {
+						eventReporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth.Clone())
+						eventReporter.SetTranslatedReasoningEffort(eventPrepared.clientBody, eventPrepared.to.String())
+					}
+					eventReporter.ObserveUpstreamResponseBytes(len(payload))
+					eventReporter.MarkFirstResponseByte()
+					eventReporter.ObserveTimingMessage(eventPrepared.to.String(), payload)
 				} else if !ambiguous {
 					responseActive = false
 					automaticActive = false
