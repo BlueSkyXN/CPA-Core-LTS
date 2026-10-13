@@ -24,6 +24,7 @@ func (h *Handler) GetUsageQueryCapabilities(c *gin.Context) {
 func (h *Handler) QueryUsageSummary(c *gin.Context)   { h.queryUsage(c, "summary") }
 func (h *Handler) QueryUsagePricing(c *gin.Context)   { h.queryUsage(c, "pricing") }
 func (h *Handler) QueryUsageDetails(c *gin.Context)   { h.queryUsage(c, "details") }
+func (h *Handler) QueryUsageExport(c *gin.Context)    { h.queryUsage(c, "export") }
 func (h *Handler) QueryUsageAnalytics(c *gin.Context) { h.queryUsage(c, "analytics") }
 
 func (h *Handler) queryUsage(c *gin.Context, operation string) {
@@ -47,7 +48,9 @@ func (h *Handler) queryUsage(c *gin.Context, operation string) {
 	defer cancel()
 	var result any
 	var err error
-	if operation == "analytics" {
+	if operation == "export" {
+		result, err = h.usageStats.QueryExport(ctx, q)
+	} else if operation == "analytics" {
 		result, err = h.usageStats.QueryAnalytics(ctx, q)
 	} else if operation == "details" {
 		result, err = h.usageStats.QueryDetails(ctx, q)
@@ -61,6 +64,10 @@ func (h *Handler) queryUsage(c *gin.Context, operation string) {
 		}
 		if errors.Is(err, usage.ErrAnalyticsTooLarge) {
 			status, code = http.StatusUnprocessableEntity, "usage_analytics_too_large"
+		}
+		if errors.Is(err, usage.ErrQueryExportBusy) {
+			status, code = http.StatusTooManyRequests, "usage_export_busy"
+			c.Header("Retry-After", "2")
 		}
 		if errors.Is(err, usage.ErrAnalyticsBusy) {
 			status, code = http.StatusTooManyRequests, "usage_analytics_busy"

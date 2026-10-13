@@ -117,6 +117,7 @@ features:
       - /v0/management/usage/query/capabilities
       - /v0/management/usage/query/summary
       - /v0/management/usage/query/details
+      - /v0/management/usage/query/export
       - /v0/management/usage/query/pricing
       - /v0/management/usage/query/analytics
       - /v0/management/usage-statistics-enabled
@@ -129,6 +130,8 @@ features:
       - internal/api/usage_compression_test.go
       - internal/usage/query.go
       - internal/usage/query_test.go
+      - internal/usage/query_export.go
+      - internal/usage/query_export_test.go
       - internal/usage/analytics.go
       - internal/usage/analytics_cache.go
       - internal/usage/analytics_test.go
@@ -150,6 +153,9 @@ features:
       - 'mgmt.POST("/usage/query/details"'
       - 'mgmt.POST("/usage/query/pricing"'
       - 'mgmt.POST("/usage/query/analytics"'
+      - export_version
+      - max_export_page_size
+      - 'mgmt.POST("/usage/query/export"'
       - analytics_version
       - request_size_version
       - requestSize

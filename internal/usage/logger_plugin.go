@@ -76,6 +76,7 @@ type RequestStatistics struct {
 	queryGeneration string
 	querySequence   uint64
 	analytics       analyticsCache
+	exportQueries   usageExportCache
 
 	totalRequests int64
 	successCount  int64
