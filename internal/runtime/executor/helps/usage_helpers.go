@@ -523,6 +523,33 @@ func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
 	return r.trackHTTPClient(client, false)
 }
 
+// TrackHTTPClientForDecodedResponse records transport timing and byte counts
+// before decompression. ObserveDecodedResponseBody must wrap the decoded stream
+// so compressed bytes never enter the semantic event parser.
+func (r *UsageReporter) TrackHTTPClientForDecodedResponse(client *http.Client) *http.Client {
+	tracked := r.trackHTTPClient(client, false)
+	if r == nil || tracked == nil {
+		return tracked
+	}
+	transport := tracked.Transport.(usageTTFTRoundTripper)
+	transport.decodedResponse = true
+	tracked.Transport = transport
+	return tracked
+}
+
+// ObserveDecodedResponseBody observes semantic events without counting the
+// decoded bytes again or changing the original first-body-byte timestamp.
+func (r *UsageReporter) ObserveDecodedResponseBody(body io.ReadCloser) io.ReadCloser {
+	if r == nil || body == nil {
+		return body
+	}
+	tracker := r.currentResponseTiming()
+	if tracker == nil {
+		return body
+	}
+	return &usageTTFTReadCloser{ReadCloser: body, observe: tracker.observeBytes}
+}
+
 // TrackHTTPClientRoundTripOnly records the TTFT start time upon sending the request
 // and captures first-packet arrival fallback on initial body reads, while keeping
 // effective TTFT unset. This allows protocol-aware streaming executors (like Codex SSE)
@@ -550,6 +577,10 @@ func (r *UsageReporter) trackHTTPClient(client *http.Client, packetOnly bool) *h
 }
 
 func (r *UsageReporter) ObserveResponse(resp *http.Response) {
+	r.observeResponse(resp, false, true)
+}
+
+func (r *UsageReporter) observeResponse(resp *http.Response, packetOnly, semantic bool) {
 	if r == nil || resp == nil || resp.Body == nil {
 		return
 	}
@@ -562,11 +593,11 @@ func (r *UsageReporter) ObserveResponse(resp *http.Response) {
 			if tracker != nil {
 				tracker.markTTFB(time.Now())
 			}
-			r.ObserveTokenEvent(true)
+			r.ObserveTokenEvent(!packetOnly)
 		},
 		observe: func(payload []byte) {
 			attempt.responseBytes.Add(int64(len(payload)))
-			if tracker != nil {
+			if tracker != nil && semantic {
 				tracker.observeBytes(payload)
 			}
 		},
@@ -616,27 +647,7 @@ func (r *UsageReporter) StartResponseTiming() {
 func (r *UsageReporter) StartResponseTTFT() { r.StartResponseTiming() }
 
 func (r *UsageReporter) ObserveResponsePacketOnly(resp *http.Response) {
-	if r == nil || resp == nil || resp.Body == nil {
-		return
-	}
-	r.StartResponseTiming()
-	tracker := r.currentResponseTiming()
-	attempt := r.ensureUpstreamAttempt()
-	resp.Body = &usageTTFTReadCloser{
-		ReadCloser: resp.Body,
-		mark: func() {
-			if tracker != nil {
-				tracker.markTTFB(time.Now())
-			}
-			r.RecordFirstPacket()
-		},
-		observe: func(payload []byte) {
-			attempt.responseBytes.Add(int64(len(payload)))
-			if tracker != nil {
-				tracker.observeBytes(payload)
-			}
-		},
-	}
+	r.observeResponse(resp, true, true)
 }
 
 func (r *UsageReporter) IsTTFTSet() bool {
@@ -1015,9 +1026,10 @@ func (r *UsageReporter) ttftDuration() time.Duration {
 }
 
 type usageTTFTRoundTripper struct {
-	base       http.RoundTripper
-	reporter   *UsageReporter
-	packetOnly bool
+	base            http.RoundTripper
+	reporter        *UsageReporter
+	packetOnly      bool
+	decodedResponse bool
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -1028,11 +1040,7 @@ func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	if errRoundTrip != nil {
 		return resp, errRoundTrip
 	}
-	if t.packetOnly {
-		t.reporter.ObserveResponsePacketOnly(resp)
-	} else {
-		t.reporter.ObserveResponse(resp)
-	}
+	t.reporter.observeResponse(resp, t.packetOnly, !t.decodedResponse)
 	return resp, nil
 }
 
