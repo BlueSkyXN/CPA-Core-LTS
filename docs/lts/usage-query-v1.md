@@ -83,3 +83,13 @@ Canonical v3 明细新增可选 `output_timing`，不改变 `timing_version: 1` 
 - HTTP 与新建 WebSocket 的尝试计时从连接建立前开始；复用 WebSocket 不重复计入旧握手。重试使用新的尝试窗口，前置处理和前次失败不进入首包后窗口。
 - 这是 Core 观测的输出速率，仍受网络缓冲与下游反压影响，不是模型内部解码速度或完整客户端端到端速率。旧样本的估算偏差不能从现有数据补回；混合历史的汇总仍标为估算。
 - 字段随 Management 查询、export/import、SDK/plugin usage 和 usage queue 传递。Import 保持原子校验与原有去重身份；v1/v2 payload 不能携带这个新扩展。旧 Core/Panel 可忽略可选对象，但重新导出会丢失其测量信息。
+
+## 性能指标的 token 口径
+
+Canonical v3 可选 `token_breakdown` 复用 SDK 的 accounting schema 2（`schema_version`、`quality`、`total_tokens`、`input`、`output`、`unclassified_tokens`）。生产者提供的 accounting 通过校验后传递；非法或与原始计数矛盾的对象降为未分类，不回退旧估算。没有 accounting 的旧 SDK 记录保持缺失。原始 `tokens`、总请求/总 token 聚合、价格输入和去重身份不变。
+
+- `quality: complete` 时，输出 TPS 与平均 TPS 使用 `output.total_tokens`，非推理平均 TPS 使用 `output.non_reasoning_tokens`，Reasoning 占比使用 `output.reasoning_tokens / output.total_tokens`。完整分类必须满足各分桶相加等于总数，并与原始总量、输入及缓存分桶、推理量和输出字段的包含/独立关系相符。
+- Gemini 的原始输出 100、推理 40 对应规范化总输出 140、非推理输出 100；OpenAI 的原始输出 140、推理 40 也对应相同的规范化值。原始输出列继续展示上游报告的字段，不在历史记录中覆盖成另一种语义。
+- 对象存在但分类不完整时，不计算相关 TPS 与 Reasoning 占比，不把未知分类猜成子集；请求数、原始 token 和价格统计仍保留。对象缺失的历史记录沿用旧估算，无法追溯补出 provider 语义。
+- QueryMetrics 和小时/天吞吐趋势使用同一分子；`displayedOutputTokens` 筛选使用可证明的非推理数量。Panel 的明细、汇总和本地趋势遵循相同规则，事件分析导出额外包含 `tps_output_tokens` 与 `non_reasoning_output_tokens`。原始统计 export/import 字段保持兼容。
+- 导入对扩展对象进行完整 shape、整数、分桶关系和原始计数一致性校验；拒绝时不写入。v1/v2 不能携带该扩展；旧 reader 可忽略它，但往返旧 Core 会丢失分类信息。

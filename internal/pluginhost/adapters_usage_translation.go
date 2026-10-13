@@ -207,6 +207,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			Body:       record.Fail.Body,
 		},
 		Detail: pluginapi.UsageDetail{
+			TokenBreakdown:      pluginTokenBreakdown(record.Detail.TokenBreakdown),
 			InputTokens:         record.Detail.InputTokens,
 			OutputTokens:        record.Detail.OutputTokens,
 			ReasoningTokens:     record.Detail.ReasoningTokens,
@@ -418,4 +419,15 @@ func pluginOutputTiming(value *coreusage.OutputTiming) *pluginapi.UsageOutputTim
 	}
 	copy := value.Clone()
 	return &pluginapi.UsageOutputTiming{Version: copy.Version, Streamed: copy.Streamed, DurationMS: copy.DurationMS}
+}
+
+func pluginTokenBreakdown(value coreusage.TokenBreakdown) *pluginapi.UsageTokenBreakdown {
+	if !value.Valid() {
+		return nil
+	}
+	return &pluginapi.UsageTokenBreakdown{
+		SchemaVersion: value.SchemaVersion, Quality: string(value.Quality), TotalTokens: value.TotalTokens, UnclassifiedTokens: value.UnclassifiedTokens,
+		Input:  pluginapi.UsageTokenInputBreakdown{TotalTokens: value.Input.TotalTokens, UncachedTokens: value.Input.UncachedTokens, CacheReadTokens: value.Input.CacheReadTokens, CacheWriteTokens: value.Input.CacheWriteTokens},
+		Output: pluginapi.UsageTokenOutputBreakdown{TotalTokens: value.Output.TotalTokens, NonReasoningTokens: value.Output.NonReasoningTokens, ReasoningTokens: value.Output.ReasoningTokens},
+	}
 }

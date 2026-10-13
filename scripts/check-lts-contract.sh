@@ -233,6 +233,7 @@ require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "ttfb_ms" internal/usage internal/api/handlers/management
 require_grep "output_timing" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "token_breakdown" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "timing_version" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttft_ms" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttfa_ms" internal/usage internal/api/handlers/management internal/redisqueue

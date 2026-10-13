@@ -1798,6 +1798,7 @@ type UsageFailure struct {
 
 // UsageDetail contains token accounting counters.
 type UsageDetail struct {
+	TokenBreakdown *UsageTokenBreakdown `json:"TokenBreakdown,omitempty"`
 	// InputTokens is the total input token count, including cache read and cache creation tokens.
 	InputTokens int64
 	// OutputTokens is the completion or output token count.
@@ -2009,4 +2010,26 @@ type QuotaResetRequest struct {
 type QuotaResetResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message,omitempty"`
+}
+
+// UsageTokenBreakdown carries the canonical non-overlapping token accounting
+// already exposed by the SDK and usage queue. Unknown older producers omit it.
+type UsageTokenBreakdown struct {
+	SchemaVersion      int                       `json:"schema_version"`
+	Quality            string                    `json:"quality"`
+	TotalTokens        int64                     `json:"total_tokens"`
+	Input              UsageTokenInputBreakdown  `json:"input"`
+	Output             UsageTokenOutputBreakdown `json:"output"`
+	UnclassifiedTokens int64                     `json:"unclassified_tokens"`
+}
+type UsageTokenInputBreakdown struct {
+	TotalTokens      int64 `json:"total_tokens"`
+	UncachedTokens   int64 `json:"uncached_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+}
+type UsageTokenOutputBreakdown struct {
+	TotalTokens        int64 `json:"total_tokens"`
+	NonReasoningTokens int64 `json:"non_reasoning_tokens"`
+	ReasoningTokens    int64 `json:"reasoning_tokens"`
 }

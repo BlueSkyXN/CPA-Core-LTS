@@ -42,6 +42,7 @@ retained_capabilities:
       - timing_version
       - ttfb_ms
       - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
       - RequestSizeVersionV1
@@ -253,6 +254,7 @@ lts_owned_features:
       - timing_version
       - ttfb_ms
       - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
       - size_version

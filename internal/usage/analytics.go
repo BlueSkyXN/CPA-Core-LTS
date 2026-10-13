@@ -213,11 +213,11 @@ func analyticsAddRequestSize(r *AnalyticsRequestSize, d RequestDetail) {
 // measured first byte that arrives before completion, and the visible series
 // needs reasoning tokens that do not exceed the reported output.
 func analyticsAddThroughput(p *AnalyticsThroughputPoint, d RequestDetail) {
-	t := d.Tokens
-	if t.OutputTokens <= 0 || d.LatencyMs <= 0 {
+	outputCount, reasoningCount, knownOutput := performanceOutputTokens(d)
+	if !knownOutput || outputCount <= 0 || d.LatencyMs <= 0 {
 		return
 	}
-	output, latency := float64(t.OutputTokens), float64(d.LatencyMs)
+	output, latency := float64(outputCount), float64(d.LatencyMs)
 	p.AverageTokens += output
 	p.AverageDurationMS += latency
 	p.AverageSamples++
@@ -226,11 +226,11 @@ func analyticsAddThroughput(p *AnalyticsThroughputPoint, d RequestDetail) {
 		p.DecodeDurationMS += duration
 		p.OutputSamples++
 	}
-	if t.ReasoningTokens <= t.OutputTokens {
-		p.VisibleTokens += output - float64(t.ReasoningTokens)
+	if reasoningCount <= outputCount {
+		p.VisibleTokens += output - float64(reasoningCount)
 		p.VisibleDurationMS += latency
 		p.VisibleSamples++
-		p.ReasoningTokens += float64(t.ReasoningTokens)
+		p.ReasoningTokens += float64(reasoningCount)
 		p.ReasoningDenominator += output
 		p.ReasoningSamples++
 	}

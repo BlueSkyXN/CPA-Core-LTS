@@ -85,6 +85,7 @@ features:
       - latency_ms
       - ttfb_ms
       - output_timing
+      - token_breakdown
       - timing_version
       - ttft_ms
       - ttfa_ms
@@ -178,6 +179,7 @@ features:
       - timing_version
       - ttfb_ms
       - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
       - uncached_input_tokens
@@ -521,6 +523,7 @@ features:
       - timing_version
       - ttfb_ms
       - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
       - size_version

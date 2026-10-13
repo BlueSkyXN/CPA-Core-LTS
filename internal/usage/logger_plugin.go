@@ -118,24 +118,25 @@ type RequestDetail struct {
 	// TTFTMs records the first non-empty reasoning content latency.
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
 	// TTFAMs records the first non-empty assistant text latency.
-	TTFAMs               int64      `json:"ttfa_ms,omitempty"`
-	Source               string     `json:"source"`
-	UsageProvenance      string     `json:"usage_provenance,omitempty"`
-	AuthIndex            string     `json:"auth_index"`
-	Alias                string     `json:"alias,omitempty"`
-	UpstreamModel        string     `json:"upstream_model,omitempty"`
-	ReasoningEffort      string     `json:"reasoning_effort,omitempty"`
-	ServiceTier          string     `json:"service_tier,omitempty"`
-	RequestServiceTier   string     `json:"request_service_tier,omitempty"`
-	OutboundServiceTier  string     `json:"outbound_service_tier,omitempty"`
-	ResponseServiceTier  string     `json:"response_service_tier,omitempty"`
-	EffectiveServiceTier string     `json:"effective_service_tier,omitempty"`
-	ResponseCyberProgram string     `json:"response_cyber_program,omitempty"`
-	Tokens               TokenStats `json:"tokens"`
-	Failed               bool       `json:"failed"`
-	Generate             bool       `json:"generate"`
-	FailureReason        string     `json:"failure_reason,omitempty"`
-	FailureStatus        int        `json:"failure_status,omitempty"`
+	TTFAMs               int64                     `json:"ttfa_ms,omitempty"`
+	Source               string                    `json:"source"`
+	UsageProvenance      string                    `json:"usage_provenance,omitempty"`
+	AuthIndex            string                    `json:"auth_index"`
+	Alias                string                    `json:"alias,omitempty"`
+	UpstreamModel        string                    `json:"upstream_model,omitempty"`
+	ReasoningEffort      string                    `json:"reasoning_effort,omitempty"`
+	ServiceTier          string                    `json:"service_tier,omitempty"`
+	RequestServiceTier   string                    `json:"request_service_tier,omitempty"`
+	OutboundServiceTier  string                    `json:"outbound_service_tier,omitempty"`
+	ResponseServiceTier  string                    `json:"response_service_tier,omitempty"`
+	EffectiveServiceTier string                    `json:"effective_service_tier,omitempty"`
+	ResponseCyberProgram string                    `json:"response_cyber_program,omitempty"`
+	Tokens               TokenStats                `json:"tokens"`
+	TokenBreakdown       *coreusage.TokenBreakdown `json:"token_breakdown,omitempty"`
+	Failed               bool                      `json:"failed"`
+	Generate             bool                      `json:"generate"`
+	FailureReason        string                    `json:"failure_reason,omitempty"`
+	FailureStatus        int                       `json:"failure_status,omitempty"`
 	// TraceID is the inbound request ID shared with request logs.
 	TraceID string `json:"trace_id,omitempty"`
 	// SizeVersion identifies the byte-count contract of the size fields
@@ -216,6 +217,9 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 
 	if raw, ok := fields["output_timing"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return fmt.Errorf("%w: output_timing must be an object", ErrInvalidCanonicalTimingStats)
+	}
+	if raw, ok := fields["token_breakdown"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: token_breakdown must be an object", ErrInvalidCanonicalTokenStats)
 	}
 	*d = RequestDetail(decoded)
 	d.Generate = generate
@@ -456,9 +460,21 @@ func (snapshot StatisticsSnapshot) ValidateCanonicalV2TokenStats() error {
 
 // ValidateCanonicalV3TokenStats keeps the canonical token contract explicit
 // at the schema version boundary. The token relationships remain unchanged
-// from v2; only the surrounding timing contract is new in v3.
+// from v2; v3 additionally validates optional canonical accounting metadata.
 func (snapshot StatisticsSnapshot) ValidateCanonicalV3TokenStats() error {
-	return snapshot.ValidateCanonicalV2TokenStats()
+	if err := snapshot.ValidateCanonicalV2TokenStats(); err != nil {
+		return err
+	}
+	for _, api := range snapshot.APIs {
+		for _, model := range api.Models {
+			for _, detail := range model.Details {
+				if !validTokenBreakdownDetail(detail) {
+					return ErrInvalidCanonicalTokenStats
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateCanonicalTimingStats validates the optional v3 timing fields. A
@@ -687,6 +703,14 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		}
 	}
 
+	if record.Detail.TokenBreakdown != (coreusage.TokenBreakdown{}) {
+		accounted := record.Detail.TokenBreakdown
+		requestDetail.TokenBreakdown = &accounted
+		if !validTokenBreakdownDetail(requestDetail) {
+			unavailable := coreusage.NewUnclassifiedTokenBreakdown(requestDetail.Tokens.TotalTokens)
+			requestDetail.TokenBreakdown = &unavailable
+		}
+	}
 	requestDetail.OutputTiming = record.OutputTiming.Clone()
 	if !validOutputTimingDetail(requestDetail) {
 		requestDetail.OutputTiming = &coreusage.OutputTiming{Version: 1}
@@ -697,6 +721,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	candidate := mergeCandidate{apiName: statsKey, modelName: modelName, detail: requestDetail}
 	if err := s.validateMergeCandidates([]mergeCandidate{candidate}); err != nil {
 		candidate.detail.Tokens = TokenStats{}
+		if candidate.detail.TokenBreakdown != nil {
+			unavailable := coreusage.NewUnclassifiedTokenBreakdown(0)
+			candidate.detail.TokenBreakdown = &unavailable
+		}
 		if err = s.validateMergeCandidates([]mergeCandidate{candidate}); err != nil {
 			return
 		}
@@ -863,6 +891,9 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeRes
 				detail.UsageProvenance = coreusage.CanonicalUsageProvenance(detail.UsageProvenance)
 				if !validCanonicalTimingDetail(detail) {
 					return MergeResult{}, ErrInvalidCanonicalTimingStats
+				}
+				if !validTokenBreakdownDetail(detail) {
+					return MergeResult{}, ErrInvalidCanonicalTokenStats
 				}
 				key := dedupKey(apiName, modelName, detail)
 				if _, exists := seen[key]; exists {
@@ -1399,6 +1430,10 @@ func sumNonNegativeTokenCounts(tokens ...int64) (int64, bool) {
 func cloneRequestDetail(detail RequestDetail) RequestDetail {
 	detail.Tokens = cloneTokenStats(detail.Tokens)
 	detail.OutputTiming = detail.OutputTiming.Clone()
+	if detail.TokenBreakdown != nil {
+		copy := *detail.TokenBreakdown
+		detail.TokenBreakdown = &copy
+	}
 	return detail
 }
 

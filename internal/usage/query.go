@@ -197,15 +197,16 @@ func (m *QueryMetrics) add(d RequestDetail, model string, rule QueryPriceRule, p
 	if hasTTFB {
 		m.TTFBSamples++
 	}
-	if t.OutputTokens > 0 && d.LatencyMs > 0 {
-		output, latency := float64(t.OutputTokens), float64(d.LatencyMs)
+	outputCount, reasoningCount, knownOutput := performanceOutputTokens(d)
+	if knownOutput && outputCount > 0 && d.LatencyMs > 0 {
+		output, latency := float64(outputCount), float64(d.LatencyMs)
 		addQueryRatio(&m.AverageTPS, output, latency)
 		if duration, ok := outputDurationMS(d); ok {
 			addQueryRatio(&m.OutputTPS, output, duration)
 		}
-		if t.ReasoningTokens <= t.OutputTokens {
-			addQueryRatio(&m.VisibleTPS, output-float64(t.ReasoningTokens), latency)
-			addQueryRatio(&m.ReasoningRatio, float64(t.ReasoningTokens), output)
+		if reasoningCount <= outputCount {
+			addQueryRatio(&m.VisibleTPS, output-float64(reasoningCount), latency)
+			addQueryRatio(&m.ReasoningRatio, float64(reasoningCount), output)
 		}
 	}
 	if !prices {
@@ -425,7 +426,11 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 	case "totalOutputTokens":
 		n = t.OutputTokens
 	case "displayedOutputTokens":
-		n = max(t.OutputTokens-t.ReasoningTokens, 0)
+		output, reasoning, known := performanceOutputTokens(d)
+		if !known {
+			return f.Minimum == nil && f.Maximum == nil
+		}
+		n = max(output-reasoning, 0)
 	case "reasoningTokens":
 		n = t.ReasoningTokens
 	case "cacheReadTokens":
