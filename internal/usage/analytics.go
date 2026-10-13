@@ -142,6 +142,7 @@ type AnalyticsData struct {
 type AnalyticsOptions struct {
 	Models     []string        `json:"models"`
 	Identities []QueryIdentity `json:"identities"`
+	Efforts    []string        `json:"efforts"`
 }
 type QueryAnalyticsResult struct {
 	Version          int               `json:"version"`
@@ -385,6 +386,7 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 	r := QueryAnalyticsResult{Version: QueryVersion, AnalyticsVersion: AnalyticsVersion, Bound: q.Bound, NowMS: q.NowMS, FromMS: q.FromMS, ToMS: q.ToMS, Timezone: q.Timezone}
 	r.Data.Histogram.Counts = make([]int, len(analyticsEdges))
 	models := map[string]bool{}
+	efforts := map[string]bool{}
 	identities := map[QueryIdentity]bool{}
 	statuses := map[int]int64{}
 	reasons := map[string]int64{}
@@ -406,8 +408,9 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 		}
 		if q.IncludeOptions {
 			models[model] = true
+			efforts[strings.ToLower(strings.TrimSpace(d.ReasoningEffort))] = true
 			identities[QueryIdentity{d.Source, d.AuthIndex}] = true
-			if len(models)+len(identities) > maxAnalyticsGroups {
+			if len(models)+len(identities)+len(efforts) > maxAnalyticsGroups {
 				return ErrAnalyticsTooLarge
 			}
 		}
@@ -595,7 +598,11 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 		return nil, err
 	}
 	if q.IncludeOptions {
-		r.Options = &AnalyticsOptions{Models: []string{}, Identities: []QueryIdentity{}}
+		r.Options = &AnalyticsOptions{Models: []string{}, Identities: []QueryIdentity{}, Efforts: []string{}}
+		for effort := range efforts {
+			r.Options.Efforts = append(r.Options.Efforts, effort)
+		}
+		sort.Strings(r.Options.Efforts)
 		for model := range models {
 			r.Options.Models = append(r.Options.Models, model)
 		}
