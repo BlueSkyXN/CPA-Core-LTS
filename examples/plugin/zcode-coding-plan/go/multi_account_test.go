@@ -2,12 +2,65 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 )
 
 func accountStorage(name string) []byte {
 	return encode(map[string]any{"type": provider, "api_key": name + ".synthetic-secret", "device_id": "device-" + name})
+}
+
+func accountStorageWithModels(name string, models ...string) []byte {
+	return encode(map[string]any{"type": provider, "api_key": name + ".synthetic-secret", "device_id": "device-" + name, "exmodel": models})
+}
+
+func TestExtraModelsUpdatePreservesActiveAccountAndPeer(t *testing.T) {
+	r, _, _ := newAccountRuntime(t)
+	reqA, old := prepareAccount(t, r, "account-a")
+	reqB, peer := prepareAccount(t, r, "account-b")
+	a, b := r.accounts[reqA.AuthID], r.accounts[reqB.AuthID]
+	signerA, signerB := a.signer, b.signer
+	running, err := r.admit(reqA, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.finish(running)
+	updated, err := r.configurationForAuth(accountStorageWithModels("account-a", "glm-5.3-highspeed"), reqA.AuthID, reqA.AuthIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == old || !slices.Equal(updated.Models, []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-highspeed"}) || len(old.Models) != 2 {
+		t.Fatal("extra model update did not replace only the config snapshot")
+	}
+	if a.signer != signerA || signerA.closed || a.active != 1 || running.ctx.Err() != nil || b.config != peer || b.signer != signerB {
+		t.Fatal("model-only update changed signing, execution or peer state")
+	}
+	if _, err = r.admit(reqA, old); err == nil {
+		t.Fatal("stale configuration admitted")
+	}
+	body := []byte(`{"model":"glm-5.3-highspeed","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`)
+	if _, err = transformExecution(executorRequest{Payload: body}, peer, "session"); err == nil {
+		t.Fatal("peer accepted an unconfigured optional model")
+	}
+	result, err := transformExecution(executorRequest{Payload: body}, updated, "session")
+	if err != nil || result["model"] != "glm-5.3-highspeed" {
+		t.Fatal("optional model could not execute with its actual ID", err)
+	}
+	r.finish(running)
+	if _, err = r.dispatch("plugin.reconfigure", managementRegistration(map[string]any{"host_logging_disabled": true, "models": []string{"glm-5.3-flash"}})); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.accounts[reqA.AuthID].config.Models, []string{"glm-5.3-flash", "glm-5.3-highspeed"}) || !slices.Equal(r.accounts[reqB.AuthID].config.Models, []string{"glm-5.3-flash"}) {
+		t.Fatal("global reload lost extra models or kept an old base directory")
+	}
+	cleared, err := r.configurationForAuth(accountStorageWithModels("account-a"), reqA.AuthID, reqA.AuthIndex)
+	if err != nil || !slices.Equal(cleared.Models, []string{"glm-5.3-flash"}) {
+		t.Fatal("clearing exmodel did not remove optional models", err)
+	}
+	if _, err = transformExecution(executorRequest{Payload: body}, cleared, "session"); err == nil {
+		t.Fatal("removed optional model remained executable")
+	}
 }
 
 func prepareAccount(t *testing.T, r *pluginRuntime, name string) (executorRequest, *config) {

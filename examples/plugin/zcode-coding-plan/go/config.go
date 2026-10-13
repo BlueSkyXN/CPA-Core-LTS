@@ -34,9 +34,21 @@ const builtinOutputLimit int64 = 128000
 
 var builtinThinkingLevels = []string{"low", "high", "max"}
 
+// modelTemplateID 只用于能力查找；请求和统计始终保留实际模型 ID。
+func modelTemplateID(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "glm-5.3", "glm-5.3-highspeed":
+		return "glm-5.3"
+	case "glm-5.3-flash", "glm-5.3-flashx":
+		return "glm-5.3-flash"
+	default:
+		return ""
+	}
+}
+
 // builtinModelLimits 按（大小写不敏感的）模型 ID 返回内置限额。
 func builtinModelLimits(model string) (modelLimits, bool) {
-	switch strings.ToLower(strings.TrimSpace(model)) {
+	switch modelTemplateID(model) {
 	case "glm-5.3", "glm-5.3-flash":
 		return modelLimits{Context: builtinContextLength, Output: builtinOutputLimit}, true
 	}
@@ -45,7 +57,7 @@ func builtinModelLimits(model string) (modelLimits, bool) {
 
 // builtinModelImageInput 报告内置模型是否接受图片输入；glm-5.3 仅文本。
 func builtinModelImageInput(model string) bool {
-	switch strings.ToLower(strings.TrimSpace(model)) {
+	switch modelTemplateID(model) {
 	case "glm-5.3":
 		return false
 	case "glm-5.3-flash":
@@ -67,6 +79,7 @@ func defaultIdentity() identityConfig {
 type config struct {
 	Identity                   identityConfig         `json:"identity"`
 	Models                     []string               `json:"models"`
+	ExtraModels                []string               `json:"exmodel,omitempty"`
 	ModelLimits                map[string]modelLimits `json:"model_limits,omitempty"`
 	Upstream                   string                 `json:"upstream"`
 	MaxInflight                int                    `json:"max_inflight"`
@@ -101,11 +114,47 @@ func validateModelAllowlist(models []string) error {
 }
 
 type authRecord struct {
-	Type         string `json:"type"`
-	Label        string `json:"label"`
-	APIKey       string `json:"api_key,omitempty"`
-	DeviceID     string `json:"device_id,omitempty"`
-	RequestRetry int    `json:"request_retry"`
+	Type         string   `json:"type"`
+	Label        string   `json:"label"`
+	APIKey       string   `json:"api_key,omitempty"`
+	DeviceID     string   `json:"device_id,omitempty"`
+	RequestRetry int      `json:"request_retry"`
+	ExtraModels  []string `json:"exmodel,omitempty"`
+}
+
+func normalizeExtraModels(models []string) ([]string, error) {
+	if len(models) == 0 {
+		return nil, nil
+	}
+	if err := validateModelAllowlist(models); err != nil {
+		return nil, problem(400, "invalid_auth", "Invalid exmodel list")
+	}
+	result := make([]string, 0, len(models))
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if !seen[model] {
+			seen[model] = true
+			result = append(result, model)
+		}
+	}
+	return result, nil
+}
+
+// applyExtraModels 在全局基础目录之后追加账号模型；保存独立列表以支持重载。
+func (c *config) applyExtraModels(models []string) {
+	c.ExtraModels = append([]string(nil), models...)
+	merged := make([]string, 0, len(c.Models)+len(models))
+	seen := make(map[string]bool, cap(merged))
+	for _, list := range [][]string{c.Models, models} {
+		for _, model := range list {
+			if !seen[model] {
+				seen[model] = true
+				merged = append(merged, model)
+			}
+		}
+	}
+	c.Models = merged
 }
 
 func validateInlineSecret(name, value string) error {
@@ -142,5 +191,10 @@ func parseAuth(raw []byte) (authRecord, error) {
 	}
 	a.APIKey = strings.TrimSpace(a.APIKey)
 	a.DeviceID = strings.TrimSpace(a.DeviceID)
+	var err error
+	a.ExtraModels, err = normalizeExtraModels(a.ExtraModels)
+	if err != nil {
+		return a, err
+	}
 	return a, nil
 }

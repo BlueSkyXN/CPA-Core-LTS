@@ -88,9 +88,9 @@ func newMultiAccountFixture(t *testing.T) (*v2Fixture, *multiAccountTransport) {
 	return f, transports
 }
 
-func saveMultiAccount(t *testing.T, f *v2Fixture, name, key, device string) *coreauth.Auth {
+func saveMultiAccount(t *testing.T, f *v2Fixture, name, key, device string, extraModels ...string) *coreauth.Auth {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": key, "device_id": device, "request_retry": 0})
+	body, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": key, "device_id": device, "request_retry": 0, "exmodel": extraModels})
 	req := httptest.NewRequest(http.MethodPost, "/v0/management/auth-files?name="+name, strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -210,6 +210,64 @@ func TestMultiAccountManagementModelsSchedulingAndUsage(t *testing.T) {
 	}
 	if rotatedTransport.handshakes != 1 || !strings.Contains(gjson.GetBytes(rotatedTransport.captured[0], "metadata.user_id").String(), "rotated-device") {
 		t.Fatal("rotation did not replace the signer or device identity")
+	}
+}
+
+func TestExtraModelsRouteOnlyToEnabledAccounts(t *testing.T) {
+	if isolateDynamic(t) {
+		return
+	}
+	f, transports := newMultiAccountFixture(t)
+	secondTransport := transports.add(t, "second-key.second-secret")
+	first := saveMultiAccount(t, f, "synthetic.json", "synthetic-key.synthetic-secret", "synthetic-device", "glm-5.3-highspeed")
+	second := saveMultiAccount(t, f, "second.json", "second-key.second-secret", "second-device", "glm-5.3-flashx")
+	for _, tc := range []struct{ id, model, excluded string }{
+		{first.ID, "glm-5.3-highspeed", "glm-5.3-flashx"},
+		{second.ID, "glm-5.3-flashx", "glm-5.3-highspeed"},
+	} {
+		rec := httptest.NewRecorder()
+		f.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/models?name="+tc.id, nil))
+		if rec.Code != http.StatusOK || gjson.GetBytes(rec.Body.Bytes(), "models.#").Int() != 3 || !strings.Contains(rec.Body.String(), tc.model) || strings.Contains(rec.Body.String(), tc.excluded) {
+			t.Fatalf("account model directory incorrect for %s", tc.id)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	call := func(model, index string) {
+		t.Helper()
+		req := coreexecutor.Request{Model: model, Payload: []byte(fmt.Sprintf(`{"model":%q,"max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`, model))}
+		if _, err := f.manager.Execute(ctx, []string{"zcode-coding-plan"}, req, multiAccountOptions("extra-"+model, "", false)); err != nil {
+			t.Fatal(err)
+		}
+		record := takeAccountUsage(t, f)
+		if record.Failed || record.AuthIndex != index || record.Model != model {
+			t.Fatal("optional model usage was attributed to the wrong account or model")
+		}
+	}
+	for range 3 {
+		call("glm-5.3-highspeed", first.Index)
+		call("glm-5.3-flashx", second.Index)
+	}
+	if len(f.transport.captured) != 3 || len(secondTransport.captured) != 3 {
+		t.Fatal("optional requests reached an ineligible account")
+	}
+	for _, tc := range []struct {
+		transport *v2Transport
+		model     string
+	}{{f.transport, "glm-5.3-highspeed"}, {secondTransport, "glm-5.3-flashx"}} {
+		if gjson.GetBytes(tc.transport.captured[0], "model").String() != tc.model {
+			t.Fatal("template lookup replaced the wire model")
+		}
+	}
+	// 通过真实 Management 上传路径转移额外模型权限，后续请求必须更新选号。
+	saveMultiAccount(t, f, "second.json", "second-key.second-secret", "second-device", "glm-5.3-flashx", "glm-5.3-highspeed")
+	saveMultiAccount(t, f, "synthetic.json", "synthetic-key.synthetic-secret", "synthetic-device")
+	call("glm-5.3-highspeed", second.Index)
+	if f.transport.handshakes != 1 || secondTransport.handshakes != 1 {
+		t.Fatal("model-only update replaced an account signer")
+	}
+	if registry.GetGlobalRegistry().ClientSupportsModel(first.ID, "glm-5.3-highspeed") {
+		t.Fatal("removed extra model remains registered")
 	}
 }
 
