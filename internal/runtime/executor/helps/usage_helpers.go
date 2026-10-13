@@ -743,6 +743,8 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	// response.model is not evidence for the additional model, so do not copy it
 	// into a field consumers compare with this record's Model.
 	record.UpstreamModel = ""
+	// The parent stream does not measure the side model's output window.
+	record.OutputTiming = &usage.OutputTiming{Version: 1}
 	record.RequestID = uuid.NewString()
 	return record, true
 }
@@ -942,6 +944,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		TTFB:                 timing.TTFB,
 		TTFT:                 timing.TTFT,
 		TTFA:                 timing.TTFA,
+		OutputTiming:         timing.OutputTiming.Clone(),
 		Failed:               failed,
 		Fail:                 fail,
 		Detail:               detail,
@@ -1003,7 +1006,7 @@ func (r *UsageReporter) timingSnapshot() ResponseTimingSnapshot {
 		// Every detail produced by the current Core is versioned, even when the
 		// transport never exposed a measurable timing event (for example a
 		// non-streaming response or an executor-side failure before dispatch).
-		return ResponseTimingSnapshot{TimingVersion: UsageTimingVersionV1}
+		return ResponseTimingSnapshot{TimingVersion: UsageTimingVersionV1, OutputTiming: &usage.OutputTiming{Version: 1}}
 	}
 	return tracker.snapshot()
 }

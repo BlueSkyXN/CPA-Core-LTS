@@ -115,6 +115,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 
 func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 	withEnabledQueue(t, func() {
+		duration := int64(500)
 		ctx := internallogging.WithResponseStatusHolder(context.Background())
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
 
@@ -122,6 +123,7 @@ func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 			Provider:      "openai",
 			Model:         "gpt-5.6-sol",
 			TimingVersion: coreusage.TimingVersionV1,
+			OutputTiming:  &coreusage.OutputTiming{Version: 1, Streamed: true, DurationMS: &duration},
 			TTFB:          120 * time.Millisecond,
 			TTFT:          480 * time.Millisecond,
 			TTFA:          920 * time.Millisecond,
@@ -134,6 +136,11 @@ func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 		})
 
 		payload := popSinglePayload(t)
+		var window map[string]json.RawMessage
+		if err := json.Unmarshal(payload["output_timing"], &window); err != nil {
+			t.Fatal(err)
+		}
+		requireIntField(t, window, "duration_ms", 500)
 		requireIntField(t, payload, "timing_version", int(coreusage.TimingVersionV1))
 		requireIntField(t, payload, "ttfb_ms", 120)
 		requireIntField(t, payload, "ttft_ms", 480)

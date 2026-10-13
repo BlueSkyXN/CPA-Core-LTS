@@ -84,6 +84,7 @@ features:
       - auth_index
       - latency_ms
       - ttfb_ms
+      - output_timing
       - timing_version
       - ttft_ms
       - ttfa_ms
@@ -176,6 +177,7 @@ features:
       - TimingVersionV1
       - timing_version
       - ttfb_ms
+      - output_timing
       - ttft_ms
       - ttfa_ms
       - uncached_input_tokens
@@ -518,6 +520,7 @@ features:
       - latency_ms
       - timing_version
       - ttfb_ms
+      - output_timing
       - ttft_ms
       - ttfa_ms
       - size_version
