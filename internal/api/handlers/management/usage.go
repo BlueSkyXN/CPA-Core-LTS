@@ -93,6 +93,8 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 			writeUsageImportError(c, usageCodeV1TimingAmbiguous, err.Error())
 		case errors.Is(err, errUsageV2TimingSemanticsAmbiguous):
 			writeUsageImportError(c, usageCodeV2TimingAmbiguous, err.Error())
+		case errors.Is(err, usage.ErrInvalidCanonicalTokenStats):
+			writeUsageImportTokenContractError(c, version)
 		case errors.Is(err, errUsageV3TimingContractInvalid):
 			writeUsageImportError(c, usageCodeV3TimingInvalid, err.Error())
 		default:
@@ -267,6 +269,7 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"latency_ms",
 					"ttfb_ms",
 					"output_timing",
+					"token_breakdown",
 					"source",
 					"auth_index",
 					"alias",
@@ -297,6 +300,9 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"upstream_request_encoding",
 					"upstream_response_bytes",
 				); err != nil {
+					return err
+				}
+				if err := validateUsageTokenBreakdownRawShape(detailObject, version); err != nil {
 					return err
 				}
 				if err := validateUsageTimingRawShape(detailObject, version); err != nil {
@@ -617,4 +623,52 @@ func writeUsageImportError(c *gin.Context, code, message string) {
 		"error": message,
 		"code":  code,
 	})
+}
+
+func validateUsageTokenBreakdownRawShape(detail map[string]json.RawMessage, version int) error {
+	raw, exists := detail["token_breakdown"]
+	if !exists {
+		return nil
+	}
+	if version != 3 {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	object, err := unmarshalUsageObject(raw)
+	if err != nil {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	if err := rejectUsageFieldAliases(object, "schema_version", "quality", "total_tokens", "unclassified_tokens", "input", "output"); err != nil {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	for _, key := range []string{"schema_version", "total_tokens", "unclassified_tokens"} {
+		if _, ok := rawNonNegativeInt64(object[key]); !ok {
+			return usage.ErrInvalidCanonicalTokenStats
+		}
+	}
+	var quality string
+	if json.Unmarshal(object["quality"], &quality) != nil || quality == "" {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	for group, keys := range map[string][]string{
+		"input":  {"total_tokens", "uncached_tokens", "cache_read_tokens", "cache_write_tokens"},
+		"output": {"total_tokens", "non_reasoning_tokens", "reasoning_tokens"},
+	} {
+		fields, err := requiredUsageObject(object, group)
+		if err != nil {
+			return usage.ErrInvalidCanonicalTokenStats
+		}
+		if err := rejectUsageFieldAliases(fields, keys...); err != nil {
+			return usage.ErrInvalidCanonicalTokenStats
+		}
+		for _, key := range keys {
+			if _, ok := rawNonNegativeInt64(fields[key]); !ok {
+				return usage.ErrInvalidCanonicalTokenStats
+			}
+		}
+	}
+	var breakdown coreusage.TokenBreakdown
+	if json.Unmarshal(raw, &breakdown) != nil || !breakdown.Valid() {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	return nil
 }
