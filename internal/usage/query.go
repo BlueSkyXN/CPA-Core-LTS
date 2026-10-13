@@ -88,6 +88,8 @@ type QueryCapabilities struct {
 	MaxAnalyticsRows int      `json:"max_analytics_rows"`
 	// RequestSizeVersion advertises the detail size-field contract.
 	RequestSizeVersion uint32 `json:"request_size_version"`
+	ExportVersion      int    `json:"export_version"`
+	MaxExportPageSize  int    `json:"max_export_page_size"`
 }
 
 func queryEncode(value any) string {
@@ -122,7 +124,7 @@ func (s *RequestStatistics) QueryCapabilities() QueryCapabilities {
 		models = append(models, name)
 	}
 	sort.Strings(models)
-	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows, coreusage.RequestSizeVersionV1}
+	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows, coreusage.RequestSizeVersionV1, QueryExportVersion, MaxQueryExportPageSize}
 }
 
 type QueryPriceGroup struct {
@@ -443,6 +445,12 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 // 在锁内只固定桶和长度，分块复制常量大小的只读值；聚合/编码不持统计锁。
 // 既有记录不可变，追加或历史导入由内部序号排除，不建立第二份完整快照。
 func (s *RequestStatistics) walkQuery(ctx context.Context, q *QueryRequest, visit func(string, string, RequestDetail) error) error {
+	return s.walkQueryRows(ctx, q, func(api, model string, _ *modelStats, _ int, detail RequestDetail) error {
+		return visit(api, model, detail)
+	})
+}
+
+func (s *RequestStatistics) walkQueryRows(ctx context.Context, q *QueryRequest, visit func(string, string, *modelStats, int, RequestDetail) error) error {
 	type span struct {
 		api, model string
 		bucket     *modelStats
@@ -478,9 +486,9 @@ func (s *RequestStatistics) walkQuery(ctx context.Context, q *QueryRequest, visi
 			s.mu.RLock()
 			n := copy(block[:], p.bucket.Details[offset:min(offset+len(block), p.length)])
 			s.mu.RUnlock()
-			for _, d := range block[:n] {
+			for i, d := range block[:n] {
 				if d.querySequence <= bound.Sequence {
-					if err := visit(p.api, p.model, d); err != nil {
+					if err := visit(p.api, p.model, p.bucket, offset+i, d); err != nil {
 						return err
 					}
 				}
@@ -640,15 +648,19 @@ func (h queryHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *queryHeap) Push(v any)        { *h = append(*h, v.(QueryItem)) }
 func (h *queryHeap) Pop() any          { n := len(*h); v := (*h)[n-1]; *h = (*h)[:n-1]; return v }
 
-func (s *RequestStatistics) QueryDetails(ctx context.Context, q QueryRequest) (*QueryDetails, error) {
-	if _, err := validateQuery(&q); err != nil {
-		return nil, err
-	}
+func queryFilterID(q QueryRequest) string {
 	fingerprint := sha256.Sum256([]byte(queryEncode(struct {
 		From, To *int64
 		Filter   QueryFilter
 	}{q.FromMS, q.ToMS, q.Filter})))
-	filterID := hex.EncodeToString(fingerprint[:])
+	return hex.EncodeToString(fingerprint[:])
+}
+
+func (s *RequestStatistics) QueryDetails(ctx context.Context, q QueryRequest) (*QueryDetails, error) {
+	if _, err := validateQuery(&q); err != nil {
+		return nil, err
+	}
+	filterID := queryFilterID(q)
 	var cursor queryCursor
 	if q.Cursor != "" {
 		if err := queryDecode(q.Cursor, &cursor); err != nil {

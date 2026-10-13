@@ -37,6 +37,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage/query/capabilities", usageCompression(), s.mgmt.GetUsageQueryCapabilities)
 		mgmt.POST("/usage/query/summary", usageCompression(), s.mgmt.QueryUsageSummary)
 		mgmt.POST("/usage/query/details", usageCompression(), s.mgmt.QueryUsageDetails)
+		mgmt.POST("/usage/query/export", usageCompression(), s.mgmt.QueryUsageExport)
 		mgmt.POST("/usage/query/pricing", usageCompression(), s.mgmt.QueryUsagePricing)
 		mgmt.POST("/usage/query/analytics", usageCompression(), s.mgmt.QueryUsageAnalytics)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)

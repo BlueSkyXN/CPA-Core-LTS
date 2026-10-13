@@ -10,8 +10,9 @@
 
 | 方法与路径 | 行为 |
 | --- | --- |
-| `GET /usage/query/capabilities` | `version: 1`、不透明 `bound`、`now_ms`、模型目录、`max_page_size: 200`、可选 `analytics_version: 1` 与 `max_analytics_rows`、`request_size_version: 1`（见 [usage-request-size.md](usage-request-size.md)） |
+| `GET /usage/query/capabilities` | `version: 1`、不透明 `bound`、`now_ms`、模型目录、`max_page_size: 200`、`export_version: 1`、`max_export_page_size: 1000`、可选 `analytics_version: 1` 与 `max_analytics_rows`、`request_size_version: 1`（见 [usage-request-size.md](usage-request-size.md)） |
 | `POST /usage/query/summary` | 当前范围的 totals 和按 modules 选择的分组，不包含请求明细 |
+| `POST /usage/query/export` | 同一筛选与排序的分批导出；只返回 bound、items、total、next_cursor，不重复计算 metrics/options |
 | `POST /usage/query/details` | 时间倒序、内部序号倒序的当前页；完整筛选结果的 total 和 metrics |
 | `POST /usage/query/pricing` | 与摘要相同的查询，加上按模型、tier 证据和上下文档位分类的计价事实汇总 |
 
@@ -33,6 +34,18 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 - 晚完成请求、历史导入只在下次建立 bound 后出现；重复导入不获得新序号。内部序号不进入旧快照或导出格式。
 - 非法查询返回 400；实例或上界失效返回 409；15 秒查询预算或请求取消返回 408。单个请求体上限 2 MiB。
 - 新 Panel 只在能力端点 404 且同前缀旧管理接口正常时进入旧版模式。网络、5xx、解析失败不得触发全量 fallback。失效 bound 通过刷新会话恢复，不能拼接两代页面。
+
+## 分批导出 v1
+
+只有能力响应声明 `export_version: 1` 时，Panel 才可调用 `/usage/query/export`；未声明能力的 Core 继续使用原 `/usage/query/details` 路径。查询 `version` 与 canonical export/import 版本均不变。
+
+新端点接受相同的 bound、毫秒时间范围、filter、cursor，保留时间倒序和内部序号倒序。limit 默认及上限为 1,000；旧 details 上限仍是 200。新端点拒绝 include_options、modules、rules 和 hour_from_ms。响应包含 `version: 1`、`bound`、`items`、`total`、可选 `next_cursor`，不包含 metrics/options。筛选结果导出不等同于 `/usage/export` 完整备份。
+
+首次扫描只建立到 append-only 内存明细的排序位置索引，后续页通过二分定位游标、复制当前批次。索引不复制完整明细、不引用旧切片 backing array；没有持久化或后台依赖。索引键包含 bound、时间范围和全部 filter；每次命中前仍校验实例代次。晚到记录和导入不会进入已有 bound，缓存失效后重建仍得到同一结果。
+
+每项最多 100,000 条索引；每个统计实例最多 4 项、合计 200,000 个索引槽位，TTL 4 分钟并按最近使用淘汰；同时最多两个索引构建任务，超出返回 429 `usage_export_busy`。超过单项容量时记住超限状态，后续用有界堆扫描，保留完整 total、所有记录和同一游标顺序，不截断结果。该路径不承诺单次扫描或常数耗时。原有 400/409/408 错误、15 秒预算、鉴权、响应压缩和 2 MiB 请求限制沿用。
+
+本地性能对照可运行 `go test ./internal/usage -run '^$' -bench BenchmarkUsageFullExport -benchmem -benchtime=1x`，对比旧 details、冷索引和热索引的完整导出，输出耗时、累计分配与扫描次数。累计分配不等于进程峰值内存。
 
 ## 精确看板分析 v1
 
