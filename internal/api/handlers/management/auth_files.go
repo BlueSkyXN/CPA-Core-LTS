@@ -457,6 +457,46 @@ func safeModelDiscoveryCode(code string) string {
 	return code
 }
 
+// GetAuthFileModelPolicyPreview returns a read-only evaluation of the channel
+// and account model policy for one credential, using the stored pre-policy
+// catalog. It never triggers discovery and never mutates registration state;
+// the response shape mirrors sdk/cliproxy ModelPolicyPreview.
+func (h *Handler) GetAuthFileModelPolicyPreview(c *gin.Context) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name_required", "message": "name is required"})
+		return
+	}
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth_manager_unavailable", "message": "auth manager is unavailable"})
+		return
+	}
+	var auth *coreauth.Auth
+	for _, candidate := range h.authManager.List() {
+		if candidate != nil && (candidate.FileName == name || candidate.ID == name) {
+			auth = candidate
+			break
+		}
+	}
+	if auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth_not_found", "message": "auth file was not found"})
+		return
+	}
+	h.mu.Lock()
+	hook := h.authModelPolicyPreviewHook
+	h.mu.Unlock()
+	if hook == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model_policy_preview_unavailable", "message": "model policy preview is unavailable"})
+		return
+	}
+	preview, ok := hook(auth.Clone())
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "catalog_unknown", "evaluations": []any{}})
+		return
+	}
+	c.JSON(http.StatusOK, preview)
+}
+
 // List auth files from disk when the auth manager is unavailable.
 func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagination) {
 	observedAt := time.Now().UTC()

@@ -222,9 +222,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/oauth-request-scoped-errors", s.mgmt.PatchOAuthRequestScopedErrors)
 		mgmt.DELETE("/oauth-request-scoped-errors", s.mgmt.DeleteOAuthRequestScopedErrors)
 
+		mgmt.GET("/oauth-model-policy", s.mgmt.GetOAuthModelPolicy)
+		mgmt.PUT("/oauth-model-policy", s.mgmt.PutOAuthModelPolicy)
+		mgmt.PATCH("/oauth-model-policy", s.mgmt.PatchOAuthModelPolicy)
+		mgmt.DELETE("/oauth-model-policy", s.mgmt.DeleteOAuthModelPolicy)
+
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.POST("/auth-files/models/refresh", s.mgmt.RefreshAuthFileModels)
+		mgmt.GET("/auth-files/models/policy-preview", s.mgmt.GetAuthFileModelPolicyPreview)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)

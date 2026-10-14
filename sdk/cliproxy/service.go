@@ -102,6 +102,10 @@ type Service struct {
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 
+	// accountCatalogs keeps pre-policy per-auth model catalogs for the LTS
+	// model policy preview surface. See model_policy_store_lts.go.
+	accountCatalogs *accountCatalogStore
+
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
 

@@ -283,6 +283,15 @@ func withCodexCacheLifetime(ctx context.Context, providers []string) (context.Co
 // admitFlowExecution precedes provider admission and selected-auth publication.
 // Local queue errors never mark the credential unavailable or spend retry rounds.
 func (m *Manager) admitFlowExecution(ctx context.Context, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (context.Context, error) {
+	// LTS model policy: final pre-dispatch check on the real upstream model. This
+	// is the shared boundary for normal execution, Home dispatch, the Codex Live
+	// uncatalogued route, and Antigravity credits fallback; a denial here is a
+	// local rejection and must not cool the credential down.
+	if auth != nil {
+		if decision, allowed := m.modelPolicyAllowedForExecution(auth, "", req.Model); !allowed {
+			return ctx, newModelPolicyDeniedError(req.Model, decision)
+		}
+	}
 	if m == nil || m.flowControl == nil || !m.flowControl.Enabled() {
 		ctx, allowed := m.activateFlowContinuity(ctx, auth)
 		if !allowed {

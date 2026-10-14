@@ -14,20 +14,21 @@ import (
 )
 
 type serverOptionConfig struct {
-	extraMiddleware       []gin.HandlerFunc
-	engineConfigurator    func(*gin.Engine)
-	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
-	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
-	localPassword         string
-	keepAliveEnabled      bool
-	keepAliveTimeout      time.Duration
-	keepAliveOnTimeout    func()
-	postAuthHook          auth.PostAuthHook
-	postAuthPersistHook   auth.PostAuthHook
-	authModelsRefreshHook func(context.Context, *auth.Auth) error
-	pluginHost            *pluginhost.Host
-	configReloadHook      func(context.Context, *config.Config)
-	exampleAPIKeySafeMode bool
+	extraMiddleware            []gin.HandlerFunc
+	engineConfigurator         func(*gin.Engine)
+	routerConfigurator         func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	requestLoggerFactory       func(*config.Config, string) logging.RequestLogger
+	localPassword              string
+	keepAliveEnabled           bool
+	keepAliveTimeout           time.Duration
+	keepAliveOnTimeout         func()
+	postAuthHook               auth.PostAuthHook
+	postAuthPersistHook        auth.PostAuthHook
+	authModelsRefreshHook      func(context.Context, *auth.Auth) error
+	authModelPolicyPreviewHook func(*auth.Auth) (any, bool)
+	pluginHost                 *pluginhost.Host
+	configReloadHook           func(context.Context, *config.Config)
+	exampleAPIKeySafeMode      bool
 }
 
 // ServerOption customises HTTP server construction.
@@ -120,6 +121,14 @@ func WithPostAuthPersistHook(hook auth.PostAuthHook) ServerOption {
 func WithAuthModelsRefreshHook(hook func(context.Context, *auth.Auth) error) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.authModelsRefreshHook = hook
+	}
+}
+
+// WithAuthModelPolicyPreviewHook binds the read-only model policy preview to
+// the service-owned pre-policy catalog store.
+func WithAuthModelPolicyPreviewHook(hook func(*auth.Auth) (any, bool)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.authModelPolicyPreviewHook = hook
 	}
 }
 

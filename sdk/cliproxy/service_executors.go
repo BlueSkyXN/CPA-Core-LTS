@@ -429,6 +429,9 @@ func shouldUpgradeOpenAICompatToPluginRefresh(existing, next coreauth.ProviderEx
 	return bareOpenAICompat
 }
 
+// registerResolvedModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
+// LTS model policy (oauth-model-policy + per-account model_policy) is applied here on the real model IDs,
+// before alias/prefix projection, so every registration path shares one evaluation.
 func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey string, models []*ModelInfo) {
 	if a == nil || a.ID == "" {
 		return
@@ -451,11 +454,46 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		clone.ID = modelID
 		normalizedModels = append(normalizedModels, &clone)
 	}
-	if len(normalizedModels) == 0 {
+	// Snapshot the pre-policy catalog before filtering so previews and policy-only
+	// recomputation never require rediscovery. RegistrationEpoch 0 (file-watcher
+	// snapshots) participates normally: each synthesis pass supersedes the last.
+	if s != nil && s.accountCatalogs != nil {
+		ids := make([]string, 0, len(normalizedModels))
+		for _, model := range normalizedModels {
+			if model != nil {
+				ids = append(ids, model.ID)
+			}
+		}
+		s.accountCatalogs.recordIDs(a.ID, a.RegistrationEpoch, ids)
+	}
+	published := make([]*ModelInfo, 0, len(normalizedModels))
+	for _, model := range normalizedModels {
+		if model == nil {
+			continue
+		}
+		if s != nil && !s.modelPolicyAllowsModel(a, providerKey, model.ID) {
+			continue
+		}
+		published = append(published, model)
+	}
+	if len(published) == 0 {
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	}
-	GlobalModelRegistry().RegisterClient(a.ID, providerKey, normalizedModels)
+	published = applyOAuthModelAliasForAuth(s.cfg, providerKey, a.AuthKind(), a.Attributes, published)
+	published = applyModelPrefixes(published, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix)
+	GlobalModelRegistry().RegisterClient(a.ID, providerKey, published)
+}
+
+// modelPolicyAllowsModel applies the channel + account model policy to one real
+// model ID. API-key config entries are out of scope: they already use their own
+// static model lists and excluded-models semantics.
+func (s *Service) modelPolicyAllowsModel(a *coreauth.Auth, providerKey, modelID string) bool {
+	if s == nil || a == nil {
+		return true
+	}
+	decision := coreauth.EvaluateModelPolicy(s.cfg, a, providerKey, modelID)
+	return decision.Allowed
 }
 
 func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
@@ -564,9 +602,8 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return true, ctx.Err()
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
-	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
-		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		s.registerResolvedModelsForAuth(activeAuth, providerKey, models)
 		return true, nil
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
