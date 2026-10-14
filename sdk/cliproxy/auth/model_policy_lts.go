@@ -229,7 +229,7 @@ func evaluateModelPolicyLayers(cfg *internalconfig.Config, attributes map[string
 		return modelPolicyDecision{Allowed: true}
 	}
 	channel := channelModelPolicyForProvider(cfg, provider)
-	if cfg != nil && matchPolicyModels(modelKey, cfg.OAuthExcludedModels[strings.ToLower(strings.TrimSpace(provider))]) {
+	if strings.TrimSpace(attributes[AttributeExcludedModels]) == "" && cfg != nil && matchPolicyModels(modelKey, cfg.OAuthExcludedModels[strings.ToLower(strings.TrimSpace(provider))]) {
 		return modelPolicyDecision{Allowed: false, Layer: policyLayerChannel, Reason: policySourceLegacy + ": pattern matched"}
 	}
 	if channelPolicyListActive(channel.Allowlist) && !matchPolicyModels(modelKey, channel.Allowlist.Models) {
