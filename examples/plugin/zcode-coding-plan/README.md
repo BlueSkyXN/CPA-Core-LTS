@@ -75,7 +75,7 @@ Changing only `exmodel` replaces that account's configuration snapshot without r
 
 Panel **Plugins → Edit config** exposes the four public fields (host_logging_disabled, upstream, models, model_limits). Boolean fields distinguish inherit, true and false; choosing inherit removes that override. **Manage accounts** opens the existing account page. **Check readiness** loads available accounts but does not automatically probe; select an account and click the diagnostic button. Provider-only results cannot claim auth readiness. Local readiness does not verify remote acceptance or billing.
 
-Configuration saved means the existing PATCH persisted its fields, not that asynchronous runtime reconfiguration succeeded. Check registration/effective status and explicit readiness separately. Reconfiguration rejects active requests and preserves the plugin's old memory snapshot on failure; Core's existing reload behavior is unchanged.
+Configuration saved means the existing PATCH persisted its fields, not that asynchronous runtime reconfiguration succeeded. Check registration/effective status and explicit readiness separately. While the plugin is accepting work, reapplying the same parsed management settings is a no-op: it preserves account snapshots, signers and active requests, including when Core reloads unrelated routing or provider settings. Changing any of the four plugin settings still requires active requests to finish; a busy rejection preserves only the plugin's old memory snapshot and does not guarantee that Core retains registration. A stopped plugin still runs initialization when the same settings are reapplied. Core's existing reload behavior is unchanged.
 
 ### Get credentials from local ZCode on macOS
 

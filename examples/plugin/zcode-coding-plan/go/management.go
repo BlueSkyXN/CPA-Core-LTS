@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 )
 
@@ -67,6 +68,9 @@ func (r *pluginRuntime) resolveAuth(raw []byte) (authRecord, error) {
 func (r *pluginRuntime) reconfigure(cfg managementConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.accepting && reflect.DeepEqual(r.management, cfg) {
+		return nil
+	}
 	if len(r.active) > 0 {
 		return problem(409, "busy", "Finish or cancel requests before reconfiguring")
 	}
