@@ -103,6 +103,45 @@ func (r *UsageReporter) ObserveUpstreamWebsocketTransport() {
 	r.setUpstreamAttempt(&upstreamSizeAttempt{transport: usage.UpstreamTransportWebsocket})
 }
 
+type usageReporterContextKey struct{}
+
+// WithUsageReporter attaches the reporter that should receive request-size
+// measurements for this execution. A nil reporter leaves the context unchanged.
+func WithUsageReporter(ctx context.Context, reporter *UsageReporter) context.Context {
+	if reporter == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, usageReporterContextKey{}, reporter)
+}
+
+// UsageReporterFromContext returns the reporter attached by WithUsageReporter.
+func UsageReporterFromContext(ctx context.Context) *UsageReporter {
+	if ctx == nil {
+		return nil
+	}
+	reporter, _ := ctx.Value(usageReporterContextKey{}).(*UsageReporter)
+	return reporter
+}
+
+// ObserveUpstreamHTTPRequest records byte counts for one provider HTTP
+// attempt without changing response timing. The returned function adds
+// response bytes to this attempt only. A later attempt replaces the usage
+// snapshot; bytes already added to an earlier attempt stay there.
+func (r *UsageReporter) ObserveUpstreamHTTPRequest(req *http.Request) func(int) {
+	attempt := r.beginUpstreamHTTPAttempt(req)
+	if attempt == nil {
+		return func(int) {}
+	}
+	return func(n int) {
+		if n > 0 {
+			attempt.responseBytes.Add(int64(n))
+		}
+	}
+}
+
 // ObserveUpstreamResponseBytes adds bytes read from the provider response
 // body or websocket messages to the current attempt.
 func (r *UsageReporter) ObserveUpstreamResponseBytes(n int) {

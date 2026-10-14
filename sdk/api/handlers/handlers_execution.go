@@ -209,6 +209,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	if !execOptions.InternalSource {
 		reporter = helps.NewUsageReporter(execCtx, executorPluginID, modelName, nil)
 		reporter.SetTranslatedReasoningEffort(req.Payload, entryProtocol)
+		execCtx = helps.WithUsageReporter(execCtx, reporter)
 	}
 	resp, errExecute := host.ExecutePluginExecutor(execCtx, executorPluginID, req, opts)
 	if errExecute != nil {

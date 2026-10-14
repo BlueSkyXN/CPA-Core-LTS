@@ -69,6 +69,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 	if !execOptions.InternalSource {
 		reporter = helps.NewUsageReporter(execCtx, executorPluginID, modelName, nil)
 		reporter.SetTranslatedReasoningEffort(req.Payload, entryProtocol)
+		execCtx = helps.WithUsageReporter(execCtx, reporter)
 	}
 	streamResult, errStream := host.ExecutePluginExecutorStream(execCtx, executorPluginID, req, opts)
 	if errStream != nil {

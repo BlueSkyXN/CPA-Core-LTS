@@ -1308,6 +1308,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	if reporter != nil {
 		reporter.StartResponseTiming()
+		ctx = helps.WithUsageReporter(ctx, reporter)
 	}
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
@@ -1413,6 +1414,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	if reporter != nil {
 		reporter.EnableSemanticTiming(prepared.outputFormat.String())
 		reporter.StartResponseTiming()
+		streamCtx = helps.WithUsageReporter(streamCtx, reporter)
 	}
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(streamCtx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
