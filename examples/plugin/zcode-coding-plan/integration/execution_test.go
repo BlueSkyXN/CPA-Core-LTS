@@ -40,11 +40,13 @@ func (s *fixtureUsageSink) HandleUsage(_ context.Context, record coreusage.Recor
 }
 
 type fixtureTransport struct {
-	mu                 sync.Mutex
-	pub                ed25519.PublicKey
-	priv               ed25519.PrivateKey
-	handshakes, models int
-	apiKey             string
+	mu                     sync.Mutex
+	pub                    ed25519.PublicKey
+	priv                   ed25519.PrivateKey
+	handshakes, models     int
+	apiKey                 string
+	lastModelRequestBytes  int
+	lastModelResponseBytes int
 }
 
 func (f *fixtureTransport) credentials() (string, string) {
@@ -101,6 +103,8 @@ func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			ct = "text/event-stream"
 			text = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"id\":\"synthetic-message\",\"model\":\"test-model\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture-ok\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 		}
+		f.lastModelRequestBytes = len(body)
+		f.lastModelResponseBytes = len(text)
 	}
 	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{ct}}, Body: io.NopCloser(strings.NewReader(text)), Request: req}, nil
 }
@@ -174,10 +178,20 @@ func TestCPAExecutorWithNoNetworkTransport(t *testing.T) {
 		if !bytes.Contains(body, []byte("fixture-ok")) {
 			t.Fatal("response lost")
 		}
+		transport.mu.Lock()
+		wantRequestBytes := transport.lastModelRequestBytes
+		wantResponseBytes := transport.lastModelResponseBytes
+		transport.mu.Unlock()
 		select {
 		case record := <-sink.records:
 			if record.Failed || record.AuthIndex != "fixture-index" || record.Detail.TotalTokens != 12 || record.UsageProvenance != "provider_reported_unverified" {
 				t.Fatal("usage attribution mismatch")
+			}
+			size := record.Size
+			if size.Version != coreusage.RequestSizeVersionV1 || size.UpstreamTransport != coreusage.UpstreamTransportHTTP ||
+				size.UpstreamRequestBytes != int64(wantRequestBytes) || size.UpstreamRequestWireBytes != int64(wantRequestBytes) ||
+				size.UpstreamResponseBytes != int64(wantResponseBytes) || size.UpstreamRequestEncoding != "" {
+				t.Fatalf("request size = %+v, want http req=%d resp=%d", size, wantRequestBytes, wantResponseBytes)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("host did not publish usage")

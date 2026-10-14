@@ -194,3 +194,35 @@ func TestUsageReporterRecordsPayloadSizeOfEncodedRequest(t *testing.T) {
 		t.Fatalf("size = %+v, want payload and wire 40 without encoding", got)
 	}
 }
+
+func TestObserveUpstreamHTTPRequestKeepsFinalAttempt(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "zcode-coding-plan", "glm-5.3", nil)
+	first, err := http.NewRequest(http.MethodPost, "https://example.invalid/client", strings.NewReader("handshake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addFirst := reporter.ObserveUpstreamHTTPRequest(first)
+	addFirst(len("handshake-response"))
+
+	secondBody := strings.Repeat("m", 80)
+	second, err := http.NewRequest(http.MethodPost, "https://example.invalid/messages", strings.NewReader(secondBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Header.Set("Content-Encoding", "zstd")
+	addSecond := reporter.ObserveUpstreamHTTPRequest(second)
+	addFirst(999)
+	addSecond(25)
+
+	got := reporter.buildRecord(usage.Detail{}, false).Size
+	want := usage.RequestSize{
+		Version:                  usage.RequestSizeVersionV1,
+		UpstreamTransport:        usage.UpstreamTransportHTTP,
+		UpstreamRequestWireBytes: int64(len(secondBody)),
+		UpstreamRequestEncoding:  "zstd",
+		UpstreamResponseBytes:    25,
+	}
+	if got != want {
+		t.Fatalf("size = %+v, want %+v", got, want)
+	}
+}

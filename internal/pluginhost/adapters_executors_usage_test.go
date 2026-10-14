@@ -1,9 +1,14 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -884,5 +889,179 @@ func TestUsageAdapterRecoversSessionHierarchyFromContext(t *testing.T) {
 	recLoop := <-plugin.captured
 	if recLoop.SessionID != "loop-sess" || recLoop.ParentSessionID != "" {
 		t.Fatalf("loop protection = (%q, %q), want (loop-sess, empty)", recLoop.SessionID, recLoop.ParentSessionID)
+	}
+}
+
+func TestExecutorAdapterHostHTTPRecordsFinalRequestSize(t *testing.T) {
+	plugin := newTestUsageCapturePlugin("plugin-request-size")
+	registerTestUsagePlugin(t, "test-executor-adapter-request-size", plugin)
+
+	handshake := []byte("handshake")
+	modelBody := bytes.Repeat([]byte("m"), 80)
+	handshakeResponse := []byte("handshake-response")
+	modelResponse := []byte("model-response")
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Errorf("read request: %v", errRead)
+			return
+		}
+		switch calls.Add(1) {
+		case 1:
+			if !bytes.Equal(body, handshake) {
+				t.Errorf("handshake body = %q", body)
+			}
+			_, _ = w.Write(handshakeResponse)
+		default:
+			if !bytes.Equal(body, modelBody) {
+				t.Errorf("model body len = %d", len(body))
+			}
+			_, _ = w.Write(modelResponse)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	executorRecord := normalizeTestCapabilityRecord(capabilityRecord{id: "executor-plugin-request-size"})
+	host := newHostWithRecords(executorRecord)
+	exec := &fakeExecutor{
+		identifier: "plugin-request-size",
+		execute: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+			client := host.newHTTPClient(nil)
+			if _, errDo := client.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: server.URL, Body: handshake}); errDo != nil {
+				return pluginapi.ExecutorResponse{}, errDo
+			}
+			stream, errDo := client.DoStream(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: server.URL, Body: modelBody})
+			if errDo != nil {
+				return pluginapi.ExecutorResponse{}, errDo
+			}
+			var got []byte
+			for chunk := range stream.Chunks {
+				if chunk.Err != nil {
+					return pluginapi.ExecutorResponse{}, chunk.Err
+				}
+				got = append(got, chunk.Payload...)
+			}
+			if !bytes.Equal(got, modelResponse) {
+				return pluginapi.ExecutorResponse{}, errors.New("model response body mismatch")
+			}
+			return pluginapi.ExecutorResponse{
+				Payload: []byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+			}, nil
+		},
+	}
+	adapter := newExecutorAdapterForRecordForTest(host, executorRecord, exec,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.provider = "plugin-request-size"
+	auth := &coreauth.Auth{ID: "auth-size", Provider: "plugin-request-size"}
+	req := coreexecutor.Request{Model: "test-model", Payload: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`)}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAI}
+	if _, errExecute := adapter.Execute(context.Background(), auth, req, opts); errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+
+	record := plugin.waitRecord(t, time.Second)
+	size := record.Size
+	if size.Version != coreusage.RequestSizeVersionV1 || size.UpstreamTransport != coreusage.UpstreamTransportHTTP ||
+		size.UpstreamRequestBytes != int64(len(modelBody)) || size.UpstreamRequestWireBytes != int64(len(modelBody)) ||
+		size.UpstreamResponseBytes != int64(len(modelResponse)) || size.UpstreamRequestEncoding != "" {
+		t.Fatalf("size = %+v, want final http request", size)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestExecutorAdapterDirectRouteKeepsAttachedRequestSize(t *testing.T) {
+	plugin := newTestUsageCapturePlugin("plugin-direct-request-size")
+	registerTestUsagePlugin(t, "test-executor-adapter-direct-request-size", plugin)
+
+	body := []byte("direct-model-request")
+	responseBody := []byte("direct-response")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(responseBody)
+	}))
+	t.Cleanup(server.Close)
+
+	executorRecord := normalizeTestCapabilityRecord(capabilityRecord{id: "executor-plugin-direct-request-size"})
+	host := newHostWithRecords(executorRecord)
+	exec := &fakeExecutor{
+		identifier: "plugin-direct-request-size",
+		execute: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+			if _, errDo := host.newHTTPClient(nil).Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: server.URL, Body: body}); errDo != nil {
+				return pluginapi.ExecutorResponse{}, errDo
+			}
+			return pluginapi.ExecutorResponse{Payload: []byte(`{"ok":true}`)}, nil
+		},
+	}
+	adapter := newExecutorAdapterForRecordForTest(host, executorRecord, exec,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.provider = "plugin-direct-request-size"
+	reporter := helps.NewUsageReporter(context.Background(), "plugin-direct-request-size", "test-model", nil)
+	ctx := helps.WithUsageReporter(context.Background(), reporter)
+	req := coreexecutor.Request{Model: "test-model", Payload: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`)}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAI}
+	if _, errExecute := adapter.Execute(ctx, nil, req, opts); errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	plugin.assertNoRecord(t, 50*time.Millisecond)
+	reporter.Publish(ctx, coreusage.Detail{})
+
+	record := plugin.waitRecord(t, time.Second)
+	size := record.Size
+	if size.UpstreamTransport != coreusage.UpstreamTransportHTTP || size.UpstreamRequestBytes != int64(len(body)) ||
+		size.UpstreamRequestWireBytes != int64(len(body)) || size.UpstreamResponseBytes != int64(len(responseBody)) {
+		t.Fatalf("size = %+v", size)
+	}
+}
+
+func TestExecutorAdapterHostHTTPFailureKeepsRequestSize(t *testing.T) {
+	plugin := newTestUsageCapturePlugin("plugin-request-size-failure")
+	registerTestUsagePlugin(t, "test-executor-adapter-request-size-failure", plugin)
+
+	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatal(errListen)
+	}
+	addr := listener.Addr().String()
+	if errClose := listener.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+	body := []byte("payload-that-failed-to-connect")
+
+	executorRecord := normalizeTestCapabilityRecord(capabilityRecord{id: "executor-plugin-request-size-failure"})
+	host := newHostWithRecords(executorRecord)
+	exec := &fakeExecutor{
+		identifier: "plugin-request-size-failure",
+		execute: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+			_, errDo := host.newHTTPClient(nil).Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: "http://" + addr, Body: body})
+			if errDo == nil {
+				return pluginapi.ExecutorResponse{}, errors.New("closed listener accepted a request")
+			}
+			return pluginapi.ExecutorResponse{}, errDo
+		},
+	}
+	adapter := newExecutorAdapterForRecordForTest(host, executorRecord, exec,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.provider = "plugin-request-size-failure"
+	auth := &coreauth.Auth{ID: "auth-size-failure", Provider: "plugin-request-size-failure"}
+	req := coreexecutor.Request{Model: "test-model", Payload: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`)}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAI}
+	if _, errExecute := adapter.Execute(context.Background(), auth, req, opts); errExecute == nil {
+		t.Fatal("Execute() succeeded, want connection failure")
+	}
+
+	record := plugin.waitRecord(t, time.Second)
+	size := record.Size
+	if !record.Failed || size.UpstreamTransport != coreusage.UpstreamTransportHTTP ||
+		size.UpstreamRequestBytes != int64(len(body)) || size.UpstreamRequestWireBytes != int64(len(body)) ||
+		size.UpstreamResponseBytes != 0 {
+		t.Fatalf("failed record size = %+v failed=%v", size, record.Failed)
 	}
 }
