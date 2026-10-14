@@ -61,7 +61,7 @@ func TestPickNextLegacyAccountDenyScopedToAuth(t *testing.T) {
 		Provider:   "codex",
 		Status:     StatusActive,
 		Metadata:   map[string]any{"access_token": "tok"},
-		Attributes: map[string]string{AttributeModelPolicy: "deny=gpt-4.1"},
+		Attributes: map[string]string{AttributeModelPolicy: `{"denylist":{"enabled":true,"models":["gpt-4.1"]}}`},
 	}
 	allowed := &Auth{ID: "policy-account-allowed", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "tok"}}
 	for _, auth := range []*Auth{denied, allowed} {
@@ -91,7 +91,7 @@ func TestAdmitFlowExecutionRejectsPolicyDeniedModel(t *testing.T) {
 		ID:         "admit-policy-auth",
 		Provider:   "codex",
 		Status:     StatusActive,
-		Attributes: map[string]string{AttributeModelPolicy: "deny=gpt-4.1"},
+		Attributes: map[string]string{AttributeModelPolicy: `{"denylist":{"enabled":true,"models":["gpt-4.1"]}}`},
 		Metadata:   map[string]any{"access_token": "tok"},
 	}
 	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
@@ -113,6 +113,54 @@ func TestAdmitFlowExecutionRejectsPolicyDeniedModel(t *testing.T) {
 }
 
 type fakeAdmitExecutor struct{}
+
+func TestModelPolicySelectionResolvesAliasAndPrefix(t *testing.T) {
+	manager := deniedPolicyManager(t)
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"codex": {{Name: "gpt-5-codex", Alias: "public"}},
+	})
+	auth := &Auth{ID: t.Name(), Provider: "codex", Prefix: "tenant", Status: StatusActive}
+	SetModelPolicyAttribute(auth, &AccountModelPolicy{Allowlist: &OAuthModelPolicy{Enabled: true, Models: []string{"gpt-5-codex"}}})
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "tenant/public"}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	if selected, _, err := manager.pickNextLegacy(context.Background(), "codex", "tenant/public(high)", cliproxyexecutor.Options{}, nil); err != nil || selected == nil {
+		t.Fatalf("allowed upstream model was rejected through its alias: %v", err)
+	}
+	if _, err := manager.admitFlowExecution(context.Background(), fakeAdmitExecutor{}, auth, cliproxyexecutor.Request{Model: "gpt-5-codex(high)"}, cliproxyexecutor.Options{}); err != nil {
+		t.Fatalf("thinking suffix changed policy outcome: %v", err)
+	}
+}
+
+func TestModelPolicyConfiguredAPIKeyScope(t *testing.T) {
+	manager := deniedPolicyManager(t)
+	auth := &Auth{ID: t.Name(), Provider: "codex", Attributes: map[string]string{AttributeAuthKind: AuthKindAPIKey, AttributeSource: AuthSourceConfig}}
+	if _, err := manager.admitFlowExecution(context.Background(), fakeAdmitExecutor{}, auth, cliproxyexecutor.Request{Model: "gpt-4.1"}, cliproxyexecutor.Options{}); err != nil {
+		t.Fatalf("OAuth policy restricted configured API key: %v", err)
+	}
+	auth.Attributes[AttributeSource] = AuthSourceFile
+	if _, allowed := manager.modelPolicyAllowedForExecution(auth, "codex", "gpt-4.1"); allowed {
+		t.Fatal("file credential bypassed policy because it used API key authentication")
+	}
+}
+
+func TestModelPolicyAttributePreservesLiteralSeparators(t *testing.T) {
+	auth := &Auth{Provider: "codex"}
+	SetModelPolicyAttribute(auth, &AccountModelPolicy{Allowlist: &OAuthModelPolicy{Enabled: true, Models: []string{"literal;allow=*", "x,y"}}})
+	if EvaluateModelPolicy(nil, auth, "codex", "unlisted").Allowed || EvaluateModelPolicy(nil, auth, "codex", "x").Allowed {
+		t.Fatal("model separators changed the allowlist")
+	}
+	if !EvaluateModelPolicy(nil, auth, "codex", "x,y").Allowed {
+		t.Fatal("literal model ID was lost")
+	}
+	cfg := &internalconfig.Config{OAuthExcludedModels: map[string][]string{"codex": {"x,y"}}}
+	if EvaluateModelPolicy(cfg, auth, "codex", "x,y").Allowed {
+		t.Fatal("current channel legacy exclusion was ignored")
+	}
+}
 
 func (fakeAdmitExecutor) Identifier() string { return "codex" }
 func (fakeAdmitExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

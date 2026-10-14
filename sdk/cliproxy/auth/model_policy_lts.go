@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"encoding/json"
 	"strings"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 )
 
 // AttributeModelPolicy carries the per-account model policy synthesized from the
@@ -13,15 +15,15 @@ const AttributeModelPolicy = "model_policy"
 
 // OAuthModelPolicy is the runtime form of one switchable model list.
 type OAuthModelPolicy struct {
-	Enabled bool
-	Models  []string
+	Enabled bool     `json:"enabled"`
+	Models  []string `json:"models"`
 }
 
 // AccountModelPolicy is the effective per-account policy: the account-level
 // lists plus the always-on legacy "excluded_models" union source.
 type AccountModelPolicy struct {
-	Allowlist *OAuthModelPolicy
-	Denylist  *OAuthModelPolicy
+	Allowlist *OAuthModelPolicy `json:"allowlist,omitempty"`
+	Denylist  *OAuthModelPolicy `json:"denylist,omitempty"`
 }
 
 // active reports whether the list participates in evaluation.
@@ -191,7 +193,11 @@ func ParseAccountModelPolicyMetadata(metadata map[string]any) (*AccountModelPoli
 				parsed.Models = append(parsed.Models, entry)
 			}
 		}
-		*target = normalizeAccountModelPolicyList(parsed)
+		normalized, err := internalconfig.NormalizeOAuthModelPolicyList(&internalconfig.OAuthModelPolicyList{Enabled: parsed.Enabled, Models: parsed.Models})
+		if err != nil {
+			return nil, false
+		}
+		*target = &OAuthModelPolicy{Enabled: normalized.Enabled, Models: normalized.Models}
 	}
 	return policy, true
 }
@@ -223,6 +229,9 @@ func evaluateModelPolicyLayers(cfg *internalconfig.Config, attributes map[string
 		return modelPolicyDecision{Allowed: true}
 	}
 	channel := channelModelPolicyForProvider(cfg, provider)
+	if cfg != nil && matchPolicyModels(modelKey, cfg.OAuthExcludedModels[strings.ToLower(strings.TrimSpace(provider))]) {
+		return modelPolicyDecision{Allowed: false, Layer: policyLayerChannel, Reason: policySourceLegacy + ": pattern matched"}
+	}
 	if channelPolicyListActive(channel.Allowlist) && !matchPolicyModels(modelKey, channel.Allowlist.Models) {
 		return modelPolicyDecision{Allowed: false, Layer: policyLayerChannel, Reason: "channel allowlist: no pattern matched"}
 	}
@@ -252,33 +261,15 @@ func evaluateModelPolicyLayers(cfg *internalconfig.Config, attributes map[string
 const AttributeExcludedModels = "excluded_models"
 
 // parseModelPolicyAttribute decodes the runtime account policy attribute.
-// The attribute is stored as "allow=<comma patterns>;deny=<comma patterns>"
-// with enabled flags; only enabled lists are stored. An empty attribute means
-// no account policy.
+// 使用 JSON 保留模型 ID 内的分隔符，避免将模型文本解析为另一条策略。
 func parseModelPolicyAttribute(attributes map[string]string) AccountModelPolicy {
 	policy := AccountModelPolicy{}
 	raw := strings.TrimSpace(attributes[AttributeModelPolicy])
 	if raw == "" {
 		return policy
 	}
-	for _, part := range strings.Split(raw, ";") {
-		part = strings.TrimSpace(part)
-		value := ""
-		key := part
-		if idx := strings.Index(part, "="); idx >= 0 {
-			key = strings.TrimSpace(part[:idx])
-			value = strings.TrimSpace(part[idx+1:])
-		}
-		models := []string{}
-		if value != "" {
-			models = strings.Split(value, ",")
-		}
-		switch key {
-		case "allow":
-			policy.Allowlist = &OAuthModelPolicy{Enabled: true, Models: models}
-		case "deny":
-			policy.Denylist = &OAuthModelPolicy{Enabled: true, Models: models}
-		}
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		return AccountModelPolicy{Allowlist: &OAuthModelPolicy{Enabled: true}}
 	}
 	return policy
 }
@@ -290,14 +281,18 @@ func encodeModelPolicyAttribute(policy *AccountModelPolicy) string {
 	if policy == nil {
 		return ""
 	}
-	parts := make([]string, 0, 2)
+	active := AccountModelPolicy{}
 	if policy.Allowlist.active() {
-		parts = append(parts, "allow="+strings.Join(policy.Allowlist.Models, ","))
+		active.Allowlist = policy.Allowlist
 	}
 	if policy.Denylist.active() {
-		parts = append(parts, "deny="+strings.Join(policy.Denylist.Models, ","))
+		active.Denylist = policy.Denylist
 	}
-	return strings.Join(parts, ";")
+	if active.Allowlist == nil && active.Denylist == nil {
+		return ""
+	}
+	raw, _ := json.Marshal(active)
+	return string(raw)
 }
 
 // EvaluateModelPolicy evaluates the channel + account model policy for one
@@ -306,6 +301,12 @@ func encodeModelPolicyAttribute(policy *AccountModelPolicy) string {
 // A nil auth is treated as having no account lists; the channel policy and the
 // legacy excluded_models union still apply when derivable from arguments.
 func EvaluateModelPolicy(cfg *internalconfig.Config, auth *Auth, provider, modelID string) modelPolicyDecision {
+	if auth != nil {
+		source := auth.AuthSourceKind()
+		if (source == AuthSourceConfig || source == "") && isConfiguredModelRoutingAuth(auth) {
+			return modelPolicyDecision{Allowed: true}
+		}
+	}
 	attributes := map[string]string{}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	if auth != nil {
@@ -332,7 +333,7 @@ func (m *Manager) modelPolicyAllowedForExecution(auth *Auth, provider, modelID s
 	if strings.TrimSpace(provider) == "" {
 		provider = auth.Provider
 	}
-	decision := EvaluateModelPolicy(m.runtimeConfigSnapshot(), auth, provider, modelID)
+	decision := EvaluateModelPolicy(m.runtimeConfigSnapshot(), auth, provider, thinking.ParseSuffix(modelID).ModelName)
 	return decision, decision.Allowed
 }
 

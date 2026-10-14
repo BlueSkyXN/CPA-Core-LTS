@@ -24,6 +24,29 @@ type OAuthModelPolicyEntry struct {
 // grow unbounded matching work on every registration.
 const maxOAuthModelPolicyModels = 512
 
+func (c *Config) ValidateOAuthModelPolicy() error {
+	if c == nil {
+		return nil
+	}
+	return ValidateOAuthModelPolicy(c.OAuthModelPolicy)
+}
+
+// ValidateOAuthModelPolicy rejects invalid restrictions before normalization can drop them.
+func ValidateOAuthModelPolicy(entries map[string]OAuthModelPolicyEntry) error {
+	seen := make(map[string]bool, len(entries))
+	for provider, entry := range entries {
+		key := strings.ToLower(strings.TrimSpace(provider))
+		if key == "" || seen[key] {
+			return fmt.Errorf("oauth-model-policy has an empty or duplicate provider")
+		}
+		seen[key] = true
+		if _, err := NormalizeOAuthModelPolicyEntry(entry); err != nil {
+			return fmt.Errorf("oauth-model-policy: %w", err)
+		}
+	}
+	return nil
+}
+
 // NormalizeOAuthModelPolicyList cleans one switchable list. It returns nil for a
 // nil list and rejects structurally invalid values.
 func NormalizeOAuthModelPolicyList(list *OAuthModelPolicyList) (*OAuthModelPolicyList, error) {

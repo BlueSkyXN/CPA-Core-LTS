@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -46,5 +48,19 @@ func TestNormalizeOAuthModelPolicyListRejectsOversized(t *testing.T) {
 	}
 	if _, err := NormalizeOAuthModelPolicyList(&OAuthModelPolicyList{Enabled: true, Models: models}); err == nil {
 		t.Fatal("oversized list accepted")
+	}
+}
+
+func TestOAuthModelPolicyInvalidRestrictionFailsBothLoaders(t *testing.T) {
+	raw := []byte("oauth-model-policy:\n  codex:\n    allowlist:\n      enabled: true\n      models: [\"bad\\u0000id\"]\n")
+	if _, err := ParseConfigBytes(raw); err == nil {
+		t.Fatal("invalid restriction was silently dropped by byte parser")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("invalid restriction was silently dropped by file loader")
 	}
 }

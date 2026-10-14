@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -26,23 +27,26 @@ func (h *Handler) PutOAuthModelPolicy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 		return
 	}
-	var entries map[string]config.OAuthModelPolicyEntry
-	if errUnmarshal := json.Unmarshal(data, &entries); errUnmarshal != nil {
-		var wrapper struct {
-			Items map[string]config.OAuthModelPolicyEntry `json:"items"`
-		}
-		if errWrapper := json.Unmarshal(data, &wrapper); errWrapper != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-			return
-		}
-		entries = wrapper.Items
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
 	}
-	normalized := config.NormalizeOAuthModelPolicy(entries)
-	if !modelPolicyMappingEquivalent(entries, normalized) {
+	if items, ok := raw["items"]; ok && len(raw) == 1 {
+		data = items
+	}
+	var entries map[string]config.OAuthModelPolicyEntry
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&entries); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if err := config.ValidateOAuthModelPolicy(entries); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid model policy entry"})
 		return
 	}
-	h.cfg.OAuthModelPolicy = normalized
+	h.cfg.OAuthModelPolicy = config.NormalizeOAuthModelPolicy(entries)
 	h.persist(c)
 }
 
@@ -115,26 +119,4 @@ func (h *Handler) DeleteOAuthModelPolicy(c *gin.Context) {
 		h.cfg.OAuthModelPolicy = nil
 	}
 	h.persist(c)
-}
-
-// modelPolicyMappingEquivalent reports whether normalization dropped any
-// provider entry as structurally invalid. Blank-key drops are acceptable;
-// value-level rejections are not.
-func modelPolicyMappingEquivalent(in, normalized map[string]config.OAuthModelPolicyEntry) bool {
-	if in == nil {
-		return true
-	}
-	for provider, entry := range in {
-		key := strings.ToLower(strings.TrimSpace(provider))
-		if key == "" {
-			continue
-		}
-		if entry.Allowlist == nil && entry.Denylist == nil {
-			continue
-		}
-		if _, exists := normalized[key]; !exists {
-			return false
-		}
-	}
-	return true
 }

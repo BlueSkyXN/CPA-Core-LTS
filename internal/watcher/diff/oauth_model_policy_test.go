@@ -59,3 +59,14 @@ func TestDiffOAuthModelPolicyEmptyEntryNotReported(t *testing.T) {
 		t.Fatalf("empty entry reported: %v %v", changes, affected)
 	}
 }
+
+func TestDiffOAuthModelPolicyEmptyAllowlistToggle(t *testing.T) {
+	disabled := map[string]config.OAuthModelPolicyEntry{"codex": entry(false, nil, false, nil)}
+	enabled := map[string]config.OAuthModelPolicyEntry{"codex": entry(true, nil, false, nil)}
+	for _, pair := range [][2]map[string]config.OAuthModelPolicyEntry{{nil, enabled}, {disabled, enabled}, {enabled, disabled}} {
+		_, affected := DiffOAuthModelPolicyChanges(pair[0], pair[1])
+		if len(affected) != 1 || affected[0] != "codex" {
+			t.Fatalf("empty allowlist toggle did not refresh models: %v", affected)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -37,11 +38,13 @@ func summarizeOAuthModelPolicyList(list *config.OAuthModelPolicyList) []string {
 
 func summarizeOAuthModelPolicyEntry(entry config.OAuthModelPolicyEntry) oauthModelPolicySummary {
 	parts := make([]string, 0, 2)
-	if allow := summarizeOAuthModelPolicyList(entry.Allowlist); allow != nil {
-		parts = append(parts, "allow="+strings.Join(allow, ","))
+	if entry.Allowlist != nil && entry.Allowlist.Enabled {
+		allow, _ := json.Marshal(summarizeOAuthModelPolicyList(entry.Allowlist))
+		parts = append(parts, "allow="+string(allow))
 	}
 	if deny := summarizeOAuthModelPolicyList(entry.Denylist); deny != nil {
-		parts = append(parts, "deny="+strings.Join(deny, ","))
+		raw, _ := json.Marshal(deny)
+		parts = append(parts, "deny="+string(raw))
 	}
 	if len(parts) == 0 {
 		return oauthModelPolicySummary{}

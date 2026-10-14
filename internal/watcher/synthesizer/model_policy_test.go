@@ -35,8 +35,8 @@ func TestSynthesizeModelPolicyAttribute(t *testing.T) {
 		t.Fatalf("auths = %#v", auths)
 	}
 	attr := auths[0].Attributes[coreauth.AttributeModelPolicy]
-	if attr != "allow=gpt-5-codex" {
-		t.Fatalf("model_policy attribute = %q, want allow=gpt-5-codex", attr)
+	if attr != `{"allowlist":{"enabled":true,"models":["gpt-5-codex"]}}` {
+		t.Fatalf("model_policy attribute = %q", attr)
 	}
 }
 

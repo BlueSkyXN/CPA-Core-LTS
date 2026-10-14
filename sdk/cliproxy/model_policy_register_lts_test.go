@@ -1,9 +1,11 @@
 package cliproxy
 
 import (
+	"context"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -113,5 +115,39 @@ func TestRegisterResolvedModelsForAuthSkipsAPIKeyAuth(t *testing.T) {
 	service.registerResolvedModelsForAuth(auth, "gemini", []*ModelInfo{{ID: "gemini-2.5-pro"}})
 	if got := reg.GetModelsForClient(authID); len(got) != 1 {
 		t.Fatalf("apikey models = %#v, want unrestricted registration", got)
+	}
+}
+
+func TestModelPolicyNativeRegistrationBeforeAliasAndPrefix(t *testing.T) {
+	models := registry.GetCodexProModels()
+	if len(models) == 0 {
+		t.Fatal("missing embedded model catalog")
+	}
+	model := models[0].ID
+	cfg := &config.Config{
+		OAuthModelAlias:  map[string][]config.OAuthModelAlias{"codex": {{Name: model, Alias: "public"}}},
+		OAuthModelPolicy: map[string]config.OAuthModelPolicyEntry{"codex": {Allowlist: &config.OAuthModelPolicyList{Enabled: true, Models: []string{model}}}},
+	}
+	cfg.ForceModelPrefix = true
+	service := &Service{cfg: cfg, accountCatalogs: newAccountCatalogStore()}
+	auth := &coreauth.Auth{ID: t.Name(), Provider: "codex", Prefix: "tenant"}
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(auth.ID) })
+	service.registerModelsForAuth(context.Background(), auth)
+	got := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	if len(got) != 1 || got[0].ID != "tenant/public" {
+		t.Fatalf("native registration lost allowed alias: %+v", got)
+	}
+	preview, ok := service.PreviewModelPolicyForAuth(auth)
+	if !ok {
+		t.Fatal("missing preview")
+	}
+	found := false
+	for _, row := range preview.Evaluations {
+		if row.ModelID == model && row.Allowed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("preview did not retain the real upstream model")
 	}
 }

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -15,21 +16,16 @@ func TestEvaluateModelPolicyLayersMatrix(t *testing.T) {
 		return map[string]string{AttributeExcludedModels: patterns}
 	}
 	accountAttrs := func(allow, deny string) map[string]string {
-		attrs := map[string]string{}
-		encoded := ""
+		auth := &Auth{Attributes: map[string]string{}}
+		policy := &AccountModelPolicy{}
 		if allow != "" {
-			encoded += "allow=" + allow
+			policy.Allowlist = &OAuthModelPolicy{Enabled: true, Models: strings.Split(allow, ",")}
 		}
 		if deny != "" {
-			if encoded != "" {
-				encoded += ";"
-			}
-			encoded += "deny=" + deny
+			policy.Denylist = &OAuthModelPolicy{Enabled: true, Models: strings.Split(deny, ",")}
 		}
-		if encoded != "" {
-			attrs[AttributeModelPolicy] = encoded
-		}
-		return attrs
+		SetModelPolicyAttribute(auth, policy)
+		return auth.Attributes
 	}
 
 	tests := []struct {
@@ -270,8 +266,8 @@ func TestSetModelPolicyAttributeRoundTrip(t *testing.T) {
 		Allowlist: &OAuthModelPolicy{Enabled: true, Models: []string{"gpt-5-codex"}},
 		Denylist:  &OAuthModelPolicy{Enabled: false, Models: []string{"kept-but-off"}},
 	})
-	if got := auth.Attributes[AttributeModelPolicy]; got != "allow=gpt-5-codex" {
-		t.Fatalf("attribute = %q, want allow=gpt-5-codex", got)
+	if got := auth.Attributes[AttributeModelPolicy]; got != `{"allowlist":{"enabled":true,"models":["gpt-5-codex"]}}` {
+		t.Fatalf("attribute = %q", got)
 	}
 	parsed := parseModelPolicyAttribute(auth.Attributes)
 	if parsed.Denylist != nil {

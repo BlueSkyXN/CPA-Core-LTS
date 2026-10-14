@@ -65,8 +65,30 @@ func TestPatchAuthFileFieldsModelPolicyRoundTrip(t *testing.T) {
 	if !ok || updated == nil {
 		t.Fatal("auth record missing after patch")
 	}
-	if got := updated.Attributes[coreauth.AttributeModelPolicy]; got != "allow=gpt-4.1,gpt-5-codex" && got != "allow=gpt-5-codex,gpt-4.1" {
-		t.Fatalf("runtime attribute = %q", got)
+	if !coreauth.EvaluateModelPolicy(nil, updated, "codex", "gpt-5-codex").Allowed || coreauth.EvaluateModelPolicy(nil, updated, "codex", "other").Allowed {
+		t.Fatal("runtime model policy does not match the persisted allowlist")
+	}
+	for _, tc := range []struct {
+		body   string
+		status int
+	}{
+		{`{"name":"policy.json","model_policy.allowlist.enabled":false}`, http.StatusOK},
+		{`{"name":"policy.json","model_policy.allowlist.enabled":"false"}`, http.StatusBadRequest},
+		{`{"name":"policy.json","model_policy.allowlist":{"enabled":"bad"}}`, http.StatusBadRequest},
+		{`{"name":"policy.json","model_policy.allowlist.enabled":true,"model_policy.allowlist.models":[]}`, http.StatusOK},
+	} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(tc.body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		h.PatchAuthFileFields(ctx)
+		if rec.Code != tc.status {
+			t.Fatalf("nested patch status=%d, want %d: %s", rec.Code, tc.status, rec.Body.String())
+		}
+	}
+	updated, _ = manager.GetByID(fileName)
+	if coreauth.EvaluateModelPolicy(nil, updated, "codex", "gpt-5-codex").Allowed {
+		t.Fatal("enabled empty allowlist did not take effect")
 	}
 }
 

@@ -1887,7 +1887,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		// candidate enumeration even on uncatalogued endpoint routes (Codex Live),
 		// because the policy applies to the real model, not registry membership.
 		if modelKey != "" {
-			if _, allowed := m.modelPolicyAllowedForExecution(candidate, provider, modelKey); !allowed {
+			if _, allowed := m.modelPolicyAllowedForExecution(candidate, provider, m.selectionModelForAuth(candidate, modelKey)); !allowed {
 				continue
 			}
 		}
@@ -2084,9 +2084,8 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 		policyMatches := true
 		homeDispatchModel := strings.TrimSpace(model)
 		if selectionAuth != nil {
-			if _, allowed := m.modelPolicyAllowedForExecution(selectionAuth, selection.Provider, homeDispatchModel); !allowed {
+			if _, allowed := m.modelPolicyAllowedForExecution(selectionAuth, selection.Provider, m.ResolveExecutionModel(selectionAuth, homeDispatchModel)); !allowed {
 				policyMatches = false
-				selection.End("model_policy_denied")
 			}
 		}
 		if providerMatches && kindMatches && policyMatches {

@@ -46,6 +46,8 @@ oauth-model-policy:
 
 结构非法（非对象、`enabled` 非布尔、`models` 含非字符串）时整个认证文件加载失败并给出明确错误，不会静默当作未限制。管理面 `PATCH /v0/management/auth-files/fields` 支持嵌套路径（如 `model_policy.allowlist.enabled`），写入前做同样校验并同步运行时属性、热重载模型注册。
 
+渠道和账号名单均限制为最多 512 项，拒绝控制字符；无效渠道限制会使配置加载失败，保留运行中的旧配置。运行时账号策略使用 JSON 保存，模型文本中的逗号和分号不会被解释为其他策略。
+
 ## 与 legacy 黑名单的关系
 
 - `oauth-excluded-models`（渠道）与认证文件 `excluded_models`（账号）视为**始终生效、没有开关的黑名单来源**，与新的 denylist 取并集，不做冲突报错。
@@ -65,7 +67,7 @@ oauth-model-policy:
 Core 在注册时按账号保存一份过滤前候选目录（`sdk/cliproxy/model_policy_store_lts.go`）。它支撑：
 
 - `GET /v0/management/auth-files/models/policy-preview?name=<auth>`：只读评估当前策略下每个候选模型的允许/拒绝与原因（channel/account/legacy 层标注），不联网、不改注册状态。无快照时返回 `catalog_unknown`。
-- 纯改策略的热重载使用快照重新计算，不触发上游目录发现。
+- 预览只读取快照，不触发上游目录发现。策略热重载沿用现有账号注册流程，插件的 `ModelsForAuth` 可能刷新目录；此版本没有新增跳过插件注册的目录缓存。
 
 被禁模型仍保留在快照中，预览界面可以看到"当前禁止、原因、放开后生效"，不会出现"禁掉就看不到、无法再勾选"的问题。
 

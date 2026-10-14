@@ -480,6 +480,8 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	}
+	published = applyOAuthModelAliasForAuth(s.cfg, providerKey, a.AuthKind(), a.Attributes, published)
+	published = applyModelPrefixes(published, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix)
 	GlobalModelRegistry().RegisterClient(a.ID, providerKey, published)
 }
 
@@ -488,9 +490,6 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 // static model lists and excluded-models semantics.
 func (s *Service) modelPolicyAllowsModel(a *coreauth.Auth, providerKey, modelID string) bool {
 	if s == nil || a == nil {
-		return true
-	}
-	if a.AuthKind() == coreauth.AuthKindAPIKey {
 		return true
 	}
 	decision := coreauth.EvaluateModelPolicy(s.cfg, a, providerKey, modelID)
@@ -603,9 +602,8 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return true, ctx.Err()
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
-	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
-		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		s.registerResolvedModelsForAuth(activeAuth, providerKey, models)
 		return true, nil
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)

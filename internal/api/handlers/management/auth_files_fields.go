@@ -328,8 +328,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 	coreauth.NormalizeCredentialMetadata(targetAuth.Metadata)
 
-	// LTS model policy: validate the model_policy object before any field is
-	// applied so a malformed policy fails the whole patch atomically.
+	// 先对副本应用所有策略字段，再校验完整对象；嵌套字段值本身并非策略对象。
+	policyDraft := targetAuth.Clone()
+	if policyDraft.Metadata == nil {
+		policyDraft.Metadata = make(map[string]any)
+	}
+	policyTouched := false
 	for key, rawValue := range req {
 		if rootAuthFileField(strings.TrimSpace(key)) != "model_policy" {
 			continue
@@ -339,10 +343,15 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid field %s", strings.TrimSpace(key))})
 			return
 		}
-		if _, valid := coreauth.ParseAccountModelPolicyMetadata(map[string]any{"model_policy": value}); !valid {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "model_policy must be an object of allowlist/denylist with enabled flag and string model arrays"})
+		if errSet := setAuthFileMetadataValue(policyDraft.Metadata, strings.TrimSpace(key), value); errSet != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errSet.Error()})
 			return
 		}
+		policyTouched = true
+	}
+	if _, valid := coreauth.ParseAccountModelPolicyMetadata(policyDraft.Metadata); policyTouched && !valid {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model_policy must be an object of allowlist/denylist with enabled flag and string model arrays"})
+		return
 	}
 
 	changed := false

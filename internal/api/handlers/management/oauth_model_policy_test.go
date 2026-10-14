@@ -107,3 +107,15 @@ func TestOAuthModelPolicyPutRejectsInvalidMapping(t *testing.T) {
 		t.Fatalf("invalid put status = %d body %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestOAuthModelPolicyPutItemsWrapper(t *testing.T) {
+	h, _ := newOAuthModelPolicyTestHandler(t)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/oauth-model-policy", strings.NewReader(`{"items":{"codex":{"allowlist":{"enabled":true,"models":[]}}}}`))
+	h.PutOAuthModelPolicy(ctx)
+	list := h.cfg.OAuthModelPolicy["codex"].Allowlist
+	if rec.Code != http.StatusOK || list == nil || !list.Enabled {
+		t.Fatalf("wrapped PUT lost restriction: status=%d policy=%+v", rec.Code, h.cfg.OAuthModelPolicy)
+	}
+}
