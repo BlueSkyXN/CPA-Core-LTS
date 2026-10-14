@@ -24,6 +24,8 @@
 
 - 同一请求内有重试时，`upstream_*` 描述最后一次尝试。
 - HTTP 路径在传输层统一测量，覆盖所有使用 usage reporter 跟踪 HTTP client 的 executor。请求体带 `Content-Encoding` 时，传输层只能看到线上字节；由 CPA 自己压缩的请求（如 Codex 出站 zstd）会在压缩点通过 `helps.WithUpstreamPayloadBytes` 登记原文大小，`upstream_request_bytes` 与 `upstream_request_wire_bytes` 同时可用。其他带编码的请求 `upstream_request_bytes` 可能缺失，此时以 `upstream_request_wire_bytes` 为准。
+- 插件 executor 通过 host HTTP 出站时，selected-auth 路由与直接插件路由都使用当前执行的 usage reporter，记录 `http` 和体积。每次实际 HTTP 发送（包括重定向）替换上一次尝试；响应字节只归属各自尝试。ZCode 的签名握手会被随后的模型请求覆盖，握手阶段失败则保留该次握手的测量值。连接失败也保留已知的请求体长度；这些长度不证明请求已被上游接收。
+- ZCode 插件向上游发送 HTTP 请求，SSE 流式响应仍记录 `http`；客户端通过 websocket 连接 Core 也不改变这个出站标记。此处未增加插件 websocket 出站能力或更改现有 timing/token 统计。
 - Codex websocket 路径记录发送的 `response.create` 消息字节数；出站消息不压缩，payload 与线上字节相同。启用 response steering 的双工会话中，后续轮次只记录传输方式和响应字节。
 - 图片等附加模型的 usage 记录不重复携带体积，避免重复计数。
 
