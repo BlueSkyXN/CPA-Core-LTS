@@ -1114,6 +1114,36 @@ nonstream-keepalive-interval: 0
 #   meta:
 #     - "muse-spark-1.1"
 
+# OAuth provider model policy (LTS): optional allowlist/denylist per provider
+# channel, applied to OAuth/file-backed credentials on top of the account's own
+# catalog. Patterns are case-insensitive and support '*'. A denylist unions with
+# oauth-excluded-models (the legacy key always stays in effect); an allowlist
+# intersects across channel and account. enabled=false keeps the stored models
+# for later without applying them. An enabled allowlist with an empty models
+# list publishes zero models. Out of scope for config *-api-key entries, which
+# keep their own static model lists.
+# oauth-model-policy:
+#   copilot:
+#     allowlist:
+#       enabled: true
+#       models:
+#         - "gpt-*"
+#     denylist:
+#       enabled: true
+#       models:
+#         - "*-preview"
+#   qoder:
+#     denylist:
+#       enabled: true
+#       models:
+#         - "auto"
+#   codebuddy:
+#     allowlist:
+#       enabled: false
+#       models:
+#         - "hy3"
+#         - "hy3-x"
+
 # OAuth provider request-scoped error rules (custom error classification for OAuth credentials)
 # oauth-request-scoped-errors:
 #   vertex:

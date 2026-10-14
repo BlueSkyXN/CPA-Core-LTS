@@ -210,6 +210,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
+	// Normalize OAuth provider model policies.
+	cfg.OAuthModelPolicy = NormalizeOAuthModelPolicy(cfg.OAuthModelPolicy)
+
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 

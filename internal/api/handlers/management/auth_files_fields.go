@@ -328,6 +328,23 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 	coreauth.NormalizeCredentialMetadata(targetAuth.Metadata)
 
+	// LTS model policy: validate the model_policy object before any field is
+	// applied so a malformed policy fails the whole patch atomically.
+	for key, rawValue := range req {
+		if rootAuthFileField(strings.TrimSpace(key)) != "model_policy" {
+			continue
+		}
+		value, errDecodePolicy := decodeAuthFileFieldValue(rawValue)
+		if errDecodePolicy != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid field %s", strings.TrimSpace(key))})
+			return
+		}
+		if _, valid := coreauth.ParseAccountModelPolicyMetadata(map[string]any{"model_policy": value}); !valid {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "model_policy must be an object of allowlist/denylist with enabled flag and string model arrays"})
+			return
+		}
+	}
+
 	changed := false
 	touchedRoots := make(map[string]struct{}, len(req))
 	for key, rawValue := range req {
@@ -651,6 +668,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
+	if _, ok := touchedRoots["model_policy"]; ok {
+		syncAuthFileModelPolicyAttribute(auth)
+	}
 	if _, ok := touchedRoots["plan_type"]; ok {
 		syncAuthFilePlanTypeAttribute(auth)
 	} else if _, ok := touchedRoots["id_token"]; ok {
@@ -828,6 +848,21 @@ func syncAuthFileDisabledState(auth *coreauth.Auth) {
 	}
 	auth.Status = coreauth.StatusActive
 	auth.StatusMessage = ""
+}
+
+// syncAuthFileModelPolicyAttribute re-derives the runtime model_policy
+// attribute after a fields patch touched model_policy. Invalid shapes are
+// rejected earlier in the patch flow; a missing or cleared object removes the
+// attribute (no account-level restriction).
+func syncAuthFileModelPolicyAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	policy, valid := coreauth.ParseAccountModelPolicyMetadata(auth.Metadata)
+	if !valid {
+		return
+	}
+	coreauth.SetModelPolicyAttribute(auth, policy)
 }
 
 func (h *Handler) removeAuth(ctx context.Context, id string) {

@@ -294,6 +294,7 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager:         coreManager,
 		cooldownStateStore:  cooldownStateStore,
 		pluginHost:          pluginHost,
+		accountCatalogs:     newAccountCatalogStore(),
 		discoveryManager:    newDiscoveryAdvertiserManager(),
 		appliedRoutingState: appliedRoutingState,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
@@ -304,6 +305,7 @@ func (b *Builder) Build() (*Service, error) {
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
 		api.WithAuthModelsRefreshHook(service.refreshAuthFileModels),
+		api.WithAuthModelPolicyPreviewHook(service.authModelPolicyPreview),
 		api.WithPluginHost(pluginHost),
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()

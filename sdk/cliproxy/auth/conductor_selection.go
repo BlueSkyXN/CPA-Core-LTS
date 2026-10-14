@@ -1883,6 +1883,14 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
+		// LTS model policy: deny-listed credentials are excluded from local
+		// candidate enumeration even on uncatalogued endpoint routes (Codex Live),
+		// because the policy applies to the real model, not registry membership.
+		if modelKey != "" {
+			if _, allowed := m.modelPolicyAllowedForExecution(candidate, provider, modelKey); !allowed {
+				continue
+			}
+		}
 		if modelKey != "" && !usesUncataloguedEndpointModel(ctx) && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
@@ -2070,7 +2078,18 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 		providerMatches := strings.TrimSpace(provider) == "" || strings.EqualFold(strings.TrimSpace(selection.Provider), strings.TrimSpace(provider))
 		selectionAuth := selection.CloneAuth()
 		kindMatches := selectionAuth != nil && selectionAuth.AuthKind() == requiredKind
-		if providerMatches && kindMatches {
+		// LTS model policy: Home returns the actual upstream model; hold the
+		// dispatch for a denied (auth, model) pair instead of executing it. This
+		// covers Codex Live under Home mode, which bypasses the local registry.
+		policyMatches := true
+		homeDispatchModel := strings.TrimSpace(model)
+		if selectionAuth != nil {
+			if _, allowed := m.modelPolicyAllowedForExecution(selectionAuth, selection.Provider, homeDispatchModel); !allowed {
+				policyMatches = false
+				selection.End("model_policy_denied")
+			}
+		}
+		if providerMatches && kindMatches && policyMatches {
 			return selection, nil
 		}
 
@@ -2081,6 +2100,8 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 		reason := "auth_kind_mismatch"
 		if !providerMatches {
 			reason = "provider_mismatch"
+		} else if !policyMatches {
+			reason = "model_policy_denied"
 		}
 		if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, reason); errEnd != nil {
 			return nil, errEnd

@@ -107,6 +107,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+			perAccountModelPolicy, policyValid := coreauth.ParseAccountModelPolicyMetadata(metadata)
+			if !policyValid {
+				return nil, fmt.Errorf("invalid model_policy in %s: must be an object of allowlist/denylist with enabled flag and string model arrays", filepath.Base(fullPath))
+			}
 			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
@@ -149,6 +153,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
+				coreauth.SetModelPolicyAttribute(auth, perAccountModelPolicy)
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
 			}
@@ -196,6 +201,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	// Read per-account excluded models from the OAuth JSON file.
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+	perAccountModelPolicy, policyValid := coreauth.ParseAccountModelPolicyMetadata(metadata)
+	if !policyValid {
+		return nil, fmt.Errorf("invalid model_policy in %s: must be an object of allowlist/denylist with enabled flag and string model arrays", filepath.Base(fullPath))
+	}
 
 	a := &coreauth.Auth{
 		ID:       id,
@@ -231,6 +240,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
+	coreauth.SetModelPolicyAttribute(a, perAccountModelPolicy)
 	applyFingerprintProfileAttribute(a, metadata)
 	// For Kimi auth files, preserve domain and base_url attributes.
 	if provider == "kimi" || provider == "kimi-ai" || provider == "kimi.ai" || provider == "kimi.com" {
