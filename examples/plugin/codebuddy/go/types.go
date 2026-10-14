@@ -90,6 +90,7 @@ type registration struct {
 type registrationCapabilities struct {
 	ModelProvider          bool                         `json:"model_provider"`
 	AuthProvider           bool                         `json:"auth_provider"`
+	AuthImportOnly         bool                         `json:"auth_import_only"`
 	Executor               bool                         `json:"executor"`
 	ExecutionCanceller     bool                         `json:"execution_canceller"`
 	ProviderReadiness      bool                         `json:"provider_readiness"`

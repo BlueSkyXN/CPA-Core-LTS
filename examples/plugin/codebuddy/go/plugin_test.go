@@ -36,6 +36,11 @@ func TestRegistrationDeclaresCodeBuddyG1Capabilities(t *testing.T) {
 	if !got.Capabilities.AuthProvider || !got.Capabilities.ModelProvider || !got.Capabilities.Executor || !got.Capabilities.ExecutionCanceller || !got.Capabilities.ProviderReadiness || !got.Capabilities.ManagementAPI {
 		t.Fatalf("required capabilities are missing: %#v", got.Capabilities)
 	}
+	// CodeBuddy G1 accepts preconfigured PAT/API keys only and rejects interactive
+	// login; auth_import_only keeps it out of the OAuth login entry.
+	if !got.Capabilities.AuthImportOnly {
+		t.Fatalf("auth_import_only must be declared for PAT/API-key-only auth: %#v", got.Capabilities)
+	}
 	if got.Capabilities.ExecutionSessionCloser {
 		t.Fatal("CodeBuddy G1 must not advertise execution_session_closer")
 	}
