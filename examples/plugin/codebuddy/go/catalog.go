@@ -193,6 +193,11 @@ func fetchCodeBuddyCatalog(caller hostCaller, callbackID string, cfg pluginConfi
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
 		}
+		// 401/403 是厂商拒绝了这把凭据（含 PAT 过期），不是短暂故障；
+		// 不可重试，等待显式刷新或凭据更新，避免定时探测已失效的 key。
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return codeBuddyCatalog{}, newPluginCallError("catalog_auth_rejected", "CodeBuddy catalog rejected the credential", status, false)
+		}
 		return codeBuddyCatalog{}, newPluginCallError("catalog_upstream_error", fmt.Sprintf("CodeBuddy catalog returned HTTP %d", status), status, status == http.StatusTooManyRequests || status >= 500)
 	}
 	if len(response.Body) == 0 || len(response.Body) > maxCodeBuddyCatalogBytes {
