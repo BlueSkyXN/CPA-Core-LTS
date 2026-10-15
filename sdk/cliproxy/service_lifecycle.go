@@ -50,6 +50,8 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	usage.StartDefault(ctx)
+	s.pluginModelRetry = newPluginModelRegistrationRetry(s)
+	s.pluginModelRetry.start(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
@@ -286,6 +288,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 
 		// legacy refresh loop removed; only stopping core auth manager below
 
+		if s.pluginModelRetry != nil {
+			s.pluginModelRetry.stop()
+		}
 		if s.watcherCancel != nil {
 			s.watcherCancel()
 		}

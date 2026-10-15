@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -552,6 +553,7 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return false, nil
 	}
 	if result.Err != nil {
+		s.notePluginModelDiscoveryFailure(a, result.Err)
 		return true, result.Err
 	}
 	activeAuth := a
@@ -602,10 +604,37 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return true, ctx.Err()
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
+	s.clearPluginModelDiscoveryFailure(activeAuth.ID)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(activeAuth, providerKey, models)
 		return true, nil
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
 	return true, nil
+}
+
+// notePluginModelDiscoveryFailure records a retryable plugin model discovery
+// failure for bounded automatic retry. Terminal credential rejections (401/403
+// plugin errors) are never scheduled: the auth file did not change, so retrying
+// would probe the vendor with a dead key until a manual refresh or restart.
+func (s *Service) notePluginModelDiscoveryFailure(a *coreauth.Auth, err error) {
+	if s == nil || s.pluginModelRetry == nil || a == nil || a.ID == "" {
+		return
+	}
+	// 调用方取消或超时不能证明凭据已失效，保留此前排队的恢复尝试。
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	if !pluginModelDiscoveryRetryable(err) {
+		s.pluginModelRetry.clear(a.ID)
+		return
+	}
+	s.pluginModelRetry.schedule(a.ID)
+}
+
+func (s *Service) clearPluginModelDiscoveryFailure(authID string) {
+	if s == nil || s.pluginModelRetry == nil {
+		return
+	}
+	s.pluginModelRetry.clear(authID)
 }
