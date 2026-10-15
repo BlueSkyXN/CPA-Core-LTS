@@ -44,6 +44,9 @@ type fixtureTransport struct {
 	pub                    ed25519.PublicKey
 	priv                   ed25519.PrivateKey
 	handshakes, models     int
+	counts                 int
+	lastCountPath          string
+	lastCountQuery         string
 	apiKey                 string
 	lastModelRequestBytes  int
 	lastModelResponseBytes int
@@ -94,6 +97,12 @@ func (f *fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		sig, _ := base64.StdEncoding.DecodeString(h.Get("X-Client-Sig"))
 		if !ed25519.Verify(f.pub, []byte(id+"\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
 			return nil, fmt.Errorf("invalid signature")
+		}
+		if strings.HasSuffix(req.URL.Path, "/count_tokens") {
+			f.counts++
+			f.lastCountPath = req.URL.Path
+			f.lastCountQuery = req.URL.RawQuery
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":13}`)), Request: req}, nil
 		}
 		if b["system"] != "caller" {
 			return nil, fmt.Errorf("caller system lost")
@@ -206,5 +215,62 @@ func TestCPAExecutorWithNoNetworkTransport(t *testing.T) {
 	defer transport.mu.Unlock()
 	if transport.handshakes != 1 || transport.models != 2 {
 		t.Fatalf("unexpected calls %d %d", transport.handshakes, transport.models)
+	}
+}
+
+func TestCPACountTokensEndToEnd(t *testing.T) {
+	if isolateDynamic(t) {
+		return
+	}
+	library := os.Getenv("CP_PLUGIN_LIBRARY")
+	if library == "" {
+		t.Skip("CP_PLUGIN_LIBRARY required")
+	}
+	dir := t.TempDir()
+	lib, err := os.ReadFile(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "zcode-coding-plan"+filepath.Ext(library)), lib, 0700)
+	cfg, err := config.ParseConfigBytes([]byte(fmt.Sprintf("plugins:\n  enabled: true\n  dir: %q\n  configs:\n    zcode-coding-plan:\n      enabled: true\n      host_logging_disabled: true\n      models: [\"test-model\"]\nrequest-log: false\n", dir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := pluginhost.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	defer h.ShutdownAll()
+	h.ApplyConfig(ctx, cfg)
+	storage, _ := json.Marshal(map[string]any{"type": "zcode-coding-plan", "api_key": "synthetic-key.synthetic-secret", "device_id": "synthetic-device", "request_retry": 0})
+	auth, handled, err := h.ParseAuth(ctx, pluginapi.AuthParseRequest{RawJSON: storage, FileName: "synthetic.json"})
+	if err != nil || !handled {
+		t.Fatalf("auth %v", err)
+	}
+	auth.ID = "fixture-auth"
+	manager := coreauth.NewManager(nil, nil, nil)
+	h.RegisterExecutors(manager, nil)
+	executor, ok := manager.Executor("zcode-coding-plan")
+	if !ok {
+		t.Fatal("executor missing")
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	transport := &fixtureTransport{pub: pub, priv: priv}
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", http.RoundTripper(transport))
+	req := coreexecutor.Request{Model: "test-model", Payload: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hello"}],"tools":[],"max_tokens":1}`)}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Metadata: map[string]any{coreexecutor.RequestIDMetadataKey: "fixture-count"}}
+	result, err := executor.CountTokens(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(result.Payload, []byte(`"input_tokens":13`)) {
+		t.Fatalf("count payload = %s", result.Payload)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if transport.counts != 1 || transport.handshakes != 1 {
+		t.Fatalf("calls counts=%d handshakes=%d", transport.counts, transport.handshakes)
+	}
+	if transport.lastCountPath != "/api/anthropic/v1/messages/count_tokens" || transport.lastCountQuery != "beta=true" {
+		t.Fatalf("count endpoint = %s?%s", transport.lastCountPath, transport.lastCountQuery)
 	}
 }
