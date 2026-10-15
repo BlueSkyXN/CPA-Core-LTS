@@ -386,6 +386,73 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	}
 	return map[string]any{"Payload": data, "Headers": http.Header{"Content-Type": []string{"application/json"}}}, nil
 }
+func (r *pluginRuntime) countTokens(req executorRequest) (any, error) {
+	if req.Format != "" && req.Format != "claude" {
+		return nil, problem(400, "unsupported_format", "Expected host-translated Anthropic Messages")
+	}
+	c, err := r.configurationForAuth(req.StorageJSON, req.AuthID, req.AuthIndex)
+	if err != nil {
+		return nil, err
+	}
+	e, err := r.admit(req, c)
+	if err != nil {
+		return nil, err
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			r.finish(e)
+		}
+	}()
+	endpoint := countTokensEndpoint(c.Endpoint)
+	if endpoint == "" {
+		return nil, problem(400, "invalid_config", "Count endpoint cannot be derived from the configured upstream")
+	}
+	session := sessionID(c.AccountScope, req.CallerScope, req.WorkspaceIdentity, req.ExecutionSessionID)
+	body, err := transformCountTokenRequest(req, c, session)
+	if err != nil {
+		return nil, err
+	}
+	signed, err := e.signer.headers(r, e, session)
+	if err != nil {
+		return nil, err
+	}
+	headers := modelHeaders(c, req.Headers)
+	for k, v := range signed {
+		headers[k] = v
+	}
+	headers.Set("X-Request-Id", e.id)
+	if err = e.ctx.Err(); err != nil {
+		return nil, err
+	}
+	raw, err := r.caller.Call("host.http.do_stream", httpRequest{CallbackID: req.CallbackID, Method: "POST", URL: endpoint, Headers: headers, Body: encode(body), DisableRedirects: true})
+	if err != nil {
+		return nil, problem(502, "connection_lifecycle", "Upstream connection failed")
+	}
+	var upstream httpStream
+	if json.Unmarshal(raw, &upstream) != nil || upstream.StreamID == "" {
+		return nil, problem(502, "invalid_response", "Invalid host stream response")
+	}
+	if err = r.bind(e, upstream.StreamID); err != nil {
+		return nil, err
+	}
+	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+		status := upstream.StatusCode
+		if status < 400 || status > 599 {
+			status = 502
+		}
+		return nil, problem(status, "upstream_error", "Upstream rejected the token count request")
+	}
+	data, err := r.readAll(e, upstream.StreamID, maxBody)
+	if err != nil {
+		return nil, err
+	}
+	var value map[string]any
+	if json.Unmarshal(data, &value) != nil || value["input_tokens"] == nil {
+		return nil, problem(502, "invalid_response", "Invalid upstream token count")
+	}
+	return map[string]any{"Payload": data, "Headers": http.Header{"Content-Type": []string{"application/json"}}}, nil
+}
 func (r *pluginRuntime) readChunk(e *execution, id string) (httpChunk, error) {
 	if err := e.ctx.Err(); err != nil {
 		return httpChunk{}, err
@@ -554,6 +621,12 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) (any, error) {
 			return nil, problem(400, "invalid_request", "Stream method mismatch")
 		}
 		return r.execute(req)
+	case "executor.count_tokens":
+		var req executorRequest
+		if err := decode(raw, &req); err != nil {
+			return nil, err
+		}
+		return r.countTokens(req)
 	case "executor.cancel", "executor.close_session":
 		var q cancelRequest
 		if err := decode(raw, &q); err != nil {
