@@ -3323,7 +3323,7 @@ func TestExecutorAdapterUsesResponseFormatForOutputTranslation(t *testing.T) {
 	if captured.Format != sdktranslator.FormatClaude.String() {
 		t.Fatalf("executor Format = %q, want %q", captured.Format, sdktranslator.FormatClaude)
 	}
-	if bytes.Equal(captured.Payload, openAIRequest) || !bytes.Contains(captured.Payload, []byte(`"max_tokens":32000`)) {
+	if bytes.Equal(captured.Payload, openAIRequest) || !bytes.Contains(captured.Payload, []byte(`"max_tokens":64000`)) {
 		t.Fatalf("executor payload = %s, want translated Claude request", captured.Payload)
 	}
 	if !bytes.Equal(resp.Payload, claudeResponse) {

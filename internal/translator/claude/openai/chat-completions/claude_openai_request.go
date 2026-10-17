@@ -49,7 +49,7 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	userID := common.DeriveClaudeUserID(rawJSON)
 
 	// Base Claude Code API template with default max_tokens value
-	out := []byte(`{"model":"","max_tokens":32000,"messages":[],"metadata":{}}`)
+	out := []byte(`{"model":"","max_tokens":64000,"messages":[],"metadata":{}}`)
 	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
 
 	root := gjson.ParseBytes(rawJSON)
@@ -114,11 +114,15 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	// Max tokens configuration with fallback to default value.
 	// OpenAI Chat Completions deprecated max_tokens in favor of
 	// max_completion_tokens, so accept either spelling.
+	limitModelInfo := modelInfo
 	if maxTokens := firstExisting(root.Get("max_tokens"), root.Get("max_completion_tokens")); maxTokens.Exists() {
 		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
+	} else if limitModelInfo == nil {
+		// 缺省预算也受模型目录上限约束；显式传参沿用现有处理规则。
+		limitModelInfo = registry.LookupModelInfo(modelName, "claude")
 	}
-	if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 && gjson.GetBytes(out, "max_tokens").Int() > int64(modelInfo.MaxCompletionTokens) {
-		out, _ = sjson.SetBytes(out, "max_tokens", modelInfo.MaxCompletionTokens)
+	if limitModelInfo != nil && limitModelInfo.MaxCompletionTokens > 0 && gjson.GetBytes(out, "max_tokens").Int() > int64(limitModelInfo.MaxCompletionTokens) {
+		out, _ = sjson.SetBytes(out, "max_tokens", limitModelInfo.MaxCompletionTokens)
 	}
 
 	// Top P setting for nucleus sampling.

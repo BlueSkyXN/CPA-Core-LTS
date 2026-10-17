@@ -16,10 +16,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const (
-	defaultClaudeResponsesMaxTokens = 32000
-	defaultFableResponsesMaxTokens  = 64000
-)
+const defaultClaudeResponsesMaxTokens = 64000
 
 // ConvertOpenAIResponsesRequestToClaude transforms an OpenAI Responses API request
 // into a Claude Messages API request using only gjson/sjson for JSON handling.
@@ -67,9 +64,9 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	userID := common.DeriveClaudeUserID(rawJSON)
 
 	// Base Claude message payload
-	out := []byte(`{"model":"","max_tokens":32000,"messages":[],"metadata":{}}`)
+	out := []byte(`{"model":"","messages":[],"metadata":{}}`)
 	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
-	out, _ = sjson.SetBytes(out, "max_tokens", defaultClaudeResponsesMaxTokensForModel(modelName, resolvedModelInfo))
+	out, _ = sjson.SetBytes(out, "max_tokens", defaultClaudeResponsesMaxTokensForModel(resolvedModelInfo))
 
 	root := gjson.ParseBytes(rawJSON)
 
@@ -667,11 +664,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	return thinking.ApplySummaryConfigWithModelInfo(out, "claude", modelName, resolvedModelInfo, thinking.ExtractSummaryConfig(rawJSON, "openai-response"))
 }
 
-func defaultClaudeResponsesMaxTokensForModel(modelName string, modelInfo *registry.ModelInfo) int {
+func defaultClaudeResponsesMaxTokensForModel(modelInfo *registry.ModelInfo) int {
 	maxTokens := defaultClaudeResponsesMaxTokens
-	if strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "fable") {
-		maxTokens = defaultFableResponsesMaxTokens
-	}
 	if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 && modelInfo.MaxCompletionTokens < maxTokens {
 		return modelInfo.MaxCompletionTokens
 	}

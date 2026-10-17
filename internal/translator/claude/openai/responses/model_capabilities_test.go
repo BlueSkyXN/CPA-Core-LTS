@@ -48,10 +48,10 @@ func TestResponsesEnvelopeUsesSelectedModelCapabilities(t *testing.T) {
 							max      int64
 							effort   string
 						}{
-							{`"reasoning":{"effort":"max","summary":"auto"}`, 32000, "max"},
+							{`"reasoning":{"effort":"max","summary":"auto"}`, 64000, "max"},
 							{`"reasoning":{"effort":"max"},"max_output_tokens":64000`, 64000, "max"},
 							{`"reasoning":{"effort":"max"},"max_output_tokens":256000`, 128000, "max"},
-							{`"reasoning":{"summary":"auto"}`, 32000, ""},
+							{`"reasoning":{"summary":"auto"}`, 64000, ""},
 						} {
 							body := []byte(fmt.Sprintf(`{"model":%q,"input":"hello",%s}`, model, tc.controls))
 							out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
