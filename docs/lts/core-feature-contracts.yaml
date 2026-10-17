@@ -18,6 +18,27 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: zcode-codex-context-usage
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Codex compaction needs a delivered context count for zcode search while provider usage accounting remains complete.
+    config_keys:
+      - codex.zcode-context-usage
+    core_files:
+      - internal/config/codex_zcode_context_usage.go
+      - internal/pluginhost/zcode_context_usage.go
+      - internal/pluginhost/zcode_context_usage_test.go
+      - internal/translator/claude/openai/responses/context_count.go
+      - docs/lts/zcode-context-usage.md
+      - config.example.yaml
+    required_markers:
+      - zcode-context-usage
+    validation:
+      - go test ./internal/config ./internal/watcher/diff ./internal/pluginhost -run ZcodeContext
+      - go test ./internal/translator/claude/openai/responses
+
   - id: codex-oauth-cache-affinity
     kind: lts-feature
     support: maintained

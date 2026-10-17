@@ -51,6 +51,10 @@ forbid_grep_ci() {
   fi
 }
 
+require_path internal/pluginhost/zcode_context_usage.go
+require_path docs/lts/zcode-context-usage.md
+require_grep 'zcode-context-usage' config.example.yaml internal/config/config_types.go
+
 module_path="$(sed -n 's/^module //p' go.mod)"
 if [ "$module_path" != "github.com/router-for-me/CLIProxyAPI/v7" ]; then
   echo "unexpected Go module path: $module_path" >&2

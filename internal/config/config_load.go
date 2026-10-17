@@ -96,6 +96,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if err := cfg.Codex.Outbound.normalizeAndValidate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.Codex.ZcodeContextUsage.normalizeAndValidate(); err != nil {
+		return nil, err
+	}
 	if err := validateCodexKeyRequestCompression(cfg.CodexKey); err != nil {
 		return nil, err
 	}
