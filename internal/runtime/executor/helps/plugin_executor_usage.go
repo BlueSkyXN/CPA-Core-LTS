@@ -39,11 +39,7 @@ func ObservePluginExecutorStreamUsage(protocol string, payload []byte, buffer *S
 	}
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "claude":
-		IterateStreamLines(payload, func(line []byte) {
-			if detail, ok := parseClaudeStreamLine(line); ok {
-				ObserveMergedStreamUsage(buffer, detail)
-			}
-		})
+		IterateStreamLines(payload, buffer.ObserveClaudeStream)
 	case "gemini":
 		IterateStreamLines(payload, func(line []byte) {
 			if detail, ok := ParseGeminiStreamUsage(line); ok {

@@ -1137,6 +1137,8 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 
 // StreamUsageBuffer keeps the latest usage detail observed in a stream.
 type StreamUsageBuffer struct {
+	claudeUsageSnapshot []byte
+
 	detail        usage.Detail
 	ok            bool
 	responseModel string
@@ -1232,9 +1234,34 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
 			}
 		}
 	}
-	if detail, ok := ParseClaudeStreamUsage(line); ok {
-		ObserveMergedStreamUsage(b, detail)
+	payload := jsonPayload(line)
+	if !gjson.ValidBytes(payload) {
+		return
 	}
+	root := gjson.ParseBytes(payload)
+	if root.Get("type").String() == "message_start" {
+		b.claudeUsageSnapshot = nil
+	}
+	usageNode := root.Get("usage")
+	if !usageNode.Exists() {
+		usageNode = root.Get("message.usage")
+	}
+	if !usageNode.IsObject() {
+		return
+	}
+	if len(b.claudeUsageSnapshot) == 0 {
+		b.claudeUsageSnapshot = []byte(`{}`)
+	}
+	// 按字段是否存在合并原始分项；显式零覆盖旧值，省略字段保留。
+	for _, path := range []string{
+		"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+		"output_tokens_details.thinking_tokens", "output_tokens_details.reasoning_tokens", "thinking_tokens",
+	} {
+		if value := usageNode.Get(path); value.Exists() {
+			b.claudeUsageSnapshot, _ = sjson.SetRawBytes(b.claudeUsageSnapshot, path, []byte(value.Raw))
+		}
+	}
+	b.Observe(parseClaudeUsageNode(gjson.ParseBytes(b.claudeUsageSnapshot)), true)
 }
 
 // Publish emits the latest observed usage detail, if any.
