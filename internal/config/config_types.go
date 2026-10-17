@@ -201,6 +201,8 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// ZcodeContextUsage optionally counts delivered search context for Codex clients.
+	ZcodeContextUsage      CodexZcodeContextUsageMode        `yaml:"zcode-context-usage,omitempty" json:"zcode-context-usage,omitempty"`
 	CacheAffinity          CodexCacheAffinityConfig          `yaml:"cache-affinity" json:"cache-affinity"`
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
 	ClientMetadata         CodexClientMetadataConfig         `yaml:"client-metadata" json:"client-metadata"`

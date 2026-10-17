@@ -997,6 +997,7 @@ type preparedExecutorCall struct {
 	requestedFormat sdktranslator.Format
 	inputFormat     sdktranslator.Format
 	outputFormat    sdktranslator.Format
+	modelInfo       *registry.ModelInfo
 }
 
 func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
@@ -1017,10 +1018,12 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 
 	nativeReq := req
 	nativeOpts := opts
+	var modelInfo *registry.ModelInfo
 	if inputRequested != "" && inputRequested != inputFormat {
 		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: req.Model, Body: req.Payload, Stream: opts.Stream}
 		if (inputRequested == sdktranslator.FormatOpenAIResponse || inputRequested == sdktranslator.FormatOpenAI) && inputFormat == sdktranslator.FormatClaude {
-			modelInfo, errModel := a.executionModelInfo(auth, req, opts)
+			var errModel error
+			modelInfo, errModel = a.executionModelInfo(auth, req, opts)
 			if errModel != nil {
 				return preparedExecutorCall{}, errModel
 			}
@@ -1039,6 +1042,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 		requestedFormat: requestedFormat,
 		inputFormat:     inputFormat,
 		outputFormat:    outputFormat,
+		modelInfo:       modelInfo,
 	}, nil
 }
 
@@ -1354,6 +1358,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if translated == nil {
 		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil)
 	}
+	translated = a.adjustZcodeContextUsage(ctx, prepared, pluginReq, translated, nil)
 	return coreexecutor.Response{
 		Payload:  translated,
 		Metadata: cloneAnyMap(pluginResp.Metadata),

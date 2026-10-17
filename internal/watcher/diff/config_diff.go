@@ -147,6 +147,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	if oldCfg.Codex.ZcodeContextUsage.Effective() != newCfg.Codex.ZcodeContextUsage.Effective() {
+		changes = append(changes, fmt.Sprintf("codex.zcode-context-usage: %s -> %s", oldCfg.Codex.ZcodeContextUsage.Effective(), newCfg.Codex.ZcodeContextUsage.Effective()))
+	}
 	if oldCfg.Codex.CacheAffinity.EffectiveStrategy() != newCfg.Codex.CacheAffinity.EffectiveStrategy() {
 		changes = append(changes, fmt.Sprintf("codex.cache-affinity.strategy: %s -> %s", oldCfg.Codex.CacheAffinity.EffectiveStrategy(), newCfg.Codex.CacheAffinity.EffectiveStrategy()))
 	}
