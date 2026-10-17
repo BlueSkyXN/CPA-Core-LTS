@@ -296,6 +296,10 @@ codex:
   # This legacy option is not a complete privacy boundary and does not hide
   # account, network, or request-behavior signals from the upstream service.
   identity-confuse: false
+  # zcode 搜索响应的 Codex 上下文计数：disabled（默认）、observe、correct。
+  # observe/correct 在响应结束后额外调用一次插件原生 count_tokens，最多等待 5 秒。
+  # correct 只校正 Codex 客户端 total_tokens；后台用量与缓存分项保留上游值。
+  zcode-context-usage: disabled
   # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
   # Upstream transport strategy for Codex requests that arrive over HTTP. Websocket sessions are not
