@@ -14,16 +14,19 @@ const maxEvent = 4 * 1024 * 1024
 type apiError struct {
 	Status        int
 	Code, Message string
+	FailureReason string
 }
 
-func (e *apiError) Error() string                    { return e.Message }
-func problem(status int, code, message string) error { return &apiError{status, code, message} }
+func (e *apiError) Error() string { return e.Message }
+func problem(status int, code, message string) error {
+	return &apiError{Status: status, Code: code, Message: message}
+}
 func safeError(err error) *apiError {
 	var e *apiError
 	if errors.As(err, &e) {
 		return e
 	}
-	return &apiError{502, "request_failed", "Request failed"}
+	return &apiError{Status: 502, Code: "request_failed", Message: "Request failed"}
 }
 func encode(v any) []byte {
 	var b bytes.Buffer
@@ -44,7 +47,11 @@ func decode(raw []byte, target any) error {
 func envelope(v any, err error) []byte {
 	if err != nil {
 		e := safeError(err)
-		return encode(map[string]any{"ok": false, "error": map[string]any{"code": rpcErrorCode(e), "message": e.Message, "http_status": e.Status, "retryable": false}})
+		detail := map[string]any{"code": rpcErrorCode(e), "message": e.Message, "http_status": e.Status, "retryable": false}
+		if e.FailureReason != "" {
+			detail["failure_reason"] = e.FailureReason
+		}
+		return encode(map[string]any{"ok": false, "error": detail})
 	}
 	return encode(map[string]any{"ok": true, "result": v})
 }

@@ -18,6 +18,7 @@ type countFakeHost struct {
 	countBody    map[string]any
 	rejectSig    bool
 	badCountBody bool
+	rejectBody   string
 }
 
 func (f *countFakeHost) Call(method string, value any) (json.RawMessage, error) {
@@ -43,6 +44,9 @@ func (f *countFakeHost) Call(method string, value any) (json.RawMessage, error) 
 		}
 	}
 	if method == "host.http.stream_read" {
+		if id, _ := value.(map[string]any)["stream_id"].(string); id == "count-reject" {
+			return encode(httpChunk{Payload: []byte(f.rejectBody), Done: true}), nil
+		}
 		if id, _ := value.(map[string]any)["stream_id"].(string); id == "count" {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -135,6 +139,21 @@ func TestCountTokensUpstreamAuthFailurePropagates(t *testing.T) {
 	e := safeError(err)
 	if e.Status != 401 || e.Code != "upstream_error" {
 		t.Fatalf("error = %d %s", e.Status, e.Code)
+	}
+}
+
+func TestCountTokensUpstreamBusinessReason(t *testing.T) {
+	r, f := newCountTestRuntime(t)
+	f.rejectSig = true
+	f.rejectBody = `{"error":{"code":1301,"message":"private prompt"}}`
+	req := executorRequest{RequestID: "count-business", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
+	_, err := r.countTokens(req)
+	if err == nil {
+		t.Fatal("upstream error accepted")
+	}
+	e := safeError(err)
+	if e.Status != 401 || e.FailureReason != "bigmodel_1301" || strings.Contains(e.Message, "private prompt") {
+		t.Fatalf("failure = %+v", e)
 	}
 }
 

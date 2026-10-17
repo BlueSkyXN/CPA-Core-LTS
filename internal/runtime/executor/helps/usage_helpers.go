@@ -978,12 +978,31 @@ func failFromErrors(errs ...error) usage.Failure {
 				body = string(responseBody)
 			}
 		}
+		var diagnostic interface{ FailureReason() string }
+		if errors.As(err, &diagnostic) {
+			if reason := safeUsageFailureReason(diagnostic.FailureReason()); reason != "" {
+				body = reason
+			}
+		}
 		return usage.Failure{
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
 	}
 	return usage.Failure{}
+}
+
+func safeUsageFailureReason(reason string) string {
+	if len(reason) == 0 || len(reason) > 128 {
+		return ""
+	}
+	for _, ch := range reason {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-' || ch == '.' {
+			continue
+		}
+		return ""
+	}
+	return reason
 }
 
 func (r *UsageReporter) latency() time.Duration {

@@ -344,11 +344,7 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 		return nil, err
 	}
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
-		status := upstream.StatusCode
-		if status < 400 || status > 599 {
-			status = 502
-		}
-		return nil, problem(status, "upstream_error", "Upstream rejected the request")
+		return nil, r.rejectedRequest(e, upstream, "messages", "Upstream rejected the request")
 	}
 	if stream {
 		if !strings.Contains(strings.ToLower(upstream.Headers.Get("Content-Type")), "text/event-stream") {
@@ -360,7 +356,6 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 				_, err := r.caller.Call("host.stream.emit", map[string]any{"stream_id": req.StreamID, "payload": chunk})
 				return err
 			})
-			r.finish(e)
 			result := map[string]any{"stream_id": req.StreamID}
 			if err != nil {
 				safe := safeError(err)
@@ -368,7 +363,14 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 				result["error_code"] = rpcErrorCode(safe)
 				result["http_status"] = safe.Status
 				result["retryable"] = false
+				if safe.FailureReason != "" {
+					result["failure_reason"] = safe.FailureReason
+				}
+				if safe.Code == "upstream_error" {
+					r.logUpstreamFailure(e, "sse_error", upstream.StatusCode, upstream.Headers, safe)
+				}
 			}
+			r.finish(e)
 			_, _ = r.caller.Call("host.stream.close", result)
 		}()
 		return map[string]any{"headers": http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
@@ -437,11 +439,7 @@ func (r *pluginRuntime) countTokens(req executorRequest) (any, error) {
 		return nil, err
 	}
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
-		status := upstream.StatusCode
-		if status < 400 || status > 599 {
-			status = 502
-		}
-		return nil, problem(status, "upstream_error", "Upstream rejected the token count request")
+		return nil, r.rejectedRequest(e, upstream, "count_tokens", "Upstream rejected the token count request")
 	}
 	data, err := r.readAll(e, upstream.StreamID, maxBody)
 	if err != nil {
@@ -487,7 +485,7 @@ func (r *pluginRuntime) readAll(e *execution, id string, limit int) ([]byte, err
 	}
 }
 func (r *pluginRuntime) consume(e *execution, id string, emit func([]byte) error) error {
-	p := sseParser{emit: emit}
+	p := sseParser{emit: emit, source: diagnosticSource(e.signer.endpoint)}
 	for {
 		c, err := r.readChunk(e, id)
 		if err != nil {
