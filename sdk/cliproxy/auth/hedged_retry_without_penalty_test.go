@@ -1143,13 +1143,17 @@ func TestManagerExecute_HedgedRetrySelectedAuthCallbackReportsWinner(t *testing.
 }
 
 func TestManagerExecute_HedgedRetryQualityWaitsForAbnormalAndFinalizesWinnerUsage(t *testing.T) {
+	// 先让两个候选都派发，再验证胜者和用量；零延迟 timer 不保证先于结果被处理。
+	barrier := newHedgedRetryBarrier(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	executor := &hedgedRetryTestExecutor{
 		behaviors: map[string][]hedgedRetryBehavior{
 			"auth-a": {
 				{kind: "retry"},
-				{kind: "success", payload: "winner-ok", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 20, ReasoningTokens: 8, TotalTokens: 25}, finalize: true},
+				{kind: "success", barrier: barrier, payload: "winner-ok", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 20, ReasoningTokens: 8, TotalTokens: 25}, finalize: true},
 			},
-			"auth-b": {{kind: "retry"}},
+			"auth-b": {{kind: "retry", barrier: barrier}},
 		},
 		maxRetries:      2,
 		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
@@ -1171,7 +1175,7 @@ func TestManagerExecute_HedgedRetryQualityWaitsForAbnormalAndFinalizesWinnerUsag
 		},
 	}
 
-	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, opts)
+	resp, err := manager.Execute(ctx, []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, opts)
 	if err != nil {
 		t.Fatalf("Execute error = %v, want nil", err)
 	}
@@ -1193,13 +1197,17 @@ func TestManagerExecute_HedgedRetryQualityWaitsForAbnormalAndFinalizesWinnerUsag
 }
 
 func TestManagerExecute_HedgedRetryQualityChoosesLargestOutputAndFoldsLoser(t *testing.T) {
+	// 先让两个候选都派发，再验证胜者和用量；零延迟 timer 不保证先于结果被处理。
+	barrier := newHedgedRetryBarrier(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	executor := &hedgedRetryTestExecutor{
 		behaviors: map[string][]hedgedRetryBehavior{
 			"auth-a": {
 				{kind: "retry"},
-				{kind: "success", payload: "big", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, ReasoningTokens: 8, TotalTokens: 35}, finalize: true},
+				{kind: "success", barrier: barrier, payload: "big", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, ReasoningTokens: 8, TotalTokens: 35}, finalize: true},
 			},
-			"auth-b": {{kind: "success", payload: "small", usage: coreusage.Detail{InputTokens: 3, OutputTokens: 10, ReasoningTokens: 2, TotalTokens: 13}, finalize: true}},
+			"auth-b": {{kind: "success", barrier: barrier, payload: "small", usage: coreusage.Detail{InputTokens: 3, OutputTokens: 10, ReasoningTokens: 2, TotalTokens: 13}, finalize: true}},
 		},
 		maxRetries:      2,
 		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
@@ -1209,7 +1217,7 @@ func TestManagerExecute_HedgedRetryQualityChoosesLargestOutputAndFoldsLoser(t *t
 	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
 	manager.SetRetryConfig(0, 0, 0)
 
-	resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	resp, err := manager.Execute(ctx, []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("Execute error = %v, want nil", err)
 	}
@@ -1245,13 +1253,17 @@ func TestManagerExecute_HedgedRetryQualityBudgetCountsDispatchedLanes(t *testing
 }
 
 func TestManagerExecuteStream_HedgedRetryQualityReplaysWinnerOnly(t *testing.T) {
+	// 先让两个候选都派发，再验证胜者和用量；零延迟 timer 不保证先于结果被处理。
+	barrier := newHedgedRetryBarrier(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	executor := &hedgedRetryTestExecutor{
 		streamBehaviors: map[string][]hedgedRetryBehavior{
 			"auth-a": {
 				{kind: "retry"},
-				{kind: "success", payload: "big-stream", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, ReasoningTokens: 8, TotalTokens: 35}, finalize: true},
+				{kind: "success", barrier: barrier, payload: "big-stream", usage: coreusage.Detail{InputTokens: 5, OutputTokens: 30, ReasoningTokens: 8, TotalTokens: 35}, finalize: true},
 			},
-			"auth-b": {{kind: "success", payload: "small-stream", usage: coreusage.Detail{InputTokens: 3, OutputTokens: 10, ReasoningTokens: 2, TotalTokens: 13}, finalize: true}},
+			"auth-b": {{kind: "success", barrier: barrier, payload: "small-stream", usage: coreusage.Detail{InputTokens: 3, OutputTokens: 10, ReasoningTokens: 2, TotalTokens: 13}, finalize: true}},
 		},
 		maxRetries:      2,
 		hedgeMode:       retryWithoutPenaltyHedgeModeQuality,
@@ -1261,7 +1273,7 @@ func TestManagerExecuteStream_HedgedRetryQualityReplaysWinnerOnly(t *testing.T) 
 	manager, _ := newHedgedRetryTestManager(t, executor, "auth-a", "auth-b")
 	manager.SetRetryConfig(0, 0, 0)
 
-	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
+	result, err := manager.ExecuteStream(ctx, []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.5"}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("ExecuteStream error = %v, want nil", err)
 	}
