@@ -1,6 +1,6 @@
 # Coding Plan native Go plugin
 
-`zcode-coding-plan` v0.6.0 is a multi-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
+`zcode-coding-plan` v0.6.1 is a multi-account provider plugin maintained in this CPA-Core-LTS repository. It is a C-shared dynamic library, not a built-in provider or a Node worker. Product rules and ownership are in [SPEC.md](SPEC.md).
 
 The plugin supports direct Anthropic Messages with Core's Responses HTTP JSON/SSE adapter and same-connection WebSocket continuation. The matching Core source also provides Chat Completions JSON/SSE conversion; updating the plugin alone on an older Core does not add that adapter. It does not execute tools, maintain another chat history, discover accounts, scan official application directories, query quota or implement interactive login. Use only credentials and client identity you are authorized to use. Local synthetic acceptance is not proof of upstream acceptance, pricing or production logging safety.
 
@@ -167,6 +167,14 @@ Merge it into the relevant provider/model rule in the active `provider_config.js
 
 Strict output schemas, priority tier, HTTP store/background, files, server tools and unsupported cache shapes fail explicitly. HTTP multi-turn requests must carry full input; a response ID alone does not restore HTTP history. WS input remains an array, and an explicit previous response ID must match the connection's latest response. The offline suite loads the actual C-shared library into the current Core and covers three-protocol JSON/SSE client tools plus native-tool pre-dispatch rejection. It uses synthetic credentials and an in-memory upstream transport, not a real search service or client UI.
 
+## Upstream error diagnostics
+
+From 0.6.1, HTTP rejection bodies and SSE error events retain bounded business codes separately from the existing HTTP status and error classification. With the matching Core, usage `failure_reason` records a provider-scoped value such as `bigmodel_1301` or `zai_1301`. Panel can display `1301 · Content safety block`; older Panels display the raw reason. Older Core versions ignore the optional diagnostic field and keep their existing usage classification.
+
+Code 1301 reports a content safety check on input or generated content. It does not identify the specific category or establish an account restriction. Unknown numeric codes remain available without an inferred explanation. Raw upstream messages, user content and signing material are not copied into these diagnostics; known codes use fixed descriptions.
+
+A warning in the existing application log includes the request ID, failure phase, original HTTP status, mapped status and safe reason. This works with `request-log: false`: `logging-to-file` selects `main.log` or stdout. For example, `upstream_http=200 status=502 phase=sse_error` means an error event arrived after a successful HTTP handshake. Error-body reads are limited to 16 KiB and two seconds after an HTTP rejection; successful streams have no added timeout. Retry, cooldown and account selection policies are unchanged.
+
 ## Safety and validation boundary
 
 - Handshake and model requests both disable redirects; 307/308 cannot replay credentials or bodies elsewhere.
@@ -175,4 +183,6 @@ Strict output schemas, priority tier, HTTP store/background, files, server tools
 - A plugin execution dispatches at most one model request. Disable unsuitable caller/Core retries and fallbacks separately; this is not an end-to-end exactly-once guarantee.
 - Core unload drains active RPCs and does not force-cancel them. Stop traffic and cancel/finish requests before unload/restart. Tests isolate each C-shared scenario in a child process; they do not prove arbitrary hot replacement safety.
 
-Validation before this source import included macOS arm64 Go 1.27.0/1.26.5 unit/race/vet, synthetic crypto parity, actual dynamic JSON/SSE/WS and management flows. macOS dynamic test children on Go 1.27 and 1.26.5 have intermittently failed to exit after their scenario finished; full suites have also passed, but the cause is not established and nonzero exits remain failures. Linux results are determined by the current PR's explicit plugin CI; no Windows dynamic-runtime, live billing, long-running load, TLS fingerprint, or production deployment claim is made.
+On macOS, the matching Core keeps Go dynamic libraries mapped after logical unload so their embedded runtime threads cannot execute unmapped code. Host callbacks and plugin registration are still released. Restart Core when replacing a plugin binary to load a fresh image and reclaim resident library memory; see [native library lifetime](../README.md#native-library-lifetime-on-macos).
+
+Local validation covers macOS arm64 Go 1.27.2/1.26.5 dynamic JSON/SSE/WS and management flows at default concurrency, plus unit/race/vet and synthetic crypto parity. The PR workflow also runs the dynamic suite on Linux and macOS, including a macOS Go-versus-C library mapping regression. Linux results require the current PR run; Windows dynamic runtime and live provider acceptance are separate checks.

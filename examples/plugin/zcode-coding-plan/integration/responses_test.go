@@ -46,6 +46,8 @@ type v2Transport struct {
 	targets        int
 	handshakeBody  string
 	blocked        *blockedFixtureBody
+	errorStatus    int
+	errorBody      string
 }
 
 func (f *v2Transport) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return f }
@@ -103,12 +105,18 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if f.mode == "model-redirect" {
 		return &http.Response{StatusCode: f.redirectStatus, Header: http.Header{"Location": {"https://elsewhere.invalid/capture"}}, Body: io.NopCloser(strings.NewReader("redirect")), Request: req}, nil
 	}
+	if f.errorStatus != 0 {
+		return &http.Response{StatusCode: f.errorStatus, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(f.errorBody)), Request: req}, nil
+	}
 	text, ct := v2Reply(body, len(f.captured)), "application/json"
 	if gjson.GetBytes(body, "stream").Bool() {
 		ct = "text/event-stream"
 		text = v2Events(text)
-		if f.mode == "truncate" {
+		if f.mode == "truncate" || f.mode == "business-error" {
 			text = strings.TrimSuffix(text, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		}
+		if f.mode == "business-error" {
+			text += "event: error\ndata: " + f.errorBody + "\n\n"
 		}
 	}
 	if f.mode == "invalid" {

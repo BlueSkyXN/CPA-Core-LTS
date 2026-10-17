@@ -199,7 +199,12 @@ func (s *signer) handshake(r *pluginRuntime, e *execution) (ed25519.PrivateKey, 
 	}
 	defer r.releaseStream(e, response.StreamID)
 	if response.StatusCode != 200 {
-		return nil, problem(502, "signing_failed", "Signing handshake rejected")
+		body := r.readErrorBody(e, response.StreamID, errorBodyReadTimeout)
+		failure := upstreamProblem(502, diagnosticSource(s.endpoint), upstreamErrorCode(body), "Signing handshake rejected")
+		failure.Code = "signing_failed"
+		failure.Message = "Signing handshake rejected; no model request was sent"
+		r.logUpstreamFailure(e, "signing", response.StatusCode, response.Headers, failure)
+		return nil, failure
 	}
 	body, err := r.readAll(e, response.StreamID, 65536)
 	if err != nil {
@@ -212,7 +217,11 @@ func (s *signer) handshake(r *pluginRuntime, e *execution) (ed25519.PrivateKey, 
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &result) != nil || result.Code != 200 {
-		return nil, problem(502, "signing_failed", "Signing handshake rejected")
+		failure := upstreamProblem(502, diagnosticSource(s.endpoint), upstreamErrorCode(body), "Signing handshake rejected")
+		failure.Code = "signing_failed"
+		failure.Message = "Signing handshake rejected; no model request was sent"
+		r.logUpstreamFailure(e, "signing", response.StatusCode, response.Headers, failure)
+		return nil, failure
 	}
 	return decryptKey(s.apiKey, result.Data.Cipher)
 }

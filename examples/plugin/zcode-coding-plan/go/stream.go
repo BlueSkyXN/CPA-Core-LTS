@@ -11,6 +11,7 @@ type sseParser struct {
 	pending  []byte
 	terminal bool
 	emit     func([]byte) error
+	source   string
 }
 
 func separator(b []byte) (int, int) {
@@ -87,7 +88,7 @@ func (p *sseParser) frame(b []byte) error {
 		return problem(502, "invalid_response", "Invalid SSE JSON")
 	}
 	if value["type"] == "error" || event == "error" {
-		return problem(502, "upstream_error", "Upstream reported a stream error")
+		return streamErrorProblem([]byte(text), p.source)
 	}
 	if p.terminal && value["type"] != "ping" {
 		return problem(502, "invalid_response", "Data after terminal event")
