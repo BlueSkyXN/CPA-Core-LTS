@@ -33,23 +33,23 @@ const (
 //   - max_output_tokens -> max_tokens
 //   - stream passthrough via parameter
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, nil)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, nil, false)
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithCompat preserves reasoning items
 // whose encrypted content is empty for configured compatibility endpoints.
 func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, nil)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, nil, false)
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithModelInfo lets executor adapters
 // pass the selected model metadata; a model that declares the BigModel search
 // replay protocol also unlocks refer-tagged search history replay.
 func ConvertOpenAIResponsesRequestToClaudeWithModelInfo(modelName string, inputRawJSON []byte, stream bool, modelInfo *registry.ModelInfo) []byte {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, modelInfo)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, modelInfo, false)
 }
 
-func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo) []byte {
+func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo, countOnly bool) []byte {
 	// modelInfo keeps its caller-supplied value as the authority flag; metadata-free
 	// callers fall back to the legacy global lookup for capability hints.
 	resolvedModelInfo := modelInfo
@@ -558,18 +558,20 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		log.Warnf("responses->claude: dropped input items of unmapped types %v (model=%s)", unmappedItemTypes, modelName)
 	}
 	hadMessages := len(messageBlocks) > 0
-	if !preserveEmptyThinkingBlocks {
+	if !preserveEmptyThinkingBlocks && !countOnly {
 		messageBlocks = stripTrailingClaudeThinkingBlocks(messageBlocks)
 	}
 	// Answer dangling tool_use blocks before the prefill check below so an
 	// interrupted turn ends with a synthesized user tool_result instead of a
 	// rejected assistant prefill on models that disallow it.
-	messageBlocks = repairClaudeToolPairing(messageBlocks)
-	if !preserveEmptyThinkingBlocks {
-		messageBlocks = dropUnsupportedClaudeAssistantPrefill(modelName, messageBlocks)
-	}
-	if problems := claudeMessageInvariantProblems(messageBlocks); len(problems) > 0 {
-		log.Warnf("responses->claude: message invariants violated after repair (model=%s): %s", modelName, strings.Join(problems, "; "))
+	if !countOnly {
+		messageBlocks = repairClaudeToolPairing(messageBlocks)
+		if !preserveEmptyThinkingBlocks {
+			messageBlocks = dropUnsupportedClaudeAssistantPrefill(modelName, messageBlocks)
+		}
+		if problems := claudeMessageInvariantProblems(messageBlocks); len(problems) > 0 {
+			log.Warnf("responses->claude: message invariants violated after repair (model=%s): %s", modelName, strings.Join(problems, "; "))
+		}
 	}
 	// Preserve a minimal conversational turn for system-only inputs or when messages became empty
 	// so downstream validation still sees a Claude-shaped request.
