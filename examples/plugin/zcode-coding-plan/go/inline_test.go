@@ -66,8 +66,8 @@ func TestInlineConfigurationRequiresLoggingAcknowledgement(t *testing.T) {
 		t.Fatal("default upstream endpoint missing")
 	}
 	second := []byte(`{"type":"zcode-coding-plan","api_key":"other-key.other-secret","device_id":"other-device"}`)
-	if _, err = r.configuration(second, "second-auth"); err == nil {
-		t.Fatal("second inline account accepted")
+	if other, err := r.configuration(second, "second-auth"); err != nil || other == c || other.AccountScope != "second-auth" {
+		t.Fatal("second inline account was not independently configured", err)
 	}
 	status, err := r.dispatch("executor.readiness", encode(map[string]any{"StorageJSON": inlineStorage(), "AuthID": "inline-auth"}))
 	if err != nil {
@@ -84,6 +84,11 @@ func TestInlineModelMetadata(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatal("default models missing")
 	}
+	c.applyExtraModels([]string{"glm-5.3-highspeed", "glm-5.3-flashx"})
+	list = modelList(c)
+	if len(list) != 4 {
+		t.Fatal("optional models missing")
+	}
 	for _, entry := range list {
 		m := entry.(map[string]any)
 		id := m["ID"].(string)
@@ -99,11 +104,15 @@ func TestInlineModelMetadata(t *testing.T) {
 			t.Fatal("thinking levels wrong for", id, thinking["Levels"])
 		}
 		input := m["SupportedInputModalities"].([]string)
-		if id == "glm-5.3" && len(input) != 1 {
+		if (id == "glm-5.3" || id == "glm-5.3-highspeed") && len(input) != 1 {
 			t.Fatal("glm-5.3 must be text-only")
 		}
-		if id == "glm-5.3-flash" && len(input) != 2 || (id == "glm-5.3-flash" && input[1] != "image") {
+		if (id == "glm-5.3-flash" || id == "glm-5.3-flashx") && (len(input) != 2 || input[1] != "image") {
 			t.Fatal("glm-5.3-flash must accept images")
+		}
+		native := m["NativeCapabilities"].(map[string]any)
+		if native["WebSearch"] != true || native["WebSearchReplay"] != "bigmodel" {
+			t.Fatal("GLM template lost native search capability")
 		}
 	}
 	legacy, ok := builtinModelLimits("GLM-5.3-Flash")
@@ -143,8 +152,8 @@ func TestInlineExecutionAndReconfigure(t *testing.T) {
 		t.Fatal("inline config lost after reconfigure", err)
 	}
 	r.mu.Lock()
-	key := r.config.APIKey
-	signer := r.signer
+	key := r.accounts["inline-auth"].config.APIKey
+	signer := r.accounts["inline-auth"].signer
 	r.mu.Unlock()
 	if key != "synthetic-key.synthetic-secret" || signer == nil {
 		t.Fatal("inline credential snapshot lost on reconfigure")

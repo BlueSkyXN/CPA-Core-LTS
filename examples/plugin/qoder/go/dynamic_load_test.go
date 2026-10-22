@@ -92,7 +92,9 @@ func TestDynamicPluginLoadHelper(t *testing.T) {
 	if metadata.Name != pluginName || metadata.Version != pluginVersion || metadata.Author == "" || metadata.GitHubRepository != "https://github.com/BlueSkyXN/CPA-Core-LTS" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
-	if !plugins[0].SupportsOAuth || plugins[0].OAuthProvider != pluginIdentifier {
+	// auth_import_only moves the plugin out of the OAuth login entry while
+	// keeping parse/refresh under the plugin auth provider.
+	if plugins[0].SupportsOAuth || !plugins[0].SupportsAuth || plugins[0].OAuthProvider != pluginIdentifier {
 		t.Fatalf("auth registration = %#v", plugins[0])
 	}
 	manager := coreauth.NewManager(nil, nil, nil)

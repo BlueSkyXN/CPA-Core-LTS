@@ -75,6 +75,12 @@ Pre-execution admission uses `Purpose=admission` and probes plugin, runner, prot
 
 Plugins that negotiate schema 4 or earlier continue to execute without these optional methods. Their RPC executor request omits the new typed fields; the existing metadata extension bag remains available for compatibility. `RequestID` identifies one execution across auth retries and is distinct from the HTTP/logging trace ID. `ExecutionSessionID` is populated only for an explicit Core-owned lifecycle; an affinity-only `derived_session_id` remains metadata and must not be treated as a native session.
 
+## Native library lifetime on macOS
+
+The host detects libraries that embed a Go runtime through their Go build information — plain `c-shared` plugins and Go archives linked into a C or Rust shell alike — and loads them with `RTLD_NODELETE` on macOS. Plugin shutdown still drains calls, unregisters capabilities and releases host callback resources. The library's code and embedded Go runtime remain mapped until Core exits, matching the lifetime flag emitted by Go's ELF linker on Linux. Unmapping a Go runtime while its threads remain alive can hang or crash the host after shutdown. Do not strip Go build information from plugin binaries; binaries the host cannot classify fall back to plain unload behavior.
+
+Ordinary C/Rust libraries keep the existing unload behavior. Restart Core after replacing a Go plugin binary on macOS; loading the same path again may reuse the resident image, and its mapped memory is reclaimed only when the process exits.
+
 ## Host Auth Files Callback
 
 `host-callback-auth-files` declares the Management API capability and exposes a browser resource named `Host Auth Files`. The resource demonstrates `host.auth.list`, `host.auth.get` (physical JSON file), `host.auth.get_runtime`, and `host.auth.save`.

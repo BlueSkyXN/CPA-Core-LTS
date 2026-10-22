@@ -532,6 +532,18 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 	return refreshed, true
 }
 
+// permanentRefreshFailure is implemented by provider refresh errors that cannot recover without
+// re-authentication, such as a Codex refresh token the token endpoint reports as expired, reused,
+// or invalidated. Classification is typed so it never depends on matching error text.
+type permanentRefreshFailure interface {
+	PermanentRefreshFailure() bool
+}
+
+func isPermanentRefreshFailure(err error) bool {
+	var permanent permanentRefreshFailure
+	return errors.As(err, &permanent) && permanent.PermanentRefreshFailure()
+}
+
 func invalidGrantBackoffDuration(failures int) time.Duration {
 	if failures <= 1 {
 		return invalidGrantBackoffBase
@@ -644,7 +656,9 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	now := time.Now()
 	if err != nil {
 		unauthorized := isUnauthorizedError(err)
-		invalidGrant := isInvalidGrantError(err)
+		// Permanent refresh failures (e.g. a Codex refresh token reported invalidated) take the
+		// invalid-grant path: growing backoff instead of a fixed retry interval.
+		invalidGrant := isInvalidGrantError(err) || isPermanentRefreshFailure(err)
 		shouldReschedule := false
 		isDisabled := false
 		shouldUnschedule := false

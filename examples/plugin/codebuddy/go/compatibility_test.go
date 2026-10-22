@@ -51,6 +51,35 @@ func TestModernCatalogPreservesVariantsThinkingAndDefaultContext(t *testing.T) {
 	}
 }
 
+func TestCatalogAuthRejectionIsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"unauthorized", 401},
+		{"forbidden", 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := newFakeHost()
+			host.catalogResponse.StatusCode = tc.status
+			host.catalogResponse.Body = []byte(`{"message":"expired"}`)
+			runtime := newPluginRuntime(host)
+			auth, _ := parseStoredAuth(testAuthJSON())
+			_, errCatalog := runtime.catalogForAuth(auth, "fixture")
+			callErr, ok := errCatalog.(*pluginCallError)
+			if !ok {
+				t.Fatalf("catalog error = %#v, want pluginCallError", errCatalog)
+			}
+			if callErr.code != "catalog_auth_rejected" || callErr.retryable {
+				t.Fatalf("catalog error code=%s retryable=%v, want catalog_auth_rejected non-retryable", callErr.code, callErr.retryable)
+			}
+			if callErr.statusCode != tc.status {
+				t.Fatalf("catalog error status = %d, want %d", callErr.statusCode, tc.status)
+			}
+		})
+	}
+}
+
 func TestClientProfileDefaultAndExplicitOverrides(t *testing.T) {
 	cfg, err := decodePluginConfig(nil)
 	if err != nil || !strings.Contains(cfg.CatalogUserAgent, "CLI/") || cfg.UserAgent != cfg.CatalogUserAgent {

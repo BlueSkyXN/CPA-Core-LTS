@@ -1516,6 +1516,12 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 		if entry.BaseURL == "" {
 			continue
 		}
+		compression, errCompression := config.NormalizeCodexKeyRequestCompression(entry.RequestCompression)
+		if errCompression != nil {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("invalid codex-api-key[%d].request-compression: %v", i, errCompression)})
+			return
+		}
+		entry.RequestCompression = compression
 		if rejectInvalidCredentialWeight(c, fmt.Sprintf("codex-api-key[%d].weight", i), entry.Weight) {
 			return
 		}
@@ -1541,6 +1547,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		ExcludedModels       *[]string                        `json:"excluded-models"`
 		DisableCooling       json.RawMessage                  `json:"disable-cooling"`
 		DisableCodexCloaking json.RawMessage                  `json:"disable-codex-cloaking"`
+		RequestCompression   *string                          `json:"request-compression"`
 		RequestRetry         *int                             `json:"request-retry"`
 		RequestScopedErrors  *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
 	}
@@ -1575,6 +1582,14 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.CodexKey[targetIndex]
+	if body.Value.RequestCompression != nil {
+		compression, errCompression := config.NormalizeCodexKeyRequestCompression(*body.Value.RequestCompression)
+		if errCompression != nil {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("invalid request-compression: %v", errCompression)})
+			return
+		}
+		entry.RequestCompression = compression
+	}
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}

@@ -289,6 +289,8 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	body = normalizeKimiTools(body)
 	body = normalizeKimiTemperature(body)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
+	// Thinking settings use the provider dialect; timing uses the wire protocol.
+	reporter.EnableSemanticTiming(to.String())
 
 	url := helps.ResolveKimiChatURL(auth)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -571,6 +573,8 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 	body = normalizeKimiTools(body)
 	body = normalizeKimiTemperature(body)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
+	// Thinking settings use the provider dialect; timing uses the wire protocol.
+	reporter.EnableSemanticTiming(sdktranslator.FormatOpenAIResponse.String())
 
 	url := helps.ResolveKimiResponsesURL(auth)
 	httpReq, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

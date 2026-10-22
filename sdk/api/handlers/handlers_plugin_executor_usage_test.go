@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -125,6 +127,14 @@ func TestHandlerPluginExecutorPublishesUsageNonStreamOpenAI(t *testing.T) {
 			Payload: openAIResponseBody,
 		},
 	}
+	mockHost.execFunc = func(ctx context.Context, _ string, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+		reporter := helps.UsageReporterFromContext(ctx)
+		if reporter == nil {
+			t.Fatal("direct executor did not receive the handler usage reporter")
+		}
+		reporter.ObserveUpstreamHTTPRequest(&http.Request{ContentLength: 123})(len(openAIResponseBody))
+		return mockHost.execResp, nil
+	}
 	mockHost.hasRouters = true
 	mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
 		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
@@ -151,6 +161,9 @@ func TestHandlerPluginExecutorPublishesUsageNonStreamOpenAI(t *testing.T) {
 	if record.Detail.InputTokens != 12 || record.Detail.OutputTokens != 34 || record.Detail.TotalTokens != 46 {
 		t.Errorf("record.Detail = %+v, want prompt=12 completion=34 total=46", record.Detail)
 	}
+	if record.Size.UpstreamTransport != usage.UpstreamTransportHTTP || record.Size.UpstreamRequestBytes != 123 || record.Size.UpstreamResponseBytes != int64(len(openAIResponseBody)) {
+		t.Errorf("record.Size = %+v, want direct executor HTTP measurement", record.Size)
+	}
 }
 
 func TestHandlerPluginExecutorPublishesUsageStreamOpenAI(t *testing.T) {
@@ -168,6 +181,14 @@ func TestHandlerPluginExecutorPublishesUsageStreamOpenAI(t *testing.T) {
 
 	mockHost := &mockPluginUsageHost{
 		streamResult: &coreexecutor.StreamResult{Chunks: chunks},
+	}
+	mockHost.stream = func(ctx context.Context, _ string, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+		reporter := helps.UsageReporterFromContext(ctx)
+		if reporter == nil {
+			t.Fatal("direct stream executor did not receive the handler usage reporter")
+		}
+		reporter.ObserveUpstreamHTTPRequest(&http.Request{ContentLength: 234})(345)
+		return mockHost.streamResult, nil
 	}
 	mockHost.hasRouters = true
 	mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
@@ -195,6 +216,9 @@ func TestHandlerPluginExecutorPublishesUsageStreamOpenAI(t *testing.T) {
 	}
 	if record.Detail.InputTokens != 15 || record.Detail.OutputTokens != 25 || record.Detail.TotalTokens != 40 {
 		t.Errorf("record.Detail = %+v, want prompt=15 completion=25 total=40", record.Detail)
+	}
+	if record.Size.UpstreamTransport != usage.UpstreamTransportHTTP || record.Size.UpstreamRequestBytes != 234 || record.Size.UpstreamResponseBytes != 345 {
+		t.Errorf("record.Size = %+v, want direct stream executor HTTP measurement", record.Size)
 	}
 }
 
@@ -762,5 +786,8 @@ func (h *mockPluginUsageHost) ExecutePluginExecutorStream(ctx context.Context, p
 	h.lastPluginID = pluginID
 	h.lastRequest = req
 	h.lastOptions = opts
+	if h.stream != nil {
+		return h.stream(ctx, pluginID, req, opts)
+	}
 	return h.streamResult, nil
 }

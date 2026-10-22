@@ -91,10 +91,13 @@ type Record struct {
 	TTFT time.Duration
 	// TTFA is the time from the upstream attempt start to the first non-empty
 	// user-visible assistant text event.
-	TTFA   time.Duration
-	Failed bool
-	Fail   Failure
-	Detail Detail
+	OutputTiming *OutputTiming
+	TTFA         time.Duration
+	Failed       bool
+	Fail         Failure
+	Detail       Detail
+	// Size stores request/response byte counts measured for this request.
+	Size RequestSize
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

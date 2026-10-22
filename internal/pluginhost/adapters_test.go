@@ -2650,6 +2650,7 @@ func TestUsageAdapterPreservesServiceTierMetadata(t *testing.T) {
 
 func TestUsageAdapterPreservesSemanticTimingMetadata(t *testing.T) {
 	var got pluginapi.UsageRecord
+	duration := int64(500)
 	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
 		got = record
 	})
@@ -2663,12 +2664,20 @@ func TestUsageAdapterPreservesSemanticTimingMetadata(t *testing.T) {
 	adapter.HandleUsage(context.Background(), coreusage.Record{
 		Provider:      "codex",
 		TimingVersion: coreusage.TimingVersionV1,
+		OutputTiming:  &coreusage.OutputTiming{Version: 1, Streamed: true, DurationMS: &duration},
 		TTFB:          120 * time.Millisecond,
 		TTFT:          480 * time.Millisecond,
 		TTFA:          920 * time.Millisecond,
 	})
 	if got.TimingVersion != coreusage.TimingVersionV1 || got.TTFB != 120*time.Millisecond || got.TTFT != 480*time.Millisecond || got.TTFA != 920*time.Millisecond {
 		t.Fatalf("plugin timing = version:%d ttfb:%v ttft:%v ttfa:%v, want 1/120ms/480ms/920ms", got.TimingVersion, got.TTFB, got.TTFT, got.TTFA)
+	}
+	if got.OutputTiming == nil || got.OutputTiming.DurationMS == nil || *got.OutputTiming.DurationMS != 500 {
+		t.Fatal("output window lost in plugin adapter")
+	}
+	*got.OutputTiming.DurationMS = 1
+	if duration != 500 {
+		t.Fatal("plugin timing aliases producer state")
 	}
 }
 
@@ -3387,7 +3396,7 @@ func TestExecutorAdapterUsesResponseFormatForOutputTranslation(t *testing.T) {
 	if captured.Format != sdktranslator.FormatClaude.String() {
 		t.Fatalf("executor Format = %q, want %q", captured.Format, sdktranslator.FormatClaude)
 	}
-	if bytes.Equal(captured.Payload, openAIRequest) || !bytes.Contains(captured.Payload, []byte(`"max_tokens":32000`)) {
+	if bytes.Equal(captured.Payload, openAIRequest) || !bytes.Contains(captured.Payload, []byte(`"max_tokens":64000`)) {
 		t.Fatalf("executor payload = %s, want translated Claude request", captured.Payload)
 	}
 	if !bytes.Equal(resp.Payload, claudeResponse) {

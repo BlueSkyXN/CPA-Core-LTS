@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -189,5 +190,72 @@ func TestGinLogrusLoggerHealthProbeStatus(t *testing.T) {
 				t.Errorf("access log present = %v, want %v", got, tc.wantLog)
 			}
 		})
+	}
+}
+
+func TestSkipSuccessfulGetAccessLogSkipsOnlySuccessfulGets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(hook.Reset)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger())
+	group := engine.Group("/v0/management")
+	group.Use(SkipSuccessfulGetAccessLog())
+	group.GET("/config", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/boom", func(c *gin.Context) { c.Status(http.StatusInternalServerError) })
+	group.POST("/config", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/auth-files/download", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/codex-auth-url", func(c *gin.Context) { c.Status(http.StatusOK) })
+	group.GET("/auth-files", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	perform := func(method, path string) {
+		req := httptest.NewRequest(method, path, nil)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+	}
+
+	perform(http.MethodGet, "/v0/management/config")
+	perform(http.MethodGet, "/v0/management/boom")
+	perform(http.MethodPost, "/v0/management/config")
+	perform(http.MethodGet, "/v0/management/auth-files/download")
+	perform(http.MethodGet, "/v0/management/codex-auth-url")
+	perform(http.MethodGet, "/v0/management/auth-files")
+
+	logged := map[string]bool{}
+	for _, entry := range hook.AllEntries() {
+		switch {
+		case strings.Contains(entry.Message, `GET     "/v0/management/config"`):
+			logged["get-ok"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/boom"`):
+			logged["get-500"] = true
+		case strings.Contains(entry.Message, `POST    "/v0/management/config"`):
+			logged["post-ok"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/auth-files/download"`):
+			logged["auth-download"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/codex-auth-url"`):
+			logged["oauth-start"] = true
+		case strings.Contains(entry.Message, `GET     "/v0/management/auth-files"`):
+			logged["auth-poll"] = true
+		}
+	}
+	if logged["get-ok"] {
+		t.Fatalf("successful management GET must be skipped from access log")
+	}
+	if !logged["get-500"] {
+		t.Fatalf("failed management GET must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if !logged["post-ok"] {
+		t.Fatalf("successful management POST must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if !logged["auth-download"] {
+		t.Fatalf("auth file download must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if !logged["oauth-start"] {
+		t.Fatalf("OAuth start must stay logged; entries: %#v", hook.AllEntries())
+	}
+	if logged["auth-poll"] {
+		t.Fatalf("auth-files polling GET must stay skipped; entries: %#v", hook.AllEntries())
 	}
 }

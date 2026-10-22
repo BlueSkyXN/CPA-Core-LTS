@@ -1650,6 +1650,68 @@ patches:
     state: required
     retire_when: Upstream uses the shared response-header filtering and write-outcome lifecycle for model-list responses.
 
+  - id: codex-outbound-strategy
+    reason: Codex OAuth traffic to chatgpt.com should match the official Codex client on the wire. Large HTTP requests failed in some upstream regions while the same payload over websocket succeeded, and CPA differed from the official client in request-body encoding and Accept-Encoding. codex.outbound makes the upstream transport selectable for HTTP clients and aligns body compression and Accept-Encoding by default, each with an explicit rollback value; compressed requests still report their original size to usage.
+    introduced_in: 66b33b28a5aeee38137e297653b352d3b7323e28
+    affected_upstream_range: through 0adf70aa (LTS main, 2026-10-10); upstream keeps the upstream transport equal to the downstream one and sends uncompressed bodies with automatic gzip Accept-Encoding.
+    files:
+      - internal/config/codex_outbound.go
+      - internal/config/codex_outbound_test.go
+      - internal/config/config_types.go
+      - internal/config/config_load.go
+      - internal/config/parse.go
+      - internal/runtime/executor/codex_websockets_executor.go
+      - internal/runtime/executor/codex_executor_compression.go
+      - internal/runtime/executor/codex_executor_execute.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_outbound_transport_test.go
+      - internal/runtime/executor/codex_outbound_compression_test.go
+      - internal/runtime/executor/codex_request_size_test.go
+      - internal/runtime/executor/helps/accept_encoding.go
+      - internal/runtime/executor/helps/accept_encoding_test.go
+      - internal/runtime/executor/helps/utls_client.go
+      - internal/runtime/executor/helps/usage_request_size.go
+      - internal/runtime/executor/helps/usage_request_size_test.go
+      - internal/watcher/diff/config_diff.go
+      - internal/watcher/diff/config_diff_test.go
+      - config.example.yaml
+      - docs/lts/codex-outbound.md
+    regression_tests:
+      - TestCodexOutboundDefaultsToFollow
+      - TestCodexOutboundParsesModesAndThreshold
+      - TestCodexOutboundRejectsInvalidValues
+      - TestCodexOutboundCompressionAndAcceptEncoding
+      - TestCodexAutoExecutorOutboundTransportRouting
+      - TestCodexAutoExecutorOutboundWebsocketKeepsCompactOnHTTP
+      - TestCodexRequestCompressionEnabled
+      - TestIsCodexBackendResponsesURL
+      - TestCodexExecutorCompressesOptedInAPIKeyRequests
+      - TestCodexExecutorLeavesDefaultAPIKeyRequestsUncompressed
+      - TestCodexExecutorRetriesUncompressedAfter415
+      - TestPrepareCodexOutboundHTTPRequestAcceptEncodingMode
+      - TestNewChatGPTHTTP2TransportHonorsAcceptEncodingMode
+      - TestBuildConfigChangeDetailsCodexOutbound
+      - TestUsageReporterRecordsPayloadSizeOfEncodedRequest
+      - TestCodexExecutorRecordsPayloadAndWireSizeOfCompressedRequest
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream offers an equivalent outbound transport selection for HTTP clients and matches the official client's request-body encoding and Accept-Encoding.
+
+  - id: management-proxy-url-probe
+    reason: Operators need to validate a proxy URL from the Management Panel before saving it. The probe uses the submitted value only, never the saved configuration, exercises the proxy with a bounded request to a fixed target, and returns stable failure codes without echoing the proxy URL or credentials.
+    introduced_in: c59650ca925aebe9e079667ab00d65715125bb3b
+    affected_upstream_range: through a3a4686d (LTS main, 2026-10-11); upstream has no proxy probe endpoint.
+    files:
+      - internal/api/handlers/management/api_tools.go
+      - internal/api/handlers/management/api_tools_test.go
+      - internal/api/server_management.go
+    regression_tests:
+      - TestProxyURLProbe
+      - TestClassifyProxyProbeError
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream ships an equivalent Management proxy validation endpoint that does not echo proxy credentials.
+
   - id: credential-change-unauthorized-recovery
     reason: Credential replacement must clear the old unauthorized deadline without clearing unrelated model quota merely because its message contains unauthorized.
     introduced_in: e5a9e985f6c42c21102b786a756f1d46641ce5c5
@@ -1922,3 +1984,75 @@ patches:
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: OpenAI-compatible stream observation follows validated SSE event boundaries with equivalent model, tier, failure and token attribution, and the regression passes without this delta.
+  - id: usage-request-size-fields
+    reason: Request body size and upstream transport are the decisive variables for diagnosing upstream connection failures on large Codex requests, but usage details, the usage queue and failure warns did not record them. Additive omitempty fields keep old exports, imports, queue consumers and Panel builds compatible.
+    introduced_in: e2d745d9e9148c45fa1ceb81f94ec234ea628ac2
+    affected_upstream_range: through 0adf70aa (LTS main, 2026-10-10); upstream has no per-request size or transport fields.
+    files:
+      - sdk/cliproxy/usage/request_size.go
+      - sdk/cliproxy/usage/manager.go
+      - internal/runtime/executor/helps/usage_request_size.go
+      - internal/runtime/executor/helps/usage_helpers.go
+      - internal/runtime/executor/codex_websockets_execute.go
+      - internal/runtime/executor/codex_websockets_stream.go
+      - internal/runtime/executor/codex_websockets_duplex.go
+      - internal/usage/logger_plugin.go
+      - internal/usage/query.go
+      - internal/usage/analytics.go
+      - internal/redisqueue/plugin.go
+      - internal/logging/upstream_size.go
+      - sdk/cliproxy/auth/conductor_execution.go
+      - sdk/cliproxy/auth/conductor_warn_extras.go
+      - internal/api/handlers/management/usage.go
+      - sdk/cliproxy/usage/request_size_test.go
+      - internal/runtime/executor/helps/usage_request_size_test.go
+      - internal/runtime/executor/codex_request_size_test.go
+      - internal/usage/request_size_test.go
+      - internal/redisqueue/plugin_test.go
+      - internal/logging/upstream_size_test.go
+      - sdk/cliproxy/auth/conductor_warn_logging_test.go
+    regression_tests:
+      - TestRequestSizeCanonical
+      - TestUsageReporterRecordsHTTPRequestSize
+      - TestUsageReporterRecordsWebsocketRequestSize
+      - TestUsageReporterRequestSizeDescribesFinalAttempt
+      - TestUsageReporterRequestSizeSkipsAdditionalModelRecords
+      - TestCodexExecutorRecordsHTTPRequestSize
+      - TestCodexWebsocketsExecutorRecordsWebsocketRequestSize
+      - TestRequestStatisticsRecordMapsRequestSize
+      - TestRequestStatisticsUnsizedRecordOmitsSizeFields
+      - TestRequestSizeSurvivesExportImport
+      - TestRequestSizeImportNormalisation
+      - TestRequestSizeDoesNotChangeDedupIdentity
+      - TestUsageAnalyticsRequestSizeDistribution
+      - TestUsageAnalyticsOmitsRequestSizeWithoutMeasurements
+      - TestUsageQueuePluginEmitsRequestSizeFields
+      - TestUpstreamRequestSizeHolderIsPerAttempt
+      - TestWarnLogUpstreamFailureIncludesUpstreamRequestSize
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream ships equivalent per-request size and transport fields in its usage pipeline, or the LTS usage contract drops request size tracking by explicit decision.
+
+  - id: codex-permanent-refresh-failure
+    reason: A Codex refresh token reported expired, reused or invalidated cannot recover without re-login. Treating it as transient retried the token endpoint every few minutes and hid the condition until the access token expired. Typed classification stops in-round retries, backs off like invalid_grant while the access token stays usable, and Management exposes reauth_required so operators can re-login before expiry.
+    introduced_in: 68f355e94cc4e6754da75b22ed3c83f9190891ee
+    affected_upstream_range: through 0adf70aa (LTS main, 2026-10-10); upstream retries every refresh failure the same way.
+    files:
+      - internal/auth/codex/refresh_error.go
+      - internal/auth/codex/openai_auth.go
+      - internal/auth/codex/openai_auth_test.go
+      - sdk/cliproxy/auth/conductor_refresh.go
+      - sdk/cliproxy/auth/conductor_refresh_permanent_test.go
+      - internal/api/handlers/management/auth_files.go
+      - internal/api/handlers/management/auth_files_reauth_test.go
+    regression_tests:
+      - TestRefreshTokenErrorClassification
+      - TestRefreshTokensWithRetry_InvalidatedRefreshTokenAttemptsOnce
+      - TestRefreshAuthForRequest_PermanentRefreshFailureBacksOffWhileAccessTokenValid
+      - TestRefreshAuthForRequest_TransientRefreshFailureKeepsFixedRetry
+      - TestIsPermanentRefreshFailureUsesTypedClassification
+      - TestPermanentRefreshFailureSurvivesSuccessUntilCredentialReplaced
+      - TestListAuthFilesFlagsCredentialsNeedingReauth
+    upstream_issue_or_pr: not-filed
+    state: required
+    retire_when: Upstream classifies permanent Codex refresh failures without in-round retries and exposes an equivalent re-login signal through the Management auth-files API.

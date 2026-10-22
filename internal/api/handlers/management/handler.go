@@ -39,31 +39,32 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                     *config.Config
-	configFilePath          string
-	mu                      sync.Mutex
-	authStatusMu            sync.Mutex
-	reloadMu                sync.Mutex
-	reloadGeneration        uint64
-	appliedReloadGeneration uint64
-	attemptsMu              sync.Mutex
-	failedAttempts          map[string]*attemptInfo // keyed by client IP
-	authManager             *coreauth.Manager
-	usageStats              *usage.RequestStatistics
-	tokenStore              coreauth.Store
-	localPassword           string
-	allowRemoteOverride     bool
-	envSecret               string
-	logDir                  string
-	postAuthHook            coreauth.PostAuthHook
-	postAuthPersistHook     coreauth.PostAuthHook
-	authModelsRefreshHook   func(context.Context, *coreauth.Auth) error
-	pluginHost              *pluginhost.Host
-	configReloadHook        func(context.Context, *config.Config)
-	pluginStoreRegistryURL  string
-	pluginStoreHTTPClient   pluginstore.HTTPDoer
-	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
-	pluginReleases          pluginReleaseCache
+	cfg                        *config.Config
+	configFilePath             string
+	mu                         sync.Mutex
+	authStatusMu               sync.Mutex
+	reloadMu                   sync.Mutex
+	reloadGeneration           uint64
+	appliedReloadGeneration    uint64
+	attemptsMu                 sync.Mutex
+	failedAttempts             map[string]*attemptInfo // keyed by client IP
+	authManager                *coreauth.Manager
+	usageStats                 *usage.RequestStatistics
+	tokenStore                 coreauth.Store
+	localPassword              string
+	allowRemoteOverride        bool
+	envSecret                  string
+	logDir                     string
+	postAuthHook               coreauth.PostAuthHook
+	postAuthPersistHook        coreauth.PostAuthHook
+	authModelsRefreshHook      func(context.Context, *coreauth.Auth) error
+	authModelPolicyPreviewHook func(*coreauth.Auth) (any, bool)
+	pluginHost                 *pluginhost.Host
+	configReloadHook           func(context.Context, *config.Config)
+	pluginStoreRegistryURL     string
+	pluginStoreHTTPClient      pluginstore.HTTPDoer
+	pluginStoreRateLimiter     *pluginstore.GitHubRateLimiter
+	pluginReleases             pluginReleaseCache
 }
 
 type configReloadSnapshot struct {
@@ -165,6 +166,18 @@ func (h *Handler) SetAuthModelsRefreshHook(hook func(context.Context, *coreauth.
 	}
 	h.mu.Lock()
 	h.authModelsRefreshHook = hook
+	h.mu.Unlock()
+}
+
+// SetAuthModelPolicyPreviewHook sets the service-owned model policy preview
+// callback. It is read-only: it evaluates the stored pre-policy catalog
+// against the current config without touching the registry or the network.
+func (h *Handler) SetAuthModelPolicyPreviewHook(hook func(*coreauth.Auth) (any, bool)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.authModelPolicyPreviewHook = hook
 	h.mu.Unlock()
 }
 

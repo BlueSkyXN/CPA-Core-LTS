@@ -94,6 +94,21 @@ jobs:
           go -C go vet ./...
           sh test-cpa.sh
 
+  plugin-lifecycle-macos:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify Go and C plugin library lifetimes
+        run: go test -count=1 -timeout=120s ./internal/pluginhost -run '^TestDarwinLibraryLifetime'
+      - name: Test Coding Plan dynamic lifecycle
+        run: sh examples/plugin/zcode-coding-plan/test-cpa.sh
+
   credential-permissions-windows:
     runs-on: windows-latest
     steps:

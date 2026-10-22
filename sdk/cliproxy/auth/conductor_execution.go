@@ -27,6 +27,7 @@ import (
 
 func newUpstreamAttemptContext(ctx context.Context) context.Context {
 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
+	ctx = logging.WithFreshUpstreamRequestSizeHolder(ctx)
 	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
 }
 
@@ -712,7 +713,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
+						m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
 						}
@@ -724,7 +725,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
+					m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
@@ -975,7 +976,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
+						m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
 						}
@@ -984,7 +985,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
+					m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
@@ -2149,7 +2150,7 @@ func safeErrorDiagnosticForLog(err error) string {
 	return logging.SafeDiagnosticForLog(diagnostic)
 }
 
-func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, model string, auth *Auth, duration time.Duration, err error) {
+func (m *Manager) warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, model string, auth *Auth, duration time.Duration, err error, execOpts *cliproxyexecutor.Options, attempt string) {
 	if err == nil {
 		return
 	}
@@ -2162,6 +2163,7 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 	if isRequestInvalidError(err) {
 		return
 	}
+	authIdent := formatAuthIdentity(auth, provider)
 	if entry == nil {
 		if ctx != nil {
 			entry = logEntryWithRequestID(ctx)
@@ -2169,14 +2171,14 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 			entry = log.NewEntry(log.StandardLogger())
 		}
 	}
-	authIdent := formatAuthIdentity(auth, provider)
 	errSummary := safeErrorDiagnosticForLog(err)
 	duration = duration.Round(time.Millisecond)
+	extras := upstreamFailureWarnExtras(ctx, execOpts, attempt)
 	if statusCode := statusCodeFromError(err); statusCode != 0 {
-		entry.Warnf("%3d | %13v | upstream execution failed: provider=%s model=%s auth=%s err=%s", statusCode, duration, provider, model, authIdent, errSummary)
+		entry.Warnf("%3d | %13v | upstream execution failed: provider=%s model=%s auth=%s%s err=%s", statusCode, duration, provider, model, authIdent, extras, errSummary)
 		return
 	}
-	entry.Warnf("upstream execution failed: provider=%s model=%s auth=%s duration=%s err=%s", provider, model, authIdent, duration, errSummary)
+	entry.Warnf("upstream execution failed: provider=%s model=%s auth=%s duration=%s%s err=%s", provider, model, authIdent, duration, extras, errSummary)
 }
 
 // InjectCredentials delegates per-provider HTTP request preparation when supported.

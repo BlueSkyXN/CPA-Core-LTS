@@ -283,7 +283,7 @@ func pluginRegistration() registration {
 			},
 		},
 		Capabilities: registrationCapabilities{
-			ModelProvider: true, AuthProvider: true, Executor: true,
+			ModelProvider: true, AuthProvider: true, AuthImportOnly: true, Executor: true,
 			ExecutionCanceller: true, ProviderReadiness: true, ExecutionSessionCloser: true,
 			ExecutorModelScope:   pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats: []string{"chat-completions"}, ExecutorOutputFormats: []string{"chat-completions"},

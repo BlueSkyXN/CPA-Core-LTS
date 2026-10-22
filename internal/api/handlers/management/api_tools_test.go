@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1527,6 +1528,379 @@ func TestIsCodexQuotaResetConsumeAPICall(t *testing.T) {
 			resp := apiCallTestResponse(tc.finalMethod, tc.finalTarget, tc.statusCode)
 			if isCodexQuotaResetConsumeAPICall(tc.method, parsed, resp, tc.auth) {
 				t.Fatal("expected call not to match")
+			}
+		})
+	}
+}
+
+func TestProxyURLProbe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var targetHits atomic.Int32
+	probeTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate_204" {
+			http.NotFound(w, r)
+			return
+		}
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer probeTarget.Close()
+	originalTarget := proxyProbeTarget
+	proxyProbeTarget = probeTarget.URL + "/generate_204"
+	defer func() { proxyProbeTarget = originalTarget }()
+
+	forwardTransport := &http.Transport{}
+	defer forwardTransport.CloseIdleConnections()
+	httpProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Host != probeTarget.Listener.Addr().String() {
+			t.Errorf("unexpected forward proxy request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		forward := r.Clone(r.Context())
+		forward.RequestURI = ""
+		resp, err := forwardTransport.RoundTrip(forward)
+		if err != nil {
+			t.Errorf("forward proxy request: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer httpProxy.Close()
+
+	authProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy"`)
+		http.Error(w, "auth required", http.StatusProxyAuthRequired)
+	}))
+	defer authProxy.Close()
+
+	socksProxy := startTestSOCKS5Server(t, "")
+	defer socksProxy.Close()
+	authSocksProxy := startTestSOCKS5Server(t, "secret")
+	defer authSocksProxy.Close()
+
+	savedProxy := "http://user:secret@saved-proxy.example:8080"
+	h := &Handler{cfg: &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: savedProxy}}}
+	router := gin.New()
+	router.POST("/proxy-url/test", h.TestProxyURL)
+
+	postProbe := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/proxy-url/test", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	assertProbe := func(name, body string, wantStatus int, wantResultStatus, wantCode string) {
+		t.Helper()
+		recorder := postProbe(body)
+		if recorder.Code != wantStatus {
+			t.Fatalf("%s: status = %d, want %d; body = %s", name, recorder.Code, wantStatus, recorder.Body.String())
+		}
+		var result proxyProbeResult
+		if errDecode := json.NewDecoder(recorder.Body).Decode(&result); errDecode != nil {
+			t.Fatalf("%s: decode response: %v", name, errDecode)
+		}
+		if result.Status != wantResultStatus || result.Code != wantCode {
+			t.Fatalf("%s: result = %+v, want status %s code %s", name, result, wantResultStatus, wantCode)
+		}
+		if strings.Contains(recorder.Body.String(), "secret") || strings.Contains(recorder.Body.String(), savedProxy) {
+			t.Fatalf("%s: response echoes a proxy URL: %s", name, recorder.Body.String())
+		}
+	}
+
+	assertProbe("empty", `{"value":"  "}`, http.StatusOK, "skipped", "empty")
+	assertProbe("direct", `{"value":"direct"}`, http.StatusOK, "skipped", "direct")
+	assertProbe("none", `{"value":" none "}`, http.StatusOK, "skipped", "direct")
+	assertProbe("invalid", `{"value":"ftp://proxy.example"}`, http.StatusBadRequest, "error", "invalid_proxy_url")
+
+	missing := postProbe(`{}`)
+	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), `"invalid body"`) {
+		t.Fatalf("missing body: status = %d, body = %s", missing.Code, missing.Body.String())
+	}
+
+	assertProbe("http proxy", `{"value":"`+httpProxy.URL+`"}`, http.StatusOK, "ok", "reachable")
+	if targetHits.Load() != 1 {
+		t.Fatalf("HTTP proxy reached target %d times, want 1", targetHits.Load())
+	}
+	assertProbe("proxy auth", `{"value":"`+authProxy.URL+`"}`, http.StatusBadGateway, "error", "proxy_auth_required")
+	assertProbe("connection refused", `{"value":"http://127.0.0.1:1"}`, http.StatusBadGateway, "error", "connection_refused")
+	assertProbe("socks5", `{"value":"`+socksProxy.URL()+`"}`, http.StatusOK, "ok", "reachable")
+	assertProbe(
+		"socks5 auth",
+		`{"value":"socks5://user:wrong@`+authSocksProxy.listener.Addr().String()+`"}`,
+		http.StatusBadGateway,
+		"error",
+		"proxy_auth_failed",
+	)
+
+	if h.cfg.ProxyURL != savedProxy {
+		t.Fatalf("saved proxy changed to %q", h.cfg.ProxyURL)
+	}
+}
+
+type testSOCKS5Server struct {
+	listener net.Listener
+}
+
+func (s *testSOCKS5Server) URL() string {
+	return "socks5://" + s.listener.Addr().String()
+}
+
+func (s *testSOCKS5Server) Close() {
+	_ = s.listener.Close()
+}
+
+func startTestSOCKS5Server(t *testing.T, password string) *testSOCKS5Server {
+	t.Helper()
+	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatalf("listen socks5: %v", errListen)
+	}
+	server := &testSOCKS5Server{listener: listener}
+	go func() {
+		for {
+			conn, errAccept := listener.Accept()
+			if errAccept != nil {
+				return
+			}
+			go serveTestSOCKS5(conn, password)
+		}
+	}()
+	return server
+}
+
+func serveTestSOCKS5(conn net.Conn, password string) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	header := make([]byte, 2)
+	if _, errRead := io.ReadFull(conn, header); errRead != nil || header[0] != 0x05 {
+		return
+	}
+	methods := make([]byte, int(header[1]))
+	if _, errRead := io.ReadFull(conn, methods); errRead != nil {
+		return
+	}
+	selectedMethod := byte(0x00)
+	if password != "" {
+		selectedMethod = 0x02
+		offeredPassword := false
+		for _, method := range methods {
+			if method == 0x02 {
+				offeredPassword = true
+				break
+			}
+		}
+		if !offeredPassword {
+			selectedMethod = 0xff
+		}
+	}
+	if _, errWrite := conn.Write([]byte{0x05, selectedMethod}); errWrite != nil || selectedMethod == 0xff {
+		return
+	}
+	if password != "" {
+		var version [1]byte
+		if _, errRead := io.ReadFull(conn, version[:]); errRead != nil {
+			return
+		}
+		var userLength [1]byte
+		if _, errRead := io.ReadFull(conn, userLength[:]); errRead != nil {
+			return
+		}
+		user := make([]byte, int(userLength[0]))
+		if _, errRead := io.ReadFull(conn, user); errRead != nil {
+			return
+		}
+		var passwordLength [1]byte
+		if _, errRead := io.ReadFull(conn, passwordLength[:]); errRead != nil {
+			return
+		}
+		gotPassword := make([]byte, int(passwordLength[0]))
+		if _, errRead := io.ReadFull(conn, gotPassword); errRead != nil {
+			return
+		}
+		status := byte(0x00)
+		if string(gotPassword) != password {
+			status = 0x01
+		}
+		if _, errWrite := conn.Write([]byte{0x01, status}); errWrite != nil || status != 0x00 {
+			return
+		}
+	}
+
+	request := make([]byte, 4)
+	if _, errRead := io.ReadFull(conn, request); errRead != nil || request[1] != 0x01 {
+		return
+	}
+	var host string
+	switch request[3] {
+	case 0x01:
+		address := make([]byte, 4)
+		if _, errRead := io.ReadFull(conn, address); errRead != nil {
+			return
+		}
+		host = net.IP(address).String()
+	case 0x03:
+		var length [1]byte
+		if _, errRead := io.ReadFull(conn, length[:]); errRead != nil {
+			return
+		}
+		name := make([]byte, int(length[0]))
+		if _, errRead := io.ReadFull(conn, name); errRead != nil {
+			return
+		}
+		host = string(name)
+	case 0x04:
+		address := make([]byte, 16)
+		if _, errRead := io.ReadFull(conn, address); errRead != nil {
+			return
+		}
+		host = net.IP(address).String()
+	default:
+		return
+	}
+	var portBytes [2]byte
+	if _, errRead := io.ReadFull(conn, portBytes[:]); errRead != nil {
+		return
+	}
+	port := int(portBytes[0])<<8 | int(portBytes[1])
+
+	upstream, errDial := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	if errDial != nil {
+		_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer upstream.Close()
+	if _, errWrite := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); errWrite != nil {
+		return
+	}
+
+	errCopy := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, conn)
+		errCopy <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(conn, upstream)
+		errCopy <- struct{}{}
+	}()
+	<-errCopy
+}
+
+func TestProxyProbeTransportHTTPSConnect(t *testing.T) {
+	var targetHits, connects atomic.Int32
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect || r.Host != target.Listener.Addr().String() {
+			t.Errorf("unexpected CONNECT request: %s %s", r.Method, r.Host)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		connects.Add(1)
+		upstream, err := net.Dial("tcp", target.Listener.Addr().String())
+		if err != nil {
+			t.Errorf("dial TLS target: %v", err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer upstream.Close()
+		client, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack proxy: %v", err)
+			return
+		}
+		defer client.Close()
+		_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		if err := buffered.Flush(); err != nil {
+			t.Errorf("CONNECT response: %v", err)
+			return
+		}
+		done := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(upstream, buffered); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+		<-done
+	}))
+	defer proxy.Close()
+	transport := buildProxyProbeTransport(proxy.URL)
+	if transport == nil {
+		t.Fatal("probe transport is nil")
+	}
+	defer transport.CloseIdleConnections()
+	transport.TLSClientConfig = target.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	client := &http.Client{Transport: transport, Timeout: proxyProbeTimeout}
+	resp, err := client.Get(target.URL + "/generate_204")
+	if err != nil {
+		t.Fatalf("HTTPS probe: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || connects.Load() != 1 || targetHits.Load() != 1 {
+		t.Fatalf("status=%d CONNECTs=%d target hits=%d", resp.StatusCode, connects.Load(), targetHits.Load())
+	}
+}
+
+func TestProxyURLProbeConnectAuthRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var connects atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			t.Errorf("proxy method=%s, want CONNECT", r.Method)
+		}
+		connects.Add(1)
+		w.Header().Set("Proxy-Authenticate", `Basic realm="test"`)
+		w.WriteHeader(http.StatusProxyAuthRequired)
+	}))
+	defer proxy.Close()
+	// 使用生产 HTTPS 目标；代理在 CONNECT 阶段拒绝，不会访问外部目标。
+	original := proxyProbeTarget
+	proxyProbeTarget = proxyProbeTargetURL
+	defer func() { proxyProbeTarget = original }()
+	router := gin.New()
+	router.POST("/proxy-url/test", (&Handler{}).TestProxyURL)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/proxy-url/test", strings.NewReader(`{"value":"`+proxy.URL+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	var result proxyProbeResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if connects.Load() != 1 || rec.Code != http.StatusBadGateway || result.Status != "error" || result.Code != "proxy_auth_required" {
+		t.Fatalf("connects=%d status=%d result=%+v", connects.Load(), rec.Code, result)
+	}
+}
+
+func TestClassifyProxyProbeError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nil", err: nil, want: "probe_failed"},
+		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "socks auth", err: errors.New("username/password authentication failed"), want: "proxy_auth_failed"},
+		{name: "wrapped connect auth", err: &url.Error{Op: "Get", URL: "https://example.com", Err: fmt.Errorf("CONNECT: %w", errProxyAuthRequired)}, want: "proxy_auth_required"},
+		{name: "dial", err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}, want: "connection_refused"},
+		{name: "tls", err: errors.New("tls: handshake failure"), want: "tls_failed"},
+		{name: "other", err: errors.New("unexpected eof"), want: "probe_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyProxyProbeError(tc.err); got != tc.want {
+				t.Fatalf("classifyProxyProbeError() = %q, want %q", got, tc.want)
 			}
 		})
 	}

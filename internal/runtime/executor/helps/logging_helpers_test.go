@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -205,6 +206,63 @@ func TestRecordAPIRequestBoundsDeferredBodyWhenRequestLogDisabled(t *testing.T) 
 	}
 	if !bytes.Contains(captured, []byte("API REQUEST BODY TRUNCATED")) {
 		t.Fatalf("captured API request missing truncation marker: %q", captured[len(captured)-128:])
+	}
+	if !bytes.Contains(captured, fmt.Appendf(nil, "captured first %d of %d bytes]", safeDeferredBodyLimit, len(body))) {
+		t.Fatalf("truncation marker does not report the original body size: %q", captured[len(captured)-128:])
+	}
+}
+
+func TestRecordAPIRequestReleasesOriginalDeferredBodies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	defer runtime.KeepAlive(ctx)
+
+	// 保持日志上下文存活，确认预览及其闭包不会保留原始 backing array。
+	const bodyBytes = 2 * maxDeferredAPIRequestBodyBytes
+	const attempts = 2
+	collected := make(chan struct{}, attempts)
+	for i := 0; i < attempts; i++ {
+		func() {
+			body := new([bodyBytes]byte)
+			body[0] = 'x'
+			runtime.SetFinalizer(body, func(_ *[bodyBytes]byte) { collected <- struct{}{} })
+			RecordAPIRequest(ctx, &config.Config{}, UpstreamRequestLog{Body: body[:]})
+		}()
+	}
+
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for remaining := attempts; remaining > 0; {
+		runtime.GC()
+		select {
+		case <-collected:
+			remaining--
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("%d original request bodies remain retained by deferred logging", remaining)
+		}
+	}
+
+	value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey)
+	if !exists {
+		t.Fatal("deferred requests missing after collection")
+	}
+	requests := snapshotDeferredAPIRequests(t, value)
+	if len(requests) != attempts {
+		t.Fatalf("deferred requests = %d, want %d", len(requests), attempts)
+	}
+	for i, buildRequest := range requests {
+		capturedBytes := maxDeferredAPIRequestBodyBytes
+		if i > 0 {
+			capturedBytes = 0
+		}
+		marker := fmt.Sprintf("captured first %d of %d bytes]", capturedBytes, bodyBytes)
+		if !bytes.Contains(buildRequest(), []byte(marker)) {
+			t.Fatalf("request %d missing truncation marker %q", i, marker)
+		}
 	}
 }
 

@@ -191,6 +191,14 @@ upstream:
         # The injected tool is also added to tool_choice.allowed_tools when applicable.
         inject-x-search: false
     codex:
+        # Codex 客户端的 ZCode 搜索上下文计数：disabled / observe / correct。
+        zcode-context-usage: disabled
+        # 出站策略适用于 HTTP 入口；请求体压缩默认仅用于 Codex OAuth。
+        outbound:
+            transport: follow # follow / websocket / auto
+            websocket-threshold-bytes: 786432
+            request-compression: auto # auto / none
+            accept-encoding: official # official / legacy
         cache-affinity:
             # ChatGPT OAuth 缓存适配；API key 不受影响。legacy 可恢复旧行为。
             strategy: client-aware # legacy | stable-id | client-aware
@@ -502,6 +510,11 @@ management:
     # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
     panel-github-repository: "https://github.com/BlueSkyXN/CPA-Panel-LTS"
 oauth:
+    # OAuth 渠道模型策略与账号策略共同作用于真实模型 ID；空的已启用 allowlist 排除全部模型。
+    # model-policy:
+    #     copilot:
+    #         allowlist: {enabled: true, models: ["gpt-*"]}
+    #         denylist: {enabled: true, models: ["*-preview"]}
     # Authentication directory (supports ~ for home directory)
     auth-dir: "~/.cli-proxy-api"
     providers:

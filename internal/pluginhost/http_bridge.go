@@ -183,6 +183,15 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 		copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		client = &copyClient
 	}
+	if reporter := helps.UsageReporterFromContext(ctx); reporter != nil {
+		copyClient := *client
+		transport := copyClient.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		copyClient.Transport = hostHTTPUsageRoundTripper{base: transport, reporter: reporter}
+		client = &copyClient
+	}
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	resp, errDo := client.Do(httpReq)
 	if errDo != nil {
@@ -193,6 +202,38 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest) 
 		return nil, cfg, nil, fmt.Errorf("execute host http request: %w", errDo)
 	}
 	return resp, cfg, cleanup, nil
+}
+
+type hostHTTPUsageRoundTripper struct {
+	base     http.RoundTripper
+	reporter *helps.UsageReporter
+}
+
+func (t hostHTTPUsageRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// 每次实际发送都建立独立计数，重定向后的请求也遵守最终尝试语义。
+	addResponseBytes := t.reporter.ObserveUpstreamHTTPRequest(req)
+	resp, err := t.base.RoundTrip(req)
+	if err == nil && resp != nil && resp.Body != nil {
+		resp.Body = &hostHTTPUsageReadCloser{ReadCloser: resp.Body, add: addResponseBytes}
+	}
+	return resp, err
+}
+
+// 计数器绑定到本次尝试，旧响应的延迟读取不会计入后续请求。
+type hostHTTPUsageReadCloser struct {
+	io.ReadCloser
+	add func(int)
+}
+
+func (r *hostHTTPUsageReadCloser) Read(p []byte) (int, error) {
+	if r == nil || r.ReadCloser == nil {
+		return 0, io.ErrClosedPipe
+	}
+	n, errRead := r.ReadCloser.Read(p)
+	if n > 0 && r.add != nil {
+		r.add(n)
+	}
+	return n, errRead
 }
 
 func (c *hostHTTPClient) recordHTTPRequest(ctx context.Context, cfg *config.Config, req *http.Request, body []byte) {

@@ -47,6 +47,15 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := cfg.Codex.CacheAffinity.normalizeAndValidate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.Codex.Outbound.normalizeAndValidate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Codex.ZcodeContextUsage.normalizeAndValidate(); err != nil {
+		return nil, err
+	}
+	if err := validateCodexKeyRequestCompression(cfg.CodexKey); err != nil {
+		return nil, err
+	}
 	if flowErr := cfg.ValidateFlowControl(); flowErr != nil {
 		return nil, flowErr
 	}
@@ -135,6 +144,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
+	if err := ValidateOAuthModelPolicy(cfg.OAuthModelPolicy); err != nil {
+		return nil, err
+	}
+	cfg.OAuthModelPolicy = NormalizeOAuthModelPolicy(cfg.OAuthModelPolicy)
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizeOAuthSettings()
 	cfg.SanitizeOAuthRequestScopedErrors()

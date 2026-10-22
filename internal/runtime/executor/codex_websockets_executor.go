@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
@@ -31,11 +32,14 @@ func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
 	}
 }
 
-// CodexAutoExecutor routes Codex requests to the websocket transport only when:
-//  1. The downstream transport is websocket, and
-//  2. The selected auth enables websockets.
+// CodexAutoExecutor routes Codex requests to the websocket transport when the selected auth enables
+// websockets and either:
+//  1. The downstream transport is websocket, or
+//  2. codex.outbound.transport selects websocket for an HTTP request (always, or in auto mode once
+//     the payload reaches the configured threshold).
 //
-// For non-websocket downstream requests, it always uses the legacy HTTP implementation.
+// Otherwise it uses the HTTP implementation. The default outbound transport, follow, keeps HTTP
+// downstream requests on HTTP.
 type CodexAutoExecutor struct {
 	httpExec *CodexExecutor
 	wsExec   *CodexWebsocketsExecutor
@@ -76,7 +80,7 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
+	if e.useUpstreamWebsocket(ctx, auth, req, opts) {
 		return e.wsExec.Execute(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
@@ -89,7 +93,7 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return nil, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
+	if e.useUpstreamWebsocket(ctx, auth, req, opts) {
 		return e.wsExec.ExecuteStream(ctx, auth, req, opts)
 	}
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
@@ -124,6 +128,43 @@ func (e *CodexAutoExecutor) UpstreamDisconnectChan(sessionID string) <-chan erro
 		return nil
 	}
 	return e.wsExec.UpstreamDisconnectChan(sessionID)
+}
+
+// useUpstreamWebsocket reports whether a request should use the upstream websocket transport.
+// Websocket sessions keep following the credential's websockets attribute. HTTP requests use it
+// only when codex.outbound.transport selects websocket, always or in auto mode once the payload
+// reaches the threshold. Compact requests stay on HTTP: the websocket executor delegates them to
+// HTTP anyway.
+func (e *CodexAutoExecutor) useUpstreamWebsocket(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
+	if !codexWebsocketsEnabled(auth) {
+		return false
+	}
+	if cliproxyexecutor.DownstreamWebsocket(ctx) {
+		return true
+	}
+	if opts.Alt == "responses/compact" || cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+		return false
+	}
+	var outbound config.CodexOutboundConfig
+	if e != nil && e.httpExec != nil && e.httpExec.cfg != nil {
+		outbound = e.httpExec.cfg.Codex.Outbound
+	}
+	mode := outbound.EffectiveTransport()
+	size := len(req.Payload)
+	if n := len(opts.OriginalRequest); n > size {
+		size = n
+	}
+	switch mode {
+	case config.CodexOutboundTransportWebsocket:
+	case config.CodexOutboundTransportAuto:
+		if size < outbound.EffectiveWebsocketThresholdBytes() {
+			return false
+		}
+	default:
+		return false
+	}
+	log.Debugf("codex outbound: sending HTTP request over upstream websocket (mode=%s, payload=%d bytes)", mode, size)
+	return true
 }
 
 func codexWebsocketsEnabled(auth *cliproxyauth.Auth) bool {

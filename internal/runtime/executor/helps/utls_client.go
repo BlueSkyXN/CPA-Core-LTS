@@ -18,7 +18,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
 
@@ -123,7 +122,7 @@ func roundTripUtlsConnection(req *http.Request, tlsConn *tls.UConn) (*http.Respo
 	var err error
 	switch protocol := tlsConn.ConnectionState().NegotiatedProtocol; protocol {
 	case "h2":
-		h2Conn, errClientConn := (&http2.Transport{}).NewClientConn(tlsConn)
+		h2Conn, errClientConn := newChatGPTHTTP2Transport(req.Context()).NewClientConn(tlsConn)
 		if errClientConn != nil {
 			err = fmt.Errorf("utls: initialize HTTP/2 connection: %w", errClientConn)
 			break
@@ -135,7 +134,8 @@ func roundTripUtlsConnection(req *http.Request, tlsConn *tls.UConn) (*http.Respo
 		// transport retains net/http's cancellation and request-body handling
 		// without changing the TLS fingerprint or redialing through another path.
 		transport := &http.Transport{
-			DisableKeepAlives: true,
+			DisableKeepAlives:  true,
+			DisableCompression: AutoAcceptEncodingDisabled(req.Context()),
 			DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
 				return tlsConn, nil
 			},

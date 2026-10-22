@@ -1835,7 +1835,8 @@ func TestHostCanceledInitializationDiscardsBlockedClient(t *testing.T) {
 
 	close(client.release)
 	deadline := time.Now().Add(time.Second)
-	for client.shutdown.Load() == 0 && time.Now().Before(deadline) {
+	// Shutdown is observed before the asynchronous cleanup releases its load token.
+	for (client.shutdown.Load() == 0 || h.PluginBusy("alpha")) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if got := client.shutdown.Load(); got != 1 {
@@ -1875,7 +1876,8 @@ func TestHostCancellationUnderMutationLockDoesNotInsertLoadedPlugin(t *testing.T
 	waitForHostTestSignal(t, applyDone, "canceled plugin apply")
 
 	deadline := time.Now().Add(time.Second)
-	for client.shutdown.Load() == 0 && time.Now().Before(deadline) {
+	// Wait for host cleanup as well as Shutdown before checking the final state.
+	for (client.shutdown.Load() == 0 || h.PluginBusy("alpha")) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if got := client.shutdown.Load(); got != 1 {

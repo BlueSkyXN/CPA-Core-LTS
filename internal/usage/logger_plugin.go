@@ -4,6 +4,7 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -75,6 +76,8 @@ type RequestStatistics struct {
 	mu              sync.RWMutex
 	queryGeneration string
 	querySequence   uint64
+	analytics       analyticsCache
+	exportQueries   usageExportCache
 
 	totalRequests int64
 	successCount  int64
@@ -111,28 +114,42 @@ type RequestDetail struct {
 	// optional timing fields below. Zero is retained for migrated legacy rows.
 	TimingVersion uint32 `json:"timing_version,omitempty"`
 	// TTFBMs records the first upstream response byte/payload latency.
-	TTFBMs int64 `json:"ttfb_ms,omitempty"`
+	TTFBMs       int64                   `json:"ttfb_ms,omitempty"`
+	OutputTiming *coreusage.OutputTiming `json:"output_timing,omitempty"`
 	// TTFTMs records the first non-empty reasoning content latency.
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
 	// TTFAMs records the first non-empty assistant text latency.
-	TTFAMs               int64      `json:"ttfa_ms,omitempty"`
-	Source               string     `json:"source"`
-	UsageProvenance      string     `json:"usage_provenance,omitempty"`
-	AuthIndex            string     `json:"auth_index"`
-	Alias                string     `json:"alias,omitempty"`
-	UpstreamModel        string     `json:"upstream_model,omitempty"`
-	ReasoningEffort      string     `json:"reasoning_effort,omitempty"`
-	ServiceTier          string     `json:"service_tier,omitempty"`
-	RequestServiceTier   string     `json:"request_service_tier,omitempty"`
-	OutboundServiceTier  string     `json:"outbound_service_tier,omitempty"`
-	ResponseServiceTier  string     `json:"response_service_tier,omitempty"`
-	EffectiveServiceTier string     `json:"effective_service_tier,omitempty"`
-	ResponseCyberProgram string     `json:"response_cyber_program,omitempty"`
-	Tokens               TokenStats `json:"tokens"`
-	Failed               bool       `json:"failed"`
-	Generate             bool       `json:"generate"`
-	FailureReason        string     `json:"failure_reason,omitempty"`
-	FailureStatus        int        `json:"failure_status,omitempty"`
+	TTFAMs               int64                     `json:"ttfa_ms,omitempty"`
+	Source               string                    `json:"source"`
+	UsageProvenance      string                    `json:"usage_provenance,omitempty"`
+	AuthIndex            string                    `json:"auth_index"`
+	Alias                string                    `json:"alias,omitempty"`
+	UpstreamModel        string                    `json:"upstream_model,omitempty"`
+	ReasoningEffort      string                    `json:"reasoning_effort,omitempty"`
+	ServiceTier          string                    `json:"service_tier,omitempty"`
+	RequestServiceTier   string                    `json:"request_service_tier,omitempty"`
+	OutboundServiceTier  string                    `json:"outbound_service_tier,omitempty"`
+	ResponseServiceTier  string                    `json:"response_service_tier,omitempty"`
+	EffectiveServiceTier string                    `json:"effective_service_tier,omitempty"`
+	ResponseCyberProgram string                    `json:"response_cyber_program,omitempty"`
+	Tokens               TokenStats                `json:"tokens"`
+	TokenBreakdown       *coreusage.TokenBreakdown `json:"token_breakdown,omitempty"`
+	Failed               bool                      `json:"failed"`
+	Generate             bool                      `json:"generate"`
+	FailureReason        string                    `json:"failure_reason,omitempty"`
+	FailureStatus        int                       `json:"failure_status,omitempty"`
+	// TraceID is the inbound request ID shared with request logs.
+	TraceID string `json:"trace_id,omitempty"`
+	// SizeVersion identifies the byte-count contract of the size fields
+	// below. Zero means that no size field was measured.
+	SizeVersion              uint32 `json:"size_version,omitempty"`
+	ClientRequestBytes       int64  `json:"client_request_bytes,omitempty"`
+	ClientRequestEncoding    string `json:"client_request_encoding,omitempty"`
+	UpstreamTransport        string `json:"upstream_transport,omitempty"`
+	UpstreamRequestBytes     int64  `json:"upstream_request_bytes,omitempty"`
+	UpstreamRequestWireBytes int64  `json:"upstream_request_wire_bytes,omitempty"`
+	UpstreamRequestEncoding  string `json:"upstream_request_encoding,omitempty"`
+	UpstreamResponseBytes    int64  `json:"upstream_response_bytes,omitempty"`
 
 	timingFieldsPresent timingFieldPresence
 	querySequence       uint64
@@ -199,6 +216,12 @@ func (d *RequestDetail) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	if raw, ok := fields["output_timing"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: output_timing must be an object", ErrInvalidCanonicalTimingStats)
+	}
+	if raw, ok := fields["token_breakdown"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: token_breakdown must be an object", ErrInvalidCanonicalTokenStats)
+	}
 	*d = RequestDetail(decoded)
 	d.Generate = generate
 	var timingFields timingFieldPresence
@@ -438,9 +461,21 @@ func (snapshot StatisticsSnapshot) ValidateCanonicalV2TokenStats() error {
 
 // ValidateCanonicalV3TokenStats keeps the canonical token contract explicit
 // at the schema version boundary. The token relationships remain unchanged
-// from v2; only the surrounding timing contract is new in v3.
+// from v2; v3 additionally validates optional canonical accounting metadata.
 func (snapshot StatisticsSnapshot) ValidateCanonicalV3TokenStats() error {
-	return snapshot.ValidateCanonicalV2TokenStats()
+	if err := snapshot.ValidateCanonicalV2TokenStats(); err != nil {
+		return err
+	}
+	for _, api := range snapshot.APIs {
+		for _, model := range api.Models {
+			for _, detail := range model.Details {
+				if !validTokenBreakdownDetail(detail) {
+					return ErrInvalidCanonicalTokenStats
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateCanonicalTimingStats validates the optional v3 timing fields. A
@@ -460,6 +495,9 @@ func (snapshot StatisticsSnapshot) ValidateCanonicalTimingStats() error {
 }
 
 func validCanonicalTimingDetail(detail RequestDetail) bool {
+	if !validOutputTimingDetail(detail) {
+		return false
+	}
 	if detail.TimingVersion != 0 && detail.TimingVersion != usageTimingVersion {
 		return false
 	}
@@ -636,7 +674,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		FailureReason:        failureReason,
 		FailureStatus:        failureStatus,
+		TraceID:              record.TraceID,
 	}
+	requestDetail.setRequestSize(record.Size.Canonical())
+	requestDetail = normaliseRequestSizeFields(requestDetail)
 	if record.TimingVersion == usageTimingVersion {
 		requestDetail.TimingVersion = usageTimingVersion
 		requestDetail.timingFieldsPresent |= timingVersionPresent
@@ -663,12 +704,28 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		}
 	}
 
+	if record.Detail.TokenBreakdown != (coreusage.TokenBreakdown{}) {
+		accounted := record.Detail.TokenBreakdown
+		requestDetail.TokenBreakdown = &accounted
+		if !validTokenBreakdownDetail(requestDetail) {
+			unavailable := coreusage.NewUnclassifiedTokenBreakdown(requestDetail.Tokens.TotalTokens)
+			requestDetail.TokenBreakdown = &unavailable
+		}
+	}
+	requestDetail.OutputTiming = record.OutputTiming.Clone()
+	if !validOutputTimingDetail(requestDetail) {
+		requestDetail.OutputTiming = &coreusage.OutputTiming{Version: 1}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	candidate := mergeCandidate{apiName: statsKey, modelName: modelName, detail: requestDetail}
 	if err := s.validateMergeCandidates([]mergeCandidate{candidate}); err != nil {
 		candidate.detail.Tokens = TokenStats{}
+		if candidate.detail.TokenBreakdown != nil {
+			unavailable := coreusage.NewUnclassifiedTokenBreakdown(0)
+			candidate.detail.TokenBreakdown = &unavailable
+		}
 		if err = s.validateMergeCandidates([]mergeCandidate{candidate}); err != nil {
 			return
 		}
@@ -694,7 +751,7 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	}
 	modelStatsValue.TotalRequests++
 	modelStatsValue.TotalTokens = addNonNegativeTokenCounts(modelStatsValue.TotalTokens, detail.Tokens.TotalTokens)
-	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+	modelStatsValue.Details = append(modelStatsValue.Details, cloneRequestDetail(detail))
 }
 
 // Counts reads the import receipt counters atomically without copying details.
@@ -831,9 +888,13 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) (MergeRes
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				detail = normaliseServiceTierAliases(detail)
+				detail = normaliseRequestSizeFields(detail)
 				detail.UsageProvenance = coreusage.CanonicalUsageProvenance(detail.UsageProvenance)
 				if !validCanonicalTimingDetail(detail) {
 					return MergeResult{}, ErrInvalidCanonicalTimingStats
+				}
+				if !validTokenBreakdownDetail(detail) {
+					return MergeResult{}, ErrInvalidCanonicalTokenStats
 				}
 				key := dedupKey(apiName, modelName, detail)
 				if _, exists := seen[key]; exists {
@@ -1006,6 +1067,48 @@ func normaliseServiceTierAliases(detail RequestDetail) RequestDetail {
 	return detail
 }
 
+const maxTraceIDLength = 64
+
+func (d *RequestDetail) setRequestSize(size coreusage.RequestSize) {
+	d.SizeVersion = size.Version
+	d.ClientRequestBytes = size.ClientRequestBytes
+	d.ClientRequestEncoding = size.ClientRequestEncoding
+	d.UpstreamTransport = size.UpstreamTransport
+	d.UpstreamRequestBytes = size.UpstreamRequestBytes
+	d.UpstreamRequestWireBytes = size.UpstreamRequestWireBytes
+	d.UpstreamRequestEncoding = size.UpstreamRequestEncoding
+	d.UpstreamResponseBytes = size.UpstreamResponseBytes
+}
+
+func (d RequestDetail) requestSize() coreusage.RequestSize {
+	return coreusage.RequestSize{
+		Version:                  d.SizeVersion,
+		ClientRequestBytes:       d.ClientRequestBytes,
+		ClientRequestEncoding:    d.ClientRequestEncoding,
+		UpstreamTransport:        d.UpstreamTransport,
+		UpstreamRequestBytes:     d.UpstreamRequestBytes,
+		UpstreamRequestWireBytes: d.UpstreamRequestWireBytes,
+		UpstreamRequestEncoding:  d.UpstreamRequestEncoding,
+		UpstreamResponseBytes:    d.UpstreamResponseBytes,
+	}
+}
+
+// normaliseRequestSizeFields keeps size metadata diagnostic-only: details
+// with an unknown size contract drop the size fields instead of failing the
+// import, and a trace ID that cannot be a request ID is cleared.
+func normaliseRequestSizeFields(detail RequestDetail) RequestDetail {
+	detail.TraceID = strings.TrimSpace(detail.TraceID)
+	if len(detail.TraceID) > maxTraceIDLength || strings.ContainsAny(detail.TraceID, "/\\") {
+		detail.TraceID = ""
+	}
+	if detail.SizeVersion != coreusage.RequestSizeVersionV1 {
+		detail.setRequestSize(coreusage.RequestSize{})
+		return detail
+	}
+	detail.setRequestSize(detail.requestSize().Canonical())
+	return detail
+}
+
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
 	s.querySequence++
 	detail.querySequence = s.querySequence
@@ -1068,22 +1171,125 @@ func safeFailureDetail(record coreusage.Record, failed bool) (string, int) {
 	return extractSafeFailureReason(record.Fail.Body), status
 }
 
+// failureReasonWrapperPrefixes are Go error wrapper namespaces and generic
+// labels whose colon prefix is a library artifact, not an application error
+// code: "tls: handshake failure" must not record reason "tls".
+var failureReasonWrapperPrefixes = map[string]struct{}{
+	"context": {}, "dial": {}, "http": {}, "http2": {}, "https": {},
+	"net": {}, "proxy": {}, "runtime": {}, "socks": {}, "socks5": {},
+	"tls": {}, "websocket": {},
+}
+
+// failureReasonSignatures maps distinctive free-text transport/upstream error
+// phrases to stable failure_reason tokens. It is the last-resort fallback:
+// structured JSON codes and explicit application prefixes win first, and a
+// body matching none of these entries records no reason rather than a
+// misleading first word. Signatures must stay specific (TLS handshake entries
+// keep their "tls" qualifier) so they cannot shadow application codes.
+var failureReasonSignatures = []struct {
+	signature string
+	class     string
+}{
+	{signature: "upstream connect error or disconnect/reset before headers", class: "upstream_connect_failure"},
+	{signature: "connection reset by peer", class: "connection_reset"},
+	{signature: "connection refused", class: "connection_refused"},
+	{signature: "tls: handshake failure", class: "tls_handshake_failure"},
+	{signature: "tls handshake timeout", class: "tls_handshake_timeout"},
+	{signature: "context deadline exceeded", class: "deadline_exceeded"},
+	{signature: "i/o timeout", class: "io_timeout"},
+	{signature: "no such host", class: "dns_failure"},
+	{signature: "unexpected eof", class: "unexpected_eof"},
+}
+
+// jsonFailureReason extracts an upstream application error code from a JSON
+// error body. Executors already normalize upstream errors into these fields
+// (e.g. classifyCodexStatusError writes error.code/error.type), so they
+// outrank every free-text heuristic. Only whole-body JSON objects are
+// considered; nested values must be strings and pass the safety filter.
+func jsonFailureReason(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if !strings.HasPrefix(trimmed, "{") {
+		return ""
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &root); err != nil {
+		return ""
+	}
+	nested := map[string]json.RawMessage{}
+	var nestedErrorString string
+	if raw, ok := root["error"]; ok {
+		var asString string
+		if json.Unmarshal(raw, &asString) == nil {
+			nestedErrorString = asString
+		} else {
+			_ = json.Unmarshal(raw, &nested)
+		}
+	}
+	for _, candidate := range []string{nestedErrorString} {
+		if reason := strings.TrimSpace(candidate); reason != "" && isSafeFailureReason(reason) {
+			return reason
+		}
+	}
+	for _, field := range []json.RawMessage{nested["code"], nested["type"], root["code"], root["type"]} {
+		var value string
+		if len(field) == 0 || json.Unmarshal(field, &value) != nil {
+			continue
+		}
+		if reason := strings.TrimSpace(value); reason != "" && isSafeFailureReason(reason) {
+			return reason
+		}
+	}
+	return ""
+}
+
+// prefixedFailureReason extracts an explicit "code: detail" prefix. Wrapper
+// namespaces (tls:, websocket:, ...) are rejected so transport-wrapped errors
+// fall through to signature classification instead of recording the wrapper.
+func prefixedFailureReason(body string) string {
+	idx := strings.Index(body, ":")
+	if idx <= 0 {
+		return ""
+	}
+	prefix := strings.TrimSpace(body[:idx])
+	if !isSafeFailureReason(prefix) {
+		return ""
+	}
+	if _, wrapper := failureReasonWrapperPrefixes[strings.ToLower(prefix)]; wrapper {
+		return ""
+	}
+	return prefix
+}
+
+func failureReasonClassFromSignature(body string) string {
+	lower := strings.ToLower(body)
+	for _, sig := range failureReasonSignatures {
+		if strings.Contains(lower, sig.signature) && isSafeFailureReason(sig.class) {
+			return sig.class
+		}
+	}
+	return ""
+}
+
 func extractSafeFailureReason(body string) string {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return ""
 	}
-	candidate := body
-	if idx := strings.Index(candidate, ":"); idx > 0 {
-		candidate = candidate[:idx]
-	} else if fields := strings.Fields(candidate); len(fields) > 0 {
-		candidate = fields[0]
+	if reason := jsonFailureReason(body); reason != "" {
+		return reason
 	}
-	candidate = strings.TrimSpace(candidate)
-	if !isSafeFailureReason(candidate) {
-		return ""
+	if reason := prefixedFailureReason(body); reason != "" {
+		return reason
 	}
-	return candidate
+	if reason := failureReasonClassFromSignature(body); reason != "" {
+		return reason
+	}
+	// A single-token body is itself the code; multi-word free text records no
+	// reason instead of a misleading first word like "context" or "status".
+	if !strings.ContainsAny(body, " \t\r\n") && isSafeFailureReason(body) {
+		return body
+	}
+	return ""
 }
 
 func isSafeFailureReason(value string) bool {
@@ -1220,6 +1426,11 @@ func sumNonNegativeTokenCounts(tokens ...int64) (int64, bool) {
 
 func cloneRequestDetail(detail RequestDetail) RequestDetail {
 	detail.Tokens = cloneTokenStats(detail.Tokens)
+	detail.OutputTiming = detail.OutputTiming.Clone()
+	if detail.TokenBreakdown != nil {
+		copy := *detail.TokenBreakdown
+		detail.TokenBreakdown = &copy
+	}
 	return detail
 }
 

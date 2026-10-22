@@ -201,6 +201,8 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// ZcodeContextUsage optionally counts delivered search context for Codex clients.
+	ZcodeContextUsage      CodexZcodeContextUsageMode        `yaml:"zcode-context-usage,omitempty" json:"zcode-context-usage,omitempty"`
 	CacheAffinity          CodexCacheAffinityConfig          `yaml:"cache-affinity" json:"cache-affinity"`
 	IdentityConfuse        bool                              `yaml:"identity-confuse" json:"identity-confuse"`
 	ClientMetadata         CodexClientMetadataConfig         `yaml:"client-metadata" json:"client-metadata"`
@@ -208,6 +210,8 @@ type CodexConfig struct {
 	ModelFallback          CodexModelFallbackConfig          `yaml:"model-fallback" json:"model-fallback"`
 	RateLimitContinuity    CodexRateLimitContinuityConfig    `yaml:"rate-limit-continuity" json:"rate-limit-continuity"`
 	AbnormalReasoningRetry CodexAbnormalReasoningRetryConfig `yaml:"abnormal-reasoning-retry" json:"abnormal-reasoning-retry"`
+	// Outbound selects the upstream transport strategy for Codex requests that arrive over HTTP.
+	Outbound CodexOutboundConfig `yaml:"outbound,omitempty" json:"outbound,omitempty"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
@@ -708,6 +712,11 @@ type CodexKey struct {
 	// DisableCodexCloaking optionally overrides the global codex.disable-codex-cloaking for this credential.
 	// True disables cloaking; false explicitly enables cloaking; omitted inherits global codex.disable-codex-cloaking.
 	DisableCodexCloaking *bool `yaml:"disable-codex-cloaking,omitempty" json:"disable-codex-cloaking,omitempty"`
+
+	// RequestCompression opts this API-key credential into compressed HTTP /responses request bodies:
+	// none (default) or zstd. Enable zstd only when the base-url accepts Content-Encoding: zstd
+	// (for example another CPA instance). OAuth credentials follow codex.outbound.request-compression.
+	RequestCompression string `yaml:"request-compression,omitempty" json:"request-compression,omitempty"`
 
 	// RequestRetry optionally overrides the global request-retry for this credential.
 	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.

@@ -165,7 +165,11 @@ func (c *deferredRequestBodyCapture) statusMarker() string {
 	}
 	var markers []string
 	if c.truncated {
-		markers = append(markers, fmt.Sprintf("[REQUEST BODY TRUNCATED: captured first %d bytes]", c.bytesCaptured))
+		if total, known := c.totalBodyBytes(); known {
+			markers = append(markers, fmt.Sprintf("[REQUEST BODY TRUNCATED: captured first %d of %d bytes]", c.bytesCaptured, total))
+		} else {
+			markers = append(markers, fmt.Sprintf("[REQUEST BODY TRUNCATED: captured first %d bytes]", c.bytesCaptured))
+		}
 	}
 	complete := c.sawEOF || (c.contentLength >= 0 && c.bytesRead >= c.contentLength)
 	if !complete {
@@ -176,6 +180,22 @@ func (c *deferredRequestBodyCapture) statusMarker() string {
 		}
 	}
 	return strings.Join(markers, "\n")
+}
+
+// totalBodyBytes reports the original request body size when it can be known
+// without consuming more bytes: the count read to EOF, else the declared
+// Content-Length. Chunked bodies that have not reached EOF report unknown.
+func (c *deferredRequestBodyCapture) totalBodyBytes() (int64, bool) {
+	if c == nil {
+		return 0, false
+	}
+	if c.sawEOF {
+		return c.bytesRead, true
+	}
+	if c.contentLength >= 0 {
+		return c.contentLength, true
+	}
+	return 0, false
 }
 
 func (c *deferredRequestBodyCapture) Cleanup() {
@@ -299,7 +319,11 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 				Reader: io.MultiReader(bytes.NewReader(bodyBytes), originalBody),
 				closer: originalBody,
 			}
-			body = append(bytes.Clone(bodyBytes[:maxErrorOnlyCapturedRequestBodyBytes]), []byte("\n[REQUEST BODY TRUNCATED IN LOG]")...)
+			truncationMarker := "\n[REQUEST BODY TRUNCATED IN LOG]"
+			if c.Request.ContentLength >= 0 {
+				truncationMarker = fmt.Sprintf("\n[REQUEST BODY TRUNCATED IN LOG: %d of %d bytes]", maxErrorOnlyCapturedRequestBodyBytes, c.Request.ContentLength)
+			}
+			body = append(bytes.Clone(bodyBytes[:maxErrorOnlyCapturedRequestBodyBytes]), []byte(truncationMarker)...)
 		} else {
 			// Restore the body for the actual request processing.
 			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))

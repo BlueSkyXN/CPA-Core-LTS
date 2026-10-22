@@ -1,11 +1,28 @@
 package main
 
+import "strings"
+
+func normalizeThinkingEffort(value any) (string, error) {
+	level, ok := value.(string)
+	if ok {
+		switch strings.ToLower(strings.TrimSpace(level)) {
+		case "low", "high", "max":
+			return strings.ToLower(strings.TrimSpace(level)), nil
+		case "medium", "med":
+			return "high", nil
+		case "xhigh":
+			return "max", nil
+		}
+	}
+	return "", problem(400, "unsupported_parameter", "Thinking effort must be low, medium (med), high, xhigh or max")
+}
+
 func thinkingEffort(source map[string]any) (string, error) {
 	effort := ""
 	accept := func(value any) error {
-		level, ok := value.(string)
-		if !ok || (level != "low" && level != "high" && level != "max") {
-			return problem(400, "unsupported_parameter", "Thinking effort must be low, high or max")
+		level, err := normalizeThinkingEffort(value)
+		if err != nil {
+			return err
 		}
 		if effort != "" && effort != level {
 			return problem(400, "invalid_request", "Conflicting thinking effort fields")

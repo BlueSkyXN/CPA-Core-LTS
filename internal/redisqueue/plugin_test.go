@@ -115,6 +115,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 
 func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 	withEnabledQueue(t, func() {
+		duration := int64(500)
 		ctx := internallogging.WithResponseStatusHolder(context.Background())
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
 
@@ -122,6 +123,7 @@ func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 			Provider:      "openai",
 			Model:         "gpt-5.6-sol",
 			TimingVersion: coreusage.TimingVersionV1,
+			OutputTiming:  &coreusage.OutputTiming{Version: 1, Streamed: true, DurationMS: &duration},
 			TTFB:          120 * time.Millisecond,
 			TTFT:          480 * time.Millisecond,
 			TTFA:          920 * time.Millisecond,
@@ -134,6 +136,11 @@ func TestUsageQueuePluginEmitsCanonicalTimingFields(t *testing.T) {
 		})
 
 		payload := popSinglePayload(t)
+		var window map[string]json.RawMessage
+		if err := json.Unmarshal(payload["output_timing"], &window); err != nil {
+			t.Fatal(err)
+		}
+		requireIntField(t, window, "duration_ms", 500)
 		requireIntField(t, payload, "timing_version", int(coreusage.TimingVersionV1))
 		requireIntField(t, payload, "ttfb_ms", 120)
 		requireIntField(t, payload, "ttft_ms", 480)
@@ -979,4 +986,52 @@ func TestUsageQueuePlugin_SchemeB_StrictLegacyRequestIDPreservation(t *testing.T
 	requireStringField(t, payload, "execution_id", execUUID)
 	// trace_id reflects the record.TraceID
 	requireStringField(t, payload, "trace_id", "custom-trace-id")
+}
+
+func TestUsageQueuePluginEmitsRequestSizeFields(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "codex",
+			Model:    "gpt-5.6",
+			Detail:   coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+			Size: coreusage.RequestSize{
+				ClientRequestBytes:       800,
+				UpstreamTransport:        "WebSocket",
+				UpstreamRequestBytes:     900,
+				UpstreamRequestWireBytes: 900,
+				UpstreamResponseBytes:    300,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireIntField(t, payload, "size_version", int(coreusage.RequestSizeVersionV1))
+		requireIntField(t, payload, "client_request_bytes", 800)
+		requireIntField(t, payload, "upstream_request_bytes", 900)
+		requireIntField(t, payload, "upstream_request_wire_bytes", 900)
+		requireIntField(t, payload, "upstream_response_bytes", 300)
+		requireStringField(t, payload, "upstream_transport", "websocket")
+		requireMissingField(t, payload, "upstream_request_encoding")
+		requireMissingField(t, payload, "client_request_encoding")
+	})
+}
+
+func TestUsageQueuePluginOmitsUnmeasuredRequestSize(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "codex",
+			Model:    "gpt-5.6",
+			Detail:   coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		})
+
+		payload := popSinglePayload(t)
+		for _, field := range []string{"size_version", "client_request_bytes", "upstream_transport", "upstream_request_bytes", "upstream_request_wire_bytes", "upstream_response_bytes"} {
+			requireMissingField(t, payload, field)
+		}
+	})
 }

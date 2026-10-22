@@ -234,6 +234,35 @@ func TestBuildConfigChangeDetailsCodexClientMetadata(t *testing.T) {
 	expectContains(t, details, "codex.client-metadata.workspace-policy: passthrough -> drop")
 }
 
+func TestBuildConfigChangeDetailsCodexOutbound(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{Codex: config.CodexConfig{Outbound: config.CodexOutboundConfig{
+		Transport:               config.CodexOutboundTransportAuto,
+		WebsocketThresholdBytes: 512 * 1024,
+	}}}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "codex.outbound.transport: follow -> auto")
+	expectContains(t, details, "codex.outbound.websocket-threshold-bytes: 786432 -> 524288")
+
+	strategy := &config.Config{Codex: config.CodexConfig{Outbound: config.CodexOutboundConfig{RequestCompression: config.CodexRequestCompressionNone, AcceptEncoding: config.CodexAcceptEncodingLegacy}}}
+	strategyDetails := BuildConfigChangeDetails(oldCfg, strategy)
+	expectContains(t, strategyDetails, "codex.outbound.request-compression: auto -> none")
+	expectContains(t, strategyDetails, "codex.outbound.accept-encoding: official -> legacy")
+	explicitDefault := &config.Config{Codex: config.CodexConfig{Outbound: config.CodexOutboundConfig{AcceptEncoding: config.CodexAcceptEncodingOfficial}}}
+	if details := BuildConfigChangeDetails(oldCfg, explicitDefault); len(details) != 0 {
+		t.Fatalf("spelling out the default accept-encoding produced changes: %v", details)
+	}
+
+	keyOld := &config.Config{CodexKey: []config.CodexKey{{APIKey: "k", BaseURL: "https://relay.example.com/v1"}}}
+	keyNew := &config.Config{CodexKey: []config.CodexKey{{APIKey: "k", BaseURL: "https://relay.example.com/v1", RequestCompression: config.CodexRequestCompressionZstd}}}
+	expectContains(t, BuildConfigChangeDetails(keyOld, keyNew), "codex[0].request-compression: none -> zstd")
+
+	if unchanged := BuildConfigChangeDetails(newCfg, newCfg); len(unchanged) != 0 {
+		t.Fatalf("identical outbound config produced changes: %v", unchanged)
+	}
+}
+
 func TestBuildConfigChangeDetailsCodexDesktopToolOverlay(t *testing.T) {
 	oldCfg := &config.Config{}
 	newCfg := &config.Config{}

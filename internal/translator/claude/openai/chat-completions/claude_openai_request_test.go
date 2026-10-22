@@ -773,9 +773,9 @@ func TestConvertOpenAIRequestToClaude_MaxTokensAndMaxCompletionTokens(t *testing
 			wantLimit: 4096,
 		},
 		{
-			name:      "neither present uses default template limit",
+			name:      "neither present respects catalog model limit",
 			rawJSON:   `{"messages":[{"role":"user","content":"hi"}]}`,
-			wantLimit: 32000,
+			wantLimit: 8192,
 		},
 	}
 

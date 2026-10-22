@@ -102,6 +102,10 @@ type Service struct {
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 
+	// accountCatalogs keeps pre-policy per-auth model catalogs for the LTS
+	// model policy preview surface. See model_policy_store_lts.go.
+	accountCatalogs *accountCatalogStore
+
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
 
@@ -132,6 +136,10 @@ type Service struct {
 	homePluginSyncFetch          func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error)
 	homePluginDeleteTask         func(context.Context, *config.Config, home.PluginTask) homeplugins.SyncReport
 	antigravityProbeWg           sync.WaitGroup
+
+	// pluginModelRetry re-runs plugin model discovery for auths whose discovery
+	// failed retryably (network/429/5xx). Credential rejections are excluded.
+	pluginModelRetry *pluginModelRegistrationRetry
 }
 
 // SetResultPolicy sets an execution result policy on the underlying core auth manager.

@@ -166,3 +166,73 @@ func TestV8EmptyOAuthContainerDoesNotEraseSharedLegacyPolicy(t *testing.T) {
 		t.Fatal("migration erased shared policy", err)
 	}
 }
+
+func TestV8IntegratedMainSettingsRoundTrip(t *testing.T) {
+	raw := []byte(`config-version: 8
+server: {port: 8317}
+upstream:
+  codex:
+    zcode-context-usage: correct
+    outbound: {transport: auto, websocket-threshold-bytes: 42, request-compression: none, accept-encoding: legacy}
+oauth:
+  model-policy:
+    codex:
+      allowlist: {enabled: true, models: [gpt-*]}
+api-keys:
+  codex:
+    - name: fixture
+      base-url: https://example.invalid/v1
+      keys: [{api-key: synthetic-provider, request-compression: zstd}]
+`)
+	if err := ValidateV8Config(raw); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseConfigBytes(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Codex.ZcodeContextUsage != ZcodeContextUsageCorrect || cfg.Codex.Outbound.Transport != "auto" || cfg.Codex.Outbound.WebsocketThresholdBytes != 42 {
+		t.Fatal("shared settings lost")
+	}
+	if !reflect.DeepEqual(cfg.Codex, cfg.ForAPIKey().Codex) {
+		t.Fatal("shared settings became OAuth-only")
+	}
+	if p := cfg.OAuthModelPolicy["codex"].Allowlist; p == nil || !p.Enabled || len(p.Models) != 1 {
+		t.Fatal("model policy lost")
+	}
+	if len(cfg.CodexKey) != 1 || cfg.CodexKey[0].RequestCompression != "zstd" {
+		t.Fatal("per-key compression lost")
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(file, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RequestRetry++
+	if err := SaveConfigPreserveComments(file, cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateV8Config(data); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertV8LTSEffectiveEqual(t, cfg, loaded)
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"upstream.codex.outbound", "upstream.codex.zcode-context-usage", "oauth.model-policy"} {
+		if yamlPath(doc.Content[0], path) == nil {
+			t.Fatalf("missing canonical %s", path)
+		}
+	}
+	if yamlPath(doc.Content[0], "oauth.providers.codex.outbound") != nil {
+		t.Fatal("shared outbound saved in OAuth-only scope")
+	}
+}

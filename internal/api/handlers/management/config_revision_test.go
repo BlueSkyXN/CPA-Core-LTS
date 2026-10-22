@@ -190,3 +190,34 @@ func TestConfigRevisionChecksPatchDeleteAndMissingFamily(t *testing.T) {
 		}
 	}
 }
+
+func TestV8IntegratedModelPolicyConditionalWrite(t *testing.T) {
+	r, path := newRevisionTestRouter(t, "config-version: 8\nserver: {port: 8317}\noauth: {excluded-models: {codex: [old]}}\n")
+	before := revisionRequest(r, http.MethodGet, "/v8/config/oauth", "", "")
+	revision := before.Header().Get("ETag")
+	body := `{"model-policy":{"codex":{"allowlist":{"enabled":true,"models":[]},"denylist":{"enabled":true,"models":["old"]}}},"excluded-models":{}}`
+	if got := revisionRequest(r, http.MethodPut, "/v8/config/oauth", body, ""); got.Code != 428 {
+		t.Fatalf("missing revision: %d", got.Code)
+	}
+	if got := revisionRequest(r, http.MethodPut, "/v8/config/oauth", body, revision); got.Code != 200 {
+		t.Fatalf("write: %d %s", got.Code, got.Body.String())
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.OAuthModelPolicy["codex"].Allowlist; p == nil || !p.Enabled || len(p.Models) != 0 {
+		t.Fatal("enabled empty allowlist lost")
+	}
+	if len(cfg.OAuthExcludedModels) != 0 {
+		t.Fatal("excluded rule not moved atomically")
+	}
+	saved, _ := os.ReadFile(path)
+	if got := revisionRequest(r, http.MethodPut, "/v8/config/oauth", `{}`, revision); got.Code != 412 {
+		t.Fatalf("stale write: %d", got.Code)
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(saved, after) {
+		t.Fatal("stale write mutated disk")
+	}
+}

@@ -18,6 +18,36 @@ import (
 
 const flashImageFixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII="
 
+func TestGLMEffortAliasesAcrossProtocols(t *testing.T) {
+	if isolateDynamic(t) {
+		return
+	}
+	models := []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-highspeed", "glm-5.3-flashx"}
+	f := newV2Fixture(t, models...)
+	for _, model := range models {
+		for effort, expected := range map[string]string{"low": "low", "high": "high", "max": "max", "medium": "high", "med": "high", "xhigh": "max"} {
+			for _, stream := range []bool{false, true} {
+				for _, tc := range []struct{ path, template string }{
+					{"/v1/messages", `{"model":%q,"max_tokens":100,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":%q},"stream":%t}`},
+					{"/v1/chat/completions", `{"model":%q,"max_tokens":100,"messages":[{"role":"user","content":"hello"}],"reasoning_effort":%q,"stream":%t}`},
+					{"/v1/responses", `{"model":%q,"input":"hello","reasoning":{"effort":%q},"stream":%t}`},
+				} {
+					rec := httptest.NewRecorder()
+					f.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(fmt.Sprintf(tc.template, model, effort, stream))))
+					if rec.Code != http.StatusOK {
+						t.Fatalf("%s/%s/%s stream=%t HTTP %d: %s", tc.path, model, effort, stream, rec.Code, rec.Body.String())
+					}
+					f.checkUsage(t, false)
+					wire := f.transport.captured[len(f.transport.captured)-1]
+					if gjson.GetBytes(wire, "model").String() != model || gjson.GetBytes(wire, "reasoning_effort").String() != expected || gjson.GetBytes(wire, "thinking.type").String() != "enabled" || gjson.GetBytes(wire, "thinking.budget_tokens").Exists() {
+						t.Fatalf("%s/%s/%s controls changed before dispatch", tc.path, model, effort)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestResponsesThinkingAndImageControls(t *testing.T) {
 	if isolateDynamic(t) {
 		return
@@ -108,7 +138,7 @@ func TestWebsocketThinkingAndImageControls(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	f := newV2Fixture(t, "glm-5.3-flash")
+	f := newV2Fixture(t, "glm-5.3-flashx")
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
@@ -127,7 +157,7 @@ func TestWebsocketThinkingAndImageControls(t *testing.T) {
 			t.Error("WebSocket handler did not finish before plugin cleanup")
 		}
 	}()
-	body := fmt.Sprintf(`{"type":"response.create","model":"glm-5.3-flash","reasoning":{"effort":"max"},"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,%s"}]}]}`, flashImageFixture)
+	body := fmt.Sprintf(`{"type":"response.create","model":"glm-5.3-flashx","reasoning":{"effort":"xhigh"},"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,%s"}]}]}`, flashImageFixture)
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(body)); err != nil {
 		t.Fatal(err)
 	}

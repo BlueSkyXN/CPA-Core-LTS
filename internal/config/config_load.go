@@ -93,6 +93,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if err := cfg.Codex.CacheAffinity.normalizeAndValidate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.Codex.Outbound.normalizeAndValidate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Codex.ZcodeContextUsage.normalizeAndValidate(); err != nil {
+		return nil, err
+	}
+	if err := validateCodexKeyRequestCompression(cfg.CodexKey); err != nil {
+		return nil, err
+	}
 	if flowErr := cfg.ValidateFlowControl(); flowErr != nil {
 		return nil, flowErr
 	}
@@ -121,6 +130,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
+	}
+
+	if err := ValidateOAuthModelPolicy(cfg.OAuthModelPolicy); err != nil {
+		return nil, err
 	}
 
 	// Hash remote management key if plaintext is detected (nested)
@@ -208,6 +221,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
+
+	// Normalize OAuth provider model policies.
+	cfg.OAuthModelPolicy = NormalizeOAuthModelPolicy(cfg.OAuthModelPolicy)
 
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()

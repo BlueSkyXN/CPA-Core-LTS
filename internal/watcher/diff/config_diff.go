@@ -150,6 +150,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	if oldCfg.Codex.ZcodeContextUsage.Effective() != newCfg.Codex.ZcodeContextUsage.Effective() {
+		changes = append(changes, fmt.Sprintf("codex.zcode-context-usage: %s -> %s", oldCfg.Codex.ZcodeContextUsage.Effective(), newCfg.Codex.ZcodeContextUsage.Effective()))
+	}
 	if oldCfg.Codex.CacheAffinity.EffectiveStrategy() != newCfg.Codex.CacheAffinity.EffectiveStrategy() {
 		changes = append(changes, fmt.Sprintf("codex.cache-affinity.strategy: %s -> %s", oldCfg.Codex.CacheAffinity.EffectiveStrategy(), newCfg.Codex.CacheAffinity.EffectiveStrategy()))
 	}
@@ -159,6 +162,18 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	changes = appendCodexAbnormalReasoningRetryChanges(changes, oldCfg.Codex.AbnormalReasoningRetry.Effective(), newCfg.Codex.AbnormalReasoningRetry.Effective())
 	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
 		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
+	}
+	if oldCfg.Codex.Outbound.EffectiveTransport() != newCfg.Codex.Outbound.EffectiveTransport() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.transport: %s -> %s", oldCfg.Codex.Outbound.EffectiveTransport(), newCfg.Codex.Outbound.EffectiveTransport()))
+	}
+	if oldCfg.Codex.Outbound.EffectiveRequestCompression() != newCfg.Codex.Outbound.EffectiveRequestCompression() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.request-compression: %s -> %s", oldCfg.Codex.Outbound.EffectiveRequestCompression(), newCfg.Codex.Outbound.EffectiveRequestCompression()))
+	}
+	if oldCfg.Codex.Outbound.EffectiveAcceptEncoding() != newCfg.Codex.Outbound.EffectiveAcceptEncoding() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.accept-encoding: %s -> %s", oldCfg.Codex.Outbound.EffectiveAcceptEncoding(), newCfg.Codex.Outbound.EffectiveAcceptEncoding()))
+	}
+	if oldCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes() != newCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.websocket-threshold-bytes: %d -> %d", oldCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes(), newCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes()))
 	}
 	if oldCfg.Codex.StreamBootstrapBuffering != newCfg.Codex.StreamBootstrapBuffering {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-buffering: %t -> %t", oldCfg.Codex.StreamBootstrapBuffering, newCfg.Codex.StreamBootstrapBuffering))
@@ -373,6 +388,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("codex[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("codex[%d].disable-codex-cloaking", i), o.DisableCodexCloaking, n.DisableCodexCloaking)
+			if oldMode, newMode := codexKeyRequestCompressionLabel(o.RequestCompression), codexKeyRequestCompressionLabel(n.RequestCompression); oldMode != newMode {
+				changes = append(changes, fmt.Sprintf("codex[%d].request-compression: %s -> %s", i, oldMode, newMode))
+			}
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("codex[%d].api-key: updated", i))
 			}
@@ -882,4 +900,12 @@ func equalUpstreamAPIKeys(a, b []config.AmpUpstreamAPIKeyEntry) bool {
 		}
 	}
 	return true
+}
+
+// codexKeyRequestCompressionLabel renders a codex-api-key request-compression value, defaulting to none.
+func codexKeyRequestCompressionLabel(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), config.CodexRequestCompressionZstd) {
+		return config.CodexRequestCompressionZstd
+	}
+	return config.CodexRequestCompressionNone
 }

@@ -190,6 +190,29 @@ func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cance
 				return claudePluginConversionError()
 			}
 			for _, frame := range frames {
+				if state.Terminal && !state.Chat {
+					frame = a.adjustZcodeContextFrame(ctx, prepared, req, frame, func(waitCtx context.Context) bool {
+						// The plugin releases its generation slot before closing this
+						// channel. Drain only after a validated terminal event.
+						remaining := zcodeContextMaxBytes
+						for !upstreamClosed {
+							select {
+							case <-waitCtx.Done():
+								return false
+							case tail, ok := <-in:
+								if !ok {
+									upstreamClosed = true
+									return true
+								}
+								remaining -= len(tail.Payload)
+								if remaining < 0 {
+									return false
+								}
+							}
+						}
+						return true
+					})
+				}
 				if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
 					return ctx.Err()
 				}

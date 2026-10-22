@@ -40,8 +40,14 @@ typedef int (*cliproxy_plugin_init_fn)(const cliproxy_host_api*, cliproxy_plugin
 extern int cliproxyHostCall(void*, const char*, const uint8_t*, size_t, cliproxy_buffer*);
 extern void cliproxyHostFree(void*, size_t);
 
-static void* cliproxy_dlopen(const char* path) {
-	return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+static void* cliproxy_dlopen(const char* path, int keep_mapped) {
+	int flags = RTLD_NOW | RTLD_LOCAL;
+#ifdef __APPLE__
+	if (keep_mapped) {
+		flags |= RTLD_NODELETE;
+	}
+#endif
+	return dlopen(path, flags);
 }
 
 static void* cliproxy_dlsym(void* handle, const char* name) {
@@ -84,7 +90,9 @@ import "C"
 
 import (
 	"context"
+	"debug/buildinfo"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -115,7 +123,11 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	cPath := C.CString(file.Path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	handle := C.cliproxy_dlopen(cPath)
+	var keepMapped C.int
+	if keepGoPluginMapped(file.Path) {
+		keepMapped = 1
+	}
+	handle := C.cliproxy_dlopen(cPath, keepMapped)
 	if handle == nil {
 		return nil, fmt.Errorf("dlopen %s: %s", file.Path, dlerrorString())
 	}
@@ -168,6 +180,21 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 		return nil, fmt.Errorf("plugin function table is incomplete")
 	}
 	return client, nil
+}
+
+// keepGoPluginMapped reports whether the library embeds a live Go runtime.
+// Go's ELF linker marks c-shared libraries NODELETE for the same reason:
+// plugin shutdown cannot stop the runtime's threads, so unmapping the image
+// can hang or crash the host after dlclose. Any binary carrying Go build
+// info gets the pinned lifetime — including Go archives linked into a C or
+// Rust dynamic library — because the miss direction (unmapping a live Go
+// runtime) is far more costly than over-pinning a plain native library.
+func keepGoPluginMapped(path string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	_, err := buildinfo.ReadFile(path)
+	return err == nil
 }
 
 func (c *dynamicLibraryClient) callbackInstance() *hostCallbackInstance {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -365,6 +366,9 @@ func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(
 	}
 	if !bytes.Contains(content, []byte("REQUEST BODY TRUNCATED")) {
 		t.Fatal("error log does not mark the large request body as truncated")
+	}
+	if !bytes.Contains(content, fmt.Appendf(nil, "of %d bytes]", len(payload))) {
+		t.Fatal("truncation marker does not report the original request body size")
 	}
 	if bytes.Contains(content, payload) {
 		t.Fatal("error log unexpectedly retained the complete oversized request body")
