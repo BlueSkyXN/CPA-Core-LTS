@@ -666,6 +666,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				selectedPublished = true
 			}
 			markCodexModelFallbackDispatch(execOpts, auth.ID)
+			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -705,6 +706,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.commitPreDispatchSelection(auth, execOpts)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
+					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -733,6 +735,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
 			result.RouteModel = routeModel
+			result.ExecutionSeq = executionSeq
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -933,6 +936,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
 			}
+			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -968,6 +972,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = admittedRetryCtx
 					m.commitPreDispatchSelection(auth, execOpts)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -994,6 +999,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
 			result.SkipQuotaObservation = true
 			result.RouteModel = routeModel
+			result.ExecutionSeq = executionSeq
 			if errExec != nil {
 				result.Error = countTokensResultErrorFromError(errExec, execReq.Model)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -1240,7 +1246,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		// Enrich before auth preparation so prepare-stage usage records observe the client request.
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 		execCtx = newUpstreamAttemptContext(execCtx)
-		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
+		// Home owns dispatched credential availability; only local selections need state filtering.
+		if selection == nil {
+			models = m.filterExecutionModels(auth, routeModel, models, pooled)
+		}
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias
 		}

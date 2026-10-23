@@ -13,6 +13,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
@@ -61,6 +62,11 @@ func NewCodexAutoExecutor(cfg *config.Config, previous ...*CodexAutoExecutor) *C
 }
 
 func (e *CodexAutoExecutor) Identifier() string { return "codex" }
+
+// UsesConfig reports whether the executor was created for cfg.
+func (e *CodexAutoExecutor) UsesConfig(cfg *config.Config) bool {
+	return e != nil && e.httpExec != nil && e.httpExec.cfg == cfg
+}
 
 func (e *CodexAutoExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if e == nil || e.httpExec == nil {
@@ -121,6 +127,20 @@ func (e *CodexAutoExecutor) CloseExecutionSession(sessionID string) {
 		return
 	}
 	e.wsExec.CloseExecutionSession(sessionID)
+}
+
+func (e *CodexAutoExecutor) SharesExecutionSessionsWith(other cliproxyauth.ProviderExecutor) bool {
+	if e == nil || e.wsExec == nil {
+		return false
+	}
+	return e.wsExec.SharesExecutionSessionsWith(other)
+}
+
+func (e *CodexAutoExecutor) CloseAuthExecutionSessions(authID string) {
+	if e == nil || e.wsExec == nil {
+		return
+	}
+	e.wsExec.CloseAuthExecutionSessions(authID)
 }
 
 func (e *CodexAutoExecutor) UpstreamDisconnectChan(sessionID string) <-chan error {
@@ -243,22 +263,48 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	conn := sess.conn
 	connection := codexWebsocketConnectionRef{conn: conn, generation: sess.connGen}
 	authID := sess.authID
-	wsURL := sess.wsURL
 	sess.connMu.Unlock()
 	if conn == nil {
 		return cliproxyexecutor.ErrNoActiveUpstreamWebsocket
 	}
-	// A retained socket from an earlier turn is not the current upstream.
-	// HTTP turns must fall through to local cancellation instead.
-	if _, _, active := sess.activeFor(connection); !active {
+	// Account checks may call back into the auth manager; do not hold session
+	// locks across them. Take the lifecycle snapshot only after they finish.
+	authEnabled := cliproxyexecutor.WebsocketAuthEnabled(ctx, authID)
+	sess.connMu.Lock()
+	if sess.conn != conn || sess.connGen != connection.generation {
+		sess.connMu.Unlock()
 		return cliproxyexecutor.ErrNoActiveUpstreamWebsocket
 	}
-	if !cliproxyexecutor.WebsocketAuthEnabled(ctx, authID) {
+	sess.activeMu.Lock()
+	_, alreadyTerminal := sess.terminalResponseIDs[gjson.GetBytes(payload, "response_id").String()]
+	alreadyTerminal = alreadyTerminal && sess.responseStateConn == conn
+	active := sess.active.connection == connection && sess.active.ch != nil && sess.active.signal != nil
+	var disconnectErr error
+	if sess.terminalConn == conn {
+		disconnectErr = sess.terminalErr
+	}
+	// Terminal state and the active channel must belong to one snapshot:
+	// completion can otherwise land between the checks and produce a stale 400.
+	sess.activeMu.Unlock()
+	sess.connMu.Unlock()
+	if disconnectErr != nil {
+		return disconnectErr
+	}
+	if alreadyTerminal {
+		log.WithField("outcome", "already_terminal").Debug("codex websockets: response.interrupt handled")
+		return nil
+	}
+	// A retained socket from an earlier turn is not the current upstream.
+	// HTTP turns must fall through to local cancellation instead.
+	if !active {
+		return cliproxyexecutor.ErrNoActiveUpstreamWebsocket
+	}
+	if !authEnabled {
 		return fmt.Errorf("websocket credential is no longer enabled")
 	}
 	if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
 		return errWrite
 	}
-	log.Infof("codex websockets: request forwarded session=%s auth=%s url=%s event=response.interrupt", sessionID, authID, wsURL)
+	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")
 	return nil
 }

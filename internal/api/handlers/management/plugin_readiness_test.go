@@ -120,6 +120,7 @@ func TestPluginReadinessManagementScopeAndErrors(t *testing.T) {
 		t.Fatal("legacy executor advertised readiness")
 	}
 	cfg.Plugins.Enabled = false
+	h.SetConfig(cfg)
 	res = request("fixture", "")
 	if res.Code != 503 {
 		t.Fatal("disabled host probed")

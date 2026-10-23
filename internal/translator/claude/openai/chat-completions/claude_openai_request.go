@@ -588,10 +588,10 @@ func convertOpenAIToolResultContent(content gjson.Result) (string, bool) {
 	return content.Raw, false
 }
 
-// firstExisting returns the first result that exists, or an empty result.
+// firstExisting returns the first non-null result that exists, or an empty result.
 func firstExisting(values ...gjson.Result) gjson.Result {
 	for _, value := range values {
-		if value.Exists() {
+		if value.Exists() && value.Type != gjson.Null {
 			return value
 		}
 	}

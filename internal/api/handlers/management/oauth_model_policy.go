@@ -17,11 +17,15 @@ import (
 
 // GetOAuthModelPolicy returns the normalized oauth-model-policy mapping.
 func (h *Handler) GetOAuthModelPolicy(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"oauth-model-policy": config.NormalizeOAuthModelPolicy(h.cfg.OAuthModelPolicy)})
 }
 
 // PutOAuthModelPolicy replaces the whole oauth-model-policy mapping.
 func (h *Handler) PutOAuthModelPolicy(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	data, errRead := c.GetRawData()
 	if errRead != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
@@ -47,13 +51,15 @@ func (h *Handler) PutOAuthModelPolicy(c *gin.Context) {
 		return
 	}
 	h.cfg.OAuthModelPolicy = config.NormalizeOAuthModelPolicy(entries)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // PatchOAuthModelPolicy upserts one provider entry. An entry whose lists are
 // all absent/empty removes the provider key. An explicit legacy merge flag is
 // rejected: legacy exclusions always stay in effect by design.
 func (h *Handler) PatchOAuthModelPolicy(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	var body struct {
 		Provider *string                       `json:"provider"`
 		Policy   *config.OAuthModelPolicyEntry `json:"policy"`
@@ -89,18 +95,20 @@ func (h *Handler) PatchOAuthModelPolicy(c *gin.Context) {
 		if len(h.cfg.OAuthModelPolicy) == 0 {
 			h.cfg.OAuthModelPolicy = nil
 		}
-		h.persist(c)
+		h.persistLocked(c)
 		return
 	}
 	if h.cfg.OAuthModelPolicy == nil {
 		h.cfg.OAuthModelPolicy = make(map[string]config.OAuthModelPolicyEntry)
 	}
 	h.cfg.OAuthModelPolicy[provider] = next
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // DeleteOAuthModelPolicy removes one provider entry.
 func (h *Handler) DeleteOAuthModelPolicy(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
 	if provider == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing provider"})
@@ -118,5 +126,5 @@ func (h *Handler) DeleteOAuthModelPolicy(c *gin.Context) {
 	if len(h.cfg.OAuthModelPolicy) == 0 {
 		h.cfg.OAuthModelPolicy = nil
 	}
-	h.persist(c)
+	h.persistLocked(c)
 }

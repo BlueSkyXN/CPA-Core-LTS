@@ -79,6 +79,18 @@ type PreDispatchExecutionAdmitter interface {
 	AdmitExecution(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (context.Context, error)
 }
 
+// ExecutionSessionSharer reports whether a replaced executor shares its execution
+// session store with the replacement executor so active sessions stay open.
+type ExecutionSessionSharer interface {
+	SharesExecutionSessionsWith(other ProviderExecutor) bool
+}
+
+// authExecutionSessionIDCloser allows executors to release execution sessions
+// associated with a removed credential without tearing down other credentials' sessions.
+type authExecutionSessionIDCloser interface {
+	CloseAuthExecutionSessions(authID string)
+}
+
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
 	// AuthID references the auth that produced this result.
@@ -110,6 +122,12 @@ type Result struct {
 	CredentialVersion uint64
 	// RegistrationEpoch captures the registration epoch under which the request was executed.
 	RegistrationEpoch uint64
+	// ExecutionSeq is the manager-local monotonic sequence assigned when the
+	// execution was dispatched upstream. It orders in-flight executions so a
+	// success dispatched before a cooldown was recorded cannot clear that
+	// cooldown. Zero means unknown (direct MarkResult callers) and is exempt
+	// from the ordering guard.
+	ExecutionSeq uint64
 }
 
 // Selector chooses an auth candidate for execution.
@@ -202,6 +220,7 @@ type Manager struct {
 	authEpochs         map[string]uint64
 	scheduler          *authScheduler
 	authChangeWatchers map[string]map[chan struct{}]struct{}
+	executionSeq       atomic.Uint64
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
@@ -271,7 +290,9 @@ type Manager struct {
 	// keeps Manager.mu out of store I/O.
 	persistLocks sync.Map
 	// authMutationLocks coordinate credential mutations without blocking unrelated readers.
-	authMutationLocks sync.Map
+	authMutationLocks      sync.Map
+	metadataPersistCancels sync.Map
+	metadataSaveGate       sync.Map
 	// authLoadGate allows concurrent credential transactions, but excludes whole-store reloads.
 	// Mutations acquire one permit; Load acquires all permits before reading the store.
 	authLoadGate *semaphore.Weighted

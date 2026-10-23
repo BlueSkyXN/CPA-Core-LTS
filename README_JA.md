@@ -79,7 +79,7 @@ CLIProxyAPI向けの独立した使用量永続化・可視化サービス。CLI
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 
-リクエスト単位の監視とコスト推定を備えたCLIProxyAPI向けのフル管理センターです。CPA-Managerは、収集したリクエストをアカウント、モデル、チャネル、レイテンシ、ステータス、Token使用量ごとに追跡し、編集可能なモデル価格とLiteLLM価格のワンクリック同期でコストを推定します。SQLiteでイベントを永続化し、Codexアカウントプール向けに一括検査、クォータ判定、異常アカウント検出、クリーンアップ提案、ワンクリック実行を提供し、日常的なマルチアカウント運用に適しています。
+CLIProxyAPI 向けのセルフホスト型管理コンソールと可観測性ダッシュボードです。追加サービス不要の軽量パネルとしても、リクエスト履歴の永続化と分析機能を備えた Manager Server としても利用できます。OAuth 認証情報、AI プロバイダー、クライアント API キー、モデルエイリアス、プラグイン、CPA 設定を一元管理します。SQLite に保存したリクエスト履歴から、リアルタイム監視、エラー原因の調査、モデル・プロバイダー・アカウント・キー・チャネル別の Token 使用量、レイテンシ、推定コストを分析できます。モデル料金の編集とワンクリック同期に対応し、Codex と xAI のクォータ確認、リセット情報、アカウントの健全性チェック、制御された復旧操作を提供します。Docker またはクロスプラットフォームのネイティブパッケージで導入でき、データはローカルに保存されます。
 
 ### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
 
@@ -226,6 +226,10 @@ CLIProxyAPI 向けのクロスプラットフォームな Electron トレイダ�
 ### [panel4cliproxyapi](https://github.com/yaanlaan/panel4cliproxyapi)
 
 React と Tailwind CSS で構築された、CLIProxyAPI 向けのモダンでレスポンシブな Web ダッシュボードおよび管理コンソール。LAN リダイレクト支援付きの複数プロバイダー対応 OAuth ログイン、YAML 不要の直感的なビジュアル設定、リアルタイムのトラフィック分析チャート、クライアント API キー管理、コアのバージョン確認とホットリロード、およびライブ SSE ストリーミングのプレイグラウンドを備えています。
+
+### [sub2api](https://github.com/PlaygrndLabs/sub2api)
+
+Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIProxyAPI を Cloudflare Workers + Containers にワンクリックでデプロイします。ログインと設定は R2 に永続化され、ダッシュボードはパスワードで保護され、クライアント API キーを作成するまで API リクエストはすべて拒否されます。
 
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。

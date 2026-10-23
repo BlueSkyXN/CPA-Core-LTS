@@ -79,6 +79,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	cfg := ctx.Config
 	var metadata map[string]any
 	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
+		if ctx.StrictFileParsing {
+			return nil, fmt.Errorf("parse auth file: %w", errUnmarshal)
+		}
 		return nil, nil
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)

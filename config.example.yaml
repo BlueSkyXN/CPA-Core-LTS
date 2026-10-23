@@ -101,6 +101,8 @@ routing:
     # for maximum parallel concurrency.
     # Ignored when routing.session-affinity is false.
     session-affinity-subagents: true
+    # any：任何凭据失败后重绑；quota：临时故障只切换本次请求，保留已有绑定。
+    session-affinity-rebind-on: "any"
     # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
     force-model-prefix: false
     cooldown:
@@ -139,6 +141,8 @@ requests:
     # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
     # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
     proxy-url: ""
+    # 仅限制共享 uTLS 客户端的 TLS 握手阶段；0 关闭，已建立的流不受此限。
+    tls-handshake-timeout-seconds: 0
     # When true, forward filtered upstream response headers to downstream clients.
     # Default is false (disabled).
     passthrough-headers: false
@@ -148,6 +152,7 @@ requests:
     # streaming:
     #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
     #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
+    #   send-keepalive-before-ft: false # 首个 token 前发送 SSE 心跳，需启用 keepalive-seconds。
 multimedia:
     # disable-image-generation supports: false (default), true, "chat", or "passthrough".
     # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
@@ -163,6 +168,13 @@ multimedia:
     video-result-auth-cache-ttl: "3h"
 upstream:
     claude:
+        # 在 Claude Responses 路由启用 Codex tool_search；自定义网关需 native-tool-search 明确支持。
+        tool-search: false
+        # header-defaults:
+        #     anthropic-beta-strip: []  # 从派生 beta 列表移除这些名称。
+        #     anthropic-beta-append: [] # 在末尾补充尚不存在的 beta 名称。
+        #     inject-diagnostics: true # 为官方 Claude Code 路由注入诊断字段。
+        #     client-request-id: "on"  # on / passthrough / off
         # Claude Code compatibility settings.
 
 
@@ -458,6 +470,8 @@ server:
     host: ""
     # Server port
     port: 8317
+    # 全局 HTTP 请求体上限；0 关闭。标准协议仍受 api-request-body-max-bytes 约束。
+    max-request-body-bytes: 0
     # GitHub 请求共享 token；留空时使用 GITHUB_TOKEN 环境变量。
     github-token: ""
     # IP addresses or CIDRs of proxies allowed to supply forwarded client IP headers.
@@ -544,6 +558,8 @@ oauth:
             # When true, enable authentication for the WebSocket API (/v1/ws).
             ws-auth: true
         codex:
+            # SIWC OAuth 和 API 请求使用的客户端标识。
+            signin-with-chatgpt-identifier: "CLIProxyAPI"
             live-media-relay:
                 enabled: false
                 # Maximum concurrent media sessions. Zero uses the default of 32.
@@ -824,6 +840,7 @@ config-version: 8
 #         - api-key: "sk-atSM..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
+#           native-tool-search: false # optional: default is false; when true, trust this key's custom base-url with Anthropic native tool search (defer_loading + tool_reference) for Codex tool_search; requires upstream.claude.tool-search: true
 #           cloak:                         # optional: explicitly enable request cloaking for non-Claude-Code clients
 #             mode: "auto"                 # "auto" (default inside this block): cloak only when client is not Claude Code
 #                                          # "always": cloak every unconfirmed client; confirmed native Claude Code still passes through

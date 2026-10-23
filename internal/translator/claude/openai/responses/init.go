@@ -1,8 +1,6 @@
 package responses
 
 import (
-	"context"
-
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/translator"
@@ -13,15 +11,17 @@ func init() {
 	translator.Register(
 		OpenaiResponse,
 		Claude,
-		ConvertOpenAIResponsesRequestToClaude,
+		nil,
 		interfaces.TranslateResponse{
 			Stream:    ConvertClaudeResponseToOpenAIResponses,
 			NonStream: ConvertClaudeResponseToOpenAIResponsesNonStream,
 		},
 	)
-	sdktranslator.RegisterRequestEnvelope(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, func(_ context.Context, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
-		preserveEmptyThinkingBlocks := req.ModelInfo != nil && req.ModelInfo.IsCompat
-		req.Body, req.Err = convertOpenAIResponsesRequestToClaude(req.Model, req.Body, req.Stream, preserveEmptyThinkingBlocks, req.ModelInfo, false)
-		return req
-	})
+	// The envelope form receives the request context, which carries the
+	// upstream.claude.tool-search value the executor pinned for the request.
+	sdktranslator.RegisterRequestEnvelope(
+		sdktranslator.FormatOpenAIResponse,
+		sdktranslator.FormatClaude,
+		ConvertOpenAIResponsesRequestEnvelopeToClaude,
+	)
 }

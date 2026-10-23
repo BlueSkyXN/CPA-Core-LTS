@@ -935,10 +935,134 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
-	fallback         Selector
-	cache            *SessionCache
-	matcher          *cliproxysession.MerklePrefixMatcher
-	subagentAffinity bool
+	fallback          Selector
+	cache             *SessionCache
+	matcher           *cliproxysession.MerklePrefixMatcher
+	subagentAffinity  bool
+	rebindOnQuotaOnly bool
+}
+
+const (
+	// SessionAffinityRebindOnAny rebinds the session on any credential-attributed failure (default).
+	SessionAffinityRebindOnAny = "any"
+	// SessionAffinityRebindOnQuota preserves the existing session binding across transient failures
+	// and only rebinds on quota, auth, model-support, or permanent unavailability.
+	SessionAffinityRebindOnQuota = "quota"
+)
+
+func normalizeSessionAffinityRebindOn(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SessionAffinityRebindOnQuota:
+		return SessionAffinityRebindOnQuota
+	default:
+		return SessionAffinityRebindOnAny
+	}
+}
+
+type sessionAffinityTransientAuthIDsKey struct{}
+
+func withSessionAffinityTransientAuthIDs(ctx context.Context, authIDs map[string]struct{}) context.Context {
+	if len(authIDs) == 0 {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, sessionAffinityTransientAuthIDsKey{}, authIDs)
+}
+
+func sessionAffinityTransientAuthIDsFromContext(ctx context.Context) map[string]struct{} {
+	if ctx == nil {
+		return nil
+	}
+	authIDs, _ := ctx.Value(sessionAffinityTransientAuthIDsKey{}).(map[string]struct{})
+	return authIDs
+}
+
+func shouldRebindSessionAffinityOnError(err *Error) bool {
+	if err == nil || shouldSkipCredentialCooldown(err) {
+		return false
+	}
+	if isModelSupportResultError(err) || isCloudflareChallengeResultError(err) || isInvalidGrantResultError(err) {
+		return true
+	}
+	switch statusCodeFromResult(err) {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAuthBlockedByQuotaOrAuthForModel(auth *Auth, model string, now time.Time) bool {
+	if auth == nil {
+		return true
+	}
+	if auth.Disabled || auth.Status == StatusDisabled {
+		return true
+	}
+	if hasUnauthorizedAuthFailure(auth) {
+		return true
+	}
+	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
+		return true
+	}
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && (auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)) {
+		return true
+	}
+	if model != "" && len(auth.ModelStates) > 0 {
+		modelKey := canonicalModelKey(model)
+		for stateModel, state := range auth.ModelStates {
+			if state == nil || canonicalModelKey(stateModel) != modelKey {
+				continue
+			}
+			if state.Status == StatusDisabled {
+				return true
+			}
+			if isStateBlockedByQuotaOrAuth(state.Unavailable, state.Quota, state.NextRetryAfter, state.LastError, now) {
+				return true
+			}
+		}
+		return false
+	}
+	quota := auth.Quota
+	if len(auth.ModelStates) > 0 && auth.Quota.Reason != "credential_quota" && !auth.Unavailable {
+		quota.Exceeded = false
+	}
+	return isStateBlockedByQuotaOrAuth(auth.Unavailable, quota, auth.NextRetryAfter, auth.LastError, now)
+}
+
+func isStateBlockedByQuotaOrAuth(unavailable bool, quota QuotaState, nextRetryAfter time.Time, lastErr *Error, now time.Time) bool {
+	if quota.Exceeded && (quota.NextRecoverAt.IsZero() || quota.NextRecoverAt.After(now)) {
+		return true
+	}
+	blocked, _, _ := availabilityBlock(unavailable, quota.Exceeded, nextRetryAfter, quota.NextRecoverAt, now)
+	if !blocked {
+		return lastErr != nil && shouldRebindSessionAffinityOnError(lastErr)
+	}
+	if lastErr != nil {
+		return shouldRebindSessionAffinityOnError(lastErr)
+	}
+	return nextRetryAfter.IsZero() && quota.NextRecoverAt.IsZero()
+}
+
+func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx context.Context, candidates []*Auth, model, authID string, now time.Time) bool {
+	if s == nil || !s.rebindOnQuotaOnly || authID == "" {
+		return false
+	}
+	if ctx != nil {
+		if validated, _ := ctx.Value(prevalidatedAuthCandidatesKey{}).(bool); validated {
+			transientAuthIDs := sessionAffinityTransientAuthIDsFromContext(ctx)
+			_, ok := transientAuthIDs[authID]
+			return ok
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate != nil && candidate.ID == authID {
+			return !isAuthBlockedByQuotaOrAuthForModel(candidate, model, now)
+		}
+	}
+	return false
 }
 
 const sessionAffinitySelectionMetadataKey = "__cliproxy_session_affinity_selection"
@@ -946,6 +1070,7 @@ const sessionAffinitySelectionMetadataKey = "__cliproxy_session_affinity_selecti
 type sessionAffinitySelectionMarker struct {
 	selector             *SessionAffinitySelector
 	authID               string
+	boundAuthID          string
 	aliases              []string
 	lcpNamespace         string
 	lcpFingerprints      []string
@@ -959,6 +1084,7 @@ type SessionAffinityConfig struct {
 	Fallback         Selector
 	TTL              time.Duration
 	SubagentAffinity *bool
+	RebindOn         string
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -981,11 +1107,13 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	if cfg.SubagentAffinity != nil {
 		subagentAffinity = *cfg.SubagentAffinity
 	}
+	rebindOnQuotaOnly := normalizeSessionAffinityRebindOn(cfg.RebindOn) == SessionAffinityRebindOnQuota
 	return &SessionAffinitySelector{
-		fallback:         cfg.Fallback,
-		cache:            NewSessionCache(cfg.TTL),
-		matcher:          cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
-		subagentAffinity: subagentAffinity,
+		fallback:          cfg.Fallback,
+		cache:             NewSessionCache(cfg.TTL),
+		matcher:           cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
+		subagentAffinity:  subagentAffinity,
+		rebindOnQuotaOnly: rebindOnQuotaOnly,
 	}
 }
 
@@ -1130,6 +1258,11 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 		if auth == nil {
 			return nil, nil
 		}
+		if s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
+			bind(cachedAuthID, true)
+			entry.Infof("session-affinity: temporary failover, preserved binding | session=%s failover_auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
+			return auth, nil
+		}
 		bind(auth.ID, false)
 		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 		return auth, nil
@@ -1149,6 +1282,18 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 						return auth, nil
 					}
 				}
+			}
+			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
+				auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+				if err != nil {
+					return nil, err
+				}
+				if auth == nil {
+					return nil, nil
+				}
+				bind(cachedAuthID, true)
+				entry.Infof("session-affinity: fallback cache hit but auth transiently unavailable, failover without rebinding | session=%s fallback=%s bound_auth_index=%s failover_auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(&Auth{ID: cachedAuthID}), sessionAffinityAuthLogID(auth), provider, model)
+				return auth, nil
 			}
 		}
 	}
@@ -1180,11 +1325,15 @@ func (s *SessionAffinitySelector) CommitPreDispatchSelection(authID string, opts
 	if !ok || marker == nil || marker.selector != s || marker.authID != authID {
 		return
 	}
+	boundAuthID := authID
+	if marker.boundAuthID != "" {
+		boundAuthID = marker.boundAuthID
+	}
 	if s.cache != nil && len(marker.aliases) > 0 {
-		s.cache.SetAliases(authID, marker.aliases...)
+		s.cache.SetAliases(boundAuthID, marker.aliases...)
 	}
 	if s.matcher != nil && marker.lcpNamespace != "" && len(marker.lcpFingerprints) > 0 && marker.lcpMinPrefixLength > 0 {
-		if bindRes := s.matcher.BindFingerprintsWithContext(marker.lcpNamespace, marker.lcpFingerprints, marker.lcpTailFingerprints, marker.lcpEnvironmentDigest, marker.lcpMinPrefixLength, authID); bindRes.SessionID != "" {
+		if bindRes := s.matcher.BindFingerprintsWithContext(marker.lcpNamespace, marker.lcpFingerprints, marker.lcpTailFingerprints, marker.lcpEnvironmentDigest, marker.lcpMinPrefixLength, boundAuthID); bindRes.SessionID != "" {
 			opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
 			if bindRes.ParentSessionID != "" {
@@ -1265,11 +1414,13 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
-	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, time.Now())
+	now := time.Now()
+	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
 	if errAvailable != nil {
 		return nil, true, errAvailable
 	}
 
+	var preservedAuthID string
 	if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok {
 		for _, auth := range available {
 			if auth == nil || auth.ID != match.AuthID {
@@ -1311,6 +1462,9 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 			}
 			return auth, true, nil
 		}
+		if !match.IsFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, match.AuthID, now) {
+			preservedAuthID = match.AuthID
+		}
 	}
 
 	fallbackAuths := highestPriorityAuths(available)
@@ -1321,10 +1475,15 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	if auth == nil {
 		return nil, true, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	bindAuthID := auth.ID
+	if preservedAuthID != "" {
+		bindAuthID = preservedAuthID
+	}
 	if deferBinding {
 		opts.Metadata[sessionAffinitySelectionMetadataKey] = &sessionAffinitySelectionMarker{
 			selector:             s,
 			authID:               auth.ID,
+			boundAuthID:          bindAuthID,
 			lcpNamespace:         namespace,
 			lcpFingerprints:      append([]string(nil), fingerprints...),
 			lcpTailFingerprints:  append([]string(nil), tailFingerprints...),
@@ -1334,7 +1493,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		entry.Infof("session-affinity: LCP cache miss, staged binding | auth_index=%s provider=%s model=%s", sessionAffinityAuthLogID(auth), provider, model)
 		return auth, true, nil
 	}
-	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, auth.ID); bindRes.SessionID != "" {
+	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
 		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
 		if bindRes.ParentSessionID != "" {
@@ -1345,7 +1504,20 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		if bindRes.AccessNumber > 0 && opts.Metadata != nil {
 			opts.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey] = bindRes.AccessNumber
 		}
-		if bindRes.IsFork {
+		if preservedAuthID != "" {
+			if bindRes.IsCompaction {
+				if opts.Metadata != nil {
+					opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
+					delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+					opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
+				}
+			} else if opts.Metadata != nil {
+				delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+				delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
+				delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+			}
+			entry.Infof("session-affinity: LCP cache hit but auth transiently unavailable, failover without rebinding | session=%s bound_auth_index=%s failover_auth_index=%s provider=%s model=%s", sessionLogIdentity(bindRes.SessionID), sessionAffinityAuthLogID(&Auth{ID: preservedAuthID}), sessionAffinityAuthLogID(auth), provider, model)
+		} else if bindRes.IsFork {
 			if opts.Metadata != nil {
 				opts.Metadata[cliproxyexecutor.IsForkMetadataKey] = true
 				delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
@@ -1638,6 +1810,11 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 		// selected credential is unhealthy, so preserve both explicit and LCP bindings.
 		return
 	}
+	if !res.Success && s.rebindOnQuotaOnly && !shouldRebindSessionAffinityOnError(res.Error) {
+		// Under session-affinity-rebind-on: quota, transient failures fail over for
+		// the current request without unbinding the session from its bound credential.
+		return
+	}
 
 	// LCP bindings are independent from explicit harness bindings. A successful
 	// extension is recorded as a new sequence while credential-attributed failures
@@ -1661,7 +1838,14 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 							generation = gen
 						}
 					}
-					s.matcher.RemoveFingerprintsBefore(namespace, fingerprints, res.AuthID, generation)
+					if !s.matcher.RemoveFingerprintsBefore(namespace, fingerprints, res.AuthID, generation) && res.Options.Metadata != nil {
+						isFork, _ := res.Options.Metadata[cliproxyexecutor.IsForkMetadataKey].(bool)
+						if !isFork {
+							if lcpSessionID := sessionMetadataString(res.Options.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey); lcpSessionID != "" {
+								s.matcher.RemoveSessionBefore(namespace, lcpSessionID, res.AuthID, generation)
+							}
+						}
+					}
 				}
 			}
 		}

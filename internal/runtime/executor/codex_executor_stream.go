@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -33,6 +32,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
 	apiKey, baseURL := codexCreds(auth)
+	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+		return nil, errSIWC
+	}
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
 	}
@@ -87,9 +89,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		body, _ = sjson.SetBytes(body, "stream_options.reasoning_summary_delivery", reasoningSummaryDelivery.Value())
 	}
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = normalizeCodexInstructions(body, preserveNativeOutput)
-	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+	useSIWC := codexUseSIWC(auth)
+	hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
+	if !useSIWC {
+		body = normalizeCodexInstructions(body, preserveNativeOutput)
+		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+		}
+	} else {
+		body = applyCodexSIWCRequestBodyRules(body, hasExplicitInstructions)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
@@ -186,8 +194,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			scannerMaxTokenBytes = 64 << 10
 		}
 	}
-	scanner := bufio.NewScanner(httpResp.Body)
-	scanner.Buffer(nil, int(scannerMaxTokenBytes))
+	scanner := helps.NewCodexSSEScanner(ctx, httpResp.Body, int(scannerMaxTokenBytes))
+	scanner.SetOnLine(func(line []byte) {
+		helps.AppendAPIResponseChunk(ctx, e.cfg, applyCodexIdentityConfuseResponsePayload(line, identityState))
+	})
 	closeResponseBody := func() {
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("codex executor: close response body error: %v", errClose)
@@ -204,7 +214,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		bootstrapReleased := false
 		bufferedFrames := 0
 		bufferedBytes := 0
+		budgetExhausted := false
+		scanner.SetBudgetChecker(func(_ []byte, heldLines, heldBytes int) bool {
+			budgetExhausted = (bootstrapTimeout > 0 && nowCodexBootstrap().Sub(bootstrapStart) >= bootstrapTimeout) || bufferedFrames+heldLines >= codexBootstrapMaxBufferedFrames || bufferedBytes+heldBytes >= codexBootstrapMaxBufferedBytes
+			return budgetExhausted
+		})
 		for scanner.Scan() {
+			if budgetExhausted {
+				bootstrapReleased = true
+				break
+			}
+
 			rawLine := bytes.Clone(scanner.Bytes())
 			bootstrapLines = append(bootstrapLines, rawLine)
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
@@ -229,10 +249,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
 						if !timeoutReached {
-							for _, bufferedLine := range bootstrapLines {
-								loggedLine := applyCodexIdentityConfuseResponsePayload(bufferedLine, identityState)
-								helps.AppendAPIResponseChunk(ctx, e.cfg, loggedLine)
-							}
 							closeResponseBody()
 							if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 								helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
@@ -275,14 +291,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			translatedChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &bootstrapParam, bootstrapClaudeInputTokens)
-			frameBytes := len(rawLine)
+			frameBytes := scanner.RawBytes()
 			for i := range translatedChunks {
 				frameBytes += len(translatedChunks[i])
 			}
 			timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 			timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
-			if !timeoutReached && bufferedFrames < codexBootstrapMaxBufferedFrames && bufferedBytes+frameBytes <= codexBootstrapMaxBufferedBytes {
-				bufferedFrames++
+			if !timeoutReached && bufferedFrames+scanner.HeldLines()+scanner.RawLines() <= codexBootstrapMaxBufferedFrames && bufferedBytes+scanner.HeldBytes()+frameBytes <= codexBootstrapMaxBufferedBytes {
+				bufferedFrames += scanner.RawLines()
 				bufferedBytes += frameBytes
 				continue
 			}
@@ -296,6 +312,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			bootstrapReleased = true
 			break
 		}
+		scanner.SetBudgetChecker(nil)
 		if !bootstrapReleased {
 			closeResponseBody()
 			if len(bootstrapLines) == 0 && ctx.Err() == nil {
@@ -430,7 +447,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			rawLinesSeen++
 			line := applyCodexIdentityConfuseResponsePayload(rawLine, identityState)
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			var translatedLine []byte
 			flushAfterLine := false
 			var completedData []byte

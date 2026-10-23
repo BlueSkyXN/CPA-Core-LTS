@@ -76,8 +76,8 @@ func (s *Service) registerPluginAuthParser() {
 		parser = s.pluginHost
 	}
 	sdkAuth.RegisterPluginAuthParser(parser)
-	if s != nil && s.watcher != nil {
-		s.watcher.SetPluginAuthParser(parser)
+	if watcher := s.currentWatcher(); watcher != nil {
+		watcher.SetPluginAuthParser(parser)
 	}
 }
 

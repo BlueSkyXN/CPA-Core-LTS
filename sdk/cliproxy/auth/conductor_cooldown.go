@@ -796,6 +796,26 @@ func cooldownReason(statusMessage string, quota QuotaState, lastErr *Error) stri
 	return ""
 }
 
+// nextExecutionSeq stamps a new upstream dispatch with the next monotonic
+// execution sequence. The stamp travels on the execution's Result so that
+// MarkResult can order the execution against cooldowns recorded meanwhile.
+func (m *Manager) nextExecutionSeq() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.executionSeq.Add(1)
+}
+
+// currentExecutionSeq returns the latest execution sequence issued so far.
+// Capturing it as the cooldown watermark when a cooldown is recorded marks
+// every execution dispatched up to that moment as predating the cooldown.
+func (m *Manager) currentExecutionSeq() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.executionSeq.Load()
+}
+
 // isStaleExecutionResult reports whether an execution result originated from a superseded
 // credential version or an earlier registration epoch than the currently active auth.
 func isStaleExecutionResult(result Result, current *Auth) bool {
@@ -875,6 +895,22 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		wasTerminalUnauthorized := hasUnauthorizedAuthFailure(auth)
 
+		// retainModelCooldown pins a still-live model cooldown against a success
+		// from an execution dispatched before that cooldown was recorded. Such a
+		// success predates the failure and proves nothing about recovery, so the
+		// state transition it normally causes is skipped entirely.
+		retainModelCooldown := modelKey != "" && !wasTerminalUnauthorized && result.ExecutionSeq > 0
+		if retainModelCooldown {
+			if existing := existingModelState(auth, modelKey); existing != nil && isModelStateActiveCooldown(existing, now) &&
+				existing.cooldownRecordedSeq > 0 && result.ExecutionSeq <= existing.cooldownRecordedSeq {
+				modelState = existing
+			} else {
+				retainModelCooldown = false
+			}
+		}
+		retainAuthCooldown := modelKey == "" && !wasTerminalUnauthorized && result.ExecutionSeq > 0 &&
+			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
+
 		if continuityDisposition == codexRateLimitContinuityRecordOnly {
 			auth.UpdatedAt = now
 		} else if result.Success {
@@ -886,6 +922,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				}
 			} else if auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 				// Retain active credential-scoped cooldown
+			} else if retainModelCooldown || retainAuthCooldown {
+				// Retain a cooldown recorded after this execution was dispatched.
 			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
 				modelState = state
@@ -1100,6 +1138,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if !state.NextRetryAfter.IsZero() && prevModelRetryAfter.After(state.NextRetryAfter) && prevModelRetryAfter.After(now) {
 						state.NextRetryAfter = prevModelRetryAfter
 					}
+					// Capture the dispatch watermark of the cooldown just recorded.
+					// Credential-scoped cooldowns were propagated to the auth and
+					// every sibling state inside the failure branch; their watermarks
+					// are stamped here so a sibling's later, longer model-scoped
+					// cooldown can re-stamp only its own state.
+					cooldownSeq := m.currentExecutionSeq()
+					state.cooldownRecordedSeq = cooldownSeq
+					if result.CredentialScope && !disableCooling && statusCodeFromResult(result.Error) == 429 {
+						auth.cooldownRecordedSeq = cooldownSeq
+						for _, otherState := range auth.ModelStates {
+							if otherState != nil && otherState != state {
+								otherState.cooldownRecordedSeq = cooldownSeq
+							}
+						}
+					}
 					auth.Status = StatusError
 					updateAggregatedAvailability(auth, now)
 				}
@@ -1112,6 +1165,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					applyTransientRateLimitAuthFailureState(auth, result.Error, now, disableCooling)
 				} else if !wasTerminalUnauthorized {
 					applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
+					auth.cooldownRecordedSeq = m.currentExecutionSeq()
 				}
 			}
 		}
@@ -1370,6 +1424,14 @@ func mergeModelState(target, source *ModelState) *ModelState {
 	if source.UpdatedAt.After(merged.UpdatedAt) {
 		merged.UpdatedAt = source.UpdatedAt
 	}
+	// Keep the strongest cooldown watermark from either side so merging a
+	// restored or alias-migrated state into a live auth cannot reopen the
+	// stale-success race. Both sides stay zero across a process restart,
+	// where restored cooldowns must remain clearable by any success.
+	merged.cooldownRecordedSeq = target.cooldownRecordedSeq
+	if source.cooldownRecordedSeq > merged.cooldownRecordedSeq {
+		merged.cooldownRecordedSeq = source.cooldownRecordedSeq
+	}
 	if merged.StatusMessage == "" {
 		merged.StatusMessage = fallback.StatusMessage
 	}
@@ -1402,6 +1464,7 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.LastError = nil
 	applyCooldownFields(&state.Quota, QuotaState{})
 	state.modelFallbackReason = ""
+	state.cooldownRecordedSeq = 0
 	state.UpdatedAt = now
 }
 
@@ -1622,7 +1685,26 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.BackoffLevel = 0
 	auth.LastError = nil
 	auth.NextRetryAfter = time.Time{}
+	auth.cooldownRecordedSeq = 0
 	auth.UpdatedAt = now
+}
+
+// isAuthActiveCooldown reports whether the auth carries a still-live
+// auth-level cooldown recorded without a model key.
+func isAuthActiveCooldown(auth *Auth, now time.Time) bool {
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		return false
+	}
+	if !auth.NextRetryAfter.IsZero() && auth.NextRetryAfter.After(now) {
+		return true
+	}
+	if !auth.Quota.NextRecoverAt.IsZero() && auth.Quota.NextRecoverAt.After(now) {
+		return true
+	}
+	if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.IsZero() {
+		return true
+	}
+	return false
 }
 
 func cloneError(err *Error) *Error {
@@ -1692,6 +1774,16 @@ func resultErrorFromError(err error) *Error {
 		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 			resultErr.Code = "model_not_found"
 		}
+	case isRequestScopedError(err) || isRequestInvalidError(err):
+		// Prefer true request-scoped faults (including Claude OAuth cancellation)
+		// over the broader connection-lifecycle classification.
+		resultErr.Code = requestScopedErrorCode
+	case isConfiguredTLSHandshakeTimeoutError(err):
+		// An internal TLS establishment deadline is a transient transport
+		// failure, not a caller-owned context lifecycle event.
+		if resultErr.Code == "" || resultErr.Code == transientTransportErrorCode {
+			resultErr.Code = transientTransportErrorCode
+		}
 	case isConnectionLifecycleError(err):
 		// Preserve lifecycle classification for MarkResult without making the error
 		// request-scoped (which would also stop credential fallback).
@@ -1758,7 +1850,7 @@ func isAccessProgramNotEnabledResultError(err *Error) bool {
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must
-// not cool credentials: client cancellation and WebSocket close/EOF disconnects.
+// not cool credentials: client cancellation and WebSocket/HTTP/2 close/EOF disconnects.
 func isConnectionLifecycleError(err error) bool {
 	if err == nil {
 		return false
@@ -1775,6 +1867,9 @@ func isConnectionLifecycleError(err error) bool {
 	if statusCodeFromError(err) != 0 {
 		return false
 	}
+	if isConfiguredTLSHandshakeTimeoutError(err) {
+		return false
+	}
 	// Client abort and request-scoped timeouts are not credential faults.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
@@ -1788,6 +1883,9 @@ func isConnectionLifecycleResultError(err *Error) bool {
 	}
 	if err.Code == connectionLifecycleErrorCode {
 		return true
+	}
+	if err.Code == transientTransportErrorCode {
+		return false
 	}
 	// Message fallback only when no HTTP status is attached, so 401/429/5xx
 	// response bodies cannot suppress credential cooldown.
@@ -1812,11 +1910,29 @@ func isConnectionLifecycleMessage(message string) bool {
 		strings.Contains(lower, "websocket: close 1006") {
 		return true
 	}
-	// Wrapped transport EOF phrasing (e.g. "read tcp ...: unexpected EOF").
-	if strings.Contains(lower, "unexpected eof") {
+	// Wrapped transport disconnects (e.g. "read tcp ...: unexpected EOF").
+	if strings.Contains(lower, "unexpected eof") || isHTTP2ClosedConnectionMessage(lower) {
 		return true
 	}
 	return false
+}
+
+func isHTTP2ClosedConnectionMessage(lower string) bool {
+	// x/net/http2 keeps these errors unexported; allow common wrappers such as url.Error.
+	return strings.Contains(lower, "http2: client connection force closed via clientconn.close") ||
+		strings.Contains(lower, "http2: client conn is closed")
+}
+
+// isConfiguredTLSHandshakeTimeoutError identifies the typed internal
+// establishment deadline produced by the configured TLS handshake bound.
+// Delegating to the shared executor predicate ensures classification is
+// based on error identity rather than message text and that any
+// caller-owned context error outside a configured-timeout subtree wins.
+func isConfiguredTLSHandshakeTimeoutError(err error) bool {
+	if err == nil || statusCodeFromError(err) != 0 {
+		return false
+	}
+	return cliproxyexecutor.IsConfiguredTLSHandshakeTimeoutError(err)
 }
 
 // isTransientTransportError reports pre-HTTP dial/TLS/DNS/reset failures that
@@ -1828,6 +1944,9 @@ func isTransientTransportError(err error) bool {
 	// HTTP-status failures stay on the credential/status retry path.
 	if statusCodeFromError(err) != 0 {
 		return false
+	}
+	if isConfiguredTLSHandshakeTimeoutError(err) {
+		return true
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -1861,6 +1980,14 @@ func isTransientTransportResultError(err *Error) bool {
 		return true
 	}
 	if statusCodeFromResult(err) != 0 {
+		return false
+	}
+	// Once an error has been reduced to a Result message, typed identity is
+	// no longer available. An explicit transient code assigned by
+	// resultErrorFromError is authoritative for configured handshake
+	// timeouts; matching text alone must not promote an external or
+	// caller-owned deadline that happens to use the same phrase.
+	if strings.Contains(strings.ToLower(err.Message), "tls handshake timeout") {
 		return false
 	}
 	return isTransientTransportMessage(err.Message)
@@ -1901,7 +2028,8 @@ func isTransientTransportMessage(message string) bool {
 		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "connection aborted"),
 		strings.Contains(lower, "use of closed network connection"),
-		strings.Contains(lower, "unexpected eof"):
+		strings.Contains(lower, "unexpected eof"),
+		isHTTP2ClosedConnectionMessage(lower):
 		return true
 	default:
 		return false

@@ -714,7 +714,8 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 				IdleConnTimeout: "10s",
 			},
 		},
-		XAI: config.XAIConfig{InjectXSearch: true},
+		XAI:    config.XAIConfig{InjectXSearch: true},
+		Claude: config.ClaudeConfig{ToolSearch: true},
 		ClaudeKey: []config.ClaudeKey{
 			{APIKey: "c1", BaseURL: "http://new", ProxyURL: "http://p", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"a"}},
 			{APIKey: "c2"},
@@ -771,6 +772,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "antigravity.connection-pool.enabled: false -> true")
 	expectContains(t, details, `antigravity.connection-pool.idle-conn-timeout: "30s" -> "10s"`)
 	expectContains(t, details, "xai.inject-x-search: false -> true")
+	expectContains(t, details, "claude.tool-search: false -> true")
 	expectContains(t, details, "api-keys count: 1 -> 2")
 	expectContains(t, details, "claude-api-key count: 1 -> 2")
 	expectContains(t, details, "codex-api-key count: 1 -> 2")
@@ -1051,4 +1053,10 @@ func TestBuildConfigChangeDetailsCodexCacheAffinity(t *testing.T) {
 	newCfg := &config.Config{Codex: config.CodexConfig{CacheAffinity: config.CodexCacheAffinityConfig{Strategy: "legacy"}}}
 	details := BuildConfigChangeDetails(oldCfg, newCfg)
 	expectContains(t, details, "codex.cache-affinity.strategy: client-aware -> legacy")
+}
+
+func TestBuildConfigChangeDetails_ClaudeNativeToolSearch(t *testing.T) {
+	oldCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com"}}}
+	newCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com", NativeToolSearch: true}}}
+	expectContains(t, BuildConfigChangeDetails(oldCfg, newCfg), "claude[0].native-tool-search: false -> true")
 }

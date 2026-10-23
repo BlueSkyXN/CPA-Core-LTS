@@ -173,6 +173,8 @@ func (s *codexWebsocketSession) detachConnectionRef(connection codexWebsocketCon
 		closer = s.connCloser
 		s.conn = nil
 		s.connCloser = nil
+		s.connCfg = nil
+		s.hasConnCfg = false
 		s.multiAgentV2OptimizedGen = 0
 		s.connKey = codexWebsocketConnectionKey{}
 		s.connGen++

@@ -107,7 +107,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	connectionKey := newCodexWebsocketConnectionKey(authID, wsURL, baseModel, modelHeaderProfile.digest)
-	connectionKey.proxyURL = executionProxyURL(ctx, e.cfg, auth)
+	connectionKey.proxyURL = executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
 	var connection codexWebsocketConnectionRef
 	var closer *websocketConnectionCloser
 	var respHS *http.Response
@@ -674,38 +674,47 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
+				// The disconnect notification makes the downstream handler close the client and
+				// cancel the request context, so it must follow delivery of the error to the
+				// conductor; otherwise the cancellation can drop the error and its cooldown.
 				if sess != nil {
-					e.invalidateUpstreamConn(sess, connection, "upstream_error", wsErr)
+					e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, "upstream_error", wsErr)
 				}
 				if errClearReplay := clearCodexReasoningReplayOnWebsocketError(ctx, replayScope, payload); errClearReplay != nil {
 					terminateErr = errClearReplay
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "replay_clear_error", errClearReplay)
 					reporter.PublishFailure(ctx, errClearReplay)
 					_ = send(cliproxyexecutor.StreamChunk{Err: errClearReplay})
+					sess.notifyUpstreamDisconnect(wsErr)
 					return
 				}
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", wsErr)
 				reporter.PublishFailure(ctx, wsErr)
 				_ = send(cliproxyexecutor.StreamChunk{Err: wsErr})
+				sess.notifyUpstreamDisconnect(wsErr)
 				return
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
+				// Publish the downstream disconnect only after the error was delivered, see the
+				// upstream error branch above.
 				if sess != nil {
 					unlockStreamSession()
-					e.invalidateUpstreamConn(sess, connection, "terminal_failure", streamErr)
+					e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, "terminal_failure", streamErr)
 				}
 				if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 					terminateErr = errClearReplay
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "replay_clear_error", errClearReplay)
 					reporter.PublishFailure(ctx, errClearReplay)
 					_ = send(cliproxyexecutor.StreamChunk{Err: errClearReplay})
+					sess.notifyUpstreamDisconnect(streamErr)
 					return
 				}
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
 				reporter.PublishFailure(ctx, streamErr)
 				_ = send(cliproxyexecutor.StreamChunk{Err: streamErr})
+				sess.notifyUpstreamDisconnect(streamErr)
 				return
 			}
 
@@ -811,8 +820,16 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 	apiKey, baseURL := codexCreds(auth)
+	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+		return nil, errSIWC
+	}
+	useSIWC := codexUseSIWC(auth)
 	if baseURL == "" {
-		baseURL = "https://chatgpt.com/backend-api/codex"
+		if useSIWC {
+			baseURL = defaultOpenAISIWCBaseURL
+		} else {
+			baseURL = "https://chatgpt.com/backend-api/codex"
+		}
 	}
 	var err error
 	affinityReq := codexAffinityRequestMetadata(req, opts)
@@ -840,12 +857,15 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, err
 	}
 
+	hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
 	finalizePayload := helps.NewPayloadFinalizer(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
-	body = normalizeCodexInstructions(body, preserveNativeOutput)
-	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+	if !useSIWC {
+		body = normalizeCodexInstructions(body, preserveNativeOutput)
+		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+		}
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex websockets executor", body, isCompat)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
@@ -883,6 +903,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	if errPromptCache != nil {
 		return nil, errPromptCache
+	}
+	if useSIWC {
+		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions)
 	}
 	body, err = finalizeCodexPayloadForWire(helps.WithPayloadFinalizer(ctx, finalizePayload), helps.SanitizeCodexInputItemIDs(body), baseModel)
 	replayScope = codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
