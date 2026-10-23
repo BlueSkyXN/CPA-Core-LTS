@@ -2,9 +2,17 @@
 
 ## 范围与兼容性
 
-本功能服务于声明 `claude` 输出的任意执行器插件，不依赖具体供应商、账号或模型。标准 Anthropic message JSON 可转换为 Responses JSON；标准 SSE 字节流可转换为 Responses 事件。原生 Messages 直出、内置 ClaudeExecutor 的逐行/SSE 汇总路径和 Chat 插件保持原行为。
+本功能服务于声明 `claude` 输出的任意执行器插件，不依赖具体供应商、账号或模型。标准 Anthropic message JSON 可转换为 Responses JSON；标准 SSE 字节流可转换为 Responses 事件。原生 Messages 直出、内置 ClaudeExecutor 的逐行/SSE 汇总和 Chat 插件沿用既有响应处理路径。
 
-不重建协议中间层、不新增会话历史、不改变全局输出预算、账号选择或模型重试策略。公共 transformer 函数签名和 C ABI 不变。插件自行负责供应商参数、签名与提示词策略。
+公共 transformer 函数签名和 C ABI 沿用现有契约；账号选择、模型重试和会话历史继续由 Core 管理。插件自行负责供应商参数、签名与提示词策略。
+
+## 请求输出预算
+
+Responses 和 Chat Completions 转成 Anthropic Messages 时，未指定输出预算的请求默认使用 `max_tokens: 64000`；模型声明的输出上限更低时，采用该上限。此规则用于内置 Anthropic 通道和 ZCode 等使用同一转换器的插件，流式与非流式一致。
+
+客户端可用 Responses 的 `max_output_tokens`，或 Chat Completions 的 `max_tokens` / `max_completion_tokens` 显式指定预算；两种 Chat 字段同时存在时，`max_tokens` 优先。显式值沿用对应转换路径的模型限额处理。内置 Anthropic 通道的 `payload.override` 在转换后生效，可继续覆盖最终 `max_tokens`。
+
+ZCode 的 `model_limits.output` 控制模型允许的输出上限，内置 GLM 模型上限为 128,000。仅提高该上限不会提高 64,000 的缺省请求预算。原生 `/v1/messages` 沿用各执行器原有规则；ZCode 要求提供正整数 `max_tokens`。
 
 ## 输出支持集
 
@@ -48,7 +56,7 @@ sequenceDiagram
 
 ## 请求侧独立纠错
 
-Responses 字符串 input 与等价 user 数组输入语义一致。显式 temperature/top_p 保留，tool_choice=none 明确禁止工具，parallel_tool_calls=false 对有工具的请求映射为 disable_parallel_tool_use。不改变未指定参数的默认值，不用这些映射承诺所有兼容模型都支持该参数。
+Responses 字符串 input 与等价 user 数组输入语义一致。显式 temperature/top_p 保留，tool_choice=none 明确禁止工具，parallel_tool_calls=false 对有工具的请求映射为 disable_parallel_tool_use。这些控制参数仅在客户端指定时映射，具体模型的支持范围由上游决定。
 
 ## 插件模型的显式兼容模式
 

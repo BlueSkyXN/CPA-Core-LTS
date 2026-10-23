@@ -47,9 +47,10 @@ type rpcQuotaProvider struct {
 }
 
 type rpcError struct {
-	Code       string
-	message    string
-	statusCode int
+	Code          string
+	message       string
+	statusCode    int
+	failureReason string
 }
 
 func (e rpcError) Error() string {
@@ -62,6 +63,10 @@ func (e rpcError) StatusCode() int {
 
 func (e rpcError) PluginCode() string {
 	return e.Code
+}
+
+func (e rpcError) FailureReason() string {
+	return e.failureReason
 }
 
 type rpcResponseNormalizer struct {
@@ -456,9 +461,10 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 				}
 			}
 			return zero, rpcError{
-				Code:       code,
-				message:    message,
-				statusCode: envelope.Error.HTTPStatus,
+				Code:          code,
+				message:       message,
+				statusCode:    envelope.Error.HTTPStatus,
+				failureReason: envelope.Error.FailureReason,
 			}
 		}
 		return zero, fmt.Errorf("plugin call failed")

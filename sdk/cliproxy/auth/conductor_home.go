@@ -1309,6 +1309,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 	}
 	m.mu.RUnlock()
 
+	now := time.Now()
 	var known []creditsCandidateEntry
 	var unknown []creditsCandidateEntry
 	for _, candidate := range candidates {
@@ -1318,6 +1319,10 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 		}
 		if okHint && hint.Known {
 			if !hint.Available {
+				if IsAntigravityCreditsHintFresh(hint, now) {
+					continue
+				}
+				unknown = append(unknown, candidate)
 				continue
 			}
 			known = append(known, candidate)
@@ -1441,9 +1446,11 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 				publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
 				selectedPublished = true
 			}
+			executionSeq := m.nextExecutionSeq()
 			resp, errExec := executeWithFlowSlot(admittedCtx, c.executor, c.auth, execReq, creditsOpts)
 			result := resultForAuthWithOptions(c.auth, c.provider, resultModel, errExec == nil, nil, creditsOpts)
 			result.RouteModel = routeModel
+			result.ExecutionSeq = executionSeq
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {

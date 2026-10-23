@@ -137,8 +137,14 @@ func TestModelsCatalogRemoteRefreshMergesGuardModels(t *testing.T) {
 		name string
 		run  func(context.Context)
 	}{
-		{"startup", tryStartupRefresh},
-		{"periodic", tryPeriodicRefresh},
+		{"default-source", func(ctx context.Context) {
+			updater := &catalogUpdater{fetch: catalogFetcher(embeddedModelsJSON, modelsURLs, validateCatalogBytes), publish: publishCatalogBytes}
+			updater.refresh(ctx, "", 0)
+		}},
+		{"explicit-source", func(ctx context.Context) {
+			updater := &catalogUpdater{fetch: catalogFetcher(embeddedModelsJSON, modelsURLs, validateCatalogBytes), publish: publishCatalogBytes}
+			updater.refresh(ctx, modelsURLs[0], 0)
+		}},
 	} {
 		for _, remoteBlue := range []bool{false, true} {
 			name := "missing-guard"

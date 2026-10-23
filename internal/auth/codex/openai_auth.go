@@ -7,6 +7,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,7 +34,8 @@ const (
 // It manages the HTTP client and provides methods for generating authorization URLs,
 // exchanging authorization codes for tokens, and refreshing access tokens.
 type CodexAuth struct {
-	httpClient *http.Client
+	httpClient        *http.Client
+	siwcAgentNameHint string
 }
 
 var codexRefreshGroup singleflight.Group
@@ -49,15 +51,18 @@ func NewCodexAuth(cfg *config.Config) *CodexAuth {
 func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	effectiveProxyURL := strings.TrimSpace(proxyURL)
 	var sdkCfg config.SDKConfig
+	agentNameHint := SIWCAgentNameHint
 	if cfg != nil {
 		sdkCfg = cfg.SDKConfig
 		if effectiveProxyURL == "" {
 			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
 		}
+		agentNameHint = cfg.Codex.EffectiveSignInWithChatGPTIdentifier()
 	}
 	sdkCfg.ProxyURL = effectiveProxyURL
 	return &CodexAuth{
-		httpClient: util.SetProxy(&sdkCfg, &http.Client{}),
+		httpClient:        util.SetProxy(&sdkCfg, &http.Client{}),
+		siwcAgentNameHint: agentNameHint,
 	}
 }
 
@@ -245,7 +250,7 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, newRefreshTokenError(resp.StatusCode, body)
 	}
 
 	var tokenResp struct {
@@ -342,6 +347,10 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 func isNonRetryableRefreshErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	var refreshErr *RefreshTokenError
+	if errors.As(err, &refreshErr) && refreshErr.PermanentRefreshFailure() {
+		return true
 	}
 	raw := strings.ToLower(err.Error())
 	return strings.Contains(raw, "refresh_token_reused")

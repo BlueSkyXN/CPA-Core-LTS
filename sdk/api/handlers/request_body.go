@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
@@ -19,6 +20,9 @@ const defaultMaxRequestBodyBytes int64 = sdkconfig.DefaultAPIRequestBodyMaxBytes
 // ErrRequestBodyTooLarge reports that either the encoded request body or one
 // decoded Content-Encoding layer exceeded the API request body limit.
 var ErrRequestBodyTooLarge = errors.New("request body too large")
+
+// MaxRequestBodyBytesContextKey stores the configured request body size limit (in bytes) on the Gin context.
+const MaxRequestBodyBytesContextKey = "maxRequestBodyBytes"
 
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
@@ -45,6 +49,9 @@ func readRequestBodyWithLimit(c *gin.Context, limit int64) ([]byte, error) {
 		limit = defaultMaxRequestBodyBytes
 	}
 
+	if maxBytes := c.GetInt64(MaxRequestBodyBytesContextKey); maxBytes > 0 && maxBytes < limit {
+		limit = maxBytes
+	}
 	raw, err := readAllRequestBodyWithLimit(c.Request.Body, limit)
 	if err != nil {
 		return nil, err
@@ -150,5 +157,5 @@ func RequestBodyStatusCode(err error) int {
 	if errors.Is(err, ErrRequestBodyTooLarge) {
 		return http.StatusRequestEntityTooLarge
 	}
-	return http.StatusBadRequest
+	return clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest)
 }

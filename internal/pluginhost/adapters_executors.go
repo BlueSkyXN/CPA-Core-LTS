@@ -51,8 +51,21 @@ func (h *Host) RegisterExecutors(manager executorManager, modelRegistry modelPro
 	claimedModels := make(map[string]struct{})
 	claimedProviders := make(map[string]string)
 	for _, registration := range registrations {
-		if !registration.hasExecutor {
-			appendModelsForProvider(providerModels, registration.provider, registration.models)
+		if registration.hasExecutor {
+			continue
+		}
+		appendModelsForProvider(providerModels, registration.provider, registration.models)
+		// Reserve native catalog models before plugin arbitration, independently of
+		// credential publication or exclusions. This preserves native priority without
+		// publishing availability, which remains credential-bound.
+		if h.providerHasNativeExecutor(manager, registration.provider) {
+			for _, model := range registration.models {
+				if model != nil {
+					if modelID := strings.TrimSpace(model.ID); modelID != "" {
+						claimedModels[modelID] = struct{}{}
+					}
+				}
+			}
 		}
 	}
 	for _, record := range records {
@@ -997,6 +1010,7 @@ type preparedExecutorCall struct {
 	requestedFormat sdktranslator.Format
 	inputFormat     sdktranslator.Format
 	outputFormat    sdktranslator.Format
+	modelInfo       *registry.ModelInfo
 }
 
 func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
@@ -1017,16 +1031,22 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 
 	nativeReq := req
 	nativeOpts := opts
+	var modelInfo *registry.ModelInfo
 	if inputRequested != "" && inputRequested != inputFormat {
 		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: req.Model, Body: req.Payload, Stream: opts.Stream}
 		if (inputRequested == sdktranslator.FormatOpenAIResponse || inputRequested == sdktranslator.FormatOpenAI) && inputFormat == sdktranslator.FormatClaude {
-			modelInfo, errModel := a.executionModelInfo(auth, req, opts)
+			var errModel error
+			modelInfo, errModel = a.executionModelInfo(auth, req, opts)
 			if errModel != nil {
 				return preparedExecutorCall{}, errModel
 			}
 			envelope.ModelInfo = modelInfo
 		}
-		nativeReq.Payload = sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope).Body
+		translated := sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope)
+		if translated.Err != nil {
+			return preparedExecutorCall{}, translated.Err
+		}
+		nativeReq.Payload = translated.Body
 	}
 	nativeReq.Format = outputFormat
 	nativeOpts.SourceFormat = inputFormat
@@ -1039,6 +1059,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 		requestedFormat: requestedFormat,
 		inputFormat:     inputFormat,
 		outputFormat:    outputFormat,
+		modelInfo:       modelInfo,
 	}, nil
 }
 
@@ -1308,6 +1329,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	if reporter != nil {
 		reporter.StartResponseTiming()
+		ctx = helps.WithUsageReporter(ctx, reporter)
 	}
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
@@ -1369,6 +1391,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if translated == nil {
 		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil)
 	}
+	translated = a.adjustZcodeContextUsage(ctx, prepared, pluginReq, translated, nil)
 	return coreexecutor.Response{
 		Payload:  translated,
 		Metadata: cloneAnyMap(pluginResp.Metadata),
@@ -1429,6 +1452,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	if reporter != nil {
 		reporter.EnableSemanticTiming(prepared.outputFormat.String())
 		reporter.StartResponseTiming()
+		streamCtx = helps.WithUsageReporter(streamCtx, reporter)
 	}
 	pluginResp, errExecuteStream := a.executor.ExecuteStream(streamCtx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {

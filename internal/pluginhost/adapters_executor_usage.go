@@ -73,7 +73,6 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 		sawPayload := false
 		firstPayload := true
 		var lineBuffer []byte
-		const maxLineBufferSize = 64 * 1024
 
 		observePayload := func(payload []byte) {
 			if firstPayload {
@@ -93,10 +92,6 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 				helps.ObservePluginExecutorStreamUsage(format.String(), line, &usageBuffer)
 			}
 			if jsonPayload := helps.ExtractStreamJSONPayload(lineBuffer); len(jsonPayload) > 0 && json.Valid(jsonPayload) {
-				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
-				lineBuffer = nil
-			}
-			if len(lineBuffer) > maxLineBufferSize {
 				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
 				lineBuffer = nil
 			}

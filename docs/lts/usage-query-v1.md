@@ -10,8 +10,9 @@
 
 | 方法与路径 | 行为 |
 | --- | --- |
-| `GET /usage/query/capabilities` | `version: 1`、不透明 `bound`、`now_ms`、模型目录、`max_page_size: 200` |
+| `GET /usage/query/capabilities` | `version: 1`、不透明 `bound`、`now_ms`、模型目录、`max_page_size: 200`、`export_version: 1`、`max_export_page_size: 1000`、可选 `analytics_version: 1` 与 `max_analytics_rows`、`request_size_version: 1`（见 [usage-request-size.md](usage-request-size.md)） |
 | `POST /usage/query/summary` | 当前范围的 totals 和按 modules 选择的分组，不包含请求明细 |
+| `POST /usage/query/export` | 同一筛选与排序的分批导出；只返回 bound、items、total、next_cursor，不重复计算 metrics/options |
 | `POST /usage/query/details` | 时间倒序、内部序号倒序的当前页；完整筛选结果的 total 和 metrics |
 | `POST /usage/query/pricing` | 与摘要相同的查询，加上按模型、tier 证据和上下文档位分类的计价事实汇总 |
 
@@ -25,11 +26,38 @@ POST JSON 公共字段：`bound`、`now_ms`、`from_ms`、`to_ms`、`timezone`�
 
 - `limit` 默认 100，最大 200；`cursor` 使用上页返回的 `next_cursor`。
 - 首次 `include_options: true` 返回仅受时间范围限制的模型、API、来源/凭据身份、effort 和字段可用性；翻页与其他筛选不必重复读取选项。
-- `filter` 支持 `model`、`api`、`auth_index`、来源与凭据配对的 `identities`、`tier`、`effort`、`failed`、`cached`，以及 token `metric` 的 `minimum`/`maximum`。metric 对齐 Panel 现有八种数值筛选。
+- `filter` 支持 `model`、`api`、`auth_index`、来源与凭据配对的 `identities`、`tier`、`tier_flow`、`effort`、`failed`、`cached`，以及 token `metric` 的 `minimum`/`maximum`。metric 对齐 Panel 现有八种数值筛选。
+- `tier` 保留按最终解析档位筛选的既有 `fast/std` 语义。`tier_flow` 为互斥的 `fast`、`std`、`fast_to_std`、`std_to_fast`：转换方向取客户端请求档位到现有证据链解析出的生效档位，转换请求不再计入单独的 `fast/std`。请求档位缺失或无法识别时，归入解析后的单一档位；生效证据缺失/未知时仍遵循原有 Std 兼容推定，分类不新增实际降级的证据。
+- `effort` 按去空白、不区分大小写的原始强度匹配；空字符串专门匹配缺失/空值，省略表示不限制。未知自定义强度保留，不根据模型名称推断。
+- `tier_flow` 是新增的查询字段；旧 Core 会明确拒绝，不应删除条件重试或显示未筛选结果。该筛选需要 Core 与 Panel 配套更新，旧 `tier` 调用继续兼容。
 - bound 固定实例代次和已记录序号上界；cursor 另绑定时间范围、筛选及排序位置。同一会话的摘要、费用和明细传递同一 bound。
 - 晚完成请求、历史导入只在下次建立 bound 后出现；重复导入不获得新序号。内部序号不进入旧快照或导出格式。
 - 非法查询返回 400；实例或上界失效返回 409；15 秒查询预算或请求取消返回 408。单个请求体上限 2 MiB。
 - 新 Panel 只在能力端点 404 且同前缀旧管理接口正常时进入旧版模式。网络、5xx、解析失败不得触发全量 fallback。失效 bound 通过刷新会话恢复，不能拼接两代页面。
+
+## 分批导出 v1
+
+只有能力响应声明 `export_version: 1` 时，Panel 才可调用 `/usage/query/export`；未声明能力的 Core 继续使用原 `/usage/query/details` 路径。查询 `version` 与 canonical export/import 版本均不变。
+
+新端点接受相同的 bound、毫秒时间范围、filter、cursor，保留时间倒序和内部序号倒序。limit 默认及上限为 1,000；旧 details 上限仍是 200。新端点拒绝 include_options、modules、rules 和 hour_from_ms。响应包含 `version: 1`、`bound`、`items`、`total`、可选 `next_cursor`，不包含 metrics/options。筛选结果导出不等同于 `/usage/export` 完整备份。
+
+首次扫描只建立到 append-only 内存明细的排序位置索引，后续页通过二分定位游标、复制当前批次。索引不复制完整明细、不引用旧切片 backing array；没有持久化或后台依赖。索引键包含 bound、时间范围和全部 filter；每次命中前仍校验实例代次。晚到记录和导入不会进入已有 bound，缓存失效后重建仍得到同一结果。
+
+每项最多 100,000 条索引；每个统计实例最多 4 项、合计 200,000 个索引槽位，TTL 4 分钟并按最近使用淘汰；同时最多两个索引构建任务，超出返回 429 `usage_export_busy`。超过单项容量时记住超限状态，后续用有界堆扫描，保留完整 total、所有记录和同一游标顺序，不截断结果。该路径不承诺单次扫描或常数耗时。原有 400/409/408 错误、15 秒预算、鉴权、响应压缩和 2 MiB 请求限制沿用。
+
+本地性能对照可运行 `go test ./internal/usage -run '^$' -bench BenchmarkUsageFullExport -benchmem -benchtime=1x`，对比旧 details、冷索引和热索引的完整导出，输出耗时、累计分配与扫描次数。累计分配不等于进程峰值内存。
+
+## 精确看板分析 v1
+
+`POST /usage/query/analytics` 使用公共时间、快照与筛选字段，以及 `include_options`；拒绝分页 cursor、summary modules 和 pricing rules。能力通过 `analytics_version: 1` 声明，不改变 query/export 版本。
+
+聚合响应的 `options.efforts` 返回当前时间窗口内全部强度（含空字符串），不受模型、来源、层级或 effort 筛选缩窄。旧聚合响应缺少此字段时，Panel 可通过同一 bound/time window 的 `/usage/query/details` 读取已有 effort 目录，无需下载完整明细。
+
+一次分块遍历生成 `data.timings`、`histogram`、`cache`、`errors`、`hour/day` 两套趋势，以及存在体积测量时的 `requestSize` 分桶。`total` 是匹配请求数，`analyzed` 是有效正时间戳记录数。延迟与语义时间分位数仅使用成功请求，采用精确 nearest-rank；缺失测量返回 null，显式零值按 timing presence 判定。缓存率为总 cache-read / 总 input；cachedRequests 仅计 cache-read > 0。`hour/day.throughput` 逐桶累计与 `QueryMetrics` 相同的分子分母：输出 TPS 优先使用 `output_timing` 的同次上游观测窗口，历史记录才使用首包之后的估算时长，平均与可见 TPS 用总耗时，失败请求同样计入；分母为零表示该桶没有可测样本。速率为分子 / 分母 × 1000（token/秒）。起止毫秒均包含，本地日历桶保留 Panel 的 DST 行为。附带 options 仅受时间范围影响。
+
+第一版容量上限：250,000 条匹配记录，每个粒度最多 4,096 个实际桶，模型、身份和 effort 选项合计最多 8,192 项，错误原因最多 8,192 种。完整响应上限 4 MiB；超出返回 422 `usage_analytics_too_large`，不抽样、不截断。最多两个不同聚合任务并发，超过返回 429 `usage_analytics_busy`；同键请求共享计算，最后一个等待者退出后取消工作，15 秒预算继续生效。
+
+每个统计实例最多缓存 8 项 / 16 MiB 完整响应，TTL 4 分钟，按最近使用淘汰。缓存键包括 bound、时间、时区、筛选、参考时刻与 options；先验证 bound 再查缓存。新增/导入不改变旧快照，不清空其缓存；刷新建立新 bound。缓存不复制或持久化请求明细，不改变导入导出和 usage 记录路径。
 
 ## 动态计价
 
@@ -39,7 +67,7 @@ Panel 对每类使用原价格算法选取 status、单价和警告，再计算�
 
 ## HTTP 响应压缩
 
-上述七个 usage JSON 路由在鉴权之后按 `Accept-Encoding` 协商压缩：同权重时优先 Brotli level 4、Zstandard level 1、gzip level 3。显式 `q=0` 不会被通配符覆盖；显式更高权重的 `identity` 优先。没有可接受编码时返回 406，导入 handler 不会执行。
+包括 analytics 在内的 usage JSON 路由在鉴权之后按 `Accept-Encoding` 协商压缩：同权重时优先 Brotli level 4、Zstandard level 1、gzip level 3。显式 `q=0` 不会被通配符覆盖；显式更高权重的 `identity` 优先。没有可接受编码时返回 406，导入 handler 不会执行。
 
 客户端允许 identity 时，小于 1024 bytes 的响应不压缩；禁止 identity 时，小 JSON 也使用允许的编码。压缩层只保留不足 1024 bytes 的前置缓冲，超过阈值直接写入压缩器，不再复制完整快照。响应携带 `Vary: Accept-Encoding`，压缩后删除旧 `Content-Length`，已编码响应不重复压缩。JSON、状态码、POST 请求体和统计 schema 不变。
 
@@ -52,3 +80,29 @@ Panel 对每类使用原价格算法选取 status、单价和警告，再计算�
 任何 Core 重启或 wrapper 重建前，都要确认统计保存位置在被重建实例之外。若要求升级零缺失，应在维护窗口暂停新流量、等待在途请求和 usage 分发排空、最终导出并校验，再重启、导入、对账及恢复流量。导出后到停止前的新增请求不能由旧备份恢复；不能仅以定时备份代替最终导出。现有自动保存流程只有经核对覆盖这个尾部窗口才可替代维护步骤。
 
 Core、Panel、HFS wrapper 可分批回滚。旧接口和导出版本未改变，因此旧 Panel 可连接新 Core，新 Panel 也保留明确的旧 Core 兼容路径。回滚或发布不授权删除历史、改 Secrets 或擅自重建生产 Space。
+
+
+## 输出窗口测量
+
+Canonical v3 明细新增可选 `output_timing`，不改变 `timing_version: 1` 或旧 timing/token 字段的含义：
+
+```json
+{"output_timing":{"version":1,"streamed":true,"duration_ms":800}}
+```
+
+- `streamed` 表示观测器识别到上游 SSE 或消息流；`duration_ms` 仅在同一次上游尝试至少有两次有效载荷观测、且首包时间已测得时提供，窗口为首包到最后一次有效载荷观测。单次整包读取、无起点的自动续接、前置失败等不伪造窗口。
+- `duration_ms` 为非负整数，不能超过 `latency_ms - ttfb_ms`；小于一毫秒的窗口可记录为零，但不计算 TPS。没有测到时省略 duration，不能当作零耗时。
+- 新 Core reporter 始终提供该元数据。对象存在时，无可用正窗口就不计输出 TPS；只有对象完全缺失的历史记录沿用 `latency_ms - ttfb_ms` 估算。明细、QueryMetrics、服务端趋势和 Panel 本地趋势使用相同资格规则。平均 TPS 仍使用 reporter 总耗时。
+- HTTP 与新建 WebSocket 的尝试计时从连接建立前开始；复用 WebSocket 不重复计入旧握手。重试使用新的尝试窗口，前置处理和前次失败不进入首包后窗口。
+- 这是 Core 观测的输出速率，仍受网络缓冲与下游反压影响，不是模型内部解码速度或完整客户端端到端速率。旧样本的估算偏差不能从现有数据补回；混合历史的汇总仍标为估算。
+- 字段随 Management 查询、export/import、SDK/plugin usage 和 usage queue 传递。Import 保持原子校验与原有去重身份；v1/v2 payload 不能携带这个新扩展。旧 Core/Panel 可忽略可选对象，但重新导出会丢失其测量信息。
+
+## 性能指标的 token 口径
+
+Canonical v3 可选 `token_breakdown` 复用 SDK 的 accounting schema 2（`schema_version`、`quality`、`total_tokens`、`input`、`output`、`unclassified_tokens`）。生产者提供的 accounting 通过校验后传递；非法或与原始计数矛盾的对象降为未分类，不回退旧估算。没有 accounting 的旧 SDK 记录保持缺失。原始 `tokens`、总请求/总 token 聚合、价格输入和去重身份不变。
+
+- `quality: complete` 时，输出 TPS 与平均 TPS 使用 `output.total_tokens`，非推理平均 TPS 使用 `output.non_reasoning_tokens`，Reasoning 占比使用 `output.reasoning_tokens / output.total_tokens`。完整分类必须满足各分桶相加等于总数，并与原始总量、输入及缓存分桶、推理量和输出字段的包含/独立关系相符。
+- Gemini 的原始输出 100、推理 40 对应规范化总输出 140、非推理输出 100；OpenAI 的原始输出 140、推理 40 也对应相同的规范化值。原始输出列继续展示上游报告的字段，不在历史记录中覆盖成另一种语义。
+- 对象存在但分类不完整时，不计算相关 TPS 与 Reasoning 占比，不把未知分类猜成子集；请求数、原始 token 和价格统计仍保留。对象缺失的历史记录沿用旧估算，无法追溯补出 provider 语义。
+- QueryMetrics 和小时/天吞吐趋势使用同一分子；`displayedOutputTokens` 筛选使用可证明的非推理数量。Panel 的明细、汇总和本地趋势遵循相同规则，事件分析导出额外包含 `tps_output_tokens` 与 `non_reasoning_output_tokens`。原始统计 export/import 字段保持兼容。
+- 导入对扩展对象进行完整 shape、整数、分桶关系和原始计数一致性校验；拒绝时不写入。v1/v2 不能携带该扩展；旧 reader 可忽略它，但往返旧 Core 会丢失分类信息。

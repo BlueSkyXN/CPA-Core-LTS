@@ -113,6 +113,7 @@ const (
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
+	MethodHostAuthModels         = "host.auth.models"
 	MethodHostAffinityLookup     = "host.affinity.lookup"
 
 	MethodHostRoutingResetCooldown = "host.routing.reset_cooldown"
@@ -131,6 +132,8 @@ type Error struct {
 	// HTTPStatus is the HTTP status code (e.g. 401, 403, 429) to surface to the client.
 	// When omitted or 0, CPA defaults to HTTP 500 (internal_server_error).
 	HTTPStatus int `json:"http_status,omitempty"`
+	// FailureReason is an optional safe, provider-scoped usage diagnostic, independent of Code and retry policy.
+	FailureReason string `json:"failure_reason,omitempty"`
 }
 
 // Error implements the error interface for Error.

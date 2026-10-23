@@ -1036,3 +1036,183 @@ func requireMergeSnapshot(t *testing.T, stats *RequestStatistics, snapshot Stati
 	}
 	return result
 }
+
+func TestExtractSafeFailureReasonSignatureMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "envoy upstream connect failure full payload",
+			body: "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure",
+			want: "upstream_connect_failure",
+		},
+		{
+			name: "envoy payload embedded in transport wrapping",
+			body: `Post "https://chatgpt.com/backend-api/codex/responses": upstream connect error or disconnect/reset before headers. reset reason: remote connection failure`,
+			want: "upstream_connect_failure",
+		},
+		{
+			name: "connection refused",
+			body: `dial tcp 203.0.113.7:443: connect: connection refused`,
+			want: "connection_refused",
+		},
+		{
+			name: "connection reset by peer",
+			body: "read tcp 10.0.0.2:443: read: connection reset by peer",
+			want: "connection_reset",
+		},
+		{
+			name: "io timeout",
+			body: `Get "https://api.example.com": dial tcp: i/o timeout`,
+			want: "io_timeout",
+		},
+		{
+			name: "tls handshake failure",
+			body: "remote error: tls: handshake failure",
+			want: "tls_handshake_failure",
+		},
+		{
+			name: "net/http TLS handshake timeout keeps TLS qualifier",
+			body: "net/http: TLS handshake timeout",
+			want: "tls_handshake_timeout",
+		},
+		{
+			name: "context deadline exceeded maps to stable token",
+			body: "context deadline exceeded",
+			want: "deadline_exceeded",
+		},
+		{
+			name: "dns failure",
+			body: `dial tcp: lookup api.example.com: no such host`,
+			want: "dns_failure",
+		},
+		{
+			name: "unexpected eof",
+			body: "unexpected EOF",
+			want: "unexpected_eof",
+		},
+		{
+			name: "existing token prefix keeps passing through",
+			body: "codex_abnormal_reasoning_response: codex abnormal reasoning response discarded",
+			want: "codex_abnormal_reasoning_response",
+		},
+		{
+			name: "json nested code wins over message text",
+			body: `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"try again later after connection refused"}}`,
+			want: "rate_limit_exceeded",
+		},
+		{
+			name: "json nested type only",
+			body: `{"error":{"type":"usage_limit_reached","message":"You've hit your usage limit."}}`,
+			want: "usage_limit_reached",
+		},
+		{
+			name: "json normalized executor code",
+			body: `{"error":{"type":"invalid_request_error","code":"context_too_large","message":"too long"}}`,
+			want: "context_too_large",
+		},
+		{
+			name: "json root code",
+			body: `{"code":"rate_limit_exceeded","message":"try later"}`,
+			want: "rate_limit_exceeded",
+		},
+		{
+			name: "json root type",
+			body: `{"type":"usage_limit_reached","message":"quota exhausted"}`,
+			want: "usage_limit_reached",
+		},
+		{
+			name: "json error as plain string",
+			body: `{"error":"rate_limited"}`,
+			want: "rate_limited",
+		},
+		{
+			name: "json numeric code is not a string reason",
+			body: `{"error":{"code":429}}`,
+			want: "",
+		},
+		{
+			name: "explicit application prefix survives free-text detail",
+			body: "invalid_request: field contains unexpected EOF",
+			want: "invalid_request",
+		},
+		{
+			name: "websocket wrapper prefix is not an application code",
+			body: "websocket: handshake timeout",
+			want: "",
+		},
+		{
+			name: "proxy handshake failure without TLS context stays unclassified",
+			body: "proxy negotiation error: SOCKS5 handshake failure",
+			want: "",
+		},
+		{
+			name: "single token body is the code itself",
+			body: "EOF",
+			want: "EOF",
+		},
+		{
+			name: "multi-word free text records no misleading first word",
+			body: "This request was rejected by the upstream service.",
+			want: "",
+		},
+		{
+			name: "status-only free text records no misleading first word",
+			body: "status 503",
+			want: "",
+		},
+		{
+			name: "free text with colon and unsafe prefix stays dropped",
+			body: "upstream service error: please retry later",
+			want: "",
+		},
+		{
+			name: "whitespace only",
+			body: "   ",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractSafeFailureReason(tc.body); got != tc.want {
+				t.Fatalf("extractSafeFailureReason(%q) = %q, want %q", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRecordFailureReasonCollapsesEnvoyPayloadToClassToken(t *testing.T) {
+	prevEnabled := StatisticsEnabled()
+	SetStatisticsEnabled(true)
+	t.Cleanup(func() { SetStatisticsEnabled(prevEnabled) })
+
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "client-api-key",
+		Provider:    "codex",
+		Model:       "gpt-6.1-sol",
+		Source:      "auths/codex-pro.json",
+		AuthIndex:   "365cdd29b5ad861a",
+		RequestedAt: time.Date(2026, 10, 10, 4, 56, 13, 0, time.UTC),
+		Latency:     1055 * time.Millisecond,
+		Failed:      true,
+		Fail: coreusage.Failure{
+			Body:       "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure",
+			StatusCode: 503,
+		},
+	})
+
+	snapshot := stats.Snapshot()
+	details := snapshot.APIs["client-api-key"].Models["gpt-6.1-sol"].Details
+	if len(details) != 1 {
+		t.Fatalf("details length = %d, want 1", len(details))
+	}
+	if got := details[0].FailureReason; got != "upstream_connect_failure" {
+		t.Fatalf("failure_reason = %q, want upstream_connect_failure", got)
+	}
+	if got := details[0].FailureStatus; got != 503 {
+		t.Fatalf("failure_status = %d, want 503", got)
+	}
+}

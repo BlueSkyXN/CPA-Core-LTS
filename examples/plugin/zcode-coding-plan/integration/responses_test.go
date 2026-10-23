@@ -46,6 +46,8 @@ type v2Transport struct {
 	targets        int
 	handshakeBody  string
 	blocked        *blockedFixtureBody
+	errorStatus    int
+	errorBody      string
 }
 
 func (f *v2Transport) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return f }
@@ -103,12 +105,18 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if f.mode == "model-redirect" {
 		return &http.Response{StatusCode: f.redirectStatus, Header: http.Header{"Location": {"https://elsewhere.invalid/capture"}}, Body: io.NopCloser(strings.NewReader("redirect")), Request: req}, nil
 	}
+	if f.errorStatus != 0 {
+		return &http.Response{StatusCode: f.errorStatus, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(f.errorBody)), Request: req}, nil
+	}
 	text, ct := v2Reply(body, len(f.captured)), "application/json"
 	if gjson.GetBytes(body, "stream").Bool() {
 		ct = "text/event-stream"
 		text = v2Events(text)
-		if f.mode == "truncate" {
+		if f.mode == "truncate" || f.mode == "business-error" {
 			text = strings.TrimSuffix(text, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		}
+		if f.mode == "business-error" {
+			text += "event: error\ndata: " + f.errorBody + "\n\n"
 		}
 	}
 	if f.mode == "invalid" {
@@ -151,13 +159,14 @@ func v2Events(reply string) string {
 }
 
 type v2Fixture struct {
-	host      *pluginhost.Host
-	router    *gin.Engine
-	transport *v2Transport
-	usage     *fixtureUsageSink
-	logs      []string
-	cfg       *config.Config
-	manager   *coreauth.Manager
+	host       *pluginhost.Host
+	router     *gin.Engine
+	transport  *v2Transport
+	usage      *fixtureUsageSink
+	logs       []string
+	cfg        *config.Config
+	manager    *coreauth.Manager
+	management *management.Handler
 }
 
 func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
@@ -245,6 +254,7 @@ func newV2Fixture(t *testing.T, allowedModels ...string) *v2Fixture {
 	router.POST("/v1/responses", handler.Responses)
 	router.GET("/v1/responses/ws", handler.ResponsesWebsocket)
 	mgmt := management.NewHandlerWithoutConfigFilePath(cfg, manager)
+	f.management = mgmt
 	mgmt.SetPluginHost(h)
 	router.GET("/v0/management/plugins/:id/readiness", mgmt.GetPluginReadiness)
 	router.GET("/v0/management/plugins", mgmt.ListPlugins)
@@ -327,7 +337,7 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 	}
 	f.checkUsage(t, false)
 	before := len(f.transport.captured)
-	for _, control := range []string{`"reasoning":{"effort":"medium"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
+	for _, control := range []string{`"reasoning":{"effort":"ultra"}`, `"text":{"format":{"type":"json_schema","strict":true}}`, `"previous_response_id":"old"`, `"x_coding_plan":{"prompt":{"mode":"preserve"}}`} {
 		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello",%s}`, v2Model, control))
 		if res.Code < 400 {
 			t.Fatalf("unsupported control accepted: %s", control)

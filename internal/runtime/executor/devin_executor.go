@@ -277,10 +277,10 @@ func (e *DevinExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		errData, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
 		helps.AppendAPIResponseChunk(ctx, e.cfg, errData)
-		return resp, newDevinStatusError(httpResp.StatusCode, httpResp.Header, errData)
+		return resp, newDevinStatusErrorForAuth(httpResp.StatusCode, httpResp.Header, errData, auth)
 	}
 
-	interactionsJSON, respLog, errConsume := consumeDevinFramesToInteractions(httpResp.Body, req.Model, chatModelUID, helps.ApplyPatchOriginalRequest(req, opts))
+	interactionsJSON, respLog, errConsume := consumeDevinFramesToInteractionsForAuth(httpResp.Body, req.Model, chatModelUID, auth, helps.ApplyPatchOriginalRequest(req, opts))
 	if respLog != nil || len(interactionsJSON) > 0 {
 		logRespBody := helps.BuildDevinUpstreamResponseLogBody(respLog, interactionsJSON)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, logRespBody)
@@ -356,7 +356,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		errData, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
 		_ = httpResp.Body.Close()
 		helps.AppendAPIResponseChunk(ctx, e.cfg, errData)
-		return nil, newDevinStatusError(httpResp.StatusCode, httpResp.Header, errData)
+		return nil, newDevinStatusErrorForAuth(httpResp.StatusCode, httpResp.Header, errData, auth)
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -378,7 +378,7 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}()
 
-		e.streamDevinFrames(streamCtx, httpResp.Body, req, opts, chatModelUID, responseFormat, reporter, out)
+		e.streamDevinFramesForAuth(streamCtx, httpResp.Body, req, opts, chatModelUID, responseFormat, reporter, out, auth)
 	}()
 
 	return &cliproxyexecutor.StreamResult{
@@ -396,9 +396,24 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	payload := req.Payload
 	isInteractionsSource := opts.SourceFormat == "" || opts.SourceFormat == sdktranslator.FormatInteractions
 	if !isInteractionsSource {
-		payload = sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FormatInteractions, req.Model, payload, opts.Stream)
+		translated := sdktranslator.TranslateRequestEnvelope(ctx, opts.SourceFormat, sdktranslator.FormatInteractions, sdktranslator.RequestEnvelope{
+			Format: opts.SourceFormat,
+			Model:  req.Model,
+			Stream: opts.Stream,
+			Body:   payload,
+		})
+		if translated.Err != nil {
+			return nil, "", nil, translated.Err
+		}
+		payload = translated.Body
 	}
 	systemPrompt, prompts, tools, temp, maxTokens, sessionID, cascadeID, thinkingLevel, budgetTokens := parseInteractionsPayload(payload, opts.OriginalRequest)
+	// Devin cannot fetch a remote uri or take audio, video or documents. A user turn left
+	// with nothing else to send is refused here, before any upstream call.
+	prompts, errTurns := helps.CheckDevinUserTurns(prompts)
+	if errTurns != nil {
+		return nil, "", nil, errTurns
+	}
 	sessionID, cascadeID = resolveDevinSessionAndCascadeIDs(ctx, sessionID, cascadeID, opts)
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
@@ -410,6 +425,7 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 
 	chatModelUID := helps.ResolveDevinChatModelUID(req.Model, thinkingLevel, budgetTokens)
 
+	helps.RestoreDevinToolCallIDs(prompts)
 	matcher := e.getSensitiveWordMatcher()
 
 	protoBytes := helps.BuildDevinGetChatMessageRequest(
@@ -444,6 +460,15 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 		cascadeID,
 	)
 
+	var errPayload error
+	protoBytes, logBody, errPayload = helps.FinalizeDevinPayload(protoBytes, func(body []byte) []byte {
+		original := helps.DevinPayloadDefaultsSource(body, payload)
+		return helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "devin", "", original, req, opts)(body)
+	})
+	if errPayload != nil {
+		return nil, "", nil, errPayload
+	}
+
 	framed := helps.WrapConnectEnvelope(protoBytes)
 	url := strings.TrimRight(baseURL, "/") + helps.DevinChatPath
 
@@ -470,6 +495,22 @@ func (e *DevinExecutor) streamDevinFrames(
 	responseFormat sdktranslator.Format,
 	reporter *helps.UsageReporter,
 	out chan<- cliproxyexecutor.StreamChunk,
+) {
+	e.streamDevinFramesForAuth(ctx, body, req, opts, chatModelUID, responseFormat, reporter, out, nil)
+}
+
+// streamDevinFramesForAuth streams Devin frames for auth; auth may be nil in tests,
+// in which case quota errors carry credential scope without a reset-based delay.
+func (e *DevinExecutor) streamDevinFramesForAuth(
+	ctx context.Context,
+	body io.Reader,
+	req cliproxyexecutor.Request,
+	opts cliproxyexecutor.Options,
+	chatModelUID string,
+	responseFormat sdktranslator.Format,
+	reporter *helps.UsageReporter,
+	out chan<- cliproxyexecutor.StreamChunk,
+	auth *cliproxyauth.Auth,
 ) {
 	if reporter != nil {
 		if chatModelUID != "" {
@@ -498,7 +539,8 @@ func (e *DevinExecutor) streamDevinFrames(
 	var accumulatedSignature []byte
 	var signatureType string
 
-	claudeInputTokens := helps.NewClaudeInputTokenState(opts.SourceFormat, sdktranslator.FormatInteractions, responseFormat, opts.OriginalRequest)
+	// Devin reports authoritative cache-aware token usage in its response frames,
+	// so do not seed message_start with a full-input estimate.
 	var translateParam any
 	helps.InitializeApplyPatchStream(ctx, sdktranslator.FormatInteractions, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), req.Payload, &translateParam)
 	translationFailed := false
@@ -562,7 +604,7 @@ func (e *DevinExecutor) streamDevinFrames(
 			req.Payload,
 			trimmed,
 			&translateParam,
-			claudeInputTokens,
+			nil,
 		)
 		helps.RecordApplyPatchStreamFailure(ctx, translateParam, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 		for _, line := range lines {
@@ -662,6 +704,7 @@ func (e *DevinExecutor) streamDevinFrames(
 	}
 
 	emitToolCall := func(tc helps.DevinToolCallDelta) bool {
+		tc.ID = helps.EncodeDevinToolCallID(tc.ID)
 		if thoughtStarted {
 			stopEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.stop","index":0}`), "index", stepIndex)
 			if !emitInteractionsEvent(stopEvent) {
@@ -825,7 +868,7 @@ func (e *DevinExecutor) streamDevinFrames(
 				failedEvent, _ := sjson.SetBytes([]byte(`{"event_type":"response.failed","error":{"message":"","code":""}}`), "error.message", errTrailer.Error())
 				failedEvent, _ = sjson.SetBytes(failedEvent, "error.code", fmt.Sprintf("%d", code))
 				_ = emitInteractionsEvent(failedEvent)
-				emitStreamError(statusErr{code: code, msg: errTrailer.Error()})
+				emitStreamError(devinTrailerStatusError(code, errTrailer.Error(), auth))
 				return
 			}
 			sawEOS = true
@@ -1109,7 +1152,7 @@ func (e *DevinExecutor) streamDevinFrames(
 			req.Payload,
 			[]byte("[DONE]"),
 			&translateParam,
-			claudeInputTokens,
+			nil,
 		)
 		helps.RecordApplyPatchStreamFailure(ctx, translateParam, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 		for _, line := range lines {
@@ -1122,6 +1165,10 @@ func (e *DevinExecutor) streamDevinFrames(
 }
 
 func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string, original ...[]byte) ([]byte, *helps.DevinUpstreamResponseLog, error) {
+	return consumeDevinFramesToInteractionsForAuth(body, model, chatModelUID, nil, original...)
+}
+
+func consumeDevinFramesToInteractionsForAuth(body io.Reader, model, chatModelUID string, auth *cliproxyauth.Auth, original ...[]byte) ([]byte, *helps.DevinUpstreamResponseLog, error) {
 	interactionID := fmt.Sprintf("interaction_%s", uuid.New().String()[:12])
 	var preToolTextParts []string
 	var postToolTextParts []string
@@ -1215,7 +1262,7 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 					Usage:         finalUsage,
 					UnknownFields: unknownFields,
 				}
-				return nil, respLog, statusErr{code: code, msg: errTrailer.Error()}
+				return nil, respLog, devinTrailerStatusError(code, errTrailer.Error(), auth)
 			}
 			sawEOS = true
 			break
@@ -1421,10 +1468,11 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 	}
 
 	for _, tc := range toolCalls {
+		id := helps.EncodeDevinToolCallID(tc.ID)
 		fnStep := []byte(`{"type":"function_call","name":"","id":"","call_id":"","arguments":{}}`)
 		fnStep, _ = sjson.SetBytes(fnStep, "name", tc.Name)
-		fnStep, _ = sjson.SetBytes(fnStep, "id", tc.ID)
-		fnStep, _ = sjson.SetBytes(fnStep, "call_id", tc.ID)
+		fnStep, _ = sjson.SetBytes(fnStep, "id", id)
+		fnStep, _ = sjson.SetBytes(fnStep, "call_id", id)
 		if tc.Arguments != "" {
 			if json.Valid([]byte(tc.Arguments)) {
 				fnStep, _ = sjson.SetRawBytes(fnStep, "arguments", []byte(tc.Arguments))
@@ -1582,12 +1630,13 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 			stepType := strings.ToLower(strings.TrimSpace(step.Get("type").String()))
 			switch stepType {
 			case "user_input":
-				text, images := extractInteractionsStepContent(step)
+				text, images, droppedPart := extractInteractionsStepContent(step)
 				prompts = append(prompts, helps.DevinPrompt{
-					MessageID: uuid.New().String(),
-					Source:    1,
-					Content:   text,
-					Images:    images,
+					MessageID:   uuid.New().String(),
+					Source:      1,
+					Content:     text,
+					Images:      images,
+					DroppedPart: droppedPart,
 				})
 
 			case "model_output":
@@ -1694,12 +1743,13 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 					systemPrompt = m.Get("content").String()
 				}
 			case "user":
-				text, images := extractInteractionsStepContent(m)
+				text, images, droppedPart := extractInteractionsStepContent(m)
 				prompts = append(prompts, helps.DevinPrompt{
-					MessageID: uuid.New().String(),
-					Source:    1,
-					Content:   text,
-					Images:    images,
+					MessageID:   uuid.New().String(),
+					Source:      1,
+					Content:     text,
+					Images:      images,
+					DroppedPart: droppedPart,
 				})
 			case "assistant":
 				text := extractInteractionsStepText(m)
@@ -1870,7 +1920,8 @@ func extractDevinImage(part gjson.Result) (helps.DevinImage, bool) {
 	}
 
 	if base64Data == "" {
-		url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String())
+		// uri and file_uri are Interactions spellings of url; only a data URL is usable.
+		url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String(), part.Get("uri").String(), part.Get("file_uri").String(), part.Get("fileUri").String())
 		if m, d, ok := parseDataURL(url); ok {
 			base64Data = d
 			if mimeType == "" {
@@ -2099,10 +2150,27 @@ func extractFunctionResultContent(step gjson.Result) (string, []helps.DevinImage
 	return resText, images
 }
 
-func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinImage) {
+// devinUnsendableMediaType names the type of a media part that Devin cannot send, or
+// returns "" for text and for parts that are not media. Devin only takes inline images,
+// so a remote uri or any audio, video or document part is unsendable.
+func devinUnsendableMediaType(part gjson.Result) string {
+	if part.Get("text").String() != "" {
+		return ""
+	}
+	switch partType := strings.ToLower(strings.TrimSpace(part.Get("type").String())); partType {
+	case "image", "input_image", "image_url", "audio", "input_audio", "video", "document", "file", "input_file":
+		return partType
+	}
+	return ""
+}
+
+// extractInteractionsStepContent returns the text and inline images of a user step. The
+// third result is the type of the first media part Devin could not send, or "".
+func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinImage, string) {
 	content := step.Get("content")
 	var textParts []string
 	var images []helps.DevinImage
+	droppedPart := ""
 
 	extractFromPart := func(p gjson.Result) {
 		if img, ok := extractDevinImage(p); ok {
@@ -2111,6 +2179,9 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 		}
 		if t := p.Get("text").String(); t != "" {
 			textParts = append(textParts, t)
+		}
+		if droppedPart == "" {
+			droppedPart = devinUnsendableMediaType(p)
 		}
 	}
 
@@ -2140,7 +2211,7 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 		}
 	}
 
-	return text, images
+	return text, images, droppedPart
 }
 
 func extractInteractionsStepText(step gjson.Result) string {
@@ -2309,12 +2380,32 @@ func parseSignatureBytes(sigStr string) ([]byte, string) {
 		return []byte(s), "openai"
 	case internalsignature.SignatureProviderGemini:
 		return []byte(s), "gemini"
+	case internalsignature.SignatureProviderMeta:
+		// Positively foreign to the Devin backend: never supplement it as a
+		// sealed signature.
+		return nil, ""
 	}
 	if strings.HasPrefix(s, "AY") {
 		return []byte(s), "gemini"
 	}
 	if decoded, err := base64.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
 		decStr := string(decoded)
+		if strings.HasPrefix(decStr, "cpa-codex-gemini-carrier-v1:") {
+			inner := strings.TrimSpace(strings.TrimPrefix(decStr, "cpa-codex-gemini-carrier-v1:"))
+			if strings.HasPrefix(inner, "sealed.v1.") {
+				return []byte(inner), "sealed"
+			}
+			switch internalsignature.DetectSignatureProvider(inner) {
+			case internalsignature.SignatureProviderClaude:
+				return []byte(inner), "anthropic"
+			case internalsignature.SignatureProviderGPT:
+				return []byte(inner), "openai"
+			case internalsignature.SignatureProviderGemini:
+				return []byte(inner), "gemini"
+			default:
+				return nil, ""
+			}
+		}
 		if strings.HasPrefix(decStr, "sealed.v1.") {
 			return decoded, "sealed"
 		}
@@ -2325,6 +2416,8 @@ func parseSignatureBytes(sigStr string) ([]byte, string) {
 			return decoded, "openai"
 		case internalsignature.SignatureProviderGemini:
 			return []byte(s), "gemini"
+		case internalsignature.SignatureProviderMeta:
+			return nil, ""
 		}
 		if strings.HasPrefix(decStr, "CAQS") || strings.HasPrefix(decStr, "CAIS") {
 			return decoded, "anthropic"
@@ -2360,6 +2453,8 @@ func detectSignatureType(sig string) string {
 		return "openai"
 	case internalsignature.SignatureProviderGemini:
 		return "gemini"
+	case internalsignature.SignatureProviderMeta:
+		return ""
 	}
 	if strings.HasPrefix(s, "CAQS") || strings.HasPrefix(s, "CAIS") {
 		return "anthropic"
@@ -2462,7 +2557,46 @@ func (e *DevinExecutor) getSensitiveWordMatcher() *helps.SensitiveWordMatcher {
 	return e.cachedMatcher
 }
 
+// devinTrailerStatusError builds the scheduling view of a Connect trailer
+// error. Explicit account-wide daily/weekly usage quota exhaustion (issue
+// #6690) is credential-scoped and, when auth carries a valid observed reset
+// timestamp for that window, retries only after the reset. Transient
+// capacity and generic rate-limit 429s stay model-scoped.
+func devinTrailerStatusError(code int, msg string, auth *cliproxyauth.Auth) statusErr {
+	return devinQuotaScopedStatusError(statusErr{code: code, msg: msg}, auth, time.Now())
+}
+
+// devinQuotaScopedStatusError upgrades a 429 to credential scope when its
+// message reports daily/weekly usage quota exhaustion, deriving RetryAfter
+// from the matching observed reset signal. An explicit Retry-After already
+// carried by err is preserved and never overwritten by signal data.
+func devinQuotaScopedStatusError(err statusErr, auth *cliproxyauth.Auth, now time.Time) statusErr {
+	if err.code != http.StatusTooManyRequests {
+		return err
+	}
+	period := helps.DevinUsageQuotaExhaustionPeriod(err.msg)
+	if period == helps.DevinQuotaPeriodNone {
+		return err
+	}
+	err.credentialScoped = true
+	if err.retryAfter == nil && auth != nil {
+		key := "daily_quota_reset_at"
+		if period == helps.DevinQuotaPeriodWeekly {
+			key = "weekly_quota_reset_at"
+		}
+		err.retryAfter = helps.DevinQuotaRetryAfter(auth.Quota.Signals[key], now)
+	}
+	return err
+}
+
 func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
+	return newDevinStatusErrorForAuth(code, headers, body, nil)
+}
+
+// newDevinStatusErrorForAuth builds the scheduling view of a direct HTTP
+// (non-trailer) upstream failure. Daily/weekly quota exhaustion becomes
+// credential-scoped and, when auth is known, retries at the observed reset.
+func newDevinStatusErrorForAuth(code int, headers http.Header, body []byte, auth *cliproxyauth.Auth) statusErr {
 	err := statusErr{code: code, msg: string(body)}
 	if code == http.StatusTooManyRequests && headers != nil {
 		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
@@ -2477,7 +2611,9 @@ func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
 			}
 		}
 	}
-	return err
+	// An explicit Retry-After header parsed above keeps precedence inside
+	// devinQuotaScopedStatusError; signal data only fills the gap.
+	return devinQuotaScopedStatusError(err, auth, time.Now())
 }
 
 func devinAuthCredentials(auth *cliproxyauth.Auth) (apiKey string, baseURL string, deviceSeed string) {

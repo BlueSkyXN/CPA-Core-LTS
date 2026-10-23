@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,22 +20,27 @@ type execution struct {
 	done     chan struct{}
 	once     sync.Once
 	signer   *signer
+	account  *accountState
+}
+type accountState struct {
+	authID    string
+	authIndex string
+	config    *config
+	signer    *signer
+	active    int
+	retiring  bool
 }
 type pluginRuntime struct {
 	mu         sync.Mutex
 	caller     hostCaller
 	accepting  bool
 	active     map[string]*execution
-	config     *config
-	authOwner  string
-	authIndex  string
-	retiring   bool
-	signer     *signer
+	accounts   map[string]*accountState
 	management managementConfig
 }
 
 func newRuntime(c hostCaller) *pluginRuntime {
-	return &pluginRuntime{caller: c, accepting: true, active: map[string]*execution{}}
+	return &pluginRuntime{caller: c, accepting: true, active: map[string]*execution{}, accounts: map[string]*accountState{}}
 }
 func (r *pluginRuntime) loggingAcknowledgedLocked() error {
 	if r.management.HostLoggingDisabled == nil || !*r.management.HostLoggingDisabled {
@@ -43,11 +49,14 @@ func (r *pluginRuntime) loggingAcknowledgedLocked() error {
 	return nil
 }
 func (r *pluginRuntime) configuration(raw []byte, authID string) (*config, error) {
+	return r.configurationForAuth(raw, authID, "")
+}
+func (r *pluginRuntime) configurationForAuth(raw []byte, authID, authIndex string) (*config, error) {
 	a, err := parseAuth(raw)
 	if err != nil {
 		return nil, err
 	}
-	authID = strings.TrimSpace(authID)
+	authID, authIndex = strings.TrimSpace(authID), strings.TrimSpace(authIndex)
 	if authID == "" {
 		return nil, problem(400, "invalid_auth", "Host account identity is required")
 	}
@@ -56,30 +65,46 @@ func (r *pluginRuntime) configuration(raw []byte, authID string) (*config, error
 	if err := r.loggingAcknowledgedLocked(); err != nil {
 		return nil, err
 	}
-	if !r.accepting || r.retiring {
+	account := r.accounts[authID]
+	if !r.accepting || account != nil && account.retiring {
 		return nil, problem(503, "unavailable", "Plugin account is stopping")
 	}
-	if r.authOwner != "" && r.authOwner != authID {
-		return nil, problem(409, "single_account_only", "This plugin instance supports one configured account")
-	}
-	if r.config != nil && r.config.APIKey == a.APIKey && r.config.DeviceID == a.DeviceID {
-		return r.config, nil
-	}
-	if len(r.active) > 0 {
-		return nil, problem(409, "busy", "Finish or cancel requests before replacing account credentials")
+	sameCredentials := account != nil && account.config != nil && account.config.APIKey == a.APIKey && account.config.DeviceID == a.DeviceID
+	if account != nil {
+		if authIndex != "" && account.authIndex != "" && authIndex != account.authIndex {
+			return nil, problem(409, "config_changed", "Host account identity changed")
+		}
+		if sameCredentials && slices.Equal(account.config.ExtraModels, a.ExtraModels) {
+			if authIndex != "" {
+				account.authIndex = authIndex
+			}
+			return account.config, nil
+		}
+		if !sameCredentials && account.active > 0 {
+			return nil, problem(409, "busy", "Finish or cancel this account's requests before replacing its credentials")
+		}
 	}
 	c := defaultConfig()
 	if err = r.management.apply(c); err != nil {
 		return nil, err
 	}
+	c.applyExtraModels(a.ExtraModels)
 	c.APIKey, c.DeviceID = a.APIKey, a.DeviceID
 	c.AccountScope = authID
-	if r.signer != nil {
-		r.signer.close()
+	if account == nil {
+		account = &accountState{authID: authID}
+		r.accounts[authID] = account
 	}
-	r.authOwner = authID
-	r.config = c
-	r.signer = &signer{apiKey: c.APIKey, endpoint: c.Endpoint}
+	if !sameCredentials && account.signer != nil {
+		account.signer.close()
+	}
+	if authIndex != "" {
+		account.authIndex = authIndex
+	}
+	account.config = c
+	if !sameCredentials {
+		account.signer = &signer{apiKey: c.APIKey, endpoint: c.Endpoint}
+	}
 	return c, nil
 }
 func (r *pluginRuntime) admit(req executorRequest, c *config) (*execution, error) {
@@ -88,31 +113,36 @@ func (r *pluginRuntime) admit(req executorRequest, c *config) (*execution, error
 	if err := r.loggingAcknowledgedLocked(); err != nil {
 		return nil, err
 	}
-	if !r.accepting || r.retiring {
-		return nil, problem(503, "unavailable", "Plugin is stopping")
+	req.AuthID, req.AuthIndex = strings.TrimSpace(req.AuthID), strings.TrimSpace(req.AuthIndex)
+	account := r.accounts[req.AuthID]
+	if !r.accepting || account != nil && account.retiring {
+		return nil, problem(503, "unavailable", "Plugin account is stopping")
 	}
 	// 校验与 admission 之间可能发生重配置，旧快照不能配合新签名器执行。
-	if r.config != c || r.signer == nil {
+	if account == nil || c == nil || account.config != c || account.signer == nil {
 		return nil, problem(409, "config_changed", "Configuration changed before admission; submit again")
 	}
-	if len(r.active) >= c.MaxInflight {
-		return nil, problem(429, "rate_limit_error", "Local concurrency limit reached")
+	if req.AuthIndex != "" && account.authIndex != "" && req.AuthIndex != account.authIndex {
+		return nil, problem(409, "config_changed", "Host account identity changed")
+	}
+	if account.active >= c.MaxInflight {
+		return nil, problem(429, "rate_limit_error", "This account's local concurrency limit was reached")
 	}
 	if req.RequestID == "" || req.CallbackID == "" {
 		return nil, problem(400, "invalid_request", "Host execution context is required")
 	}
-	if req.AuthID == "" || r.authOwner != strings.TrimSpace(req.AuthID) {
-		return nil, problem(409, "single_account_only", "Only one auth record is supported")
-	}
-	r.authIndex = req.AuthIndex
 	for _, e := range r.active {
-		if e.req.RequestID == req.RequestID && e.req.AuthID == req.AuthID {
+		if e.req.RequestID == req.RequestID && e.account == account {
 			return nil, problem(409, "duplicate_execution", "Request is already active")
 		}
 	}
+	if req.AuthIndex != "" {
+		account.authIndex = req.AuthIndex
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &execution{req: req, id: uuid(), ctx: ctx, cancel: cancel, done: make(chan struct{}), signer: r.signer}
+	e := &execution{req: req, id: uuid(), ctx: ctx, cancel: cancel, done: make(chan struct{}), signer: account.signer, account: account}
 	r.active[e.id] = e
+	account.active++
 	return e, nil
 }
 func (r *pluginRuntime) closeStream(id string) {
@@ -149,39 +179,60 @@ func (r *pluginRuntime) bind(e *execution, id string) error {
 	e.mu.Unlock()
 	return nil
 }
-func (r *pluginRuntime) clearAccountLocked() {
-	if r.signer != nil {
-		r.signer.close()
+func (r *pluginRuntime) clearAccountLocked(account *accountState) {
+	if account.signer != nil {
+		account.signer.close()
 	}
-	r.config, r.signer = nil, nil
-	r.authOwner, r.authIndex = "", ""
-	r.retiring = false
+	account.config, account.signer = nil, nil
+	if r.accounts[account.authID] == account {
+		delete(r.accounts, account.authID)
+	}
 }
 func (r *pluginRuntime) finish(e *execution) {
 	e.once.Do(func() {
 		r.cancelOne(e)
 		r.mu.Lock()
 		delete(r.active, e.id)
-		if r.retiring && len(r.active) == 0 {
-			r.clearAccountLocked()
+		account := e.account
+		account.active--
+		if account.retiring && account.active == 0 {
+			r.clearAccountLocked(account)
 		}
 		r.mu.Unlock()
 		close(e.done)
 	})
 }
+func accountMatches(account *accountState, q cancelRequest) bool {
+	if q.Provider != "" && q.Provider != provider {
+		return false
+	}
+	if q.Scope == "provider" {
+		return true
+	}
+	if q.Scope != "auth" || q.AuthID == "" && q.AuthIndex == "" {
+		return false
+	}
+	if q.AuthID != "" && q.AuthID != account.authID {
+		return false
+	}
+	// Model discovery supplies AuthID but no AuthIndex; deletion must also work before first admission.
+	return q.AuthIndex == "" || q.AuthIndex == account.authIndex || account.authIndex == "" && q.AuthID == account.authID
+}
 func (r *pluginRuntime) closeAccount(q cancelRequest) {
+	q.AuthID, q.AuthIndex = strings.TrimSpace(q.AuthID), strings.TrimSpace(q.AuthIndex)
 	r.mu.Lock()
-	owned := (q.Provider == "" || q.Provider == provider) && (q.Scope == "provider" ||
-		(q.AuthID != "" && q.AuthID == r.authOwner) ||
-		(q.AuthID == "" && q.AuthIndex != "" && q.AuthIndex == r.authIndex))
-	var pending []*execution
-	if owned {
-		r.retiring = true
-		for _, e := range r.active {
-			pending = append(pending, e)
+	for _, account := range r.accounts {
+		if accountMatches(account, q) {
+			account.retiring = true
+			if account.active == 0 {
+				r.clearAccountLocked(account)
+			}
 		}
-		if len(pending) == 0 {
-			r.clearAccountLocked()
+	}
+	var pending []*execution
+	for _, e := range r.active {
+		if e.account.retiring && accountMatches(e.account, q) {
+			pending = append(pending, e)
 		}
 	}
 	r.mu.Unlock()
@@ -209,21 +260,22 @@ func (r *pluginRuntime) cancelMatching(q cancelRequest) {
 func (r *pluginRuntime) stop() {
 	r.mu.Lock()
 	r.accepting = false
-	r.retiring = true
+	for _, account := range r.accounts {
+		account.retiring = true
+		if account.signer != nil {
+			account.signer.close()
+		}
+		if account.active == 0 {
+			r.clearAccountLocked(account)
+		}
+	}
 	var pending []*execution
 	for _, e := range r.active {
 		pending = append(pending, e)
 	}
-	s := r.signer
-	if len(pending) == 0 {
-		r.clearAccountLocked()
-	}
 	r.mu.Unlock()
 	for _, e := range pending {
 		r.cancelOne(e)
-	}
-	if s != nil {
-		s.close()
 	}
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
@@ -240,7 +292,7 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	if req.Format != "" && req.Format != "claude" {
 		return nil, problem(400, "unsupported_format", "Expected host-translated Anthropic Messages")
 	}
-	c, err := r.configuration(req.StorageJSON, req.AuthID)
+	c, err := r.configurationForAuth(req.StorageJSON, req.AuthID, req.AuthIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -292,11 +344,7 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 		return nil, err
 	}
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
-		status := upstream.StatusCode
-		if status < 400 || status > 599 {
-			status = 502
-		}
-		return nil, problem(status, "upstream_error", "Upstream rejected the request")
+		return nil, r.rejectedRequest(e, upstream, "messages", "Upstream rejected the request")
 	}
 	if stream {
 		if !strings.Contains(strings.ToLower(upstream.Headers.Get("Content-Type")), "text/event-stream") {
@@ -308,7 +356,6 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 				_, err := r.caller.Call("host.stream.emit", map[string]any{"stream_id": req.StreamID, "payload": chunk})
 				return err
 			})
-			r.finish(e)
 			result := map[string]any{"stream_id": req.StreamID}
 			if err != nil {
 				safe := safeError(err)
@@ -316,7 +363,14 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 				result["error_code"] = rpcErrorCode(safe)
 				result["http_status"] = safe.Status
 				result["retryable"] = false
+				if safe.FailureReason != "" {
+					result["failure_reason"] = safe.FailureReason
+				}
+				if safe.Code == "upstream_error" {
+					r.logUpstreamFailure(e, "sse_error", upstream.StatusCode, upstream.Headers, safe)
+				}
 			}
+			r.finish(e)
 			_, _ = r.caller.Call("host.stream.close", result)
 		}()
 		return map[string]any{"headers": http.Header{"Content-Type": []string{"text/event-stream"}}}, nil
@@ -331,6 +385,69 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	}
 	if _, ok := value["content"].([]any); !ok {
 		return nil, problem(502, "invalid_response", "Invalid upstream content")
+	}
+	return map[string]any{"Payload": data, "Headers": http.Header{"Content-Type": []string{"application/json"}}}, nil
+}
+func (r *pluginRuntime) countTokens(req executorRequest) (any, error) {
+	if req.Format != "" && req.Format != "claude" {
+		return nil, problem(400, "unsupported_format", "Expected host-translated Anthropic Messages")
+	}
+	c, err := r.configurationForAuth(req.StorageJSON, req.AuthID, req.AuthIndex)
+	if err != nil {
+		return nil, err
+	}
+	e, err := r.admit(req, c)
+	if err != nil {
+		return nil, err
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			r.finish(e)
+		}
+	}()
+	endpoint := countTokensEndpoint(c.Endpoint)
+	if endpoint == "" {
+		return nil, problem(400, "invalid_config", "Count endpoint cannot be derived from the configured upstream")
+	}
+	session := sessionID(c.AccountScope, req.CallerScope, req.WorkspaceIdentity, req.ExecutionSessionID)
+	body, err := transformCountTokenRequest(req, c, session)
+	if err != nil {
+		return nil, err
+	}
+	signed, err := e.signer.headers(r, e, session)
+	if err != nil {
+		return nil, err
+	}
+	headers := modelHeaders(c, req.Headers)
+	for k, v := range signed {
+		headers[k] = v
+	}
+	headers.Set("X-Request-Id", e.id)
+	if err = e.ctx.Err(); err != nil {
+		return nil, err
+	}
+	raw, err := r.caller.Call("host.http.do_stream", httpRequest{CallbackID: req.CallbackID, Method: "POST", URL: endpoint, Headers: headers, Body: encode(body), DisableRedirects: true})
+	if err != nil {
+		return nil, problem(502, "connection_lifecycle", "Upstream connection failed")
+	}
+	var upstream httpStream
+	if json.Unmarshal(raw, &upstream) != nil || upstream.StreamID == "" {
+		return nil, problem(502, "invalid_response", "Invalid host stream response")
+	}
+	if err = r.bind(e, upstream.StreamID); err != nil {
+		return nil, err
+	}
+	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+		return nil, r.rejectedRequest(e, upstream, "count_tokens", "Upstream rejected the token count request")
+	}
+	data, err := r.readAll(e, upstream.StreamID, maxBody)
+	if err != nil {
+		return nil, err
+	}
+	var value map[string]any
+	if json.Unmarshal(data, &value) != nil || value["input_tokens"] == nil {
+		return nil, problem(502, "invalid_response", "Invalid upstream token count")
 	}
 	return map[string]any{"Payload": data, "Headers": http.Header{"Content-Type": []string{"application/json"}}}, nil
 }
@@ -368,7 +485,7 @@ func (r *pluginRuntime) readAll(e *execution, id string, limit int) ([]byte, err
 	}
 }
 func (r *pluginRuntime) consume(e *execution, id string, emit func([]byte) error) error {
-	p := sseParser{emit: emit}
+	p := sseParser{emit: emit, source: diagnosticSource(e.signer.endpoint)}
 	for {
 		c, err := r.readChunk(e, id)
 		if err != nil {
@@ -398,8 +515,8 @@ func modelList(c *config) []any {
 		if _, known := builtinModelLimits(m); known {
 			model["SupportedParameters"] = append(parameters, "reasoning_effort", "thinking")
 			model["Thinking"] = map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}
-			// Only probe-verified built-in IDs declare native search support;
-			// custom IDs stay unknown instead of inheriting the capability.
+			// 已知 GLM ID（包括高速变体）复用内置模板的搜索能力；
+			// 自定义 ID 保持未知，不按名称前缀继承能力。
 			// WebSearchReplay is the replay-protocol discriminator the host
 			// checks separately from search capability; the literal matches
 			// registry.NativeWebSearchReplayBigModel ("bigmodel").
@@ -502,6 +619,12 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) (any, error) {
 			return nil, problem(400, "invalid_request", "Stream method mismatch")
 		}
 		return r.execute(req)
+	case "executor.count_tokens":
+		var req executorRequest
+		if err := decode(raw, &req); err != nil {
+			return nil, err
+		}
+		return r.countTokens(req)
 	case "executor.cancel", "executor.close_session":
 		var q cancelRequest
 		if err := decode(raw, &q); err != nil {

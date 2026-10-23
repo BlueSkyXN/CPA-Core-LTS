@@ -40,11 +40,12 @@ type streamBridgeEmit struct {
 }
 
 type streamBridgeClose struct {
-	errorMessage string
-	errorCode    string
-	retryable    bool
-	httpStatus   int
-	accepted     chan struct{}
+	errorMessage  string
+	errorCode     string
+	retryable     bool
+	httpStatus    int
+	failureReason string
+	accepted      chan struct{}
 }
 
 type rpcStreamEmitRequest struct {
@@ -54,12 +55,24 @@ type rpcStreamEmitRequest struct {
 }
 
 type rpcStreamCloseRequest struct {
-	StreamID   string `json:"stream_id"`
-	Error      string `json:"error,omitempty"`
-	ErrorCode  string `json:"error_code,omitempty"`
-	Retryable  bool   `json:"retryable,omitempty"`
-	HTTPStatus int    `json:"http_status,omitempty"`
+	StreamID      string `json:"stream_id"`
+	Error         string `json:"error,omitempty"`
+	ErrorCode     string `json:"error_code,omitempty"`
+	Retryable     bool   `json:"retryable,omitempty"`
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
 }
+
+type streamFailureDiagnostic struct {
+	cause  *coreauth.Error
+	reason string
+}
+
+func (e *streamFailureDiagnostic) Error() string         { return e.cause.Error() }
+func (e *streamFailureDiagnostic) Unwrap() error         { return e.cause }
+func (e *streamFailureDiagnostic) StatusCode() int       { return e.cause.StatusCode() }
+func (e *streamFailureDiagnostic) IsRequestScoped() bool { return e.cause.IsRequestScoped() }
+func (e *streamFailureDiagnostic) FailureReason() string { return e.reason }
 
 func newStreamBridge() *streamBridge {
 	return &streamBridge{streams: make(map[string]*streamBridgeStream)}
@@ -107,9 +120,13 @@ func (s *streamBridgeStream) run() {
 			if request.errorMessage != "" {
 				errClose := error(fmt.Errorf("%s", request.errorMessage))
 				if request.errorCode != "" {
-					errClose = &coreauth.Error{
+					cause := &coreauth.Error{
 						Code: request.errorCode, Message: request.errorMessage,
 						Retryable: request.retryable, HTTPStatus: request.httpStatus,
+					}
+					errClose = cause
+					if request.failureReason != "" {
+						errClose = &streamFailureDiagnostic{cause: cause, reason: request.failureReason}
 					}
 				}
 				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: errClose})
@@ -176,19 +193,20 @@ func (s *streamBridgeStream) emit(ctx context.Context, chunk pluginapi.ExecutorS
 }
 
 func (s *streamBridgeStream) close(errorMessage string) {
-	s.closeStructured(errorMessage, "", false, 0)
+	s.closeStructured(errorMessage, "", false, 0, "")
 }
 
-func (s *streamBridgeStream) closeStructured(errorMessage, errorCode string, retryable bool, httpStatus int) {
+func (s *streamBridgeStream) closeStructured(errorMessage, errorCode string, retryable bool, httpStatus int, failureReason string) {
 	if s == nil {
 		return
 	}
 	request := streamBridgeClose{
-		errorMessage: errorMessage,
-		errorCode:    errorCode,
-		retryable:    retryable,
-		httpStatus:   httpStatus,
-		accepted:     make(chan struct{}),
+		errorMessage:  errorMessage,
+		errorCode:     errorCode,
+		retryable:     retryable,
+		httpStatus:    httpStatus,
+		failureReason: failureReason,
+		accepted:      make(chan struct{}),
 	}
 	select {
 	case <-s.finished:
@@ -254,6 +272,10 @@ func (b *streamBridge) close(id string, errorMessage string) {
 }
 
 func (b *streamBridge) closeStructured(id, errorMessage, errorCode string, retryable bool, httpStatus int) {
+	b.closeWithDiagnostic(id, errorMessage, errorCode, retryable, httpStatus, "")
+}
+
+func (b *streamBridge) closeWithDiagnostic(id, errorMessage, errorCode string, retryable bool, httpStatus int, failureReason string) {
 	if b == nil || id == "" {
 		return
 	}
@@ -264,5 +286,5 @@ func (b *streamBridge) closeStructured(id, errorMessage, errorCode string, retry
 	if stream == nil {
 		return
 	}
-	stream.closeStructured(errorMessage, errorCode, retryable, httpStatus)
+	stream.closeStructured(errorMessage, errorCode, retryable, httpStatus, failureReason)
 }

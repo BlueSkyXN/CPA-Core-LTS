@@ -48,6 +48,32 @@ func TestBuildConfigChangeDetailsClientCodexOptimizeMultiAgentV2(t *testing.T) {
 	}
 }
 
+func TestBuildConfigChangeDetailsClientCodexWebSearchResultCache(t *testing.T) {
+	oldCfg, newCfg := &config.Config{}, &config.Config{}
+	newCfg.Client.Codex.WebSearchResultCache = config.CodexWebSearchResultCacheConfig{
+		Enabled: true,
+		TTL:     "30m",
+		Limit:   256,
+	}
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	want := []string{
+		"client.codex.web-search-result-cache.enabled: false -> true",
+		"client.codex.web-search-result-cache.ttl:  -> 30m",
+		"client.codex.web-search-result-cache.limit: 0 -> 256",
+	}
+	if len(changes) != len(want) {
+		t.Fatalf("changes = %v, want %v", changes, want)
+	}
+	for i := range want {
+		if changes[i] != want[i] {
+			t.Fatalf("changes[%d] = %q, want %q", i, changes[i], want[i])
+		}
+	}
+	if unchanged := BuildConfigChangeDetails(newCfg, newCfg); len(unchanged) != 0 {
+		t.Fatalf("unchanged web-search-result-cache produced changes: %v", unchanged)
+	}
+}
+
 func TestBuildConfigChangeDetails(t *testing.T) {
 	oldCfg := &config.Config{
 		SDKConfig:                       config.SDKConfig{APIRequestBodyMaxBytes: 16 << 20},
@@ -232,6 +258,35 @@ func TestBuildConfigChangeDetailsCodexClientMetadata(t *testing.T) {
 	details := BuildConfigChangeDetails(oldCfg, newCfg)
 	expectContains(t, details, "codex.client-metadata.mode: repair -> strict")
 	expectContains(t, details, "codex.client-metadata.workspace-policy: passthrough -> drop")
+}
+
+func TestBuildConfigChangeDetailsCodexOutbound(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{Codex: config.CodexConfig{Outbound: config.CodexOutboundConfig{
+		Transport:               config.CodexOutboundTransportAuto,
+		WebsocketThresholdBytes: 512 * 1024,
+	}}}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "codex.outbound.transport: follow -> auto")
+	expectContains(t, details, "codex.outbound.websocket-threshold-bytes: 786432 -> 524288")
+
+	strategy := &config.Config{Codex: config.CodexConfig{Outbound: config.CodexOutboundConfig{RequestCompression: config.CodexRequestCompressionNone, AcceptEncoding: config.CodexAcceptEncodingLegacy}}}
+	strategyDetails := BuildConfigChangeDetails(oldCfg, strategy)
+	expectContains(t, strategyDetails, "codex.outbound.request-compression: auto -> none")
+	expectContains(t, strategyDetails, "codex.outbound.accept-encoding: official -> legacy")
+	explicitDefault := &config.Config{Codex: config.CodexConfig{Outbound: config.CodexOutboundConfig{AcceptEncoding: config.CodexAcceptEncodingOfficial}}}
+	if details := BuildConfigChangeDetails(oldCfg, explicitDefault); len(details) != 0 {
+		t.Fatalf("spelling out the default accept-encoding produced changes: %v", details)
+	}
+
+	keyOld := &config.Config{CodexKey: []config.CodexKey{{APIKey: "k", BaseURL: "https://relay.example.com/v1"}}}
+	keyNew := &config.Config{CodexKey: []config.CodexKey{{APIKey: "k", BaseURL: "https://relay.example.com/v1", RequestCompression: config.CodexRequestCompressionZstd}}}
+	expectContains(t, BuildConfigChangeDetails(keyOld, keyNew), "codex[0].request-compression: none -> zstd")
+
+	if unchanged := BuildConfigChangeDetails(newCfg, newCfg); len(unchanged) != 0 {
+		t.Fatalf("identical outbound config produced changes: %v", unchanged)
+	}
 }
 
 func TestBuildConfigChangeDetailsCodexDesktopToolOverlay(t *testing.T) {
@@ -685,7 +740,8 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 				IdleConnTimeout: "10s",
 			},
 		},
-		XAI: config.XAIConfig{InjectXSearch: true},
+		XAI:    config.XAIConfig{InjectXSearch: true},
+		Claude: config.ClaudeConfig{ToolSearch: true},
 		ClaudeKey: []config.ClaudeKey{
 			{APIKey: "c1", BaseURL: "http://new", ProxyURL: "http://p", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"a"}},
 			{APIKey: "c2"},
@@ -742,6 +798,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "antigravity.connection-pool.enabled: false -> true")
 	expectContains(t, details, `antigravity.connection-pool.idle-conn-timeout: "30s" -> "10s"`)
 	expectContains(t, details, "xai.inject-x-search: false -> true")
+	expectContains(t, details, "claude.tool-search: false -> true")
 	expectContains(t, details, "api-keys count: 1 -> 2")
 	expectContains(t, details, "claude-api-key count: 1 -> 2")
 	expectContains(t, details, "codex-api-key count: 1 -> 2")
@@ -1022,4 +1079,10 @@ func TestBuildConfigChangeDetailsCodexCacheAffinity(t *testing.T) {
 	newCfg := &config.Config{Codex: config.CodexConfig{CacheAffinity: config.CodexCacheAffinityConfig{Strategy: "legacy"}}}
 	details := BuildConfigChangeDetails(oldCfg, newCfg)
 	expectContains(t, details, "codex.cache-affinity.strategy: client-aware -> legacy")
+}
+
+func TestBuildConfigChangeDetails_ClaudeNativeToolSearch(t *testing.T) {
+	oldCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com"}}}
+	newCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com", NativeToolSearch: true}}}
+	expectContains(t, BuildConfigChangeDetails(oldCfg, newCfg), "claude[0].native-tool-search: false -> true")
 }

@@ -283,7 +283,7 @@ func (b *Builder) Build() (*Service, error) {
 	}
 
 	service := &Service{
-		cfg:                 b.cfg,
+		cfg:                 b.cfg.CloneForRuntime(),
 		configPath:          b.configPath,
 		tokenProvider:       tokenProvider,
 		apiKeyProvider:      apiKeyProvider,
@@ -294,6 +294,7 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager:         coreManager,
 		cooldownStateStore:  cooldownStateStore,
 		pluginHost:          pluginHost,
+		accountCatalogs:     newAccountCatalogStore(),
 		discoveryManager:    newDiscoveryAdvertiserManager(),
 		appliedRoutingState: appliedRoutingState,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
@@ -304,6 +305,7 @@ func (b *Builder) Build() (*Service, error) {
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
 		api.WithAuthModelsRefreshHook(service.refreshAuthFileModels),
+		api.WithAuthModelPolicyPreviewHook(service.authModelPolicyPreview),
 		api.WithPluginHost(pluginHost),
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()
@@ -328,8 +330,8 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 			ID:     auth.ID,
 			Auth:   auth,
 		}
-		if s.watcher != nil {
-			_, rev := s.watcher.DispatchPersistedAuthUpdateWithRevision(&update)
+		if watcher := s.currentWatcher(); watcher != nil {
+			_, rev := watcher.DispatchPersistedAuthUpdateWithRevision(&update)
 			if rev > 0 {
 				update.SetRevision(rev)
 			}

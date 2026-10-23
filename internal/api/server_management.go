@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -26,7 +27,10 @@ func (s *Server) registerManagementRoutes() {
 	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	// SkipSuccessfulGetAccessLog keeps management read polling (config,
+	// auth-files, usage queries) out of the console access log; writes and
+	// non-2xx reads stay visible.
+	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), logging.SkipSuccessfulGetAccessLog())
 	{
 		mgmt.GET("/usage", usageCompression(), s.mgmt.GetUsageStatistics)
 		mgmt.GET("/usage/export", usageCompression(), s.mgmt.ExportUsageStatistics)
@@ -34,7 +38,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage/query/capabilities", usageCompression(), s.mgmt.GetUsageQueryCapabilities)
 		mgmt.POST("/usage/query/summary", usageCompression(), s.mgmt.QueryUsageSummary)
 		mgmt.POST("/usage/query/details", usageCompression(), s.mgmt.QueryUsageDetails)
+		mgmt.POST("/usage/query/export", usageCompression(), s.mgmt.QueryUsageExport)
 		mgmt.POST("/usage/query/pricing", usageCompression(), s.mgmt.QueryUsagePricing)
+		mgmt.POST("/usage/query/analytics", usageCompression(), s.mgmt.QueryUsageAnalytics)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/flow-control", s.mgmt.GetFlowControl)
@@ -85,6 +91,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
+		mgmt.POST("/proxy-url/test", s.mgmt.TestProxyURL)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
@@ -216,9 +223,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/oauth-request-scoped-errors", s.mgmt.PatchOAuthRequestScopedErrors)
 		mgmt.DELETE("/oauth-request-scoped-errors", s.mgmt.DeleteOAuthRequestScopedErrors)
 
+		mgmt.GET("/oauth-model-policy", s.mgmt.GetOAuthModelPolicy)
+		mgmt.PUT("/oauth-model-policy", s.mgmt.PutOAuthModelPolicy)
+		mgmt.PATCH("/oauth-model-policy", s.mgmt.PatchOAuthModelPolicy)
+		mgmt.DELETE("/oauth-model-policy", s.mgmt.DeleteOAuthModelPolicy)
+
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.POST("/auth-files/models/refresh", s.mgmt.RefreshAuthFileModels)
+		mgmt.GET("/auth-files/models/policy-preview", s.mgmt.GetAuthFileModelPolicyPreview)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
@@ -251,11 +264,12 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) managementAvailable(c *gin.Context) bool {
-	if s == nil || s.cfg == nil {
+	cfg := s.getConfig()
+	if s == nil || cfg == nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return false
 	}
-	if s.cfg.Home.Enabled {
+	if cfg.Home.Enabled {
 		c.AbortWithStatus(http.StatusNotFound)
 		return false
 	}
@@ -336,7 +350,8 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 		}
 		return
 	}
-	if s.cfg == nil || s.cfg.Home.Enabled || s.pluginHost == nil {
+	cfg := s.getConfig()
+	if cfg == nil || cfg.Home.Enabled || s.pluginHost == nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -348,7 +363,7 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	cfg := s.cfg
+	cfg := s.getConfig()
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return

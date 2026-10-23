@@ -40,8 +40,14 @@ typedef int (*cliproxy_plugin_init_fn)(const cliproxy_host_api*, cliproxy_plugin
 extern int cliproxyHostCall(void*, const char*, const uint8_t*, size_t, cliproxy_buffer*);
 extern void cliproxyHostFree(void*, size_t);
 
-static void* cliproxy_dlopen(const char* path) {
-	return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+static void* cliproxy_dlopen(const char* path, int keep_mapped) {
+	int flags = RTLD_NOW | RTLD_LOCAL;
+#ifdef __APPLE__
+	if (keep_mapped) {
+		flags |= RTLD_NODELETE;
+	}
+#endif
+	return dlopen(path, flags);
 }
 
 static void* cliproxy_dlsym(void* handle, const char* name) {
@@ -84,7 +90,9 @@ import "C"
 
 import (
 	"context"
+	"debug/buildinfo"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -98,13 +106,15 @@ var (
 type dynamicLibraryLoader struct{}
 
 type dynamicLibraryClient struct {
-	handle   unsafe.Pointer
-	hostAPI  *C.cliproxy_host_api
-	hostCtx  unsafe.Pointer
-	api      C.cliproxy_plugin_api
-	host     *Host
-	pluginID string
-	instance *hostCallbackInstance
+	handle       unsafe.Pointer
+	tempPath     string
+	keepResident bool
+	hostAPI      *C.cliproxy_host_api
+	hostCtx      unsafe.Pointer
+	api          C.cliproxy_plugin_api
+	host         *Host
+	pluginID     string
+	instance     *hostCallbackInstance
 }
 
 func defaultPluginLoader() pluginLoader {
@@ -112,31 +122,41 @@ func defaultPluginLoader() pluginLoader {
 }
 
 func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
-	cPath := C.CString(file.Path)
+	loadPath, errShadow := shadowCopyPlugin(file)
+	if errShadow != nil {
+		return nil, errShadow
+	}
+	cPath := C.CString(loadPath)
 	defer C.free(unsafe.Pointer(cPath))
 
-	handle := C.cliproxy_dlopen(cPath)
+	var keepMapped C.int
+	if keepGoPluginMapped(file.Path) {
+		keepMapped = 1
+	}
+	handle := C.cliproxy_dlopen(cPath, keepMapped)
 	if handle == nil {
+		removeShadowPlugin(loadPath)
 		return nil, fmt.Errorf("dlopen %s: %s", file.Path, dlerrorString())
 	}
+	// From here on the image must never be unloaded: dlopen may already
+	// have started the plugin runtime, and a Go c-shared runtime cannot be
+	// removed from the host process safely. Failure paths below only detach
+	// the client logically and deliberately leak the mapped image together
+	// with any host callback state the runtime may reference.
 
 	cSymbol := C.CString("cliproxy_plugin_init")
 	initSymbol := C.cliproxy_dlsym(handle, cSymbol)
 	C.free(unsafe.Pointer(cSymbol))
 	if initSymbol == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("missing cliproxy_plugin_init: %s", dlerrorString())
 	}
 
 	hostAPI := (*C.cliproxy_host_api)(C.malloc(C.size_t(unsafe.Sizeof(C.cliproxy_host_api{}))))
 	if hostAPI == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host api")
 	}
 	hostCtx := C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
 	if hostCtx == nil {
-		C.free(unsafe.Pointer(hostAPI))
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host context")
 	}
 	id := hostCallbackID.Add(1)
@@ -147,27 +167,44 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	C.cliproxy_set_host_api(hostAPI, C.uint32_t(pluginHostABIVersion), hostCtx)
 
 	client := &dynamicLibraryClient{
-		handle:   handle,
-		hostAPI:  hostAPI,
-		hostCtx:  hostCtx,
-		host:     host,
-		pluginID: file.ID,
-		instance: instance,
+		handle:       handle,
+		tempPath:     loadPath,
+		keepResident: runtime.GOOS != "darwin" || keepMapped != 0,
+		hostAPI:      hostAPI,
+		hostCtx:      hostCtx,
+		host:         host,
+		pluginID:     file.ID,
+		instance:     instance,
 	}
 	rc := C.cliproxy_call_init(initSymbol, hostAPI, &client.api)
 	if rc != 0 {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("cliproxy_plugin_init returned %d", int(rc))
 	}
 	if uint32(client.api.abi_version) != pluginHostABIVersion {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("plugin ABI version %d is not supported", uint32(client.api.abi_version))
 	}
 	if client.api.call == nil || client.api.free_buffer == nil {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("plugin function table is incomplete")
 	}
 	return client, nil
+}
+
+// keepGoPluginMapped reports whether the library embeds a live Go runtime.
+// Go's ELF linker marks c-shared libraries NODELETE for the same reason:
+// plugin shutdown cannot stop the runtime's threads, so unmapping the image
+// can hang or crash the host after dlclose. Any binary carrying Go build
+// info gets the pinned lifetime — including Go archives linked into a C or
+// Rust dynamic library — because the miss direction (unmapping a live Go
+// runtime) is far more costly than over-pinning a plain native library.
+func keepGoPluginMapped(path string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	_, err := buildinfo.ReadFile(path)
+	return err == nil
 }
 
 func (c *dynamicLibraryClient) callbackInstance() *hostCallbackInstance {
@@ -215,6 +252,22 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 }
 
 func (c *dynamicLibraryClient) Shutdown() {
+	c.close()
+}
+
+func (c *dynamicLibraryClient) closeAfterOpenFailure() {
+	c.close()
+}
+
+// close detaches the client logically without unloading the plugin image.
+// Go plugin libraries are not safe to hot-unload from the host process: the
+// plugin runtime, its threads and its signal handlers stay resident after
+// dlclose, so a later load in the same process forwards signals into
+// unmapped memory and spins. This also applies when initialization failed,
+// because dlopen may already have started the runtime. The plugin was
+// loaded from a shadow copy, so keeping the image mapped does not block
+// deleting or replacing the source artifact.
+func (c *dynamicLibraryClient) close() {
 	if c == nil {
 		return
 	}
@@ -226,19 +279,32 @@ func (c *dynamicLibraryClient) Shutdown() {
 		C.cliproxy_shutdown_plugin(c.api.shutdown)
 		c.api.shutdown = nil
 	}
+	c.api.call = nil
+	c.api.free_buffer = nil
 	if c.hostCtx != nil {
+		// Drop the callback registration so repeated reloads do not pin the
+		// host forever. The C host context and host API block themselves are
+		// deliberately leaked: the resident plugin runtime may still pass
+		// the context back into cliproxyHostCall, which reads the callback
+		// id from it before failing the lookup.
 		id := uintptr(*(*C.uintptr_t)(c.hostCtx))
 		hostCallbackEntries.Delete(id)
-		C.free(c.hostCtx)
-		c.hostCtx = nil
 	}
-	if c.hostAPI != nil {
-		C.free(unsafe.Pointer(c.hostAPI))
-		c.hostAPI = nil
-	}
-	if c.handle != nil {
-		C.cliproxy_dlclose(c.handle)
-		c.handle = nil
+	// Pure C images on Darwin retain the LTS unload path. Go and hybrid
+	// runtimes keep their image and C callback blocks alive after detachment.
+	if !c.keepResident {
+		if c.handle != nil {
+			C.cliproxy_dlclose(c.handle)
+			c.handle = nil
+		}
+		if c.hostCtx != nil {
+			C.free(c.hostCtx)
+			c.hostCtx = nil
+		}
+		if c.hostAPI != nil {
+			C.free(unsafe.Pointer(c.hostAPI))
+			c.hostAPI = nil
+		}
 	}
 }
 

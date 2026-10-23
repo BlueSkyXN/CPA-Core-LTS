@@ -8,6 +8,8 @@ package config
 type Config struct {
 	// FlowControl is opt-in and independent of Home credential concurrency.
 	FlowControl FlowControlConfig `yaml:"flow-control,omitempty" json:"flow-control,omitempty"`
+	// Models selects optional catalog sources independently for each catalog.
+	Models ModelCatalogs `yaml:"models" json:"models"`
 
 	SDKConfig `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
@@ -15,6 +17,9 @@ type Config struct {
 	Host string `yaml:"host" json:"-"`
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
+
+	// GitHubToken is the global token for GitHub requests, taking precedence over GITHUB_TOKEN.
+	GitHubToken string `yaml:"github-token" json:"-"`
 
 	// TrustedProxies lists the IPs or CIDRs allowed to provide forwarded client IP headers.
 	// The server applies this list at startup; changing it requires a restart.
@@ -25,6 +30,10 @@ type Config struct {
 
 	// Home config is runtime-only and is populated from -home-jwt.
 	Home HomeConfig `yaml:"-" json:"-"`
+
+	// SourceHash is runtime-only: the SHA-256 of the config file bytes this config was
+	// parsed from, or empty when the config was not loaded from a file.
+	SourceHash string `yaml:"-" json:"-"`
 
 	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
 	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
@@ -176,6 +185,12 @@ type Config struct {
 
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
+
+	// OAuthModelPolicy defines per-provider allow/deny model policies applied to
+	// OAuth/file-backed auth entries. It is additive to OAuthExcludedModels: the
+	// legacy exclusions always stay in effect and are unioned with any enabled
+	// denylist here. Entries with an empty allowlist enabled exclude all models.
+	OAuthModelPolicy map[string]OAuthModelPolicyEntry `yaml:"oauth-model-policy,omitempty" json:"oauth-model-policy,omitempty"`
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:

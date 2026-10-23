@@ -20,7 +20,7 @@ func init() {
 		},
 	)
 	sdktranslator.RegisterRequestEnvelope(sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, func(_ context.Context, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
-		req.Body = convertOpenAIRequestToClaude(req.Model, req.Body, req.Stream, req.ModelInfo != nil && req.ModelInfo.IsCompat, req.ModelInfo)
+		req.Body, req.Err = convertOpenAIRequestToClaude(req.Model, req.Body, req.Stream, req.ModelInfo != nil && req.ModelInfo.IsCompat, req.ModelInfo)
 		return req
 	})
 }

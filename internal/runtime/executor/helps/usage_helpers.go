@@ -60,6 +60,8 @@ type UsageReporter struct {
 	timingEnabled         bool
 	// The effective-token fields preserve upstream's protocol-aware timing
 	// state. Canonical v3 usage records are populated only from timing above.
+	accessProvider      string
+	isNativeKey         bool
 	ttftMu              sync.RWMutex
 	ttft                time.Duration
 	firstPacketDuration time.Duration
@@ -67,6 +69,13 @@ type UsageReporter struct {
 	ttftStart           time.Time
 	ttftSet             bool
 	once                sync.Once
+
+	// Inbound size is fixed at construction; upstreamAttempt is replaced by
+	// each provider attempt so the record describes the final one.
+	clientRequestBytes    int64
+	clientRequestEncoding string
+	sizeMu                sync.Mutex
+	upstreamAttempt       *upstreamSizeAttempt
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
@@ -93,6 +102,13 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
 
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	apiKey := APIKeyFromContext(ctx)
+	accessProvider := AccessProviderFromContext(ctx)
+	isNativeKey := false
+	if nativeExplicit, ok := usage.IsNativeKeyFromContext(ctx); ok {
+		isNativeKey = nativeExplicit
+	} else if accessProvider != "" {
+		isNativeKey = usage.IsNativeAccessProvider(accessProvider)
+	}
 	alias := usage.RequestedModelAliasFromContext(ctx)
 	if alias == "" {
 		alias = model
@@ -131,6 +147,8 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		alias:           strings.TrimSpace(alias),
 		requestedAt:     time.Now(),
 		apiKey:          apiKey,
+		accessProvider:  accessProvider,
+		isNativeKey:     isNativeKey,
 		sessionID:       sessionID,
 		parentSessionID: parentSessionID,
 		source:          resolveUsageSource(auth, apiKey),
@@ -140,6 +158,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		generate:        usage.GenerateFromContext(ctx),
 		stream:          usage.StreamFromContext(ctx),
 	}
+	reporter.clientRequestBytes, reporter.clientRequestEncoding = clientRequestSizeFromContext(ctx)
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
@@ -266,12 +285,6 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 	}
 }
 
-// ObserveCodexResponseModel stores the model reported by a codex upstream event and
-// ignores payloads without one; the substitution warning is emitted at publish time.
-func (r *UsageReporter) ObserveCodexResponseModel(payload []byte) {
-	r.ObserveResponseModel(payload)
-}
-
 // SetResponseModel sets the reported model directly if valid and not already marked final.
 func (r *UsageReporter) SetResponseModel(model string) {
 	if r == nil || r.responseModelFinal.Load() {
@@ -301,8 +314,8 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
 	return r != nil && r.responseModelFinal.Load()
 }
 
-// warnModelSubstitution warns about a silent upstream model swap, throttled per
-// credential and model pair, and labels the credential by index only, never by account.
+// warnModelSubstitution warns about a silent upstream model swap, and labels the
+// credential by index only, never by account.
 func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
 	if r == nil {
 		return
@@ -318,29 +331,11 @@ func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
 	if r.model != "" && !IsModelSubstituted(r.model, served) {
 		return
 	}
-	// The throttle key uses the same normalized names as the substitution check, so
-	// aliases of one pair share a window instead of each warning on its own.
-	requested := normalizeModelName(expectedModel)
-	servedNormalized := normalizeModelName(served)
-	providerName := r.provider
+	providerName := strings.TrimSpace(r.provider)
 	if providerName == "" {
-		providerName = "codex"
-	}
-	if !codexModelSubstitutionWarns.allow(codexModelSubstitutionKey{
-		provider:  providerName,
-		authID:    r.authID,
-		requested: requested,
-		served:    servedNormalized,
-	}) {
-		return
+		providerName = "unknown"
 	}
 	LogWithRequestID(ctx).Warnf("%s executor: upstream served model %q for requested model %q (auth_index=%s)", providerName, served, r.model, r.authIndexForLog())
-}
-
-// warnCodexModelSubstitution warns about a silent upstream model swap, throttled per
-// credential and model pair, and labels the credential by index only, never by account.
-func (r *UsageReporter) warnCodexModelSubstitution(ctx context.Context) {
-	r.warnModelSubstitution(ctx)
 }
 
 // authIndexForLog labels the credential without exposing its file name or account.
@@ -387,11 +382,14 @@ func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string
 	r.publishRecord(ctx, record)
 }
 
-func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format string) {
+// SetTranslatedRequestMetadata captures usage-relevant values from the final
+// outbound payload after translation and payload defaults or overrides.
+func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format string) {
 	if r == nil {
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+	r.outboundTier = extractEffectiveServiceTier(payload)
 	r.timingMu.Lock()
 	r.timingFormat = sdktranslator.FromString(format)
 	if stream := gjson.GetBytes(payload, "stream"); stream.Type == gjson.True {
@@ -515,6 +513,33 @@ func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
 	return r.trackHTTPClient(client, false)
 }
 
+// TrackHTTPClientForDecodedResponse records transport timing and byte counts
+// before decompression. ObserveDecodedResponseBody must wrap the decoded stream
+// so compressed bytes never enter the semantic event parser.
+func (r *UsageReporter) TrackHTTPClientForDecodedResponse(client *http.Client) *http.Client {
+	tracked := r.trackHTTPClient(client, false)
+	if r == nil || tracked == nil {
+		return tracked
+	}
+	transport := tracked.Transport.(usageTTFTRoundTripper)
+	transport.decodedResponse = true
+	tracked.Transport = transport
+	return tracked
+}
+
+// ObserveDecodedResponseBody observes semantic events without counting the
+// decoded bytes again or changing the original first-body-byte timestamp.
+func (r *UsageReporter) ObserveDecodedResponseBody(body io.ReadCloser) io.ReadCloser {
+	if r == nil || body == nil {
+		return body
+	}
+	tracker := r.currentResponseTiming()
+	if tracker == nil {
+		return body
+	}
+	return &usageTTFTReadCloser{ReadCloser: body, observe: tracker.observeBytes}
+}
+
 // TrackHTTPClientRoundTripOnly records the TTFT start time upon sending the request
 // and captures first-packet arrival fallback on initial body reads, while keeping
 // effective TTFT unset. This allows protocol-aware streaming executors (like Codex SSE)
@@ -542,21 +567,27 @@ func (r *UsageReporter) trackHTTPClient(client *http.Client, packetOnly bool) *h
 }
 
 func (r *UsageReporter) ObserveResponse(resp *http.Response) {
+	r.observeResponse(resp, false, true)
+}
+
+func (r *UsageReporter) observeResponse(resp *http.Response, packetOnly, semantic bool) {
 	if r == nil || resp == nil || resp.Body == nil {
 		return
 	}
 	r.StartResponseTiming()
 	tracker := r.currentResponseTiming()
+	attempt := r.ensureUpstreamAttempt()
 	resp.Body = &usageTTFTReadCloser{
 		ReadCloser: resp.Body,
 		mark: func() {
 			if tracker != nil {
 				tracker.markTTFB(time.Now())
 			}
-			r.ObserveTokenEvent(true)
+			r.ObserveTokenEvent(!packetOnly)
 		},
 		observe: func(payload []byte) {
-			if tracker != nil {
+			attempt.responseBytes.Add(int64(len(payload)))
+			if tracker != nil && semantic {
 				tracker.observeBytes(payload)
 			}
 		},
@@ -606,25 +637,7 @@ func (r *UsageReporter) StartResponseTiming() {
 func (r *UsageReporter) StartResponseTTFT() { r.StartResponseTiming() }
 
 func (r *UsageReporter) ObserveResponsePacketOnly(resp *http.Response) {
-	if r == nil || resp == nil || resp.Body == nil {
-		return
-	}
-	r.StartResponseTiming()
-	tracker := r.currentResponseTiming()
-	resp.Body = &usageTTFTReadCloser{
-		ReadCloser: resp.Body,
-		mark: func() {
-			if tracker != nil {
-				tracker.markTTFB(time.Now())
-			}
-			r.RecordFirstPacket()
-		},
-		observe: func(payload []byte) {
-			if tracker != nil {
-				tracker.observeBytes(payload)
-			}
-		},
-	}
+	r.observeResponse(resp, true, true)
 }
 
 func (r *UsageReporter) IsTTFTSet() bool {
@@ -720,6 +733,8 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	// response.model is not evidence for the additional model, so do not copy it
 	// into a field consumers compare with this record's Model.
 	record.UpstreamModel = ""
+	// The parent stream does not measure the side model's output window.
+	record.OutputTiming = &usage.OutputTiming{Version: 1}
 	record.RequestID = uuid.NewString()
 	return record, true
 }
@@ -822,6 +837,15 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	if record.Size.Measured() {
+		internallogging.SetUpstreamRequestSize(ctx, internallogging.UpstreamRequestSize{
+			Transport:     record.Size.UpstreamTransport,
+			RequestBytes:  record.Size.UpstreamRequestBytes,
+			WireBytes:     record.Size.UpstreamRequestWireBytes,
+			Encoding:      record.Size.UpstreamRequestEncoding,
+			ResponseBytes: record.Size.UpstreamResponseBytes,
+		})
+	}
 	usage.PublishRecord(ctx, record)
 }
 
@@ -839,6 +863,22 @@ func (r *UsageReporter) TraceID() string {
 		return ""
 	}
 	return r.traceID
+}
+
+// IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
+func (r *UsageReporter) IsNativeKey() bool {
+	if r == nil {
+		return false
+	}
+	return r.isNativeKey
+}
+
+// AccessProvider identifies the client request authentication provider.
+func (r *UsageReporter) AccessProvider() string {
+	if r == nil {
+		return ""
+	}
+	return r.accessProvider
 }
 
 func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
@@ -860,8 +900,12 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Additional-model records describe a side model (for example image tool
 	// usage) that the upstream response model does not identify.
 	responseModel := ""
+	// Byte counts belong to the primary model so side-model records do not
+	// double count the same HTTP exchange.
+	var size usage.RequestSize
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		size = r.requestSizeSnapshot()
 		if detail.ResponseCyberProgram == "" {
 			detail.ResponseCyberProgram = r.snapshotResponseCyberProgram()
 		}
@@ -881,6 +925,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Source:              r.source,
 		UsageProvenance:     r.usageProvenance,
 		APIKey:              r.apiKey,
+		IsNativeKey:         r.isNativeKey,
+		AccessProvider:      r.accessProvider,
 		SessionID:           r.sessionID,
 		ParentSessionID:     r.parentSessionID,
 		AuthID:              r.authID,
@@ -906,9 +952,11 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		TTFB:                 timing.TTFB,
 		TTFT:                 timing.TTFT,
 		TTFA:                 timing.TTFA,
+		OutputTiming:         timing.OutputTiming.Clone(),
 		Failed:               failed,
 		Fail:                 fail,
 		Detail:               detail,
+		Size:                 size,
 	}
 }
 
@@ -938,12 +986,31 @@ func failFromErrors(errs ...error) usage.Failure {
 				body = string(responseBody)
 			}
 		}
+		var diagnostic interface{ FailureReason() string }
+		if errors.As(err, &diagnostic) {
+			if reason := safeUsageFailureReason(diagnostic.FailureReason()); reason != "" {
+				body = reason
+			}
+		}
 		return usage.Failure{
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
 	}
 	return usage.Failure{}
+}
+
+func safeUsageFailureReason(reason string) string {
+	if len(reason) == 0 || len(reason) > 128 {
+		return ""
+	}
+	for _, ch := range reason {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-' || ch == '.' {
+			continue
+		}
+		return ""
+	}
+	return reason
 }
 
 func (r *UsageReporter) latency() time.Duration {
@@ -966,7 +1033,7 @@ func (r *UsageReporter) timingSnapshot() ResponseTimingSnapshot {
 		// Every detail produced by the current Core is versioned, even when the
 		// transport never exposed a measurable timing event (for example a
 		// non-streaming response or an executor-side failure before dispatch).
-		return ResponseTimingSnapshot{TimingVersion: UsageTimingVersionV1}
+		return ResponseTimingSnapshot{TimingVersion: UsageTimingVersionV1, OutputTiming: &usage.OutputTiming{Version: 1}}
 	}
 	return tracker.snapshot()
 }
@@ -989,23 +1056,21 @@ func (r *UsageReporter) ttftDuration() time.Duration {
 }
 
 type usageTTFTRoundTripper struct {
-	base       http.RoundTripper
-	reporter   *UsageReporter
-	packetOnly bool
+	base            http.RoundTripper
+	reporter        *UsageReporter
+	packetOnly      bool
+	decodedResponse bool
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.BeginResponseTiming()
+	t.reporter.beginUpstreamHTTPAttempt(req)
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		return resp, errRoundTrip
 	}
-	if t.packetOnly {
-		t.reporter.ObserveResponsePacketOnly(resp)
-	} else {
-		t.reporter.ObserveResponse(resp)
-	}
+	t.reporter.observeResponse(resp, t.packetOnly, !t.decodedResponse)
 	return resp, nil
 }
 
@@ -1046,6 +1111,31 @@ func APIKeyFromContext(ctx context.Context) string {
 			return value.String()
 		default:
 			return fmt.Sprintf("%v", value)
+		}
+	}
+	return ""
+}
+
+// AccessProviderFromContext extracts the client authentication provider identifier from the context.
+func AccessProviderFromContext(ctx context.Context) string {
+	if provider := usage.AccessProviderFromContext(ctx); provider != "" {
+		return provider
+	}
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	if v, exists := ginCtx.Get("accessProvider"); exists {
+		switch value := v.(type) {
+		case string:
+			return strings.TrimSpace(value)
+		case fmt.Stringer:
+			return strings.TrimSpace(value.String())
+		default:
+			return strings.TrimSpace(fmt.Sprintf("%v", value))
 		}
 	}
 	return ""
@@ -1099,6 +1189,8 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 
 // StreamUsageBuffer keeps the latest usage detail observed in a stream.
 type StreamUsageBuffer struct {
+	claudeUsageSnapshot []byte
+
 	detail        usage.Detail
 	ok            bool
 	responseModel string
@@ -1194,9 +1286,34 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
 			}
 		}
 	}
-	if detail, ok := ParseClaudeStreamUsage(line); ok {
-		ObserveMergedStreamUsage(b, detail)
+	payload := jsonPayload(line)
+	if !gjson.ValidBytes(payload) {
+		return
 	}
+	root := gjson.ParseBytes(payload)
+	if root.Get("type").String() == "message_start" {
+		b.claudeUsageSnapshot = nil
+	}
+	usageNode := root.Get("usage")
+	if !usageNode.Exists() {
+		usageNode = root.Get("message.usage")
+	}
+	if !usageNode.IsObject() {
+		return
+	}
+	if len(b.claudeUsageSnapshot) == 0 {
+		b.claudeUsageSnapshot = []byte(`{}`)
+	}
+	// 按字段是否存在合并原始分项；显式零覆盖旧值，省略字段保留。
+	for _, path := range []string{
+		"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "speed",
+		"output_tokens_details.thinking_tokens", "output_tokens_details.reasoning_tokens", "thinking_tokens",
+	} {
+		if value := usageNode.Get(path); value.Exists() {
+			b.claudeUsageSnapshot, _ = sjson.SetRawBytes(b.claudeUsageSnapshot, path, []byte(value.Raw))
+		}
+	}
+	b.Observe(parseClaudeUsageNode(gjson.ParseBytes(b.claudeUsageSnapshot)), true)
 }
 
 // Publish emits the latest observed usage detail, if any.
@@ -1325,7 +1442,8 @@ func hasOpenAIStyleUsageBucketFields(usageNode gjson.Result) bool {
 		usageNode.Get("input_tokens_details.cache_write_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cache_creation_tokens").Exists() ||
 		usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() ||
-		usageNode.Get("output_tokens_details.reasoning_tokens").Exists()
+		usageNode.Get("output_tokens_details.reasoning_tokens").Exists() ||
+		usageNode.Get("reasoning_tokens").Exists()
 }
 
 func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
@@ -1364,6 +1482,10 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens")
 	if !reasoning.Exists() {
 		reasoning = usageNode.Get("output_tokens_details.reasoning_tokens")
+	}
+	if !reasoning.Exists() {
+		// Flat dialect (e.g. SGLang): usage.reasoning_tokens at top level.
+		reasoning = usageNode.Get("reasoning_tokens")
 	}
 	if reasoning.Exists() {
 		var okReasoning bool
@@ -1477,6 +1599,13 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
+	}
+	// Anthropic reports the speed a response was served and billed at in
+	// usage.speed ("fast" or "standard"): fast mode costs more, and a
+	// fast request on a model without it runs, and is billed, at standard.
+	// Carried as the response tier so usage sinks can price it.
+	if speed := strings.TrimSpace(usageNode.Get("speed").String()); speed != "" {
+		detail.ResponseServiceTier = speed
 	}
 	canonicalInput, ok := sumNonNegativeUsageTokens(inputTokenCount, cacheReadTokens, cacheCreationTokens)
 	if !ok {
@@ -1983,4 +2112,23 @@ func jsonPayload(line []byte) []byte {
 		return nil
 	}
 	return trimmed
+}
+
+// SetTranslatedReasoningEffort keeps existing LTS callers on the same metadata path.
+func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format string) {
+	r.SetTranslatedRequestMetadata(payload, format)
+}
+
+func extractEffectiveServiceTier(payload []byte) string {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	for _, path := range []string{"service_tier", "request.service_tier", "interaction.service_tier"} {
+		if node := gjson.GetBytes(payload, path); node.Type == gjson.String {
+			if tier := strings.TrimSpace(node.String()); tier != "" {
+				return tier
+			}
+		}
+	}
+	return ""
 }

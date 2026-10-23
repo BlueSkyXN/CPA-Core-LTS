@@ -54,6 +54,18 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		authType = "unknown"
 	}
 	apiKey := strings.TrimSpace(record.APIKey)
+	accessProvider := strings.TrimSpace(record.AccessProvider)
+	if accessProvider == "" {
+		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
+	}
+	isNativeKey := record.IsNativeKey
+	if !isNativeKey {
+		if nativeExplicit, ok := coreusage.IsNativeKeyFromContext(ctx); ok {
+			isNativeKey = nativeExplicit
+		} else if accessProvider != "" {
+			isNativeKey = coreusage.IsNativeAccessProvider(accessProvider)
+		}
+	}
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
 	traceID := strings.TrimSpace(record.TraceID)
 	if traceID == "" {
@@ -145,8 +157,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Failed:           failed,
 		Generate:         coreusage.GenerateEnabled(record.Generate),
 		Stream:           stream,
+		OutputTiming:     record.OutputTiming.Clone(),
 		Fail:             fail,
 		ResponseHeaders:  usageResponseHeaders(record.ResponseHeaders),
+		requestSize:      queuedRequestSize(record.Size),
 	}
 	if record.TimingVersion == coreusage.TimingVersionV1 {
 		detail.TimingVersion = record.TimingVersion
@@ -183,6 +197,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ResponseModel:        responseModel,
 		ExecutionID:          executionID,
 		TraceID:              traceID,
+		IsNativeKey:          isNativeKey,
+		AccessProvider:       accessProvider,
 	})
 	if err != nil {
 		return
@@ -218,29 +234,59 @@ type queuedUsageDetail struct {
 	ResponseModel        string                   `json:"response_model,omitempty"`
 	ExecutionID          string                   `json:"execution_id,omitempty"`
 	TraceID              string                   `json:"trace_id,omitempty"`
+	IsNativeKey          bool                     `json:"is_native_key"`
+	AccessProvider       string                   `json:"access_provider,omitempty"`
 }
 
 type requestDetail struct {
-	Timestamp        time.Time   `json:"timestamp"`
-	LatencyMs        int64       `json:"latency_ms"`
-	TimingVersion    uint32      `json:"timing_version,omitempty"`
-	TTFBMs           int64       `json:"ttfb_ms,omitempty"`
-	TTFTMs           int64       `json:"ttft_ms,omitempty"`
-	TTFAMs           int64       `json:"ttfa_ms,omitempty"`
-	Source           string      `json:"source"`
-	UsageProvenance  string      `json:"usage_provenance,omitempty"`
-	AuthIndex        string      `json:"auth_index"`
-	AccessTokenHash  string      `json:"access_token_sha256,omitempty"`
-	ClientIP         string      `json:"client_ip"`
-	ResolvedClientIP string      `json:"resolved_client_ip"`
-	XForwardedFor    string      `json:"x_forwarded_for"`
-	UserAgent        string      `json:"user_agent"`
-	Tokens           tokenStats  `json:"tokens"`
-	Failed           bool        `json:"failed"`
-	Generate         bool        `json:"generate"`
-	Stream           bool        `json:"stream"`
-	Fail             failDetail  `json:"fail"`
-	ResponseHeaders  http.Header `json:"response_headers,omitempty"`
+	Timestamp        time.Time               `json:"timestamp"`
+	LatencyMs        int64                   `json:"latency_ms"`
+	TimingVersion    uint32                  `json:"timing_version,omitempty"`
+	OutputTiming     *coreusage.OutputTiming `json:"output_timing,omitempty"`
+	TTFBMs           int64                   `json:"ttfb_ms,omitempty"`
+	TTFTMs           int64                   `json:"ttft_ms,omitempty"`
+	TTFAMs           int64                   `json:"ttfa_ms,omitempty"`
+	Source           string                  `json:"source"`
+	UsageProvenance  string                  `json:"usage_provenance,omitempty"`
+	AuthIndex        string                  `json:"auth_index"`
+	AccessTokenHash  string                  `json:"access_token_sha256,omitempty"`
+	ClientIP         string                  `json:"client_ip"`
+	ResolvedClientIP string                  `json:"resolved_client_ip"`
+	XForwardedFor    string                  `json:"x_forwarded_for"`
+	UserAgent        string                  `json:"user_agent"`
+	Tokens           tokenStats              `json:"tokens"`
+	Failed           bool                    `json:"failed"`
+	Generate         bool                    `json:"generate"`
+	Stream           bool                    `json:"stream"`
+	Fail             failDetail              `json:"fail"`
+	ResponseHeaders  http.Header             `json:"response_headers,omitempty"`
+	requestSize
+}
+
+// requestSize mirrors the usage detail size fields; zero values are omitted.
+type requestSize struct {
+	SizeVersion              uint32 `json:"size_version,omitempty"`
+	ClientRequestBytes       int64  `json:"client_request_bytes,omitempty"`
+	ClientRequestEncoding    string `json:"client_request_encoding,omitempty"`
+	UpstreamTransport        string `json:"upstream_transport,omitempty"`
+	UpstreamRequestBytes     int64  `json:"upstream_request_bytes,omitempty"`
+	UpstreamRequestWireBytes int64  `json:"upstream_request_wire_bytes,omitempty"`
+	UpstreamRequestEncoding  string `json:"upstream_request_encoding,omitempty"`
+	UpstreamResponseBytes    int64  `json:"upstream_response_bytes,omitempty"`
+}
+
+func queuedRequestSize(size coreusage.RequestSize) requestSize {
+	size = size.Canonical()
+	return requestSize{
+		SizeVersion:              size.Version,
+		ClientRequestBytes:       size.ClientRequestBytes,
+		ClientRequestEncoding:    size.ClientRequestEncoding,
+		UpstreamTransport:        size.UpstreamTransport,
+		UpstreamRequestBytes:     size.UpstreamRequestBytes,
+		UpstreamRequestWireBytes: size.UpstreamRequestWireBytes,
+		UpstreamRequestEncoding:  size.UpstreamRequestEncoding,
+		UpstreamResponseBytes:    size.UpstreamResponseBytes,
+	}
 }
 
 type tokenStats struct {

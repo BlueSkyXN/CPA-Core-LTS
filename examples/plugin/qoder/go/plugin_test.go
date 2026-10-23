@@ -199,6 +199,11 @@ func TestRegistrationDeclaresSchema5LifecycleCapabilities(t *testing.T) {
 		!capabilities.ExecutionCanceller || !capabilities.ExecutionSessionCloser || !capabilities.ProviderReadiness || !capabilities.ManagementAPI {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
+	// Qoder authenticates with preconfigured PATs only; auth_import_only keeps it
+	// out of the OAuth login entry and labels it manual account import.
+	if !capabilities.AuthImportOnly {
+		t.Fatalf("auth_import_only must be declared for PAT-only auth: %#v", capabilities)
+	}
 	if registration.Metadata.GitHubRepository != "https://github.com/BlueSkyXN/CPA-Core-LTS" {
 		t.Fatalf("metadata = %#v", registration.Metadata)
 	}

@@ -18,6 +18,27 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: zcode-codex-context-usage
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Codex compaction needs a delivered context count for zcode search while provider usage accounting remains complete.
+    config_keys:
+      - codex.zcode-context-usage
+    core_files:
+      - internal/config/codex_zcode_context_usage.go
+      - internal/pluginhost/zcode_context_usage.go
+      - internal/pluginhost/zcode_context_usage_test.go
+      - internal/translator/claude/openai/responses/context_count.go
+      - docs/lts/zcode-context-usage.md
+      - config.example.yaml
+    required_markers:
+      - zcode-context-usage
+    validation:
+      - go test ./internal/config ./internal/watcher/diff ./internal/pluginhost -run ZcodeContext
+      - go test ./internal/translator/claude/openai/responses
+
   - id: codex-oauth-cache-affinity
     kind: lts-feature
     support: maintained
@@ -61,18 +82,31 @@ features:
       - internal/usage/
       - internal/runtime/executor/helps/usage_helpers.go
       - internal/runtime/executor/helps/usage_timing.go
+      - internal/runtime/executor/helps/usage_request_size.go
       - sdk/cliproxy/usage/manager.go
+      - sdk/cliproxy/usage/request_size.go
       - internal/api/handlers/management/usage.go
       - internal/api/handlers/management/usage_contract_test.go
       - internal/api/server_management.go
       - config.example.yaml
+      - docs/lts/usage-request-size.md
     required_markers:
       - usage-statistics-enabled
       - UsageReporter
       - RequestDetail
+      - RequestSizeVersionV1
+      - size_version
+      - trace_id
+      - client_request_bytes
+      - upstream_transport
+      - upstream_request_bytes
+      - upstream_request_wire_bytes
+      - upstream_response_bytes
       - auth_index
       - latency_ms
       - ttfb_ms
+      - output_timing
+      - token_breakdown
       - timing_version
       - ttft_ms
       - ttfa_ms
@@ -106,7 +140,9 @@ features:
       - /v0/management/usage/query/capabilities
       - /v0/management/usage/query/summary
       - /v0/management/usage/query/details
+      - /v0/management/usage/query/export
       - /v0/management/usage/query/pricing
+      - /v0/management/usage/query/analytics
       - /v0/management/usage-statistics-enabled
     core_files:
       - internal/api/server_management.go
@@ -117,6 +153,11 @@ features:
       - internal/api/usage_compression_test.go
       - internal/usage/query.go
       - internal/usage/query_test.go
+      - internal/usage/query_export.go
+      - internal/usage/query_export_test.go
+      - internal/usage/analytics.go
+      - internal/usage/analytics_cache.go
+      - internal/usage/analytics_test.go
       - docs/lts/usage-query-v1.md
       - internal/api/handlers/management/config_basic.go
       - internal/api/handlers/management/usage_contract_test.go
@@ -134,6 +175,13 @@ features:
       - 'mgmt.POST("/usage/query/summary"'
       - 'mgmt.POST("/usage/query/details"'
       - 'mgmt.POST("/usage/query/pricing"'
+      - 'mgmt.POST("/usage/query/analytics"'
+      - export_version
+      - max_export_page_size
+      - 'mgmt.POST("/usage/query/export"'
+      - analytics_version
+      - request_size_version
+      - requestSize
       - Accept-Encoding
       - Content-Encoding
       - 'mgmt.GET("/usage-statistics-enabled"'
@@ -157,6 +205,8 @@ features:
       - TimingVersionV1
       - timing_version
       - ttfb_ms
+      - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
       - uncached_input_tokens
@@ -505,8 +555,13 @@ features:
       - latency_ms
       - timing_version
       - ttfb_ms
+      - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
+      - size_version
+      - upstream_transport
+      - upstream_request_bytes
       - auth_index
       - outbound_service_tier
       - effective_service_tier
@@ -602,7 +657,7 @@ features:
     support: optional
     owner: cpa-core-lts
     upstream_relation: downstream-only
-    reason: Keep the single-account Coding Plan provider source, inline-only single-file credentials, stable account identity and revocable logging acknowledgement, default GLM model catalog and execution controls, synthetic acceptance fixtures, and explicit nested-module CI in the Core repository without a built-in vendor executor or runtime worker.
+    reason: Keep the multi-account Coding Plan provider source, inline-only single-file credentials, isolated account signers and lifecycle with ten in-flight requests per account, stable account identity and revocable logging acknowledgement, default GLM model catalog and execution controls, synthetic acceptance fixtures, and explicit nested-module CI in the Core repository without a built-in vendor executor or runtime worker.
     core_files:
       - examples/plugin/zcode-coding-plan/
       - examples/plugin/Makefile

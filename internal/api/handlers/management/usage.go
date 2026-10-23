@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 type usageExportPayload struct {
@@ -92,6 +93,8 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 			writeUsageImportError(c, usageCodeV1TimingAmbiguous, err.Error())
 		case errors.Is(err, errUsageV2TimingSemanticsAmbiguous):
 			writeUsageImportError(c, usageCodeV2TimingAmbiguous, err.Error())
+		case errors.Is(err, usage.ErrInvalidCanonicalTokenStats):
+			writeUsageImportTokenContractError(c, version)
 		case errors.Is(err, errUsageV3TimingContractInvalid):
 			writeUsageImportError(c, usageCodeV3TimingInvalid, err.Error())
 		default:
@@ -265,6 +268,8 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"timestamp",
 					"latency_ms",
 					"ttfb_ms",
+					"output_timing",
+					"token_breakdown",
 					"source",
 					"auth_index",
 					"alias",
@@ -285,7 +290,19 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"timing_version",
 					"ttft_ms",
 					"ttfa_ms",
+					"trace_id",
+					"size_version",
+					"client_request_bytes",
+					"client_request_encoding",
+					"upstream_transport",
+					"upstream_request_bytes",
+					"upstream_request_wire_bytes",
+					"upstream_request_encoding",
+					"upstream_response_bytes",
 				); err != nil {
+					return err
+				}
+				if err := validateUsageTokenBreakdownRawShape(detailObject, version); err != nil {
 					return err
 				}
 				if err := validateUsageTimingRawShape(detailObject, version); err != nil {
@@ -326,6 +343,26 @@ func validateUsageImportRawShape(data []byte, version int) error {
 }
 
 func validateUsageTimingRawShape(detail map[string]json.RawMessage, version int) error {
+	if raw, ok := detail["output_timing"]; ok {
+		if version == 1 {
+			return errUsageV1TimingSemanticsAmbiguous
+		}
+		if version == 2 {
+			return errUsageV2TimingSemanticsAmbiguous
+		}
+		var timing coreusage.OutputTiming
+		if err := json.Unmarshal(raw, &timing); err != nil || !timing.Valid() {
+			return errUsageV3TimingContractInvalid
+		}
+		if timing.DurationMS != nil {
+			latency, validLatency := rawNonNegativeInt64(detail["latency_ms"])
+			first, validFirst := rawNonNegativeInt64(detail["ttfb_ms"])
+			if !validLatency || !validFirst || first > latency || *timing.DurationMS > latency-first {
+				return errUsageV3TimingContractInvalid
+			}
+		}
+	}
+
 	_, hasTimingVersion := detail["timing_version"]
 	_, hasTTFB := detail["ttfb_ms"]
 	_, hasTTFT := detail["ttft_ms"]
@@ -586,4 +623,52 @@ func writeUsageImportError(c *gin.Context, code, message string) {
 		"error": message,
 		"code":  code,
 	})
+}
+
+func validateUsageTokenBreakdownRawShape(detail map[string]json.RawMessage, version int) error {
+	raw, exists := detail["token_breakdown"]
+	if !exists {
+		return nil
+	}
+	if version != 3 {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	object, err := unmarshalUsageObject(raw)
+	if err != nil {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	if err := rejectUsageFieldAliases(object, "schema_version", "quality", "total_tokens", "unclassified_tokens", "input", "output"); err != nil {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	for _, key := range []string{"schema_version", "total_tokens", "unclassified_tokens"} {
+		if _, ok := rawNonNegativeInt64(object[key]); !ok {
+			return usage.ErrInvalidCanonicalTokenStats
+		}
+	}
+	var quality string
+	if json.Unmarshal(object["quality"], &quality) != nil || quality == "" {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	for group, keys := range map[string][]string{
+		"input":  {"total_tokens", "uncached_tokens", "cache_read_tokens", "cache_write_tokens"},
+		"output": {"total_tokens", "non_reasoning_tokens", "reasoning_tokens"},
+	} {
+		fields, err := requiredUsageObject(object, group)
+		if err != nil {
+			return usage.ErrInvalidCanonicalTokenStats
+		}
+		if err := rejectUsageFieldAliases(fields, keys...); err != nil {
+			return usage.ErrInvalidCanonicalTokenStats
+		}
+		for _, key := range keys {
+			if _, ok := rawNonNegativeInt64(fields[key]); !ok {
+				return usage.ErrInvalidCanonicalTokenStats
+			}
+		}
+	}
+	var breakdown coreusage.TokenBreakdown
+	if json.Unmarshal(raw, &breakdown) != nil || !breakdown.Valid() {
+		return usage.ErrInvalidCanonicalTokenStats
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,7 @@ type responsesWebsocketPinnedAuthState struct {
 }
 
 type websocketTimelineLog struct {
+	mu      sync.Mutex
 	enabled bool
 	source  *requestlogging.FileBodySource
 	builder *strings.Builder
@@ -74,6 +76,12 @@ func (l *websocketTimelineLog) BeginRequest() {
 	if l == nil || !l.enabled || l.source == nil {
 		return
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.beginRequestLocked()
+}
+
+func (l *websocketTimelineLog) beginRequestLocked() {
 	l.closeCurrentPart()
 	part, errCreate := l.source.CreatePart("request")
 	if errCreate != nil {
@@ -91,13 +99,15 @@ func (l *websocketTimelineLog) Append(eventType string, payload []byte, timestam
 	if strings.EqualFold(strings.TrimSpace(eventType), "request") {
 		payload = codexmetadata.RedactRequestBodyForLog(payload)
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	data := formatWebsocketTimelineEvent(eventType, payload, timestamp)
 	if len(data) == 0 {
 		return
 	}
 	if l.source != nil {
 		if l.currentPart == nil {
-			l.BeginRequest()
+			l.beginRequestLocked()
 		}
 		if l.currentPart == nil {
 			return
@@ -118,6 +128,8 @@ func (l *websocketTimelineLog) SetContext(c *gin.Context) {
 	if l == nil || !l.enabled {
 		return
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.closeCurrentPart()
 	if l.source != nil {
 		if l.source.HasPayload() {
@@ -137,6 +149,8 @@ func (l *websocketTimelineLog) String() string {
 	if l == nil || !l.enabled {
 		return ""
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.closeCurrentPart()
 	if l.source != nil {
 		data, errRead := l.source.Bytes()

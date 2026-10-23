@@ -22,6 +22,7 @@ import (
 
 	gin "github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
@@ -43,6 +44,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -2308,6 +2310,7 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	server.cfg.Plugins.Configs = map[string]proxyconfig.PluginInstanceConfig{
 		"sample": {Enabled: &enabled, Priority: 4},
 	}
+	server.mgmt.SetConfig(server.cfg)
 	if errWrite := os.WriteFile(server.configFilePath, []byte("{}\n"), 0o600); errWrite != nil {
 		t.Fatalf("failed to write config file: %v", errWrite)
 	}
@@ -4195,6 +4198,97 @@ func TestModelsWithClientVersionHomeApplyPatchRouting(t *testing.T) {
 	}
 }
 
+func TestModelsWithClientVersionHomeSearchToolRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		toolSearch bool
+		want       map[string]bool
+	}{
+		{
+			// Home routing evidence decides search support exactly as local routes do:
+			// pure Codex template routes, or pure Claude routes whose every credential
+			// supports native tool search. A Home without tool_search fails closed.
+			name:       "tool search on",
+			toolSearch: true,
+			want: map[string]bool{
+				"home-claude-only":        true,
+				"gpt-5.5":                 true,
+				"home-claude-mixed":       false,
+				"home-claude-third-party": false,
+				"home-claude-old-home":    false,
+				"team/gpt-5.5":            false,
+			},
+		},
+		{
+			// Off keeps the catalog that predates tool_search: Home routes are not
+			// consulted, so template models keep their search flag and Claude
+			// models never advertise it.
+			name: "tool search off",
+			want: map[string]bool{
+				"home-claude-only":        false,
+				"gpt-5.5":                 true,
+				"home-claude-mixed":       false,
+				"home-claude-third-party": false,
+				"home-claude-old-home":    false,
+				"team/gpt-5.5":            true,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTestServer(t)
+			server.cfg.Home.Enabled = true
+			setClaudeToolSearchForTest(t, tc.toolSearch)
+			engine := gin.New()
+			engine.GET("/v1/models", server.unifiedModelsHandler(nil, nil))
+			client := newHomeCatalogClient(t, `{
+				"claude":[
+					{"id":"home-claude-only","native_capabilities":{"tool_search":true}},
+					{"id":"home-claude-mixed","native_capabilities":{"tool_search":true}},
+					{"id":"home-claude-third-party","native_capabilities":{"tool_search":false}},
+					{"id":"home-claude-old-home"}
+				],
+				"codex":[{"id":"gpt-5.5"}],
+				"home-custom":[{"id":"home-claude-mixed"},{"id":"team/gpt-5.5"}]
+			}`)
+			previousHome := home.Current()
+			home.SetCurrent(client)
+			t.Cleanup(func() { home.SetCurrent(previousHome) })
+
+			request := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.153.4", nil)
+			request.Header.Set("Authorization", "Bearer test-key")
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			var response struct {
+				Models []map[string]any `json:"models"`
+			}
+			if errUnmarshal := json.Unmarshal(recorder.Body.Bytes(), &response); errUnmarshal != nil {
+				t.Fatalf("decode Home catalog: %v", errUnmarshal)
+			}
+			want := make(map[string]bool, len(tc.want))
+			for slug, wantSearch := range tc.want {
+				want[slug] = wantSearch
+			}
+			for _, entry := range response.Models {
+				slug, _ := entry["slug"].(string)
+				wantSearch, ok := want[slug]
+				if !ok {
+					continue
+				}
+				delete(want, slug)
+				if got, _ := entry["supports_search_tool"].(bool); got != wantSearch {
+					t.Errorf("%s supports_search_tool = %v, want %v", slug, got, wantSearch)
+				}
+			}
+			if len(want) != 0 {
+				t.Fatalf("missing Home catalog entries: %v", want)
+			}
+		})
+	}
+}
+
 func TestModelsWithClientVersionApplyPatchRequiresExecutor(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	clientID := "http-patch-missing-executor"
@@ -4229,5 +4323,168 @@ func TestModelsWithClientVersionApplyPatchRequiresExecutor(t *testing.T) {
 	server.engine.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"object":"list"`) || strings.Contains(recorder.Body.String(), "apply_patch_tool_type") {
 		t.Fatalf("ordinary local catalog changed: %s", recorder.Body.String())
+	}
+}
+
+type revocableServerAccessProvider struct {
+	revoked  atomic.Bool
+	mu       sync.Mutex
+	requests []recordedAccessRequest
+}
+
+type recordedAccessRequest struct {
+	Method  string
+	Path    string
+	Headers http.Header
+	Body    []byte
+}
+
+func (p *revocableServerAccessProvider) Identifier() string {
+	return "revocable-test-provider"
+}
+
+func (p *revocableServerAccessProvider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, *sdkaccess.AuthError) {
+	var body []byte
+	if r != nil && r.Body != nil {
+		body, _ = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
+	if r != nil {
+		p.mu.Lock()
+		p.requests = append(p.requests, recordedAccessRequest{
+			Method:  r.Method,
+			Path:    r.URL.Path,
+			Headers: r.Header.Clone(),
+			Body:    append([]byte(nil), body...),
+		})
+		p.mu.Unlock()
+	}
+	if r == nil || r.Header.Get("Authorization") != "Bearer key-1" {
+		return nil, sdkaccess.NewNoCredentialsError()
+	}
+	if p.revoked.Load() {
+		return nil, sdkaccess.NewInvalidCredentialError()
+	}
+	return &sdkaccess.Result{
+		Provider:  p.Identifier(),
+		Principal: "key-1",
+	}, nil
+}
+
+type serverResponsesWebsocketCaptureExecutor struct {
+	calls atomic.Int32
+}
+
+func (e *serverResponsesWebsocketCaptureExecutor) Identifier() string {
+	return "codex"
+}
+
+func (e *serverResponsesWebsocketCaptureExecutor) Execute(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (e *serverResponsesWebsocketCaptureExecutor) ExecuteStream(_ context.Context, _ *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	n := e.calls.Add(1)
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{
+		Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp-%d","output":[]}}`, n)),
+	}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *serverResponsesWebsocketCaptureExecutor) Refresh(_ context.Context, a *auth.Auth) (*auth.Auth, error) {
+	return a, nil
+}
+
+func (e *serverResponsesWebsocketCaptureExecutor) CountTokens(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (e *serverResponsesWebsocketCaptureExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
+	server := newTestServer(t)
+	provider := &revocableServerAccessProvider{}
+	server.accessManager.SetProviders([]sdkaccess.Provider{provider})
+
+	wsExec := &serverResponsesWebsocketCaptureExecutor{}
+	server.handlers.AuthManager.RegisterExecutor(wsExec)
+	authEntry := &auth.Auth{
+		ID:         "ws-reauth-auth",
+		Provider:   "codex",
+		Status:     auth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, errReg := server.handlers.AuthManager.Register(context.Background(), authEntry); errReg != nil {
+		t.Fatalf("Register auth: %v", errReg)
+	}
+	modelName := "ws-reauth-model"
+	registry.GetGlobalRegistry().RegisterClient(authEntry.ID, authEntry.Provider, []*registry.ModelInfo{{ID: modelName}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(authEntry.ID)
+	})
+
+	httpServer := httptest.NewServer(server.engine)
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/responses"
+	headers := http.Header{"Authorization": []string{"Bearer key-1"}}
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, headers)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	turn1 := []byte(`{"type":"response.create","model":"ws-reauth-model","input":[{"type":"message","role":"user","content":"turn 1"}]}`)
+	if errWrite := conn.WriteMessage(websocket.TextMessage, turn1); errWrite != nil {
+		t.Fatalf("write turn 1: %v", errWrite)
+	}
+	_, msg1, errRead1 := conn.ReadMessage()
+	if errRead1 != nil {
+		t.Fatalf("read turn 1: %v", errRead1)
+	}
+	if got := gjson.GetBytes(msg1, "type").String(); got != "response.completed" {
+		t.Fatalf("turn 1 event type = %q, want response.completed (%s)", got, msg1)
+	}
+
+	provider.revoked.Store(true)
+
+	// Control: fresh dial with the revoked key must fail at the handshake with 401.
+	freshConn, resp, errFreshDial := websocket.DefaultDialer.Dial(wsURL, headers)
+	if errFreshDial == nil {
+		_ = freshConn.Close()
+		t.Fatal("expected fresh dial with revoked key to fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("fresh dial status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	// Second turn on the already-open socket must be rejected with an error event and not execute.
+	turn2 := []byte(`{"type":"response.create","model":"ws-reauth-model","input":[{"type":"message","role":"user","content":"turn 2"}]}`)
+	if errWrite := conn.WriteMessage(websocket.TextMessage, turn2); errWrite != nil {
+		t.Fatalf("write turn 2: %v", errWrite)
+	}
+	_, msg2, errRead2 := conn.ReadMessage()
+	if errRead2 != nil {
+		t.Fatalf("read turn 2: %v", errRead2)
+	}
+	if got := gjson.GetBytes(msg2, "type").String(); got != "error" {
+		t.Fatalf("turn 2 event type = %q, want error (%s)", got, msg2)
+	}
+	if got := int(gjson.GetBytes(msg2, "status").Int()); got != http.StatusUnauthorized {
+		t.Fatalf("turn 2 error status = %d, want %d (%s)", got, http.StatusUnauthorized, msg2)
+	}
+	if gotCalls := wsExec.calls.Load(); gotCalls != 1 {
+		t.Fatalf("executor calls after revoked turn = %d, want 1", gotCalls)
 	}
 }

@@ -150,6 +150,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	if oldCfg.Codex.ZcodeContextUsage.Effective() != newCfg.Codex.ZcodeContextUsage.Effective() {
+		changes = append(changes, fmt.Sprintf("codex.zcode-context-usage: %s -> %s", oldCfg.Codex.ZcodeContextUsage.Effective(), newCfg.Codex.ZcodeContextUsage.Effective()))
+	}
 	if oldCfg.Codex.CacheAffinity.EffectiveStrategy() != newCfg.Codex.CacheAffinity.EffectiveStrategy() {
 		changes = append(changes, fmt.Sprintf("codex.cache-affinity.strategy: %s -> %s", oldCfg.Codex.CacheAffinity.EffectiveStrategy(), newCfg.Codex.CacheAffinity.EffectiveStrategy()))
 	}
@@ -159,6 +162,18 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	changes = appendCodexAbnormalReasoningRetryChanges(changes, oldCfg.Codex.AbnormalReasoningRetry.Effective(), newCfg.Codex.AbnormalReasoningRetry.Effective())
 	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
 		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
+	}
+	if oldCfg.Codex.Outbound.EffectiveTransport() != newCfg.Codex.Outbound.EffectiveTransport() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.transport: %s -> %s", oldCfg.Codex.Outbound.EffectiveTransport(), newCfg.Codex.Outbound.EffectiveTransport()))
+	}
+	if oldCfg.Codex.Outbound.EffectiveRequestCompression() != newCfg.Codex.Outbound.EffectiveRequestCompression() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.request-compression: %s -> %s", oldCfg.Codex.Outbound.EffectiveRequestCompression(), newCfg.Codex.Outbound.EffectiveRequestCompression()))
+	}
+	if oldCfg.Codex.Outbound.EffectiveAcceptEncoding() != newCfg.Codex.Outbound.EffectiveAcceptEncoding() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.accept-encoding: %s -> %s", oldCfg.Codex.Outbound.EffectiveAcceptEncoding(), newCfg.Codex.Outbound.EffectiveAcceptEncoding()))
+	}
+	if oldCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes() != newCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes() {
+		changes = append(changes, fmt.Sprintf("codex.outbound.websocket-threshold-bytes: %d -> %d", oldCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes(), newCfg.Codex.Outbound.EffectiveWebsocketThresholdBytes()))
 	}
 	if oldCfg.Codex.StreamBootstrapBuffering != newCfg.Codex.StreamBootstrapBuffering {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-buffering: %t -> %t", oldCfg.Codex.StreamBootstrapBuffering, newCfg.Codex.StreamBootstrapBuffering))
@@ -181,8 +196,20 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			len(newCfg.Codex.DesktopToolOverlay.Tools),
 		))
 	}
+	if oldCfg.Client.Codex.WebSearchResultCache.Enabled != newCfg.Client.Codex.WebSearchResultCache.Enabled {
+		changes = append(changes, fmt.Sprintf("client.codex.web-search-result-cache.enabled: %t -> %t", oldCfg.Client.Codex.WebSearchResultCache.Enabled, newCfg.Client.Codex.WebSearchResultCache.Enabled))
+	}
+	if strings.TrimSpace(oldCfg.Client.Codex.WebSearchResultCache.TTL) != strings.TrimSpace(newCfg.Client.Codex.WebSearchResultCache.TTL) {
+		changes = append(changes, fmt.Sprintf("client.codex.web-search-result-cache.ttl: %s -> %s", strings.TrimSpace(oldCfg.Client.Codex.WebSearchResultCache.TTL), strings.TrimSpace(newCfg.Client.Codex.WebSearchResultCache.TTL)))
+	}
+	if oldCfg.Client.Codex.WebSearchResultCache.Limit != newCfg.Client.Codex.WebSearchResultCache.Limit {
+		changes = append(changes, fmt.Sprintf("client.codex.web-search-result-cache.limit: %d -> %d", oldCfg.Client.Codex.WebSearchResultCache.Limit, newCfg.Client.Codex.WebSearchResultCache.Limit))
+	}
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
+	}
+	if oldCfg.Claude.ToolSearch != newCfg.Claude.ToolSearch {
+		changes = append(changes, fmt.Sprintf("claude.tool-search: %t -> %t", oldCfg.Claude.ToolSearch, newCfg.Claude.ToolSearch))
 	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
@@ -331,6 +358,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if o.RebuildMidSystemMessage != n.RebuildMidSystemMessage {
 				changes = append(changes, fmt.Sprintf("claude[%d].rebuild-mid-system-message: %t -> %t", i, o.RebuildMidSystemMessage, n.RebuildMidSystemMessage))
 			}
+			if o.NativeToolSearch != n.NativeToolSearch {
+				changes = append(changes, fmt.Sprintf("claude[%d].native-tool-search: %t -> %t", i, o.NativeToolSearch, n.NativeToolSearch))
+			}
 			if strings.TrimSpace(o.FingerprintProfile) != strings.TrimSpace(n.FingerprintProfile) {
 				changes = append(changes, fmt.Sprintf("claude[%d].fingerprint-profile: %s -> %s", i, strings.TrimSpace(o.FingerprintProfile), strings.TrimSpace(n.FingerprintProfile)))
 			}
@@ -373,6 +403,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("codex[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("codex[%d].disable-codex-cloaking", i), o.DisableCodexCloaking, n.DisableCodexCloaking)
+			if oldMode, newMode := codexKeyRequestCompressionLabel(o.RequestCompression), codexKeyRequestCompressionLabel(n.RequestCompression); oldMode != newMode {
+				changes = append(changes, fmt.Sprintf("codex[%d].request-compression: %s -> %s", i, oldMode, newMode))
+			}
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("codex[%d].api-key: updated", i))
 			}
@@ -578,6 +611,10 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("vertex[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
 			}
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("vertex[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("vertex[%d].openapi", i), o.OpenAPI, n.OpenAPI)
+			if strings.TrimSpace(o.OpenAPILocation) != strings.TrimSpace(n.OpenAPILocation) {
+				changes = append(changes, fmt.Sprintf("vertex[%d].openapi-location: %s -> %s", i, strings.TrimSpace(o.OpenAPILocation), strings.TrimSpace(n.OpenAPILocation)))
+			}
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].api-key: updated", i))
 			}
@@ -882,4 +919,12 @@ func equalUpstreamAPIKeys(a, b []config.AmpUpstreamAPIKeyEntry) bool {
 		}
 	}
 	return true
+}
+
+// codexKeyRequestCompressionLabel renders a codex-api-key request-compression value, defaulting to none.
+func codexKeyRequestCompressionLabel(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), config.CodexRequestCompressionZstd) {
+		return config.CodexRequestCompressionZstd
+	}
+	return config.CodexRequestCompressionNone
 }

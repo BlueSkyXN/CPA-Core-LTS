@@ -44,6 +44,7 @@ var (
 	callbackForwarders    = make(map[int]*callbackForwarder)
 	authFileEntryMu       sync.Mutex
 	errAuthFileMustBeJSON = errors.New("auth file must be .json")
+	errInvalidAuthFile    = errors.New("invalid auth file")
 	errAuthFileNotFound   = errors.New("auth file not found")
 	errPluginVirtualAuth  = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
 	newCodexOAuthService  = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
@@ -122,9 +123,9 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	h.mu.Lock()
 	host := h.pluginHost
 	h.mu.Unlock()
-	var quotaSupportedProviders map[string]struct{}
+	quota := authFileQuotaContext{v8: c.GetBool(ConfigV8ContextKey)}
 	if host != nil {
-		quotaSupportedProviders = host.QuotaSupportedProvidersSet(c.Request.Context())
+		quota.pluginIDs = host.QuotaProviderPluginIDs(c.Request.Context())
 	}
 	auths := h.authManager.List()
 	observedAt := time.Now().UTC()
@@ -144,7 +145,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		start, end := pagination.bounds(total)
 		files := make([]gin.H, 0, end-start)
 		for _, auth := range matching[start:end] {
-			if entry := h.buildAuthFileEntry(auth, quotaSupportedProviders); entry != nil {
+			if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 				entry["cooldowns"] = nil
 				if cooldownsKnown {
 					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
@@ -160,7 +161,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 			continue
 		}
-		if entry := h.buildAuthFileEntry(auth, quotaSupportedProviders); entry != nil {
+		if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 			entry["cooldowns"] = nil
 			if cooldownsKnown {
 				entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
@@ -457,6 +458,46 @@ func safeModelDiscoveryCode(code string) string {
 	return code
 }
 
+// GetAuthFileModelPolicyPreview returns a read-only evaluation of the channel
+// and account model policy for one credential, using the stored pre-policy
+// catalog. It never triggers discovery and never mutates registration state;
+// the response shape mirrors sdk/cliproxy ModelPolicyPreview.
+func (h *Handler) GetAuthFileModelPolicyPreview(c *gin.Context) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name_required", "message": "name is required"})
+		return
+	}
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth_manager_unavailable", "message": "auth manager is unavailable"})
+		return
+	}
+	var auth *coreauth.Auth
+	for _, candidate := range h.authManager.List() {
+		if candidate != nil && (candidate.FileName == name || candidate.ID == name) {
+			auth = candidate
+			break
+		}
+	}
+	if auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth_not_found", "message": "auth file was not found"})
+		return
+	}
+	h.mu.Lock()
+	hook := h.authModelPolicyPreviewHook
+	h.mu.Unlock()
+	if hook == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model_policy_preview_unavailable", "message": "model policy preview is unavailable"})
+		return
+	}
+	preview, ok := hook(auth.Clone())
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "catalog_unknown", "evaluations": []any{}})
+		return
+	}
+	c.JSON(http.StatusOK, preview)
+}
+
 // List auth files from disk when the auth manager is unavailable.
 func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagination) {
 	observedAt := time.Now().UTC()
@@ -566,10 +607,19 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 	c.JSON(200, authFilesListResponse(observedAt, files, pagination, total, end))
 }
 
-func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quotaSupported ...map[string]struct{}) gin.H {
+// authFileQuotaContext carries request-scoped quota capability data for auth file entries.
+type authFileQuotaContext struct {
+	// pluginIDs maps normalized provider keys to the quota plugin selected for them.
+	// A nil map means no quota plugins are available.
+	pluginIDs map[string]string
+	// v8 hides declarative quota_probe support because v8 only serves plugin quota routes.
+	v8 bool
+}
+
+func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quota authFileQuotaContext) gin.H {
 	authFileEntryMu.Lock()
 	defer authFileEntryMu.Unlock()
-	return h.buildAuthFileEntryLocked(auth, quotaSupported...)
+	return h.buildAuthFileEntryLocked(auth, quota)
 }
 
 func isPersistentAuthFailure(auth *coreauth.Auth, now time.Time) bool {
@@ -723,7 +773,11 @@ func reconcileAuthFileCooldownState(auth *coreauth.Auth, now time.Time) (unavail
 	return unavailable, status, statusMessage, nextRetry
 }
 
-func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported ...map[string]struct{}) gin.H {
+// authFileReauthRequiredMessage is shown when the last refresh was rejected as unrecoverable and no
+// other status message applies.
+const authFileReauthRequiredMessage = "refresh token rejected; re-login required"
+
+func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQuotaContext) gin.H {
 	if auth == nil {
 		return nil
 	}
@@ -741,6 +795,13 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 		name = auth.ID
 	}
 	unavailable, status, statusMessage, nextRetryAfter := reconcileAuthFileCooldownState(auth, time.Now().UTC())
+	// RefreshFailures counts only refresh outcomes the token endpoint reported as unrecoverable
+	// (invalid grant or a permanent provider refresh error) and survives successful requests, so the
+	// credential stays flagged while its access token keeps working until expiry.
+	reauthRequired := auth.RefreshFailures > 0
+	if reauthRequired && strings.TrimSpace(statusMessage) == "" {
+		statusMessage = authFileReauthRequiredMessage
+	}
 	entry := gin.H{
 		"id":             auth.ID,
 		"auth_index":     auth.Index,
@@ -756,6 +817,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 		"source":         "memory",
 		"size":           int64(0),
 	}
+	if reauthRequired {
+		entry["reauth_required"] = true
+	}
 	if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
 		entry["prefix"] = prefix
 	}
@@ -766,25 +830,15 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
-	var quotaSupportedMap map[string]struct{}
-	if len(quotaSupported) > 0 {
-		quotaSupportedMap = quotaSupported[0]
-	}
-	if quotaSupportedMap != nil {
-		if _, ok := quotaSupportedMap[strings.ToLower(strings.TrimSpace(auth.Provider))]; ok {
-			entry["supports_quota"] = true
-			entry["quota_provider"] = auth.Provider
-		}
-	} else {
-		h.mu.Lock()
-		host := h.pluginHost
-		h.mu.Unlock()
-		if host != nil && host.HasQuotaProvider(auth.Provider) {
-			entry["supports_quota"] = true
-			entry["quota_provider"] = auth.Provider
+	if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
+		entry["supports_quota"] = true
+		entry["quota_provider"] = auth.Provider
+		if quota.v8 {
+			entry["quota_plugin_id"] = pluginID
 		}
 	}
-	if auth.Metadata != nil {
+	// Declarative quota_probe is only executed by the v0 quota/fetch route.
+	if !quota.v8 && auth.Metadata != nil {
 		if probe, okProbe := auth.Metadata["quota_probe"]; okProbe && probe != nil {
 			entry["supports_quota"] = true
 			entry["quota_probe"] = probe
@@ -878,6 +932,19 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 	}
 	if requestRetry, ok := auth.RequestRetryOverride(); ok {
 		entry["request_retry"] = requestRetry
+	}
+	if quota.v8 && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		entry["siwc_bind_supported"] = siwcBindEligible(auth)
+		entry["use_siwc"] = coreauth.IsCodexUseSIWC(auth)
+		entry["siwc_status"] = string(auth.CodexSIWCStatus(time.Now().UTC()))
+		section, _ := auth.Metadata["siwc"].(map[string]any)
+		accessToken, _ := section["access_token"].(string)
+		refreshToken, _ := section["refresh_token"].(string)
+		clientID, _ := section["client_id"].(string)
+		entry["siwc_bound"] = strings.TrimSpace(accessToken) != "" && strings.TrimSpace(refreshToken) != "" && strings.TrimSpace(clientID) != ""
+		if expiry, okExpiry := auth.SIWCExpirationTime(); okExpiry {
+			entry["siwc_expires_at"] = expiry.UTC().Format(time.RFC3339)
+		}
 	}
 	return entry
 }

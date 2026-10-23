@@ -25,12 +25,14 @@ func (e *XAIExecutor) executeImages(ctx context.Context, auth *cliproxyauth.Auth
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL, xaiBaseURLLogKindChat)
 	if endpointPath == "" {
 		endpointPath = xaiDefaultImageEndpointPath
 	}
 
 	payload := normalizeXAIImageRefs(req.Payload)
+	payload = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", req.Payload, req, opts)(payload)
+	reporter.SetTranslatedRequestMetadata(payload, "openai")
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
@@ -81,9 +83,10 @@ func (e *XAIExecutor) executeVideos(ctx context.Context, auth *cliproxyauth.Auth
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL, xaiBaseURLLogKindChat)
 
 	payload := normalizeXAIImageRefs(req.Payload)
+	payload = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", req.Payload, req, opts)(payload)
 	method := http.MethodPost
 	endpointPath := xaiVideosGenerationsPath
 	var body io.Reader = bytes.NewReader(payload)
@@ -97,6 +100,9 @@ func (e *XAIExecutor) executeVideos(ctx context.Context, auth *cliproxyauth.Auth
 			endpointPath = xaiVideosPath + "/" + url.PathEscape(requestID)
 			body = nil
 		}
+	}
+	if body != nil {
+		reporter.SetTranslatedRequestMetadata(payload, "openai")
 	}
 	requestURL := strings.TrimSuffix(baseURL, "/") + endpointPath
 	httpReq, err := http.NewRequestWithContext(ctx, method, requestURL, body)

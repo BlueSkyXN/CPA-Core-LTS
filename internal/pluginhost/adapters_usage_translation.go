@@ -167,6 +167,22 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 	if traceID == "" {
 		traceID = strings.TrimSpace(logging.GetRequestID(ctx))
 	}
+	accessProvider := strings.TrimSpace(record.AccessProvider)
+	if accessProvider == "" {
+		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
+	}
+	isNativeKey := record.IsNativeKey
+	if !isNativeKey {
+		if nativeExplicit, ok := coreusage.IsNativeKeyFromContext(ctx); ok {
+			isNativeKey = nativeExplicit
+		} else if accessProvider != "" {
+			isNativeKey = coreusage.IsNativeAccessProvider(accessProvider)
+		}
+	}
+	apiKey := strings.TrimSpace(record.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(coreusage.APIKeyFromContext(ctx))
+	}
 	plugin.HandleUsage(ctx, pluginapi.UsageRecord{
 		RequestID:            requestID,
 		TraceID:              traceID,
@@ -176,7 +192,9 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		Model:                record.Model,
 		Alias:                record.Alias,
 		UpstreamModel:        record.UpstreamModel,
-		APIKey:               record.APIKey,
+		APIKey:               apiKey,
+		IsNativeKey:          isNativeKey,
+		AccessProvider:       accessProvider,
 		AuthID:               record.AuthID,
 		AuthIndex:            record.AuthIndex,
 		AuthType:             record.AuthType,
@@ -198,6 +216,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		TTFB:                 record.TTFB,
 		TTFT:                 record.TTFT,
 		TTFA:                 record.TTFA,
+		OutputTiming:         pluginOutputTiming(record.OutputTiming),
 		Failed:               record.Failed,
 		SessionID:            sessionID,
 		ParentSessionID:      parentSessionID,
@@ -206,6 +225,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			Body:       record.Fail.Body,
 		},
 		Detail: pluginapi.UsageDetail{
+			TokenBreakdown:      pluginTokenBreakdown(record.Detail.TokenBreakdown),
 			InputTokens:         record.Detail.InputTokens,
 			OutputTokens:        record.Detail.OutputTokens,
 			ReasoningTokens:     record.Detail.ReasoningTokens,
@@ -409,4 +429,23 @@ func (h *Host) callResponseTranslator(ctx context.Context, record capabilityReco
 		return nil, false
 	}
 	return bytes.Clone(resp.Body), true
+}
+
+func pluginOutputTiming(value *coreusage.OutputTiming) *pluginapi.UsageOutputTiming {
+	if value == nil {
+		return nil
+	}
+	copy := value.Clone()
+	return &pluginapi.UsageOutputTiming{Version: copy.Version, Streamed: copy.Streamed, DurationMS: copy.DurationMS}
+}
+
+func pluginTokenBreakdown(value coreusage.TokenBreakdown) *pluginapi.UsageTokenBreakdown {
+	if !value.Valid() {
+		return nil
+	}
+	return &pluginapi.UsageTokenBreakdown{
+		SchemaVersion: value.SchemaVersion, Quality: string(value.Quality), TotalTokens: value.TotalTokens, UnclassifiedTokens: value.UnclassifiedTokens,
+		Input:  pluginapi.UsageTokenInputBreakdown{TotalTokens: value.Input.TotalTokens, UncachedTokens: value.Input.UncachedTokens, CacheReadTokens: value.Input.CacheReadTokens, CacheWriteTokens: value.Input.CacheWriteTokens},
+		Output: pluginapi.UsageTokenOutputBreakdown{TotalTokens: value.Output.TotalTokens, NonReasoningTokens: value.Output.NonReasoningTokens, ReasoningTokens: value.Output.ReasoningTokens},
+	}
 }

@@ -184,13 +184,15 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 	if remaining < 0 {
 		remaining = 0
 	}
-	captureLength := len(info.Body)
+	// 闭包只捕获长度整数，避免截断预览仍持有完整请求体。
+	originalBodyLength := len(info.Body)
+	captureLength := originalBodyLength
 	if captureLength > remaining {
 		captureLength = remaining
 	}
 	capturedInfo.Body = bytes.Clone(info.Body[:captureLength])
-	bodyEmpty := len(info.Body) == 0
-	bodyTruncated := captureLength < len(info.Body)
+	bodyEmpty := originalBodyLength == 0
+	bodyTruncated := captureLength < originalBodyLength
 	state.bytesUsed += captureLength
 	state.requests = append(state.requests, func() []byte {
 		builder := newAPIRequestLogBuilder(index, capturedInfo, capturedAt)
@@ -199,7 +201,7 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 		} else {
 			builder.Write(capturedInfo.Body)
 			if bodyTruncated {
-				builder.WriteString(fmt.Sprintf("\n[API REQUEST BODY TRUNCATED: captured first %d bytes]", captureLength))
+				builder.WriteString(fmt.Sprintf("\n[API REQUEST BODY TRUNCATED: captured first %d of %d bytes]", captureLength, originalBodyLength))
 			}
 		}
 		builder.WriteString("\n\n")

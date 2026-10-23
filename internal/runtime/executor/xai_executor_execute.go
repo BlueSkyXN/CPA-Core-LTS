@@ -29,10 +29,13 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if xaiIsVideoRequest(opts) {
 		return e.executeVideos(ctx, auth, req, opts)
 	}
+	if xaiIsSpeechRequest(opts) {
+		return e.executeSpeech(ctx, auth, req, opts)
+	}
 
 	token, _ := xaiCreds(auth)
 	baseURL := xaiChatBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL, xaiBaseURLLogKindChat)
 
 	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
 	if err != nil {
@@ -41,9 +44,11 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
-	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
+	prepared.body = prepared.finalizePayload(prepared.body)
+	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
 	if err != nil {
 		return resp, err
@@ -86,11 +91,15 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	var outputItemsFallback [][]byte
 	responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 	namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
+	var upstreamUsage helps.StreamUsageBuffer
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		if !bytes.HasPrefix(line, xaiDataTag) {
 			continue
 		}
 		eventData := xaiNormalizeReasoningSummaryData(bytes.TrimSpace(line[len(xaiDataTag):]))
+		if detail, ok := helps.ParseCodexUsage(eventData); ok {
+			upstreamUsage.Observe(detail, true)
+		}
 		prepared.applyPatch.RememberDispatcherEvent(eventData)
 		eventData = namespaceRestorer.restore(eventData)
 		eventData = restoreXAIPlaintextMultiAgentFunctionArgs(eventData, prepared.plaintextMultiAgentTools)
@@ -104,6 +113,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		events, errBridge := prepared.applyPatch.Transform(eventData)
 		if errBridge != nil {
 			errBridge = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+			upstreamUsage.PublishFailure(ctx, reporter, errBridge)
 			return resp, errBridge
 		}
 		for _, eventData := range events {
@@ -123,7 +133,9 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 				var param any
 				out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, completedData, &param)
 				if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
-					return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+					errTranslation := statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+					upstreamUsage.PublishFailure(ctx, reporter, errTranslation)
+					return cliproxyexecutor.Response{}, errTranslation
 				}
 				if detail, ok := helps.ParseCodexUsage(eventData); ok {
 					reporter.Publish(ctx, detail)
@@ -137,7 +149,9 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	}
 
 	if errFinish := prepared.applyPatch.Finish(); errFinish != nil {
-		return resp, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		errFinish = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		upstreamUsage.PublishFailure(ctx, reporter, errFinish)
+		return resp, errFinish
 	}
 	return resp, statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed or response.incomplete"}
 }
@@ -149,17 +163,21 @@ func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Aut
 	}
 
 	defer reporter.TrackFailure(ctx, &err)
+	upstreamUsage := helps.ParseOpenAIUsage(data)
 	converted, errBridge := prepared.applyPatch.Bridge.TransformNonStream(data)
 	if errBridge != nil {
 		errBridge = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		reporter.PublishFailureWithDetail(ctx, upstreamUsage, errBridge)
 		return resp, errBridge
 	}
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, converted, &param)
 	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		errTranslation := statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+		reporter.PublishFailureWithDetail(ctx, upstreamUsage, errTranslation)
+		return cliproxyexecutor.Response{}, errTranslation
 	}
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
+	reporter.Publish(ctx, upstreamUsage)
 	if prepared.responseFormat == sdktranslator.FormatOpenAIResponse {
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
@@ -171,7 +189,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	// Compact must not use xaiChatBaseURL: CLI chat-proxy returns 404 for
 	// /responses/compact and a 404 cools down the whole xAI auth pool.
 	baseURL := xaiCompactBaseURL(auth)
-	logXAIResolvedBaseURL(ctx, baseURL)
+	logXAIResolvedBaseURL(ctx, auth, baseURL, xaiBaseURLLogKindCompact)
 
 	prepared, err := e.prepareResponsesRequestTo(ctx, req, opts, false, sdktranslator.FormatOpenAIResponse)
 	if err != nil {
@@ -193,9 +211,11 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
-	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
 	requestURL := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
+	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
+	prepared.body = prepared.finalizePayload(prepared.body)
+	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(prepared.body))
 	if err != nil {
 		return nil, nil, nil, nil, err

@@ -96,11 +96,14 @@ routing:
     session-affinity-ttl: "1h"
     # When true (default), subagents (child sessions with parent references) inherit and bind
     # to the parent's upstream credential across all providers (Claude, Codex, Antigravity, Gemini),
-    # maximizing Prompt/KV Cache reuse and minimizing TTFT.
+    # for the same model, maximizing Prompt/KV Cache reuse and minimizing TTFT.
+    # Guardian reviews may inherit the latest eligible parent selection across models.
     # When false, subagents are distributed across the credential pool via the fallback selector
     # for maximum parallel concurrency.
     # Ignored when routing.session-affinity is false.
     session-affinity-subagents: true
+    # any：任何凭据失败后重绑；quota：临时故障只切换本次请求，保留已有绑定。
+    session-affinity-rebind-on: "any"
     # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
     force-model-prefix: false
     cooldown:
@@ -130,6 +133,11 @@ routing:
         max-retry-interval: 30
 client:
     codex:
+        enable-apply-patch: false
+        web-search-result-cache:
+            enabled: false
+            ttl: "24h"
+            limit: 1024
         # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
         # This refreshes Codex spawn_agent model details, requests plaintext message arguments,
         # and converts only fully plaintext agent_message input. Opaque encrypted or mixed
@@ -139,6 +147,8 @@ requests:
     # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
     # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
     proxy-url: ""
+    # 仅限制共享 uTLS 客户端的 TLS 握手阶段；0 关闭，已建立的流不受此限。
+    tls-handshake-timeout-seconds: 0
     # When true, forward filtered upstream response headers to downstream clients.
     # Default is false (disabled).
     passthrough-headers: false
@@ -148,6 +158,7 @@ requests:
     # streaming:
     #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
     #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
+    #   send-keepalive-before-ft: false # 首个 token 前发送 SSE 心跳，需启用 keepalive-seconds。
 multimedia:
     # disable-image-generation supports: false (default), true, "chat", or "passthrough".
     # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
@@ -163,6 +174,13 @@ multimedia:
     video-result-auth-cache-ttl: "3h"
 upstream:
     claude:
+        # 在 Claude Responses 路由启用 Codex tool_search；自定义网关需 native-tool-search 明确支持。
+        tool-search: false
+        # header-defaults:
+        #     anthropic-beta-strip: []  # 从派生 beta 列表移除这些名称。
+        #     anthropic-beta-append: [] # 在末尾补充尚不存在的 beta 名称。
+        #     inject-diagnostics: true # 为官方 Claude Code 路由注入诊断字段。
+        #     client-request-id: "on"  # on / passthrough / off
         # Claude Code compatibility settings.
 
 
@@ -170,6 +188,7 @@ upstream:
         # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
         disable-cloaking-model-list: false
         # Provider-wide Claude settings.
+        session-date-pin-days: 7
 
 
 
@@ -191,6 +210,14 @@ upstream:
         # The injected tool is also added to tool_choice.allowed_tools when applicable.
         inject-x-search: false
     codex:
+        # Codex 客户端的 ZCode 搜索上下文计数：disabled / observe / correct。
+        zcode-context-usage: disabled
+        # 出站策略适用于 HTTP 入口；请求体压缩默认仅用于 Codex OAuth。
+        outbound:
+            transport: follow # follow / websocket / auto
+            websocket-threshold-bytes: 786432
+            request-compression: auto # auto / none
+            accept-encoding: official # official / legacy
         cache-affinity:
             # ChatGPT OAuth 缓存适配；API key 不受影响。legacy 可恢复旧行为。
             strategy: client-aware # legacy | stable-id | client-aware
@@ -438,12 +465,22 @@ access:
         - "your-api-key-1"
         - "your-api-key-2"
         - "your-api-key-3"
+# 模型目录可使用 HTTP(S) URL 或绝对文件路径；失败时保留最后有效目录。
+# 显式来源优先于 --local-model；Home 模式不加载通用模型目录。
+models:
+    catalog: ""
+    codex-catalog: ""
+    devin-catalog: ""
 server:
     # Server host/interface to bind to. Default is empty ("") to bind all interfaces (IPv4 + IPv6).
     # Use "127.0.0.1" or "localhost" to restrict access to local machine only.
     host: ""
     # Server port
     port: 8317
+    # 全局 HTTP 请求体上限；0 关闭。标准协议仍受 api-request-body-max-bytes 约束。
+    max-request-body-bytes: 0
+    # GitHub 请求共享 token；留空时使用 GITHUB_TOKEN 环境变量。
+    github-token: ""
     # IP addresses or CIDRs of proxies allowed to supply forwarded client IP headers.
     # An empty list (the default) does not trust forwarded headers. Restart after changing this setting.
     trusted-proxies: []
@@ -502,6 +539,11 @@ management:
     # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
     panel-github-repository: "https://github.com/BlueSkyXN/CPA-Panel-LTS"
 oauth:
+    # OAuth 渠道模型策略与账号策略共同作用于真实模型 ID；空的已启用 allowlist 排除全部模型。
+    # model-policy:
+    #     copilot:
+    #         allowlist: {enabled: true, models: ["gpt-*"]}
+    #         denylist: {enabled: true, models: ["*-preview"]}
     # Authentication directory (supports ~ for home directory)
     auth-dir: "~/.cli-proxy-api"
     providers:
@@ -523,6 +565,8 @@ oauth:
             # When true, enable authentication for the WebSocket API (/v1/ws).
             ws-auth: true
         codex:
+            # SIWC OAuth 和 API 请求使用的客户端标识。
+            signin-with-chatgpt-identifier: "CLIProxyAPI"
             live-media-relay:
                 enabled: false
                 # Maximum concurrent media sessions. Zero uses the default of 32.
@@ -696,6 +740,7 @@ config-version: 8
 #       base-url: "https://example.com/api"         # optional, e.g. https://zenmux.ai/api; falls back to Google Vertex when omitted
 #       proxy-url: "socks5://proxy.example.com:1080" # optional per-key proxy override
 #       # proxy-url: "direct" # optional: explicit direct connect for this credential
+#       # interactions: true                        # optional: opt into native Vertex Interactions API routing (/v1beta1/interactions). For service account JSON files under auths/, add "interactions": true at the root of the file.
 #       headers:
 #         X-Custom-Header: "custom-value"
 #         # Values starting with "$" dynamically copy the header value from downstream client requests.
@@ -802,10 +847,11 @@ config-version: 8
 #         - api-key: "sk-atSM..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
+#           native-tool-search: false # optional: default is false; when true, trust this key's custom base-url with Anthropic native tool search (defer_loading + tool_reference) for Codex tool_search; requires upstream.claude.tool-search: true
 #           cloak:                         # optional: explicitly enable request cloaking for non-Claude-Code clients
 #             mode: "auto"                 # "auto" (default inside this block): cloak only when client is not Claude Code
 #                                          # "always": cloak every unconfirmed client; confirmed native Claude Code still passes through
-#                                          # "never": never apply cloaking
+#                                          # "never" / "uncloak": never apply cloaking; on non-CLI API keys, also strip incoming Claude Code identity/billing attribution
 #             # This "cloak" block applies to this api-keys.claude key entry only. For Claude OAuth
 #             # credentials, set the same options in the auth/token JSON file via "cloak_mode" /
 #             # "cloak_strict_mode" / "cloak_sensitive_words" / "cloak_cache_user_id".

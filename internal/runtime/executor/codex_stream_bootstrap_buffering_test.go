@@ -924,6 +924,7 @@ func TestIsCodexBootstrapBufferableEvent(t *testing.T) {
 		`{"type":"response.in_progress"}`,
 		`{"type":"codex.rate_limits"}`,
 		`{"type":"codex.response.metadata"}`,
+		`{"type":"response.metadata","response_id":"resp_1","sequence_number":2,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`,
 		codexKeepaliveEvent,
 		codexOutputAddedEvent,
 		`{"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
@@ -1080,6 +1081,46 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadFailsAttempt(t *test
 	}
 	if result != nil {
 		t.Fatal("expected nil result so no buffered handshake frame can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+// Captured from upstream on 2026-10-21: created, in_progress, a prompt-moderation response.metadata
+// frame, then server_is_overloaded. Nothing generated has been produced, so the attempt must fail over.
+const codexModerationMetadataEvent = `{"type":"response.metadata","response_id":"resp_1","sequence_number":2,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{"omnimod":{"protection_type":"omnimod"}}}}}`
+
+func TestCodexExecutor_BootstrapBuffering_OverloadAfterModerationMetadataFailsAttempt(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent, codexModerationMetadataEvent, codexOverloadEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+	if err == nil {
+		t.Fatal("expected ExecuteStream to fail the attempt on an overload after response.metadata")
+	}
+	if result != nil {
+		t.Fatal("expected nil result so no buffered frame can reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadAfterModerationMetadataFailsAttempt(t *testing.T) {
+	server := codexWebsocketServer(t, codexCreatedEvent, codexInProgressEvent, codexModerationMetadataEvent, codexOverloadEvent)
+	defer server.Close()
+
+	req, opts := codexWebsocketRequest()
+	result, err := NewCodexWebsocketsExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+
+	if err == nil {
+		t.Fatal("expected ExecuteStream to fail the attempt on a websocket overload after response.metadata")
+	}
+	if result != nil {
+		t.Fatal("expected nil result so no buffered frame can reach the client")
 	}
 	if got := statusCodeFromTestError(t, err); got != http.StatusServiceUnavailable {
 		t.Fatalf("status code = %d, want %d", got, http.StatusServiceUnavailable)
@@ -1764,5 +1805,71 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 	}
 	if _, streamErr := drainChunks(result); streamErr == nil {
 		t.Fatal("expected status-bearing error to be delivered in-stream")
+	}
+}
+
+// The downstream handler closes the client connection as soon as the executor publishes an
+// upstream disconnect, which cancels the request context. A usage-limit error must reach the
+// conductor before that happens, otherwise the cancellation drops the error and the credential
+// cooldown it carries (issue 6503).
+func TestCodexWebsocketsExecutor_UnbufferedUpstreamErrorIsDeliveredBeforeDisconnectNotify(t *testing.T) {
+	frames := map[string]string{
+		"error frame":     `{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":600}}`,
+		"response.failed": `{"type":"response.failed","response":{"error":{"type":"usage_limit_reached","status_code":429,"message":"The usage limit has been reached","resets_in_seconds":600}}}`,
+	}
+	for name, frame := range frames {
+		t.Run(name, func(t *testing.T) {
+			server := codexWebsocketServerHoldingConnection(t, frame)
+			defer server.Close()
+
+			exec := NewCodexWebsocketsExecutor(codexBufferingConfig(false))
+			exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+
+			const sessionID = "issue-6503-session"
+			disconnectCh := exec.UpstreamDisconnectChan(sessionID)
+			if disconnectCh == nil {
+				t.Fatal("expected a disconnect channel")
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			canceled := make(chan struct{})
+			go func() {
+				<-disconnectCh
+				cancel()
+				close(canceled)
+			}()
+
+			req, opts := codexWebsocketRequest()
+			opts.Metadata = map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID}
+			result, err := exec.ExecuteStream(ctx, codexTestAuth(server.URL), req, opts)
+			if err != nil {
+				t.Fatalf("ExecuteStream() error = %v", err)
+			}
+
+			// Give a premature disconnect notification time to cancel the context before the error is read.
+			select {
+			case <-canceled:
+			case <-time.After(200 * time.Millisecond):
+			}
+
+			var streamErr error
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+			}
+			if streamErr == nil {
+				t.Fatal("the upstream usage-limit error was dropped by the disconnect-triggered cancellation")
+			}
+			if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+				t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+			}
+			select {
+			case <-canceled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("downstream disconnect was never signalled after the error was delivered")
+			}
+		})
 	}
 }

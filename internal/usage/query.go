@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata"
+
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 const QueryVersion = 1
@@ -36,6 +38,7 @@ type QueryFilter struct {
 	AuthIndex  *string         `json:"auth_index,omitempty"`
 	Identities []QueryIdentity `json:"identities,omitempty"`
 	Tier       string          `json:"tier,omitempty"`
+	TierFlow   string          `json:"tier_flow,omitempty"`
 	Effort     *string         `json:"effort,omitempty"`
 	Failed     *bool           `json:"failed,omitempty"`
 	Cached     *bool           `json:"cached,omitempty"`
@@ -76,11 +79,17 @@ type queryCursor struct {
 }
 
 type QueryCapabilities struct {
-	Version     int      `json:"version"`
-	Bound       string   `json:"bound"`
-	NowMS       int64    `json:"now_ms"`
-	Models      []string `json:"models"`
-	MaxPageSize int      `json:"max_page_size"`
+	Version          int      `json:"version"`
+	Bound            string   `json:"bound"`
+	NowMS            int64    `json:"now_ms"`
+	Models           []string `json:"models"`
+	MaxPageSize      int      `json:"max_page_size"`
+	AnalyticsVersion int      `json:"analytics_version"`
+	MaxAnalyticsRows int      `json:"max_analytics_rows"`
+	// RequestSizeVersion advertises the detail size-field contract.
+	RequestSizeVersion uint32 `json:"request_size_version"`
+	ExportVersion      int    `json:"export_version"`
+	MaxExportPageSize  int    `json:"max_export_page_size"`
 }
 
 func queryEncode(value any) string {
@@ -115,7 +124,7 @@ func (s *RequestStatistics) QueryCapabilities() QueryCapabilities {
 		models = append(models, name)
 	}
 	sort.Strings(models)
-	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize}
+	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows, coreusage.RequestSizeVersionV1, QueryExportVersion, MaxQueryExportPageSize}
 }
 
 type QueryPriceGroup struct {
@@ -186,19 +195,20 @@ func (m *QueryMetrics) add(d RequestDetail, model string, rule QueryPriceRule, p
 		m.LatencyMS += float64(d.LatencyMs)
 		m.LatencySamples++
 	}
-	hasTTFB := d.TTFBMs >= 0 && (d.TTFBMs != 0 || d.timingFieldPresent(timingTTFBPresent))
+	hasTTFB := d.timingFieldPresent(timingTTFBPresent) && d.TTFBMs >= 0
 	if hasTTFB {
 		m.TTFBSamples++
 	}
-	if t.OutputTokens > 0 && d.LatencyMs > 0 {
-		output, latency := float64(t.OutputTokens), float64(d.LatencyMs)
+	outputCount, reasoningCount, knownOutput := performanceOutputTokens(d)
+	if knownOutput && outputCount > 0 && d.LatencyMs > 0 {
+		output, latency := float64(outputCount), float64(d.LatencyMs)
 		addQueryRatio(&m.AverageTPS, output, latency)
-		if hasTTFB && d.LatencyMs > d.TTFBMs {
-			addQueryRatio(&m.OutputTPS, output, latency-float64(d.TTFBMs))
+		if duration, ok := outputDurationMS(d); ok {
+			addQueryRatio(&m.OutputTPS, output, duration)
 		}
-		if t.ReasoningTokens <= t.OutputTokens {
-			addQueryRatio(&m.VisibleTPS, output-float64(t.ReasoningTokens), latency)
-			addQueryRatio(&m.ReasoningRatio, float64(t.ReasoningTokens), output)
+		if reasoningCount <= outputCount {
+			addQueryRatio(&m.VisibleTPS, output-float64(reasoningCount), latency)
+			addQueryRatio(&m.ReasoningRatio, float64(reasoningCount), output)
 		}
 	}
 	if !prices {
@@ -246,17 +256,19 @@ func (m *QueryMetrics) finish() {
 	m.prices = nil
 }
 
+func classifyQueryServiceTier(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "priority", "fast":
+		return "fast"
+	case "standard", "default":
+		return "std"
+	}
+	return ""
+}
+
 // 与 Panel serviceTier.ts 相同：未知的高优先级证据阻止向低优先级 Fast 回退。
 func queryServiceTier(d RequestDetail) (string, string) {
-	classify := func(s string) string {
-		switch strings.ToLower(strings.TrimSpace(s)) {
-		case "priority", "fast":
-			return "fast"
-		case "standard", "default":
-			return "std"
-		}
-		return ""
-	}
+	classify := classifyQueryServiceTier
 	effective, response, outbound, request := strings.TrimSpace(d.EffectiveServiceTier), strings.TrimSpace(d.ResponseServiceTier), strings.TrimSpace(d.OutboundServiceTier), strings.TrimSpace(d.RequestServiceTier)
 	if request == "" {
 		request = strings.TrimSpace(d.ServiceTier)
@@ -282,6 +294,19 @@ func queryServiceTier(d RequestDetail) (string, string) {
 		}
 	}
 	return "std", "assumed"
+}
+
+// 请求档位与现有解析结果组成互斥分类；缺失请求档位归入解析后的单一档位。
+func queryServiceTierFlow(d RequestDetail) string {
+	tier, _ := queryServiceTier(d)
+	request := strings.TrimSpace(d.RequestServiceTier)
+	if request == "" {
+		request = d.ServiceTier
+	}
+	if requested := classifyQueryServiceTier(request); requested != "" && requested != tier {
+		return requested + "_to_" + tier
+	}
+	return tier
 }
 
 type QueryGroup struct {
@@ -326,6 +351,11 @@ func validateQuery(q *QueryRequest) (*time.Location, error) {
 		return nil, ErrQueryInvalid
 	}
 	if q.Filter.Tier != "" && q.Filter.Tier != "fast" && q.Filter.Tier != "std" {
+		return nil, ErrQueryInvalid
+	}
+	switch q.Filter.TierFlow {
+	case "", "fast", "std", "fast_to_std", "std_to_fast":
+	default:
 		return nil, ErrQueryInvalid
 	}
 	for _, rule := range q.Rules {
@@ -379,7 +409,10 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 			return false
 		}
 	}
-	if f.Effort != nil && strings.ToLower(strings.TrimSpace(d.ReasoningEffort)) != *f.Effort {
+	if f.TierFlow != "" && queryServiceTierFlow(d) != f.TierFlow {
+		return false
+	}
+	if f.Effort != nil && strings.ToLower(strings.TrimSpace(d.ReasoningEffort)) != strings.ToLower(strings.TrimSpace(*f.Effort)) {
 		return false
 	}
 	t := d.Tokens
@@ -395,7 +428,11 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 	case "totalOutputTokens":
 		n = t.OutputTokens
 	case "displayedOutputTokens":
-		n = max(t.OutputTokens-t.ReasoningTokens, 0)
+		output, reasoning, known := performanceOutputTokens(d)
+		if !known {
+			return f.Minimum == nil && f.Maximum == nil
+		}
+		n = max(output-reasoning, 0)
 	case "reasoningTokens":
 		n = t.ReasoningTokens
 	case "cacheReadTokens":
@@ -413,6 +450,12 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 // 在锁内只固定桶和长度，分块复制常量大小的只读值；聚合/编码不持统计锁。
 // 既有记录不可变，追加或历史导入由内部序号排除，不建立第二份完整快照。
 func (s *RequestStatistics) walkQuery(ctx context.Context, q *QueryRequest, visit func(string, string, RequestDetail) error) error {
+	return s.walkQueryRows(ctx, q, func(api, model string, _ *modelStats, _ int, detail RequestDetail) error {
+		return visit(api, model, detail)
+	})
+}
+
+func (s *RequestStatistics) walkQueryRows(ctx context.Context, q *QueryRequest, visit func(string, string, *modelStats, int, RequestDetail) error) error {
 	type span struct {
 		api, model string
 		bucket     *modelStats
@@ -448,9 +491,9 @@ func (s *RequestStatistics) walkQuery(ctx context.Context, q *QueryRequest, visi
 			s.mu.RLock()
 			n := copy(block[:], p.bucket.Details[offset:min(offset+len(block), p.length)])
 			s.mu.RUnlock()
-			for _, d := range block[:n] {
+			for i, d := range block[:n] {
 				if d.querySequence <= bound.Sequence {
-					if err := visit(p.api, p.model, d); err != nil {
+					if err := visit(p.api, p.model, p.bucket, offset+i, d); err != nil {
 						return err
 					}
 				}
@@ -610,15 +653,19 @@ func (h queryHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *queryHeap) Push(v any)        { *h = append(*h, v.(QueryItem)) }
 func (h *queryHeap) Pop() any          { n := len(*h); v := (*h)[n-1]; *h = (*h)[:n-1]; return v }
 
-func (s *RequestStatistics) QueryDetails(ctx context.Context, q QueryRequest) (*QueryDetails, error) {
-	if _, err := validateQuery(&q); err != nil {
-		return nil, err
-	}
+func queryFilterID(q QueryRequest) string {
 	fingerprint := sha256.Sum256([]byte(queryEncode(struct {
 		From, To *int64
 		Filter   QueryFilter
 	}{q.FromMS, q.ToMS, q.Filter})))
-	filterID := hex.EncodeToString(fingerprint[:])
+	return hex.EncodeToString(fingerprint[:])
+}
+
+func (s *RequestStatistics) QueryDetails(ctx context.Context, q QueryRequest) (*QueryDetails, error) {
+	if _, err := validateQuery(&q); err != nil {
+		return nil, err
+	}
+	filterID := queryFilterID(q)
 	var cursor queryCursor
 	if q.Cursor != "" {
 		if err := queryDecode(q.Cursor, &cursor); err != nil {
@@ -679,6 +726,7 @@ func (s *RequestStatistics) QueryDetails(ctx context.Context, q QueryRequest) (*
 		r.NextCursor = queryEncode(queryCursor{q.Bound, filterID, last.Detail.Timestamp.UnixMilli(), last.Detail.querySequence})
 	}
 	for i := range r.Items {
+		r.Items[i].Detail = cloneRequestDetail(r.Items[i].Detail)
 		r.Items[i].ID = strconv.FormatUint(r.Items[i].Detail.querySequence, 10)
 	}
 	if r.Options != nil {

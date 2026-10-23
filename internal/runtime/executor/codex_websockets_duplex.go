@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -49,6 +50,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 	// inherit the preceding response settings, just as they do upstream.
 	var metadataMu sync.Mutex
 	pending := []*codexWebsocketPrepared{initial}
+	// Only explicit creates have a known upstream dispatch boundary. Keep each
+	// reporter with its pending request rather than starting it at response.created.
+	pendingReporters := make(map[*codexWebsocketPrepared]*helps.UsageReporter)
 	allPrepared := []*codexWebsocketPrepared{initial}
 	// Serialize explicit creates against steering continuations. A response.created
 	// alone does not identify whether upstream created it automatically.
@@ -137,7 +141,40 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 		}
+		authorizePayload := func(payload []byte, forceBoundModel bool) (allowed bool, keepOpen bool) {
+			authPayload := payload
+			boundModel := ""
+			if initial != nil {
+				boundModel = strings.TrimSpace(gjson.GetBytes(initial.originalPayload, "model").String())
+			}
+			if boundModel == "" {
+				boundModel = req.Model
+			}
+			explicitModel := strings.TrimSpace(gjson.GetBytes(authPayload, "model").String())
+			if boundModel != "" && json.Valid(authPayload) && (forceBoundModel || explicitModel == "" || explicitModel == req.Model) {
+				if withModel, errSet := sjson.SetBytes(bytes.Clone(authPayload), "model", boundModel); errSet == nil {
+					authPayload = withModel
+				}
+			}
+			errPayload, errAuth := cliproxyexecutor.AuthorizeWebsocketTurn(streamCtx, authPayload)
+			if errAuth != nil {
+				fail(errAuth)
+				return false, false
+			}
+			if len(errPayload) > 0 {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: errPayload}:
+					return false, true
+				case <-streamCtx.Done():
+					return false, false
+				}
+			}
+			return true, true
+		}
 		processCreatePayload := func(payload []byte) bool {
+			if allowed, keepOpen := authorizePayload(payload, false); !allowed {
+				return keepOpen
+			}
 			metadataMu.Lock()
 			isAppend := gjson.GetBytes(payload, "type").String() == "response.append"
 			prevID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
@@ -202,7 +239,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 				return false
 			}
-			payload = buildCodexWebsocketRequestBody(prepared.upstreamBody)
+			payload = frameCodexWebsocketRequestBody(prepared.upstreamBody)
+			nextReporter := helps.NewExecutorUsageReporter(ctx, e, req.Model, auth.Clone())
+			nextReporter.SetTranslatedReasoningEffort(prepared.upstreamBody, prepared.to.String())
+			nextReporter.EnableSemanticTiming(prepared.to.String())
+			nextReporter.StartResponseTiming()
+			nextReporter.ObserveUpstreamWebsocketTransport()
 			metadataMu.Lock()
 			if len(pending) >= 16 {
 				metadataMu.Unlock()
@@ -210,6 +252,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 			pending = append(pending, prepared)
+			pendingReporters[prepared] = nextReporter
 			allPrepared = append(allPrepared, prepared)
 			metadataMu.Unlock()
 			if prepared.optimizeMultiAgentV2 || prepared.multiAgentV2Conflict {
@@ -280,6 +323,20 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				switch gjson.GetBytes(payload, "type").String() {
 				case "response.steer":
+					if allowed, keepOpen := authorizePayload(payload, true); !allowed {
+						if !keepOpen {
+							return
+						}
+						continue
+					}
+					// Steering carries business input but must not inherit response.create defaults.
+					steerReq := req
+					steerReq.Payload = payload
+					if codexUseSIWCForRequest(ctx, auth, opts.Headers) {
+						payload = thinking.StripConfigurationUpdates(payload)
+					}
+					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, opts)(payload)
+					payload, _ = sjson.SetBytes(payload, "type", "response.steer")
 					parent := gjson.GetBytes(payload, "previous_response_id").String()
 					metadataMu.Lock()
 					settings := responseSettings[parent]
@@ -298,8 +355,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						steeringSettings[parent] = settings
 					}
 					metadataMu.Unlock()
-					// Control frames bypass ALL response.create translations and defaults.
-					// Unknown fields and unsupported input are left to upstream validation.
+					// Control frames bypass response.create translations and built-in defaults.
+					// Except for SIWC configuration_update stripping, unknown fields and unsupported
+					// input are left to upstream validation.
 					if !cliproxyexecutor.WebsocketAuthEnabled(streamCtx, auth.ID) {
 						fail(fmt.Errorf("websocket credential is no longer enabled"))
 						return
@@ -388,6 +446,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				continue
 			}
 			payload = bytes.TrimSpace(payload)
+			if len(payload) == 0 {
+				continue
+			}
 			eventType := gjson.GetBytes(payload, "type").String()
 			establishing := firstResponse && eventType == "response.created"
 			if eventType == "response.created" {
@@ -420,6 +481,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				if len(pending) > 0 {
 					current, pending = pending[0], pending[1:]
 				}
+				nextReporter := pendingReporters[current]
+				delete(pendingReporters, current)
 				responseID = gjson.GetBytes(payload, "response.id").String()
 				// Retain response settings, not request history or authorization headers.
 				// In-flight steering pins its parent's settings independently of this window.
@@ -432,6 +495,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				if inst := gjson.GetBytes(current.clientBody, "instructions"); inst.Exists() {
 					snapshot.clientBody, _ = sjson.SetRawBytes(snapshot.clientBody, "instructions", []byte(inst.Raw))
 				}
+				if serviceTier := gjson.GetBytes(current.clientBody, "service_tier"); serviceTier.Exists() {
+					snapshot.clientBody, _ = sjson.SetRawBytes(snapshot.clientBody, "service_tier", []byte(serviceTier.Raw))
+				}
 				responseSettings[responseID] = &snapshot
 				responseOrder = append(responseOrder, responseID)
 				if len(responseOrder) > 16 {
@@ -442,15 +508,23 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				metadataMu.Unlock()
 				wakeWriter()
 				if !firstResponse {
-					reporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
-					reporter.SetTranslatedReasoningEffort(current.clientBody, current.to.String())
-					reporter.StartResponseTTFT()
+					reporter = nextReporter
+					if reporter == nil {
+						// An automatic successor has no unambiguous client dispatch.
+						// Preserve usage without inventing near-zero timing measurements.
+						reporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth.Clone())
+						reporter.SetTranslatedReasoningEffort(current.clientBody, current.to.String())
+						reporter.ObserveUpstreamWebsocketTransport()
+					}
 				}
 				firstResponse = false
 				responseActive = true
 				outputItems = make(map[int64][]byte)
 				outputFallback = nil
 			}
+			reporter.ObserveUpstreamResponseBytes(len(payload))
+			reporter.MarkFirstResponseByte()
+			reporter.ObserveTimingMessage(current.to.String(), payload)
 			observeCodexTokenEvent(reporter, payload)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
@@ -527,8 +601,15 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				ambiguous := failedID == "" && ((len(pending) > 0 && responseActive) || len(unacknowledgedSteers) > 0)
 				if len(pending) > 0 && !currentFailure && !ambiguous {
 					eventPrepared, pending = pending[0], pending[1:]
-					eventReporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
-					eventReporter.SetTranslatedReasoningEffort(eventPrepared.clientBody, eventPrepared.to.String())
+					eventReporter = pendingReporters[eventPrepared]
+					delete(pendingReporters, eventPrepared)
+					if eventReporter == nil {
+						eventReporter = helps.NewExecutorUsageReporter(ctx, e, req.Model, auth.Clone())
+						eventReporter.SetTranslatedReasoningEffort(eventPrepared.clientBody, eventPrepared.to.String())
+					}
+					eventReporter.ObserveUpstreamResponseBytes(len(payload))
+					eventReporter.MarkFirstResponseByte()
+					eventReporter.ObserveTimingMessage(eventPrepared.to.String(), payload)
 				} else if !ambiguous {
 					responseActive = false
 					automaticActive = false

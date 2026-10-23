@@ -272,6 +272,7 @@ func pluginRegistration() registration {
 		Capabilities: registrationCapabilities{
 			ModelProvider:          true,
 			AuthProvider:           true,
+			AuthImportOnly:         true,
 			Executor:               true,
 			ExecutionCanceller:     true,
 			ProviderReadiness:      true,

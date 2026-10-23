@@ -72,9 +72,9 @@ func TestResponseCyberProgramStreamAndReporter(t *testing.T) {
 	}
 	for _, final := range []string{"standard", "unknown"} {
 		r := NewUsageReporter(context.Background(), "codex", "base", nil)
-		r.ObserveCodexResponseModel([]byte(`data: {"type":"response.created","response":{"access_programs":{"cyber":"daybreak_blue"}}}`))
-		r.ObserveCodexResponseModel([]byte(fmt.Sprintf(`{"type":"response.completed","response":{"access_programs":{"cyber":%q}}}`, final)))
-		r.ObserveCodexResponseModel([]byte(`{"type":"response.created","response":{"access_programs":{"cyber":"daybreak_blue"}}}`))
+		r.ObserveResponseModel([]byte(`data: {"type":"response.created","response":{"access_programs":{"cyber":"daybreak_blue"}}}`))
+		r.ObserveResponseModel([]byte(fmt.Sprintf(`{"type":"response.completed","response":{"access_programs":{"cyber":%q}}}`, final)))
+		r.ObserveResponseModel([]byte(`{"type":"response.created","response":{"access_programs":{"cyber":"daybreak_blue"}}}`))
 		if got := r.buildRecord(usage.Detail{}, false).ResponseCyberProgram; got != final {
 			t.Fatalf("no-usage terminal = %q, want %q", got, final)
 		}

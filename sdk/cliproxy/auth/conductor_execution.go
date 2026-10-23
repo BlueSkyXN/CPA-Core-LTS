@@ -27,6 +27,7 @@ import (
 
 func newUpstreamAttemptContext(ctx context.Context) context.Context {
 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
+	ctx = logging.WithFreshUpstreamRequestSizeHolder(ctx)
 	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
 }
 
@@ -425,7 +426,7 @@ func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexe
 		}
 	}
 	source := opts.SourceFormat.String()
-	if source == "openai-image" || source == "openai-video" {
+	if source == "openai-image" || source == "openai-video" || source == "openai-speech" {
 		return opts.SourceFormat
 	}
 	if opts.Alt == "responses/compact" && !opts.Stream {
@@ -593,6 +594,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
 			result.RouteModel = routeModel
 			m.MarkResult(execCtx, result)
 			lastErr = errPrepare
@@ -665,6 +667,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				selectedPublished = true
 			}
 			markCodexModelFallbackDispatch(execOpts, auth.ID)
+			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -683,7 +686,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					return cliproxyexecutor.Response{}, errExec
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
@@ -704,6 +707,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.commitPreDispatchSelection(auth, execOpts)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					markCodexModelFallbackDispatch(execOpts, auth.ID)
+					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executeWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -712,7 +716,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
+						m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
 						}
@@ -724,14 +728,16 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
+					m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
 			result.RouteModel = routeModel
+			result.ExecutionSeq = executionSeq
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -864,6 +870,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
 			result.RouteModel = routeModel
 			result.SkipQuotaObservation = true
 			m.MarkResult(execCtx, result)
@@ -932,6 +939,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
 			}
+			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -947,7 +955,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					return cliproxyexecutor.Response{}, errExec
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
@@ -967,6 +975,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = admittedRetryCtx
 					m.commitPreDispatchSelection(auth, execOpts)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = countWithFlowSlot(execCtx, executor, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -975,7 +984,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
+						m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
 						}
@@ -984,15 +993,17 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
+					m.warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec, &execOpts, fmt.Sprintf("round=%d try=%d", retryRound, len(attempted)))
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
 			result.SkipQuotaObservation = true
 			result.RouteModel = routeModel
+			result.ExecutionSeq = executionSeq
 			if errExec != nil {
 				result.Error = countTokensResultErrorFromError(errExec, execReq.Model)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -1239,7 +1250,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		// Enrich before auth preparation so prepare-stage usage records observe the client request.
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 		execCtx = newUpstreamAttemptContext(execCtx)
-		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
+		// Home owns dispatched credential availability; only local selections need state filtering.
+		if selection == nil {
+			models = m.filterExecutionModels(auth, routeModel, models, pooled)
+		}
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias
 		}
@@ -1284,6 +1299,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
 			result.RouteModel = routeModel
 			if selection != nil {
 				m.reportHomeResult(execCtx, result, auth)
@@ -2149,7 +2165,7 @@ func safeErrorDiagnosticForLog(err error) string {
 	return logging.SafeDiagnosticForLog(diagnostic)
 }
 
-func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, model string, auth *Auth, duration time.Duration, err error) {
+func (m *Manager) warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, model string, auth *Auth, duration time.Duration, err error, execOpts *cliproxyexecutor.Options, attempt string) {
 	if err == nil {
 		return
 	}
@@ -2162,6 +2178,7 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 	if isRequestInvalidError(err) {
 		return
 	}
+	authIdent := formatAuthIdentity(auth, provider)
 	if entry == nil {
 		if ctx != nil {
 			entry = logEntryWithRequestID(ctx)
@@ -2169,14 +2186,14 @@ func warnLogUpstreamFailure(ctx context.Context, entry *log.Entry, provider, mod
 			entry = log.NewEntry(log.StandardLogger())
 		}
 	}
-	authIdent := formatAuthIdentity(auth, provider)
 	errSummary := safeErrorDiagnosticForLog(err)
 	duration = duration.Round(time.Millisecond)
+	extras := upstreamFailureWarnExtras(ctx, execOpts, attempt)
 	if statusCode := statusCodeFromError(err); statusCode != 0 {
-		entry.Warnf("%3d | %13v | upstream execution failed: provider=%s model=%s auth=%s err=%s", statusCode, duration, provider, model, authIdent, errSummary)
+		entry.Warnf("%3d | %13v | upstream execution failed: provider=%s model=%s auth=%s%s err=%s", statusCode, duration, provider, model, authIdent, extras, errSummary)
 		return
 	}
-	entry.Warnf("upstream execution failed: provider=%s model=%s auth=%s duration=%s err=%s", provider, model, authIdent, duration, errSummary)
+	entry.Warnf("upstream execution failed: provider=%s model=%s auth=%s duration=%s%s err=%s", provider, model, authIdent, duration, extras, errSummary)
 }
 
 // InjectCredentials delegates per-provider HTTP request preparation when supported.

@@ -51,6 +51,10 @@ forbid_grep_ci() {
   fi
 }
 
+require_path internal/pluginhost/zcode_context_usage.go
+require_path docs/lts/zcode-context-usage.md
+require_grep 'zcode-context-usage' config.example.yaml internal/config/config_types.go
+
 module_path="$(sed -n 's/^module //p' go.mod)"
 if [ "$module_path" != "github.com/router-for-me/CLIProxyAPI/v8" ]; then
   echo "unexpected Go module path: $module_path" >&2
@@ -156,6 +160,15 @@ require_path .github/scripts/refresh-model-catalogs.sh
 require_grep "mgmt.GET(\"/usage\"" internal/api/server_management.go
 require_grep "mgmt.GET(\"/usage/export\"" internal/api/server_management.go
 require_grep "mgmt.POST(\"/usage/import\"" internal/api/server_management.go
+require_path internal/usage/analytics.go
+require_path internal/usage/analytics_cache.go
+require_path internal/usage/analytics_test.go
+require_grep 'export_version' internal/usage/query.go
+require_grep 'max_export_page_size' internal/usage/query.go
+require_grep 'mgmt.POST("/usage/query/export"' internal/api/server_management.go
+require_path internal/usage/query_export.go
+require_grep 'analytics_version' internal/usage/query.go
+require_grep 'mgmt.POST("/usage/query/analytics"' internal/api/server_management.go
 require_path internal/usage/query.go
 require_path internal/api/handlers/management/usage_query.go
 require_path docs/lts/usage-query-v1.md
@@ -232,9 +245,19 @@ require_grep "responsesWebsocketCanAttestContextReset" sdk/api/handlers/openai/o
 require_grep "ModelFallbackZeroDispatch" sdk/cliproxy/auth/codex_model_fallback.go docs/lts/core-feature-contracts.yaml
 require_grep "auth_index" internal/usage internal/api/handlers/management internal/runtime/executor/helps internal/redisqueue
 require_grep "ttfb_ms" internal/usage internal/api/handlers/management
+require_grep "output_timing" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "token_breakdown" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "timing_version" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttft_ms" internal/usage internal/api/handlers/management internal/redisqueue
 require_grep "ttfa_ms" internal/usage internal/api/handlers/management internal/redisqueue
+require_grep "RequestSizeVersionV1" sdk/cliproxy/usage internal/usage
+require_grep 'json:"size_version,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"trace_id,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_transport,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_request_bytes,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_request_wire_bytes,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"upstream_response_bytes,omitempty"' internal/usage internal/redisqueue
+require_grep 'json:"request_size_version"' internal/usage
 require_grep "UserEndpoint" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep "UserEndpointUserAgent" internal/auth/xai/types.go internal/auth/xai/xai.go docs/lts/core-feature-contracts.yaml
 require_grep 'case "amd64"' internal/auth/xai/types.go

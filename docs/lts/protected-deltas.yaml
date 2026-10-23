@@ -41,8 +41,13 @@ retained_capabilities:
       - TimingVersionV1
       - timing_version
       - ttfb_ms
+      - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
+      - RequestSizeVersionV1
+      - size_version
+      - upstream_request_bytes
       - uncached_input_tokens
       - schema_version
       - migrated_from_version
@@ -139,6 +144,16 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: zcode-codex-context-usage
+    registry_feature: zcode-codex-context-usage
+    maintenance_policy: opt-in-context-counting
+    markers:
+      - codex.zcode-context-usage
+    validation:
+      - go test ./internal/pluginhost -run ZcodeContext
+      - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+    conflict_policy: preserve_disabled_default_codex_client_scope_and_full_provider_usage
+
   - id: zcode-coding-plan-plugin
     registry_feature: zcode-coding-plan-plugin
     maintenance_policy: long-term-maintained-optional-integration
@@ -248,8 +263,12 @@ lts_owned_features:
       - internal/redisqueue/
       - timing_version
       - ttfb_ms
+      - output_timing
+      - token_breakdown
       - ttft_ms
       - ttfa_ms
+      - size_version
+      - upstream_request_bytes
     validation:
       - redis-usage-queue-contract-tests
     conflict_policy: preserve_queue_without_replacing_full_usage

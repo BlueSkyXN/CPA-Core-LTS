@@ -9,8 +9,8 @@ import (
 const imageFixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII="
 
 func TestThinkingEffortReachesProvider(t *testing.T) {
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "GLM-5.3-Flash"} {
-		for _, effort := range builtinThinkingLevels {
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "GLM-5.3-Flash", "glm-5.3-highspeed", "glm-5.3-flashx"} {
+		for effort, expected := range map[string]string{"low": "low", "high": "high", "max": "max", "medium": "high", "med": "high", "xhigh": "max", " XHIGH ": "max"} {
 			for _, field := range []string{"reasoning_effort", "output_config", "reasoning"} {
 				t.Run(model+"/"+effort+"/"+field, func(t *testing.T) {
 					body := map[string]any{"model": model, "max_tokens": 100, "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
@@ -26,7 +26,7 @@ func TestThinkingEffortReachesProvider(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if result["reasoning_effort"] != effort || result["thinking"].(map[string]any)["type"] != "enabled" || result["output_config"] != nil || result["reasoning"] != nil {
+					if result["model"] != model || result["reasoning_effort"] != expected || result["thinking"].(map[string]any)["type"] != "enabled" || result["output_config"] != nil || result["reasoning"] != nil {
 						t.Fatal("effort was not normalized to the GLM provider fields")
 					}
 				})
@@ -37,7 +37,7 @@ func TestThinkingEffortReachesProvider(t *testing.T) {
 
 func TestThinkingRejectsUnsupportedControls(t *testing.T) {
 	for _, extra := range []string{
-		`"reasoning_effort":"none"`, `"reasoning_effort":"medium"`, `"reasoning_effort":42`,
+		`"reasoning_effort":"none"`, `"reasoning_effort":"auto"`, `"reasoning_effort":"minimal"`, `"reasoning_effort":"ultra"`, `"reasoning_effort":"unknown"`, `"reasoning_effort":42`,
 		`"thinking":{"type":"disabled"}`, `"thinking":{"type":"enabled","budget_tokens":100}`,
 		`"thinking":{"type":"enabled","display":"omitted"}`,
 		`"thinking":{"type":"enabled","display":"raw"}`,
@@ -69,11 +69,13 @@ func TestFlashImageInputValidation(t *testing.T) {
 		{"type": "base64", "media_type": "image/png", "data": imageFixture},
 		{"type": "url", "url": "https://images.example.invalid/synthetic.png"},
 	}
-	for _, model := range builtinModels {
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-highspeed", "glm-5.3-flashx"} {
 		for _, source := range sources {
 			body := map[string]any{"model": model, "max_tokens": 100, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image", "source": source}}}}}
-			result, err := transformExecution(executorRequest{Payload: encode(body)}, defaultConfig(), "session")
-			if model == "glm-5.3" {
+			cfg := defaultConfig()
+			cfg.applyExtraModels([]string{"glm-5.3-highspeed", "glm-5.3-flashx"})
+			result, err := transformExecution(executorRequest{Payload: encode(body)}, cfg, "session")
+			if model == "glm-5.3" || model == "glm-5.3-highspeed" {
 				if err == nil {
 					t.Fatal("text-only model accepted an image")
 				}
@@ -92,6 +94,34 @@ func TestFlashImageInputValidation(t *testing.T) {
 		if err := validateImage(map[string]any{"source": source}, "glm-5.3-flash"); err == nil {
 			t.Fatal("invalid image source accepted")
 		}
+	}
+}
+
+func TestThinkingAliasConflictsAndAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		first, second, want string
+		invalid             bool
+	}{
+		{"xhigh", "max", "max", false},
+		{"medium", "high", "high", false},
+		{"med", "medium", "high", false},
+		{"low", "medium", "", true},
+		{"high", "xhigh", "", true},
+	} {
+		body := []byte(fmt.Sprintf(`{"model":"glm-5.3","max_tokens":100,"messages":[{"role":"user","content":"hello"}],"reasoning_effort":%q,"output_config":{"effort":%q}}`, tc.first, tc.second))
+		result, err := transformExecution(executorRequest{Payload: body}, defaultConfig(), "session")
+		if (err != nil) != tc.invalid || !tc.invalid && result["reasoning_effort"] != tc.want {
+			t.Fatalf("%s/%s: %v", tc.first, tc.second, err)
+		}
+	}
+	body := []byte(`{"model":"glm-5.3","max_tokens":100,"messages":[{"role":"user","content":"hello"}],"reasoning_effort":"low"}`)
+	original := []byte(`{"reasoning":{"effort":"xhigh"}}`)
+	result, err := transformExecution(executorRequest{Payload: body, OriginalRequest: original}, defaultConfig(), "session")
+	if err != nil || result["reasoning_effort"] != "low" {
+		t.Fatal("alias in original overrode effective effort", err)
+	}
+	if _, err = transformExecution(executorRequest{Payload: []byte(`{"model":"glm-5.3","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`), OriginalRequest: original}, defaultConfig(), "session"); err == nil {
+		t.Fatal("lost effective effort was restored from original")
 	}
 }
 

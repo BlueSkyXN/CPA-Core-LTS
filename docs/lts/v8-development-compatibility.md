@@ -13,7 +13,7 @@
 - canonical 路径按存在性优先于旧字段，不能用真假值判断；false、0、空数组/对象与缺失不同。
 - 客户端访问密钥在 `access.api-keys`；根 `api-keys` 映射为上游 provider groups，不能混用。
 - `flow-control`、`ampcode`、`api-request-body-max-bytes` 保留原根路径，并通过 strict v8 校验。
-- LTS Codex 的 `cache-affinity`、`identity-confuse`、`client-metadata`、`desktop-tool-overlay`、`model-fallback`、`rate-limit-continuity`、`abnormal-reasoning-retry` 位于 `upstream.codex.*`；这些设置不会因 API-key 配置过滤而被清空。旧拼写读取仅为上游兼容残留，新配置只使用 v8 路径。
+- LTS Codex 的 `cache-affinity`、`identity-confuse`、`client-metadata`、`desktop-tool-overlay`、`model-fallback`、`rate-limit-continuity`、`abnormal-reasoning-retry`、`outbound`、`zcode-context-usage` 位于 `upstream.codex.*`；这些设置不会因 API-key 配置过滤而被清空。旧拼写读取仅为上游兼容残留，新配置只使用 v8 路径。
 - `plugins.configs.<id>` 是插件自有的 opaque YAML：v8 布局预处理不对其做整树解码或别名展开，复合键、仅类型不同的键与 merge 语义与 v7 加载器一致。
 - `client.codex.optimize-multi-agent-v2` 是客户端共享能力。原拼写为 YAML 边界别名；只有已确认客户端和明确明文形状可重写，opaque/encrypted/mixed 内容不能当明文。
 
@@ -22,6 +22,8 @@
 配套 v8 Panel 的共享管理功能使用 `/v8/management`（配置、provider groups、credentials、OAuth、logs、plugins store 等），LTS 独有扩展（完整 usage 与查询、Flow、插件 readiness 与插件自有路由、PAT、Codex quota/reset/remote cloud、Ampcode 等）继续使用受保护的 `/v0/management` 路由。Panel 连接到不提供 v8 管理面的 Core 时提示升级，不回退到 v0 配置写入。
 
 旧缓存 Panel 可能把根 `api-keys` provider map 当访问密钥数组覆盖，因此服务端拒绝通过 v0 raw `/config.yaml` 替换已有 v8 文档或提交新 v8 文档，返回 HTTP 409 `unsupported_config_layout`。
+
+渠道模型策略位于 `oauth.model-policy`。策略按真实模型 ID 过滤后，再应用别名、OAuth model settings 和前缀；Panel 渠道编辑与旧排除规则合并使用同一份 V8 配置快照。
 
 ## 配置条件写入
 

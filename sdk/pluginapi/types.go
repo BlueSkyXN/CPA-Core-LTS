@@ -77,6 +77,8 @@ type ConfigField struct {
 	Name string
 	// Type classifies the field value for management clients.
 	Type ConfigFieldType
+	// Default is the value used when the configuration key is omitted.
+	Default any
 	// EnumValues lists allowed values when Type is ConfigFieldTypeEnum.
 	EnumValues []string
 	// Description explains how the plugin uses the field.
@@ -238,6 +240,9 @@ type ThinkingSupport struct {
 	ZeroAllowed bool
 	// DynamicAllowed reports whether automatic reasoning budget selection is supported.
 	DynamicAllowed bool
+	// DisableType is the Claude thinking.type that turns thinking off for this
+	// model. Empty means "disabled"; claude-sonnet-5-5 needs "between_tools".
+	DisableType string
 	// Levels lists supported named reasoning levels.
 	Levels []string
 }
@@ -416,6 +421,8 @@ type AuthRefreshResponse struct {
 }
 
 // ModelRegistrar registers plugin-provided models with the host.
+// Without an Executor, these models are published only through matching credentials
+// after applying their model exclusions.
 type ModelRegistrar interface {
 	RegisterModels(context.Context, ModelRegistrationRequest) (ModelRegistrationResponse, error)
 }
@@ -435,6 +442,7 @@ type ModelRegistrationResponse struct {
 }
 
 // ModelProvider contributes provider-native static and per-auth model metadata.
+// StaticModels alone does not make models available without an Executor or matching credentials.
 type ModelProvider interface {
 	StaticModels(context.Context, StaticModelRequest) (ModelResponse, error)
 	ModelsForAuth(context.Context, AuthModelRequest) (ModelResponse, error)
@@ -494,8 +502,11 @@ type FrontendAuthRequest struct {
 	Headers http.Header
 	// Query contains inbound query parameters.
 	Query url.Values
-	// Body contains the raw request body.
+	// Body contains the raw request body as received, before any Content-Encoding decoding.
 	Body []byte
+	// DecodedBody contains the request body after Content-Encoding decoding. It is set only when
+	// the body was content-encoded and the route's handler decodes it, and is nil otherwise.
+	DecodedBody []byte
 }
 
 // FrontendAuthResponse reports the authentication decision and identity metadata.
@@ -506,6 +517,10 @@ type FrontendAuthResponse struct {
 	Principal string
 	// Metadata carries plugin-defined identity attributes for downstream use.
 	Metadata map[string]string
+	// DenyStatusCode optionally specifies an HTTP status code when denying the request.
+	DenyStatusCode int
+	// DenyMessage optionally specifies an error message when denying the request.
+	DenyMessage string
 }
 
 const (
@@ -1042,6 +1057,30 @@ type HostAuthSaveResponse struct {
 	Name string `json:"name"`
 	// Path is the saved auth file path.
 	Path string `json:"path"`
+}
+
+// HostAuthModelsRequest asks the host for the models registered for one or all credentials.
+type HostAuthModelsRequest struct {
+	// AuthIndex identifies the credential index; empty requests all credentials.
+	AuthIndex string `json:"auth_index,omitempty"`
+}
+
+// HostAuthModelsResponse returns the models registered for each matching credential.
+type HostAuthModelsResponse struct {
+	// Credentials lists the credentials and their registered models.
+	Credentials []HostAuthModels `json:"credentials"`
+}
+
+// HostAuthModels describes the models registered for one credential.
+type HostAuthModels struct {
+	// ID identifies the credential record.
+	ID string `json:"id"`
+	// AuthIndex is the stable runtime credential index.
+	AuthIndex string `json:"auth_index"`
+	// Provider is the credential provider key.
+	Provider string `json:"provider"`
+	// Models lists the model identifiers registered for this credential in the global registry.
+	Models []string `json:"models"`
 }
 
 // Host affinity lookup status outcomes.
@@ -1734,6 +1773,10 @@ type UsageRecord struct {
 	UpstreamModel string
 	// APIKey is the client API key identifier when available.
 	APIKey string
+	// IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
+	IsNativeKey bool
+	// AccessProvider identifies the client request authentication provider (e.g. "config-inline" or plugin ID).
+	AccessProvider string
 	// SessionID identifies the session when present.
 	SessionID string
 	// ParentSessionID identifies the parent session in a hierarchy or fork.
@@ -1751,7 +1794,7 @@ type UsageRecord struct {
 	UsageProvenance string `json:"UsageProvenance,omitempty"`
 	// ReasoningEffort records the requested reasoning effort.
 	ReasoningEffort string
-	// ServiceTier records the requested or reported service tier.
+	// ServiceTier records the tier requested by the original client.
 	ServiceTier string
 	// RequestServiceTier records the client-requested service tier.
 	RequestServiceTier string `json:"RequestServiceTier,omitempty"`
@@ -1787,7 +1830,8 @@ type UsageRecord struct {
 	TTFT time.Duration `json:"TTFT,omitempty"`
 	// TTFA is the time from the upstream attempt start to the first non-empty
 	// user-visible assistant text event.
-	TTFA time.Duration `json:"TTFA,omitempty"`
+	TTFA         time.Duration      `json:"TTFA,omitempty"`
+	OutputTiming *UsageOutputTiming `json:"OutputTiming,omitempty"`
 	// Failed reports whether the request failed.
 	Failed bool
 	// Failure contains failure details when Failed is true.
@@ -1796,6 +1840,13 @@ type UsageRecord struct {
 	Detail UsageDetail
 	// ResponseHeaders contains selected upstream response headers.
 	ResponseHeaders http.Header
+}
+
+// UsageOutputTiming is the optional upstream output-window measurement.
+type UsageOutputTiming struct {
+	Version    uint32 `json:"version"`
+	Streamed   bool   `json:"streamed"`
+	DurationMS *int64 `json:"duration_ms,omitempty"`
 }
 
 // UsageFailure describes an upstream or executor failure.
@@ -1808,6 +1859,7 @@ type UsageFailure struct {
 
 // UsageDetail contains token accounting counters.
 type UsageDetail struct {
+	TokenBreakdown *UsageTokenBreakdown `json:"TokenBreakdown,omitempty"`
 	// InputTokens is the total input token count, including cache read and cache creation tokens.
 	InputTokens int64
 	// OutputTokens is the completion or output token count.
@@ -2019,4 +2071,26 @@ type QuotaResetRequest struct {
 type QuotaResetResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message,omitempty"`
+}
+
+// UsageTokenBreakdown carries the canonical non-overlapping token accounting
+// already exposed by the SDK and usage queue. Unknown older producers omit it.
+type UsageTokenBreakdown struct {
+	SchemaVersion      int                       `json:"schema_version"`
+	Quality            string                    `json:"quality"`
+	TotalTokens        int64                     `json:"total_tokens"`
+	Input              UsageTokenInputBreakdown  `json:"input"`
+	Output             UsageTokenOutputBreakdown `json:"output"`
+	UnclassifiedTokens int64                     `json:"unclassified_tokens"`
+}
+type UsageTokenInputBreakdown struct {
+	TotalTokens      int64 `json:"total_tokens"`
+	UncachedTokens   int64 `json:"uncached_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+}
+type UsageTokenOutputBreakdown struct {
+	TotalTokens        int64 `json:"total_tokens"`
+	NonReasoningTokens int64 `json:"non_reasoning_tokens"`
+	ReasoningTokens    int64 `json:"reasoning_tokens"`
 }

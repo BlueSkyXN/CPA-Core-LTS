@@ -218,3 +218,46 @@ func TestUtlsHTTP1FailureDoesNotReplayPost(t *testing.T) {
 	}
 	tracked.requireClosed(t)
 }
+
+func TestUtlsAcceptEncodingAcrossProtocols(t *testing.T) {
+	for _, protocol := range []string{"h2", "http/1.1", ""} {
+		for _, disabled := range []bool{false, true} {
+			for _, explicit := range []string{"", "identity"} {
+				t.Run(protocol+"/"+explicit+"/"+map[bool]string{false: "legacy", true: "official"}[disabled], func(t *testing.T) {
+					tlsConn, tracked, url := newALPNTestConnection(t, protocol, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						want := explicit
+						if want == "" && !disabled {
+							want = "gzip"
+						}
+						if r.Header.Get("Accept-Encoding") != want {
+							t.Errorf("Accept-Encoding = %q, want %q", r.Header.Get("Accept-Encoding"), want)
+						}
+						_, _ = io.WriteString(w, "ok")
+					}))
+					ctx := t.Context()
+					if disabled {
+						ctx = WithoutAutoAcceptEncoding(ctx)
+					}
+					req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader("fixture"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if explicit != "" {
+						req.Header.Set("Accept-Encoding", explicit)
+					}
+					resp, err := roundTripUtlsConnection(req, tlsConn)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+						t.Fatal(err)
+					}
+					if err := resp.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					tracked.requireClosed(t)
+				})
+			}
+		}
+	}
+}

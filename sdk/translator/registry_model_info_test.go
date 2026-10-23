@@ -39,7 +39,7 @@ func TestRegistrySummaryUsesAuthoritativeModelInfo(t *testing.T) {
 				if pluginTranslation {
 					r.SetPluginHooks(&fakePluginHooks{requestTranslateBody: target, requestTranslateOK: true})
 				} else {
-					r.Register(FormatOpenAIResponse, FormatClaude, func(string, []byte, bool) []byte { return bytes.Clone(target) }, ResponseTransform{})
+					r.Register(FormatOpenAIResponse, FormatClaude, func(string, []byte, bool) ([]byte, error) { return bytes.Clone(target), nil }, ResponseTransform{})
 				}
 				out := r.TranslateRequestEnvelope(context.Background(), FormatOpenAIResponse, FormatClaude, RequestEnvelope{
 					Model: model, ModelInfo: selected, Body: []byte(`{"input":"hello","reasoning":{"summary":"auto"}}`),
@@ -72,8 +72,8 @@ func TestRegistryModelInfoPreservesNormalizerAuthority(t *testing.T) {
 					return out
 				}
 			} else {
-				r.Register(FormatOpenAIResponse, FormatClaude, func(string, []byte, bool) []byte {
-					return []byte(`{"messages":[],"max_tokens":32000}`)
+				r.Register(FormatOpenAIResponse, FormatClaude, func(string, []byte, bool) ([]byte, error) {
+					return []byte(`{"messages":[],"max_tokens":32000}`), nil
 				}, ResponseTransform{})
 				hooks.normalizeRequest = func(body []byte) []byte {
 					if gjson.GetBytes(body, "thinking.type").String() != "adaptive" || gjson.GetBytes(body, "thinking.display").String() != "summarized" {

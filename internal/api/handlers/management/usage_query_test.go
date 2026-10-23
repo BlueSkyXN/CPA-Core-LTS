@@ -15,7 +15,7 @@ func TestUsageQueryHTTPContract(t *testing.T) {
 	for _, test := range []struct {
 		body   string
 		status int
-	}{{`{}`, 200}, {`{"limit":201}`, 400}, {`{"modules":["invalid"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}, {`{"from_ms":2,"to_ms":1}`, 400}} {
+	}{{`{}`, 200}, {`{"filter":{"tier_flow":"fast_to_std","effort":"high"}}`, 200}, {`{"filter":{"tier_flow":"invalid"}}`, 400}, {`{"limit":201}`, 400}, {`{"modules":["invalid"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}, {`{"from_ms":2,"to_ms":1}`, 400}} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/usage/query/details", strings.NewReader(test.body))
@@ -30,5 +30,51 @@ func TestUsageQueryHTTPContract(t *testing.T) {
 	h.GetUsageQueryCapabilities(c)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"version":1`) || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("capability contract")
+	}
+}
+
+func TestUsageAnalyticsHTTPContract(t *testing.T) {
+	h := &Handler{usageStats: usage.NewRequestStatistics()}
+	for _, test := range []struct {
+		body   string
+		status int
+	}{{`{}`, 200}, {`{"filter":{"tier_flow":"std_to_fast","effort":""}}`, 200}, {`{"filter":{"tier_flow":"invalid"}}`, 400}, {`{"cursor":"x"}`, 400}, {`{"modules":["models"]}`, 400}, {`{"unknown":true}`, 400}, {`{} {}`, 400}, {`{"bound":"invalid"}`, 400}} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/usage/query/analytics", strings.NewReader(test.body))
+		h.QueryUsageAnalytics(c)
+		if w.Code != test.status {
+			t.Fatalf("status %d, expected %d", w.Code, test.status)
+		}
+		if w.Code == 200 && (!strings.Contains(w.Body.String(), `"analytics_version":1`) || w.Header().Get("Cache-Control") != "no-store") {
+			t.Fatal("analytics envelope")
+		}
+	}
+}
+
+func TestUsageQueryExportHTTPContract(t *testing.T) {
+	h := &Handler{usageStats: usage.NewRequestStatistics()}
+	for _, test := range []struct {
+		body   string
+		status int
+	}{
+		{`{}`, 200}, {`{"limit":1000}`, 200}, {`{"limit":1001}`, 400},
+		{`{"include_options":true}`, 400}, {`{"filter":{"tier_flow":"fast_to_std","effort":"high"}}`, 200},
+		{`{"unknown":true}`, 400}, {`{} {}`, 400},
+	} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/usage/query/export", strings.NewReader(test.body))
+		h.QueryUsageExport(c)
+		if w.Code != test.status {
+			t.Fatalf("status %d != %d", w.Code, test.status)
+		}
+		if w.Code == 200 && (strings.Contains(w.Body.String(), `"metrics"`) || w.Header().Get("Cache-Control") != "no-store") {
+			t.Fatal("export envelope")
+		}
+	}
+	caps := h.usageStats.QueryCapabilities()
+	if caps.ExportVersion != 1 || caps.MaxExportPageSize != 1000 || caps.MaxPageSize != 200 {
+		t.Fatal("capability or legacy limit changed")
 	}
 }

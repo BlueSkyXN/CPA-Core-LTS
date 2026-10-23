@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpfetch"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -74,6 +75,9 @@ func panelAuthorizationHeader(releaseURL string) string {
 		return ""
 	}
 	if token := strings.TrimSpace(os.Getenv("CLIPROXYAPI_PANEL_GITHUB_TOKEN")); token != "" {
+		return "Bearer " + token
+	}
+	if token := githubauth.TokenForURL(releaseURL); token != "" {
 		return "Bearer " + token
 	}
 	if token := strings.TrimSpace(os.Getenv("GITSTORE_GIT_TOKEN")); token != "" && isGitHubRepositoryReference(os.Getenv("GITSTORE_GIT_URL")) {

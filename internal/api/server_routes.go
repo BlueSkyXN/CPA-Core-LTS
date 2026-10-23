@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/gemini"
@@ -57,6 +58,7 @@ func (s *Server) setupRoutes() {
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
+	openaiResponsesHandlers.AccessManager = s.accessManager
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
 
 	// OpenAI compatible API routes
@@ -64,6 +66,10 @@ func (s *Server) setupRoutes() {
 	v1.Use(AuthMiddleware(s.accessManager))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		v1.GET("/models/*model", func(c *gin.Context) {
+			c.Set(handlers.ModelDetailIDContextKey, strings.TrimPrefix(c.Param("model"), "/"))
+			s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers)(c)
+		})
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/embeddings", openaiHandlers.Embeddings)
 		v1.POST("/completions", openaiHandlers.Completions)
@@ -74,6 +80,8 @@ func (s *Server) setupRoutes() {
 		v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
 		v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
 		v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
+		v1.POST("/audio/speech", openaiHandlers.AudioSpeech)
+		v1.POST("/tts", openaiHandlers.XAITTS)
 		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
@@ -153,7 +161,9 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "anthropic", state, code, errStr)
+			if cfg := s.getConfig(); cfg != nil {
+				_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(cfg.AuthDir, "anthropic", state, code, errStr)
+			}
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -167,7 +177,12 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "codex", state, code, errStr)
+			if cfg := s.getConfig(); cfg != nil {
+				if _, errWrite := managementHandlers.WriteOAuthCallbackFileForPendingSession(cfg.AuthDir, "codex", state, code, errStr); errors.Is(errWrite, managementHandlers.ErrSIWCCallbackRequiresV8) {
+					c.JSON(http.StatusConflict, gin.H{"error": "SIWC callbacks require /v8/management/oauth/callback"})
+					return
+				}
+			}
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -181,7 +196,9 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "antigravity", state, code, errStr)
+			if cfg := s.getConfig(); cfg != nil {
+				_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(cfg.AuthDir, "antigravity", state, code, errStr)
+			}
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -199,7 +216,12 @@ func (s *Server) setupRoutes() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "code or error is required"})
 			return
 		}
-		if _, errWrite := managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "devin", state, code, errStr); errWrite != nil {
+		cfg := s.getConfig()
+		authDir := ""
+		if cfg != nil {
+			authDir = cfg.AuthDir
+		}
+		if _, errWrite := managementHandlers.WriteOAuthCallbackFileForPendingSession(authDir, "devin", state, code, errStr); errWrite != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or expired OAuth callback"})
 			return
 		}
@@ -220,8 +242,10 @@ func (s *Server) codexAlphaSearchModelRouterHost() handlers.PluginModelRouterHos
 	if s.pluginHost != nil {
 		return s.pluginHost
 	}
-	if s.handlers != nil && s.handlers.ModelRouterHost != nil {
-		return s.handlers.ModelRouterHost
+	if s.handlers != nil {
+		if host := s.handlers.ModelRouterHostSnapshot(); host != nil {
+			return host
+		}
 	}
 	return nil
 }
@@ -490,7 +514,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			}
 		}
 		authType, authValue := current.AccountInfo()
-		helps.RecordAPIRequest(ctx, s.cfg, helps.UpstreamRequestLog{
+		helps.RecordAPIRequest(ctx, s.getConfig(), helps.UpstreamRequestLog{
 			URL:       upstreamURL,
 			Method:    http.MethodPost,
 			Headers:   req.Header.Clone(),
@@ -512,6 +536,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(errCtx, http.StatusRequestTimeout), gin.H{"error": errCtx.Error()})
 		return
 	}
+	cfg := s.getConfig()
 	resp, dispatched, err := performRequest(selected, selection == nil)
 	if err != nil {
 		if errors.Is(err, errMissingBaseURL) {
@@ -537,7 +562,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		} else if selection != nil {
 			selection.End("request_failed")
 		}
-		helps.RecordAPIResponseError(ctx, s.cfg, err)
+		helps.RecordAPIResponseError(ctx, cfg, err)
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": err.Error()})
 		return
 	}
@@ -561,19 +586,19 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	} else {
 		defer func() { _ = closeResponseBody() }()
 	}
-	helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
+	helps.RecordAPIResponseMetadata(ctx, cfg, resp.StatusCode, resp.Header.Clone())
 	upstreamBody, responseTooLarge, err := readCodexAlphaSearchBody(resp.Body, codexAlphaSearchResponseMaxBytes)
 	if err != nil {
-		helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
+		helps.AppendAPIResponseChunk(ctx, cfg, upstreamBody)
 		if selection != nil && resp.StatusCode == http.StatusUnauthorized {
 			s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
 		}
-		helps.RecordAPIResponseError(ctx, s.cfg, err)
+		helps.RecordAPIResponseError(ctx, cfg, err)
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": "Failed to read Codex search response"})
 		return
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
+		helps.AppendAPIResponseChunk(ctx, cfg, upstreamBody)
 	}
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
 		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
@@ -581,7 +606,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	if responseTooLarge {
 		errResponseTooLarge := errors.New("Codex search response exceeds 32 MiB")
-		helps.RecordAPIResponseError(ctx, s.cfg, errResponseTooLarge)
+		helps.RecordAPIResponseError(ctx, cfg, errResponseTooLarge)
 		c.JSON(http.StatusBadGateway, gin.H{"error": errResponseTooLarge.Error()})
 		return
 	}
@@ -654,9 +679,10 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
+		cfg := s.getConfig()
 		if _, ok := c.Request.URL.Query()["client_version"]; ok {
 			clientVersion := c.Query("client_version")
-			if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+			if cfg != nil && cfg.Home.Enabled {
 				s.handleHomeCodexClientModels(c, clientVersion)
 				return
 			}
@@ -664,7 +690,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if cfg != nil && cfg.Home.Enabled {
 			s.handleHomeModels(c)
 			return
 		}
@@ -711,7 +737,7 @@ func grokModelsFromRegistryInfos(infos []*registry.ModelInfo) []grokbuild.ModelI
 
 func (s *Server) handleGrokModels(c *gin.Context) {
 	var models []grokbuild.ModelInfo
-	if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+	if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled {
 		entries, ok := s.loadHomeModelEntries(c)
 		if !ok {
 			return
@@ -739,9 +765,10 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 		return
 	}
 
+	cfg := s.getConfig()
 	models := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
-		models = append(models, formatHomeCodexModelWithSettings(entry, s.cfg))
+		models = append(models, formatHomeCodexModelWithSettings(entry, cfg))
 	}
 
 	var webSearchCapabilityForModel codexmodels.WebSearchCapabilityForModelFunc
@@ -753,10 +780,18 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 		manager = s.handlers.AuthManager
 	}
 	var applyPatchCapabilityForModel codexmodels.ApplyPatchCapabilityForModelFunc
-	if s.cfg.Client.Codex.EnableApplyPatch {
+	if cfg != nil && cfg.Client.Codex.EnableApplyPatch {
 		applyPatchCapabilityForModel = homeApplyPatchCapabilityForModel(entries, manager)
 	}
-	payload := codexmodels.BuildResponseForClientWithToolCapabilities(models, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, s.cfg.Client.Codex.OptimizeMultiAgentV2, clientVersion)
+	optimizeMultiAgentV2 := cfg != nil && cfg.Client.Codex.OptimizeMultiAgentV2
+	var payload map[string]any
+	if responsesclaude.ClientToolSearchEnabled() {
+		payload = codexmodels.BuildResponseForClientWithSearchToolRoutes(models, nil, homeProvidersForModel(entries), webSearchCapabilityForModel, applyPatchCapabilityForModel, homeToolSearchCapabilityForModel(entries), optimizeMultiAgentV2, clientVersion)
+	} else {
+		// upstream.claude.tool-search off keeps the catalog that predates
+		// tool_search, which never consulted Home routes for search support.
+		payload = codexmodels.BuildResponseForClientWithToolCapabilities(models, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, nil, optimizeMultiAgentV2, clientVersion)
+	}
 	body, errMarshal := codexmodels.MarshalCompact(payload)
 	if errMarshal != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errMarshal.Error()})
@@ -768,6 +803,15 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 // homeApplyPatchCapabilityForModel uses only Home's exact public routing evidence,
 // never the local model registry or the template's metadata model ID.
 func homeApplyPatchCapabilityForModel(entries []homeModelEntry, manager *auth.Manager) codexmodels.ApplyPatchCapabilityForModelFunc {
+	providersForModel := homeProvidersForModel(entries)
+	return func(id string) bool {
+		return manager.SupportsApplyPatchForProviders(providersForModel(id))
+	}
+}
+
+// homeProvidersForModel returns Home's routing providers for an exact public
+// model ID. An empty entry stands for an unknown route so it can veto support.
+func homeProvidersForModel(entries []homeModelEntry) codexmodels.ProvidersForModelFunc {
 	providersByID := make(map[string][]string, len(entries))
 	for _, entry := range entries {
 		id := strings.TrimSpace(entry.id)
@@ -783,8 +827,31 @@ func homeApplyPatchCapabilityForModel(entries []homeModelEntry, manager *auth.Ma
 			}
 		}
 	}
+	return func(id string) []string {
+		return providersByID[strings.TrimSpace(id)]
+	}
+}
+
+// homeToolSearchCapabilityForModel trusts Home's per-route tool_search flag and
+// requires it on every route of the model. A Home that predates the flag never
+// enables native tool search.
+func homeToolSearchCapabilityForModel(entries []homeModelEntry) codexmodels.ToolSearchCapabilityForModelFunc {
+	routesByID := make(map[string][]registry.NativeCapabilityRoute, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.id)
+		routesByID[id] = append(routesByID[id], entry.nativeCapabilityRoutes...)
+	}
 	return func(id string) bool {
-		return manager.SupportsApplyPatchForProviders(providersByID[strings.TrimSpace(id)])
+		routes := routesByID[strings.TrimSpace(id)]
+		if len(routes) == 0 {
+			return false
+		}
+		for _, route := range routes {
+			if route.NativeCapabilities == nil || route.NativeCapabilities.ToolSearch == nil || !*route.NativeCapabilities.ToolSearch {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -863,7 +930,7 @@ func formatHomeCodexModelWithSettings(entry homeModelEntry, cfg *config.Config) 
 
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled {
 			s.handleHomeGeminiModels(c)
 			return
 		}
@@ -874,7 +941,7 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled {
 			s.handleHomeGeminiModel(c)
 			return
 		}
@@ -905,7 +972,8 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 	isClaude := isAnthropicModelsRequest(c)
 
 	if isClaude {
-		disableCloaking := s.cfg != nil && s.cfg.ClaudeCode.DisableCloakingModelList
+		cfg := s.getConfig()
+		disableCloaking := cfg != nil && cfg.ClaudeCode.DisableCloakingModelList
 		s.writeModelListResponse(c, "claude", claudemodels.BuildResponse(formatHomeClaudeModels(entries), disableCloaking))
 		return
 	}
@@ -1158,13 +1226,22 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 	if err := json.Unmarshal(raw, &bySection); err != nil {
 		return nil, fmt.Errorf("parse home models payload: %w", err)
 	}
-	if len(bySection) == 0 {
-		return nil, fmt.Errorf("home models payload has no sections")
+	if bySection == nil {
+		return nil, fmt.Errorf("home models payload is not an object")
+	}
+	// The error envelope must never be interpreted as a provider model section.
+	if _, hasError := bySection["error"]; hasError {
+		return nil, fmt.Errorf("home models payload contains an error envelope")
 	}
 
 	indexByID := make(map[string]int)
 	out := make([]homeModelEntry, 0, 256)
+	hasModelRecords := false
 	for section, models := range bySection {
+		if models == nil {
+			return nil, fmt.Errorf("home models section %q is null", section)
+		}
+		hasModelRecords = hasModelRecords || len(models) > 0
 		provider := strings.ToLower(strings.TrimSpace(section))
 		for _, model := range models {
 			id, _ := model["id"].(string)
@@ -1215,7 +1292,9 @@ func decodeHomeModels(raw []byte) ([]homeModelEntry, error) {
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
-	if len(out) == 0 {
+	// An empty catalog is valid when the client's access scopes have no routes.
+	// Non-empty sections with no usable model IDs still indicate malformed data.
+	if len(out) == 0 && hasModelRecords {
 		return nil, fmt.Errorf("home models payload contains no models")
 	}
 	return out, nil
@@ -1226,11 +1305,14 @@ func homeModelNativeCapabilities(model map[string]any) *registry.NativeCapabilit
 	if !ok {
 		return nil
 	}
-	webSearch, ok := raw["web_search"].(bool)
-	if !ok {
-		return &registry.NativeCapabilities{}
+	capabilities := &registry.NativeCapabilities{}
+	if webSearch, okWebSearch := raw["web_search"].(bool); okWebSearch {
+		capabilities.WebSearch = &webSearch
 	}
-	return &registry.NativeCapabilities{WebSearch: &webSearch}
+	if toolSearch, okToolSearch := raw["tool_search"].(bool); okToolSearch {
+		capabilities.ToolSearch = &toolSearch
+	}
+	return capabilities
 }
 
 func appendUniqueHomeProvider(providers []string, provider string) []string {

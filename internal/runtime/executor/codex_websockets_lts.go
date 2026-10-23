@@ -19,6 +19,7 @@ import (
 )
 
 type codexWebsocketConnectionKey struct {
+	useSIWC               bool
 	authID                string
 	wsURL                 string
 	proxyURL              string
@@ -56,12 +57,19 @@ func (s *codexWebsocketSession) setActiveConnection(connection codexWebsocketCon
 		s.connMu.Unlock()
 		return nil, fmt.Errorf("codex websockets executor: session is closed")
 	}
+	s.activeMu.Lock()
+	if s.terminalConn == connection.conn && s.terminalErr != nil {
+		err := s.terminalErr
+		s.activeMu.Unlock()
+		s.connMu.Unlock()
+		return nil, err
+	}
 	if connection.conn == nil || s.conn != connection.conn || s.connGen != connection.generation {
+		s.activeMu.Unlock()
 		s.connMu.Unlock()
 		return nil, fmt.Errorf("codex websockets executor: connection generation is no longer current")
 	}
 	signal := newCodexWebsocketRequestSignal()
-	s.activeMu.Lock()
 	if s.active.signal != nil {
 		s.active.signal.cancel(context.Canceled)
 	}
@@ -166,6 +174,8 @@ func (s *codexWebsocketSession) detachConnectionRef(connection codexWebsocketCon
 		closer = s.connCloser
 		s.conn = nil
 		s.connCloser = nil
+		s.connCfg = nil
+		s.hasConnCfg = false
 		s.multiAgentV2OptimizedGen = 0
 		s.connKey = codexWebsocketConnectionKey{}
 		s.connGen++

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -66,6 +67,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
 
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-policy")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-request-scoped-errors")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-settings")
@@ -88,7 +90,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 			setYAMLPathWithComments(original.Content[0], alias.old, copy)
 		}
 	}
-	normalizeCollectionNodeStyles(original.Content[0])
+	NormalizeCollectionNodeStyles(original.Content[0])
 
 	// Encode and validate the layout before opening the destination for writing.
 	var buf bytes.Buffer
@@ -130,17 +132,27 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	if err != nil {
 		return err
 	}
-	var root yaml.Node
-	if err = yaml.Unmarshal(data, &root); err != nil {
+	data, err = updateNestedScalarYAML(data, path, value)
+	if err != nil {
 		return err
 	}
+	return os.WriteFile(configFile, data, 0600)
+}
+
+// updateNestedScalarYAML returns data with the nested scalar key path like ["a","b"] set to
+// value, preserving comments and positions.
+func updateNestedScalarYAML(data []byte, path []string, value string) ([]byte, error) {
+	var root yaml.Node
+	if errUnmarshal := yaml.Unmarshal(data, &root); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
 	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return fmt.Errorf("invalid yaml document structure")
+		return nil, fmt.Errorf("invalid yaml document structure")
 	}
 	// Resolve aliases and merge keys before updating a path. Otherwise replacing
 	// an alias with a mapping drops inherited siblings or mutates a shared anchor.
-	if err = decodeConfigShape(root.Content[0]); err != nil {
-		return err
+	if errDecode := decodeConfigShape(root.Content[0]); errDecode != nil {
+		return nil, errDecode
 	}
 	root.Content[0] = expandConfigAliases(root.Content[0])
 	node := root.Content[0]
@@ -161,24 +173,17 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 			node = next
 		}
 	}
-	f, err := os.Create(configFile)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err = enc.Encode(&root); err != nil {
+	if errEncode := enc.Encode(&root); errEncode != nil {
 		_ = enc.Close()
-		return err
+		return nil, errEncode
 	}
-	if err = enc.Close(); err != nil {
-		return err
+	if errClose := enc.Close(); errClose != nil {
+		return nil, errClose
 	}
-	data = NormalizeCommentIndentation(buf.Bytes())
-	_, err = f.Write(data)
-	return err
+	return NormalizeCommentIndentation(buf.Bytes()), nil
 }
 
 // NormalizeCommentIndentation removes indentation from standalone YAML comment lines to keep them left aligned.
@@ -383,9 +388,23 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		return false
 	}
 
+	// session-date-pin-days is pointer-backed: only an explicit zero is
+	// preserved; the default value must not pollute saves.
+	if len(path) > 0 && path[len(path)-1] == "session-date-pin-days" && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!int" && node.Value == "0" {
+		return false
+	}
+
 	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved.
 	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
 		return false
+	}
+
+	// A parent mapping carrying an explicit session-date-pin-days value must
+	// survive the zero-value check below, or the new key is never written.
+	if node != nil && node.Kind == yaml.MappingNode {
+		if pinIdx := findMapKeyIndex(node, "session-date-pin-days"); pinIdx >= 0 {
+			return false
+		}
 	}
 
 	// First check if it's a zero value
@@ -421,6 +440,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		switch fullPath {
 		case "error-logs-max-files":
 			return node.Value == "10"
+		case "claude.session-date-pin-days":
+			return node.Value == strconv.Itoa(DefaultClaudeSessionDatePinDays)
 		}
 	}
 
@@ -841,18 +862,46 @@ func shouldPruneNestedMappingKeys(path []string) bool {
 	}
 }
 
-// normalizeCollectionNodeStyles forces YAML collections to use block notation, keeping
+// NormalizeCollectionNodeStyles forces YAML collections to use block notation, keeping
 // lists and maps readable. Empty sequences retain flow style ([]) so empty list markers
-// remain compact.
-func normalizeCollectionNodeStyles(node *yaml.Node) {
+// remain compact. It also clears double quotes from string mapping keys so JSON-derived
+// keys render as standard unquoted YAML keys.
+func NormalizeCollectionNodeStyles(node *yaml.Node) {
+	root := node
+	if root != nil && root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+	var opaque *yaml.Node
+	if plugins, index := pluginConfigsValue(root); plugins != nil {
+		opaque = plugins.Content[index+1]
+	}
+	normalizeCollectionNodeStyles(node, opaque)
+}
+
+func normalizeCollectionNodeStyles(node, opaque *yaml.Node) {
 	if node == nil {
 		return
 	}
+	// 插件自有 YAML 的样式、类型化 key 和 merge 语义不由宿主正规化。
+	if node == opaque {
+		return
+	}
 	switch node.Kind {
+	case yaml.DocumentNode:
+		for i := range node.Content {
+			normalizeCollectionNodeStyles(node.Content[i], opaque)
+		}
 	case yaml.MappingNode:
 		node.Style = 0
-		for i := range node.Content {
-			normalizeCollectionNodeStyles(node.Content[i])
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key != nil && key.Kind == yaml.ScalarNode && key.Tag == "!!str" && key.Style == yaml.DoubleQuotedStyle {
+				key.Style = 0
+			}
+			normalizeCollectionNodeStyles(key, opaque)
+			if i+1 < len(node.Content) {
+				normalizeCollectionNodeStyles(node.Content[i+1], opaque)
+			}
 		}
 	case yaml.SequenceNode:
 		if len(node.Content) == 0 {
@@ -861,7 +910,7 @@ func normalizeCollectionNodeStyles(node *yaml.Node) {
 			node.Style = 0
 		}
 		for i := range node.Content {
-			normalizeCollectionNodeStyles(node.Content[i])
+			normalizeCollectionNodeStyles(node.Content[i], opaque)
 		}
 	default:
 		// Scalars keep their existing style to preserve quoting
