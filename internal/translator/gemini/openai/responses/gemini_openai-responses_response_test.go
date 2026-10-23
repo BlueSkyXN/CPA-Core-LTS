@@ -266,7 +266,7 @@ func TestConvertGeminiResponseToOpenAIResponses_ConsecutiveSignedVisibleTextPres
 
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	var visibleParts []gjson.Result
 	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
 		if !part.Get("thought").Bool() && part.Get("text").String() != "" {
@@ -292,7 +292,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_ConsecutiveSignedVisibl
 	outputWithoutIDs, _ = sjson.DeleteBytes(outputWithoutIDs, "2.id")
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", outputWithoutIDs)
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	var visibleParts []gjson.Result
 	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
 		if !part.Get("thought").Bool() && part.Get("text").String() != "" {
@@ -322,7 +322,7 @@ func TestConvertGeminiResponseToOpenAIResponses_SignedVisibleThenUnsignedPreserv
 	}
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("text").String() != "signed" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || parts[1].Get("text").String() != "unsigned" || parts[1].Get("thoughtSignature").String() != "" {
 		t.Fatalf("signed/unsigned visible boundary changed: output=%s translated=%s", completed.Raw, translated)
@@ -356,7 +356,7 @@ func TestConvertGeminiResponseToOpenAIResponses_LeadingCarrierDoesNotCrossSigned
 	for name, output := range map[string]gjson.Result{"stream": streamOutput, "non-stream": gjson.GetBytes(nonStream, "output")} {
 		request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 		request, _ = sjson.SetRawBytes(request, "input", []byte(output.Raw))
-		translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+		translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 		parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 		if len(parts) != 3 || !parts[0].Get("text").Exists() || parts[0].Get("text").String() != "" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || parts[1].Get("text").String() != "reason" || !parts[1].Get("thought").Bool() || parts[1].Get("thoughtSignature").String() != signature2 || parts[2].Get("text").String() != "answer" || parts[2].Get("thoughtSignature").String() != "" {
 			t.Fatalf("%s leading carrier crossed signed thought: output=%s translated=%s", name, output.Raw, translated)
@@ -369,7 +369,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_SignedVisibleThenUnsign
 	out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3.6-flash-high", nil, nil, raw, nil)
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(gjson.GetBytes(out, "output").Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("text").String() != "signed" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || parts[1].Get("text").String() != "unsigned" || parts[1].Get("thoughtSignature").String() != "" {
 		t.Fatalf("non-stream signed/unsigned visible boundary changed: output=%s translated=%s", gjson.GetBytes(out, "output").Raw, translated)
@@ -382,7 +382,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_TrailingCarrierDirectio
 	out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-3.6-flash-high", nil, nil, raw, nil)
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(gjson.GetBytes(out, "output").Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("text").String() != "answer" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[1].Get("thoughtSignature").String() != signature2 {
 		t.Fatalf("non-stream trailing carrier changed direction: output=%s translated=%s", gjson.GetBytes(out, "output").Raw, translated)
@@ -411,7 +411,7 @@ func TestConvertGeminiResponseToOpenAIResponses_TrailingCarrierDirectionSurvives
 	withoutIDs, _ = sjson.DeleteBytes(withoutIDs, "2.id")
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", withoutIDs)
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("text").String() != "answer" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[1].Get("thoughtSignature").String() != signature2 {
 		t.Fatalf("ID-stripped trailing carrier changed direction: output=%s translated=%s", completed.Raw, translated)
@@ -458,7 +458,7 @@ func TestConvertGeminiResponseToOpenAIResponses_VisibleSignatureDoesNotOverwrite
 	}
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	var signatures []string
 	visibleSignature := ""
 	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
@@ -496,6 +496,10 @@ func TestConvertGeminiResponseToOpenAIResponses_FlushesVisibleSignatureBeforeLat
 	if decodedResponsesCarrierSignature(t, completed.Get("0.encrypted_content").String()) != testResponsesGeminiThoughtSignature || completed.Get("1.type").String() != "message" || decodedResponsesCarrierSignature(t, completed.Get("2.encrypted_content").String()) != signature2 || decodedResponsesCarrierSignature(t, completed.Get("3.encrypted_content").String()) != signature3 {
 		t.Fatalf("visible signature crossed later thought: %s", completed.Raw)
 	}
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(`{"input":`+completed.Raw+`}`), false)
+	if gjson.GetBytes(translated, "contents.0.parts.1.text").String() != "answer" || gjson.GetBytes(translated, "contents.0.parts.1.thoughtSignature").String() != signature2 || gjson.GetBytes(translated, "contents.0.parts.2.text").String() != "thought-c" {
+		t.Fatalf("cached visible signature crossed later thought on replay: %s", translated)
+	}
 }
 
 func TestConvertGeminiResponseToOpenAIResponses_FunctionAndTrailingSignaturesRoundTrip(t *testing.T) {
@@ -517,7 +521,7 @@ func TestConvertGeminiResponseToOpenAIResponses_FunctionAndTrailingSignaturesRou
 	}
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	var signatures []string
 	for _, content := range gjson.GetBytes(translated, "contents").Array() {
 		for _, part := range content.Get("parts").Array() {
@@ -566,7 +570,7 @@ func TestConvertGeminiResponseToOpenAIResponses_FunctionThenTrailingSignatureHas
 		}
 		request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 		request, _ = sjson.SetRawBytes(request, "input", []byte(output.Raw))
-		translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+		translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 		parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 		if len(parts) != 2 || parts[0].Get("text").String() != "preamble" || parts[1].Get("functionCall.name").String() != "run_command" || parts[1].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature {
 			t.Fatalf("%s trailing function signature did not replay: %s", name, translated)
@@ -647,7 +651,7 @@ func TestConvertGeminiResponseToOpenAIResponses_LeadingEmptyAndSignedTextRoundTr
 	}
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	var signatures []string
 	visibleSignature := ""
 	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
@@ -685,7 +689,7 @@ func TestConvertGeminiResponseToOpenAIResponses_SignedTextAndTrailingSignatureRo
 	}
 	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
 	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	var signatures []string
 	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
 		if signature := part.Get("thoughtSignature").String(); signature != "" {
@@ -963,7 +967,7 @@ func TestConvertGeminiResponseToOpenAIResponses_PreservesTextAroundFunction(t *t
 	functionOutput := []byte(`{"type":"function_call_output","call_id":"","output":"ok"}`)
 	functionOutput, _ = sjson.SetBytes(functionOutput, "call_id", completed.Get("1.call_id").String())
 	request, _ = sjson.SetRawBytes(request, "input.-1", functionOutput)
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 	contents := gjson.GetBytes(translated, "contents").Array()
 	if len(contents) != 2 || contents[0].Get("role").String() != "model" || contents[1].Get("role").String() != "user" {
 		t.Fatalf("mixed turn round-trip roles malformed: %s", translated)
@@ -1012,7 +1016,7 @@ func TestConvertGeminiResponseToOpenAIResponses_PendingSignatureBeforeFunctionRo
 	functionOutput := []byte(`{"type":"function_call_output","call_id":"","output":"ok"}`)
 	functionOutput, _ = sjson.SetBytes(functionOutput, "call_id", callID)
 	request, _ = sjson.SetRawBytes(request, "input.-1", functionOutput)
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 
 	functionSignature := ""
 	detachedSignatures := 0
@@ -1059,7 +1063,7 @@ func TestConvertGeminiResponseToOpenAIResponses_SignedTextBeforeSignedFunctionRo
 	functionOutput := []byte(`{"type":"function_call_output","call_id":"","output":"ok"}`)
 	functionOutput, _ = sjson.SetBytes(functionOutput, "call_id", callID)
 	request, _ = sjson.SetRawBytes(request, "input.-1", functionOutput)
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
 
 	var textSignature, functionSignature string
 	for _, content := range gjson.GetBytes(translated, "contents").Array() {
@@ -1132,6 +1136,10 @@ func TestConvertGeminiResponseToOpenAIResponses_DetachedSignatureAfterVisibleTex
 	}
 	if got := decodedResponsesCarrierSignature(t, completedOutput.Get("1.encrypted_content").String()); got != testResponsesGeminiThoughtSignature {
 		t.Fatalf("completed detached signature = %q, want %q; output=%s", got, testResponsesGeminiThoughtSignature, completedOutput.Raw)
+	}
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", []byte(`{"input":`+completedOutput.Raw+`}`), false)
+	if gjson.GetBytes(translated, "contents.0.parts.0.thoughtSignature").String() != testResponsesGeminiThoughtSignature {
+		t.Fatalf("cached signature was not replayed: %s", translated)
 	}
 }
 

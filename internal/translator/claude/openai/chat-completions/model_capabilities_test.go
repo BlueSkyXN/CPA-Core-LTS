@@ -44,8 +44,11 @@ func TestChatEnvelopeSelectedCapabilities(t *testing.T) {
 			})
 		}
 	}
-	for _, convert := range []func(string, []byte, bool) []byte{ConvertOpenAIRequestToClaude, ConvertOpenAIRequestToClaudeWithCompat} {
-		out := convert(model, []byte(`{"reasoning_effort":"max","max_tokens":64000}`), false)
+	for _, convert := range []func(string, []byte, bool) ([]byte, error){ConvertOpenAIRequestToClaude, ConvertOpenAIRequestToClaudeWithCompat} {
+		out, err := convert(model, []byte(`{"reasoning_effort":"max","max_tokens":64000}`), false)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if gjson.GetBytes(out, "output_config.effort").String() != "high" || gjson.GetBytes(out, "max_tokens").Int() != 64000 {
 			t.Fatal("legacy wrapper changed")
 		}

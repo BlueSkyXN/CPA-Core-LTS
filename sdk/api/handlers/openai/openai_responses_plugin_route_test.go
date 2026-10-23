@@ -88,13 +88,13 @@ func TestResponsesStreamTrueReachesPluginExecutorStream(t *testing.T) {
 
 func TestResponsesWithoutStreamParsesPluginUsage(t *testing.T) {
 	traceID := uuid.NewString()
-	plugin := &responsesUsageCapture{traceID: traceID, records: make(chan usage.Record, 4)}
+	plugin := &responsesUsageCapture{traceID: traceID, model: "commandcode/deepseek/usage-test", records: make(chan usage.Record, 4)}
 	usage.RegisterNamedPlugin("test-responses-plugin-route-usage", plugin)
 	t.Cleanup(func() {
 		usage.RegisterNamedPlugin("test-responses-plugin-route-usage", responsesUsageNop{})
 	})
 
-	handler, host, ctx := newResponsesPluginRouteContext(t, `{"model":"commandcode/deepseek/deepseek-v4.1-flash","input":[{"role":"user","type":"message","content":"Write me a poem"}]}`)
+	handler, host, ctx := newResponsesPluginRouteContext(t, `{"model":"commandcode/deepseek/usage-test","input":[{"role":"user","type":"message","content":"Write me a poem"}]}`)
 	ctx.Request = ctx.Request.WithContext(logging.WithRequestID(ctx.Request.Context(), traceID))
 	host.execPayload = []byte(`{"id":"resp_1","object":"response","service_tier":"default","usage":{"input_tokens":34,"output_tokens":499,"total_tokens":533}}`)
 	handler.Responses(ctx)
@@ -124,10 +124,11 @@ func TestResponsesWithoutStreamParsesPluginUsage(t *testing.T) {
 type responsesUsageCapture struct {
 	traceID string
 	records chan usage.Record
+	model   string
 }
 
 func (p *responsesUsageCapture) HandleUsage(_ context.Context, record usage.Record) {
-	if record.Provider != "commandcode" || record.TraceID != p.traceID {
+	if record.Provider != "commandcode" || record.TraceID != p.traceID || (p.model != "" && record.Model != p.model) {
 		return
 	}
 	select {

@@ -30,30 +30,31 @@ const defaultClaudeResponsesMaxTokens = 64000
 //   - top-level tools and input[].additional_tools -> Claude tools[].input_schema
 //   - max_output_tokens -> max_tokens
 //   - stream passthrough via parameter
-func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, nil, false)
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithCompat preserves reasoning items
 // whose encrypted content is empty for configured compatibility endpoints.
-func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, nil, false)
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithModelInfo lets executor adapters
 // pass the selected model metadata; a model that declares the BigModel search
 // replay protocol also unlocks refer-tagged search history replay.
-func ConvertOpenAIResponsesRequestToClaudeWithModelInfo(modelName string, inputRawJSON []byte, stream bool, modelInfo *registry.ModelInfo) []byte {
+func ConvertOpenAIResponsesRequestToClaudeWithModelInfo(modelName string, inputRawJSON []byte, stream bool, modelInfo *registry.ModelInfo) ([]byte, error) {
 	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, modelInfo, false)
 }
 
-func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo, countOnly bool) []byte {
+func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo, countOnly bool) ([]byte, error) {
 	// modelInfo keeps its caller-supplied value as the authority flag; metadata-free
 	// callers fall back to the legacy global lookup for capability hints.
 	resolvedModelInfo := modelInfo
 	if resolvedModelInfo == nil {
 		resolvedModelInfo = registry.LookupModelInfo(modelName, "claude")
 	}
+	var drops common.UserTurnDrops
 	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
 	// 字符串 input 是 Responses 的 user 消息简写，不能在数组遍历时丢失。
 	if input := gjson.GetBytes(rawJSON, "input"); input.Type == gjson.String {
@@ -348,6 +349,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			// Determine role and construct Claude-compatible content parts.
 			var role string
 			var partsJSON [][]byte
+			var droppedPartType string
 			if parts := item.Get("content"); parts.Exists() && parts.IsArray() {
 				parts.ForEach(func(_, part gjson.Result) bool {
 					ptype := part.Get("type").String()
@@ -433,6 +435,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 							if role == "" {
 								role = "user"
 							}
+						} else if droppedPartType == "" {
+							droppedPartType = ptype
+						}
+					case "input_audio":
+						// Claude has no audio block, so the part cannot be sent.
+						if droppedPartType == "" {
+							droppedPartType = ptype
 						}
 					}
 					return true
@@ -452,6 +461,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				default:
 					role = "user"
 				}
+			}
+
+			if role == "user" {
+				if droppedPartType != "" {
+					drops.Drop(droppedPartType)
+				}
+				drops.EndTurn(len(partsJSON))
 			}
 
 			if len(partsJSON) > 0 {
@@ -671,7 +687,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 		out, _ = sjson.SetBytes(out, "tool_choice.disable_parallel_tool_use", true)
 	}
-	return thinking.ApplySummaryConfigWithModelInfo(out, "claude", modelName, resolvedModelInfo, thinking.ExtractSummaryConfig(rawJSON, "openai-response"))
+	return thinking.ApplySummaryConfigWithModelInfo(out, "claude", modelName, resolvedModelInfo, thinking.ExtractSummaryConfig(rawJSON, "openai-response")), drops.Err()
 }
 
 func defaultClaudeResponsesMaxTokensForModel(modelInfo *registry.ModelInfo) int {
@@ -764,12 +780,39 @@ func stripTrailingClaudeThinkingBlocks(messages [][]byte) [][]byte {
 // disallows trailing assistant prefill in its conversation history.
 func claudeModelRejectsAssistantPrefill(modelName string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	for _, family := range []string{"fable", "opus-5", "sonnet-4-6"} {
-		if strings.Contains(normalized, family) {
-			return true
-		}
+	// Provider namespaces are not part of the model family.
+	if index := strings.LastIndexByte(normalized, '/'); index >= 0 {
+		normalized = normalized[index+1:]
 	}
-	return false
+	normalized = strings.TrimPrefix(normalized, "claude-")
+	tokens := strings.Split(strings.ReplaceAll(normalized, ".", "-"), "-")
+	if tokens[0] == "fable" {
+		return true
+	}
+	if len(tokens) < 2 || (tokens[0] != "opus" && tokens[0] != "sonnet") {
+		return false
+	}
+	parseVersion := func(token string) int {
+		// Eight-digit snapshot dates must never be treated as versions.
+		if token == "" || len(token) >= 8 {
+			return -1
+		}
+		for _, digit := range token {
+			if digit < '0' || digit > '9' {
+				return -1
+			}
+		}
+		version, errAtoi := strconv.Atoi(token)
+		if errAtoi != nil {
+			return -1
+		}
+		return version
+	}
+	major := parseVersion(tokens[1])
+	if major >= 5 {
+		return true
+	}
+	return tokens[0] == "sonnet" && major == 4 && len(tokens) > 2 && parseVersion(tokens[2]) >= 6
 }
 
 // responsesSystemUnsupportedBlock represents a system-level content part that

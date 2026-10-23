@@ -1029,7 +1029,11 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			}
 			envelope.ModelInfo = modelInfo
 		}
-		nativeReq.Payload = sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope).Body
+		translated := sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope)
+		if translated.Err != nil {
+			return preparedExecutorCall{}, translated.Err
+		}
+		nativeReq.Payload = translated.Body
 	}
 	nativeReq.Format = outputFormat
 	nativeOpts.SourceFormat = inputFormat

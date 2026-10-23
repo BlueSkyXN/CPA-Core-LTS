@@ -55,6 +55,8 @@ func resultForAuth(auth *Auth, provider, model string, success bool, resultErr *
 	}
 	if auth != nil {
 		result.AuthID = auth.ID
+		result.CredentialVersion = auth.CredentialVersion
+		result.RegistrationEpoch = auth.RegistrationEpoch
 	}
 	return result
 }
@@ -66,6 +68,9 @@ func resultForAuthWithOptions(auth *Auth, provider, model string, success bool, 
 }
 
 func resultMatchesAuthGeneration(ctx context.Context, result Result, auth *Auth) bool {
+	if isStaleExecutionResult(result, auth) {
+		return false
+	}
 	if auth != nil {
 		resultProvider := strings.TrimSpace(result.Provider)
 		authProvider := strings.TrimSpace(auth.Provider)

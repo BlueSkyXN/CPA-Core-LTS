@@ -8,6 +8,8 @@ package config
 type Config struct {
 	// FlowControl is opt-in and independent of Home credential concurrency.
 	FlowControl FlowControlConfig `yaml:"flow-control,omitempty" json:"flow-control,omitempty"`
+	// Models selects optional catalog sources independently for each catalog.
+	Models ModelCatalogs `yaml:"models" json:"models"`
 
 	SDKConfig `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
@@ -15,6 +17,9 @@ type Config struct {
 	Host string `yaml:"host" json:"-"`
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
+
+	// GitHubToken is the global token for GitHub requests, taking precedence over GITHUB_TOKEN.
+	GitHubToken string `yaml:"github-token" json:"-"`
 
 	// TrustedProxies lists the IPs or CIDRs allowed to provide forwarded client IP headers.
 	// The server applies this list at startup; changing it requires a restart.

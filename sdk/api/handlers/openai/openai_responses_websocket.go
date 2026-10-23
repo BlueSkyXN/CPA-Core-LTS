@@ -368,24 +368,28 @@ func truncateWebsocketCloseReason(reason string, maxBytes int) string {
 
 // ResponsesWebsocket handles websocket requests for /v1/responses.
 // It accepts `response.create` and `response.append` requests and streams
-// response events back as JSON websocket text messages.
+// response events back as JSON websocket text messages. `response.interrupt`
+// is forwarded to the current Codex upstream socket without starting a new turn.
 func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, websocketUpgradeHeaders(c.Request))
 	if err != nil {
 		return
 	}
-	downstreamCtx, downstreamCancel := context.WithCancel(c.Request.Context())
-	c.Request = c.Request.WithContext(downstreamCtx)
-	inboundMessages := make(chan responsesWebsocketInboundMessage, responsesWebsocketInboundQueueSize)
-	readErrors := make(chan error, 1)
-	go pumpResponsesWebsocketReads(downstreamCtx, downstreamCancel, conn, inboundMessages, readErrors)
-	defer downstreamCancel()
-	var duplexInput <-chan cliproxyexecutor.WebsocketInput
-	if h != nil && h.Cfg != nil && h.Cfg.CodexResponseSteering {
-		duplexInput = inboundMessages
-	}
 	writer := newResponsesWebsocketWriter(conn)
 	passthroughSessionID := uuid.NewString()
+	socketCtx, cancelSocket := context.WithCancelCause(c.Request.Context())
+	defer cancelSocket(nil)
+	c.Request = c.Request.WithContext(socketCtx)
+	// The reader owns the client socket so an in-flight interrupt is not stuck
+	// behind the response currently being forwarded.
+	localInterrupt := newResponsesLocalInterrupt()
+	input := readResponsesWebsocketInput(socketCtx, cancelSocket, conn, func(payload []byte) error {
+		return h.forwardResponsesWebsocketInterrupt(socketCtx, passthroughSessionID, payload)
+	}, localInterrupt, writer)
+	var duplexInput <-chan cliproxyexecutor.WebsocketInput
+	if h != nil && h.Cfg != nil && h.Cfg.CodexResponseSteering {
+		duplexInput = input
+	}
 	callerScope := responsesWebsocketCallerScope(c)
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
 	retainResponsesWebsocketToolCaches(downstreamSessionKey)
@@ -513,7 +517,22 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	forceTranscriptReplayNextRequest := false
 
 	for {
-		message, errReadMessage := nextResponsesWebsocketInboundMessage(downstreamCtx, inboundMessages, readErrors)
+		var msgType int
+		var payload []byte
+		var errReadMessage error
+		select {
+		case message, ok := <-input:
+			if !ok {
+				errReadMessage = context.Cause(socketCtx)
+			} else {
+				msgType, payload, errReadMessage = websocket.TextMessage, message.Payload, message.Err
+			}
+		case <-socketCtx.Done():
+			errReadMessage = context.Cause(socketCtx)
+		}
+		if errReadMessage != nil && errors.Is(errReadMessage, context.Canceled) {
+			return
+		}
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
@@ -523,8 +542,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			return
 		}
-		msgType := websocket.TextMessage
-		payload := message.Payload
 		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
 			continue
 		}
@@ -875,11 +892,12 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				duplexStream:             codexDuplexStream.Load,
 				toolCacheTurn:            toolCacheTurn,
 				suppressError:            replayPinnedAuthFailure,
+				localInterrupt:           localInterrupt,
 			},
 		)
 		if errForward != nil {
 			wsTerminateErr = errForward
-			if errRead := pendingResponsesWebsocketReadError(readErrors); errRead != nil {
+			if errRead := context.Cause(socketCtx); errRead != nil {
 				wsTerminateErr = errRead
 			}
 			switch {

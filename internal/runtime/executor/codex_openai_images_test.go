@@ -387,9 +387,17 @@ func TestPrepareCodexOpenAIImageBodyMergesMetadataBeforePayloadRules(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := NewCodexExecutor(&config.Config{Payload: tt.payload})
-			body, err := executor.prepareCodexOpenAIImageBody(translated, cliproxyexecutor.Request{Model: "gpt-image-legacy", Payload: source}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false), codexOpenAIImagesMainModel)
+			req := cliproxyexecutor.Request{Model: "gpt-image-legacy", Payload: source}
+			opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, false)
+			body, err := executor.prepareCodexOpenAIImageBody(translated, req, opts, codexOpenAIImagesMainModel)
 			if err != nil {
 				t.Fatalf("prepareCodexOpenAIImageBody() error = %v", err)
+			}
+			opts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
+			ctx := helps.WithPayloadFinalizer(context.Background(), helps.NewPayloadFinalizer(executor.cfg, executor.Identifier(), codexOpenAIImagesMainModel, "codex", "", preserveCodexImageClientMetadata(translated, source), req, opts))
+			_, body, _, err = executor.cacheHelper(ctx, opts.SourceFormat, "https://example.com/responses", nil, req, source, body, opts.Headers)
+			if err != nil {
+				t.Fatalf("cacheHelper() error = %v", err)
 			}
 			if !gjson.GetBytes(body, "client_metadata.transport_marker").Bool() {
 				t.Fatalf("translated metadata was replaced instead of merged: %s", body)

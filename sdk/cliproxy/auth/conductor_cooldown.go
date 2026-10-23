@@ -524,6 +524,8 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	registeredModels := modelsForRegisteredAuth(authID)
 	cooldownStateChanged := false
 
+	releaseMutation := m.lockAuthMutation(authID)
+	defer releaseMutation()
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
 	if !ok || auth == nil {
@@ -573,10 +575,9 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 	}
+	errPersist := m.persistLocked(ctx, auth)
 	m.mu.Unlock()
-	// persist re-reads m.auths under m.mu, so it must run outside this critical
-	// section; snapshot already carries the post-reset credential state.
-	errPersist := m.persist(ctx, snapshot)
+	releaseMutation()
 
 	defer func() {
 		if cooldownStateChanged {
@@ -795,6 +796,18 @@ func cooldownReason(statusMessage string, quota QuotaState, lastErr *Error) stri
 	return ""
 }
 
+// isStaleExecutionResult reports whether an execution result originated from a superseded
+// credential version or an earlier registration epoch than the currently active auth.
+func isStaleExecutionResult(result Result, current *Auth) bool {
+	if current == nil {
+		return false
+	}
+	staleVersion := result.CredentialVersion < current.CredentialVersion && (result.CredentialVersion > 0 || current.CredentialVersion > 1)
+	staleEpoch := result.RegistrationEpoch > 0 && result.RegistrationEpoch < current.RegistrationEpoch
+	return staleVersion || staleEpoch
+}
+
+// MarkResult records an execution result and notifies hooks.
 func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if result.AuthID == "" {
 		return
@@ -817,10 +830,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := modelStateKey(result.Provider, result.Model)
 
 	var authSnapshot *Auth
-	var pendingPersist *Auth
 	cooldownStateChanged := false
 	now := time.Now()
 
+	releaseMutation := m.lockAuthMutation(result.AuthID)
+	defer releaseMutation()
 	m.mu.Lock()
 	auth := m.auths[result.AuthID]
 	if auth != nil {
@@ -1119,17 +1133,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
+		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
-		pendingPersist = authSnapshot
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 		}
 	}
 	m.mu.Unlock()
-	if pendingPersist != nil {
-		_ = m.persist(ctx, pendingPersist)
-	}
+	releaseMutation()
 	if m.scheduler != nil && authSnapshot != nil {
 		var targetModels []string
 		if !result.CredentialScope && modelKey != "" {
@@ -1197,6 +1209,14 @@ func (m *Manager) commitPreDispatchSelection(auth *Auth, opts cliproxyexecutor.O
 }
 
 func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
+	if auth != nil {
+		if result.CredentialVersion == 0 {
+			result.CredentialVersion = auth.CredentialVersion
+		}
+		if result.RegistrationEpoch == 0 {
+			result.RegistrationEpoch = auth.RegistrationEpoch
+		}
+	}
 	if !ephemeral {
 		m.MarkResult(ctx, result)
 		return
@@ -1223,7 +1243,8 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	}
 
 	var authSnapshot *Auth
-	var pendingPersist *Auth
+	releaseMutation := m.lockAuthMutation(result.AuthID)
+	defer releaseMutation()
 	m.mu.Lock()
 	auth := m.auths[result.AuthID]
 	if !resultMatchesAuthGeneration(ctx, result, auth) {
@@ -1240,13 +1261,11 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		}
 		auth.Generation++
 		auth.UpdatedAt = now
+		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
-		pendingPersist = authSnapshot
 	}
 	m.mu.Unlock()
-	if pendingPersist != nil {
-		_ = m.persist(ctx, pendingPersist)
-	}
+	releaseMutation()
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)

@@ -64,6 +64,10 @@ func (s *Server) setupRoutes() {
 	v1.Use(AuthMiddleware(s.accessManager))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		v1.GET("/models/*model", func(c *gin.Context) {
+			c.Set(handlers.ModelDetailIDContextKey, strings.TrimPrefix(c.Param("model"), "/"))
+			s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers)(c)
+		})
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/embeddings", openaiHandlers.Embeddings)
 		v1.POST("/completions", openaiHandlers.Completions)
@@ -74,6 +78,8 @@ func (s *Server) setupRoutes() {
 		v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
 		v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
 		v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
+		v1.POST("/audio/speech", openaiHandlers.AudioSpeech)
+		v1.POST("/tts", openaiHandlers.XAITTS)
 		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)

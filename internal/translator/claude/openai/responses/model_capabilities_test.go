@@ -111,8 +111,12 @@ func TestResponsesEnvelopeEmptyCapabilitiesAndLegacyFallback(t *testing.T) {
 	if gjson.GetBytes(legacy, "thinking.type").String() != "adaptive" || gjson.GetBytes(legacy, "max_tokens").Int() != 4096 {
 		t.Fatal("legacy metadata-free translation lost its fallback")
 	}
-	for _, convert := range []func(string, []byte, bool) []byte{ConvertOpenAIResponsesRequestToClaude, ConvertOpenAIResponsesRequestToClaudeWithCompat} {
-		if gjson.GetBytes(convert(model, body, false), "max_tokens").Int() != 4096 {
+	for _, convert := range []func(string, []byte, bool) ([]byte, error){ConvertOpenAIResponsesRequestToClaude, ConvertOpenAIResponsesRequestToClaudeWithCompat} {
+		out, err := convert(model, body, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gjson.GetBytes(out, "max_tokens").Int() != 4096 {
 			t.Error("legacy conversion wrapper changed its fallback")
 		}
 	}

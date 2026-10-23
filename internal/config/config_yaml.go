@@ -89,7 +89,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 			setYAMLPathWithComments(original.Content[0], alias.old, copy)
 		}
 	}
-	normalizeCollectionNodeStyles(original.Content[0])
+	NormalizeCollectionNodeStyles(original.Content[0])
 
 	// Encode and validate the layout before opening the destination for writing.
 	var buf bytes.Buffer
@@ -842,18 +842,46 @@ func shouldPruneNestedMappingKeys(path []string) bool {
 	}
 }
 
-// normalizeCollectionNodeStyles forces YAML collections to use block notation, keeping
+// NormalizeCollectionNodeStyles forces YAML collections to use block notation, keeping
 // lists and maps readable. Empty sequences retain flow style ([]) so empty list markers
-// remain compact.
-func normalizeCollectionNodeStyles(node *yaml.Node) {
+// remain compact. It also clears double quotes from string mapping keys so JSON-derived
+// keys render as standard unquoted YAML keys.
+func NormalizeCollectionNodeStyles(node *yaml.Node) {
+	root := node
+	if root != nil && root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+	var opaque *yaml.Node
+	if plugins, index := pluginConfigsValue(root); plugins != nil {
+		opaque = plugins.Content[index+1]
+	}
+	normalizeCollectionNodeStyles(node, opaque)
+}
+
+func normalizeCollectionNodeStyles(node, opaque *yaml.Node) {
 	if node == nil {
 		return
 	}
+	// 插件自有 YAML 的样式、类型化 key 和 merge 语义不由宿主正规化。
+	if node == opaque {
+		return
+	}
 	switch node.Kind {
+	case yaml.DocumentNode:
+		for i := range node.Content {
+			normalizeCollectionNodeStyles(node.Content[i], opaque)
+		}
 	case yaml.MappingNode:
 		node.Style = 0
-		for i := range node.Content {
-			normalizeCollectionNodeStyles(node.Content[i])
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key != nil && key.Kind == yaml.ScalarNode && key.Tag == "!!str" && key.Style == yaml.DoubleQuotedStyle {
+				key.Style = 0
+			}
+			normalizeCollectionNodeStyles(key, opaque)
+			if i+1 < len(node.Content) {
+				normalizeCollectionNodeStyles(node.Content[i+1], opaque)
+			}
 		}
 	case yaml.SequenceNode:
 		if len(node.Content) == 0 {
@@ -862,7 +890,7 @@ func normalizeCollectionNodeStyles(node *yaml.Node) {
 			node.Style = 0
 		}
 		for i := range node.Content {
-			normalizeCollectionNodeStyles(node.Content[i])
+			normalizeCollectionNodeStyles(node.Content[i], opaque)
 		}
 	default:
 		// Scalars keep their existing style to preserve quoting

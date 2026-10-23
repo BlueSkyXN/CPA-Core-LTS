@@ -78,6 +78,7 @@ var v8KeyFamilies = []configPath{
 func buildV8Paths() []configPath {
 	prefixes := []configPath{
 		{"host", "server.host"}, {"port", "server.port"}, {"trusted-proxies", "server.trusted-proxies"},
+		{"github-token", "server.github-token"},
 		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
 		{"credential-concurrency", "credentials.concurrency"}, {"credential-in-flight", "credentials.in-flight"},
@@ -265,6 +266,9 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 	decoded := legacyConfig(*cfg)
 	if err = root.Decode(&decoded); err != nil {
 		return err
+	}
+	if errValidate := decoded.Models.Validate(); errValidate != nil {
+		return errValidate
 	}
 	*cfg = Config(decoded)
 	cfg.OAuthOnlyFields = nil
@@ -625,7 +629,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 
 func v8AllowedRoots() map[string]bool {
 	allowed := map[string]bool{
-		"config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true,
+		"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true,
 		"flow-control": true, "api-request-body-max-bytes": true, "ampcode": true,
 	}
 	for _, path := range v8Paths {
@@ -964,5 +968,8 @@ func ValidateV8Config(data []byte) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(encoded))
 	decoder.KnownFields(true)
 	var cfg legacyConfig
-	return decoder.Decode(&cfg)
+	if errDecode := decoder.Decode(&cfg); errDecode != nil {
+		return errDecode
+	}
+	return cfg.Models.Validate()
 }

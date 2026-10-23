@@ -30,23 +30,46 @@ func FinalizeApplyPatchStream(param any) [][]byte {
 	return state.FinalizeToolInput()
 }
 
+// CanFinalizeResponseStream reports whether EOF can safely synthesize the source terminator.
+func CanFinalizeResponseStream(param any) bool {
+	state, okState := param.(interface{ CanFinalizeResponseStream() bool })
+	return okState && state.CanFinalizeResponseStream()
+}
+
 // RecordApplyPatchStreamFailure records validation before delivery can be canceled.
 func RecordApplyPatchStreamFailure(ctx context.Context, param any, reporter *UsageReporter, gatewayErr error, streamUsage ...*StreamUsageBuffer) bool {
+	var usage *StreamUsageBuffer
+	if len(streamUsage) > 0 {
+		usage = streamUsage[0]
+	}
+	return RecordApplyPatchStreamFailureWithUsage(ctx, param, reporter, usage, gatewayErr)
+}
+
+// RecordApplyPatchStreamFailureWithUsage records validation with buffered upstream usage.
+func RecordApplyPatchStreamFailureWithUsage(ctx context.Context, param any, reporter *UsageReporter, streamUsage *StreamUsageBuffer, gatewayErr error) bool {
 	if ApplyPatchTranslationError(param) == nil {
 		return false
 	}
-	if len(streamUsage) > 0 && streamUsage[0] != nil {
-		streamUsage[0].PublishFailure(ctx, reporter, gatewayErr)
-	} else {
-		reporter.PublishFailure(ctx, gatewayErr)
+	if streamUsage != nil && streamUsage.PublishFailure(ctx, reporter, gatewayErr) {
+		return true
 	}
+	reporter.PublishFailure(ctx, gatewayErr)
 	return true
 }
 
 // StopApplyPatchStream propagates a retained failure after its one translated frame.
 // The caller supplies its existing sanitized gateway status error.
 func StopApplyPatchStream(ctx context.Context, param any, reporter *UsageReporter, out chan<- cliproxyexecutor.StreamChunk, gatewayErr error, streamUsage ...*StreamUsageBuffer) bool {
-	if !RecordApplyPatchStreamFailure(ctx, param, reporter, gatewayErr, streamUsage...) {
+	var usage *StreamUsageBuffer
+	if len(streamUsage) > 0 {
+		usage = streamUsage[0]
+	}
+	return StopApplyPatchStreamWithUsage(ctx, param, reporter, usage, out, gatewayErr)
+}
+
+// StopApplyPatchStreamWithUsage propagates a retained failure with buffered upstream usage.
+func StopApplyPatchStreamWithUsage(ctx context.Context, param any, reporter *UsageReporter, streamUsage *StreamUsageBuffer, out chan<- cliproxyexecutor.StreamChunk, gatewayErr error) bool {
+	if !RecordApplyPatchStreamFailureWithUsage(ctx, param, reporter, streamUsage, gatewayErr) {
 		return false
 	}
 	select {

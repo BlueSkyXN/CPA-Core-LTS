@@ -140,6 +140,15 @@ type Service struct {
 	// pluginModelRetry re-runs plugin model discovery for auths whose discovery
 	// failed retryably (network/429/5xx). Credential rejections are excluded.
 	pluginModelRetry *pluginModelRegistrationRetry
+	// antigravityContext is protected by cfgMu and owns background model probes.
+	antigravityContext       context.Context
+	antigravityProbeMu       sync.Mutex
+	antigravityAccountProbes map[string]map[*antigravityAccountProbe]struct{}
+	antigravityRefreshWake   chan struct{}
+	// antigravityRefreshPending is protected by antigravityProbeMu. Each entry
+	// owns one worker and at most one queued snapshot shared by all probe entry
+	// points. A nil value means the worker is running without a queued successor.
+	antigravityRefreshPending map[string]*antigravityModelRefreshRequest
 }
 
 // SetResultPolicy sets an execution result policy on the underlying core auth manager.

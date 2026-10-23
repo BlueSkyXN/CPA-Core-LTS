@@ -466,10 +466,6 @@ func (e *AIStudioExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.A
 		return cliproxyexecutor.Response{}, err
 	}
 
-	body.payload, _ = sjson.DeleteBytes(body.payload, "generationConfig")
-	body.payload, _ = sjson.DeleteBytes(body.payload, "tools")
-	body.payload, _ = sjson.DeleteBytes(body.payload, "safetySettings")
-
 	endpoint := e.buildEndpoint(baseModel, "countTokens", "")
 	wsReq := &wsrelay.HTTPRequest{
 		Method:  http.MethodPost,
@@ -540,15 +536,17 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 	}
 	originalPayload := originalPayloadSource
 	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, stream)
-	payload := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, stream)
-	payload, err := helps.ApplyThinkingWithSourcePayload(payload, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
+	payload, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, stream, false)
+	if err != nil {
+		return nil, translatedPayload{}, err
+	}
+	payload, err = helps.ApplyThinkingWithSourcePayload(payload, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, translatedPayload{}, err
 	}
 	payload = fixGeminiImageAspectRatio(baseModel, payload)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers)
 	payload, _ = sjson.DeleteBytes(payload, "generationConfig.maxOutputTokens")
 	payload, _ = sjson.DeleteBytes(payload, "generationConfig.responseMimeType")
 	payload, _ = sjson.DeleteBytes(payload, "generationConfig.responseJsonSchema")
@@ -568,6 +566,12 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 		payload = helps.EnsureGeminiTrailingUserContent(payload, "contents")
 	}
 	payload = normalizeAIStudioThinkingLevel(payload)
+	if action == "countTokens" {
+		payload, _ = sjson.DeleteBytes(payload, "generationConfig")
+		payload, _ = sjson.DeleteBytes(payload, "tools")
+		payload, _ = sjson.DeleteBytes(payload, "safetySettings")
+	}
+	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers)
 	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
 }
 

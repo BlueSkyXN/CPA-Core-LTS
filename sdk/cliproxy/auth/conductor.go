@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/flowcontrol"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"golang.org/x/sync/semaphore"
 )
 
 // ProviderExecutor defines the contract required by Manager to execute provider calls.
@@ -104,6 +106,10 @@ type Result struct {
 	// observed watermark. Count-tokens requests reuse the credential but are not
 	// generation traffic; their response headers are not a generation snapshot.
 	SkipQuotaObservation bool
+	// CredentialVersion captures the credential version under which the request was executed.
+	CredentialVersion uint64
+	// RegistrationEpoch captures the registration epoch under which the request was executed.
+	RegistrationEpoch uint64
 }
 
 // Selector chooses an auth candidate for execution.
@@ -192,9 +198,10 @@ type Manager struct {
 	syncedVersion             atomic.Uint64
 	auths                     map[string]*Auth
 	// authGeneration is allocated under mu and never persisted.
-	authGeneration uint64
-	authEpochs     map[string]uint64
-	scheduler      *authScheduler
+	authGeneration     uint64
+	authEpochs         map[string]uint64
+	scheduler          *authScheduler
+	authChangeWatchers map[string]map[chan struct{}]struct{}
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
@@ -263,6 +270,11 @@ type Manager struct {
 	// persistLocks serializes disk persistence per auth ID, orders writes, and
 	// keeps Manager.mu out of store I/O.
 	persistLocks sync.Map
+	// authMutationLocks coordinate credential mutations without blocking unrelated readers.
+	authMutationLocks sync.Map
+	// authLoadGate allows concurrent credential transactions, but excludes whole-store reloads.
+	// Mutations acquire one permit; Load acquires all permits before reading the store.
+	authLoadGate *semaphore.Weighted
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -286,6 +298,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		providerOffsets:          make(map[string]int),
 		modelPoolOffsets:         make(map[string]int),
 		codexRateLimitContinuity: newCodexRateLimitContinuityStore(),
+		authLoadGate:             semaphore.NewWeighted(math.MaxInt64),
 	}
 	manager.flowControl, _ = flowcontrol.New(flowcontrol.Config{})
 	// atomic.Value requires non-nil initial value.

@@ -446,12 +446,20 @@ access:
         - "your-api-key-1"
         - "your-api-key-2"
         - "your-api-key-3"
+# 模型目录可使用 HTTP(S) URL 或绝对文件路径；失败时保留最后有效目录。
+# 显式来源优先于 --local-model；Home 模式不加载通用模型目录。
+models:
+    catalog: ""
+    codex-catalog: ""
+    devin-catalog: ""
 server:
     # Server host/interface to bind to. Default is empty ("") to bind all interfaces (IPv4 + IPv6).
     # Use "127.0.0.1" or "localhost" to restrict access to local machine only.
     host: ""
     # Server port
     port: 8317
+    # GitHub 请求共享 token；留空时使用 GITHUB_TOKEN 环境变量。
+    github-token: ""
     # IP addresses or CIDRs of proxies allowed to supply forwarded client IP headers.
     # An empty list (the default) does not trust forwarded headers. Restart after changing this setting.
     trusted-proxies: []
@@ -709,6 +717,7 @@ config-version: 8
 #       base-url: "https://example.com/api"         # optional, e.g. https://zenmux.ai/api; falls back to Google Vertex when omitted
 #       proxy-url: "socks5://proxy.example.com:1080" # optional per-key proxy override
 #       # proxy-url: "direct" # optional: explicit direct connect for this credential
+#       # interactions: true                        # optional: opt into native Vertex Interactions API routing (/v1beta1/interactions). For service account JSON files under auths/, add "interactions": true at the root of the file.
 #       headers:
 #         X-Custom-Header: "custom-value"
 #         # Values starting with "$" dynamically copy the header value from downstream client requests.

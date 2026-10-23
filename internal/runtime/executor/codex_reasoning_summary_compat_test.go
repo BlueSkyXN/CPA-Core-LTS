@@ -281,7 +281,7 @@ func TestCodexWebsocketsExecutorDropsUnsupportedReasoningSummaryForSpark(t *test
 	}))
 	defer server.Close()
 
-	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}, Payload: config.PayloadConfig{Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "*", Protocol: "codex"}}, Params: map[string]any{"reasoning.summary": "detailed"}}}}})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test", "base_url": server.URL}}
 	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "gpt-5.3-codex-spark",
@@ -338,7 +338,7 @@ func TestCodexWebsocketsExecutorExecuteStreamDropsUnsupportedReasoningSummaryFor
 	}))
 	defer server.Close()
 
-	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}, Payload: config.PayloadConfig{Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "*", Protocol: "codex"}}, Params: map[string]any{"reasoning.summary": "detailed"}}}}})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test", "base_url": server.URL}}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

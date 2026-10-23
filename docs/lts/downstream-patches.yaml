@@ -245,6 +245,7 @@ patches:
       - internal/registry/codex_client_models.go
       - internal/registry/codex_client_models_test.go
       - internal/registry/codex_client_models_updater.go
+      - internal/registry/catalog_policy_test.go
       - internal/registry/codex_compatibility.go
       - internal/registry/codex_gpt56_compatibility_test.go
       - internal/registry/model_definitions.go
@@ -293,7 +294,8 @@ patches:
       - TestValidateCodexClientModelsLTSCompatibility
       - TestFetchCodexClientModelsFallsBackToNextURL
       - TestLoadCodexClientModelsRejectsInvalidWithoutReplacing
-      - TestModelCatalogUpdaterPlan
+      - TestEffectiveCatalogSources
+      - TestDisabledCatalogDoesNotFetch
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4160 and router-for-me/CLIProxyAPI#4276 (client-metadata equivalent only)
     state: required
     retire_when: Upstream publishes a complete and authoritative Ultra server-side solution covering parser/suffix semantics, model-aware custom-model behavior, payload-override-safe final reasoning.effort, usage/retry alignment, and HTTP/WebSocket paths while preserving the client-side proactive multi-agent boundary; the refreshed client catalog continues to satisfy the LTS compatibility validator and all listed regressions pass after removing the downstream runtime implementation.
