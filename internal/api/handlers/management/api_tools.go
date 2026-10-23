@@ -235,7 +235,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		return
 	}
 
-	if isCodexQuotaResetConsumeAPICall(method, parsedURL, resp, auth) && h != nil && h.authManager != nil {
+	if isCodexQuotaResetConsumeAPICall(method, parsedURL, resp, auth, respBody) && h != nil && h.authManager != nil {
 		if h.authManager.ClearQuotaState(c.Request.Context(), auth.ID) {
 			log.WithField("auth_id", auth.ID).Debug("cleared Codex quota routing state after reset credit consume")
 		}
@@ -248,7 +248,7 @@ func (h *Handler) APICall(c *gin.Context) {
 	})
 }
 
-func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *http.Response, auth *coreauth.Auth) bool {
+func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *http.Response, auth *coreauth.Auth, body []byte) bool {
 	if auth == nil || parsedURL == nil || resp == nil || resp.Request == nil || resp.Request.URL == nil {
 		return false
 	}
@@ -262,6 +262,12 @@ func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *ht
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	var result struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &result) != nil || (result.Code != "reset" && result.Code != "already_redeemed") {
 		return false
 	}
 	return isCodexQuotaResetConsumeURL(parsedURL) && isCodexQuotaResetConsumeURL(resp.Request.URL)
