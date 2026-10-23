@@ -382,11 +382,14 @@ func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string
 	r.publishRecord(ctx, record)
 }
 
-func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format string) {
+// SetTranslatedRequestMetadata captures usage-relevant values from the final
+// outbound payload after translation and payload defaults or overrides.
+func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format string) {
 	if r == nil {
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+	r.outboundTier = extractEffectiveServiceTier(payload)
 	r.timingMu.Lock()
 	r.timingFormat = sdktranslator.FromString(format)
 	if stream := gjson.GetBytes(payload, "stream"); stream.Type == gjson.True {
@@ -1303,7 +1306,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
 	}
 	// 按字段是否存在合并原始分项；显式零覆盖旧值，省略字段保留。
 	for _, path := range []string{
-		"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+		"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "speed",
 		"output_tokens_details.thinking_tokens", "output_tokens_details.reasoning_tokens", "thinking_tokens",
 	} {
 		if value := usageNode.Get(path); value.Exists() {
@@ -1596,6 +1599,13 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
+	}
+	// Anthropic reports the speed a response was served and billed at in
+	// usage.speed ("fast" or "standard"): fast mode costs more, and a
+	// fast request on a model without it runs, and is billed, at standard.
+	// Carried as the response tier so usage sinks can price it.
+	if speed := strings.TrimSpace(usageNode.Get("speed").String()); speed != "" {
+		detail.ResponseServiceTier = speed
 	}
 	canonicalInput, ok := sumNonNegativeUsageTokens(inputTokenCount, cacheReadTokens, cacheCreationTokens)
 	if !ok {
@@ -2102,4 +2112,23 @@ func jsonPayload(line []byte) []byte {
 		return nil
 	}
 	return trimmed
+}
+
+// SetTranslatedReasoningEffort keeps existing LTS callers on the same metadata path.
+func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format string) {
+	r.SetTranslatedRequestMetadata(payload, format)
+}
+
+func extractEffectiveServiceTier(payload []byte) string {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	for _, path := range []string{"service_tier", "request.service_tier", "interaction.service_tier"} {
+		if node := gjson.GetBytes(payload, path); node.Type == gjson.String {
+			if tier := strings.TrimSpace(node.String()); tier != "" {
+				return tier
+			}
+		}
+	}
+	return ""
 }

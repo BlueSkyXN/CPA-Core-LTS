@@ -95,6 +95,8 @@ type Host struct {
 	callbackContexts  *callbackContextRegistry
 	snapshot          atomic.Value
 	httpOperations    *hostHTTPOperationBridge
+	// loadCleanupDoneHook is used by tests after late load cleanup drops its token.
+	loadCleanupDoneHook func()
 }
 
 func New() *Host {
@@ -584,6 +586,9 @@ func (h *Host) finishPluginLoadCleanup(id string, request *pluginLoadRequest, lo
 	go func() {
 		h.discardLoadedPlugin(loaded)
 		h.clearLoadingRequest(id, request)
+		if h.loadCleanupDoneHook != nil {
+			h.loadCleanupDoneHook()
+		}
 	}()
 }
 

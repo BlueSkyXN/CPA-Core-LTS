@@ -502,8 +502,11 @@ type FrontendAuthRequest struct {
 	Headers http.Header
 	// Query contains inbound query parameters.
 	Query url.Values
-	// Body contains the raw request body.
+	// Body contains the raw request body as received, before any Content-Encoding decoding.
 	Body []byte
+	// DecodedBody contains the request body after Content-Encoding decoding. It is set only when
+	// the body was content-encoded and the route's handler decodes it, and is nil otherwise.
+	DecodedBody []byte
 }
 
 // FrontendAuthResponse reports the authentication decision and identity metadata.
@@ -514,6 +517,10 @@ type FrontendAuthResponse struct {
 	Principal string
 	// Metadata carries plugin-defined identity attributes for downstream use.
 	Metadata map[string]string
+	// DenyStatusCode optionally specifies an HTTP status code when denying the request.
+	DenyStatusCode int
+	// DenyMessage optionally specifies an error message when denying the request.
+	DenyMessage string
 }
 
 const (
@@ -1787,7 +1794,7 @@ type UsageRecord struct {
 	UsageProvenance string `json:"UsageProvenance,omitempty"`
 	// ReasoningEffort records the requested reasoning effort.
 	ReasoningEffort string
-	// ServiceTier records the requested or reported service tier.
+	// ServiceTier records the tier requested by the original client.
 	ServiceTier string
 	// RequestServiceTier records the client-requested service tier.
 	RequestServiceTier string `json:"RequestServiceTier,omitempty"`

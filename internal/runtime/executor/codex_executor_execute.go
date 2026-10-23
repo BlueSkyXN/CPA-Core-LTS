@@ -30,8 +30,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
-	apiKey, baseURL := codexCreds(auth)
-	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
+	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey, opts.Headers); errSIWC != nil {
 		return resp, errSIWC
 	}
 	if baseURL == "" {
@@ -85,7 +85,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
-	useSIWC := codexUseSIWC(auth)
+	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
 	hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
 	body = ensureWebSearchToolForHistory(body, opts.Headers)
 	if !useSIWC {
@@ -316,8 +316,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
-	apiKey, baseURL := codexCreds(auth)
-	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
+	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey, opts.Headers); errSIWC != nil {
 		return resp, errSIWC
 	}
 	if baseURL == "" {
@@ -356,7 +356,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
-	if !codexUseSIWC(auth) {
+	if !codexUseSIWCForRequest(ctx, auth, opts.Headers) {
 		body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
 	} else {
 		hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""

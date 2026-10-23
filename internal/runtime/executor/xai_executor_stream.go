@@ -44,6 +44,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
 	prepared.body = prepared.finalizePayload(prepared.body)
+	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
 	if err != nil {
 		return nil, err

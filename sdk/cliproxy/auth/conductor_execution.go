@@ -594,6 +594,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
 			result.RouteModel = routeModel
 			m.MarkResult(execCtx, result)
 			lastErr = errPrepare
@@ -685,7 +686,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					return cliproxyexecutor.Response{}, errExec
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
@@ -734,6 +735,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
 			if errExec != nil {
@@ -868,6 +870,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
 			result.RouteModel = routeModel
 			result.SkipQuotaObservation = true
 			m.MarkResult(execCtx, result)
@@ -952,7 +955,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					return cliproxyexecutor.Response{}, errExec
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
@@ -997,6 +1000,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
 			result.SkipQuotaObservation = true
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
@@ -1295,6 +1299,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				stateModel = canonicalModelKey(routeModel)
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
+			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
 			result.RouteModel = routeModel
 			if selection != nil {
 				m.reportHomeResult(execCtx, result, auth)

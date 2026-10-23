@@ -329,7 +329,8 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 		return nil, false, false, fmt.Errorf("update auth: %w", errWeight)
 	}
 	persistMetaMint := (mode == updateModePrepare || mode == updateModeRefresh) && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta")
-	if mode == updateModeReplace && auth.HasFileSnapshot() {
+	isFileSnapshot := mode == updateModeReplace && auth.HasFileSnapshot()
+	if isFileSnapshot {
 		m.mu.RLock()
 		existing, ok := m.auths[auth.ID]
 		m.mu.RUnlock()
@@ -406,6 +407,9 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 	}
 	now := time.Now()
 	sameProvider := strings.EqualFold(strings.TrimSpace(existing.Provider), strings.TrimSpace(auth.Provider))
+	if isFileSnapshot && auth.CreatedAt.IsZero() {
+		auth.CreatedAt = existing.CreatedAt
+	}
 	auth.Success = existing.Success
 	auth.Failed = existing.Failed
 	auth.recentRequests = existing.recentRequests
@@ -436,13 +440,36 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 			auth.generation = m.nextAuthGenerationLocked()
 		}
 		if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
-			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
+			if isFileSnapshot {
+				auth.ModelStates = existing.ModelStates
+				auth.LastRefreshedAt = existing.LastRefreshedAt
+				auth.NextRefreshAfter = existing.NextRefreshAfter
+				auth.RefreshFailures = existing.RefreshFailures
+				if (auth.Status == "" || auth.Status == StatusActive) && existing.Status != "" {
+					auth.Status = existing.Status
+				}
+				if auth.StatusMessage == "" {
+					auth.StatusMessage = existing.StatusMessage
+				}
+				auth.Unavailable = existing.Unavailable
+				auth.NextRetryAfter = existing.NextRetryAfter
+				if auth.LastError == nil && existing.LastError != nil {
+					auth.LastError = cloneError(existing.LastError)
+				}
+				observation := mergeQuotaObservation(auth.Quota, existing.Quota)
+				auth.Quota = existing.Quota.Clone()
+				auth.Quota.ObservedAt = observation.ObservedAt
+				auth.Quota.Signals = observation.Signals
+				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+			} else if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 				auth.ModelStates = existing.ModelStates
 			}
 			credChanged := CredentialsChanged(existing, auth)
 			if credChanged && (auth.RejectedAccessToken == "" || authAccessToken(auth) != auth.RejectedAccessToken) {
 				if hasUnauthorizedAuthFailure(existing) || (auth.LastError != nil && isUnauthorizedError(auth.LastError)) {
 					auth.Unavailable = false
+					auth.NextRetryAfter = time.Time{}
+					auth.cooldownRecordedSeq = 0
 					auth.LastError = nil
 					auth.NextRetryAfter = time.Time{}
 					auth.StatusMessage = ""
@@ -475,6 +502,7 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.Quota = existing.Quota
 				auth.Quota.ObservedAt = observation.ObservedAt
 				auth.Quota.Signals = observation.Signals
+				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 				if auth.Status == StatusActive {
 					auth.Status = existing.Status
 				}

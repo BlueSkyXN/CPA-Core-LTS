@@ -394,6 +394,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			}
 
 			if globalReg.ClientRegistrationEpoch(authID) == regEpoch {
+				preserveAuthCooldown := len(auth.ModelStates) == 0 && isAuthActiveCooldown(auth, now)
 				previousUnavailable := auth.Unavailable
 				previousNextRetryAfter := auth.NextRetryAfter
 				previousQuota := auth.Quota
@@ -403,8 +404,12 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				previousUpdatedAt := auth.UpdatedAt
 
 				auth.ModelStates = candidateAuth.ModelStates
-				recomputeAggregatedAvailability(auth, now)
-				if allModelStatesClean(auth) {
+				if !preserveAuthCooldown {
+					recomputeAggregatedAvailability(auth, now)
+				}
+				if preserveAuthCooldown {
+					// Keep the credential-wide state until an actual result or expiry.
+				} else if allModelStatesClean(auth) {
 					auth.LastError = nil
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
@@ -418,7 +423,7 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 					previousStatusMessage != auth.StatusMessage ||
 					!cooldownErrorEqual(previousLastError, auth.LastError)
 				if candidateChanged || aggregateChanged {
-					if allModelStatesClean(auth) {
+					if !preserveAuthCooldown && allModelStatesClean(auth) {
 						auth.LastError = nil
 						auth.StatusMessage = ""
 						auth.Status = StatusActive

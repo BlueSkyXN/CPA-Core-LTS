@@ -19,6 +19,7 @@ import (
 )
 
 type codexWebsocketConnectionKey struct {
+	useSIWC               bool
 	authID                string
 	wsURL                 string
 	proxyURL              string

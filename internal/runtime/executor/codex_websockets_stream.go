@@ -53,6 +53,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	upstreamBody := prepared.upstreamBody
 	wsURL := prepared.wsURL
 	wsHeaders := prepared.wsHeaders
+	useSIWC := prepared.useSIWC
 	identityState := prepared.identityState
 	replayScope = prepared.replayScope
 	optimizeMultiAgentV2 := prepared.optimizeMultiAgentV2
@@ -107,6 +108,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	connectionKey := newCodexWebsocketConnectionKey(authID, wsURL, baseModel, modelHeaderProfile.digest)
+	connectionKey.useSIWC = useSIWC
 	connectionKey.proxyURL = executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
 	var connection codexWebsocketConnectionRef
 	var closer *websocketConnectionCloser
@@ -811,6 +813,7 @@ type codexWebsocketPrepared struct {
 	clientBody           []byte
 	wsURL                string
 	wsHeaders            http.Header
+	useSIWC              bool
 	replayScope          codexReasoningReplayScope
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
@@ -819,11 +822,11 @@ type codexWebsocketPrepared struct {
 func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*codexWebsocketPrepared, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
-	apiKey, baseURL := codexCreds(auth)
-	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
+	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey, opts.Headers); errSIWC != nil {
 		return nil, errSIWC
 	}
-	useSIWC := codexUseSIWC(auth)
+	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
 	if baseURL == "" {
 		if useSIWC {
 			baseURL = defaultOpenAISIWCBaseURL
@@ -943,6 +946,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		identityState:        identityState,
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,
+		useSIWC:              useSIWC,
 		replayScope:          replayScope,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,

@@ -71,6 +71,7 @@ type codexWebsocketSession struct {
 	lifecycleGen             uint64
 	connCfg                  *config.Config
 	hasConnCfg               bool
+	useSIWC                  bool
 
 	writeMu sync.Mutex
 
@@ -442,7 +443,7 @@ func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket
 	}
 }
 
-func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
+func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, useSIWC ...bool) bool {
 	if sess == nil {
 		return false
 	}
@@ -452,17 +453,17 @@ func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, w
 	if strings.TrimSpace(sess.authID) == "" && strings.TrimSpace(sess.wsURL) == "" {
 		return false
 	}
-	return !websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
+	return !websocketSessionTargetMatches(sess, authID, wsURL, proxyURL, useSIWC...)
 }
 
-func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser) {
+func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, useSIWC ...bool) (*websocket.Conn, *websocketConnectionCloser) {
 	if sess == nil {
 		return nil, nil
 	}
 	sess.connMu.Lock()
 	conn := sess.conn
 	closer := sess.connCloser
-	matches := conn != nil && closer != nil && websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
+	matches := conn != nil && closer != nil && websocketSessionTargetMatches(sess, authID, wsURL, proxyURL, useSIWC...)
 	sess.connMu.Unlock()
 	if !matches || sess.upstreamDisconnectError(conn) != nil {
 		return nil, nil
@@ -484,20 +485,41 @@ func (s *codexWebsocketSession) effectiveConfig(authID string, fallback *config.
 	return fallback
 }
 
-func websocketSessionTargetMatches(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
+func websocketSessionTargetMatches(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, useSIWC ...bool) bool {
+	if len(useSIWC) > 0 && sess.useSIWC != useSIWC[0] {
+		return false
+	}
 	return strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
 		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL) &&
 		strings.TrimSpace(sess.proxyURL) == strings.TrimSpace(proxyURL)
 }
 
-func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+func codexWebsocketRequestUsesSIWC(ctx context.Context, auth *cliproxyauth.Auth, headers http.Header, explicitUseSIWC ...bool) bool {
+	if len(explicitUseSIWC) > 0 {
+		return explicitUseSIWC[0]
+	}
+	if !codexUseSIWC(auth) {
+		return false
+	}
+	if headers != nil {
+		if authHeader := strings.TrimSpace(headers.Get("Authorization")); strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			tok := strings.TrimSpace(authHeader[len("Bearer "):])
+			if siwcTok := codexSIWCAccessToken(auth); siwcTok != "" && tok != "" {
+				return tok == siwcTok
+			}
+		}
+	}
+	return codexUseSIWCForRequest(ctx, auth, headers)
+}
+
+func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, useSIWC ...bool) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
 	if sess == nil {
 		return nil, nil, "", "", nil
 	}
 
 	sess.connMu.Lock()
 	conn := sess.conn
-	if conn == nil || websocketSessionTargetMatches(sess, authID, wsURL, proxyURL) {
+	if conn == nil || websocketSessionTargetMatches(sess, authID, wsURL, proxyURL, useSIWC...) {
 		sess.connMu.Unlock()
 		return nil, nil, "", "", nil
 	}
@@ -519,6 +541,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	sess.multiAgentV2OptimizedGen = 0
 	sess.connCfg = nil
 	sess.hasConnCfg = false
+	sess.useSIWC = false
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 		sess.readerGen = 0
@@ -800,6 +823,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.proxyURL = wantedKey.proxyURL
 	sess.connCfg = e.cfg
 	sess.hasConnCfg = true
+	sess.useSIWC = wantedKey.useSIWC
 	sess.readerConn = conn
 	sess.readerGen = connection.generation
 	sess.connMu.Unlock()

@@ -28,11 +28,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
-	apiKey, baseURL := codexCreds(auth)
-	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
+	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey, opts.Headers); errSIWC != nil {
 		return resp, errSIWC
 	}
-	useSIWC := codexUseSIWC(auth)
+	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
 	if baseURL == "" {
 		if useSIWC {
 			baseURL = defaultOpenAISIWCBaseURL
@@ -198,6 +198,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	connectionKey := newCodexWebsocketConnectionKey(authID, wsURL, baseModel, modelHeaderProfile.digest)
+	connectionKey.useSIWC = useSIWC
 	connectionKey.proxyURL = executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
 	var connection codexWebsocketConnectionRef
 	var closer *websocketConnectionCloser

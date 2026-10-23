@@ -409,7 +409,7 @@ func TestPrepareCodexOpenAIImageBodyPreservesClientMetadata(t *testing.T) {
 		t.Fatal(errMarshal)
 	}
 	executor := NewCodexExecutor(&config.Config{})
-	body, err := executor.prepareCodexOpenAIImageBody(nil, codexBuildImagesResponsesRequest("image", nil, nil), cliproxyexecutor.Request{
+	body, err := executor.prepareCodexOpenAIImageBody(context.Background(), nil, codexBuildImagesResponsesRequest("image", nil, nil), cliproxyexecutor.Request{
 		Model:   "gpt-image-legacy",
 		Payload: payload,
 	}, codexOpenAIImageTestOptions(codexImagesGenerationsPath, false), codexOpenAIImagesMainModel)
@@ -556,7 +556,7 @@ func TestPrepareCodexOpenAIImageBodyMergesMetadataBeforePayloadRules(t *testing.
 			executor := NewCodexExecutor(&config.Config{Payload: tt.payload})
 			req := cliproxyexecutor.Request{Model: "gpt-image-legacy", Payload: source}
 			opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, false)
-			body, err := executor.prepareCodexOpenAIImageBody(nil, translated, req, opts, codexOpenAIImagesMainModel)
+			body, err := executor.prepareCodexOpenAIImageBody(context.Background(), nil, translated, req, opts, codexOpenAIImagesMainModel)
 			if err != nil {
 				t.Fatalf("prepareCodexOpenAIImageBody() error = %v", err)
 			}

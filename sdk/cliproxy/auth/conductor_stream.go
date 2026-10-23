@@ -317,7 +317,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			if allowRetry && !ephemeralResult {
 				alreadyTried := didRefreshOnUnauthorized
-				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, errStream, alreadyTried)
+				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, errStream, alreadyTried, execOpts.Headers)
 				if okRefresh {
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
@@ -421,7 +421,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			if allowRetry && !ephemeralResult {
 				alreadyTried := didRefreshOnUnauthorized
-				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried)
+				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried, execOpts.Headers)
 				if okRefresh {
 					if errDrain := m.discardFlowStreamBeforeRetry(ctx, streamResult.Chunks); errDrain != nil {
 						return nil, errDrain
