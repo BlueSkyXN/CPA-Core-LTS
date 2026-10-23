@@ -55,6 +55,7 @@ func resultForAuth(auth *Auth, provider, model string, success bool, resultErr *
 	}
 	if auth != nil {
 		result.AuthID = auth.ID
+		result.AccessToken = authAccessToken(auth)
 		result.CredentialVersion = auth.CredentialVersion
 		result.RegistrationEpoch = auth.RegistrationEpoch
 	}

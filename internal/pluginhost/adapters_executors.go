@@ -51,8 +51,21 @@ func (h *Host) RegisterExecutors(manager executorManager, modelRegistry modelPro
 	claimedModels := make(map[string]struct{})
 	claimedProviders := make(map[string]string)
 	for _, registration := range registrations {
-		if !registration.hasExecutor {
-			appendModelsForProvider(providerModels, registration.provider, registration.models)
+		if registration.hasExecutor {
+			continue
+		}
+		appendModelsForProvider(providerModels, registration.provider, registration.models)
+		// Reserve native catalog models before plugin arbitration, independently of
+		// credential publication or exclusions. This preserves native priority without
+		// publishing availability, which remains credential-bound.
+		if h.providerHasNativeExecutor(manager, registration.provider) {
+			for _, model := range registration.models {
+				if model != nil {
+					if modelID := strings.TrimSpace(model.ID); modelID != "" {
+						claimedModels[modelID] = struct{}{}
+					}
+				}
+			}
 		}
 	}
 	for _, record := range records {

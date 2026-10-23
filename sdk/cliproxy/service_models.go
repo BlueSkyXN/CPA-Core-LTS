@@ -10,13 +10,25 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
+// errModelRegistrationSuperseded requests a fresh computation without treating
+// a concurrent update as a vendor discovery failure.
+var errModelRegistrationSuperseded = errors.New("model registration superseded")
+
+func modelRegistrationResult(accepted bool) error {
+	if !accepted {
+		return errModelRegistrationSuperseded
+	}
+	return nil
+}
+
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
-func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
-	s.registerModelsForAuthWithCache(ctx, a, nil)
+func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) error {
+	return s.registerModelsForAuthWithCache(ctx, a, nil)
 }
 
 func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) error {
@@ -36,16 +48,15 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	// Capture the publication fence before any runtime read or model
 	// resolution: a registration superseded while it is being computed must
 	// not overwrite or remove the newer registration when it finishes last.
-	fence := newModelRegistrationFence(a)
+	fence := newModelRegistrationFence(a, cfg)
 	s.cancelStaleAntigravityProbes(a.ID)
 	if a.Disabled {
 		if s != nil && s.coreManager != nil {
 			if current, ok := s.coreManager.GetByID(a.ID); ok && current != nil && !current.Disabled {
-				return nil
+				return errModelRegistrationSuperseded
 			}
 		}
-		s.unregisterModelsForAuthFenced(a, fence)
-		return nil
+		return modelRegistrationResult(s.unregisterModelsForAuthFenced(a, fence))
 	}
 	if s != nil && s.coreManager != nil {
 		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled {
@@ -67,8 +78,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		provider = "openai-compatibility"
 	}
 	excluded := oauthExcludedModelsForConfig(cfg, provider, authKind)
-	// The synthesizer pre-merges per-account and global exclusions into the "excluded_models" attribute.
-	// If this attribute is present, it represents the complete list of exclusions and overrides the global config.
+	// The "excluded_models" attribute holds only the credential's own exclusions.
+	// When present it takes priority over the global oauth-excluded-models config;
+	// otherwise the current global config applies, so global changes take effect without rewriting credentials.
 	if a.Attributes != nil {
 		if val, ok := a.Attributes["excluded_models"]; ok && strings.TrimSpace(val) != "" {
 			excluded = strings.Split(val, ",")
@@ -80,6 +92,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	published := true
 	var models []*ModelInfo
 	switch provider {
 	case constant.Gemini:
@@ -114,6 +127,8 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
 			}
+		} else {
+			models = appendVertexServiceAccountModels(cfg, a, models)
 		}
 		models = applyExcludedModels(models, excluded)
 	case "aistudio":
@@ -251,14 +266,14 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 					providerKey = "openai-compatibility"
 				}
 				if len(ms) > 0 {
-					ms = s.appendPluginModels(providerKey, ms)
-					s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
+					ms = s.appendPluginModels(providerKey, ms, nil)
+					published = s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
 				} else {
-					ms = s.appendPluginModels(providerKey, nil)
+					ms = s.appendPluginModels(providerKey, nil, nil)
 					if len(ms) > 0 {
-						s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
+						published = s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
 					} else {
-						s.unregisterModelsForAuthFenced(a, fence)
+						published = s.unregisterModelsForAuthFenced(a, fence)
 					}
 				}
 				return true
@@ -274,37 +289,37 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 					}
 					ms := cached.models
 					if len(ms) > 0 {
-						ms = s.appendPluginModels(providerKey, ms)
-						s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
+						ms = s.appendPluginModels(providerKey, ms, nil)
+						published = s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
 					} else {
-						ms = s.appendPluginModels(providerKey, nil)
+						ms = s.appendPluginModels(providerKey, nil, nil)
 						if len(ms) > 0 {
-							s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
+							published = s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, ms)
 						} else {
-							s.unregisterModelsForAuthFenced(a, fence)
+							published = s.unregisterModelsForAuthFenced(a, fence)
 						}
 					}
-					return nil
+					return modelRegistrationResult(published)
 				}
 			}
 			if indexed := configEntryForAuthIndex(a, cfg.OpenAICompatibility); indexed != nil && registerCompat(indexed) {
-				return nil
+				return modelRegistrationResult(published)
 			}
 			for i := range cfg.OpenAICompatibility {
 				compat := &cfg.OpenAICompatibility[i]
 				if strings.EqualFold(compat.Name, compatName) && registerCompat(compat) {
-					return nil
+					return modelRegistrationResult(published)
 				}
 			}
 			if isCompatAuth {
-				models = s.appendPluginModels(providerKey, nil)
+				models = s.appendPluginModels(providerKey, nil, nil)
 				if len(models) > 0 {
-					s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, models)
+					published = s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, providerKey, models)
 				} else {
 					// No matching provider found or models removed entirely; drop any prior registration.
-					s.unregisterModelsForAuthFenced(a, fence)
+					published = s.unregisterModelsForAuthFenced(a, fence)
 				}
-				return nil
+				return modelRegistrationResult(published)
 			}
 		}
 	}
@@ -318,20 +333,20 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if key == "" {
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
 	}
-	models = s.appendPluginModels(key, models)
+	models = s.appendPluginModels(key, models, excluded)
 	if len(models) > 0 {
-		s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, key, models)
+		published = s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, key, models)
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
 		}
-		return nil
+		return modelRegistrationResult(published)
 	}
 
-	s.unregisterModelsForAuthFenced(a, fence)
+	published = s.unregisterModelsForAuthFenced(a, fence)
 	if provider == "antigravity" {
 		s.asyncProbeAntigravityCapabilities(ctx, a, key)
 	}
-	return nil
+	return modelRegistrationResult(published)
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for
@@ -383,14 +398,14 @@ func (s *Service) refreshModelRegistrationForAuthWithContextResult(ctx context.C
 			// still belongs to the disabled snapshot just observed. A
 			// concurrent re-enable/re-register advances identity or
 			// epoch and must not lose its newer publication.
-			s.unregisterModelsForAuthFenced(latest, newModelRegistrationFence(latest))
+			s.unregisterModelsForAuthFenced(latest, newModelRegistrationFence(latest, s.currentConfig()))
 		}
 		// If the auth is absent, applyCoreAuthRemoval owns unregistration;
 		// a stale refresh must not delete a later re-registration.
 		s.coreManager.RefreshSchedulerEntry(current.ID)
 		return false, nil
 	}
-	if err != nil && stopOnDiscoveryError {
+	if err != nil && !errors.Is(err, errModelRegistrationSuperseded) && stopOnDiscoveryError {
 		s.coreManager.RefreshSchedulerEntry(current.ID)
 		return true, err
 	}
@@ -966,7 +981,133 @@ func buildVertexCompatConfigModels(entry *config.VertexCompatKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "google", "vertex", "vertex")
+	models := buildConfigModels(entry.Models, "google", "vertex", "vertex")
+	for _, info := range models {
+		for _, configured := range entry.Models {
+			name := strings.TrimSpace(configured.Name)
+			id := strings.TrimSpace(configured.Alias)
+			if id == "" {
+				id = name
+			}
+			if !strings.EqualFold(info.ID, id) {
+				continue
+			}
+			if publisher, model, ok := strings.Cut(helps.NormalizeVertexOpenAPIModel(name), "/"); ok && strings.TrimSpace(publisher) != "" && strings.TrimSpace(model) != "" && !strings.EqualFold(strings.TrimSpace(publisher), "google") {
+				info.OwnedBy = strings.TrimSpace(publisher)
+			}
+			openAPI := helps.IsVertexOpenAPIModel(name)
+			if configured.OpenAPI != nil {
+				openAPI = *configured.OpenAPI
+			} else if entry.OpenAPI != nil {
+				openAPI = *entry.OpenAPI
+			}
+			if openAPI && info.Thinking == nil {
+				info.Thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+			}
+			break
+		}
+	}
+	return models
+}
+
+func appendVertexServiceAccountModels(cfg *config.Config, a *coreauth.Auth, baseModels []*ModelInfo) []*ModelInfo {
+	if a == nil {
+		return baseModels
+	}
+	seen := make(map[string]struct{}, len(baseModels))
+	for _, model := range baseModels {
+		if model == nil {
+			continue
+		}
+		if id := strings.ToLower(strings.TrimSpace(model.ID)); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+
+	var extraNames []string
+	addName := func(raw string) {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		extraNames = append(extraNames, trimmed)
+	}
+
+	if a.Attributes != nil {
+		if raw := strings.TrimSpace(a.Attributes["openapi_models"]); raw != "" {
+			for _, part := range strings.Split(raw, ",") {
+				addName(part)
+			}
+		}
+	}
+	if a.Metadata != nil {
+		for _, key := range []string{"openapi_models", "openapi-models", "models"} {
+			raw, ok := a.Metadata[key]
+			if !ok || raw == nil {
+				continue
+			}
+			switch v := raw.(type) {
+			case string:
+				for _, part := range strings.Split(v, ",") {
+					addName(part)
+				}
+			case []string:
+				for _, item := range v {
+					addName(item)
+				}
+			case []any:
+				for _, item := range v {
+					switch elem := item.(type) {
+					case string:
+						addName(elem)
+					case map[string]any:
+						if name, okName := elem["name"].(string); okName {
+							addName(name)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for _, aliasEntry := range oauthModelAliasesForAuth(cfg, "vertex", a.Attributes) {
+		addName(aliasEntry.Name)
+	}
+
+	if len(extraNames) == 0 {
+		return baseModels
+	}
+
+	now := time.Now().Unix()
+	out := make([]*ModelInfo, 0, len(baseModels)+len(extraNames))
+	out = append(out, baseModels...)
+	for _, name := range extraNames {
+		ownedBy := "google"
+		if publisher, _, ok := strings.Cut(helps.NormalizeVertexOpenAPIModel(name), "/"); ok && strings.TrimSpace(publisher) != "" {
+			ownedBy = strings.TrimSpace(publisher)
+		}
+		info := &ModelInfo{
+			ID:              name,
+			MetadataModelID: name,
+			Object:          "model",
+			Created:         now,
+			OwnedBy:         ownedBy,
+			Type:            "vertex",
+			DisplayName:     name,
+			UserDefined:     true,
+			Thinking:        &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		}
+		if resolved := modelconfig.ResolveModelInfo(name, "vertex", nil); resolved.Thinking != nil {
+			info.Thinking = resolved.Thinking
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 func buildGeminiConfigModels(entry *config.GeminiKey) []*ModelInfo {

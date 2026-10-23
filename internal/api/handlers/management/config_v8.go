@@ -20,19 +20,23 @@ const ConfigV8ContextKey = "management.config-v8"
 
 // ConfigV8 serves the persisted configuration using v8 names. GET is a view;
 // only a successful configuration mutation migrates the stored document.
+//
+// Reads return an ETag holding the SHA-256 of the on-disk config bytes.
+// Writes require the exact ETag of the edited snapshot in If-Match.
+// Missing revisions return 428; stale or ambiguous revisions return 412.
 func (h *Handler) ConfigV8(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	data, err := os.ReadFile(h.configFilePath)
+	raw, err := os.ReadFile(h.configFilePath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
 		return
 	}
-	c.Header("ETag", configRevision(data))
-	if c.Request.Method != http.MethodGet && !checkConfigRevision(c, data, true) {
+	c.Header("ETag", configRevision(raw))
+	if c.Request.Method != http.MethodGet && !checkConfigRevision(c, raw, true) {
 		return
 	}
-	data, _, err = config.NormalizeConfigLayout(data, true)
+	data, _, err := config.NormalizeConfigLayout(raw, true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
@@ -66,6 +70,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			return
 		}
 		c.Header("Cache-Control", "no-store")
+		c.Header("ETag", configRevision(raw))
 		if yamlRequest {
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return

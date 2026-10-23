@@ -1068,6 +1068,8 @@ func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx conte
 const sessionAffinitySelectionMetadataKey = "__cliproxy_session_affinity_selection"
 
 type sessionAffinitySelectionMarker struct {
+	bindingProvider      string
+	primaryID            string
 	selector             *SessionAffinitySelector
 	authID               string
 	boundAuthID          string
@@ -1226,20 +1228,32 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
-	bind := func(authID string, established bool) {
-		aliases := []string{cacheKey}
+	bind := func(authID string, recordSelection bool) {
+		keys := []string{cacheKey}
 		if fallbackKey != "" && !isSubagent && !isFork {
-			aliases = append(aliases, fallbackKey)
+			keys = append(keys, fallbackKey)
 		}
-		if deferBinding && !established {
+		if !recordSelection {
+			s.cache.SetAliases(authID, keys...)
+			return
+		}
+		bindingProvider := canonicalSchedulingProvider(provider)
+		for _, candidate := range auths {
+			if candidate != nil && candidate.ID == authID {
+				if candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate)); candidateProvider != "" {
+					bindingProvider = candidateProvider
+				}
+				break
+			}
+		}
+		if deferBinding {
 			opts.Metadata[sessionAffinitySelectionMetadataKey] = &sessionAffinitySelectionMarker{
-				selector: s,
-				authID:   authID,
-				aliases:  append([]string(nil), aliases...),
+				selector: s, authID: authID, aliases: append([]string(nil), keys...),
+				bindingProvider: bindingProvider, primaryID: primaryID,
 			}
 			return
 		}
-		s.cache.SetAliases(authID, aliases...)
+		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
@@ -1259,13 +1273,36 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 			return nil, nil
 		}
 		if s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
-			bind(cachedAuthID, true)
+			bind(cachedAuthID, false)
 			entry.Infof("session-affinity: temporary failover, preserved binding | session=%s failover_auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 			return auth, nil
 		}
-		bind(auth.ID, false)
+		bind(auth.ID, true)
 		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 		return auth, nil
+	}
+
+	if isSubagent && s.subagentAffinity && isGuardianRequest(opts.Headers) {
+		providers := make(map[string]struct{})
+		schedulingProvider := canonicalSchedulingProvider(provider)
+		for _, candidate := range available {
+			candidateProvider := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
+			if candidateProvider == "" {
+				candidateProvider = schedulingProvider
+			}
+			if schedulingProvider == "mixed" || candidateProvider == schedulingProvider {
+				providers[candidateProvider] = struct{}{}
+			}
+		}
+		if parentAuthID := s.cache.latestSessionAuth(fallbackID, providers); parentAuthID != "" {
+			for _, auth := range available {
+				if auth.ID == parentAuthID {
+					bind(auth.ID, true)
+					entry.Infof("session-affinity: guardian inherited parent binding | session=%s parent=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
+					return auth, nil
+				}
+			}
+		}
 	}
 
 	if fallbackKey != "" {
@@ -1273,7 +1310,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
 					if !isSubagent || s.subagentAffinity {
-						bind(auth.ID, !isSubagent)
+						bind(auth.ID, true)
 						if isFork {
 							entry.Infof("session-affinity: fork cache hit | session=%s parent=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
 						} else {
@@ -1291,7 +1328,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 				if auth == nil {
 					return nil, nil
 				}
-				bind(cachedAuthID, true)
+				bind(cachedAuthID, false)
 				entry.Infof("session-affinity: fallback cache hit but auth transiently unavailable, failover without rebinding | session=%s fallback=%s bound_auth_index=%s failover_auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(&Auth{ID: cachedAuthID}), sessionAffinityAuthLogID(auth), provider, model)
 				return auth, nil
 			}
@@ -1305,7 +1342,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 	if auth == nil {
 		return nil, nil
 	}
-	bind(auth.ID, false)
+	bind(auth.ID, true)
 	if isFork && fallbackID != "" {
 		entry.Infof("session-affinity: fork bound to new auth | session=%s parent=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
 	} else {
@@ -1330,7 +1367,11 @@ func (s *SessionAffinitySelector) CommitPreDispatchSelection(authID string, opts
 		boundAuthID = marker.boundAuthID
 	}
 	if s.cache != nil && len(marker.aliases) > 0 {
-		s.cache.SetAliases(boundAuthID, marker.aliases...)
+		if marker.primaryID != "" {
+			s.cache.setSessionAliases(boundAuthID, marker.bindingProvider, marker.primaryID, marker.aliases...)
+		} else {
+			s.cache.SetAliases(boundAuthID, marker.aliases...)
+		}
 	}
 	if s.matcher != nil && marker.lcpNamespace != "" && len(marker.lcpFingerprints) > 0 && marker.lcpMinPrefixLength > 0 {
 		if bindRes := s.matcher.BindFingerprintsWithContext(marker.lcpNamespace, marker.lcpFingerprints, marker.lcpTailFingerprints, marker.lcpEnvironmentDigest, marker.lcpMinPrefixLength, boundAuthID); bindRes.SessionID != "" {
@@ -1890,6 +1931,16 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	if fallbackKey != "" {
 		s.cache.CompareAndDelete(fallbackKey, res.AuthID)
 	}
+}
+
+// isGuardianRequest deliberately matches the header, not the configurable review model.
+func isGuardianRequest(headers http.Header) bool {
+	for key, values := range headers {
+		if strings.EqualFold(key, "X-Openai-Subagent") && len(values) > 0 {
+			return strings.EqualFold(strings.TrimSpace(values[0]), "guardian")
+		}
+	}
+	return false
 }
 
 // normalizedSessionCandidate validates an explicit client-provided session signal.
