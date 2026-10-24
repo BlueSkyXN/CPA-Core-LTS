@@ -34,7 +34,9 @@ func TestAnthropicPluginResponsesStopReasons(t *testing.T) {
 		{"refusal", "response.incomplete", "incomplete"},
 		{"sensitive", "response.incomplete", "incomplete"},
 		{"pause_turn", "response.completed", "completed"},
-		{"model_context_window_exceeded", "response.failed", "failed"},
+		// Upstream #6862: the context window maps to incomplete
+		// max_output_tokens so truncated content and usage are preserved.
+		{"model_context_window_exceeded", "response.incomplete", "incomplete"},
 	} {
 		t.Run(tc.stop, func(t *testing.T) {
 			body := claudePluginStopFixture(tc.stop)

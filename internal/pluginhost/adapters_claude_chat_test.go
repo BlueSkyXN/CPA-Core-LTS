@@ -61,9 +61,10 @@ func TestAnthropicPluginChatStreamFrames(t *testing.T) {
 	}
 }
 
-// model_context_window_exceeded ends the Chat stream with an error object
-// instead of a finish chunk; the bridge must treat it as a terminal frame.
-func TestAnthropicPluginChatContextWindowError(t *testing.T) {
+// model_context_window_exceeded maps to finish_reason length (upstream #6861):
+// the stream keeps its content and usage chunks and ends like a truncated
+// max_tokens response instead of a terminal error object.
+func TestAnthropicPluginChatContextWindowFinish(t *testing.T) {
 	wire := claudePluginStopFixture("model_context_window_exceeded")
 	in := make(chan pluginapi.ExecutorStreamChunk, 1)
 	in <- pluginapi.ExecutorStreamChunk{Payload: []byte(wire)}
@@ -77,21 +78,26 @@ func TestAnthropicPluginChatContextWindowError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawContextError bool
+	var finish string
+	var text string
 	var streamErr error
 	for chunk := range result.Chunks {
 		if chunk.Err != nil {
 			streamErr = chunk.Err
 			continue
 		}
-		if gjson.GetBytes(chunk.Payload, "error.code").String() == "context_length_exceeded" {
-			sawContextError = true
+		if reason := gjson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); reason != "" {
+			finish = reason
 		}
+		text += gjson.GetBytes(chunk.Payload, "choices.0.delta.content").String()
 	}
 	if streamErr != nil {
 		t.Fatalf("context-window stream rejected: %v", streamErr)
 	}
-	if !sawContextError {
-		t.Fatal("context_length_exceeded error object missing from stream")
+	if finish != "length" {
+		t.Fatalf("finish_reason = %q, want length", finish)
+	}
+	if text != "你好" {
+		t.Fatalf("truncated text lost: %q", text)
 	}
 }

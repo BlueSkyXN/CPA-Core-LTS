@@ -29,24 +29,9 @@ type ConvertAnthropicResponseToOpenAIParams struct {
 	FinishReason      string
 	Usage             claudeUsageTokens
 	TrailingUsageSent bool
-	// ContextWindowExceeded is set once Claude stopped with
-	// model_context_window_exceeded; the stream then ends with an error event
-	// instead of a successful finish chunk.
-	ContextWindowExceeded bool
 	// Tool calls accumulator for streaming
 	ToolCallsAccumulator map[int]*ToolCallAccumulator
 	NextToolCallIndex    int
-}
-
-// claudeContextWindowExceededChatError is the OpenAI error object for Claude's
-// model_context_window_exceeded stop reason. It carries no usage, matching the
-// OpenAI error format.
-func claudeContextWindowExceededChatError() []byte {
-	return []byte(`{"error":{"message":"Claude stopped because the conversation filled the model context window (stop_reason: model_context_window_exceeded).","type":"invalid_request_error","code":"context_length_exceeded"}}`)
-}
-
-func isClaudeContextWindowExceeded(stopReason string) bool {
-	return strings.EqualFold(strings.TrimSpace(stopReason), "model_context_window_exceeded")
 }
 
 type claudeUsageTokens struct {
@@ -287,10 +272,6 @@ func ConvertClaudeResponseToOpenAI(ctx context.Context, modelName string, origin
 		// Handle message-level changes including stop reason and usage
 		if delta := root.Get("delta"); delta.Exists() {
 			if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
-				if isClaudeContextWindowExceeded(stopReason.String()) {
-					(*param).(*ConvertAnthropicResponseToOpenAIParams).ContextWindowExceeded = true
-					return [][]byte{claudeContextWindowExceededChatError()}
-				}
 				(*param).(*ConvertAnthropicResponseToOpenAIParams).FinishReason = mapAnthropicStopReasonToOpenAI(stopReason.String())
 				template, _ = sjson.SetBytes(template, "choices.0.finish_reason", (*param).(*ConvertAnthropicResponseToOpenAIParams).FinishReason)
 			}
@@ -312,9 +293,6 @@ func ConvertClaudeResponseToOpenAI(ctx context.Context, modelName string, origin
 	case "message_stop":
 		// Final message event - emit standard OpenAI trailing usage chunk with empty choices array if usage was tracked.
 		p := (*param).(*ConvertAnthropicResponseToOpenAIParams)
-		if p.ContextWindowExceeded {
-			return [][]byte{}
-		}
 		if p.Usage.HasUsage && !p.TrailingUsageSent {
 			p.TrailingUsageSent = true
 			usageTemplate := []byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[]}`)
@@ -365,7 +343,7 @@ func mapAnthropicStopReasonToOpenAI(anthropicReason string) string {
 		return "stop"
 	case "tool_use":
 		return "tool_calls"
-	case "max_tokens":
+	case "max_tokens", "model_context_window_exceeded":
 		return "length"
 	case "stop_sequence":
 		return "stop"
@@ -597,18 +575,16 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 			out, _ = sjson.SetBytes(out, argumentsPath, arguments)
 			toolCallsCount++
 		}
-		if toolCallsCount > 0 {
+		// A length finish (max_tokens or model_context_window_exceeded) must
+		// survive a tool call: the client needs the truncation signal to retry
+		// with a smaller request instead of treating the call as complete.
+		if finishReason := mapAnthropicStopReasonToOpenAI(stopReason); toolCallsCount > 0 && finishReason != "length" {
 			out, _ = sjson.SetBytes(out, "choices.0.finish_reason", "tool_calls")
-		} else if finishReason := mapAnthropicStopReasonToOpenAI(stopReason); finishReason != "stop" {
+		} else if finishReason != "stop" {
 			out, _ = sjson.SetBytes(out, "choices.0.finish_reason", finishReason)
 		}
 	} else if finishReason := mapAnthropicStopReasonToOpenAI(stopReason); finishReason != "stop" {
 		out, _ = sjson.SetBytes(out, "choices.0.finish_reason", finishReason)
-	}
-
-	// The executor turns this body into an HTTP 400 for Chat Completions.
-	if isClaudeContextWindowExceeded(stopReason) {
-		return claudeContextWindowExceededChatError()
 	}
 
 	return out

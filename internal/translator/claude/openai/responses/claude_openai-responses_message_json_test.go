@@ -54,7 +54,7 @@ func TestClaudeMessageJSONResponsesStopReasonTerminals(t *testing.T) {
 		{"pause_turn", "completed", "response.completed"},
 		{"refusal", "incomplete", "response.incomplete"},
 		{"sensitive", "incomplete", "response.incomplete"},
-		{"model_context_window_exceeded", "failed", "response.failed"},
+		{"model_context_window_exceeded", "incomplete", "response.incomplete"},
 	} {
 		t.Run(tc.stop, func(t *testing.T) {
 			body := []byte(`{"type":"message","id":"msg-stop","role":"assistant","model":"fixture","content":[{"type":"text","text":"partial"}],"stop_reason":"` + tc.stop + `","usage":{"input_tokens":3,"output_tokens":5}}`)
@@ -69,12 +69,12 @@ func TestClaudeMessageJSONResponsesStopReasonTerminals(t *testing.T) {
 				if root.Get("end_turn").Bool() {
 					t.Fatal("pause_turn end_turn must be false")
 				}
-			case "model_context_window_exceeded":
-				if root.Get("error.code").String() != "context_length_exceeded" {
-					t.Fatalf("error.code = %q", root.Get("error.code").String())
-				}
 			default:
-				if root.Get("incomplete_details.reason").String() != "content_filter" {
+				want := "content_filter"
+				if tc.stop == "model_context_window_exceeded" {
+					want = "max_output_tokens"
+				}
+				if root.Get("incomplete_details.reason").String() != want {
 					t.Fatalf("incomplete_details.reason = %q", root.Get("incomplete_details.reason").String())
 				}
 			}

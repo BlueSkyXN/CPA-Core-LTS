@@ -293,11 +293,6 @@ func validClaudePluginChatJSON(body []byte) bool {
 		return false
 	}
 	root := gjson.ParseBytes(body)
-	// A terminal error object (context_length_exceeded) stands in for the
-	// completion; the executor maps it to an HTTP 400.
-	if root.Get("error.code").String() == "context_length_exceeded" {
-		return true
-	}
 	return root.Get("object").String() == "chat.completion" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("choices").IsArray() && root.Get("choices.0.message.role").String() == "assistant" && validChatFinish(root.Get("choices.0.finish_reason").String())
 }
 
@@ -316,11 +311,6 @@ func claudePluginHasChatFinish(frames [][]byte) bool {
 		}
 		root := gjson.ParseBytes(frame)
 		if root.Get("object").String() == "chat.completion.chunk" && root.Get("id").String() != "" && validChatFinish(root.Get("choices.0.finish_reason").String()) {
-			return true
-		}
-		// model_context_window_exceeded ends the stream with an error object
-		// instead of a finish chunk.
-		if root.Get("object").String() == "" && root.Get("error.code").String() == "context_length_exceeded" {
 			return true
 		}
 	}

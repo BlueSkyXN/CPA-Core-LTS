@@ -126,7 +126,10 @@ func TestPluginResponseStopReasons(t *testing.T) {
 		{stop: "refusal", wantStatus: "incomplete", wantEvent: "response.incomplete"},
 		{stop: "sensitive", wantStatus: "incomplete", wantEvent: "response.incomplete"},
 		{stop: "pause_turn", wantStatus: "completed", wantEvent: "response.completed"},
-		{stop: "model_context_window_exceeded", wantStatus: "failed", wantEvent: "response.failed"},
+		// Upstream #6862: a filled context window maps to incomplete
+		// max_output_tokens like max_tokens, preserving truncated content,
+		// tool calls and usage instead of failing the response.
+		{stop: "model_context_window_exceeded", wantStatus: "incomplete", wantEvent: "response.incomplete"},
 	} {
 		state := &PluginResponseState{}
 		var param any = state
@@ -162,8 +165,8 @@ func TestPluginResponseStopReasons(t *testing.T) {
 				t.Errorf("stop=%q incomplete_details.reason=%q want content_filter", tc.stop, got)
 			}
 		case "model_context_window_exceeded":
-			if got := gjson.GetBytes(last, "response.error.code").String(); got != "context_length_exceeded" {
-				t.Errorf("stop=%q response.error.code=%q want context_length_exceeded", tc.stop, got)
+			if got := gjson.GetBytes(last, "response.incomplete_details.reason").String(); got != "max_output_tokens" {
+				t.Errorf("stop=%q incomplete_details.reason=%q want max_output_tokens", tc.stop, got)
 			}
 		case "pause_turn":
 			if gjson.GetBytes(last, "response.end_turn").Exists() && gjson.GetBytes(last, "response.end_turn").Bool() {
