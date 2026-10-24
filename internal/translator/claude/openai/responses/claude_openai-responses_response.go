@@ -162,10 +162,36 @@ func (u claudeResponsesUsageTokens) OpenAIResponsesUsage() (inputTokens, outputT
 }
 
 func claudeResponsesIncompleteDetails(stopReason string) ([]byte, bool) {
-	if strings.EqualFold(strings.TrimSpace(stopReason), "max_tokens") {
+	switch strings.ToLower(strings.TrimSpace(stopReason)) {
+	case "max_tokens", "model_context_window_exceeded":
 		return []byte(`{"reason":"max_output_tokens"}`), true
+	case "refusal", "sensitive":
+		// Safety classifiers stop the turn with a normal 200. Responses clients
+		// treat content_filter as a retryable refusal instead of a finished answer:
+		// https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons#refusal
+		// GLM Coding Plan reports its safety stop as `sensitive`; same mapping.
+		return []byte(`{"reason":"content_filter"}`), true
 	}
 	return nil, false
+}
+
+// claudeStopReasonPauseTurn reports Anthropic's server-tool iteration pause.
+// The turn is unfinished but valid: the client continues it by sending the
+// paused assistant content back unchanged, so Responses ends the response as
+// completed with end_turn=false instead of an error:
+// https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons#pause_turn
+func claudeStopReasonPauseTurn(stopReason string) bool {
+	return strings.EqualFold(strings.TrimSpace(stopReason), "pause_turn")
+}
+
+// claudeResponsesWebSearchStatus keeps a paused or tool_use-deferred search
+// that never received its result in_progress, so the next request can send it
+// back without a result.
+func claudeResponsesWebSearchStatus(stopReason, status string, hasResults bool) string {
+	if !hasResults && (claudeStopReasonPauseTurn(stopReason) || strings.EqualFold(strings.TrimSpace(stopReason), "tool_use")) {
+		return "in_progress"
+	}
+	return status
 }
 
 func claudeResponsesOutputStatus(stopReason string) string {
@@ -660,8 +686,20 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			// A result block carries its full content up front and has no deltas.
 			// Results are stored here and the item is closed when the next block
 			// starts or at message_stop so the final stop_reason is respected.
-			if item := st.WebSearchByToolID[cb.Get("tool_use_id").String()]; item != nil {
+			toolUseID := cb.Get("tool_use_id").String()
+			if item := st.WebSearchByToolID[toolUseID]; item != nil {
 				item.Results = claudeWebSearchResultsToResponses(cb.Get("content"))
+			} else if toolUseID != "" {
+				// A continuation after pause_turn delivers the result of a search
+				// whose server_tool_use arrived in the previous response. Surface it
+				// under the same id so the client keeps the result in its history.
+				item := st.startWebSearch(idx, toolUseID)
+				item.Results = claudeWebSearchResultsToResponses(cb.Get("content"))
+				added := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"web_search_call","status":"in_progress","action":{"type":"search","query":""}}}`)
+				added, _ = sjson.SetBytes(added, "sequence_number", nextSeq())
+				added, _ = sjson.SetBytes(added, "output_index", item.OutputIndex)
+				added, _ = sjson.SetBytes(added, "item.id", responsesWebSearchCallID(item.ToolUseID))
+				out = append(out, emitEvent("response.output_item.added", added))
 			} else {
 				log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
 			}
@@ -794,12 +832,12 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		}
 		for _, item := range st.WebSearchItems {
 			if !item.Emitted {
-				out = append(out, st.finalizeWebSearchWithStatus(item, toolStatus, nextSeq)...)
+				out = append(out, st.finalizeWebSearchWithStatus(item, claudeResponsesWebSearchStatus(st.StopReason, toolStatus, len(item.Results) > 0), nextSeq)...)
 			}
 		}
 
 		eventType, responseStatus, incompleteDetails := claudeResponsesTerminalState(st.StopReason)
-		completed := []byte(`{"type":"","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"","background":false,"error":null}}`)
+		completed := []byte(`{"type":"","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"","background":false,"error":null,"output":[]}}`)
 		completed, _ = sjson.SetBytes(completed, "type", eventType)
 		completed, _ = sjson.SetBytes(completed, "sequence_number", nextSeq())
 		completed, _ = sjson.SetBytes(completed, "response.id", st.ResponseID)
@@ -807,6 +845,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		completed, _ = sjson.SetBytes(completed, "response.status", responseStatus)
 		if len(incompleteDetails) > 0 {
 			completed, _ = sjson.SetRawBytes(completed, "response.incomplete_details", incompleteDetails)
+		}
+		if claudeStopReasonPauseTurn(st.StopReason) {
+			completed, _ = sjson.SetBytes(completed, "response.end_turn", false)
 		}
 		// Inject original request fields into response as per docs/response.completed.json
 
@@ -1141,8 +1182,17 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 				item.args.WriteString(input.Raw)
 			}
 		case "web_search_tool_result":
-			if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil {
+			toolUseID := cb.Get("tool_use_id").String()
+			if item := webSearchByToolID[toolUseID]; item != nil {
 				item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
+			} else if toolUseID != "" {
+				// Continuation after pause_turn: the search started in the
+				// previous response; keep its result under the same id.
+				item := newOutputItem("web_search_call", idx)
+				item.id = responsesWebSearchCallID(toolUseID)
+				item.callID = toolUseID
+				item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
+				webSearchByToolID[toolUseID] = item
 			} else {
 				log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
 			}
@@ -1267,6 +1317,9 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	if len(incompleteDetails) > 0 {
 		out, _ = sjson.SetRawBytes(out, "incomplete_details", incompleteDetails)
 	}
+	if claudeStopReasonPauseTurn(stopReason) {
+		out, _ = sjson.SetBytes(out, "end_turn", false)
+	}
 
 	// Inject request echo fields as top-level (similar to streaming variant)
 	if len(reqBytes) > 0 {
@@ -1337,7 +1390,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	outputs := make([][]byte, 0, len(outputItems))
 	for i, outputItem := range outputItems {
 		itemStatus := "completed"
-		if responseStatus == "incomplete" && i == len(outputItems)-1 {
+		if (responseStatus == "incomplete" || responseStatus == "failed") && i == len(outputItems)-1 {
 			itemStatus = "incomplete"
 		}
 		var item []byte
@@ -1352,7 +1405,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			item, _ = sjson.SetRawBytes(item, "summary", translatorcommon.JoinRawArray([][]byte{summary}))
 		case "web_search_call":
 			item = buildResponsesWebSearchCallItem(outputItem.callID, claudeWebSearchQuery(outputItem.args.String()), outputItem.results)
-			item, _ = sjson.SetBytes(item, "status", itemStatus)
+			item, _ = sjson.SetBytes(item, "status", claudeResponsesWebSearchStatus(stopReason, itemStatus, len(outputItem.results) > 0))
 		case "message":
 			item = []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
 			item, _ = sjson.SetBytes(item, "id", outputItem.id)

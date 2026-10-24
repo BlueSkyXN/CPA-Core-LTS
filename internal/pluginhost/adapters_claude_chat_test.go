@@ -60,3 +60,44 @@ func TestAnthropicPluginChatStreamFrames(t *testing.T) {
 		}
 	}
 }
+
+// model_context_window_exceeded maps to finish_reason length (upstream #6861):
+// the stream keeps its content and usage chunks and ends like a truncated
+// max_tokens response instead of a terminal error object.
+func TestAnthropicPluginChatContextWindowFinish(t *testing.T) {
+	wire := claudePluginStopFixture("model_context_window_exceeded")
+	in := make(chan pluginapi.ExecutorStreamChunk, 1)
+	in <- pluginapi.ExecutorStreamChunk{Payload: []byte(wire)}
+	close(in)
+	adapter := newCurrentExecutorAdapterForTest(New(), "chat-ctx-fixture", &fakeExecutor{executeStream: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+		return pluginapi.ExecutorStreamResponse{Chunks: in}, nil
+	}}, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := adapter.ExecuteStream(ctx, nil, coreexecutor.Request{Model: "fixture", Payload: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}, coreexecutor.Options{SourceFormat: tr.FormatOpenAI, Stream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finish string
+	var text string
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		if reason := gjson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); reason != "" {
+			finish = reason
+		}
+		text += gjson.GetBytes(chunk.Payload, "choices.0.delta.content").String()
+	}
+	if streamErr != nil {
+		t.Fatalf("context-window stream rejected: %v", streamErr)
+	}
+	if finish != "length" {
+		t.Fatalf("finish_reason = %q, want length", finish)
+	}
+	if text != "你好" {
+		t.Fatalf("truncated text lost: %q", text)
+	}
+}

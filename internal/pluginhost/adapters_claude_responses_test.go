@@ -21,6 +21,64 @@ import (
 
 const claudePluginFixture = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"role\":\"assistant\",\"id\":\"fixture\",\"content\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\ndata: \"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
+// claudePluginStopFixture swaps the fixture's stop_reason. These stops used to
+// fail the whole stream with "invalid or unsupported Anthropic plugin response".
+func claudePluginStopFixture(stop string) string {
+	return strings.Replace(claudePluginFixture, `"stop_reason":"end_turn"`, `"stop_reason":"`+stop+`"`, 1)
+}
+
+func TestAnthropicPluginResponsesStopReasons(t *testing.T) {
+	for _, tc := range []struct {
+		stop, terminal, status string
+	}{
+		{"refusal", "response.incomplete", "incomplete"},
+		{"sensitive", "response.incomplete", "incomplete"},
+		{"pause_turn", "response.completed", "completed"},
+		// Upstream #6862: the context window maps to incomplete
+		// max_output_tokens so truncated content and usage are preserved.
+		{"model_context_window_exceeded", "response.incomplete", "incomplete"},
+	} {
+		t.Run(tc.stop, func(t *testing.T) {
+			body := claudePluginStopFixture(tc.stop)
+			input := make(chan pluginapi.ExecutorStreamChunk, 1)
+			input <- pluginapi.ExecutorStreamChunk{Payload: []byte(body)}
+			close(input)
+			adapter := newCurrentExecutorAdapterForTest(New(), "claude-fixture", &fakeExecutor{executeStream: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+				return pluginapi.ExecutorStreamResponse{Chunks: input}, nil
+			}}, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			result, err := adapter.ExecuteStream(ctx, &coreauth.Auth{ID: "fixture-auth", Provider: "plugin-provider"}, coreexecutor.Request{Model: "fixture", Payload: []byte(`{"input":"hello"}`)}, coreexecutor.Options{SourceFormat: tr.FormatOpenAIResponse, Stream: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out strings.Builder
+			var streamErr error
+			for chunk := range result.Chunks {
+				out.Write(chunk.Payload)
+				if chunk.Err != nil {
+					streamErr = chunk.Err
+				}
+			}
+			if streamErr != nil {
+				t.Fatalf("stop=%q rejected: %v", tc.stop, streamErr)
+			}
+			if !strings.Contains(out.String(), "event: "+tc.terminal+"\n") {
+				t.Fatalf("stop=%q missing %s event: %s", tc.stop, tc.terminal, out.String())
+			}
+			last := ""
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.HasPrefix(line, "data:") {
+					last = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				}
+			}
+			if got := gjson.Get(last, "response.status").String(); got != tc.status {
+				t.Fatalf("stop=%q response.status=%q want %q", tc.stop, got, tc.status)
+			}
+		})
+	}
+}
+
 func TestAnthropicPluginResponsesStream(t *testing.T) {
 	var baseline []string
 	for _, tc := range []struct {
