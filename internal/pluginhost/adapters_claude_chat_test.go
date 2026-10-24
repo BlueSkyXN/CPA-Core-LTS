@@ -60,3 +60,38 @@ func TestAnthropicPluginChatStreamFrames(t *testing.T) {
 		}
 	}
 }
+
+// model_context_window_exceeded ends the Chat stream with an error object
+// instead of a finish chunk; the bridge must treat it as a terminal frame.
+func TestAnthropicPluginChatContextWindowError(t *testing.T) {
+	wire := claudePluginStopFixture("model_context_window_exceeded")
+	in := make(chan pluginapi.ExecutorStreamChunk, 1)
+	in <- pluginapi.ExecutorStreamChunk{Payload: []byte(wire)}
+	close(in)
+	adapter := newCurrentExecutorAdapterForTest(New(), "chat-ctx-fixture", &fakeExecutor{executeStream: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+		return pluginapi.ExecutorStreamResponse{Chunks: in}, nil
+	}}, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := adapter.ExecuteStream(ctx, nil, coreexecutor.Request{Model: "fixture", Payload: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}, coreexecutor.Options{SourceFormat: tr.FormatOpenAI, Stream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawContextError bool
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		if gjson.GetBytes(chunk.Payload, "error.code").String() == "context_length_exceeded" {
+			sawContextError = true
+		}
+	}
+	if streamErr != nil {
+		t.Fatalf("context-window stream rejected: %v", streamErr)
+	}
+	if !sawContextError {
+		t.Fatal("context_length_exceeded error object missing from stream")
+	}
+}

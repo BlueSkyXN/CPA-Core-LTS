@@ -269,7 +269,7 @@ func claudePluginHasResponsesTerminal(frames [][]byte) bool {
 				continue
 			}
 			event := gjson.ParseBytes(payload)
-			if (event.Get("type").String() == "response.completed" || event.Get("type").String() == "response.incomplete") && validClaudePluginResponsesJSON([]byte(event.Get("response").Raw)) {
+			if (event.Get("type").String() == "response.completed" || event.Get("type").String() == "response.incomplete" || event.Get("type").String() == "response.failed") && validClaudePluginResponsesJSON([]byte(event.Get("response").Raw)) {
 				return true
 			}
 		}
@@ -283,7 +283,9 @@ func validClaudePluginResponsesJSON(body []byte) bool {
 	}
 	root := gjson.ParseBytes(body)
 	status := root.Get("status").String()
-	return root.Get("object").String() == "response" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("output").IsArray() && (status == "completed" || status == "incomplete")
+	// `failed` is a valid terminal state: model_context_window_exceeded maps to
+	// response.failed with a context_length_exceeded error object.
+	return root.Get("object").String() == "response" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("output").IsArray() && (status == "completed" || status == "incomplete" || status == "failed")
 }
 
 func validClaudePluginChatJSON(body []byte) bool {
@@ -291,6 +293,11 @@ func validClaudePluginChatJSON(body []byte) bool {
 		return false
 	}
 	root := gjson.ParseBytes(body)
+	// A terminal error object (context_length_exceeded) stands in for the
+	// completion; the executor maps it to an HTTP 400.
+	if root.Get("error.code").String() == "context_length_exceeded" {
+		return true
+	}
 	return root.Get("object").String() == "chat.completion" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("choices").IsArray() && root.Get("choices.0.message.role").String() == "assistant" && validChatFinish(root.Get("choices.0.finish_reason").String())
 }
 
@@ -309,6 +316,11 @@ func claudePluginHasChatFinish(frames [][]byte) bool {
 		}
 		root := gjson.ParseBytes(frame)
 		if root.Get("object").String() == "chat.completion.chunk" && root.Get("id").String() != "" && validChatFinish(root.Get("choices.0.finish_reason").String()) {
+			return true
+		}
+		// model_context_window_exceeded ends the stream with an error object
+		// instead of a finish chunk.
+		if root.Get("object").String() == "" && root.Get("error.code").String() == "context_length_exceeded" {
 			return true
 		}
 	}

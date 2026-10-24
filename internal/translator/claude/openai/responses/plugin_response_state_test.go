@@ -109,3 +109,158 @@ func TestPluginResponseStateRejectsMalformedContent(t *testing.T) {
 		}
 	}
 }
+
+// TestPluginResponseStopReasons covers the stop reasons that previously failed
+// the plugin validator with "invalid or unsupported Anthropic plugin response"
+// even though the translator maps them: GLM's refusal/sensitive safety stops
+// and Anthropic's pause_turn / model_context_window_exceeded.
+func TestPluginResponseStopReasons(t *testing.T) {
+	for _, tc := range []struct {
+		stop       string
+		wantStatus string
+		wantEvent  string
+	}{
+		{stop: "end_turn", wantStatus: "completed", wantEvent: "response.completed"},
+		{stop: "tool_use", wantStatus: "completed", wantEvent: "response.completed"},
+		{stop: "max_tokens", wantStatus: "incomplete", wantEvent: "response.incomplete"},
+		{stop: "refusal", wantStatus: "incomplete", wantEvent: "response.incomplete"},
+		{stop: "sensitive", wantStatus: "incomplete", wantEvent: "response.incomplete"},
+		{stop: "pause_turn", wantStatus: "completed", wantEvent: "response.completed"},
+		{stop: "model_context_window_exceeded", wantStatus: "failed", wantEvent: "response.failed"},
+	} {
+		state := &PluginResponseState{}
+		var param any = state
+		var last []byte
+		for _, event := range []string{
+			`{"type":"message_start","message":{"type":"message","id":"stop-fixture","role":"assistant","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"` + tc.stop + `"},"usage":{"output_tokens":5}}`,
+			`{"type":"message_stop"}`,
+		} {
+			for _, frame := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "fixture", nil, nil, []byte("data: "+event), &param) {
+				for _, line := range strings.Split(string(frame), "\n") {
+					if strings.HasPrefix(line, "data:") {
+						last = []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+					}
+				}
+			}
+		}
+		if state.Err != nil || !state.Terminal {
+			t.Fatalf("stop=%q state=%+v", tc.stop, state)
+		}
+		if got := gjson.GetBytes(last, "type").String(); got != tc.wantEvent {
+			t.Errorf("stop=%q terminal event=%q want %q", tc.stop, got, tc.wantEvent)
+		}
+		if got := gjson.GetBytes(last, "response.status").String(); got != tc.wantStatus {
+			t.Errorf("stop=%q response.status=%q want %q", tc.stop, got, tc.wantStatus)
+		}
+		switch tc.stop {
+		case "refusal", "sensitive":
+			if got := gjson.GetBytes(last, "response.incomplete_details.reason").String(); got != "content_filter" {
+				t.Errorf("stop=%q incomplete_details.reason=%q want content_filter", tc.stop, got)
+			}
+		case "model_context_window_exceeded":
+			if got := gjson.GetBytes(last, "response.error.code").String(); got != "context_length_exceeded" {
+				t.Errorf("stop=%q response.error.code=%q want context_length_exceeded", tc.stop, got)
+			}
+		case "pause_turn":
+			if gjson.GetBytes(last, "response.end_turn").Exists() && gjson.GetBytes(last, "response.end_turn").Bool() {
+				t.Errorf("stop=pause_turn end_turn must be false")
+			}
+		}
+		// The non-stream aggregate must agree with the streamed terminal state.
+		transcript := []string{
+			`{"type":"message_start","message":{"type":"message","id":"stop-fixture","role":"assistant","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"` + tc.stop + `"},"usage":{"output_tokens":5}}`,
+			`{"type":"message_stop"}`,
+		}
+		var aggregateParam any = &PluginResponseState{}
+		aggregate := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, []byte("data: "+strings.Join(transcript, "\n\ndata: ")+"\n\n"), &aggregateParam)
+		if !gjson.GetBytes(aggregate, "status").Exists() {
+			t.Fatalf("stop=%q aggregate missing status", tc.stop)
+		}
+		if got := gjson.GetBytes(aggregate, "status").String(); got != tc.wantStatus {
+			t.Errorf("stop=%q aggregate status=%q want %q", tc.stop, got, tc.wantStatus)
+		}
+	}
+}
+
+// TestPluginResponsePauseTurnSearchStatus verifies a pause_turn response keeps
+// an unfinished server search in_progress, and that a continuation response
+// delivering the orphan web_search_tool_result under the same id is accepted
+// and surfaces the result.
+func TestPluginResponsePauseTurnSearchStatus(t *testing.T) {
+	state := &PluginResponseState{}
+	var param any = state
+	var items []string
+	for _, event := range []string{
+		`{"type":"message_start","message":{"type":"message","id":"pause-fixture","role":"assistant","content":[],"usage":{"input_tokens":9,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_p1","name":"web_search","input":{"query":"evidence"}}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":2}}`,
+		`{"type":"message_stop"}`,
+	} {
+		for _, frame := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "fixture", nil, nil, []byte("data: "+event), &param) {
+			for _, line := range strings.Split(string(frame), "\n") {
+				if strings.HasPrefix(line, "data:") {
+					items = append(items, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+		}
+	}
+	if state.Err != nil || !state.Terminal {
+		t.Fatalf("paused turn rejected: %+v", state)
+	}
+	done := ""
+	for _, item := range items {
+		if gjson.Get(item, "type").String() == "response.output_item.done" && gjson.Get(item, "item.type").String() == "web_search_call" {
+			done = item
+		}
+	}
+	if done == "" {
+		t.Fatal("paused web_search_call item never finalized")
+	}
+	if got := gjson.Get(done, "item.status").String(); got != "in_progress" {
+		t.Fatalf("paused search status=%q want in_progress", got)
+	}
+
+	continuation := &PluginResponseState{}
+	var cParam any = continuation
+	var cItems []string
+	for _, event := range []string{
+		`{"type":"message_start","message":{"type":"message","id":"pause-cont","role":"assistant","content":[],"usage":{"input_tokens":9,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_p1","content":[{"type":"web_search_result","url":"https://example.com/pause","title":"Evidence"}]}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":"summary"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}`,
+		`{"type":"message_stop"}`,
+	} {
+		for _, frame := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "fixture", nil, nil, []byte("data: "+event), &cParam) {
+			for _, line := range strings.Split(string(frame), "\n") {
+				if strings.HasPrefix(line, "data:") {
+					cItems = append(cItems, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+		}
+	}
+	if continuation.Err != nil || !continuation.Terminal {
+		t.Fatalf("orphan result continuation rejected: %+v", continuation)
+	}
+	sawResult := false
+	for _, item := range cItems {
+		if gjson.Get(item, "type").String() == "response.output_item.done" && gjson.Get(item, "item.type").String() == "web_search_call" {
+			if gjson.Get(item, "item.results.0.url").String() == "https://example.com/pause" {
+				sawResult = true
+			}
+		}
+	}
+	if !sawResult {
+		t.Fatal("continuation dropped the orphan search result")
+	}
+}
