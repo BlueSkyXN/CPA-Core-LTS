@@ -1548,7 +1548,7 @@ func rollbackRecoveredGitDirectory(gitDir, backupGitDir string) error {
 }
 
 func isRepositoryCorruptionError(err error) bool {
-	if errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, plumbing.ErrObjectNotFound) {
+	if errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, dotgit.ErrIdxNotFound) || errors.Is(err, plumbing.ErrObjectNotFound) {
 		return true
 	}
 	var pathErr *fs.PathError
@@ -1557,7 +1557,7 @@ func isRepositoryCorruptionError(err error) bool {
 		return (strings.HasPrefix(path, "objects/pack/") || strings.Contains(path, "/objects/pack/")) &&
 			(strings.HasSuffix(path, ".pack") || strings.HasSuffix(path, ".idx"))
 	}
-	return false
+	return errors.Is(err, fs.ErrNotExist) && err != nil && strings.Contains(err.Error(), "packhandle:")
 }
 
 func verifyRepositoryHead(repo *git.Repository) error {
