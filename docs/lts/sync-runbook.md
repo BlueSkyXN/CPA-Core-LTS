@@ -2,6 +2,8 @@
 
 本文档说明 CPA-Core-LTS 后续如何由人工触发、AI 操作来稳定跟踪 `router-for-me/CLIProxyAPI`，同时保留完整 usage statistics、Management usage API、CPA-Panel-LTS 兼容和本仓库 downstream customizations。
 
+V8 开发线的独立同步记录见 [2026-10-28 上游同步审查](upstream-sync-20261028-v8.md)。
+
 ## 目标
 
 目标产品线是：
