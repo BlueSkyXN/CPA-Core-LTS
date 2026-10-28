@@ -226,6 +226,10 @@ Claude Code 状态栏，按当前 CPA 实例展示 Codex / Grok / Antigravity / 
 
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的模型提供方插件：为每个 CLIProxyAPI 提供方注册一个 Hermes 提供方，各自使用其执行器接受的协议（Anthropic Messages、Responses 或 Chat Completions），上下文窗口与推理等级读取自 CLIProxyAPI。可选只读 Management API 查询，用于精确的提供方分组。已收录于 [Hermes 插件目录](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)：`hermes plugins install cliproxyapi-provider`。
 
+### [Ebb](https://github.com/lucasnsaraujo/ebb)
+
+面向 CLIProxyAPI 账号池的原生 macOS 菜单栏应用。显示账号池中 Claude、Codex 等服务的 5 小时与每周额度还剩多少、何时恢复，并通过 Management API 设置每个登录的路由权重，让各账号均匀消耗。
+
 > [!NOTE]  
 > 如果你开发了基于 CLIProxyAPI 的项目，请提交一个 PR（拉取请求）将其添加到此列表中。
 

@@ -22,8 +22,10 @@ import (
 )
 
 const (
-	maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20 // 1 MiB
-	maxDeferredErrorRequestBodyBytes     int64 = 1 << 20 // 1 MiB preview
+	maxErrorOnlyCapturedRequestBodyBytes       int64 = 1 << 20 // 1 MiB
+	maxDeferredErrorRequestBodyBytes           int64 = 1 << 20 // 1 MiB preview
+	maxCapturedZstdWindowBytes                       = 8 << 20
+	authenticatedRequestBodyCapturerContextKey       = "CPA_AUTHENTICATED_REQUEST_BODY_CAPTURER"
 )
 
 // RequestLoggingMiddleware creates a Gin middleware that logs HTTP requests and responses.
@@ -52,7 +54,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		captureBody := shouldCaptureRequestBody(loggerEnabled, c.Request)
 
 		// Capture request information
-		requestInfo, err := captureRequestInfo(c, captureBody)
+		requestInfo, err := captureRequestInfo(c, false)
 		if err != nil {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
@@ -72,11 +74,27 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 		c.Writer = wrapper
 		attachRequestLogSources(c, logger, loggerEnabled)
-		capture := attachDeferredRequestBodyCapture(c.Request, requestInfo, captureBody)
+		capture := attachDeferredRequestBodyCapture(c.Request, requestInfo, false)
 		if capture != nil {
 			defer capture.Cleanup()
 		} else if !captureBody && requestHasBody(c.Request) {
 			requestInfo.Body = []byte(requestBodyOmittedMarker(c.Request))
+		}
+
+		if captureBody {
+			c.Set(authenticatedRequestBodyCapturerContextKey, func() {
+				captured, errCapture := captureRequestInfo(c, true)
+				if errCapture != nil {
+					var maxBytesErr *http.MaxBytesError
+					if errors.As(errCapture, &maxBytesErr) {
+						c.Header("Connection", "close")
+						c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": errCapture.Error()})
+					}
+					return
+				}
+				requestInfo.Body = captured.Body
+				requestInfo.deferredBodyCapture = nil
+			})
 		}
 
 		// Process the request
@@ -164,6 +182,10 @@ func (c *deferredRequestBodyCapture) Bytes() ([]byte, string, error) {
 		return nil, "", nil
 	}
 	return bytes.Clone(c.buffer.Bytes()), c.statusMarker(), nil
+}
+
+func (c *deferredRequestBodyCapture) isComplete() bool {
+	return c == nil || c.sawEOF || (c.contentLength >= 0 && c.bytesRead >= c.contentLength)
 }
 
 func (c *deferredRequestBodyCapture) statusMarker() string {
@@ -274,8 +296,7 @@ func isResponsesWebsocketUpgrade(req *http.Request) bool {
 }
 
 func shouldCaptureRequestBody(loggerEnabled bool, req *http.Request) bool {
-	_ = loggerEnabled
-	if !requestHasBody(req) {
+	if !loggerEnabled || !requestHasBody(req) {
 		return false
 	}
 	contentType := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Type")))
@@ -334,7 +355,11 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		} else {
 			// Restore the body for the actual request processing.
 			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxErrorOnlyCapturedRequestBodyBytes)
+			captureLimit := maxErrorOnlyCapturedRequestBodyBytes
+			if configuredLimit := c.GetInt64("maxRequestBodyBytes"); configuredLimit > 0 && configuredLimit < captureLimit {
+				captureLimit = configuredLimit
+			}
+			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), captureLimit)
 		}
 		body = redactCapturedRequestBodyForLog(c.Request.URL.Path, c.Request.Header.Get("Content-Encoding"), body)
 	}
@@ -423,14 +448,15 @@ func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit
 
 func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bool, error) {
 	decoderMemoryLimit := limit
-	if decoderMemoryLimit < 1<<20 {
-		decoderMemoryLimit = 1 << 20
+	if decoderMemoryLimit < maxCapturedZstdWindowBytes {
+		decoderMemoryLimit = maxCapturedZstdWindowBytes
 	}
 	decoder, errNewReader := zstd.NewReader(
 		bytes.NewReader(raw),
 		zstd.WithDecoderConcurrency(1),
 		zstd.WithDecoderLowmem(true),
 		zstd.WithDecoderMaxMemory(uint64(decoderMemoryLimit)),
+		zstd.WithDecoderMaxWindow(maxCapturedZstdWindowBytes),
 	)
 	if errNewReader != nil {
 		return nil, false, fmt.Errorf("failed to create zstd request decoder: %w", errNewReader)
@@ -460,4 +486,19 @@ func shouldLogRequest(path string) bool {
 	}
 
 	return true
+}
+
+// CaptureAuthenticatedRequestBody runs bounded capture after authentication.
+func CaptureAuthenticatedRequestBody(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	value, exists := c.Get(authenticatedRequestBodyCapturerContextKey)
+	if !exists {
+		return
+	}
+	c.Set(authenticatedRequestBodyCapturerContextKey, nil)
+	if capture, ok := value.(func()); ok && capture != nil {
+		capture()
+	}
 }

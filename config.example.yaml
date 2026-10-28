@@ -484,6 +484,7 @@ server:
     # 全局 HTTP 请求体上限；0 关闭。标准协议仍受 api-request-body-max-bytes 约束。
     max-request-body-bytes: 0
     # 按客户端 Accept-Encoding 协商 HTTP/SSE 压缩；WebSocket 使用独立协商。
+    # 压缩 encoder 会在流存活期间占用内存，实际占用受复用池历史影响。
     response-compression:
         enabled: true
         min-bytes: 1024

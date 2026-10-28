@@ -329,6 +329,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		Model:   normalizedModel,
 		Payload: payload,
 	}
+	originalRequest := rawJSON
+	if ctxOriginal := originalRequestFromContext(ctx); len(ctxOriginal) > 0 {
+		originalRequest = ctxOriginal
+	}
 	afterAuthCapture := &requestAfterAuthCapture{}
 	lifecycle := h.newRequestLifecycleTracker(ctx, entryProtocol, normalizedModel, originalRequestedModel, true, reqMeta, execOptions.SkipInterceptorPluginID)
 	// 首个可交付片段前的 bootstrap 重试会再次调用 Manager，缓存冻结必须
@@ -343,7 +347,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	opts := coreexecutor.Options{
 		Stream:                      true,
 		Alt:                         alt,
-		OriginalRequest:             rawJSON,
+		OriginalRequest:             originalRequest,
 		SourceFormat:                sdktranslator.FromString(entryProtocol),
 		ResponseFormat:              sdktranslator.FromString(responseProtocol),
 		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),

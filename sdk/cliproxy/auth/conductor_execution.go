@@ -179,6 +179,8 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
 	if m.codexModelFallbackEnabled(providers) {
@@ -206,6 +208,8 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -286,6 +290,8 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -328,7 +334,7 @@ type requestToFormatResolver interface {
 
 func isRequestTerminatedError(err error) bool {
 	var terminated *cliproxyexecutor.RequestTerminatedError
-	return errors.As(err, &terminated) && terminated != nil
+	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err)
 }
 
 // applyRequestAfterAuthInterceptor preserves the upstream package-level helper
@@ -497,6 +503,29 @@ func executorForAuth(executor ProviderExecutor, auth *Auth) ProviderExecutor {
 		}
 	}
 	return executor
+}
+
+// syncPreferredUpstreamError refreshes the error that terminal selection
+// will prefer over the last local failure when the attempt error gained a
+// trusted retry annotation after its result was recorded.
+func syncPreferredUpstreamError(upstreamErr *error, errExec error) {
+	if upstreamErr == nil || errExec == nil || !hasUpstreamExecutionAttempt(errExec) {
+		return
+	}
+	// A stream bootstrap wrapper built from an earlier attempt already
+	// carries the response headers needed to hand that failure back as an
+	// error stream; keep that earlier failure preferred. When the wrapper
+	// was built from this same attempt, annotate that wrapper in place
+	// instead of replacing it (error values are compared by identity only
+	// through reflect here because dynamic types may be uncomparable).
+	var bootstrap *streamBootstrapError
+	if errors.As(*upstreamErr, &bootstrap) && bootstrap != nil {
+		if hint := trustedRetryAfterHint(errExec); hint != nil && *hint > 0 {
+			bootstrap.cause = withTrustedRetryAfter(bootstrap.cause, hint)
+		}
+		return
+	}
+	*upstreamErr = errExec
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
@@ -755,6 +784,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
 					m.MarkResult(execCtx, result)
+					errExec = annotateTrustedRetryAfterByHint(errExec)
+					syncPreferredUpstreamError(&upstreamErr, errExec)
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -1026,6 +1057,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						result.CredentialScope = true
 					}
 					m.MarkResult(execCtx, result)
+					errExec = annotateTrustedRetryAfterByHint(errExec)
+					syncPreferredUpstreamError(&upstreamErr, errExec)
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -1423,7 +1456,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				}
 				continue
 			}
-			if isRequestInvalidError(errStream) {
+			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
 			lastErr = errStream

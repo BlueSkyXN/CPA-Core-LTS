@@ -227,6 +227,10 @@ Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIP
 
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)に掲載されています：`hermes plugins install cliproxyapi-provider`。
 
+### [Ebb](https://github.com/lucasnsaraujo/ebb)
+
+CLIProxyAPI のアカウントプール向けのネイティブ macOS メニューバーアプリ。プール全体で Claude、Codex などの 5 時間枠と週間枠がどれだけ残っているか、いつ戻るかを表示し、Management API で各ログインのルーティング重みを設定してアカウントを均等に消費させます。
+
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。
 
