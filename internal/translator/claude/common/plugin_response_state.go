@@ -44,11 +44,13 @@ func PluginResponseError() error {
 	return errors.New("invalid or unsupported Anthropic plugin response")
 }
 
-func supportedPluginStop(reason string, chat bool) bool {
+func supportedPluginStop(reason string) bool {
 	switch reason {
-	case "refusal", "sensitive":
-		return chat
 	case "end_turn", "stop_sequence", "tool_use", "max_tokens":
+		return true
+	// Anthropic/compatible upstreams can end a turn with these stop reasons; see
+	// the Responses terminal mapping for how each is surfaced to the client.
+	case "refusal", "sensitive", "pause_turn", "model_context_window_exceeded":
 		return true
 	default:
 		return false
@@ -99,10 +101,21 @@ func validatePluginContent(block gjson.Result, searches map[string]int, chat boo
 		}
 		searches[id] = searchStateCalled
 	case "web_search_tool_result":
-		if searches[block.Get("tool_use_id").String()] != searchStateCalled {
+		id := block.Get("tool_use_id").String()
+		switch searches[id] {
+		case searchStateCalled:
+			searches[id] = searchStateConsumed
+		case 0:
+			// A continuation after pause_turn delivers the result of a search
+			// whose server_tool_use arrived in the previous response; the
+			// translator surfaces it under the same id, so tolerate the orphan.
+			if id == "" {
+				return PluginResponseError()
+			}
+			searches[id] = searchStateConsumed
+		default:
 			return PluginResponseError()
 		}
-		searches[block.Get("tool_use_id").String()] = searchStateConsumed
 	case "tool_result":
 		// GLM Coding Plan returns provider-executed search hits as assistant-side
 		// bare tool_result blocks paired with a preceding web_search(_prime)
@@ -122,7 +135,7 @@ func validatePluginContent(block gjson.Result, searches map[string]int, chat boo
 }
 
 func ValidatePluginMessage(message gjson.Result, chat bool) error {
-	if message.Get("type").String() != "message" || message.Get("id").String() == "" || message.Get("role").String() != "assistant" || !message.Get("content").IsArray() || !supportedPluginStop(message.Get("stop_reason").String(), chat) {
+	if message.Get("type").String() != "message" || message.Get("id").String() == "" || message.Get("role").String() != "assistant" || !message.Get("content").IsArray() || !supportedPluginStop(message.Get("stop_reason").String()) {
 		return PluginResponseError()
 	}
 	searches := make(map[string]int)
@@ -238,7 +251,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 			s.stop = reason.String()
 		}
 	case "message_stop":
-		if !s.Started || !supportedPluginStop(s.stop, s.Chat) {
+		if !s.Started || !supportedPluginStop(s.stop) {
 			return fail()
 		}
 		for _, block := range s.blocks {

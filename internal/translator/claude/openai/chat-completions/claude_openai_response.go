@@ -575,6 +575,9 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 			out, _ = sjson.SetBytes(out, argumentsPath, arguments)
 			toolCallsCount++
 		}
+		// A length finish (max_tokens or model_context_window_exceeded) must
+		// survive a tool call: the client needs the truncation signal to retry
+		// with a smaller request instead of treating the call as complete.
 		if finishReason := mapAnthropicStopReasonToOpenAI(stopReason); toolCallsCount > 0 && finishReason != "length" {
 			out, _ = sjson.SetBytes(out, "choices.0.finish_reason", "tool_calls")
 		} else if finishReason != "stop" {

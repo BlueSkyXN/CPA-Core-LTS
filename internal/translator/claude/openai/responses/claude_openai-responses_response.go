@@ -183,10 +183,11 @@ func claudeResponsesIncompleteDetails(stopReason string) ([]byte, bool) {
 	switch strings.ToLower(strings.TrimSpace(stopReason)) {
 	case "max_tokens", "model_context_window_exceeded":
 		return []byte(`{"reason":"max_output_tokens"}`), true
-	case "refusal":
+	case "refusal", "sensitive":
 		// Safety classifiers stop the turn with a normal 200. Responses clients
 		// treat content_filter as a retryable refusal instead of a finished answer:
 		// https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons#refusal
+		// GLM Coding Plan reports its safety stop as `sensitive`; same mapping.
 		return []byte(`{"reason":"content_filter"}`), true
 	}
 	return nil, false
@@ -1396,9 +1397,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				}
 			}
 		}
-		if gjson.GetBytes(outputsWrapper, "arr.#").Int() > 0 {
-			completed, _ = sjson.SetRawBytes(completed, "response.output", []byte(gjson.GetBytes(outputsWrapper, "arr").Raw))
-		}
+		completed, _ = sjson.SetRawBytes(completed, "response.output", []byte(gjson.GetBytes(outputsWrapper, "arr").Raw))
 
 		reasoningLength := 0
 		for _, reasoning := range st.ReasoningItems {
@@ -1616,6 +1615,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 			if item := webSearchByToolID[toolUseID]; item != nil {
 				item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
 			} else if toolUseID != "" {
+				// Continuation after pause_turn: the search started in the
+				// previous response; keep its result under the same id.
 				item := newOutputItem("web_search_call", idx)
 				item.id = responsesWebSearchCallID(toolUseID)
 				item.callID = toolUseID
@@ -1772,7 +1773,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 	outputs := make([][]byte, 0, len(outputItems))
 	for i, outputItem := range outputItems {
 		itemStatus := "completed"
-		if responseStatus == "incomplete" && i == len(outputItems)-1 {
+		if (responseStatus == "incomplete" || responseStatus == "failed") && i == len(outputItems)-1 {
 			itemStatus = "incomplete"
 		}
 		var item []byte
