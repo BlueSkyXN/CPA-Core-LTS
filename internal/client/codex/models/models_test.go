@@ -359,7 +359,12 @@ func TestCodexClientModelsResponse_GPT56ReasoningLevelsRemainModelSpecific(t *te
 }
 
 func TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff(t *testing.T) {
-	resp := BuildResponse([]map[string]any{{"id": "gpt-5.3-codex-spark"}}, nil, false)
+	// Spark no longer has an embedded template; supply its model-specific
+	// capabilities instead of inheriting the current default template's levels.
+	resp := BuildResponse([]map[string]any{{
+		"id":       "gpt-5.3-codex-spark",
+		"thinking": &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+	}}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok || len(models) != 1 {
 		t.Fatalf("models = %#v, want one model", resp["models"])

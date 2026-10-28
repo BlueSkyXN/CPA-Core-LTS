@@ -390,51 +390,62 @@ func TestHandlerPluginExecutorPublishesUsageGemini(t *testing.T) {
 }
 
 func TestHandlerPluginExecutorPublishesUsageStreamInteractions(t *testing.T) {
-	targetPluginID := "custom-interactions-stream-plugin"
-	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
-	registerUsagePluginForTest(t, "test-plugin-executor-usage-stream-interactions", plugin)
+	for _, tc := range []struct {
+		name       string
+		inputField string
+		input      int
+	}{
+		{name: "separate cache", inputField: "input_tokens", input: 80},
+		{name: "inclusive input", inputField: "total_input_tokens", input: 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			targetPluginID := "custom-interactions-stream-plugin"
+			plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
+			registerUsagePluginForTest(t, "test-plugin-executor-usage-stream-interactions", plugin)
 
-	originalModel := "gemini-2.5-flash"
+			originalModel := "gemini-2.5-flash"
 
-	chunks := make(chan coreexecutor.StreamChunk, 3)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"event_type\":\"start\",\"usage\":{\"input_tokens\":100,\"cache_read_tokens\":20,\"output_tokens\":0,\"reasoning_tokens\":0,\"total_tokens\":100}}\n\n")}
-	chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"event_type\":\"finish\",\"usage\":{\"input_tokens\":100,\"cache_read_tokens\":20,\"output_tokens\":30,\"reasoning_tokens\":10,\"total_tokens\":140}}\n\n")}
-	chunks <- coreexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
-	close(chunks)
+			chunks := make(chan coreexecutor.StreamChunk, 3)
+			chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf("data: {\"event_type\":\"start\",\"usage\":{%q:%d,\"cache_read_tokens\":20,\"output_tokens\":0,\"reasoning_tokens\":0,\"total_tokens\":100}}\n\n", tc.inputField, tc.input))}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf("data: {\"event_type\":\"finish\",\"usage\":{%q:%d,\"cache_read_tokens\":20,\"output_tokens\":30,\"reasoning_tokens\":10,\"total_tokens\":140}}\n\n", tc.inputField, tc.input))}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
+			close(chunks)
 
-	mockHost := &mockPluginUsageHost{
-		streamResult: &coreexecutor.StreamResult{Chunks: chunks},
-	}
-	mockHost.hasRouters = true
-	mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
-	}
+			mockHost := &mockPluginUsageHost{
+				streamResult: &coreexecutor.StreamResult{Chunks: chunks},
+			}
+			mockHost.hasRouters = true
+			mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+				return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
+			}
 
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
-	handler.SetModelRouterHost(mockHost)
+			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+			handler.SetModelRouterHost(mockHost)
 
-	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "interactions", originalModel, []byte(fmt.Sprintf(`{"model":%q,"stream":true}`, originalModel)), "")
-	for range dataChan {
-	}
-	for err := range errChan {
-		if err != nil {
-			t.Fatalf("stream error = %+v", err)
-		}
-	}
+			dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "interactions", originalModel, []byte(fmt.Sprintf(`{"model":%q,"stream":true}`, originalModel)), "")
+			for range dataChan {
+			}
+			for err := range errChan {
+				if err != nil {
+					t.Fatalf("stream error = %+v", err)
+				}
+			}
 
-	record := plugin.waitRecord(t)
-	if record.Provider != targetPluginID {
-		t.Errorf("record.Provider = %q, want %q", record.Provider, targetPluginID)
-	}
-	if record.Detail.InputTokens != 100 || record.Detail.CacheReadTokens != 20 || record.Detail.OutputTokens != 30 || record.Detail.ReasoningTokens != 10 || record.Detail.TotalTokens != 140 {
-		t.Errorf("record.Detail = %+v, want input=100 cache_read=20 output=30 reasoning=10 total=140", record.Detail)
-	}
-	tb := record.Detail.TokenBreakdown
-	if !tb.Valid() || tb.Quality != usage.TokenAccountingQualityComplete ||
-		tb.TotalTokens != 140 ||
-		tb.Input.TotalTokens != 100 || tb.Input.UncachedTokens != 80 || tb.Input.CacheReadTokens != 20 ||
-		tb.Output.TotalTokens != 40 || tb.Output.NonReasoningTokens != 30 || tb.Output.ReasoningTokens != 10 {
-		t.Errorf("record.Detail.TokenBreakdown = %+v, want valid separate-reasoning breakdown with total=140 input=(100/80/20/0) output=(40/30/10)", tb)
+			record := plugin.waitRecord(t)
+			if record.Provider != targetPluginID {
+				t.Errorf("record.Provider = %q, want %q", record.Provider, targetPluginID)
+			}
+			if record.Detail.InputTokens != 100 || record.Detail.CacheReadTokens != 20 || record.Detail.OutputTokens != 30 || record.Detail.ReasoningTokens != 10 || record.Detail.TotalTokens != 140 {
+				t.Errorf("record.Detail = %+v, want input=100 cache_read=20 output=30 reasoning=10 total=140", record.Detail)
+			}
+			tb := record.Detail.TokenBreakdown
+			if !tb.Valid() || tb.Quality != usage.TokenAccountingQualityComplete ||
+				tb.TotalTokens != 140 ||
+				tb.Input.TotalTokens != 100 || tb.Input.UncachedTokens != 80 || tb.Input.CacheReadTokens != 20 ||
+				tb.Output.TotalTokens != 40 || tb.Output.NonReasoningTokens != 30 || tb.Output.ReasoningTokens != 10 {
+				t.Errorf("record.Detail.TokenBreakdown = %+v, want valid separate-reasoning breakdown with total=140 input=(100/80/20/0) output=(40/30/10)", tb)
+			}
+		})
 	}
 }
 
