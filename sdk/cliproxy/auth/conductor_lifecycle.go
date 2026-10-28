@@ -443,8 +443,10 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 			if isFileSnapshot {
 				auth.ModelStates = existing.ModelStates
 				auth.LastRefreshedAt = existing.LastRefreshedAt
-				auth.NextRefreshAfter = existing.NextRefreshAfter
-				auth.RefreshFailures = existing.RefreshFailures
+				if !credChanged {
+					auth.NextRefreshAfter = existing.NextRefreshAfter
+					auth.RefreshFailures = existing.RefreshFailures
+				}
 				if (auth.Status == "" || auth.Status == StatusActive) && existing.Status != "" {
 					auth.Status = existing.Status
 				}
@@ -465,8 +467,14 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.ModelStates = existing.ModelStates
 			}
 			credChanged := CredentialsChanged(existing, auth)
-			if credChanged && (auth.RejectedAccessToken == "" || authAccessToken(auth) != auth.RejectedAccessToken) {
-				if hasUnauthorizedAuthFailure(existing) || (auth.LastError != nil && isUnauthorizedError(auth.LastError)) {
+			if (credChanged || mode == updateModeRefresh) && (auth.RejectedAccessToken == "" || authAccessToken(auth) != auth.RejectedAccessToken) {
+				auth.RefreshFailures = 0
+				if credChanged && mode != updateModeRefresh && auth.NextRefreshAfter.Equal(existing.NextRefreshAfter) {
+					auth.NextRefreshAfter = time.Time{}
+				}
+				isAuthOrGrantFailure := hasUnauthorizedAuthFailure(existing) || (auth.LastError != nil && (isUnauthorizedError(auth.LastError) || isInvalidGrantResultError(auth.LastError)))
+				credentialQuotaActive := auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(now)
+				if !credentialQuotaActive && (isAuthOrGrantFailure || (auth.Unavailable && !auth.NextRetryAfter.After(now))) {
 					auth.Unavailable = false
 					auth.NextRetryAfter = time.Time{}
 					auth.cooldownRecordedSeq = 0
@@ -475,8 +483,12 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
 					cooldownStateChanged = true
+				} else if isAuthOrGrantFailure && credentialQuotaActive {
+					auth.LastError = nil
+					auth.StatusMessage = auth.Quota.Reason
+					cooldownStateChanged = true
 				}
-				resumed := clearUnauthorizedModelStates(auth, time.Now())
+				resumed := clearUnauthorizedModelStates(auth, now)
 				if len(resumed) > 0 {
 					cooldownStateChanged = true
 				}

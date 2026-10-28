@@ -76,6 +76,7 @@ type UsageReporter struct {
 	clientRequestEncoding string
 	sizeMu                sync.Mutex
 	upstreamAttempt       *upstreamSizeAttempt
+	selectionID           string
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
@@ -141,6 +142,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	reporter := &UsageReporter{
 		requestID:       uuid.NewString(),
 		traceID:         traceID,
+		selectionID:     usage.SelectionIDFromContext(ctx),
 		provider:        provider,
 		baseURL:         usage.SafeBaseURL(baseURL),
 		model:           model,
@@ -865,6 +867,14 @@ func (r *UsageReporter) TraceID() string {
 	return r.traceID
 }
 
+// SelectionID returns the scheduler selection ID for this reporter.
+func (r *UsageReporter) SelectionID() string {
+	if r == nil {
+		return ""
+	}
+	return r.selectionID
+}
+
 // IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
 func (r *UsageReporter) IsNativeKey() bool {
 	if r == nil {
@@ -943,6 +953,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 			r.outboundTier,
 		),
 		ResponseCyberProgram: detail.ResponseCyberProgram,
+		SelectionID:          r.selectionID,
 		ResponseModel:        responseModel,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
@@ -992,10 +1003,14 @@ func failFromErrors(errs ...error) usage.Failure {
 				body = reason
 			}
 		}
-		return usage.Failure{
+		fail := usage.Failure{
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
+		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
+			fail.Code = usage.FailureStreamTruncatedCode
+		}
+		return fail
 	}
 	return usage.Failure{}
 }

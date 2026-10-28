@@ -1275,6 +1275,7 @@ type statusErr struct {
 	modelFallbackReason string
 	codexRateLimitClass string
 	credentialScoped    bool
+	streamTruncated     bool
 }
 
 func (e statusErr) Error() string {
@@ -1296,6 +1297,10 @@ func (e statusErr) IsCredentialScoped() bool    { return e.credentialScoped }
 func (e statusErr) IsRequestScoped() bool {
 	return e.code == http.StatusBadGateway && e.msg == helps.ApplyPatchUpstreamErrorMessage
 }
+
+// IsStreamTruncated marks a locally synthesized failure for an accepted
+// upstream stream that ended without its terminal frame.
+func (e statusErr) IsStreamTruncated() bool { return e.streamTruncated }
 
 const openAICompatTPMFallbackRetryAfter = time.Minute
 
