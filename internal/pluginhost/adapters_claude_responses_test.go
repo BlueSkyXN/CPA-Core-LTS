@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	tr "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -130,15 +130,16 @@ func TestAnthropicPluginResponsesStream(t *testing.T) {
 				return pluginapi.ExecutorStreamResponse{Chunks: input}, nil
 			}}, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
 			records := make(chan coreusage.Record, 8)
+			authID := t.Name()
 			coreusage.RegisterNamedPlugin("test:claude-stream", coreUsagePluginFunc(func(_ context.Context, record coreusage.Record) {
-				if record.Provider == "plugin-provider" {
+				if record.Provider == "plugin-provider" && record.AuthID == authID {
 					records <- record
 				}
 			}))
 			t.Cleanup(func() { coreusage.RegisterNamedPlugin("test:claude-stream", noopFormalPluginUsageSink{}) })
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			result, err := adapter.ExecuteStream(ctx, &coreauth.Auth{ID: "fixture-auth", Provider: "plugin-provider"}, coreexecutor.Request{Model: "fixture", Payload: []byte(`{"input":"hello"}`)}, coreexecutor.Options{SourceFormat: tr.FormatOpenAIResponse, Stream: true})
+			result, err := adapter.ExecuteStream(ctx, &coreauth.Auth{ID: authID, Provider: "plugin-provider"}, coreexecutor.Request{Model: "fixture", Payload: []byte(`{"input":"hello"}`)}, coreexecutor.Options{SourceFormat: tr.FormatOpenAIResponse, Stream: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,7 +204,7 @@ func TestAnthropicPluginResponsesUpstreamFailureKeepsUsage(t *testing.T) {
 	}}, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
 	records := make(chan coreusage.Record, 4)
 	coreusage.RegisterNamedPlugin("test:upstream-usage", coreUsagePluginFunc(func(_ context.Context, record coreusage.Record) {
-		if record.Provider == "plugin-provider" {
+		if record.Provider == "plugin-provider" && record.AuthID == "upstream-auth" {
 			records <- record
 		}
 	}))

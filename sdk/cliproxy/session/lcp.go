@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -999,6 +999,35 @@ func (m *MerklePrefixMatcher) RemoveFingerprintsBefore(namespace string, fingerp
 	}
 	m.removeGroupLocked(group)
 	return true
+}
+
+// RemoveSessionBefore removes groups for sessionID bound to authID in namespace
+// that have not been refreshed after maxGeneration.
+func (m *MerklePrefixMatcher) RemoveSessionBefore(namespace, sessionID, authID string, maxGeneration uint64) bool {
+	if m == nil || namespace == "" || sessionID == "" || authID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prepareLocked()
+	ns := m.groups[namespace]
+	if ns == nil {
+		return false
+	}
+	var toRemove []*lcpGroup
+	for _, group := range ns.groups {
+		if group == nil || group.sessionID != sessionID || group.authID != authID {
+			continue
+		}
+		if maxGeneration > 0 && group.lastAccessNumber > maxGeneration {
+			continue
+		}
+		toRemove = append(toRemove, group)
+	}
+	for _, group := range toRemove {
+		m.removeGroupLocked(group)
+	}
+	return len(toRemove) > 0
 }
 
 // InvalidateAuth removes every LCP binding owned by authID.

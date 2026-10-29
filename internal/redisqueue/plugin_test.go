@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
@@ -1032,6 +1032,130 @@ func TestUsageQueuePluginOmitsUnmeasuredRequestSize(t *testing.T) {
 		payload := popSinglePayload(t)
 		for _, field := range []string{"size_version", "client_request_bytes", "upstream_transport", "upstream_request_bytes", "upstream_request_wire_bytes", "upstream_response_bytes"} {
 			requireMissingField(t, payload, field)
+		}
+	})
+}
+
+func TestUsageQueuePluginPayloadDistinguishesNativeKey(t *testing.T) {
+	withEnabledQueue(t, func() {
+		t.Run("native_key", func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			ginCtx, _ := gin.CreateTestContext(w)
+			ginCtx.Set("userApiKey", "sk-native-key-123")
+			ginCtx.Set("accessProvider", "config-inline")
+
+			ctx := context.WithValue(context.Background(), "gin", ginCtx)
+			ctx = internallogging.WithRequestID(ctx, "req-native-1")
+
+			plugin := &usageQueuePlugin{}
+			plugin.HandleUsage(ctx, coreusage.Record{
+				Provider: "openai",
+				Model:    "gpt-5.4",
+				APIKey:   "sk-native-key-123",
+			})
+
+			payload := popSinglePayload(t)
+			requireStringField(t, payload, "api_key", "sk-native-key-123")
+			requireBoolField(t, payload, "is_native_key", true)
+			requireStringField(t, payload, "access_provider", "config-inline")
+		})
+
+		t.Run("plugin_key", func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			ginCtx, _ := gin.CreateTestContext(w)
+			ginCtx.Set("userApiKey", "plugin-principal-456")
+			ginCtx.Set("accessProvider", "custom-auth-plugin")
+
+			ctx := context.WithValue(context.Background(), "gin", ginCtx)
+			ctx = internallogging.WithRequestID(ctx, "req-plugin-1")
+
+			plugin := &usageQueuePlugin{}
+			plugin.HandleUsage(ctx, coreusage.Record{
+				Provider: "openai",
+				Model:    "gpt-5.4",
+				APIKey:   "plugin-principal-456",
+			})
+
+			payload := popSinglePayload(t)
+			requireStringField(t, payload, "api_key", "plugin-principal-456")
+			requireBoolField(t, payload, "is_native_key", false)
+			requireStringField(t, payload, "access_provider", "custom-auth-plugin")
+		})
+
+		t.Run("record_explicit_native", func(t *testing.T) {
+			ctx := internallogging.WithRequestID(context.Background(), "req-explicit-1")
+
+			plugin := &usageQueuePlugin{}
+			plugin.HandleUsage(ctx, coreusage.Record{
+				Provider:       "openai",
+				Model:          "gpt-5.4",
+				APIKey:         "sk-explicit-native",
+				IsNativeKey:    true,
+				AccessProvider: "config-inline",
+			})
+
+			payload := popSinglePayload(t)
+			requireStringField(t, payload, "api_key", "sk-explicit-native")
+			requireBoolField(t, payload, "is_native_key", true)
+			requireStringField(t, payload, "access_provider", "config-inline")
+		})
+
+		t.Run("unauthenticated", func(t *testing.T) {
+			ctx := internallogging.WithRequestID(context.Background(), "req-unauth-1")
+
+			plugin := &usageQueuePlugin{}
+			plugin.HandleUsage(ctx, coreusage.Record{
+				Provider: "openai",
+				Model:    "gpt-5.4",
+			})
+
+			payload := popSinglePayload(t)
+			requireBoolField(t, payload, "is_native_key", false)
+			requireMissingField(t, payload, "access_provider")
+		})
+	})
+}
+
+func TestUsageQueuePluginEmitsFailCode(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ginCtx := newTestGinContext(t, http.MethodPost, "/v1/chat/completions", http.StatusOK)
+		ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+		plugin := &usageQueuePlugin{}
+		plugin.HandleUsage(ctx, coreusage.Record{
+			Provider:    "gemini",
+			Model:       "gemini-3.1-pro-preview",
+			AuthIndex:   "0",
+			AuthType:    "apikey",
+			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Failed:      true,
+			Fail: coreusage.Failure{
+				StatusCode: http.StatusBadGateway,
+				Body:       "upstream stream closed before finishReason",
+				Code:       coreusage.FailureStreamTruncatedCode,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		raw, ok := payload["fail"]
+		if !ok {
+			t.Fatal("payload missing fail")
+		}
+		var got struct {
+			StatusCode int    `json:"status_code"`
+			Body       string `json:"body"`
+			Code       string `json:"code"`
+		}
+		if errUnmarshal := json.Unmarshal(raw, &got); errUnmarshal != nil {
+			t.Fatalf("unmarshal fail: %v", errUnmarshal)
+		}
+		if got.Code != coreusage.FailureStreamTruncatedCode {
+			t.Fatalf("fail.code = %q, want %q", got.Code, coreusage.FailureStreamTruncatedCode)
+		}
+		if got.StatusCode != http.StatusBadGateway {
+			t.Fatalf("fail.status_code = %d, want %d", got.StatusCode, http.StatusBadGateway)
 		}
 	})
 }

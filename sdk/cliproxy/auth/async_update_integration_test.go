@@ -86,16 +86,29 @@ func TestAsyncPersistenceKeepsNewestSnapshot(t *testing.T) {
 	go func() { _, err := m.Update(ctx, updated); updateDone <- err }()
 	deadline := time.Now().Add(time.Second)
 	for {
-		m.mu.RLock()
-		latest := m.auths[old.ID].Clone()
-		m.mu.RUnlock()
-		if latest.Metadata["access_token"] == "new" {
+		gate, started := m.authMutationLocks.Load(old.ID)
+		if started && len(gate.(chan struct{})) > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("update blocked global auth state")
+			t.Fatal("update did not acquire its mutation gate")
 		}
 		time.Sleep(time.Millisecond)
+	}
+	readDone := make(chan *Auth, 1)
+	go func() { latest, _ := m.GetByID(old.ID); readDone <- latest }()
+	select {
+	case latest := <-readDone:
+		if latest == nil || latest.Metadata["access_token"] != "old" {
+			t.Fatal("credential was published before its save completed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked persistence prevented reading live auth state")
+	}
+	select {
+	case err := <-updateDone:
+		t.Fatalf("update completed before the older save was released: %v", err)
+	default:
 	}
 	unblock()
 	for _, done := range []<-chan error{firstDone, updateDone} {
@@ -107,6 +120,10 @@ func TestAsyncPersistenceKeepsNewestSnapshot(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("save did not finish")
 		}
+	}
+	current, ok := m.GetByID(old.ID)
+	if !ok || current.Metadata["access_token"] != "new" {
+		t.Fatal("new credential was not published after persistence")
 	}
 	store.mu.Lock()
 	last := store.last.Clone()

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -48,11 +48,16 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 	out := buildCodexWebsocketErrorPayload(payload, status)
 	headers := parseCodexWebsocketErrorHeaders(payload)
 	statusError := newCodexStatusErrWithCooling(status, out, modelLevelCooling)
+	statusError.transientRateLimit = !isCodexUsageLimitError(out) && isCodexTransientCapacityError(out) && statusError.code == http.StatusTooManyRequests
 	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
 		statusError.retryAfter = retryAfter
 	} else if isCodexWebsocketConnectionLimitError(payload) {
 		retryAfter := time.Duration(0)
 		statusError.retryAfter = &retryAfter
+	} else if status == http.StatusTooManyRequests {
+		if retryAfter := parseRetryAfterHeader(headers, time.Now()); retryAfter != nil {
+			statusError.retryAfter = retryAfter
+		}
 	}
 	return statusErrWithHeaders{
 		statusErr: statusError,

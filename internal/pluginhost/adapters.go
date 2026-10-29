@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	_ "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator/builtin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -152,6 +152,7 @@ func pluginThinkingSupportToRegistryThinkingSupport(thinking *pluginapi.Thinking
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
+		DisableType:    thinking.DisableType,
 		Levels:         cloneStringSlice(thinking.Levels),
 	}
 }
@@ -194,6 +195,7 @@ func registryThinkingSupportToPluginThinkingSupport(thinking *registry.ThinkingS
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
+		DisableType:    thinking.DisableType,
 		Levels:         cloneStringSlice(thinking.Levels),
 	}
 }
@@ -261,6 +263,8 @@ func cloneRegistryModels(in []*registry.ModelInfo) []*registry.ModelInfo {
 	return out
 }
 
+// RegisterModels collects static catalogs for executor and per-auth registration.
+// Catalog-only plugins must not advertise availability independently of credentials.
 func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) {
 	if h == nil || modelRegistry == nil {
 		return
@@ -268,8 +272,6 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 
 	snap := h.Snapshot()
 	records := h.activeRecordsFromSnapshot(snap)
-	registrations := make([]modelClientRegistration, 0)
-	nextClients := make(map[string]struct{})
 	nextProviders := make(map[string]string)
 	nextModelRegistrations := make(map[string]pluginModelRegistration)
 	for _, record := range records {
@@ -324,17 +326,48 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 			hasExecutor: record.plugin.Capabilities.Executor != nil,
 		}
 		nextProviders[record.id] = provider
-		if record.plugin.Capabilities.Executor == nil {
-			clientID := "plugin:" + record.id + ":" + provider
-			registrations = append(registrations, modelClientRegistration{
-				clientID: clientID,
-				provider: provider,
-				models:   models,
-			})
-			nextClients[clientID] = struct{}{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.Snapshot() != snap {
+		return
+	}
+	h.modelProviders = nextProviders
+	h.modelRegistrations = nextModelRegistrations
+}
+
+// HasAuthModelProvider reports whether an active plugin declares per-auth model
+// discovery for provider. It does not fetch models or refresh credentials.
+func (h *Host) HasAuthModelProvider(provider string) bool {
+	if h == nil {
+		return false
+	}
+	provider = normalizeProviderID(provider)
+	if provider == "" {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if h.authModelProviderMatches(record, provider) {
+			return true
 		}
 	}
-	h.commitModelClients(snap, modelRegistry, registrations, nextClients, nextProviders, nextModelRegistrations)
+	return false
+}
+
+func (h *Host) authModelProviderMatches(record capabilityRecord, provider string) bool {
+	caps := record.plugin.Capabilities
+	if caps.ModelProvider == nil || h.isPluginFused(record.id) || !executorScopeAllowsOAuthModels(caps) {
+		return false
+	}
+	if caps.AuthProvider != nil {
+		identifier, ok := h.callAuthProviderIdentifier(record.id, caps.AuthProvider)
+		return ok && normalizeProviderID(identifier) == provider
+	}
+	candidate := normalizeProviderID(h.modelProvider(record.id))
+	if candidate == "" && caps.Executor != nil {
+		candidate, _ = h.executorProvider(record, caps.Executor)
+	}
+	return candidate == provider
 }
 
 func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModelResult {
@@ -346,35 +379,10 @@ func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModel
 		return AuthModelResult{}
 	}
 	for _, record := range h.activeRecords() {
-		modelProvider := record.plugin.Capabilities.ModelProvider
-		if modelProvider == nil || h.isPluginFused(record.id) {
+		if !h.authModelProviderMatches(record, providerKey) {
 			continue
 		}
-		if !executorScopeAllowsOAuthModels(record.plugin.Capabilities) {
-			continue
-		}
-		authProvider := record.plugin.Capabilities.AuthProvider
-		if authProvider != nil {
-			identifier, okIdentifier := h.callAuthProviderIdentifier(record.id, authProvider)
-			if !okIdentifier || normalizeProviderID(identifier) != providerKey {
-				continue
-			}
-		} else {
-			recordProvider := normalizeProviderID(h.modelProvider(record.id))
-			if recordProvider == "" {
-				executor := record.plugin.Capabilities.Executor
-				if executor != nil {
-					candidate, okCandidate := h.executorProvider(record, executor)
-					if okCandidate {
-						recordProvider = candidate
-					}
-				}
-			}
-			if recordProvider != providerKey {
-				continue
-			}
-		}
-		resp, errModels := h.callModelsForAuth(ctx, record, modelProvider, auth)
+		resp, errModels := h.callModelsForAuth(ctx, record, record.plugin.Capabilities.ModelProvider, auth)
 		if errModels != nil {
 			log.Warnf("pluginhost: models for auth %s failed: %v", auth.ID, errModels)
 			return AuthModelResult{Handled: true, Err: errModels}

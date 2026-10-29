@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // 长期层凭据：github_token 是 GitHub OAuth/PAT 长期令牌；短时 Copilot token 只存内存。

@@ -6,11 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/tidwall/gjson"
 )
 
 func TestConvertInteractionsRequestToGeminiStringInput(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":"hello"}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":"hello"}`), false)
 	if got := gjson.GetBytes(out, "contents.0.role").String(); got != "user" {
 		t.Fatalf("role = %q, want user", got)
 	}
@@ -20,7 +21,7 @@ func TestConvertInteractionsRequestToGeminiStringInput(t *testing.T) {
 }
 
 func TestConvertInteractionsRequestToGeminiSystemAndGenerationConfig(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","system_instruction":{"text":"be brief"},"generation_config":{"max_output_tokens":32,"top_p":0.8},"input":"hi"}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","system_instruction":{"text":"be brief"},"generation_config":{"max_output_tokens":32,"top_p":0.8},"input":"hi"}`), false)
 	if got := gjson.GetBytes(out, "systemInstruction.parts.0.text").String(); got != "be brief" {
 		t.Fatalf("systemInstruction = %q, want be brief", got)
 	}
@@ -33,14 +34,14 @@ func TestConvertInteractionsRequestToGeminiSystemAndGenerationConfig(t *testing.
 }
 
 func TestConvertInteractionsRequestToGeminiStringSystemInstruction(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","system_instruction":"be brief","input":"hi"}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","system_instruction":"be brief","input":"hi"}`), false)
 	if got := gjson.GetBytes(out, "systemInstruction.parts.0.text").String(); got != "be brief" {
 		t.Fatalf("systemInstruction.parts.0.text = %q, want be brief. Output: %s", got, string(out))
 	}
 }
 
 func TestConvertGeminiRequestToInteractionsStringSystemInstruction(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","systemInstruction":{"parts":[{"text":"be brief"},{"text":"answer directly"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","systemInstruction":{"parts":[{"text":"be brief"},{"text":"answer directly"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
 	sys := gjson.GetBytes(out, "system_instruction")
 	if sys.Type != gjson.String {
 		t.Fatalf("system_instruction type = %v, want string. Output: %s", sys.Type, string(out))
@@ -180,14 +181,14 @@ func TestConvertInteractionsResponseToGeminiNonStreamFunctionCall(t *testing.T) 
 }
 
 func TestConvertInteractionsRequestToGeminiTurnInput(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":{"role":"user","steps":[{"type":"user_input","content":[{"text":"hi"}]}]}}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":{"role":"user","steps":[{"type":"user_input","content":[{"text":"hi"}]}]}}`), false)
 	if got := gjson.GetBytes(out, "contents.0.parts.0.text").String(); got != "hi" {
 		t.Fatalf("text = %q, want hi", got)
 	}
 }
 
 func TestConvertInteractionsRequestToGeminiTurnArrayInput(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"role":"user","steps":[{"type":"user_input","content":[{"text":"hi"}]}]},{"role":"assistant","steps":[{"type":"model_output","content":[{"text":"ok"}]}]}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"role":"user","steps":[{"type":"user_input","content":[{"text":"hi"}]}]},{"role":"assistant","steps":[{"type":"model_output","content":[{"text":"ok"}]}]}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.role").String(); got != "user" {
 		t.Fatalf("contents.0.role = %q, want user. Output: %s", got, string(out))
 	}
@@ -203,7 +204,7 @@ func TestConvertInteractionsRequestToGeminiTurnArrayInput(t *testing.T) {
 }
 
 func TestConvertInteractionsRequestToGeminiPreservesExpressibleTopLevelFields(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","tool_choice":{"type":"function","function":{"name":"lookup"}},"response_modalities":["text","image"],"service_tier":"priority","input":"hi"}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","tool_choice":{"type":"function","function":{"name":"lookup"}},"response_modalities":["text","image"],"service_tier":"priority","input":"hi"}`), false)
 	if got := gjson.GetBytes(out, "toolConfig.functionCallingConfig.mode").String(); got != "ANY" {
 		t.Fatalf("toolConfig.functionCallingConfig.mode = %q, want ANY. Output: %s", got, string(out))
 	}
@@ -222,7 +223,7 @@ func TestConvertInteractionsRequestToGeminiPreservesExpressibleTopLevelFields(t 
 }
 
 func TestConvertInteractionsRequestToGeminiContentInput(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":{"role":"user","parts":[{"text":"hi"}]}}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":{"role":"user","parts":[{"text":"hi"}]}}`), false)
 	if got := gjson.GetBytes(out, "contents.0.role").String(); got != "user" {
 		t.Fatalf("contents.0.role = %q, want user", got)
 	}
@@ -232,7 +233,7 @@ func TestConvertInteractionsRequestToGeminiContentInput(t *testing.T) {
 }
 
 func TestConvertInteractionsRequestToGeminiContentArrayInput(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"role":"user","parts":[{"text":"hi"}]},{"role":"assistant","parts":[{"text":"ok"}]}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"role":"user","parts":[{"text":"hi"}]},{"role":"assistant","parts":[{"text":"ok"}]}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.role").String(); got != "user" {
 		t.Fatalf("contents.0.role = %q, want user", got)
 	}
@@ -320,7 +321,7 @@ func TestConvertGeminiResponseToInteractionsStreamStepLifecycle(t *testing.T) {
 	callOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7,"thoughtsTokenCount":2}}`), &param)
 
 	out := append(append(thoughtOut, textOut...), callOut...)
-	if got := eventTypes(out); !bytes.Equal(got, []byte("interaction.created,interaction.status_update,step.start,step.delta,step.stop,step.start,step.delta,step.stop,step.start,step.delta,step.stop,interaction.completed")) {
+	if got := eventTypes(out); !bytes.Equal(got, []byte("interaction.created,interaction.status_update,step.start,step.delta,step.stop,step.start,step.delta,step.stop,step.start,step.delta,step.stop,interaction.completed,done")) {
 		t.Fatalf("event sequence = %s", got)
 	}
 	if got := gjson.GetBytes(findNthEventPayload(out, "step.start", 0), "step.type").String(); got != "thought" {
@@ -373,6 +374,81 @@ func TestConvertGeminiResponseToInteractionsStreamSnakeCaseUsage(t *testing.T) {
 	}
 }
 
+func TestConvertGeminiResponseToInteractionsStreamEmitsDoneAfterUsage(t *testing.T) {
+	var param any
+	out := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}`), &param)
+	if got := countEventType(out, "interaction.completed"); got != 1 {
+		t.Fatalf("interaction.completed count = %d, want 1. Events: %s", got, eventTypes(out))
+	}
+	if got := countEventType(out, "done"); got != 1 {
+		t.Fatalf("done count = %d, want 1. Events: %s", got, eventTypes(out))
+	}
+	completed := findCompletedPayload(out)
+	if got := gjson.GetBytes(completed, "interaction.usage.total_tokens").Int(); got != 5 {
+		t.Fatalf("completed total_tokens = %d, want 5. Payload: %s", got, string(completed))
+	}
+
+	doneOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`[DONE]`), &param)
+	if len(doneOut) != 0 {
+		t.Fatalf("literal [DONE] after completion emitted %q, want no events", doneOut)
+	}
+}
+
+func TestConvertGeminiResponseToInteractionsStreamSplitFinishAndFilteredUsage(t *testing.T) {
+	var param any
+	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`), &param)
+	if got := countEventType(finishOut, "interaction.completed"); got != 0 {
+		t.Fatalf("finish interaction.completed count = %d, want 0", got)
+	}
+	usageOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[],"cpaUsageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"totalTokenCount":33}}`), &param)
+	if got := countEventType(usageOut, "interaction.completed"); got != 1 {
+		t.Fatalf("usage interaction.completed count = %d, want 1. Events: %s", got, eventTypes(usageOut))
+	}
+	if got := countEventType(usageOut, "done"); got != 1 {
+		t.Fatalf("usage done count = %d, want 1. Events: %s", got, eventTypes(usageOut))
+	}
+	completed := findCompletedPayload(usageOut)
+	if got := gjson.GetBytes(completed, "interaction.usage.total_tokens").Int(); got != 33 {
+		t.Fatalf("completed total_tokens = %d, want 33. Payload: %s", got, string(completed))
+	}
+}
+
+func TestConvertGeminiResponseToInteractionsStreamWaitsForPostFinishUsage(t *testing.T) {
+	var param any
+	contentOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":1,"totalTokenCount":1}}`), &param)
+	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}]}`), &param)
+	for _, out := range [][][]byte{contentOut, finishOut} {
+		joined := bytes.Join(out, nil)
+		if bytes.Contains(joined, []byte("interaction.completed")) || bytes.Contains(joined, []byte("[DONE]")) {
+			t.Fatalf("stream completed before the post-finish usage frame: %q", joined)
+		}
+	}
+	usageOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"totalTokenCount":33}}`), &param)
+	if got := countEventType(usageOut, "interaction.completed"); got != 1 {
+		t.Fatalf("usage interaction.completed count = %d, want 1. Events: %s", got, eventTypes(usageOut))
+	}
+	if got := countEventType(usageOut, "done"); got != 1 {
+		t.Fatalf("usage done count = %d, want 1. Events: %s", got, eventTypes(usageOut))
+	}
+	completed := findCompletedPayload(usageOut)
+	if got := gjson.GetBytes(completed, "interaction.usage.total_tokens").Int(); got != 33 {
+		t.Fatalf("completed total_tokens = %d, want 33 (final usage, not the intermediate frame). Payload: %s", got, string(completed))
+	}
+}
+
+func TestConvertGeminiResponseToInteractionsStreamIgnoresEmptyFinishReason(t *testing.T) {
+	for _, finishReason := range []string{"", " "} {
+		var param any
+		out := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"`+finishReason+`"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}`), &param)
+		if got := countEventType(out, "interaction.completed"); got != 0 {
+			t.Fatalf("finishReason %q: interaction.completed count = %d, want 0", finishReason, got)
+		}
+		if got := countEventType(out, "done"); got != 0 {
+			t.Fatalf("finishReason %q: done count = %d, want 0", finishReason, got)
+		}
+	}
+}
+
 func TestConvertGeminiResponseToInteractionsStreamEmitsTerminalOnce(t *testing.T) {
 	var param any
 	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"finishReason":"STOP"}]}`), &param)
@@ -391,14 +467,17 @@ func TestConvertGeminiResponseToInteractionsStreamEmitsTerminalOnce(t *testing.T
 	if got := countEventType(usageOut, "interaction.completed"); got != 1 {
 		t.Fatalf("usage interaction.completed count = %d, want 1", got)
 	}
+	if got := countEventType(usageOut, "done"); got != 1 {
+		t.Fatalf("usage done count = %d, want 1", got)
+	}
 	if got := countEventType(doneOut, "interaction.completed"); got != 0 {
 		t.Fatalf("done interaction.completed count = %d, want 0", got)
 	}
-	if got := countEventType(doneOut, "done"); got != 1 {
-		t.Fatalf("done event count = %d, want 1", got)
+	if got := countEventType(doneOut, "done"); got != 0 {
+		t.Fatalf("done event count = %d, want 0 after usage already terminated the stream", got)
 	}
-	if payload := findEventPayload(doneOut, "done"); string(payload) != "[DONE]" {
-		t.Fatalf("done payload = %q, want [DONE]", string(payload))
+	if len(doneOut) != 0 {
+		t.Fatalf("literal [DONE] after completion emitted %q, want no events", doneOut)
 	}
 	payload := findCompletedPayload(usageOut)
 	if got := gjson.GetBytes(payload, "interaction.usage.total_tokens").Int(); got != 3 {
@@ -416,6 +495,10 @@ func TestConvertGeminiResponseToInteractionsStreamDoesNotCompleteOnNonTerminalUs
 		t.Fatalf("thought step.stop count = %d, want 0. Events: %s", got, eventTypes(thoughtOut))
 	}
 
+	if got := countEventType(thoughtOut, "done"); got != 0 {
+		t.Fatalf("thought done count = %d, want 0. Events: %s", got, eventTypes(thoughtOut))
+	}
+
 	textOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"好的，我将为您调用天气查询工具。"}]}}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":17,"totalTokenCount":452,"thoughtsTokenCount":311}}`), &param)
 	callOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"location":"北京"},"id":"nriii75p"}}]}}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":33,"totalTokenCount":468,"thoughtsTokenCount":311}}`), &param)
 	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":33,"totalTokenCount":468,"thoughtsTokenCount":311}}`), &param)
@@ -424,7 +507,10 @@ func TestConvertGeminiResponseToInteractionsStreamDoesNotCompleteOnNonTerminalUs
 	if got := countEventType(out, "interaction.completed"); got != 1 {
 		t.Fatalf("interaction.completed count = %d, want 1. Events: %s", got, eventTypes(out))
 	}
-	if got := eventTypes(out); !bytes.Equal(got, []byte("interaction.created,interaction.status_update,step.start,step.delta,step.stop,step.start,step.delta,step.stop,step.start,step.delta,step.stop,interaction.completed")) {
+	if got := countEventType(out, "done"); got != 1 {
+		t.Fatalf("done count = %d, want 1. Events: %s", got, eventTypes(out))
+	}
+	if got := eventTypes(out); !bytes.Equal(got, []byte("interaction.created,interaction.status_update,step.start,step.delta,step.stop,step.start,step.delta,step.stop,step.start,step.delta,step.stop,interaction.completed,done")) {
 		t.Fatalf("event sequence = %s", got)
 	}
 	payload := findCompletedPayload(out)
@@ -461,7 +547,7 @@ func TestConvertGeminiResponseToInteractionsStreamCompletesOnDoneWithoutUsage(t 
 }
 
 func TestConvertInteractionsRequestToGeminiImageContent(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"user_input","content":[{"type":"image","mime_type":"image/png","data":"aGVsbG8="}]}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"user_input","content":[{"type":"image","mime_type":"image/png","data":"aGVsbG8="}]}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.parts.0.inlineData.mimeType").String(); got != "image/png" {
 		t.Fatalf("mimeType = %q, want image/png", got)
 	}
@@ -471,7 +557,7 @@ func TestConvertInteractionsRequestToGeminiImageContent(t *testing.T) {
 }
 
 func TestConvertInteractionsRequestToGeminiModelOutputTypedContent(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"model_output","content":[{"type":"image","mime_type":"image/png","data":"aGVsbG8="},{"type":"document","mime_type":"application/pdf","file_uri":"gs://bucket/doc.pdf"}]}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"model_output","content":[{"type":"image","mime_type":"image/png","data":"aGVsbG8="},{"type":"document","mime_type":"application/pdf","file_uri":"gs://bucket/doc.pdf"}]}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.role").String(); got != "model" {
 		t.Fatalf("contents.0.role = %q, want model. Output: %s", got, string(out))
 	}
@@ -490,7 +576,7 @@ func TestConvertInteractionsRequestToGeminiModelOutputTypedContent(t *testing.T)
 }
 
 func TestConvertInteractionsRequestToGeminiThoughtTypedContent(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"thought","content":[{"type":"text","text":"thinking"},{"type":"audio","mime_type":"audio/wav","data":"UklGRg=="}]}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"thought","content":[{"type":"text","text":"thinking"},{"type":"audio","mime_type":"audio/wav","data":"UklGRg=="}]}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.parts.0.text").String(); got != "thinking" {
 		t.Fatalf("thought text = %q, want thinking. Output: %s", got, string(out))
 	}
@@ -510,7 +596,7 @@ func TestConvertGeminiResponseToInteractionsNonStreamImage(t *testing.T) {
 }
 
 func TestConvertInteractionsRequestToGeminiGenerationConfigAllFields(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generation_config":{"max_output_tokens":32,"response_schema":{"type":"object"},"seed":42,"thinking_config":{"thinking_budget":1024,"include_thoughts":true},"context_window_compression":{"trigger_tokens":1000}},"input":"hi"}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generation_config":{"max_output_tokens":32,"response_schema":{"type":"object"},"seed":42,"thinking_config":{"thinking_budget":1024,"include_thoughts":true},"context_window_compression":{"trigger_tokens":1000}},"input":"hi"}`), false)
 	if got := gjson.GetBytes(out, "generationConfig.maxOutputTokens").Int(); got != 32 {
 		t.Fatalf("maxOutputTokens = %d, want 32", got)
 	}
@@ -532,7 +618,7 @@ func TestConvertInteractionsRequestToGeminiGenerationConfigAllFields(t *testing.
 }
 
 func TestConvertInteractionsRequestToGeminiGenerationConfigProtocolFields(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generation_config":{"tool_choice":"auto","thinking_level":"high","thinking_summaries":"auto"},"stream":true,"input":"hi"}`), true)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generation_config":{"tool_choice":"auto","thinking_level":"high","thinking_summaries":"auto"},"stream":true,"input":"hi"}`), true)
 	for _, path := range []string{
 		"stream",
 		"generationConfig.toolChoice",
@@ -555,7 +641,7 @@ func TestConvertInteractionsRequestToGeminiGenerationConfigProtocolFields(t *tes
 }
 
 func TestConvertGeminiRequestToInteractionsFunctionCall(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"ok":true}}}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"ok":true}}}]}]}`), false)
 	if got := gjson.GetBytes(out, "input.0.type").String(); got != "function_call" {
 		t.Fatalf("input.0.type = %q, want function_call", got)
 	}
@@ -568,7 +654,7 @@ func TestConvertGeminiRequestToInteractionsFunctionCall(t *testing.T) {
 }
 
 func TestConvertGeminiRequestToInteractionsTextContentType(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
 	if got := gjson.GetBytes(out, "input.0.content.0.type").String(); got != "text" {
 		t.Fatalf("content.0.type = %q, want text. Output: %s", got, string(out))
 	}
@@ -578,7 +664,7 @@ func TestConvertGeminiRequestToInteractionsTextContentType(t *testing.T) {
 }
 
 func TestConvertGeminiRequestToInteractionsMultimodal(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"audio/wav","data":"aGVsbG8="}}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"audio/wav","data":"aGVsbG8="}}]}]}`), false)
 	if got := gjson.GetBytes(out, "input.0.type").String(); got != "user_input" {
 		t.Fatalf("input.0.type = %q, want user_input", got)
 	}
@@ -591,14 +677,14 @@ func TestConvertGeminiRequestToInteractionsMultimodal(t *testing.T) {
 }
 
 func TestConvertGeminiRequestToInteractionsThought(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"text":"thinking","thought":true}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"text":"thinking","thought":true}]}]}`), false)
 	if got := gjson.GetBytes(out, "input.0.type").String(); got != "thought" {
 		t.Fatalf("input.0.type = %q, want thought", got)
 	}
 }
 
 func TestConvertInteractionsRequestToGeminiTurnWithModelRole(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":{"role":"model","steps":[{"type":"user_input","content":[{"text":"hi"}]},{"type":"model_output","content":[{"text":"ok"}]}]}}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":{"role":"model","steps":[{"type":"user_input","content":[{"text":"hi"}]},{"type":"model_output","content":[{"text":"ok"}]}]}}`), false)
 	if got := gjson.GetBytes(out, "contents.0.role").String(); got != "model" {
 		t.Fatalf("contents.0.role = %q, want model", got)
 	}
@@ -608,7 +694,7 @@ func TestConvertInteractionsRequestToGeminiTurnWithModelRole(t *testing.T) {
 }
 
 func TestConvertInteractionsRequestToGeminiGenerationConfigPreservesLargeIntegers(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generation_config":{"max_output_tokens":32,"large_identity":9223372036854775807},"input":"hi"}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generation_config":{"max_output_tokens":32,"large_identity":9223372036854775807},"input":"hi"}`), false)
 	if got := gjson.GetBytes(out, "generationConfig.maxOutputTokens").Int(); got != 32 {
 		t.Fatalf("maxOutputTokens = %d, want 32", got)
 	}
@@ -618,7 +704,7 @@ func TestConvertInteractionsRequestToGeminiGenerationConfigPreservesLargeInteger
 }
 
 func TestConvertInteractionsRequestToGeminiFunctionCallPreservesCallID(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"function_call","name":"lookup","call_id":"call_1","arguments":{"q":"x"}}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"function_call","name":"lookup","call_id":"call_1","arguments":{"q":"x"}}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.parts.0.functionCall.id").String(); got != "call_1" {
 		t.Fatalf("functionCall.id = %q, want call_1", got)
 	}
@@ -631,7 +717,7 @@ func TestConvertInteractionsRequestToGeminiFunctionCallPreservesCallID(t *testin
 }
 
 func TestConvertInteractionsRequestToGeminiFunctionResultPreservesCallID(t *testing.T) {
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"function_result","name":"lookup","call_id":"call_1","result":{"ok":true}}]}`), false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","input":[{"type":"function_result","name":"lookup","call_id":"call_1","result":{"ok":true}}]}`), false)
 	if got := gjson.GetBytes(out, "contents.0.parts.0.functionResponse.id").String(); got != "call_1" {
 		t.Fatalf("functionResponse.id = %q, want call_1", got)
 	}
@@ -641,7 +727,7 @@ func TestConvertInteractionsRequestToGeminiFunctionResultPreservesCallID(t *test
 }
 
 func TestConvertGeminiRequestToInteractionsFunctionCallPreservesID(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","id":"call_1","response":{"ok":true}}}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","id":"call_1","response":{"ok":true}}}]}]}`), false)
 	if got := gjson.GetBytes(out, "input.0.call_id").String(); got != "call_1" {
 		t.Fatalf("input.0.call_id = %q, want call_1", got)
 	}
@@ -651,7 +737,7 @@ func TestConvertGeminiRequestToInteractionsFunctionCallPreservesID(t *testing.T)
 }
 
 func TestConvertGeminiRequestToInteractionsFunctionCallPreservesCallID(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","call_id":"call_request_1","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","call_id":"call_request_1","response":{"ok":true}}}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","contents":[{"role":"model","parts":[{"functionCall":{"name":"lookup","call_id":"call_request_1","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","call_id":"call_request_1","response":{"ok":true}}}]}]}`), false)
 	if got := gjson.GetBytes(out, "input.0.call_id").String(); got != "call_request_1" {
 		t.Fatalf("input.0.call_id = %q, want call_request_1", got)
 	}
@@ -661,7 +747,7 @@ func TestConvertGeminiRequestToInteractionsFunctionCallPreservesCallID(t *testin
 }
 
 func TestConvertGeminiRequestToInteractionsGenerationConfig(t *testing.T) {
-	out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generationConfig":{"maxOutputTokens":32,"topP":0.8,"thinkingConfig":{"thinkingBudget":1024}},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", []byte(`{"model":"gemini-3.5-flash","generationConfig":{"maxOutputTokens":32,"topP":0.8,"thinkingConfig":{"thinkingBudget":1024}},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`), false)
 	if got := gjson.GetBytes(out, "generation_config.max_output_tokens").Int(); got != 32 {
 		t.Fatalf("max_output_tokens = %d, want 32", got)
 	}
@@ -753,7 +839,7 @@ func ssePayload(event []byte) []byte {
 	if idx < 0 {
 		return nil
 	}
-	return event[idx+len(prefix):]
+	return bytes.TrimRight(event[idx+len(prefix):], "\r\n")
 }
 
 func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
@@ -763,7 +849,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"input":"read url",
 			"tools":[{"type":"url_context"}]
 		}`)
-		out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool, got %d. Output: %s", len(tools), string(out))
@@ -782,7 +868,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"input":"execute code",
 			"tools":[{"type":"code_execution"}]
 		}`)
-		out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool, got %d. Output: %s", len(tools), string(out))
@@ -801,7 +887,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"input":"search web",
 			"tools":[{"type":"google_search"}]
 		}`)
-		out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool, got %d. Output: %s", len(tools), string(out))
@@ -820,7 +906,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"contents":[{"role":"user","parts":[{"text":"hello"}]}],
 			"tools":[{"urlContext":{}},{"codeExecution":{}},{"googleSearch":{}}]
 		}`)
-		out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 3 {
 			t.Fatalf("expected 3 tools, got %d. Output: %s", len(tools), string(out))
@@ -842,7 +928,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"contents":[{"role":"user","parts":[{"text":"hello"}]}],
 			"tools":[{"googleSearch":{"mode":"search"}},{"codeExecution":{"sandbox":true}}]
 		}`)
-		out := ConvertGeminiRequestToInteractions("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 2 {
 			t.Fatalf("expected 2 tools, got %d. Output: %s", len(tools), string(out))
@@ -865,7 +951,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 				{"type":"web_search","google_search":{"mode":"search"}}
 			]
 		}`)
-		out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 3 {
 			t.Fatalf("expected 3 tools, got %d. Output: %s", len(tools), string(out))
@@ -887,7 +973,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"input":"native composite tools",
 			"tools":[{"googleSearch":{},"urlContext":{}}]
 		}`)
-		out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool node, got %d. Output: %s", len(tools), string(out))
@@ -905,7 +991,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"contents":[{"role":"user","parts":[{"text":"hello"}]}],
 			"tools":[{"googleSearch":{},"urlContext":{}}]
 		}`)
-		interactionsOut := ConvertGeminiRequestToInteractions("gemini-3.5-flash", geminiReq, false)
+		interactionsOut, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", geminiReq, false)
 		interTools := gjson.GetBytes(interactionsOut, "tools").Array()
 		if len(interTools) != 2 {
 			t.Fatalf("expected 2 converted tools from composite, got %d. Output: %s", len(interTools), string(interactionsOut))
@@ -931,7 +1017,7 @@ func TestConvertInteractionsRequestToGeminiBuiltinTools(t *testing.T) {
 			"input":"unrecognized tool",
 			"tools":[{"type":"file_search","file_search":{"max_results":5}}]
 		}`)
-		out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+		out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 		tools := gjson.GetBytes(out, "tools").Array()
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool retained, got %d. Output: %s", len(tools), string(out))
@@ -958,7 +1044,7 @@ func TestConvertInteractionsRequestToGemini_FunctionResponseJSONRef(t *testing.T
 			}
 		]
 	}`)
-	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
 	val := gjson.GetBytes(out, "contents.0.parts.0.functionResponse.response.result")
 	if val.Type != gjson.String {
 		t.Fatalf("expected functionResponse.response.result to be string, got %s (raw: %s)", val.Type, val.Raw)
@@ -1019,5 +1105,364 @@ func TestConvertInteractionsResponseToGemini_FunctionResultWithRef(t *testing.T)
 	}
 	if !strings.Contains(val.String(), "#/components/schemas/ErrorModel") {
 		t.Fatalf("expected string result to contain ref target, got %q", val.String())
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_ParallelToolCallsHistory(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3.5-flash",
+		"input": [
+			{"type": "user_input", "content": [{"type": "text", "text": "run tools"}]},
+			{"type": "thought", "signature": "sig_turn1"},
+			{"type": "function_call", "name": "f1", "call_id": "c1", "arguments": {"a": 1}},
+			{"type": "function_call", "name": "f2", "call_id": "c2", "arguments": {"b": 2}},
+			{"type": "function_call", "name": "f3", "call_id": "c3", "arguments": {"c": 3}},
+			{"type": "function_result", "name": "f1", "call_id": "c1", "result": {"r": 1}},
+			{"type": "function_result", "name": "f2", "call_id": "c2", "result": {"r": 2}},
+			{"type": "function_result", "name": "f3", "call_id": "c3", "result": {"r": 3}}
+		]
+	}`)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+	contents := gjson.GetBytes(out, "contents").Array()
+	if len(contents) != 3 {
+		t.Fatalf("expected 3 contents (user, model, user), got %d: %s", len(contents), string(out))
+	}
+	if err := signature.ValidateGeminiFunctionCallPairing(out); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed: %v", err)
+	}
+	modelParts := contents[1].Get("parts").Array()
+	if len(modelParts) != 3 {
+		t.Fatalf("expected 3 model parts, got %d", len(modelParts))
+	}
+	if sig := modelParts[0].Get("thoughtSignature").String(); sig != "sig_turn1" {
+		t.Fatalf("expected first functionCall thoughtSignature to be %q, got %q", "sig_turn1", sig)
+	}
+	userParts := contents[2].Get("parts").Array()
+	if len(userParts) != 3 {
+		t.Fatalf("expected 3 user functionResponse parts, got %d", len(userParts))
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_ThoughtSummaryAndSignature(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3.5-flash",
+		"input": [
+			{"type": "thought", "summary": [{"type": "text", "text": "my thinking"}], "signature": "sig_thought"},
+			{"type": "model_output", "content": [{"type": "text", "text": "my answer"}]}
+		]
+	}`)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+	contents := gjson.GetBytes(out, "contents").Array()
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 model content, got %d: %s", len(contents), string(out))
+	}
+	parts := contents[0].Get("parts").Array()
+	hasThoughtText := false
+	hasSig := false
+	for _, p := range parts {
+		if p.Get("thought").Bool() && strings.Contains(p.Get("text").String(), "my thinking") {
+			hasThoughtText = true
+		}
+		if p.Get("thoughtSignature").String() == "sig_thought" {
+			hasSig = true
+		}
+	}
+	if !hasThoughtText {
+		t.Fatalf("expected thought text from summary in parts, got: %s", string(out))
+	}
+	if !hasSig {
+		t.Fatalf("expected thoughtSignature in parts, got: %s", string(out))
+	}
+}
+
+func TestConvertGeminiResponseToInteractionsNonStream_ThoughtSignature(t *testing.T) {
+	raw := []byte(`{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [
+					{"functionCall": {"name": "lookup", "id": "call_1", "args": {"q": "x"}}, "thoughtSignature": "sig_fc"},
+					{"functionCall": {"name": "search", "id": "call_2", "args": {"q": "y"}}}
+				]
+			}
+		}]
+	}`)
+	out := ConvertGeminiResponseToInteractionsNonStream(context.Background(), "gemini-3.5-flash", nil, nil, raw, nil)
+	steps := gjson.GetBytes(out, "steps").Array()
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 steps (thought, function_call, function_call), got %d: %s", len(steps), string(out))
+	}
+	if steps[0].Get("type").String() != "thought" || steps[0].Get("signature").String() != "sig_fc" {
+		t.Fatalf("step[0] expected thought with signature sig_fc, got: %s", steps[0].Raw)
+	}
+	if steps[1].Get("type").String() != "function_call" || steps[1].Get("name").String() != "lookup" {
+		t.Fatalf("step[1] expected function_call lookup, got: %s", steps[1].Raw)
+	}
+	if steps[2].Get("type").String() != "function_call" || steps[2].Get("name").String() != "search" {
+		t.Fatalf("step[2] expected function_call search, got: %s", steps[2].Raw)
+	}
+}
+
+func TestConvertGeminiResponseToInteractionsStream_TrailingThoughtSignature(t *testing.T) {
+	var param any
+	chunk := []byte(`{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig_trailing"}]}}]}`)
+	out := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, chunk, &param)
+	foundSig := false
+	for _, frame := range out {
+		if bytes.Contains(frame, []byte("thought_signature")) && bytes.Contains(frame, []byte("sig_trailing")) {
+			foundSig = true
+			break
+		}
+	}
+	if !foundSig {
+		t.Fatalf("expected thought_signature delta in stream output, got: %v", string(bytes.Join(out, []byte("\n"))))
+	}
+}
+
+func TestConvertGeminiRequestToInteractions_SignedFunctionCallPreserved(t *testing.T) {
+	geminiReq := []byte(`{
+		"model": "gemini-3.5-flash",
+		"contents": [
+			{
+				"role": "model",
+				"parts": [
+					{"functionCall": {"name": "lookup", "id": "call_1", "args": {"q": "x"}}, "thoughtSignature": "sig_fc_pres"}
+				]
+			}
+		]
+	}`)
+	out, _ := ConvertGeminiRequestToInteractions("gemini-3.5-flash", geminiReq, false)
+	steps := gjson.GetBytes(out, "input").Array()
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps (thought, function_call), got %d: %s", len(steps), string(out))
+	}
+	if steps[0].Get("type").String() != "thought" || steps[0].Get("signature").String() != "sig_fc_pres" {
+		t.Fatalf("step[0] expected thought with sig_fc_pres, got: %s", steps[0].Raw)
+	}
+	if steps[1].Get("type").String() != "function_call" || steps[1].Get("name").String() != "lookup" {
+		t.Fatalf("step[1] expected function_call lookup, got: %s", steps[1].Raw)
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_InterleavedModelTurnSteps(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3.5-flash",
+		"input": [
+			{"type": "function_call", "name": "f1", "call_id": "c1", "arguments": {"a": 1}, "signature": "sig1"},
+			{"type": "model_output", "content": [{"type": "text", "text": "explanation"}]},
+			{"type": "function_call", "name": "f2", "call_id": "c2", "arguments": {"b": 2}},
+			{"type": "function_result", "name": "f1", "call_id": "c1", "result": {"r": 1}},
+			{"type": "function_result", "name": "f2", "call_id": "c2", "result": {"r": 2}}
+		]
+	}`)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+	contents := gjson.GetBytes(out, "contents").Array()
+	if len(contents) != 2 {
+		t.Fatalf("expected 2 contents (model, user), got %d: %s", len(contents), string(out))
+	}
+	if err := signature.ValidateGeminiFunctionCallPairing(out); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed: %v", err)
+	}
+	modelParts := contents[0].Get("parts").Array()
+	if len(modelParts) != 3 {
+		t.Fatalf("expected 3 model parts (fc1, text, fc2), got %d: %s", len(modelParts), contents[0].Raw)
+	}
+	if sig := modelParts[0].Get("thoughtSignature").String(); sig != "sig1" {
+		t.Fatalf("expected fc1 thoughtSignature = sig1, got %q", sig)
+	}
+	userParts := contents[1].Get("parts").Array()
+	if len(userParts) != 2 {
+		t.Fatalf("expected 2 user functionResponse parts, got %d: %s", len(userParts), contents[1].Raw)
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_ResponseToRequestRoundTrip(t *testing.T) {
+	upstreamResponse := []byte(`{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [
+					{"functionCall": {"name": "lookup", "id": "call_1", "args": {"q": "x"}}, "thoughtSignature": "sig_rt_fc"},
+					{"functionCall": {"name": "search", "id": "call_2", "args": {"q": "y"}}}
+				]
+			}
+		}]
+	}`)
+	respOut := ConvertGeminiResponseToInteractionsNonStream(context.Background(), "gemini-3.5-flash", nil, nil, upstreamResponse, nil)
+	steps := gjson.GetBytes(respOut, "steps").Raw
+
+	// Build Turn 2 input: user question + Turn 1 steps + tool results
+	turn2Input := `{"model":"gemini-3.5-flash","input":[{"type":"user_input","content":[{"type":"text","text":"hello"}]}`
+	for _, s := range gjson.Get(steps, "@this").Array() {
+		turn2Input += "," + s.Raw
+	}
+	turn2Input += `,{"type":"function_result","name":"lookup","call_id":"call_1","result":{"ok":true}},{"type":"function_result","name":"search","call_id":"call_2","result":{"found":true}}]}`
+
+	reqOut, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(turn2Input), false)
+	contents := gjson.GetBytes(reqOut, "contents").Array()
+	if len(contents) != 3 {
+		t.Fatalf("expected 3 contents (user, model, user), got %d: %s", len(contents), string(reqOut))
+	}
+	if err := signature.ValidateGeminiFunctionCallPairing(reqOut); err != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed: %v", err)
+	}
+	modelParts := contents[1].Get("parts").Array()
+	if len(modelParts) != 2 {
+		t.Fatalf("expected 2 model parts, got %d", len(modelParts))
+	}
+	if sig := modelParts[0].Get("thoughtSignature").String(); sig != "sig_rt_fc" {
+		t.Fatalf("expected round-tripped thoughtSignature = sig_rt_fc, got %q", sig)
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_MultipleSignaturesPreserved(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3.5-flash",
+		"input": [
+			{"type": "thought", "summary": [{"type": "text", "text": "thought 1"}], "signature": "sig_thought_1"},
+			{"type": "thought", "signature": "sig_fc_1"},
+			{"type": "function_call", "name": "f1", "call_id": "c1", "arguments": {}}
+		]
+	}`)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+	contents := gjson.GetBytes(out, "contents").Array()
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 model content, got %d: %s", len(contents), string(out))
+	}
+	parts := contents[0].Get("parts").Array()
+	var foundS1, foundS2 bool
+	for _, p := range parts {
+		if p.Get("thoughtSignature").String() == "sig_thought_1" {
+			foundS1 = true
+		}
+		if p.Get("functionCall").Exists() && p.Get("thoughtSignature").String() == "sig_fc_1" {
+			foundS2 = true
+		}
+	}
+	if !foundS1 || !foundS2 {
+		t.Fatalf("expected both sig_thought_1 and sig_fc_1 preserved, got parts: %s", contents[0].Get("parts").Raw)
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_TrailingSignatureRoundTrip(t *testing.T) {
+	upstreamResponse := []byte(`{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [
+					{"text": "answer"},
+					{"text": "", "thoughtSignature": "sig_trailing_rt"}
+				]
+			}
+		}]
+	}`)
+	respOut := ConvertGeminiResponseToInteractionsNonStream(context.Background(), "gemini-3.5-flash", nil, nil, upstreamResponse, nil)
+	steps := gjson.GetBytes(respOut, "steps").Raw
+
+	turn2Input := `{"model":"gemini-3.5-flash","input":` + steps + `}`
+	reqOut, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(turn2Input), false)
+	contents := gjson.GetBytes(reqOut, "contents").Array()
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 model content, got %d: %s", len(contents), string(reqOut))
+	}
+	parts := contents[0].Get("parts").Array()
+	var foundText, foundSig bool
+	for _, p := range parts {
+		if p.Get("text").String() == "answer" {
+			foundText = true
+		}
+		if p.Get("thoughtSignature").String() == "sig_trailing_rt" {
+			foundSig = true
+		}
+	}
+	if !foundText || !foundSig {
+		t.Fatalf("expected both answer and sig_trailing_rt preserved, got parts: %s", contents[0].Get("parts").Raw)
+	}
+}
+
+func TestConvertInteractionsRequestToGemini_ExplicitSignatureClearsPending(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3.5-flash",
+		"input": [
+			{"type": "thought", "signature": "sig_shared"},
+			{"type": "function_call", "name": "f1", "call_id": "c1", "arguments": {}, "signature": "sig_shared"},
+			{"type": "function_call", "name": "f2", "call_id": "c2", "arguments": {}}
+		]
+	}`)
+	out, _ := ConvertInteractionsRequestToGemini("gemini-3.5-flash", inputJSON, false)
+	contents := gjson.GetBytes(out, "contents").Array()
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 model content, got %d: %s", len(contents), string(out))
+	}
+	parts := contents[0].Get("parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("expected exactly 2 parts (no extra carrier), got %d: %s", len(parts), contents[0].Raw)
+	}
+	if sig := parts[0].Get("thoughtSignature").String(); sig != "sig_shared" {
+		t.Fatalf("expected f1 thoughtSignature = sig_shared, got %q", sig)
+	}
+	if sig := parts[1].Get("thoughtSignature").String(); sig != "" {
+		t.Fatalf("expected f2 thoughtSignature to be empty, got %q", sig)
+	}
+}
+
+func TestConvertInteractionsResponseToGemini_ResponseFailed(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    string
+		wantCode   int64
+		wantStatus string
+		wantMsg    string
+	}{
+		{
+			name:       "403_permission_denied",
+			payload:    `data: {"event_type":"response.failed","error":{"message":"devin upstream error: permission_denied","code":"403"}}`,
+			wantCode:   403,
+			wantStatus: "PERMISSION_DENIED",
+			wantMsg:    "permission_denied",
+		},
+		{
+			name:       "429_resource_exhausted",
+			payload:    `data: {"event_type":"interaction.failed","error":{"message":"quota exceeded","code":"resource_exhausted"}}`,
+			wantCode:   429,
+			wantStatus: "RESOURCE_EXHAUSTED",
+			wantMsg:    "quota exceeded",
+		},
+		{
+			name:       "503_unavailable_nested",
+			payload:    `data: {"event_type":"response.failed","interaction":{"error":{"message":"service unavailable","code":"503"}}}`,
+			wantCode:   503,
+			wantStatus: "UNAVAILABLE",
+			wantMsg:    "service unavailable",
+		},
+		{
+			name:       "default_fallback",
+			payload:    `data: {"event_type":"response.failed"}`,
+			wantCode:   500,
+			wantStatus: "INTERNAL",
+			wantMsg:    "upstream error occurred",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var param any
+			events := ConvertInteractionsResponseToGemini(context.Background(), "devin/kimi-k3", nil, nil, []byte(tt.payload), &param)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			gotCode := gjson.GetBytes(events[0], "error.code").Int()
+			if gotCode != tt.wantCode {
+				t.Errorf("error.code = %d, want %d", gotCode, tt.wantCode)
+			}
+			gotStatus := gjson.GetBytes(events[0], "error.status").String()
+			if gotStatus != tt.wantStatus {
+				t.Errorf("error.status = %q, want %q", gotStatus, tt.wantStatus)
+			}
+			gotMsg := gjson.GetBytes(events[0], "error.message").String()
+			if !strings.Contains(gotMsg, tt.wantMsg) {
+				t.Errorf("error.message = %q, want containing %q", gotMsg, tt.wantMsg)
+			}
+		})
 	}
 }

@@ -144,6 +144,17 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: reasoning-effort-policy
+    registry_feature: reasoning-effort-policy
+    maintenance_policy: opt-in-semantic-request-policy
+    markers:
+      - requests.reasoning-effort
+      - X-CPA-REASONING-EFFORT-POLICY
+    validation:
+      - go test ./internal/config ./internal/runtime/executor/helps ./internal/watcher -run 'ReasoningEffort|SemanticEffort'
+      - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+    conflict_policy: preserve_last_match_modes_native_protocol_ownership_and_effective_usage
+
   - id: zcode-codex-context-usage
     registry_feature: zcode-codex-context-usage
     maintenance_policy: opt-in-context-counting

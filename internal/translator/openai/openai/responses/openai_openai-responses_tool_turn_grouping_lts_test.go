@@ -98,7 +98,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitBy
 		]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	assertToolTurnMessageShapesForTest(t, out, []string{
 		"assistant[call_a,call_b]",
 		"tool(call_a)",
@@ -121,7 +121,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitBy
 		]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	assertToolTurnMessageShapesForTest(t, out, []string{
 		"assistant[call_a,call_b]{rc}",
 		"tool(call_a)",
@@ -144,7 +144,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCustomToolCa
 		]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	assertToolTurnMessageShapesForTest(t, out, []string{
 		"assistant[call_a,call_b]",
 		"tool(call_a)",
@@ -167,7 +167,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesMixedToolCal
 		]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	assertToolTurnMessageShapesForTest(t, out, []string{
 		"assistant[call_function,call_custom]",
 		"tool(call_function)",
@@ -189,7 +189,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesHarnessSt
 		]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	assertToolTurnMessageShapesForTest(t, out, []string{
 		"assistant[call-583ab1f9-5593-419e-bd7f-3e2e234b0711-0,call-583ab1f9-5593-419e-bd7f-3e2e234b0711-1]",
 		"tool(call-583ab1f9-5593-419e-bd7f-3e2e234b0711-0)",
@@ -218,7 +218,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsAcrossI
 				{"type":"function_call_output","call_id":"call_a","output":"ok_a"},
 				{"type":"function_call_output","call_id":"call_b","output":"ok_b"}
 			]}`)
-			out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai-compat-model", raw, true)
+			out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai-compat-model", raw, true)
 			assertToolTurnMessageShapesForTest(t, out, []string{
 				"assistant[call_a,call_b]",
 				"tool(call_a)",
@@ -375,7 +375,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesCompleteM
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			raw := []byte(`{"input":` + tt.input + `}`)
-			out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions(tt.model, raw, true)
+			out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions(tt.model, raw, true)
 			assertToolTurnMessagesJSONEqualForTest(t, out, tt.want)
 		})
 	}
@@ -393,7 +393,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesMidCallRea
 		]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
+	out, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	assertToolTurnMessagesJSONEqualForTest(t, out, `[
 		{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"tool_a","arguments":"{}"}}],"reasoning_content":"think"},
 		{"role":"tool","tool_call_id":"call_a","content":"ok"}

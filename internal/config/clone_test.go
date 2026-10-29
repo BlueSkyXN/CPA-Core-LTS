@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"gopkg.in/yaml.v3"
 )
 
@@ -132,8 +132,9 @@ func sampleCloneRuntimeConfig() *Config {
 		SDKConfig: SDKConfig{
 			APIKeys: []string{"client-key"},
 			Streaming: StreamingConfig{
-				KeepAliveSeconds: 3,
-				BootstrapRetries: 2,
+				KeepAliveSeconds:      3,
+				BootstrapRetries:      2,
+				SendKeepAliveBeforeFT: true,
 			},
 		},
 		Home: HomeConfig{

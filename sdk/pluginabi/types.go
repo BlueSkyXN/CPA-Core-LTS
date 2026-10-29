@@ -15,7 +15,14 @@ const (
 	// plus optional cancel, session-close, and readiness capabilities. The native
 	// function table remains ABI version 1.
 	// Version 6 preserves raw JSON bodies for plugin management responses.
-	SchemaVersion uint32 = 6
+	// Plugins that still require HTML entity escaping on JSON response strings
+	// should keep schema_version < 6.
+	// Version 7 lets request interceptors opt out of receiving the request body
+	// per phase via request_interceptor_omit_body_before/after capabilities; the
+	// host then omits RequestInterceptRequest.Body for that phase instead of
+	// cloning and Base64-encoding the full payload. Plugins that declare the
+	// flags on schema_version < 7 (or do not declare them) still receive it.
+	SchemaVersion uint32 = 7
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -31,6 +38,9 @@ const (
 	// SchemaVersionRawManagementResponse is the first schema version where plugin
 	// management JSON responses are preserved without HTML-escaping strings.
 	SchemaVersionRawManagementResponse uint32 = 6
+	// SchemaVersionRequestInterceptorOmitBody is the first schema version where
+	// request interceptors may opt out of receiving the request body per phase.
+	SchemaVersionRequestInterceptorOmitBody uint32 = 7
 )
 
 const (
@@ -113,7 +123,10 @@ const (
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
+	MethodHostAuthModels         = "host.auth.models"
 	MethodHostAffinityLookup     = "host.affinity.lookup"
+
+	MethodHostRoutingResetCooldown = "host.routing.reset_cooldown"
 )
 
 type Envelope struct {
@@ -131,6 +144,12 @@ type Error struct {
 	HTTPStatus int `json:"http_status,omitempty"`
 	// FailureReason is an optional safe, provider-scoped usage diagnostic, independent of Code and retry policy.
 	FailureReason string `json:"failure_reason,omitempty"`
+	// RetryAfterSeconds carries upstream retry guidance for cooldown and response headers.
+	// It is an optional hint. Schema-version agreement does not negotiate support for
+	// this field, and older hosts silently ignore it, so plugins must not depend on it
+	// for correctness. The same pair is accepted as error_detail on host.stream.emit
+	// and host.stream.close.
+	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 }
 
 // Error implements the error interface for Error.

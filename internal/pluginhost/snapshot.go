@@ -1,12 +1,13 @@
 package pluginhost
 
 import (
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type capabilityRecord struct {
@@ -185,6 +186,15 @@ func cloneConfigFields(fields []pluginapi.ConfigField) []pluginapi.ConfigField {
 	copy(out, fields)
 	for index := range out {
 		out[index].EnumValues = append([]string(nil), fields[index].EnumValues...)
+		out[index].Default = cloneConfigFieldValue(fields[index].Default)
 	}
 	return out
+}
+
+func cloneConfigFieldValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	visited := make(map[metadataCloneVisit]reflect.Value)
+	return cloneInterceptorMetadataAny(reflect.ValueOf(value), visited)
 }

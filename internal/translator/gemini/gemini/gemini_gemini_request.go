@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -21,12 +21,12 @@ import (
 //     The first message defaults to "user", then alternates user/model when needed.
 //
 // It keeps the payload otherwise unchanged.
-func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte {
+func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	// Fast path: if no contents field, only attach safety settings
 	contents := util.GetGJSONBytesNoCopy(rawJSON, "contents")
 	if !contents.Exists() {
-		return common.AttachDefaultSafetySettings(rawJSON, "safetySettings")
+		return common.AttachDefaultSafetySettings(rawJSON, "safetySettings"), nil
 	}
 
 	toolsResult := gjson.GetBytes(rawJSON, "tools")
@@ -138,7 +138,7 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 	out = backfillEmptyFunctionResponseNames(out)
 
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
-	return out
+	return out, nil
 }
 
 // backfillEmptyFunctionResponseNames walks the contents array and for each

@@ -8,6 +8,9 @@ type ErrorCode string
 
 // Error codes for thinking configuration processing.
 const (
+	// ErrInvalidPolicyRequest indicates malformed input at the effort policy boundary.
+	ErrInvalidPolicyRequest ErrorCode = "INVALID_POLICY_REQUEST"
+
 	// ErrInvalidSuffix indicates the suffix format cannot be parsed.
 	// Example: "model(abc" (missing closing parenthesis)
 	ErrInvalidSuffix ErrorCode = "INVALID_SUFFIX"

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func TestRegisterResolvedModelsForAuthAppliesModelPolicyAndSnapshot(t *testing.T) {
@@ -56,6 +56,54 @@ func TestRegisterResolvedModelsForAuthAppliesModelPolicyAndSnapshot(t *testing.T
 	}
 	if !allowed["gpt-5-codex"] || allowed["gpt-5-preview"] || allowed["claude-sonnet-4"] {
 		t.Fatalf("preview decisions = %#v", allowed)
+	}
+}
+
+func TestAntigravityFencedPublicationRetainsModelPolicyAndCatalog(t *testing.T) {
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
+	models := registry.GetAntigravityModels()
+	if len(models) < 2 {
+		t.Fatal("missing Antigravity catalog")
+	}
+	allowed, denied := models[0].ID, models[1].ID
+	cfg := &config.Config{
+		OAuthModelPolicy: map[string]config.OAuthModelPolicyEntry{"antigravity": {
+			Allowlist: &config.OAuthModelPolicyList{Enabled: true, Models: []string{allowed}},
+		}},
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{"antigravity": {{Name: allowed, Alias: "public"}}},
+	}
+	cfg.ForceModelPrefix = true
+	manager := coreauth.NewManager(nil, nil, nil)
+	service := &Service{cfg: cfg, coreManager: manager, accountCatalogs: newAccountCatalogStore()}
+	auth := antigravityTestAuth(t.Name(), "http://127.0.0.1:1")
+	auth.Prefix = "tenant"
+	auth, err := manager.Register(t.Context(), auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+	key := service.antigravityCapabilityKey(auth)
+	hints := antigravityModelCapabilityHints{revision: 1, ModelIDs: map[string]struct{}{
+		normalizeAntigravityFetchedModelID(allowed): {}, normalizeAntigravityFetchedModelID(denied): {},
+	}}
+	antigravityCapabilityMu.Lock()
+	antigravityCapabilityCache[key] = antigravityCapabilityCacheEntry{hints: hints}
+	antigravityCapabilityMu.Unlock()
+	service.applyAntigravityModelHints(t.Context(), auth, "antigravity", hints, key, auth.RegistrationEpoch, reg.ClientRegistrationEpoch(auth.ID))
+	got := reg.GetModelsForClient(auth.ID)
+	if len(got) != 1 || got[0].ID != "tenant/public" {
+		t.Fatalf("fenced publication bypassed policy or changed alias/prefix order: %+v", got)
+	}
+	preview, ok := service.PreviewModelPolicyForAuth(auth)
+	if !ok || len(preview.Evaluations) != 2 {
+		t.Fatalf("missing pre-policy catalog: %+v", preview)
+	}
+	for _, evaluation := range preview.Evaluations {
+		if evaluation.Allowed != (evaluation.ModelID == allowed) {
+			t.Fatalf("preview disagrees with registration: %+v", evaluation)
+		}
 	}
 }
 
@@ -126,6 +174,7 @@ func TestModelPolicyNativeRegistrationBeforeAliasAndPrefix(t *testing.T) {
 	model := models[0].ID
 	cfg := &config.Config{
 		OAuthModelAlias:  map[string][]config.OAuthModelAlias{"codex": {{Name: model, Alias: "public"}}},
+		OAuthSettings:    map[string][]config.OAuthModelSetting{"codex": {{Name: model, Alias: "public", MaxContextLength: 123456}}},
 		OAuthModelPolicy: map[string]config.OAuthModelPolicyEntry{"codex": {Allowlist: &config.OAuthModelPolicyList{Enabled: true, Models: []string{model}}}},
 	}
 	cfg.ForceModelPrefix = true
@@ -136,6 +185,9 @@ func TestModelPolicyNativeRegistrationBeforeAliasAndPrefix(t *testing.T) {
 	got := GlobalModelRegistry().GetModelsForClient(auth.ID)
 	if len(got) != 1 || got[0].ID != "tenant/public" {
 		t.Fatalf("native registration lost allowed alias: %+v", got)
+	}
+	if got[0].MaxContextLength != 123456 {
+		t.Fatal("V8 OAuth model settings lost during policy registration")
 	}
 	preview, ok := service.PreviewModelPolicyForAuth(auth)
 	if !ok {

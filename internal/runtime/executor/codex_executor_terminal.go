@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -234,7 +234,7 @@ func codexTerminalStreamErrShouldHandle(body []byte) bool {
 	if codexTerminalErrorIsContextLength(body) {
 		return true
 	}
-	if isCodexUsageLimitError(body) || isCodexModelCapacityError(body) {
+	if isCodexUsageLimitError(body) || isCodexTransientCapacityError(body) {
 		return true
 	}
 	code, _, ok := codexStatusErrorClassification(http.StatusBadRequest, body)
@@ -316,16 +316,27 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	return newCodexStatusErrWithCooling(statusCode, body, false)
 }
 
+func newCodexStatusErrWithHeaders(statusCode int, headers http.Header, body []byte) statusErr {
+	return newCodexStatusErrWithHeadersAndCooling(statusCode, headers, body, false)
+}
+
 func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling bool) statusErr {
+	return newCodexStatusErrWithHeadersAndCooling(statusCode, nil, body, modelLevelCooling)
+}
+
+func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
 	classification := ClassifyCodexUpstreamError(statusCode, body, time.Now())
+	isUsageLimit := isCodexUsageLimitError(body)
+	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(body)
+	if transientCapacity {
+		classification.HTTPStatus = http.StatusTooManyRequests
+	}
 	body = classifyCodexStatusError(classification.HTTPStatus, body)
-	err := statusErr{
-		code:                classification.HTTPStatus,
-		msg:                 string(body),
-		modelFallbackReason: classification.ModelFallbackReason,
-		retryAfter:          classification.RetryAfter,
-		codexRateLimitClass: codexRateLimitClass(body),
-		credentialScoped:    isCodexUsageLimitError(body) && !modelLevelCooling,
+	err := statusErr{code: classification.HTTPStatus, msg: string(body), modelFallbackReason: classification.ModelFallbackReason,
+		retryAfter: classification.RetryAfter, codexRateLimitClass: codexRateLimitClass(body), credentialScoped: isUsageLimit && !modelLevelCooling,
+		transientRateLimit: transientCapacity && classification.HTTPStatus == http.StatusTooManyRequests}
+	if err.retryAfter == nil && err.code == http.StatusTooManyRequests {
+		err.retryAfter = parseRetryAfterHeader(headers, time.Now())
 	}
 	return err
 }
@@ -399,6 +410,92 @@ func codexStatusErrorClassification(statusCode int, body []byte) (code string, e
 	}
 }
 
+// isCodexTurnRateLimitError reports whether the error body is Codex's
+// per-turn admission rejection (issue 7017): the upstream is at capacity for
+// this turn while the credential quota is not exhausted. The stable signal
+// is the dedicated error code; when the code is absent, a rate_limit_error
+// whose message says the service is at capacity is accepted. Generic
+// rate_limit_exceeded rejections are intentionally excluded: they keep their
+// existing generic 429 handling.
+func isCodexTurnRateLimitError(errorBody []byte) bool {
+	if len(errorBody) == 0 {
+		return false
+	}
+	codes := []string{
+		gjson.GetBytes(errorBody, "error.code").String(),
+		gjson.GetBytes(errorBody, "code").String(),
+		gjson.GetBytes(errorBody, "body.error.code").String(),
+	}
+	hasOtherCode := false
+	for _, candidate := range codes {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if strings.EqualFold(candidate, "turn_rate_limit_exceeded") {
+			return true
+		}
+		hasOtherCode = true
+	}
+	// The capacity-message fallback applies only when no dedicated error
+	// code is present; an explicit other code keeps its existing handling.
+	if hasOtherCode {
+		return false
+	}
+	errorTypes := []string{
+		gjson.GetBytes(errorBody, "error.type").String(),
+		gjson.GetBytes(errorBody, "type").String(),
+		gjson.GetBytes(errorBody, "body.error.type").String(),
+	}
+	rateLimitTyped := false
+	for _, candidate := range errorTypes {
+		if strings.EqualFold(strings.TrimSpace(candidate), "rate_limit_error") {
+			rateLimitTyped = true
+			break
+		}
+	}
+	if !rateLimitTyped {
+		return false
+	}
+	messages := []string{
+		gjson.GetBytes(errorBody, "error.message").String(),
+		gjson.GetBytes(errorBody, "message").String(),
+		gjson.GetBytes(errorBody, "body.error.message").String(),
+	}
+	for _, candidate := range messages {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(candidate)), "at capacity") {
+			return true
+		}
+	}
+	return false
+}
+
+// codexErrorCodeOf returns the dedicated error code across the layouts the
+// Codex upstream uses.
+func codexErrorCodeOf(errorBody []byte) string {
+	for _, path := range []string{"error.code", "code", "body.error.code"} {
+		if code := strings.TrimSpace(gjson.GetBytes(errorBody, path).String()); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+// isCodexTransientCapacityError covers every Codex capacity rejection that
+// is transient and model-scoped: the legacy model-at-capacity wording and
+// the per-turn admission rejection. An explicit error code other than the
+// capacity codes keeps its existing handling, so a generic
+// rate_limit_exceeded rejection is never downgraded by message text.
+func isCodexTransientCapacityError(errorBody []byte) bool {
+	if code := codexErrorCodeOf(errorBody); code != "" &&
+		!strings.EqualFold(code, "turn_rate_limit_exceeded") &&
+		!strings.EqualFold(code, "model_at_capacity") &&
+		!strings.EqualFold(code, "model_is_at_capacity") {
+		return false
+	}
+	return isCodexModelCapacityError(errorBody) || isCodexTurnRateLimitError(errorBody)
+}
+
 func isCodexModelCapacityError(errorBody []byte) bool {
 	if len(errorBody) == 0 {
 		return false
@@ -436,6 +533,7 @@ func isCodexUsageLimitError(errorBody []byte) bool {
 	candidates := []string{
 		gjson.GetBytes(errorBody, "error.type").String(),
 		gjson.GetBytes(errorBody, "type").String(),
+		gjson.GetBytes(errorBody, "body.error.type").String(),
 	}
 	for _, candidate := range candidates {
 		if strings.EqualFold(strings.TrimSpace(candidate), "usage_limit_reached") {
@@ -449,7 +547,7 @@ func parseCodexRetryAfter(statusCode int, errorBody []byte, now time.Time) *time
 	if statusCode != http.StatusTooManyRequests || len(errorBody) == 0 {
 		return nil
 	}
-	for _, quota := range []gjson.Result{gjson.GetBytes(errorBody, "error"), gjson.ParseBytes(errorBody)} {
+	for _, quota := range []gjson.Result{gjson.GetBytes(errorBody, "error"), gjson.ParseBytes(errorBody), gjson.GetBytes(errorBody, "body.error")} {
 		if !strings.EqualFold(strings.TrimSpace(quota.Get("type").String()), "usage_limit_reached") {
 			continue
 		}
@@ -537,7 +635,10 @@ func isCodexBootstrapBufferableEvent(eventType string, payload []byte) bool {
 		return true
 	}
 	switch eventType {
-	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata", "keepalive":
+	// response.metadata carries prompt-moderation flags, not generated output. Upstream now sends it
+	// between response.in_progress and a server_is_overloaded rejection, so releasing on it leaked
+	// the rejection to the client instead of failing over (issue #6856).
+	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata", "response.metadata", "keepalive":
 		return true
 	case "response.output_item.added":
 		return isCodexBufferableOutputItem(payload)
@@ -552,8 +653,7 @@ func isCodexBootstrapBufferableEvent(eventType string, payload []byte) bool {
 
 // isCodexBufferableOutputItem reports whether an announced output item is one the model produces by
 // itself and has not started producing, so nothing is running upstream yet. The emptiness checks
-// follow the ones IsResponsesTokenEvent applies to response.output_item.done, extended to the
-// reasoning summary, which that helper has no case for. Every other item type
+// cover message and reasoning text, tool arguments, and encrypted reasoning. Every other item type
 // is released, which covers the server-side operations that may already have been dispatched - a
 // web_search_call is announced with status "in_progress" and its searching event follows
 // immediately, and failing the attempt over after one would run it again on another credential - and
@@ -619,7 +719,7 @@ func isCodexEmptyPart(payload []byte) bool {
 // token event, and records the model the upstream reports serving.
 func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
 	helps.ObserveResponsesTokenEvent(reporter, payload)
-	reporter.ObserveCodexResponseModel(payload)
+	reporter.ObserveResponseModel(payload)
 }
 
 // newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.
@@ -637,7 +737,7 @@ func newCodexBootstrapOverloadErr(body []byte) statusErr {
 // Only these failures justify replacing the whole attempt during bootstrap; every other terminal
 // failure keeps the original in-stream delivery semantics so downstream behaviour is unchanged.
 func isCodexOverloadBootstrapFailure(body []byte) bool {
-	if isCodexModelCapacityError(body) {
+	if isCodexTransientCapacityError(body) {
 		return true
 	}
 	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type streamBridge struct {
@@ -40,18 +42,17 @@ type streamBridgeEmit struct {
 }
 
 type streamBridgeClose struct {
-	errorMessage  string
-	errorCode     string
-	retryable     bool
-	httpStatus    int
-	failureReason string
-	accepted      chan struct{}
+	err      error
+	accepted chan struct{}
 }
 
 type rpcStreamEmitRequest struct {
 	StreamID string `json:"stream_id"`
 	Payload  []byte `json:"payload,omitempty"`
 	Error    string `json:"error,omitempty"`
+	// ErrorDetail optionally carries the structured plugin error (status, code,
+	// retry-after). It takes precedence over Error when present.
+	ErrorDetail *pluginabi.Error `json:"error_detail,omitempty"`
 }
 
 type rpcStreamCloseRequest struct {
@@ -61,6 +62,42 @@ type rpcStreamCloseRequest struct {
 	Retryable     bool   `json:"retryable,omitempty"`
 	HTTPStatus    int    `json:"http_status,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
+	// ErrorDetail optionally carries the structured plugin error (status, code,
+	// retry-after). It takes precedence over Error when present.
+	ErrorDetail *pluginabi.Error `json:"error_detail,omitempty"`
+}
+
+// rpcStreamError builds the error reported to the client for a plugin stream
+// failure. A structured detail keeps the HTTP status and retry metadata that a
+// plain message cannot carry.
+func rpcStreamError(message string, detail *pluginabi.Error) error {
+	if detail != nil {
+		text := strings.TrimSpace(detail.Message)
+		if text == "" {
+			text = strings.TrimSpace(message)
+		}
+		if text == "" {
+			text = "plugin stream failed"
+		}
+		if strings.TrimSpace(detail.Code) == coreauth.ErrorCodeConnectionLifecycle {
+			cause := &coreauth.Error{Code: strings.TrimSpace(detail.Code), Message: text, Retryable: detail.Retryable, HTTPStatus: detail.HTTPStatus}
+			if detail.FailureReason != "" {
+				return &streamFailureDiagnostic{cause: cause, reason: detail.FailureReason}
+			}
+			return cause
+		}
+		return rpcError{
+			failureReason:     detail.FailureReason,
+			Code:              strings.TrimSpace(detail.Code),
+			message:           text,
+			statusCode:        detail.HTTPStatus,
+			retryAfterSeconds: detail.RetryAfterSeconds,
+		}
+	}
+	if message != "" {
+		return fmt.Errorf("%s", message)
+	}
+	return nil
 }
 
 type streamFailureDiagnostic struct {
@@ -117,19 +154,8 @@ func (s *streamBridgeStream) run() {
 		case request := <-s.closes:
 			s.markClosed()
 			close(request.accepted)
-			if request.errorMessage != "" {
-				errClose := error(fmt.Errorf("%s", request.errorMessage))
-				if request.errorCode != "" {
-					cause := &coreauth.Error{
-						Code: request.errorCode, Message: request.errorMessage,
-						Retryable: request.retryable, HTTPStatus: request.httpStatus,
-					}
-					errClose = cause
-					if request.failureReason != "" {
-						errClose = &streamFailureDiagnostic{cause: cause, reason: request.failureReason}
-					}
-				}
-				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: errClose})
+			if request.err != nil {
+				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: request.err})
 			}
 			for len(queue) > 0 {
 				select {
@@ -192,21 +218,13 @@ func (s *streamBridgeStream) emit(ctx context.Context, chunk pluginapi.ExecutorS
 	return <-request.done
 }
 
-func (s *streamBridgeStream) close(errorMessage string) {
-	s.closeStructured(errorMessage, "", false, 0, "")
-}
-
-func (s *streamBridgeStream) closeStructured(errorMessage, errorCode string, retryable bool, httpStatus int, failureReason string) {
+func (s *streamBridgeStream) closeWithError(err error) {
 	if s == nil {
 		return
 	}
 	request := streamBridgeClose{
-		errorMessage:  errorMessage,
-		errorCode:     errorCode,
-		retryable:     retryable,
-		httpStatus:    httpStatus,
-		failureReason: failureReason,
-		accepted:      make(chan struct{}),
+		err:      err,
+		accepted: make(chan struct{}),
 	}
 	select {
 	case <-s.finished:
@@ -268,14 +286,10 @@ func (b *streamBridge) emit(ctx context.Context, id string, chunk pluginapi.Exec
 }
 
 func (b *streamBridge) close(id string, errorMessage string) {
-	b.closeStructured(id, errorMessage, "", false, 0)
+	b.closeWithError(id, rpcStreamError(errorMessage, nil))
 }
 
-func (b *streamBridge) closeStructured(id, errorMessage, errorCode string, retryable bool, httpStatus int) {
-	b.closeWithDiagnostic(id, errorMessage, errorCode, retryable, httpStatus, "")
-}
-
-func (b *streamBridge) closeWithDiagnostic(id, errorMessage, errorCode string, retryable bool, httpStatus int, failureReason string) {
+func (b *streamBridge) closeWithError(id string, err error) {
 	if b == nil || id == "" {
 		return
 	}
@@ -286,5 +300,25 @@ func (b *streamBridge) closeWithDiagnostic(id, errorMessage, errorCode string, r
 	if stream == nil {
 		return
 	}
-	stream.closeStructured(errorMessage, errorCode, retryable, httpStatus, failureReason)
+	stream.closeWithError(err)
+}
+
+// closeStructured preserves the legacy close callback used by existing plugins.
+func (b *streamBridge) closeStructured(id, message, code string, retryable bool, status int) {
+	b.closeWithDiagnostic(id, message, code, retryable, status, "")
+}
+
+func (b *streamBridge) closeWithDiagnostic(id, message, code string, retryable bool, status int, reason string) {
+	var err error
+	if message != "" {
+		err = fmt.Errorf("%s", message)
+		if code != "" {
+			cause := &coreauth.Error{Code: code, Message: message, Retryable: retryable, HTTPStatus: status}
+			err = cause
+			if reason != "" {
+				err = &streamFailureDiagnostic{cause: cause, reason: reason}
+			}
+		}
+	}
+	b.closeWithError(id, err)
 }

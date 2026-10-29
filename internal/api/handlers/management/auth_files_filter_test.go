@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func TestListAuthFilesFiltersByNameAndAuthIndex(t *testing.T) {
@@ -182,7 +182,7 @@ func TestBuildAuthFileEntryXAIUserIDIsNonSecretOnly(t *testing.T) {
 		},
 	}
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
-	entry := h.buildAuthFileEntry(auth)
+	entry := h.buildAuthFileEntry(auth, authFileQuotaContext{})
 	if entry == nil || entry["user_id"] != "billing-user-2" {
 		t.Fatalf("entry = %#v, want xAI user_id", entry)
 	}
@@ -302,7 +302,7 @@ func TestAuthFileLookupAndEntryBuildConcurrentEnsureIndex(t *testing.T) {
 				if !matchesAuthFileLookup(auth, fileName, "idx-concurrent") {
 					t.Errorf("auth lookup did not match")
 				}
-				entry := h.buildAuthFileEntry(auth)
+				entry := h.buildAuthFileEntry(auth, authFileQuotaContext{})
 				if entry == nil {
 					t.Errorf("entry is nil")
 					continue

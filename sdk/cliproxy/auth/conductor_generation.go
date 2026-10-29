@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 type authGenerationContextKey struct{}
@@ -55,6 +55,9 @@ func resultForAuth(auth *Auth, provider, model string, success bool, resultErr *
 	}
 	if auth != nil {
 		result.AuthID = auth.ID
+		result.AccessToken = authAccessToken(auth)
+		result.CredentialVersion = auth.CredentialVersion
+		result.RegistrationEpoch = auth.RegistrationEpoch
 	}
 	return result
 }
@@ -66,6 +69,9 @@ func resultForAuthWithOptions(auth *Auth, provider, model string, success bool, 
 }
 
 func resultMatchesAuthGeneration(ctx context.Context, result Result, auth *Auth) bool {
+	if isStaleExecutionResult(result, auth) {
+		return false
+	}
 	if auth != nil {
 		resultProvider := strings.TrimSpace(result.Provider)
 		authProvider := strings.TrimSpace(auth.Provider)

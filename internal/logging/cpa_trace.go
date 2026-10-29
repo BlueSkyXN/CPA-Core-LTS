@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
 )
 
 // CPATraceIDHeader is the downstream response header used to correlate requests with selected credentials.
@@ -117,9 +118,12 @@ type cpaTraceResponseWriter struct {
 	state *cpaTraceState
 }
 
-// Unwrap lets net/http.ResponseController reach the real writer for stream
-// deadlines without bypassing trace-header injection on ordinary writes.
-func (w *cpaTraceResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *cpaTraceResponseWriter) Unwrap() http.ResponseWriter {
+	if w == nil {
+		return nil
+	}
+	return w.ResponseWriter
+}
 
 func (w *cpaTraceResponseWriter) WriteHeader(statusCode int) {
 	w.applyTraceHeader()
@@ -142,8 +146,13 @@ func (w *cpaTraceResponseWriter) WriteString(data string) (int, error) {
 }
 
 func (w *cpaTraceResponseWriter) Flush() {
+	_ = w.FlushError()
+}
+
+// FlushError preserves trace headers while forwarding transport errors.
+func (w *cpaTraceResponseWriter) FlushError() error {
 	w.applyTraceHeader()
-	w.ResponseWriter.Flush()
+	return httpwire.FlushResponse(w.ResponseWriter)
 }
 
 func (w *cpaTraceResponseWriter) applyTraceHeader() {

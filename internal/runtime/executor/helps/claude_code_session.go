@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 )
 
 const (

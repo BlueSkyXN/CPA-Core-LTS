@@ -3,7 +3,7 @@ package executor
 import (
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // CodexExecutor handles Codex requests with an instance-scoped OAuth affinity index.
@@ -32,3 +32,6 @@ func (e *CodexExecutor) affinityStore() *codexAffinityStore {
 	})
 	return e.affinity
 }
+
+// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
+func (e *CodexExecutor) SupportsApplyPatch() bool { return e != nil }

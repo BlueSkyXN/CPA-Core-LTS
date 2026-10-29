@@ -11,14 +11,15 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 type codexWebsocketConnectionKey struct {
+	useSIWC               bool
 	authID                string
 	wsURL                 string
 	proxyURL              string
@@ -56,16 +57,25 @@ func (s *codexWebsocketSession) setActiveConnection(connection codexWebsocketCon
 		s.connMu.Unlock()
 		return nil, fmt.Errorf("codex websockets executor: session is closed")
 	}
+	s.activeMu.Lock()
+	if s.terminalConn == connection.conn && s.terminalErr != nil {
+		err := s.terminalErr
+		s.activeMu.Unlock()
+		s.connMu.Unlock()
+		return nil, err
+	}
 	if connection.conn == nil || s.conn != connection.conn || s.connGen != connection.generation {
+		s.activeMu.Unlock()
 		s.connMu.Unlock()
 		return nil, fmt.Errorf("codex websockets executor: connection generation is no longer current")
 	}
 	signal := newCodexWebsocketRequestSignal()
-	s.activeMu.Lock()
 	if s.active.signal != nil {
 		s.active.signal.cancel(context.Canceled)
 	}
 	s.active = codexWebsocketActive{connection: connection, ch: ch, signal: signal}
+	s.activeResponseID = ""
+	s.activeResponseTerminal = false
 	s.activeMu.Unlock()
 	s.connMu.Unlock()
 	return signal, nil
@@ -166,6 +176,8 @@ func (s *codexWebsocketSession) detachConnectionRef(connection codexWebsocketCon
 		closer = s.connCloser
 		s.conn = nil
 		s.connCloser = nil
+		s.connCfg = nil
+		s.hasConnCfg = false
 		s.multiAgentV2OptimizedGen = 0
 		s.connKey = codexWebsocketConnectionKey{}
 		s.connGen++
@@ -191,7 +203,7 @@ func (s *codexWebsocketSession) detachConnectionRef(connection codexWebsocketCon
 // pre-payload fallback path) and retry headers for downstream error shaping.
 func newCodexWebsocketHandshakeStatusErr(status int, body []byte, headers http.Header, modelLevelCooling ...bool) error {
 	modelScoped := len(modelLevelCooling) > 0 && modelLevelCooling[0]
-	classified := newCodexStatusErrWithCooling(status, body, modelScoped)
+	classified := newCodexStatusErrWithHeadersAndCooling(status, headers, body, modelScoped)
 	return statusErrWithHeaders{statusErr: classified, headers: headers.Clone()}
 }
 

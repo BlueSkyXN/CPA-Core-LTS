@@ -3,7 +3,7 @@ package config
 import (
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexapptools"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexapptools"
 )
 
 func (c *CodexDesktopToolOverlayConfig) normalizeAndValidate() error {

@@ -5,10 +5,10 @@ import (
 	"strings"
 	"sync"
 
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -99,6 +99,12 @@ func resolveClaudeFingerprintPolicy(cfg *config.Config, auth *cliproxyauth.Auth,
 	authIsOAuth := isClaudeOAuthToken(apiKey)
 	profile := claudeFingerprintProfileFromConfig(cfg, auth)
 	profileClaudeCodeCLI := authIsOAuth || profile == claudeFingerprintProfileClaudeCodeCLI
+	// header-defaults.inject-diagnostics=false opts out of the injected
+	// diagnostics field, and with it the body-derived cache-diagnosis beta.
+	injectDiagnostics := profileClaudeCodeCLI
+	if cfg != nil && cfg.ClaudeHeaderDefaults.InjectDiagnostics != nil && !*cfg.ClaudeHeaderDefaults.InjectDiagnostics {
+		injectDiagnostics = false
+	}
 
 	return claudeFingerprintPolicy{
 		AuthIsOAuthToken:     authIsOAuth,
@@ -107,7 +113,7 @@ func resolveClaudeFingerprintPolicy(cfg *config.Config, auth *cliproxyauth.Auth,
 		ApplyCLIIdentity:     profileClaudeCodeCLI,
 		SynthesizeIdentity:   profileClaudeCodeCLI && !authIsOAuth,
 		MCPAlias:             profileClaudeCodeCLI,
-		InjectDiagnostics:    profileClaudeCodeCLI,
+		InjectDiagnostics:    injectDiagnostics,
 		OAuthCancellation:    authIsOAuth,
 	}
 }

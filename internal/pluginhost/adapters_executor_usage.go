@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -73,7 +73,6 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 		sawPayload := false
 		firstPayload := true
 		var lineBuffer []byte
-		const maxLineBufferSize = 64 * 1024
 
 		observePayload := func(payload []byte) {
 			if firstPayload {
@@ -93,10 +92,6 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 				helps.ObservePluginExecutorStreamUsage(format.String(), line, &usageBuffer)
 			}
 			if jsonPayload := helps.ExtractStreamJSONPayload(lineBuffer); len(jsonPayload) > 0 && json.Valid(jsonPayload) {
-				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
-				lineBuffer = nil
-			}
-			if len(lineBuffer) > maxLineBufferSize {
 				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
 				lineBuffer = nil
 			}

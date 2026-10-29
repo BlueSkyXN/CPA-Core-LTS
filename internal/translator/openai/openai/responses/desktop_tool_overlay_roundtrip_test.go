@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/codexapptools"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexapptools"
 	"github.com/tidwall/gjson"
 )
 
 func TestCodexDesktopToolOverlayOpenAIChatRoundTrip(t *testing.T) {
 	originalRequest := codexDesktopToolOverlayRequest(t, "read_thread")
-	chatRequest := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k3", originalRequest, false)
+	chatRequest, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k3", originalRequest, false)
 	if got := gjson.GetBytes(chatRequest, "tools.0.function.name").String(); got != "codex_app__read_thread" {
 		t.Fatalf("flattened name = %q, want codex_app__read_thread; request=%s", got, chatRequest)
 	}

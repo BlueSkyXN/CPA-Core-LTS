@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 func TestClassifySemanticTimingAcrossSupportedFormats(t *testing.T) {

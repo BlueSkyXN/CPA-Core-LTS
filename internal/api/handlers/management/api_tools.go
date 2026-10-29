@@ -14,11 +14,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -105,7 +106,7 @@ type apiCallResponse struct {
 func (h *Handler) APICall(c *gin.Context) {
 	var body apiCallRequest
 	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		c.JSON(clienterror.HTTPStatusFromErrorOr(errBindJSON, http.StatusBadRequest), gin.H{"error": "invalid body"})
 		return
 	}
 
@@ -234,7 +235,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		return
 	}
 
-	if isCodexQuotaResetConsumeAPICall(method, parsedURL, resp, auth) && h != nil && h.authManager != nil {
+	if isCodexQuotaResetConsumeAPICall(method, parsedURL, resp, auth, respBody) && h != nil && h.authManager != nil {
 		if h.authManager.ClearQuotaState(c.Request.Context(), auth.ID) {
 			log.WithField("auth_id", auth.ID).Debug("cleared Codex quota routing state after reset credit consume")
 		}
@@ -247,7 +248,7 @@ func (h *Handler) APICall(c *gin.Context) {
 	})
 }
 
-func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *http.Response, auth *coreauth.Auth) bool {
+func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *http.Response, auth *coreauth.Auth, body []byte) bool {
 	if auth == nil || parsedURL == nil || resp == nil || resp.Request == nil || resp.Request.URL == nil {
 		return false
 	}
@@ -261,6 +262,12 @@ func isCodexQuotaResetConsumeAPICall(method string, parsedURL *url.URL, resp *ht
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	var result struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &result) != nil || (result.Code != "reset" && result.Code != "already_redeemed") {
 		return false
 	}
 	return isCodexQuotaResetConsumeURL(parsedURL) && isCodexQuotaResetConsumeURL(resp.Request.URL)

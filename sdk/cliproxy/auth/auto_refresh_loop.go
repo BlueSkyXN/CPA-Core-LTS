@@ -27,7 +27,15 @@ type authAutoRefreshLoop struct {
 	dirty map[string]struct{}
 
 	wakeCh chan struct{}
-	jobs   chan string
+	jobs   chan *authRefreshJob
+}
+
+type authRefreshJob struct {
+	id                string
+	registrationEpoch uint64
+	pendingUntil      time.Time
+	loop              *authAutoRefreshLoop
+	running           bool // guarded by manager.mu
 }
 
 func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrency int) *authAutoRefreshLoop {
@@ -48,7 +56,7 @@ func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrenc
 		index:       make(map[string]*refreshHeapItem),
 		dirty:       make(map[string]struct{}),
 		wakeCh:      make(chan struct{}, 1),
-		jobs:        make(chan string, jobBuffer),
+		jobs:        make(chan *authRefreshJob, jobBuffer),
 	}
 }
 
@@ -70,6 +78,8 @@ func (l *authAutoRefreshLoop) run(ctx context.Context) {
 		return
 	}
 
+	defer l.releaseQueuedJobs()
+
 	workers := l.concurrency
 	if workers <= 0 {
 		workers = refreshMaxConcurrency
@@ -86,13 +96,29 @@ func (l *authAutoRefreshLoop) worker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case authID := <-l.jobs:
-			if authID == "" {
+		case job := <-l.jobs:
+			if job == nil {
 				continue
 			}
-			l.manager.refreshAuth(ctx, authID)
-			l.queueReschedule(authID)
+			if l.manager.beginRefreshJob(ctx, job) {
+				_, _ = l.manager.refreshAuthForRequestAtEpoch(ctx, job.id, "", job.registrationEpoch)
+			}
+			l.manager.finishRefreshJob(job, time.Time{}, false)
 		}
+	}
+}
+
+func (l *authAutoRefreshLoop) releaseQueuedJobs() {
+	l.manager.mu.RLock()
+	var jobs []*authRefreshJob
+	for _, job := range l.manager.refreshJobs {
+		if job.loop == l && !job.running {
+			jobs = append(jobs, job)
+		}
+	}
+	l.manager.mu.RUnlock()
+	for _, job := range jobs {
+		l.manager.finishRefreshJob(job, time.Time{}, true)
 	}
 }
 
@@ -252,6 +278,7 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval)
 	shouldRefresh := manager.shouldRefresh(auth, now)
 	exec, _ := manager.executorLocked(executorKeyFromAuth(auth))
+	registrationEpoch := auth.RegistrationEpoch
 	manager.mu.RUnlock()
 
 	if !shouldSchedule {
@@ -269,12 +296,16 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 		return
 	}
 
-	if !manager.markRefreshPending(authID, now) {
+	job := manager.markRefreshPending(l, authID, registrationEpoch, now)
+	if job == nil {
 		manager.mu.RLock()
 		auth = manager.auths[authID]
 		next, shouldSchedule = nextRefreshCheckAt(now, auth, l.interval)
 		manager.mu.RUnlock()
 		if shouldSchedule {
+			if !next.After(now) {
+				next = now.Add(l.interval)
+			}
 			l.upsert(authID, next)
 		} else {
 			l.remove(authID)
@@ -282,11 +313,18 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 		return
 	}
 
-	select {
-	case <-ctx.Done():
-		return
-	case l.jobs <- authID:
+	if ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+		case l.jobs <- job:
+			return
+		default:
+		}
 	}
+	// A full queue must not hold the dispatcher or leave a phantom pending job.
+	retryAt := now.Add(l.interval)
+	manager.finishRefreshJob(job, retryAt, false)
+	l.upsert(authID, retryAt)
 }
 
 func (l *authAutoRefreshLoop) applyDirty(now time.Time) {
@@ -365,12 +403,40 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 		return time.Time{}, false
 	}
 
-	if auth.AuthKind() == AuthKindAPIKey {
-		return time.Time{}, false
+	// Quota-exhausted Devin credentials revalidate upstream status so early
+	// restoration can be detected (issue #6690); their tokens never expire,
+	// so the generic expiry/lead schedule below would drop them entirely.
+	// A custom RefreshEvaluator keeps precedence (matching shouldRefresh),
+	// otherwise an evaluator veto would reschedule an immediately-due entry.
+	if _, hasEvaluator := auth.Runtime.(RefreshEvaluator); hasEvaluator {
+		// Fall through to the evaluator branch below.
+	} else if next, due := devinQuotaRevalidateAt(auth, now); due {
+		if !auth.NextRefreshAfter.IsZero() && auth.NextRefreshAfter.After(next) {
+			next = auth.NextRefreshAfter
+		}
+		if !next.After(now) {
+			return now, true
+		}
+		return next, true
 	}
 
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
 		return auth.NextRefreshAfter, true
+	}
+
+	if siwcDueAt, hasSIWC, _ := CodexSIWCNeedsRefresh(auth, now); hasSIWC {
+		minDue := siwcDueAt
+		if outerDueAt, hasOuter, _ := CodexOuterNeedsRefresh(auth, now); hasOuter && outerDueAt.Before(minDue) {
+			minDue = outerDueAt
+		}
+		if !minDue.After(now) {
+			return now, true
+		}
+		return minDue, true
+	}
+
+	if auth.AuthKind() == AuthKindAPIKey {
+		return time.Time{}, false
 	}
 
 	if evaluator, ok := auth.Runtime.(RefreshEvaluator); ok && evaluator != nil {

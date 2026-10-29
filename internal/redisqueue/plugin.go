@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
-	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func init() {
@@ -54,6 +54,18 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		authType = "unknown"
 	}
 	apiKey := strings.TrimSpace(record.APIKey)
+	accessProvider := strings.TrimSpace(record.AccessProvider)
+	if accessProvider == "" {
+		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
+	}
+	isNativeKey := record.IsNativeKey
+	if !isNativeKey {
+		if nativeExplicit, ok := coreusage.IsNativeKeyFromContext(ctx); ok {
+			isNativeKey = nativeExplicit
+		} else if accessProvider != "" {
+			isNativeKey = coreusage.IsNativeAccessProvider(accessProvider)
+		}
+	}
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
 	traceID := strings.TrimSpace(record.TraceID)
 	if traceID == "" {
@@ -120,10 +132,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		}
 	}
 
-	failed := record.Failed
-	if !failed {
-		failed = !resolveSuccess(ctx)
-	}
+	// Derive the outcome from the record itself; the final inbound status may
+	// belong to a later attempt of the same request.
+	failed := record.Failed || record.Fail.StatusCode >= httpStatusBadRequest
 	fail := resolveFail(ctx, record, failed)
 
 	stream := record.Stream
@@ -186,6 +197,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ResponseModel:        responseModel,
 		ExecutionID:          executionID,
 		TraceID:              traceID,
+		IsNativeKey:          isNativeKey,
+		AccessProvider:       accessProvider,
 	})
 	if err != nil {
 		return
@@ -221,6 +234,8 @@ type queuedUsageDetail struct {
 	ResponseModel        string                   `json:"response_model,omitempty"`
 	ExecutionID          string                   `json:"execution_id,omitempty"`
 	TraceID              string                   `json:"trace_id,omitempty"`
+	IsNativeKey          bool                     `json:"is_native_key"`
+	AccessProvider       string                   `json:"access_provider,omitempty"`
 }
 
 type requestDetail struct {
@@ -321,12 +336,14 @@ func sumNonNegativeQueuedTokens(tokens ...int64) (int64, bool) {
 type failDetail struct {
 	StatusCode int    `json:"status_code"`
 	Body       string `json:"body"`
+	Code       string `json:"code,omitempty"`
 }
 
 func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
 	fail := failDetail{
 		StatusCode: record.Fail.StatusCode,
 		Body:       strings.TrimSpace(record.Fail.Body),
+		Code:       strings.TrimSpace(record.Fail.Code),
 	}
 	if !failed {
 		return failDetail{StatusCode: 200}
@@ -338,14 +355,6 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
 		fail.StatusCode = 500
 	}
 	return fail
-}
-
-func resolveSuccess(ctx context.Context) bool {
-	status := internallogging.GetResponseStatus(ctx)
-	if status == 0 {
-		return true
-	}
-	return status < httpStatusBadRequest
 }
 
 func resolveEndpoint(ctx context.Context) string {

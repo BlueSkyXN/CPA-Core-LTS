@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/tidwall/gjson"
 )
 
@@ -28,7 +28,7 @@ func TestChatDefaultOutputBudget(t *testing.T) {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
 				body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]%s}`, tc.model, tc.control))
-				out := convertOpenAIRequestToClaude(tc.model, body, stream, false, tc.info)
+				out, _ := convertOpenAIRequestToClaude(tc.model, body, stream, false, tc.info)
 				if got := gjson.GetBytes(out, "max_tokens").Int(); got != tc.want {
 					t.Fatalf("max_tokens = %d, want %d", got, tc.want)
 				}

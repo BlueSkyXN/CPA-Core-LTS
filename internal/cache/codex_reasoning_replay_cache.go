@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
+	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -410,7 +410,7 @@ func normalizeCodexReasoningReplayReasoningItem(itemResult gjson.Result) ([]byte
 	if encryptedContent != strings.TrimSpace(encryptedContent) {
 		return nil, false
 	}
-	if _, err := signature.InspectGPTReasoningSignature(encryptedContent); err != nil {
+	if !signature.IsValidGPTReasoningSignature(encryptedContent) && !signature.IsValidMetaReasoningSignature(encryptedContent) {
 		return nil, false
 	}
 

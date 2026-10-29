@@ -17,8 +17,10 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -71,6 +73,7 @@ type ObjectTokenStore struct {
 	beforeAuthWriteHook  func()
 	beforeAuthReadHook   func()
 	beforeAuthDeleteHook func()
+	putObjectFn          func(ctx context.Context, key string, data []byte, contentType string) error
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.
@@ -236,7 +239,46 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 
 	var raw []byte
 	writeLocal := true
+	var savedCodexMetadata map[string]any
+	_, codexStorage := auth.Storage.(*codex.CodexTokenStorage)
 	switch {
+	case cliproxyauth.IsCodexAuthRecord(auth) && (auth.CodexRefreshPatch != nil || codexStorage || (auth.Storage == nil && auth.Metadata != nil)):
+		existing, _, errRead := secureReadAuthFile(s.authDir, s.authRoot, rel)
+		if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
+			return "", fmt.Errorf("object store: read Codex credentials: %w", errRead)
+		}
+		var diskMap map[string]any
+		if errRead == nil {
+			if errJSON := json.Unmarshal(existing, &diskMap); errJSON != nil || diskMap == nil {
+				return "", errors.New("object store: invalid Codex credential JSON")
+			}
+		}
+		snapshot := auth.Clone()
+		if snapshot.Metadata == nil {
+			snapshot.Metadata = make(map[string]any)
+		}
+		snapshot.Metadata["disabled"] = snapshot.Disabled
+		if snapshot.CodexRefreshPatch != nil && diskMap != nil {
+			savedCodexMetadata = snapshot.CodexRefreshPatch.Apply(diskMap)
+		} else if storage, ok := snapshot.Storage.(*codex.CodexTokenStorage); ok && storage != nil {
+			cloned := *storage
+			cloned.Metadata = snapshot.Metadata
+			cloned.ReplaceCredentials = cliproxyauth.HasAuthCreationIntent(ctx)
+			savedCodexMetadata, err = cloned.TokenDataForSave(diskMap)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			savedCodexMetadata = snapshot.Metadata
+			if diskMap != nil && !cliproxyauth.HasAuthCreationIntent(ctx) {
+				savedCodexMetadata = codex.MergeCodexCredentialsFromDisk(diskMap, savedCodexMetadata)
+			}
+		}
+		cliproxyauth.NormalizeCredentialMetadata(savedCodexMetadata)
+		raw, err = json.Marshal(savedCodexMetadata)
+		if err != nil {
+			return "", fmt.Errorf("object store: marshal Codex credentials: %w", err)
+		}
 	case auth.Storage != nil:
 		if auth.Metadata == nil {
 			auth.Metadata = make(map[string]any)
@@ -258,7 +300,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		}
 		if existing, _, errRead := secureReadAuthFile(s.authDir, s.authRoot, rel); errRead == nil {
 			if jsonEqual(existing, raw) {
-				return path, nil
+				writeLocal = false
 			}
 		} else if !errors.Is(errRead, fs.ErrNotExist) {
 			return "", fmt.Errorf("object store: read existing metadata: %w", errRead)
@@ -272,6 +314,17 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		}
 		if err = secureWriteAuthFile(s.authDir, s.authRoot, rel, raw); err != nil {
 			return "", fmt.Errorf("object store: write auth file: %w", err)
+		}
+	}
+
+	if savedCodexMetadata != nil {
+		auth.Metadata = savedCodexMetadata
+		if auth.CodexRefreshPatch != nil {
+			auth.CodexRefreshPatch = nil
+			auth.Storage = nil
+		}
+		if disabled, ok := savedCodexMetadata["disabled"].(bool); ok {
+			auth.Disabled = disabled
 		}
 	}
 
@@ -446,6 +499,12 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 				}
 			}
 		}
+		// Seed the bucket with the file the startup load leaves behind, so a plaintext
+		// management secret never reaches it. Fail instead of skipping: the startup load
+		// could turn a refused file into one that a later start would upload.
+		if errPrepare := config.PrepareConfigFileForUpload(s.configPath); errPrepare != nil {
+			return fmt.Errorf("object store: prepare local config for seeding: %w", errPrepare)
+		}
 		data, errRead := os.ReadFile(s.configPath)
 		if errRead != nil {
 			return fmt.Errorf("object store: read local config: %w", errRead)
@@ -582,8 +641,14 @@ func (s *ObjectTokenStore) deleteAuthObjectRelative(ctx context.Context, rel str
 }
 
 func (s *ObjectTokenStore) putObject(ctx context.Context, key string, data []byte, contentType string) error {
+	if s.putObjectFn != nil {
+		return s.putObjectFn(ctx, key, data, contentType)
+	}
 	if len(data) == 0 {
 		return s.deleteObject(ctx, key)
+	}
+	if s.client == nil {
+		return fmt.Errorf("object store: client not configured")
 	}
 	fullKey := s.prefixedKey(key)
 	reader := bytes.NewReader(data)

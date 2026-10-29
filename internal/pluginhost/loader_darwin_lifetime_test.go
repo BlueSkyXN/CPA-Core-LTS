@@ -62,6 +62,9 @@ func TestDarwinLibraryLifetimeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closed := client.(*dynamicLibraryClient)
+	loadedPath := closed.tempPath
+	residentExpected := os.Getenv("CPA_PLUGIN_LIFETIME_KIND") != "c"
 	t.Cleanup(client.Shutdown)
 	client.Shutdown()
 	client.Shutdown()
@@ -69,8 +72,12 @@ func TestDarwinLibraryLifetimeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "SD" {
-		t.Fatalf("shutdown/finalizer markers = %q, want SD", content)
+	wantMarkers := "SD"
+	if residentExpected {
+		wantMarkers = "S"
+	}
+	if string(content) != wantMarkers {
+		t.Fatalf("shutdown/finalizer markers = %q, want %s", content, wantMarkers)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -78,12 +85,21 @@ func TestDarwinLibraryLifetimeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect mapped library: %v\n%s", err, mapped)
 	}
-	resident := strings.Contains(string(mapped), library)
-	if resident != (os.Getenv("CPA_PLUGIN_LIFETIME_KIND") != "c") {
+	resident := strings.Contains(string(mapped), loadedPath)
+	if resident != residentExpected {
 		t.Fatalf("library resident after shutdown = %t\n%s", resident, mapped)
 	}
-	closed := client.(*dynamicLibraryClient)
-	if closed.handle != nil || closed.hostAPI != nil || closed.hostCtx != nil || !closed.instance.closed.Load() {
-		t.Fatal("shutdown retained host resources or an open callback instance")
+	if !closed.instance.closed.Load() || closed.api.call != nil || closed.api.free_buffer != nil {
+		t.Fatal("shutdown retained callable plugin resources")
+	}
+	if residentExpected {
+		if closed.handle == nil || closed.hostAPI == nil || closed.hostCtx == nil {
+			t.Fatal("resident runtime lost callback blocks")
+		}
+		if _, ok := hostCallbackEntries.Load(testHostCallbackID(t, closed)); ok {
+			t.Fatal("callback registration survived shutdown")
+		}
+	} else if closed.handle != nil || closed.hostAPI != nil || closed.hostCtx != nil {
+		t.Fatal("pure C shutdown retained host resources")
 	}
 }

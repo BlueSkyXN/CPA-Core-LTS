@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,7 +33,10 @@ func AppendResponseOutputForTokenCount(model string, nativeRequest, output []byt
 	if err != nil {
 		return nil, err
 	}
-	converted := convertOpenAIResponsesRequestToClaude(model, replay, false, modelInfo != nil && modelInfo.IsCompat, modelInfo, true)
+	converted, err := convertOpenAIResponsesRequestToClaude(model, replay, false, modelInfo != nil && modelInfo.IsCompat, modelInfo, true)
+	if err != nil {
+		return nil, err
+	}
 	messages := make([]json.RawMessage, 0)
 	if err = json.Unmarshal([]byte(gjson.GetBytes(nativeRequest, "messages").Raw), &messages); err != nil {
 		return nil, err

@@ -8,10 +8,10 @@ package chat_completions
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,18 +33,19 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Claude Code API format
-func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, false, nil)
 }
 
 // ConvertOpenAIRequestToClaudeWithCompat preserves assistant reasoning content
 // as an unsigned thinking block for configured compatibility endpoints.
-func ConvertOpenAIRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertOpenAIRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertOpenAIRequestToClaude(modelName, inputRawJSON, stream, true, nil)
 }
 
-func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo) []byte {
+func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo) ([]byte, error) {
 	rawJSON := inputRawJSON
+	var drops common.UserTurnDrops
 
 	userID := common.DeriveClaudeUserID(rawJSON)
 
@@ -79,8 +80,10 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 					out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
 					out, _ = sjson.DeleteBytes(out, "output_config.effort")
 				default:
-					if mapped, ok := thinking.MapToClaudeEffort(effort, supportsMax); ok {
-						effort = mapped
+					if !thinking.HasLevel(mi.Thinking.Levels, effort) {
+						if mapped, ok := thinking.MapToClaudeEffort(effort, supportsMax); ok {
+							effort = mapped
+						}
 					}
 					out, _ = sjson.SetBytes(out, "thinking.type", "adaptive")
 					out, _ = sjson.DeleteBytes(out, "thinking.budget_tokens")
@@ -178,7 +181,7 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 			// instructions from the upstream request.
 			case "system", "developer":
 				systemStart := len(systemBlocks)
-				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
+				if contentResult.Exists() && contentResult.Type == gjson.String && strings.TrimSpace(contentResult.String()) != "" {
 					textPart := []byte(`{"type":"text","text":""}`)
 					textPart, _ = sjson.SetBytes(textPart, "text", contentResult.String())
 					textPart = common.AttachCacheControl(textPart, message)
@@ -186,20 +189,28 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 				} else if contentResult.Exists() && contentResult.IsArray() {
 					contentResult.ForEach(func(_, part gjson.Result) bool {
 						if part.Get("type").String() == "text" {
+							txt := part.Get("text").String()
+							if strings.TrimSpace(txt) == "" {
+								if part.Get("cache_control").Exists() && len(systemBlocks) > systemStart {
+									prevIdx := len(systemBlocks) - 1
+									if !gjson.GetBytes(systemBlocks[prevIdx], "cache_control").Exists() {
+										systemBlocks[prevIdx] = common.AttachCacheControl(systemBlocks[prevIdx], part)
+									}
+								}
+								return true
+							}
 							textPart := []byte(`{"type":"text","text":""}`)
-							textPart, _ = sjson.SetBytes(textPart, "text", part.Get("text").String())
+							textPart, _ = sjson.SetBytes(textPart, "text", txt)
 							textPart = common.AttachCacheControl(textPart, part)
 							systemBlocks = append(systemBlocks, textPart)
 						}
 						return true
 					})
 					// Message-level cache_control applies to the last system block from this message.
-					if message.Get("cache_control").Exists() {
-						if len(systemBlocks) > systemStart {
-							lastIdx := len(systemBlocks) - 1
-							if !gjson.GetBytes(systemBlocks[lastIdx], "cache_control").Exists() {
-								systemBlocks[lastIdx] = common.AttachCacheControl(systemBlocks[lastIdx], message)
-							}
+					if message.Get("cache_control").Exists() && len(systemBlocks) > systemStart {
+						lastIdx := len(systemBlocks) - 1
+						if !gjson.GetBytes(systemBlocks[lastIdx], "cache_control").Exists() {
+							systemBlocks[lastIdx] = common.AttachCacheControl(systemBlocks[lastIdx], message)
 						}
 					}
 				}
@@ -214,18 +225,30 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 				}
 
 				// Handle content based on its type
-				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
+				if contentResult.Exists() && contentResult.Type == gjson.String && strings.TrimSpace(contentResult.String()) != "" {
 					part := []byte(`{"type":"text","text":""}`)
 					part, _ = sjson.SetBytes(part, "text", contentResult.String())
 					contentBlocks = append(contentBlocks, part)
 				} else if contentResult.Exists() && contentResult.IsArray() {
 					contentResult.ForEach(func(_, part gjson.Result) bool {
-						claudePart := convertOpenAIContentPartToClaudePart(part)
-						if claudePart != "" {
+						if claudePart := convertOpenAIContentPartToClaudePart(part); claudePart != "" {
 							contentBlocks = append(contentBlocks, []byte(claudePart))
+						} else if partType := part.Get("type").String(); partType == "text" {
+							if part.Get("cache_control").Exists() && len(contentBlocks) > 0 {
+								prevIdx := len(contentBlocks) - 1
+								if !gjson.GetBytes(contentBlocks[prevIdx], "cache_control").Exists() {
+									contentBlocks[prevIdx] = common.AttachCacheControl(contentBlocks[prevIdx], part)
+								}
+							}
+						} else if role == "user" && (partType == "file" || partType == "input_audio") {
+							drops.Drop(partType)
 						}
 						return true
 					})
+				}
+
+				if role == "user" {
+					drops.EndTurn(len(contentBlocks))
 				}
 
 				// Handle tool calls (for assistant messages)
@@ -316,6 +339,9 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 		systemBlock, _ = sjson.SetBytes(systemBlock, "text", formatInstruction)
 		systemBlocks = append(systemBlocks, systemBlock)
 	}
+
+	// Decided per user turn, so neither a system prompt nor the blank turn added below hides an emptied turn.
+	nothingLeftErr := drops.Err()
 
 	// Preserve a minimal conversational turn for system-only inputs.
 	// Claude payloads with top-level system instructions but no messages are risky for downstream validation.
@@ -470,14 +496,18 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 		}
 	}
 
-	return thinking.ApplySummaryConfigWithModelInfo(out, "claude", modelName, modelInfo, thinking.ExtractSummaryConfig(rawJSON, "openai"))
+	return thinking.ApplySummaryConfigWithModelInfo(out, "claude", modelName, modelInfo, thinking.ExtractSummaryConfig(rawJSON, "openai")), nothingLeftErr
 }
 
 func convertOpenAIContentPartToClaudePartRaw(part gjson.Result) []byte {
 	switch part.Get("type").String() {
 	case "text":
+		txt := part.Get("text").String()
+		if strings.TrimSpace(txt) == "" {
+			return nil
+		}
 		textPart := []byte(`{"type":"text","text":""}`)
-		textPart, _ = sjson.SetBytes(textPart, "text", part.Get("text").String())
+		textPart, _ = sjson.SetBytes(textPart, "text", txt)
 		return textPart
 
 	case "image_url":
@@ -548,8 +578,13 @@ func convertOpenAIToolResultContent(content gjson.Result) (string, bool) {
 
 	if content.IsArray() {
 		claudeParts := make([][]byte, 0, 4)
+		droppedEmptyText := false
 		content.ForEach(func(_, part gjson.Result) bool {
 			if part.Type == gjson.String {
+				if strings.TrimSpace(part.String()) == "" {
+					droppedEmptyText = true
+					return true
+				}
 				textPart := []byte(`{"type":"text","text":""}`)
 				textPart, _ = sjson.SetBytes(textPart, "text", part.String())
 				claudeParts = append(claudeParts, textPart)
@@ -558,12 +593,17 @@ func convertOpenAIToolResultContent(content gjson.Result) (string, bool) {
 
 			if claudePart := convertOpenAIContentPartToClaudePartRaw(part); len(claudePart) > 0 {
 				claudeParts = append(claudeParts, claudePart)
+			} else if part.Get("type").String() == "text" {
+				droppedEmptyText = true
 			}
 			return true
 		})
 
 		if len(claudeParts) > 0 || len(content.Array()) == 0 {
 			return string(common.JoinRawArray(claudeParts)), true
+		}
+		if droppedEmptyText {
+			return "", false
 		}
 
 		return content.Raw, false
@@ -579,10 +619,10 @@ func convertOpenAIToolResultContent(content gjson.Result) (string, bool) {
 	return content.Raw, false
 }
 
-// firstExisting returns the first result that exists, or an empty result.
+// firstExisting returns the first non-null result that exists, or an empty result.
 func firstExisting(values ...gjson.Result) gjson.Result {
 	for _, value := range values {
-		if value.Exists() {
+		if value.Exists() && value.Type != gjson.Null {
 			return value
 		}
 	}

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func synthesizeForModelPolicy(t *testing.T, raw []byte) []*coreauth.Auth {

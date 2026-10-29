@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,15 +11,19 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
 
 type trackedRequestBody struct {
@@ -142,14 +147,14 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 			want:          false,
 		},
 		{
-			name:          "small known size json in error-only mode",
+			name:          "small known size json skipped for eager capture in error-only mode",
 			loggerEnabled: false,
 			req: &http.Request{
 				Body:          io.NopCloser(strings.NewReader("{}")),
 				ContentLength: 2,
 				Header:        http.Header{"Content-Type": []string{"application/json"}},
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name:          "large known size skipped in error-only mode",
@@ -750,5 +755,232 @@ func TestCaptureRequestInfo_HeadersDeepCopy(t *testing.T) {
 
 	if got := info.Headers["X-Audit"][0]; got != "original-value" {
 		t.Fatalf("header slice was aliased: got %q, want %q", got, "original-value")
+	}
+}
+
+func TestManagementV8RequestsAreNotLogged(t *testing.T) {
+	for _, path := range []string{"/v8/management/config", "/v8/management/config.yaml", "/v8/management/config/api-keys/codex", "/v8/management/oauth/auth-url"} {
+		if shouldLogRequest(path) {
+			t.Errorf("management config request would be logged: %s", path)
+		}
+	}
+}
+
+type spyRequestLogger struct {
+	lastLogRequestID       string
+	lastStreamingRequestID string
+	underlying             logging.RequestLogger
+}
+
+func (s *spyRequestLogger) LogRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline []byte, apiResponseErrors []*interfaces.ErrorMessage, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
+	s.lastLogRequestID = requestID
+	if s.underlying != nil {
+		return s.underlying.LogRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, apiResponseErrors, requestID, requestTimestamp, apiResponseTimestamp)
+	}
+	return nil
+}
+
+func (s *spyRequestLogger) LogStreamingRequest(url, method string, headers map[string][]string, body []byte, requestID string) (logging.StreamingLogWriter, error) {
+	s.lastStreamingRequestID = requestID
+	if s.underlying != nil {
+		return s.underlying.LogStreamingRequest(url, method, headers, body, requestID)
+	}
+	return &testStreamingLogWriter{}, nil
+}
+
+func (s *spyRequestLogger) IsEnabled() bool {
+	return true
+}
+
+func TestRequestLoggingMiddleware_PreservesFullUUIDForLoggerAndTruncatesFilename(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logsDir := t.TempDir()
+	fileLogger := logging.NewFileRequestLogger(true, logsDir, "", 10)
+	spy := &spyRequestLogger{underlying: fileLogger}
+
+	router := gin.New()
+	router.Use(logging.GinLogrusLogger())
+	router.Use(RequestLoggingMiddleware(spy))
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"choices": []string{"hello"}})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+
+	// 1. Verify logger received full UUIDv7
+	if spy.lastLogRequestID == "" {
+		t.Fatalf("expected non-empty request ID passed to logger")
+	}
+	parsed, errParse := uuid.Parse(spy.lastLogRequestID)
+	if errParse != nil {
+		t.Fatalf("request ID passed to logger is not a valid UUID: %q (%v)", spy.lastLogRequestID, errParse)
+	}
+	if parsed.Version() != 7 {
+		t.Fatalf("request ID version = %d, want 7", parsed.Version())
+	}
+
+	// 2. Verify on-disk log filename uses the trailing 8 chars, not full UUID
+	entries, errRead := os.ReadDir(logsDir)
+	if errRead != nil {
+		t.Fatalf("ReadDir logsDir failed: %v", errRead)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log file on disk, got %d", len(entries))
+	}
+	fileName := entries[0].Name()
+	expectedShortID := spy.lastLogRequestID[len(spy.lastLogRequestID)-8:]
+	expectedSuffix := "-" + expectedShortID + ".log"
+	if !strings.HasSuffix(fileName, expectedSuffix) {
+		t.Fatalf("filename %q does not end with expected short suffix %q", fileName, expectedSuffix)
+	}
+	if strings.Contains(fileName, spy.lastLogRequestID) {
+		t.Fatalf("filename %q should not contain the full UUID", fileName)
+	}
+}
+
+func TestRequestLoggingMiddleware_StreamingPreservesFullUUIDForLogger(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logsDir := t.TempDir()
+	fileLogger := logging.NewFileRequestLogger(true, logsDir, "", 10)
+	spy := &spyRequestLogger{underlying: fileLogger}
+
+	router := gin.New()
+	router.Use(logging.GinLogrusLogger())
+	router.Use(RequestLoggingMiddleware(spy))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		c.Header("Content-Type", "text/event-stream")
+		c.Writer.WriteHeader(http.StatusOK)
+		_, _ = c.Writer.Write([]byte("data: chunk\n\n"))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+
+	if spy.lastStreamingRequestID == "" {
+		t.Fatalf("expected non-empty streaming request ID passed to logger")
+	}
+	parsed, errParse := uuid.Parse(spy.lastStreamingRequestID)
+	if errParse != nil {
+		t.Fatalf("streaming request ID passed to logger is not a valid UUID: %q (%v)", spy.lastStreamingRequestID, errParse)
+	}
+	if parsed.Version() != 7 {
+		t.Fatalf("streaming request ID version = %d, want 7", parsed.Version())
+	}
+}
+
+// streamingZstdBomb is a small zstd body (a stream frame with a 1 MiB window, as zstd makes from a pipe) that expands to
+// size bytes of zeros.
+func streamingZstdBomb(t *testing.T, size int) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	encoder, errNewWriter := zstd.NewWriter(&out, zstd.WithEncoderLevel(zstd.SpeedBestCompression), zstd.WithWindowSize(1<<20))
+	if errNewWriter != nil {
+		t.Fatal(errNewWriter)
+	}
+	chunk := make([]byte, 1<<20)
+	for written := 0; written < size; written += len(chunk) {
+		if _, errWrite := encoder.Write(chunk); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+	}
+	if errClose := encoder.Close(); errClose != nil {
+		t.Fatal(errClose)
+	}
+	return out.Bytes()
+}
+
+func captureOf(t *testing.T, body []byte, limit int64) (captured, restored []byte) {
+	t.Helper()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Encoding", "zstd")
+	if limit != 0 {
+		c.Set("maxRequestBodyBytes", limit)
+	}
+	info, errCapture := captureRequestInfo(c, true)
+	if errCapture != nil {
+		t.Fatal(errCapture)
+	}
+	restored, errRead := io.ReadAll(c.Request.Body)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	return info.Body, restored
+}
+
+// A small zstd body that expands past the capture bound is decoded to at most the bound when no max-request-body-bytes is
+// configured, or to the configured limit when that is smaller; capture runs after authentication and the request body is
+// restored for the handler either way. 40 MiB is enough to pass the 32 MiB bound without a heavy fixture.
+func TestCaptureRequestInfoBoundsZstdExpansionWithoutAConfiguredLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	bomb := streamingZstdBomb(t, 40<<20)
+	if int64(len(bomb)) > maxErrorOnlyCapturedRequestBodyBytes {
+		t.Fatalf("the probe body is %d bytes, over the 1 MiB capture bound", len(bomb))
+	}
+	marker := int64(len("\n[DECOMPRESSED REQUEST BODY TRUNCATED]"))
+	for _, c := range []struct{ limit, bound int64 }{{0, maxDeferredErrorRequestBodyBytes}, {-1, maxDeferredErrorRequestBodyBytes}, {1 << 40, maxDeferredErrorRequestBodyBytes}, {4096, 4096}} {
+		captured, restored := captureOf(t, bomb, c.limit)
+		if int64(len(captured)) > c.bound+marker || int64(len(captured)) < c.bound {
+			t.Fatalf("limit %d: captured %d bytes, want the bound %d plus the marker", c.limit, len(captured), c.bound)
+		}
+		if !bytes.HasSuffix(captured, []byte("[DECOMPRESSED REQUEST BODY TRUNCATED]")) {
+			t.Fatalf("limit %d: no truncation marker", c.limit)
+		}
+		if !bytes.Equal(restored, bomb) {
+			t.Fatalf("limit %d: the request body was not restored for the handler (%d bytes)", c.limit, len(restored))
+		}
+	}
+}
+
+// The classic bomb (one segment frame that declares its whole content as its window, 49 KB for 512 MiB) is not decoded at all: its
+// window is past the bound, so the raw bytes are logged and nothing large is allocated.
+func TestCaptureRequestInfoDoesNotDecodeASingleSegmentBomb(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	if errNewWriter != nil {
+		t.Fatal(errNewWriter)
+	}
+	bomb := encoder.EncodeAll(make([]byte, 64<<20), nil)
+	if int64(len(bomb)) > maxErrorOnlyCapturedRequestBodyBytes {
+		t.Fatalf("the probe body is %d bytes", len(bomb))
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	captured, restored := captureOf(t, bomb, 0)
+	runtime.ReadMemStats(&after)
+	if !bytes.Equal(captured, bomb) || !bytes.Equal(restored, bomb) {
+		t.Fatalf("the raw bytes must be logged and restored, captured %d restored %d", len(captured), len(restored))
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 16<<20 {
+		t.Fatalf("decoding a window-bomb allocated %d MiB", grown>>20)
+	}
+}
+
+// A frame that declares a window past the bound is not decoded: the raw bytes are logged and nothing large is allocated.
+func TestDecodeCapturedZstdRefusesAnOversizedWindow(t *testing.T) {
+	// `printf '{"model":"gpt-5"}' | zstd --long=24`-style frame declaring a 16 MiB window.
+	raw, errDecode := hex.DecodeString("28b52ffd0470b900007b226d6f64656c223a226770742d362e312d736f6c227d2a82afeb")
+	if errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	got := decodeCapturedRequestBodyForLogWithLimit(raw, "zstd", 1<<20)
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("an oversized window must leave the raw bytes, got %q", got)
 	}
 }

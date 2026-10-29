@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
@@ -132,6 +132,17 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	}
 }
 
+func TestCodexClientHidesSpeechModels(t *testing.T) {
+	for _, id := range []string{"grok-tts", "grok-voice-tts-1.0", "xai/grok-tts"} {
+		if !isCodexClientImageOrVideoModel(id) {
+			t.Fatalf("%s should be hidden from the Codex chat catalog", id)
+		}
+	}
+	if isCodexClientImageOrVideoModel("grok-4") {
+		t.Fatal("grok-4 should stay visible")
+	}
+}
+
 func TestCodexClientModelsResponse_AppliesDisplayNameToTemplateModel(t *testing.T) {
 	resp := BuildResponse([]map[string]any{{
 		"id":           "gpt-5.5",
@@ -228,6 +239,70 @@ func TestCodexClientModelsResponse_RequiresTemplateAndCodexProvidersForSearchToo
 	}
 }
 
+var searchToolRouteProviders = map[string][]string{
+	"claude-sonnet-4-5":     {"claude"},
+	"gpt-5.5":               {"claude"},
+	"claude-third-party":    {"claude"},
+	"gpt-5.6-sol":           {"codex"},
+	"claude-opus-mixed":     {"claude", "openai-compatibility"},
+	"claude-and-codex":      {"claude", "codex"},
+	"claude-unknown-route":  nil,
+	"claude-on-antigravity": {"antigravity"},
+}
+
+func assertSupportsSearchTool(t *testing.T, resp map[string]any, want map[string]bool) {
+	t.Helper()
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != len(want) {
+		t.Fatalf("models = %#v, want %d entries", resp["models"], len(want))
+	}
+	for _, model := range models {
+		slug := stringModelValue(model, "slug")
+		if got, ok := model["supports_search_tool"].(bool); !ok || got != want[slug] {
+			t.Errorf("%s supports_search_tool = %#v, want %v", slug, model["supports_search_tool"], want[slug])
+		}
+	}
+}
+
+func searchToolAvailableModels() []map[string]any {
+	available := make([]map[string]any, 0, len(searchToolRouteProviders))
+	for id := range searchToolRouteProviders {
+		available = append(available, map[string]any{"id": id})
+	}
+	return available
+}
+
+func TestCodexClientModelsResponse_SearchToolRequiresRoutesThatCloseTheLoop(t *testing.T) {
+	capability := func(id string) bool { return id == "claude-sonnet-4-5" || id == "gpt-5.5" }
+	resp := BuildResponseForClientWithToolCapabilities(searchToolAvailableModels(), func(id string) []string { return searchToolRouteProviders[id] }, nil, nil, capability, false, "")
+	assertSupportsSearchTool(t, resp, map[string]bool{
+		"claude-sonnet-4-5":     true,
+		"gpt-5.5":               true,
+		"claude-third-party":    false,
+		"gpt-5.6-sol":           true,
+		"claude-opus-mixed":     false,
+		"claude-and-codex":      false,
+		"claude-unknown-route":  false,
+		"claude-on-antigravity": false,
+	})
+}
+
+// Without a native tool search capability, Claude routes keep the
+// pre-tool-search catalog: only pure Codex template routes advertise search.
+func TestCodexClientModelsResponse_ClaudeSearchToolNeedsCapability(t *testing.T) {
+	resp := BuildResponseForClientWithToolCapabilities(searchToolAvailableModels(), func(id string) []string { return searchToolRouteProviders[id] }, nil, nil, nil, false, "")
+	assertSupportsSearchTool(t, resp, map[string]bool{
+		"claude-sonnet-4-5":     false,
+		"gpt-5.5":               false,
+		"claude-third-party":    false,
+		"gpt-5.6-sol":           true,
+		"claude-opus-mixed":     false,
+		"claude-and-codex":      false,
+		"claude-unknown-route":  false,
+		"claude-on-antigravity": false,
+	})
+}
+
 func TestCodexClientModelsResponse_PreservesUltraReasoningEffort(t *testing.T) {
 	resp := BuildResponse([]map[string]any{{"id": "gpt-5.6-sol"}}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
@@ -284,7 +359,12 @@ func TestCodexClientModelsResponse_GPT56ReasoningLevelsRemainModelSpecific(t *te
 }
 
 func TestCodexClientModelsResponse_SparkKeepsEffortEnabledWithSummaryDefaultOff(t *testing.T) {
-	resp := BuildResponse([]map[string]any{{"id": "gpt-5.3-codex-spark"}}, nil, false)
+	// Spark no longer has an embedded template; supply its model-specific
+	// capabilities instead of inheriting the current default template's levels.
+	resp := BuildResponse([]map[string]any{{
+		"id":       "gpt-5.3-codex-spark",
+		"thinking": &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+	}}, nil, false)
 	models, ok := resp["models"].([]map[string]any)
 	if !ok || len(models) != 1 {
 		t.Fatalf("models = %#v, want one model", resp["models"])
@@ -426,6 +506,18 @@ func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
 	if got := stringModelValue(templates["gpt-5.5"], "display_name"); got != "Second" {
 		t.Fatalf("cached display_name = %q, want Second", got)
 	}
+
+	withoutGPT55 := []byte(`{"models":[{"slug":"gpt-6.1-sol","display_name":"Fallback First"},{"slug":"gpt-5.6-sol","display_name":"Fallback Second"}]}`)
+	_, defaultTemplate, err = loadCodexClientModelTemplatesSnapshot(withoutGPT55, 102)
+	if err != nil {
+		t.Fatalf("load snapshot without gpt-5.5: %v", err)
+	}
+	if got := stringModelValue(defaultTemplate, "slug"); got != "gpt-6.1-sol" {
+		t.Fatalf("fallback default slug = %q, want gpt-6.1-sol", got)
+	}
+	if got := stringModelValue(defaultTemplate, "display_name"); got != "Fallback First" {
+		t.Fatalf("fallback default display_name = %q, want Fallback First", got)
+	}
 }
 
 func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *testing.T) {
@@ -445,7 +537,14 @@ func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *
 
 func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) {
 	const wantOverride = 1048576
-	const wantDefault = 272000
+	// Non-template models inherit context windows from the catalog's
+	// default template (currently the gpt-5.5 entry).
+	_, defaultTemplate, errLoadTemplates := loadCodexClientModelTemplates()
+	if errLoadTemplates != nil || defaultTemplate == nil {
+		t.Fatalf("load codex client model templates: %v", errLoadTemplates)
+	}
+	wantDefaultContext := intModelValue(defaultTemplate, "context_window")
+	wantDefaultMaxContext := intModelValue(defaultTemplate, "max_context_window")
 
 	resp := BuildResponse([]map[string]any{
 		{"id": "deepseek-v4-flash", "max_context_length": wantOverride},
@@ -463,22 +562,23 @@ func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) 
 	}
 
 	for _, testCase := range []struct {
-		slug string
-		want int
+		slug           string
+		wantContext    int
+		wantMaxContext int
 	}{
-		{slug: "deepseek-v4-flash", want: wantOverride},
-		{slug: "deepseek-v4-pro", want: wantDefault},
-		{slug: "gpt-5.5", want: wantOverride},
+		{slug: "deepseek-v4-flash", wantContext: wantOverride, wantMaxContext: wantOverride},
+		{slug: "deepseek-v4-pro", wantContext: wantDefaultContext, wantMaxContext: wantDefaultMaxContext},
+		{slug: "gpt-5.5", wantContext: wantOverride, wantMaxContext: wantOverride},
 	} {
 		entry := bySlug[testCase.slug]
 		if entry == nil {
 			t.Fatalf("missing model %q", testCase.slug)
 		}
-		if got := intModelValue(entry, "context_window"); got != testCase.want {
-			t.Errorf("%s context_window = %d, want %d", testCase.slug, got, testCase.want)
+		if got := intModelValue(entry, "context_window"); got != testCase.wantContext {
+			t.Errorf("%s context_window = %d, want %d", testCase.slug, got, testCase.wantContext)
 		}
-		if got := intModelValue(entry, "max_context_window"); got != testCase.want {
-			t.Errorf("%s max_context_window = %d, want %d", testCase.slug, got, testCase.want)
+		if got := intModelValue(entry, "max_context_window"); got != testCase.wantMaxContext {
+			t.Errorf("%s max_context_window = %d, want %d", testCase.slug, got, testCase.wantMaxContext)
 		}
 	}
 }
@@ -900,8 +1000,14 @@ func TestCodexClientModelsResponse_UnrelatedCustomProviderRetainsFallback(t *tes
 	if got := stringModelValue(entry, "slug"); got != "my-unrelated-custom-model" {
 		t.Errorf("slug = %q, want my-unrelated-custom-model", got)
 	}
-	if got := stringModelValue(entry, "comp_hash"); got != "2911" {
-		t.Errorf("comp_hash = %q, want 2911 (from generic gpt-5.5 fallback)", got)
+	// The fallback clones the catalog's default template (currently the
+	// gpt-5.5 entry); comp_hash is inherited from it verbatim.
+	_, defaultTemplate, errLoadTemplates := loadCodexClientModelTemplates()
+	if errLoadTemplates != nil || defaultTemplate == nil {
+		t.Fatalf("load codex client model templates: %v", errLoadTemplates)
+	}
+	if got, want := stringModelValue(entry, "comp_hash"), stringModelValue(defaultTemplate, "comp_hash"); got != want {
+		t.Errorf("comp_hash = %q, want %q (from generic fallback template)", got, want)
 	}
 	if got, _ := entry["supports_search_tool"].(bool); got {
 		t.Errorf("supports_search_tool = %v, want false for non-template fallback", got)
@@ -941,7 +1047,7 @@ func TestCodexClientModelsResponse_UnrelatedProviderCannotWidenSearchTool(t *tes
 		},
 	}
 
-	resp := BuildResponseForClient(availableModels, modelRegistry.GetModelProviders, false, "0.153.4")
+	resp := BuildResponseForClientWithToolCapabilities(availableModels, modelRegistry.GetModelProviders, nil, func(string) bool { return true }, nil, false, "0.153.4")
 	models, ok := resp["models"].([]map[string]any)
 	if !ok || len(models) != 1 {
 		t.Fatalf("models = %#v, want one model", resp["models"])
@@ -965,9 +1071,20 @@ func TestCodexClientModelsResponse_UnrelatedProviderCannotWidenSearchTool(t *tes
 	if got, _ := entry["prefer_websockets"].(bool); got {
 		t.Errorf("prefer_websockets = %v, want false for non-Codex provider", got)
 	}
-	assertCodexNullableFieldCleared(t, entry, "apply_patch_tool_type")
+	if value, present := entry["apply_patch_tool_type"]; !present || value != "freeform" {
+		t.Errorf("apply_patch_tool_type = %#v (present %v), want freeform for bridged execution", value, present)
+	}
 	if tiers, okTiers := entry["service_tiers"].([]any); !okTiers || len(tiers) != 0 {
 		t.Errorf("service_tiers = %#v, want empty array for non-Codex provider", entry["service_tiers"])
+	}
+	if got := stringModelValue(entry, "tool_mode"); got != "direct" {
+		t.Errorf("tool_mode = %#v, want direct for non-Codex provider", entry["tool_mode"])
+	}
+	if got, ok := entry["use_responses_lite"].(bool); !ok || got {
+		t.Errorf("use_responses_lite = %#v, want false for non-Codex provider", entry["use_responses_lite"])
+	}
+	if got, ok := entry["supports_reasoning_effort_updates"].(bool); !ok || got {
+		t.Errorf("supports_reasoning_effort_updates = %#v, want false for non-Codex provider", entry["supports_reasoning_effort_updates"])
 	}
 	assertCodexNullableFieldCleared(t, entry, "upgrade")
 	assertCodexNullableFieldCleared(t, entry, "availability_nux")
@@ -1038,7 +1155,7 @@ func TestCodexClientModelsResponse_MixedProvidersRestrictProtocolCapabilities(t 
 				{"id": aliasName},
 			}
 
-			resp := BuildResponseForClient(availableModels, modelRegistry.GetModelProviders, false, "0.153.4")
+			resp := BuildResponseForClientWithToolCapabilities(availableModels, modelRegistry.GetModelProviders, nil, func(string) bool { return true }, nil, false, "0.153.4")
 			models, ok := resp["models"].([]map[string]any)
 			if !ok || len(models) != 1 {
 				t.Fatalf("models = %#v, want one model", resp["models"])
@@ -1059,9 +1176,20 @@ func TestCodexClientModelsResponse_MixedProvidersRestrictProtocolCapabilities(t 
 			if got, _ := entry["prefer_websockets"].(bool); got {
 				t.Errorf("prefer_websockets = %v, want false for mixed provider", got)
 			}
-			assertCodexNullableFieldCleared(t, entry, "apply_patch_tool_type")
+			if value, present := entry["apply_patch_tool_type"]; !present || value != "freeform" {
+				t.Errorf("apply_patch_tool_type = %#v (present %v), want freeform for bridged execution", value, present)
+			}
 			if tiers, okTiers := entry["service_tiers"].([]any); !okTiers || len(tiers) != 0 {
 				t.Errorf("service_tiers = %#v, want empty array for mixed provider", entry["service_tiers"])
+			}
+			if got := stringModelValue(entry, "tool_mode"); got != "direct" {
+				t.Errorf("tool_mode = %#v, want direct for mixed provider", entry["tool_mode"])
+			}
+			if got, ok := entry["use_responses_lite"].(bool); !ok || got {
+				t.Errorf("use_responses_lite = %#v, want false for mixed provider", entry["use_responses_lite"])
+			}
+			if got, ok := entry["supports_reasoning_effort_updates"].(bool); !ok || got {
+				t.Errorf("supports_reasoning_effort_updates = %#v, want false for mixed provider", entry["supports_reasoning_effort_updates"])
 			}
 			assertCodexNullableFieldCleared(t, entry, "upgrade")
 			assertCodexNullableFieldCleared(t, entry, "availability_nux")
@@ -1503,7 +1631,7 @@ func TestCodexClientModelsResponse_DevinDisplayName(t *testing.T) {
 			"id":           "devin/gpt-6-astra",
 			"display_name": "GPT-6 Astra",
 		},
-		// 2. Template Devin model without display_name (inherits template "GPT-5.5")
+		// 2. Template Devin model without display_name (inherits the template's display_name)
 		{
 			"id": "devin/gpt-5.5",
 		},
@@ -1583,15 +1711,21 @@ func TestCodexClientModelsResponse_DevinDisplayName(t *testing.T) {
 		bySlug[slug] = m
 	}
 
+	templates, _, errLoadTemplates := loadCodexClientModelTemplates()
+	if errLoadTemplates != nil || templates["gpt-5.5"] == nil {
+		t.Fatalf("load codex client model templates: %v", errLoadTemplates)
+	}
+	templateDisplayName := stringModelValue(templates["gpt-5.5"], "display_name")
+
 	testCases := []struct {
 		slug            string
 		wantDisplayName string
 	}{
 		{"devin/gpt-6-astra", "GPT-6 Astra (Devin)"},
-		{"devin/gpt-5.5", "GPT-5.5 (Devin)"},
+		{"devin/gpt-5.5", templateDisplayName + " (Devin)"},
 		{"devin/swe-2", "SWE-2 (Devin)"},
 		{"gpt-6-astra", "GPT 6.0 Astra"},
-		{"gpt-5.5", "GPT-5.5"},
+		{"gpt-5.5", templateDisplayName},
 		{"devin/swe-1-7", "SWE-1.7 (Devin)"},
 		{"custom-devin-by-type", "Custom Model (Devin)"},
 		{"custom-devin-by-owned", "Cognition Model (Devin)"},
@@ -1696,5 +1830,108 @@ func assertCodexNullableFieldCleared(t *testing.T, entry map[string]any, key str
 	}
 	if value != nil {
 		t.Errorf("%s = %#v, want null", key, value)
+	}
+}
+
+func TestCodexClientModelsResponse_DoesNotLeakResponsesLiteOrCodeModeToNonCodexRoutes_Issue6769(t *testing.T) {
+	_, revision := registry.GetCodexClientModelsSnapshot()
+	codexClientModelTemplatesMu.Lock()
+	previousLoaded := codexClientModelTemplatesLoaded
+	previousRevision := codexClientModelTemplatesRevision
+	previousTemplates := codexClientModelTemplates
+	previousDefault := codexClientDefaultTemplate
+	previousErr := codexClientModelTemplatesErr
+	codexClientModelTemplatesLoaded = false
+	codexClientModelTemplatesMu.Unlock()
+	t.Cleanup(func() {
+		codexClientModelTemplatesMu.Lock()
+		codexClientModelTemplatesLoaded = previousLoaded
+		codexClientModelTemplatesRevision = previousRevision
+		codexClientModelTemplates = previousTemplates
+		codexClientDefaultTemplate = previousDefault
+		codexClientModelTemplatesErr = previousErr
+		codexClientModelTemplatesMu.Unlock()
+	})
+
+	// Simulate a post-retirement catalog where the first/default template (gpt-6.1-sol)
+	// advertises code_mode_only, use_responses_lite, and supports_reasoning_effort_updates.
+	snapshot := []byte(`{"models":[{
+		"slug":"gpt-6.1-sol",
+		"display_name":"GPT-6.1-Sol",
+		"description":"Latest workhorse model.",
+		"base_instructions":"Full instructions",
+		"minimal_client_version":"0.153.0",
+		"visibility":"list",
+		"context_window":500000,
+		"max_context_window":872000,
+		"priority":0,
+		"default_reasoning_level":"low",
+		"supported_reasoning_levels":[{"effort":"low","description":"Fast"}],
+		"prefer_websockets":true,
+		"apply_patch_tool_type":"freeform",
+		"tool_mode":"code_mode_only",
+		"use_responses_lite":true,
+		"supports_reasoning_effort_updates":true,
+		"supports_search_tool":true,
+		"service_tiers":[{"id":"priority"}],
+		"upgrade":null,
+		"availability_nux":{"message":"nux"}
+	}]}`)
+	if _, _, errLoad := loadCodexClientModelTemplatesSnapshot(snapshot, revision); errLoad != nil {
+		t.Fatalf("loadCodexClientModelTemplatesSnapshot: %v", errLoad)
+	}
+
+	available := []map[string]any{
+		{"id": "gpt-6.1-sol"},
+		{"id": "kimi-k3"},
+		{"id": "muse-wonder-1.0"},
+	}
+	providers := map[string][]string{
+		"gpt-6.1-sol":     {"codex"},
+		"kimi-k3":         {"kimi"},
+		"muse-wonder-1.0": {"meta"},
+	}
+
+	resp := BuildResponseForClient(available, func(id string) []string {
+		return providers[id]
+	}, false, "0.163.0-alpha.10.2")
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 3 {
+		t.Fatalf("models = %#v, want 3 entries", resp["models"])
+	}
+
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, entry := range models {
+		bySlug[stringModelValue(entry, "slug")] = entry
+	}
+
+	native := bySlug["gpt-6.1-sol"]
+	if native == nil {
+		t.Fatal("missing gpt-6.1-sol entry")
+	}
+	if got := stringModelValue(native, "tool_mode"); got != "code_mode_only" {
+		t.Errorf("gpt-6.1-sol tool_mode = %#v, want code_mode_only", native["tool_mode"])
+	}
+	if got, ok := native["use_responses_lite"].(bool); !ok || !got {
+		t.Errorf("gpt-6.1-sol use_responses_lite = %#v, want true", native["use_responses_lite"])
+	}
+	if got, ok := native["supports_reasoning_effort_updates"].(bool); !ok || !got {
+		t.Errorf("gpt-6.1-sol supports_reasoning_effort_updates = %#v, want true", native["supports_reasoning_effort_updates"])
+	}
+
+	for _, slug := range []string{"kimi-k3", "muse-wonder-1.0"} {
+		entry := bySlug[slug]
+		if entry == nil {
+			t.Fatalf("missing %s entry", slug)
+		}
+		if got := stringModelValue(entry, "tool_mode"); got != "direct" {
+			t.Errorf("%s tool_mode = %#v, want direct", slug, entry["tool_mode"])
+		}
+		if got, ok := entry["use_responses_lite"].(bool); !ok || got {
+			t.Errorf("%s use_responses_lite = %#v, want false", slug, entry["use_responses_lite"])
+		}
+		if got, ok := entry["supports_reasoning_effort_updates"].(bool); !ok || got {
+			t.Errorf("%s supports_reasoning_effort_updates = %#v, want false", slug, entry["supports_reasoning_effort_updates"])
+		}
 	}
 }

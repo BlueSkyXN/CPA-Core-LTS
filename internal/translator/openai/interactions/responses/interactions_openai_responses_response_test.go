@@ -22,6 +22,50 @@ func TestConvertInteractionsResponseToOpenAIResponsesNonStream(t *testing.T) {
 	}
 }
 
+func TestInteractionsResponsesGeneratedItemIDsDoNotCollideAcrossResponses(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, tc := range []struct {
+		name       string
+		req        []byte
+		step       string
+		delta      string
+		deltaEvent string
+	}{
+		{"reasoning", nil, `{"type":"thought"}`, `{"type":"thought_summary","text":"thinking"}`, "response.reasoning_summary_text.delta"},
+		{"message", nil, `{"type":"model_output"}`, `{"type":"text","text":"ready"}`, "response.output_text.delta"},
+		{"function", nil, `{"type":"function_call","name":"exec_command","arguments":{}}`, `{"type":"arguments_delta","arguments":"{\"cmd\":\"pwd\"}"}`, "response.function_call_arguments.delta"},
+		{"apply_patch", []byte(patchRequest), `{"type":"function_call","name":"functions__apply_patch"}`, `{"type":"arguments_delta","arguments":"{\"input\":\"pq\"}"}`, "response.custom_tool_call_input.delta"},
+	} {
+		for response := 0; response < 2; response++ {
+			var param any
+			var events [][]byte
+			for _, raw := range []string{
+				fmt.Sprintf(`{"event_type":"interaction.created","interaction":{"id":"interaction_%s_%d"}}`, tc.name, response),
+				fmt.Sprintf(`{"event_type":"step.start","index":0,"step":%s}`, tc.step),
+				fmt.Sprintf(`{"event_type":"step.delta","index":0,"delta":%s}`, tc.delta),
+				`{"event_type":"step.stop","index":0}`,
+				`{"event_type":"interaction.completed","interaction":{"status":"completed"}}`,
+			} {
+				events = append(events, ConvertInteractionsResponseToOpenAIResponses(context.Background(), "devin/gpt-6-1-sol", tc.req, nil, []byte(raw), &param)...)
+			}
+			id := gjson.GetBytes(findResponsesEventPayload(events, "response.output_item.added"), "item.id").String()
+			if id == "" || seen[id] {
+				t.Fatalf("%s response %d generated duplicate or empty item ID %q", tc.name, response, id)
+			}
+			seen[id] = true
+			for _, check := range []struct{ event, path string }{
+				{tc.deltaEvent, "item_id"},
+				{"response.output_item.done", "item.id"},
+				{"response.completed", "response.output.0.id"},
+			} {
+				if got := gjson.GetBytes(findResponsesEventPayload(events, check.event), check.path).String(); got != id {
+					t.Fatalf("%s response %d %s item ID = %q, want %q", tc.name, response, check.event, got, id)
+				}
+			}
+		}
+	}
+}
+
 func TestConvertInteractionsResponseToOpenAIResponsesStream(t *testing.T) {
 	var param any
 	var out [][]byte
@@ -233,6 +277,112 @@ func testGPTResponsesReasoningSignature() string {
 		payload[i] = byte(i)
 	}
 	return base64.URLEncoding.EncodeToString(payload)
+}
+
+func TestConvertInteractionsResponseToOpenAIResponsesStreamReasoningSummaryLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		chunks []string
+		signed bool
+	}{
+		{name: "single_frame", chunks: []string{"thinking"}},
+		{name: "multiple_frames_late_signature", chunks: []string{"think", " carefully"}, signed: true},
+		{name: "signature_only", signed: true},
+		{name: "empty_summary", chunks: []string{""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var param any
+			var out [][]byte
+			send := func(raw string) [][]byte {
+				frames := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "devin/swe-2", nil, nil, []byte("data: "+raw+"\n\n"), &param)
+				out = append(out, frames...)
+				return frames
+			}
+			send(`{"index":3,"step":{"id":"reasoning_3","type":"thought"},"event_type":"step.start"}`)
+			for i, chunk := range tc.chunks {
+				field := fmt.Sprintf(`"text":%q`, chunk)
+				if i%2 == 0 {
+					field = fmt.Sprintf(`"content":{"type":"text","text":%q}`, chunk)
+				}
+				frames := send(`{"index":3,"delta":{"type":"thought_summary",` + field + `},"event_type":"step.delta"}`)
+				if got := strings.Join(responsesEventNames(frames), ","); got != "response.reasoning_summary_text.delta" || len(frames) != 1 {
+					t.Fatalf("frame %d events = %s, want exactly one immediate summary delta", i, got)
+				}
+				payload := findResponsesEventPayload(frames, "response.reasoning_summary_text.delta")
+				if got := gjson.GetBytes(payload, "delta"); !got.Exists() || got.String() != chunk {
+					t.Fatalf("frame %d delta = %s, want %q", i, payload, chunk)
+				}
+			}
+			signature := ""
+			if tc.signed {
+				signature = testGPTResponsesReasoningSignature()
+				for _, value := range []string{signature, ""} {
+					if frames := send(`{"index":3,"delta":{"type":"thought_signature","signature":"` + value + `"},"event_type":"step.delta"}`); len(frames) != 0 {
+						t.Fatalf("signature emitted events: %s", responsesEventNames(frames))
+					}
+				}
+			}
+			send(`{"index":3,"event_type":"step.stop"}`)
+			send(`{"interaction":{"id":"interaction_1","status":"completed"},"event_type":"interaction.completed"}`)
+			wantNames := []string{"response.output_item.added", "response.reasoning_summary_part.added"}
+			for range tc.chunks {
+				wantNames = append(wantNames, "response.reasoning_summary_text.delta")
+			}
+			wantNames = append(wantNames, "response.reasoning_summary_text.done", "response.reasoning_summary_part.done", "response.output_item.done", "response.completed")
+			if got := strings.Join(responsesEventNames(out), ","); got != strings.Join(wantNames, ",") || len(out) != len(wantNames) {
+				t.Fatalf("events = %s, want %s", got, strings.Join(wantNames, ","))
+			}
+			var previousSequence int64
+			for i, frame := range out {
+				payload := findResponsesEventPayload([][]byte{frame}, wantNames[i])
+				sequence := gjson.GetBytes(payload, "sequence_number")
+				if !sequence.Exists() || (i > 0 && sequence.Int() != previousSequence+1) {
+					t.Fatalf("invalid sequence: %s", payload)
+				}
+				previousSequence = sequence.Int()
+				if wantNames[i] == "response.completed" {
+					continue
+				}
+				if index := gjson.GetBytes(payload, "output_index"); !index.Exists() || index.Int() != 3 {
+					t.Fatalf("invalid output_index: %s", payload)
+				}
+				idPath := "item.id"
+				if strings.HasPrefix(wantNames[i], "response.reasoning_summary_") {
+					idPath = "item_id"
+					if index := gjson.GetBytes(payload, "summary_index"); !index.Exists() || index.Int() != 0 {
+						t.Fatalf("invalid summary_index: %s", payload)
+					}
+				}
+				if id := gjson.GetBytes(payload, idPath); !id.Exists() || id.String() != "reasoning_3" {
+					t.Fatalf("invalid item identity: %s", payload)
+				}
+			}
+			text := strings.Join(tc.chunks, "")
+			for _, check := range []struct{ event, path, want string }{
+				{"response.output_item.added", "item.status", "in_progress"},
+				{"response.reasoning_summary_part.added", "part.type", "summary_text"},
+				{"response.reasoning_summary_part.added", "part.text", ""},
+				{"response.reasoning_summary_text.done", "text", text},
+				{"response.reasoning_summary_part.done", "part.type", "summary_text"},
+				{"response.reasoning_summary_part.done", "part.text", text},
+				{"response.output_item.done", "item.type", "reasoning"},
+				{"response.output_item.done", "item.status", "completed"},
+				{"response.output_item.done", "item.summary.0.type", "summary_text"},
+				{"response.output_item.done", "item.summary.0.text", text},
+				{"response.output_item.done", "item.encrypted_content", signature},
+			} {
+				payload := findResponsesEventPayload(out, check.event)
+				if got := gjson.GetBytes(payload, check.path); !got.Exists() || got.String() != check.want {
+					t.Errorf("%s %s = %s, want %q", check.event, check.path, payload, check.want)
+				}
+			}
+			done := gjson.GetBytes(findResponsesEventPayload(out, "response.output_item.done"), "item")
+			completed := gjson.GetBytes(findResponsesEventPayload(out, "response.completed"), "response.output")
+			if len(done.Get("summary").Array()) != 1 || len(completed.Array()) != 1 || done.Raw != completed.Get("0").Raw {
+				t.Fatalf("terminal reasoning items differ or summary count is wrong: done=%s completed=%s", done.Raw, completed.Raw)
+			}
+		})
+	}
 }
 
 func TestConvertInteractionsResponseToOpenAIResponsesStreamPreservesThoughtSignature(t *testing.T) {
@@ -672,7 +822,7 @@ func ssePayload(event []byte) []byte {
 	if idx < 0 {
 		return nil
 	}
-	return event[idx+len(prefix):]
+	return bytes.TrimRight(event[idx+len(prefix):], "\r\n")
 }
 
 func countInteractionsEventType(events [][]byte, eventType string) int {
@@ -1370,5 +1520,88 @@ func TestConvertInteractionsResponseToOpenAIResponses_AntigravityCustomToolResto
 	}
 	if customDoneCount != 1 {
 		t.Fatalf("expected exactly 1 response.custom_tool_call_input.done event on step.stop, got %d", customDoneCount)
+	}
+}
+
+func TestConvertInteractionsResponseToOpenAIResponses_ResponseFailed(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  string
+		wantMsg  string
+		wantCode string
+	}{
+		{
+			name:     "response_failed_top_level",
+			payload:  `data: {"event_type":"response.failed","error":{"message":"devin upstream error (permission_denied): Unable to process request due to an MCP configuration issue.","code":"403"}}`,
+			wantMsg:  "permission_denied",
+			wantCode: "403",
+		},
+		{
+			name:     "interaction_failed_nested",
+			payload:  `data: {"event_type":"interaction.failed","interaction":{"error":{"message":"service unavailable","code":"503"}}}`,
+			wantMsg:  "service unavailable",
+			wantCode: "503",
+		},
+		{
+			name:     "fallback_defaults",
+			payload:  `data: {"event_type":"response.failed"}`,
+			wantMsg:  "upstream execution failed",
+			wantCode: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var param any
+			events := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "devin/kimi-k3", nil, nil, []byte(tt.payload), &param)
+			if len(events) == 0 {
+				t.Fatalf("expected non-empty events for %s, got 0", tt.name)
+			}
+			payload := findResponsesEventPayload(events, "response.failed")
+			if len(payload) == 0 {
+				t.Fatalf("expected response.failed event payload, got: %s", string(bytes.Join(events, []byte("\n"))))
+			}
+			if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
+				t.Fatalf("response.status = %q, want failed", got)
+			}
+			if got := gjson.GetBytes(payload, "response.error.message").String(); !strings.Contains(got, tt.wantMsg) {
+				t.Fatalf("response.error.message = %q, want containing %q", got, tt.wantMsg)
+			}
+			if tt.wantCode != "" {
+				if got := gjson.GetBytes(payload, "response.error.code").String(); got != tt.wantCode {
+					t.Fatalf("response.error.code = %q, want %q", got, tt.wantCode)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertInteractionsResponseToOpenAIResponses_PreservesIDAndSeqOnFailure(t *testing.T) {
+	var param any
+	createdChunk := []byte(`data: {"event_type":"interaction.created","interaction":{"id":"interaction_test_id","model":"devin/kimi-k3"}}`)
+	failedChunk := []byte(`data: {"event_type":"response.failed","error":{"message":"permission denied","code":"403"}}`)
+
+	eventsCreated := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "devin/kimi-k3", nil, nil, createdChunk, &param)
+	if len(eventsCreated) == 0 {
+		t.Fatalf("expected response.created event")
+	}
+	createdPayload := findResponsesEventPayload(eventsCreated, "response.created")
+	if gotID := gjson.GetBytes(createdPayload, "response.id").String(); gotID != "interaction_test_id" {
+		t.Fatalf("created response.id = %q, want interaction_test_id", gotID)
+	}
+	if seq := gjson.GetBytes(createdPayload, "sequence_number").Int(); seq != 1 {
+		t.Fatalf("created sequence_number = %d, want 1", seq)
+	}
+
+	eventsFailed := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "devin/kimi-k3", nil, nil, failedChunk, &param)
+	if len(eventsFailed) == 0 {
+		t.Fatalf("expected response.failed event")
+	}
+	failedPayload := findResponsesEventPayload(eventsFailed, "response.failed")
+	if gotID := gjson.GetBytes(failedPayload, "response.id").String(); gotID != "interaction_test_id" {
+		t.Fatalf("failed response.id = %q, want interaction_test_id", gotID)
+	}
+	if seq := gjson.GetBytes(failedPayload, "sequence_number").Int(); seq != 2 {
+		t.Fatalf("failed sequence_number = %d, want 2", seq)
 	}
 }

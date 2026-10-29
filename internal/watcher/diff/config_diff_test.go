@@ -4,9 +4,75 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
+
+func TestBuildConfigChangeDetailsClientCodexEnableApplyPatch(t *testing.T) {
+	oldCfg, newCfg := &config.Config{}, &config.Config{}
+	newCfg.Client.Codex.EnableApplyPatch = true
+	for _, tc := range []struct {
+		old, new *config.Config
+		want     string
+	}{
+		{oldCfg, newCfg, "client.codex.enable-apply-patch: false -> true"},
+		{newCfg, oldCfg, "client.codex.enable-apply-patch: true -> false"},
+	} {
+		changes := BuildConfigChangeDetails(tc.old, tc.new)
+		if len(changes) != 1 || changes[0] != tc.want {
+			t.Fatalf("changes = %v, want [%s]", changes, tc.want)
+		}
+	}
+	if changes := BuildConfigChangeDetails(newCfg, newCfg); len(changes) != 0 {
+		t.Fatalf("unchanged client setting produced changes: %v", changes)
+	}
+}
+
+func TestBuildConfigChangeDetailsClientCodexOptimizeMultiAgentV2(t *testing.T) {
+	oldCfg, newCfg := &config.Config{}, &config.Config{}
+	newCfg.Client.Codex.OptimizeMultiAgentV2 = true
+	for _, tc := range []struct {
+		old, new *config.Config
+		want     string
+	}{
+		{oldCfg, newCfg, "client.codex.optimize-multi-agent-v2: false -> true"},
+		{newCfg, oldCfg, "client.codex.optimize-multi-agent-v2: true -> false"},
+	} {
+		changes := BuildConfigChangeDetails(tc.old, tc.new)
+		if len(changes) != 1 || changes[0] != tc.want {
+			t.Fatalf("changes = %v, want [%s]", changes, tc.want)
+		}
+	}
+	if changes := BuildConfigChangeDetails(newCfg, newCfg); len(changes) != 0 {
+		t.Fatalf("unchanged client setting produced changes: %v", changes)
+	}
+}
+
+func TestBuildConfigChangeDetailsClientCodexWebSearchResultCache(t *testing.T) {
+	oldCfg, newCfg := &config.Config{}, &config.Config{}
+	newCfg.Client.Codex.WebSearchResultCache = config.CodexWebSearchResultCacheConfig{
+		Enabled: true,
+		TTL:     "30m",
+		Limit:   256,
+	}
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	want := []string{
+		"client.codex.web-search-result-cache.enabled: false -> true",
+		"client.codex.web-search-result-cache.ttl:  -> 30m",
+		"client.codex.web-search-result-cache.limit: 0 -> 256",
+	}
+	if len(changes) != len(want) {
+		t.Fatalf("changes = %v, want %v", changes, want)
+	}
+	for i := range want {
+		if changes[i] != want[i] {
+			t.Fatalf("changes[%d] = %q, want %q", i, changes[i], want[i])
+		}
+	}
+	if unchanged := BuildConfigChangeDetails(newCfg, newCfg); len(unchanged) != 0 {
+		t.Fatalf("unchanged web-search-result-cache produced changes: %v", unchanged)
+	}
+}
 
 func TestBuildConfigChangeDetails(t *testing.T) {
 	oldCfg := &config.Config{
@@ -674,7 +740,8 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 				IdleConnTimeout: "10s",
 			},
 		},
-		XAI: config.XAIConfig{InjectXSearch: true},
+		XAI:    config.XAIConfig{InjectXSearch: true},
+		Claude: config.ClaudeConfig{ToolSearch: true},
 		ClaudeKey: []config.ClaudeKey{
 			{APIKey: "c1", BaseURL: "http://new", ProxyURL: "http://p", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"a"}},
 			{APIKey: "c2"},
@@ -731,6 +798,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "antigravity.connection-pool.enabled: false -> true")
 	expectContains(t, details, `antigravity.connection-pool.idle-conn-timeout: "30s" -> "10s"`)
 	expectContains(t, details, "xai.inject-x-search: false -> true")
+	expectContains(t, details, "claude.tool-search: false -> true")
 	expectContains(t, details, "api-keys count: 1 -> 2")
 	expectContains(t, details, "claude-api-key count: 1 -> 2")
 	expectContains(t, details, "codex-api-key count: 1 -> 2")
@@ -1011,4 +1079,10 @@ func TestBuildConfigChangeDetailsCodexCacheAffinity(t *testing.T) {
 	newCfg := &config.Config{Codex: config.CodexConfig{CacheAffinity: config.CodexCacheAffinityConfig{Strategy: "legacy"}}}
 	details := BuildConfigChangeDetails(oldCfg, newCfg)
 	expectContains(t, details, "codex.cache-affinity.strategy: client-aware -> legacy")
+}
+
+func TestBuildConfigChangeDetails_ClaudeNativeToolSearch(t *testing.T) {
+	oldCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com"}}}
+	newCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "key", BaseURL: "https://gateway.example.com", NativeToolSearch: true}}}
+	expectContains(t, BuildConfigChangeDetails(oldCfg, newCfg), "claude[0].native-tool-search: false -> true")
 }

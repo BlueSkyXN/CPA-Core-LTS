@@ -1,22 +1,25 @@
-# Codex 出站策略（`codex.outbound`）
+# Codex 出站策略（`upstream.codex.outbound`）
 
-`codex.outbound` 集中控制 Codex 请求怎样发往上游：传输方式、请求体压缩、Accept-Encoding。三项都可单独配置；设计原则与默认值的取舍见第 0 节。
+`upstream.codex.outbound` 集中控制 Codex 请求怎样发往上游：传输方式、请求体压缩、Accept-Encoding。三项都可单独配置；设计原则与默认值的取舍见第 0 节。
 
 ```yaml
-codex:
-  outbound:
-    transport: follow                 # follow | websocket | auto
-    websocket-threshold-bytes: 786432 # 仅 auto 模式使用
-    request-compression: auto         # auto | none
-    accept-encoding: official         # official | legacy
-
-codex-api-key:
-  - api-key: "..."
-    base-url: "https://relay.example.com/v1"
-    request-compression: none         # none（默认）| zstd
+upstream:
+  codex:
+    outbound:
+      transport: follow                 # follow | websocket | auto
+      websocket-threshold-bytes: 786432 # 仅 auto 模式使用
+      request-compression: auto         # auto | none
+      accept-encoding: official         # official | legacy
+api-keys:
+  codex:
+    - name: relay
+      base-url: "https://relay.example.com/v1"
+      keys:
+        - api-key: "..."
+          request-compression: none     # none（默认）| zstd
 ```
 
-非法取值（未知枚举、负阈值）会让配置加载失败，与 `codex.cache-affinity` 一致，避免拼写错误被静默回退。修改后经热重载生效，watcher 日志输出 `codex.outbound.<key>: A -> B` 变更摘要。
+非法取值（未知枚举、负阈值）会让配置加载失败，与 `upstream.codex.cache-affinity` 一致，避免拼写错误被静默回退。修改后经热重载生效，watcher 日志以内部字段名输出 `codex.outbound.<key>: A -> B` 变更摘要。
 
 ## 0. 设计原则：对齐官方 Codex 客户端
 
@@ -24,7 +27,7 @@ Codex OAuth credential 发往 chatgpt.com Codex backend 的出站行为，以官
 
 边界：
 
-- 只约束 Codex OAuth → chatgpt.com 的出站；`codex-api-key` 与其他 provider 不受此原则约束。
+- 只约束 Codex OAuth → chatgpt.com 的出站；`api-keys.codex` 与其他 provider 不受此原则约束。
 - 对齐通过配置项提供；只有经过测试环境与生产观察的项才改为代码默认值，因为代码默认值会改变所有部署的行为。
 - 不改写上游错误的语义。例如不把上游连接失败改写成 `context_length_exceeded` 去诱导客户端压缩上下文：官方客户端没有这种行为，误判时还会让客户端丢弃上下文，并让失败原因统计失真。
 
@@ -76,10 +79,10 @@ Codex 请求到达 CPA 时，下游可能是 HTTP（`POST /v1/responses` + SSE�
 | 范围 | 行为 |
 |---|---|
 | Codex OAuth credential，目标为 `https://chatgpt.com/backend-api/codex/responses`（含 `*.chatgpt.com`） | `auto`（默认）：zstd 压缩；`none`：不压缩 |
-| `codex-api-key` credential | 默认不压缩；仅当条目设置 `request-compression: zstd` 时压缩（适用于确认支持 zstd 的上游，例如另一台 CPA） |
+| `api-keys.codex` credential | 默认不压缩；仅当条目设置 `request-compression: zstd` 时压缩（适用于确认支持 zstd 的上游，例如另一台 CPA） |
 | `/responses/compact`、websocket、images 等其他端点 | 不压缩（官方客户端也不压缩） |
 
-`codex-api-key` 条目的 `request-compression` 可通过 `PUT/PATCH /v0/management/codex-api-key` 更新。接口与配置加载使用相同的归一化和校验规则：接受空字符串、`none`、`zstd`，忽略大小写及首尾空格；待保存条目包含非法值时返回 400，且不修改配置或触发重载。PATCH 省略该字段时保留原值，空字符串恢复默认的不压缩行为。
+`api-keys.codex` 的 key 可设置 `request-compression`。通过 `PUT /v8/management/config/api-keys/codex` 更新时，提交原生分组数组和读取该数组时的强 `If-Match`，保留未编辑的成员及组策略。配置加载与管理写入都接受空字符串、`none`、`zstd`，非法值返回 400；过期版本返回 412，缺失版本返回 428。
 
 - 压缩发生在请求头和请求体全部准备好之后；request-log / error-log 记录的仍是压缩前的原文，请求头中可见 `Content-Encoding: zstd`。
 - 上游对压缩请求返回 415 时，用原文自动重发一次并记录 warn。

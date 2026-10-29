@@ -1,10 +1,11 @@
 # GLM 搜索后的 Codex 上下文计数
 
-`codex.zcode-context-usage` 用于 Codex 客户端通过 `zcode-coding-plan` 使用 GLM 搜索时的上下文总量校正。Codex 用最近一次响应的 `usage.total_tokens` 判断是否压缩；上游搜索过程报告的累计用量可能高于下一轮实际回放的上下文。
+`upstream.codex.zcode-context-usage` 用于 Codex 客户端通过 `zcode-coding-plan` 使用 GLM 搜索时的上下文总量校正。Codex 用最近一次响应的 `usage.total_tokens` 判断是否压缩；上游搜索过程报告的累计用量可能高于下一轮实际回放的上下文。
 
 ```yaml
-codex:
-  zcode-context-usage: observe
+upstream:
+  codex:
+    zcode-context-usage: observe
 ```
 
 | 模式 | 行为 |
@@ -31,4 +32,4 @@ Core 保留本次已转换的 system、tools 和历史 messages，按现有回�
 
 先用 `observe` 比较有搜索与无搜索轮次，确认原生计数与下一轮实际输入规模相符，再启用 `correct`。原生计数接口本身的准确性及实际减少压缩的效果需要真实 GLM 会话验收；本地模拟测试覆盖转换、客户端范围、失败回退和后台用量隔离。
 
-旧的 `codex.abnormal-reasoning-retry.client-usage-aggregation` 处理 Codex provider 的隐藏重试，不覆盖 zcode 搜索。Anthropic 的非缓存输入、缓存读取、缓存写入仍按现有协议求和；这里不全局减去缓存，也不按搜索次数除以用量。
+旧的 `upstream.codex.abnormal-reasoning-retry.client-usage-aggregation` 处理 Codex provider 的隐藏重试，不覆盖 zcode 搜索。Anthropic 的非缓存输入、缓存读取、缓存写入仍按现有协议求和；这里不全局减去缓存，也不按搜索次数除以用量。

@@ -1,10 +1,10 @@
 # OAuth Model Policy（渠道/账号黑白名单，LTS）
 
-`oauth-model-policy` 是 Core 的通用模型访问策略，作用于所有 OAuth／认证文件账号（原生 provider 与动态插件 provider，包括 copilot、qoder、codebuddy）。配置式 `*-api-key` 条目不在范围内，它们继续使用自己的静态 `models` 与 `excluded-models`。
+`oauth.model-policy` 是 Core 的通用模型访问策略，作用于所有 OAuth／认证文件账号（原生 provider 与动态插件 provider，包括 copilot、qoder、codebuddy）。配置式 `*-api-key` 条目不在范围内，它们继续使用自己的静态 `models` 与 `excluded-models`。
 
 ## 组合契约
 
-- 只有两层：**渠道**（`config.yaml` 的 `oauth-model-policy`）和**账号**（认证 JSON 的 `model_policy`）。
+- 只有两层：**渠道**（`config.yaml` 的 `oauth.model-policy`）和**账号**（认证 JSON 的 `model_policy`）。
 - 白名单逐层取交集：模型必须通过每一层已启用的白名单。
 - 黑名单取并集：任一层命中即拒绝，同层黑白同时命中时黑名单胜出。
 - 规则按账号分别计算；合并展示只用于 UI 汇总，不共享授权。
@@ -16,14 +16,15 @@
 ## 渠道级配置
 
 ```yaml
-oauth-model-policy:
-  copilot:
-    allowlist:
-      enabled: true
-      models: ["gpt-*", "claude-sonnet-*"]
-    denylist:
-      enabled: true
-      models: ["*-preview"]
+oauth:
+  model-policy:
+    copilot:
+      allowlist:
+        enabled: true
+        models: ["gpt-*", "claude-sonnet-*"]
+      denylist:
+        enabled: true
+        models: ["*-preview"]
 ```
 
 渠道键是 provider 名（`copilot`、`qoder`、`codebuddy`、`codex`、`claude`…），不是插件库名。
@@ -44,13 +45,13 @@ oauth-model-policy:
 }
 ```
 
-结构非法（非对象、`enabled` 非布尔、`models` 含非字符串）时整个认证文件加载失败并给出明确错误，不会静默当作未限制。管理面 `PATCH /v0/management/auth-files/fields` 支持嵌套路径（如 `model_policy.allowlist.enabled`），写入前做同样校验并同步运行时属性、热重载模型注册。
+结构非法（非对象、`enabled` 非布尔、`models` 含非字符串）时整个认证文件加载失败并给出明确错误，不会静默当作未限制。管理面 `PATCH /v8/management/credentials/fields` 支持嵌套路径（如 `model_policy.allowlist.enabled`），写入前做同样校验并同步运行时属性、热重载模型注册。
 
 渠道和账号名单均限制为最多 512 项，拒绝控制字符；无效渠道限制会使配置加载失败，保留运行中的旧配置。运行时账号策略使用 JSON 保存，模型文本中的逗号和分号不会被解释为其他策略。
 
 ## 与 legacy 黑名单的关系
 
-- `oauth-excluded-models`（渠道）与认证文件 `excluded_models`（账号）视为**始终生效、没有开关的黑名单来源**，与新的 denylist 取并集，不做冲突报错。
+- `oauth.excluded-models`（渠道）与认证文件 `excluded_models`（账号）视为**始终生效、没有开关的黑名单来源**，与新的 denylist 取并集，不做冲突报错。
 - 旧 Management API（`/v0/management/oauth-excluded-models`）继续只操作旧键，行为不变。
 - 账号停用继续使用 `disabled`；不要用黑名单 `*` 表达停用（config API-key 的旧惯例不带入本结构）。
 - Copilot 插件自身的 `excluded_model_prefixes` 在插件返回目录时即生效（区分大小写、前缀语义），发生在 Core 策略之前，保持原样、不做机械迁移。
@@ -60,7 +61,7 @@ oauth-model-policy:
 1. **注册**：`registerResolvedModelsForAuth` 在别名/前缀投影前对真实模型 ID 统一评估（`sdk/cliproxy/service_executors.go`）。
 2. **选择**：本地候选枚举（`pickNextLegacy`）跳过被禁账号；该检查独立于 registry 成员资格，因此 Codex Live 这类未入目录端点同样受限。
 3. **派发**：`admitFlowExecution` 在发请求前用同一评估函数做最后复核，覆盖普通执行、Home dispatch、Codex Live uncatalogued 路由与 Antigravity credits 回退。策略拒绝是本地拒绝：不请求上游、不进入凭据冷却、Home 已占用的并发额度立即释放。
-4. **热重载**：`oauth-model-policy` 变化经 `internal/watcher/diff/oauth_model_policy.go` 识别受影响渠道并重建其账号注册；认证文件 `model_policy` 变化经既有 auth 文件热重载生效。
+4. **热重载**：`oauth.model-policy` 变化经 `internal/watcher/diff/oauth_model_policy.go` 识别受影响渠道并重建其账号注册；认证文件 `model_policy` 变化经既有 auth 文件热重载生效。
 
 ## 过滤前目录快照与预览
 
@@ -75,9 +76,9 @@ Core 在注册时按账号保存一份过滤前候选目录（`sdk/cliproxy/mode
 
 Core 提供两组配套面：
 
-- 渠道策略 CRUD：`/v0/management/oauth-model-policy`（GET/PUT/PATCH/DELETE）。PATCH 按 provider 单条写入，空 policy 删除该条；非法结构返回 400。旧 `/oauth-excluded-models` 端点继续只操作旧键。
+- 渠道策略通过 `/v8/management/config/oauth` 的原生节点读写。Panel 将编辑数据与同次读取的 ETag 绑定，保存时发送强 `If-Match`；缺失版本返回 428，过期版本返回 412。将已有排除规则并入 denylist 时，在一次条件 PUT 中更新两者并保留其他 OAuth 配置。既有 `/v0/management/oauth-model-policy` 路由继续保留，Panel 只用其 GET 判断功能支持。
 - 账号策略预览：`GET /v0/management/auth-files/models/policy-preview?name=<auth>`（见上文）。
-- 账号策略编辑：`PATCH /v0/management/auth-files/fields` 的 `model_policy` 嵌套字段。
+- 账号策略编辑：`PATCH /v8/management/credentials/fields` 的 `model_policy` 嵌套字段。
 
 Panel（`CPA-Panel-LTS`）提供：
 

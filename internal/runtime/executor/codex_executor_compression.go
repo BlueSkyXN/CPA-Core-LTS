@@ -9,9 +9,9 @@ import (
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,6 +32,9 @@ func codexRequestCompressionEnabled(cfg *config.Config, auth *cliproxyauth.Auth,
 	if codexAuthUsesAPIKey(auth) {
 		entry := resolveCodexKeyConfig(cfg, auth)
 		return entry != nil && strings.EqualFold(strings.TrimSpace(entry.RequestCompression), config.CodexRequestCompressionZstd)
+	}
+	if cfg.Codex.UpstreamRequestCompression {
+		return false
 	}
 	if cfg.Codex.Outbound.EffectiveRequestCompression() != config.CodexRequestCompressionAuto {
 		return false

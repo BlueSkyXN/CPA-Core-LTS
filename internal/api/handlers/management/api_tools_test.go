@@ -19,12 +19,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestAPICallUsesRequestProxyURL(t *testing.T) {
@@ -1499,8 +1499,17 @@ func TestIsCodexQuotaResetConsumeAPICall(t *testing.T) {
 	resetURL := mustParseURL(t, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")
 	auth := &coreauth.Auth{Provider: "codex"}
 
-	if !isCodexQuotaResetConsumeAPICall(http.MethodPost, resetURL, apiCallTestResponse(http.MethodPost, resetURL.String(), http.StatusOK), auth) {
+	if !isCodexQuotaResetConsumeAPICall(http.MethodPost, resetURL, apiCallTestResponse(http.MethodPost, resetURL.String(), http.StatusOK), auth, []byte(`{"code":"reset"}`)) {
 		t.Fatal("expected Codex quota reset consume call to match")
+	}
+
+	for _, body := range []string{`{}`, `{"code":"no_credit"}`, `{"code":"nothing_to_reset"}`, `{"code":true}`, `null`, `{`} {
+		if isCodexQuotaResetConsumeAPICall(http.MethodPost, resetURL, apiCallTestResponse(http.MethodPost, resetURL.String(), http.StatusOK), auth, []byte(body)) {
+			t.Fatalf("unconfirmed reset response accepted: %s", body)
+		}
+	}
+	if !isCodexQuotaResetConsumeAPICall(http.MethodPost, resetURL, apiCallTestResponse(http.MethodPost, resetURL.String(), http.StatusOK), auth, []byte(`{"code":"already_redeemed"}`)) {
+		t.Fatal("idempotent confirmed redemption rejected")
 	}
 
 	cases := []struct {
@@ -1526,7 +1535,7 @@ func TestIsCodexQuotaResetConsumeAPICall(t *testing.T) {
 			t.Parallel()
 			parsed := mustParseURL(t, tc.target)
 			resp := apiCallTestResponse(tc.finalMethod, tc.finalTarget, tc.statusCode)
-			if isCodexQuotaResetConsumeAPICall(tc.method, parsed, resp, tc.auth) {
+			if isCodexQuotaResetConsumeAPICall(tc.method, parsed, resp, tc.auth, []byte(`{"code":"reset"}`)) {
 				t.Fatal("expected call not to match")
 			}
 		})

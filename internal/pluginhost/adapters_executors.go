@@ -8,21 +8,25 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 const pluginExecutionLifecycleTimeout = 5 * time.Second
@@ -51,8 +55,21 @@ func (h *Host) RegisterExecutors(manager executorManager, modelRegistry modelPro
 	claimedModels := make(map[string]struct{})
 	claimedProviders := make(map[string]string)
 	for _, registration := range registrations {
-		if !registration.hasExecutor {
-			appendModelsForProvider(providerModels, registration.provider, registration.models)
+		if registration.hasExecutor {
+			continue
+		}
+		appendModelsForProvider(providerModels, registration.provider, registration.models)
+		// Reserve native catalog models before plugin arbitration, independently of
+		// credential publication or exclusions. This preserves native priority without
+		// publishing availability, which remains credential-bound.
+		if h.providerHasNativeExecutor(manager, registration.provider) {
+			for _, model := range registration.models {
+				if model != nil {
+					if modelID := strings.TrimSpace(model.ID); modelID != "" {
+						claimedModels[modelID] = struct{}{}
+					}
+				}
+			}
 		}
 	}
 	for _, record := range records {
@@ -1005,6 +1022,10 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 }
 
 func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
+	var runtimeCfg *config.Config
+	if a.host != nil {
+		runtimeCfg = a.host.currentRuntimeConfig()
+	}
 	inputRequested := executorInputFormat(req, opts)
 	requestedFormat := executorRequestedFormat(req, opts)
 	inputFormat, errInput := a.selectExecutorInputFormat(inputRequested)
@@ -1016,11 +1037,22 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 		return preparedExecutorCall{}, errOutput
 	}
 
+	baseModel := strings.TrimSpace(req.Model)
+	modelInfo := a.lookupPluginModelInfo(baseModel)
+	if parsed := thinking.ParseSuffix(req.Model); parsed.HasSuffix && modelInfo == nil {
+		baseModel = strings.TrimSpace(parsed.ModelName)
+		modelInfo = a.lookupPluginModelInfo(baseModel)
+	}
+	if baseModel == "" {
+		baseModel = req.Model
+	}
+
 	nativeReq := req
 	nativeOpts := opts
-	var modelInfo *registry.ModelInfo
+	var updatesChanged bool
+	translatedClaude := false
 	if inputRequested != "" && inputRequested != inputFormat {
-		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: req.Model, Body: req.Payload, Stream: opts.Stream}
+		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: baseModel, Body: req.Payload, Stream: opts.Stream}
 		if (inputRequested == sdktranslator.FormatOpenAIResponse || inputRequested == sdktranslator.FormatOpenAI) && inputFormat == sdktranslator.FormatClaude {
 			var errModel error
 			modelInfo, errModel = a.executionModelInfo(auth, req, opts)
@@ -1028,8 +1060,74 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 				return preparedExecutorCall{}, errModel
 			}
 			envelope.ModelInfo = modelInfo
+			translatedClaude = true
 		}
-		nativeReq.Payload = sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope).Body
+		translated := sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope)
+		if translated.Err != nil {
+			return preparedExecutorCall{}, translated.Err
+		}
+		nativeReq.Payload = translated.Body
+		updatesChanged = translated.ConfigurationUpdatesChanged
+	}
+	hasPluginThinkingTarget := modelInfo != nil ||
+		registry.LookupModelInfo(baseModel, a.provider) != nil ||
+		thinking.GetProviderApplier(a.provider) != nil
+	if hasPluginThinkingTarget && baseModel != "" && gjson.GetBytes(nativeReq.Payload, "model").Exists() {
+		nativeReq.Payload = helps.SetStringIfDifferent(nativeReq.Payload, "model", baseModel)
+	}
+	originalTranslated := nativeReq.Payload
+	if len(nativeReq.Payload) > 0 {
+		var body []byte
+		var errThinking error
+		if _, active := helps.RequestEffortOverride(runtimeCfg, req, opts); active {
+			body, errThinking = helps.ApplyConfiguredRequestThinkingWithModelInfo(runtimeCfg, nativeReq.Payload, req, opts, inputRequested.String(), inputFormat.String(), a.provider, modelInfo, updatesChanged)
+		} else if translatedClaude {
+			// Translation already used the selected account's capabilities. Its
+			// normalized native controls remain authoritative in this final pass.
+			body, errThinking = thinking.ApplyThinkingWithModelInfoAndSummary(
+				nativeReq.Payload, nativeReq.Payload, req.Model,
+				inputFormat.String(), inputFormat.String(), a.provider, modelInfo,
+				thinking.ExtractSummaryConfig(nativeReq.Payload, inputFormat.String()), updatesChanged,
+			)
+		} else {
+			body, errThinking = helps.ApplyRequestThinkingWithModelInfo(
+				nativeReq.Payload,
+				req,
+				opts,
+				inputRequested.String(),
+				inputFormat.String(),
+				a.provider,
+				modelInfo,
+				updatesChanged,
+			)
+		}
+		if errThinking != nil {
+			return preparedExecutorCall{}, errThinking
+		}
+		nativeReq.Payload = body
+	}
+	// User payload rules are the last host-side mutation before the plugin sees
+	// the request, matching on the suffix-free model like the built-in executors
+	// and using the canonical client format as source protocol.
+	if a.host != nil {
+		if cfg := runtimeCfg; cfg != nil {
+			finalizeOpts := opts
+			if inputRequested != "" {
+				finalizeOpts.SourceFormat = inputRequested
+			}
+			if len(req.Metadata) > 0 {
+				finalizeOpts.Metadata = mergeExecutorMetadata(req.Metadata, opts.Metadata)
+			}
+			root := ""
+			if inputFormat == sdktranslator.FormatAntigravity {
+				root = "request"
+			}
+			finalize := helps.NewPayloadFinalizer(cfg, a.provider, baseModel, inputFormat.String(), root, originalTranslated, req, finalizeOpts)
+			nativeReq.Payload = finalize(nativeReq.Payload)
+		}
+	}
+	if hasPluginThinkingTarget {
+		nativeReq.Model = baseModel
 	}
 	nativeReq.Format = outputFormat
 	nativeOpts.SourceFormat = inputFormat
@@ -1044,6 +1142,24 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 		outputFormat:    outputFormat,
 		modelInfo:       modelInfo,
 	}, nil
+}
+
+func (a *executorAdapter) lookupPluginModelInfo(baseModel string) *registry.ModelInfo {
+	baseModel = strings.TrimSpace(baseModel)
+	if a == nil || a.host == nil || baseModel == "" {
+		return nil
+	}
+	for _, model := range a.host.ModelsForProvider(a.provider) {
+		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), baseModel) {
+			return model
+		}
+	}
+	for _, model := range a.host.modelRegistration(a.pluginID).models {
+		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), baseModel) {
+			return model
+		}
+	}
+	return nil
 }
 
 func (a *executorAdapter) RequestToFormat(req coreexecutor.Request, opts coreexecutor.Options) sdktranslator.Format {
@@ -1348,6 +1464,22 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 			return coreexecutor.Response{}, err
 		}
 	}
+	if translated == nil && prepared.requestedFormat != "" && prepared.outputFormat != prepared.requestedFormat {
+		// Convert before reporting success: a translator tool-input failure or
+		// empty output is a request-scoped failure of a completed plugin call.
+		var param any
+		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, &param)
+		if helps.ApplyPatchTranslationError(param) != nil || len(translated) == 0 {
+			err = pluginResponseConversionError()
+			if reporter != nil {
+				if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
+					reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
+				}
+				reporter.PublishFailureWithDetail(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload), err)
+			}
+			return coreexecutor.Response{}, err
+		}
+	}
 	if reporter != nil {
 		if pluginExecutorUsageReported(prepared.outputFormat, pluginResp.Payload) {
 			reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
@@ -1609,11 +1741,50 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 	if errCountTokens != nil {
 		return coreexecutor.Response{}, errCountTokens
 	}
+	var payload []byte
+	translatedTokenCount := false
+	if prepared.outputFormat != prepared.requestedFormat {
+		// A token-count reply is not a model response; translating it as one
+		// wraps the count in a full completion message.
+		if count, okCount := pluginExecutorTokenCount(prepared.outputFormat, pluginResp.Payload); okCount {
+			if sdktranslator.HasTokenCountTransformer(prepared.outputFormat, prepared.requestedFormat) {
+				translated := sdktranslator.TranslateTokenCount(ctx, prepared.outputFormat, prepared.requestedFormat, count, pluginResp.Payload)
+				payload = translated
+				translatedTokenCount = true
+			}
+		}
+	}
+	if !translatedTokenCount {
+		payload = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil)
+	}
 	return coreexecutor.Response{
-		Payload:  a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil),
+		Payload:  payload,
 		Metadata: cloneAnyMap(pluginResp.Metadata),
 		Headers:  cloneHeader(pluginResp.Headers),
 	}, nil
+}
+
+func pluginExecutorTokenCount(format sdktranslator.Format, payload []byte) (int64, bool) {
+	for _, path := range []string{"choices", "content", "candidates", "output", "response.output"} {
+		if gjson.GetBytes(payload, path).Exists() {
+			return 0, false
+		}
+	}
+	// response.usage.input_tokens is the native Codex count shape.
+	paths := []string{"usage.prompt_tokens", "input_tokens", "response.usage.input_tokens", "totalTokens", "total_tokens"}
+	if format == sdktranslator.FormatGemini {
+		paths = []string{"totalTokens", "usageMetadata.promptTokenCount", "input_tokens", "total_tokens"}
+	}
+	for _, path := range paths {
+		value := gjson.GetBytes(payload, path)
+		if value.Exists() && value.Type == gjson.Number {
+			count, errParse := strconv.ParseInt(value.Raw, 10, 64)
+			if errParse == nil && count >= 0 {
+				return count, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (a *executorAdapter) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (resp *http.Response, err error) {

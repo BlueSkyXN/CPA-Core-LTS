@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	. "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/gemini"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
-	. "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/openai/responses"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	. "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/antigravity/gemini"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	. "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/openai/responses"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -51,15 +51,16 @@ func shouldBuildAntigravityResponsesWebSearchRequest(model string, payload []byt
 		AllowsResponsesWebSearchToolChoice(root)
 }
 
-func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, stream bool) []byte {
+func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, stream bool) ([]byte, error) {
 	includedDomains := ExtractResponsesWebSearchAllowedDomains(gjson.ParseBytes(payload))
-	rawJSON := ConvertOpenAIResponsesRequestToGemini(model, payload, stream)
+	rawJSON, errConvert := ConvertOpenAIResponsesRequestToGemini(model, payload, stream)
+	rawJSON = stripAntigravityServerSideToolInvocations(rawJSON)
 	rawJSON = rewriteOpenAIResponsesReasoningForAntigravityClaude(model, payload, rawJSON)
-	out := ConvertGeminiRequestToAntigravity(model, rawJSON, stream)
+	out, _ := ConvertGeminiRequestToAntigravity(model, rawJSON, stream)
 	out, _ = sjson.SetBytes(out, "requestType", "web_search")
 	out = ensureAntigravityResponsesWebSearchTool(out, includedDomains)
 	out = ensureAntigravityResponsesWebSearchSystemInstruction(out)
-	return thinking.ApplySummaryConfig(out, "antigravity", thinking.ExtractSummaryConfig(payload, "openai-response"))
+	return thinking.ApplySummaryConfig(out, "antigravity", thinking.ExtractSummaryConfig(payload, "openai-response")), errConvert
 }
 
 func ensureAntigravityResponsesWebSearchTool(payload []byte, includedDomains []string) []byte {
@@ -126,27 +127,30 @@ func ensureAntigravityResponsesWebSearchSystemInstruction(payload []byte) []byte
 
 // ConvertOpenAIResponsesRequestToAntigravity translates an OpenAI Responses request
 // to the Antigravity schema using locally registered Antigravity capabilities.
-func ConvertOpenAIResponsesRequestToAntigravity(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertOpenAIResponsesRequestToAntigravity(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	req := ConvertOpenAIResponsesRequestEnvelopeToAntigravity(context.Background(), sdktranslator.RequestEnvelope{
 		Model:  modelName,
 		Body:   inputRawJSON,
 		Stream: stream,
 	})
-	return req.Body
+	return req.Body, req.Err
 }
 
 // ConvertOpenAIResponsesRequestEnvelopeToAntigravity translates an OpenAI Responses
 // request and consumes request-scoped model capabilities from the envelope.
 func ConvertOpenAIResponsesRequestEnvelopeToAntigravity(_ context.Context, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
 	if shouldBuildAntigravityResponsesWebSearchRequest(req.Model, req.Body, req.ModelInfo) {
-		req.Body = buildAntigravityResponsesWebSearchRequest(req.Model, req.Body, req.Stream)
+		req.Body, req.Err = buildAntigravityResponsesWebSearchRequest(req.Model, req.Body, req.Stream)
 		return req
 	}
 	inputRawJSON := req.Body
-	req.Body = ConvertOpenAIResponsesRequestToGemini(req.Model, req.Body, req.Stream)
+	req.Body, req.Err = ConvertOpenAIResponsesRequestToGemini(req.Model, req.Body, req.Stream)
 	req.Body = stripAntigravityResponsesGoogleSearch(req.Body)
 	req.Body = rewriteOpenAIResponsesReasoningForAntigravityClaude(req.Model, inputRawJSON, req.Body)
-	req.Body = ConvertGeminiRequestToAntigravity(req.Model, req.Body, req.Stream)
+	if req.Err != nil {
+		return req
+	}
+	req.Body, req.Err = ConvertGeminiRequestToAntigravity(req.Model, req.Body, req.Stream)
 	req.Body = thinking.ApplySummaryConfig(req.Body, "antigravity", thinking.ExtractSummaryConfig(inputRawJSON, "openai-response"))
 	req.Body = stripAntigravityResponsesGoogleSearch(req.Body)
 	return req
@@ -177,6 +181,23 @@ func stripAntigravityResponsesGoogleSearch(payload []byte) []byte {
 			} else {
 				payload, _ = sjson.SetRawBytes(payload, path, translatorcommon.JoinRawArray(filtered))
 			}
+		}
+	}
+	return stripAntigravityServerSideToolInvocations(payload)
+}
+
+// stripAntigravityServerSideToolInvocations removes includeServerSideToolInvocations
+// injected by the shared Gemini Responses translator because Antigravity does not
+// support the includeServerSideToolInvocations parameter.
+func stripAntigravityServerSideToolInvocations(payload []byte) []byte {
+	for _, toolConfigPath := range []string{"toolConfig", "request.toolConfig"} {
+		flagPath := toolConfigPath + ".includeServerSideToolInvocations"
+		if !gjson.GetBytes(payload, flagPath).Exists() {
+			continue
+		}
+		payload, _ = sjson.DeleteBytes(payload, flagPath)
+		if tc := gjson.GetBytes(payload, toolConfigPath); tc.IsObject() && len(tc.Map()) == 0 {
+			payload, _ = sjson.DeleteBytes(payload, toolConfigPath)
 		}
 	}
 	return payload

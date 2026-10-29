@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -20,7 +20,7 @@ import (
 // ConvertGeminiRequestToOpenAI parses and transforms a Gemini API request into OpenAI Chat Completions API format.
 // It extracts the model name, generation config, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the OpenAI API.
-func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
@@ -243,6 +243,9 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						} else {
 							toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", "{}")
 						}
+						if thoughtSig := geminiFunctionCallThoughtSignature(part); thoughtSig != "" {
+							toolCall, _ = sjson.SetBytes(toolCall, "extra_content.google.thought_signature", thoughtSig)
+						}
 
 						toolCallItems = append(toolCallItems, toolCall)
 					}
@@ -369,12 +372,27 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 func deterministicToolCallID(kind string, msgIdx, partIdx int, name, payload string) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%s|%s", kind, msgIdx, partIdx, name, payload)))
 	return "call_" + hex.EncodeToString(sum[:12])
+}
+
+func geminiFunctionCallThoughtSignature(part gjson.Result) string {
+	for _, path := range []string{
+		"thoughtSignature",
+		"thought_signature",
+		"functionCall.thoughtSignature",
+		"functionCall.thought_signature",
+		"extra_content.google.thought_signature",
+	} {
+		if sig := part.Get(path); sig.Exists() && sig.String() != "" {
+			return sig.String()
+		}
+	}
+	return ""
 }
 
 func explicitGeminiToolID(node gjson.Result) string {

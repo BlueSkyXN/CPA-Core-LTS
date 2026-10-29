@@ -1,3 +1,5 @@
+> **V8 LTS:** `main` は V8 の保守対象ブランチです。V8 設定形式と対応する V8 Panel を使用してください。設定パス、維持される v0 API、旧 Panel の書き込み保護、ロールバック要件は [LTS V8 互換性](docs/lts/v8-development-compatibility.md) を参照してください。正式版は [Releases](https://github.com/BlueSkyXN/CPA-Core-LTS/releases/latest) から取得できます。
+
 # CPA Core LTS
 
 [English](README.md) | [中文](README_CN.md) | 日本語
@@ -77,7 +79,11 @@ CLIProxyAPI向けの独立した使用量永続化・可視化サービス。CLI
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 
-リクエスト単位の監視とコスト推定を備えたCLIProxyAPI向けのフル管理センターです。CPA-Managerは、収集したリクエストをアカウント、モデル、チャネル、レイテンシ、ステータス、Token使用量ごとに追跡し、編集可能なモデル価格とLiteLLM価格のワンクリック同期でコストを推定します。SQLiteでイベントを永続化し、Codexアカウントプール向けに一括検査、クォータ判定、異常アカウント検出、クリーンアップ提案、ワンクリック実行を提供し、日常的なマルチアカウント運用に適しています。
+CLIProxyAPI 向けのセルフホスト型管理コンソールと可観測性ダッシュボードです。追加サービス不要の軽量パネルとしても、リクエスト履歴の永続化と分析機能を備えた Manager Server としても利用できます。OAuth 認証情報、AI プロバイダー、クライアント API キー、モデルエイリアス、プラグイン、CPA 設定を一元管理します。SQLite に保存したリクエスト履歴から、リアルタイム監視、エラー原因の調査、モデル・プロバイダー・アカウント・キー・チャネル別の Token 使用量、レイテンシ、推定コストを分析できます。モデル料金の編集とワンクリック同期に対応し、Codex と xAI のクォータ確認、リセット情報、アカウントの健全性チェック、制御された復旧操作を提供します。Docker またはクロスプラットフォームのネイティブパッケージで導入でき、データはローカルに保存されます。
+
+### [Oh-My-CPA](https://github.com/WizisCool/oh-my-cpa)
+
+Ant Design を採用した CLIProxyAPI v8+ 向けのモダンな管理コンソール。CPAMC に相当する主要な管理機能と、SQLite に永続化するリクエスト記録・使用量分析を統合し、OAuth アカウント、API プロバイダー、クライアントキー、クォータ、料金設定、CPA 運用を一つの画面で管理できます。リクエストごとのレイテンシ、最初のトークンまでの時間（TTFT）、トークン数、コストを追跡し、多条件フィルター、リアルタイムダッシュボード、トークンヒートマップを提供します。OpenRouter の価格同期、カスタム料金、リクエストごとの価格スナップショットで過去のコストを保持し、組み込み Agent と MCP ツールで分析と日常管理を支援します。
 
 ## SDKドキュメント
 
@@ -120,14 +126,6 @@ Claude、Gemini、OpenAI、Antigravityのサブスクリプションを統合し
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
 TUI、システムトレイ、マルチプロバイダーOAuthを備えたWindows向けCLIProxyAPIフォーク - AIコーディングツール用、APIキー不要
-
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
-
-Claude Codeモデルを素早く切り替えるVSCode拡張機能。バックエンドとしてCLIProxyAPIを統合し、バックグラウンドでの自動ライフサイクル管理を搭載
-
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
-
-CLIProxyAPIを使用してAIコーディングアシスタントのクォータを監視するTauri + React製のWindowsデスクトップアプリ。Gemini、Claude、OpenAI Codex、Antigravityアカウントの使用量をリアルタイムダッシュボード、システムトレイ統合、ワンクリックプロキシコントロールで追跡 - APIキー不要
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 
@@ -217,6 +215,22 @@ Claude Code のステータスライン。現在の CPA インスタンスに対
 
 CLIProxyAPI 向けのクロスプラットフォームな Electron トレイダッシュボード。ChatGPT/Codex、Claude、Gemini/Antigravity、Grok、Kimi、Cursor の各アカウントにおける実際の OAuth クォータウィンドウを表示し、利用キューコストを試算し、OpenAI/Claude のサービスステータスを追跡します。ダークなターミナル風 UI。Windows および Linux で動作します。
 
+### [panel4cliproxyapi](https://github.com/yaanlaan/panel4cliproxyapi)
+
+React と Tailwind CSS で構築された、CLIProxyAPI 向けのモダンでレスポンシブな Web ダッシュボードおよび管理コンソール。LAN リダイレクト支援付きの複数プロバイダー対応 OAuth ログイン、YAML 不要の直感的なビジュアル設定、リアルタイムのトラフィック分析チャート、クライアント API キー管理、コアのバージョン確認とホットリロード、およびライブ SSE ストリーミングのプレイグラウンドを備えています。
+
+### [sub2api](https://github.com/PlaygrndLabs/sub2api)
+
+Cloudflare ベースの LLM ゲートウェイ兼プロキシサーバー。CLIProxyAPI を Cloudflare Workers + Containers にワンクリックでデプロイします。ログインと設定は R2 に永続化され、ダッシュボードはパスワードで保護され、クライアント API キーを作成するまで API リクエストはすべて拒否されます。
+
+### [Hermes CLIProxyAPI Provider](https://github.com/duu261/hermes-cliproxyapi-provider)
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 向けのモデルプロバイダープラグイン。CLIProxyAPI のプロバイダーごとに Hermes プロバイダーを 1 つ登録し、それぞれの executor が受け付けるプロトコル（Anthropic Messages、Responses、Chat Completions）を使います。コンテキストウィンドウと推論レベルは CLIProxyAPI から取得します。正確なプロバイダーグループ分けのための読み取り専用 Management API 照会はオプションです。[Hermes プラグインカタログ](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)に掲載されています：`hermes plugins install cliproxyapi-provider`。
+
+### [Ebb](https://github.com/lucasnsaraujo/ebb)
+
+CLIProxyAPI のアカウントプール向けのネイティブ macOS メニューバーアプリ。プール全体で Claude、Codex などの 5 時間枠と週間枠がどれだけ残っているか、いつ戻るかを表示し、Management API で各ログインのルーティング重みを設定してアカウントを均等に消費させます。
+
 > [!NOTE]
 > CLIProxyAPIをベースにプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。
 
@@ -245,6 +259,9 @@ Tauri 2 + Vue 3で構築された、複数のOpenAI Codexデスクトップア�
 ### [Alex](https://github.com/madhavajay/alex)
 
 CLIProxyAPIに着想を得た、オプションUI付きのローカルRust LLMプロキシ。コーディングエージェントを複数プロバイダーへルーティングし、ローカルトレース、スクリプト可能なミドルウェア、複数サブスクリプションの統合、フェイルオーバー、インスタントメッセンジャー経由の再認証に対応します。
+### [cliproxy-rs](https://github.com/vayungodara/cliproxy-rs)
+
+CLIProxyAPIのRust移植版です。同じ`config.yaml`と認証ファイルを読み込み、同じルートとv8 Management APIを提供するため、両者の間をどちらの方向にも切り替えられます。管理ダッシュボード（アカウントごとの5時間・週次クォータ表示、アカウントのサインイン、クライアント設定ガイド）を内蔵した単一バイナリで、週次ウィンドウが最も早くリセットされるアカウントから使うオプトインの`soonest-reset`ルーティング戦略も追加しています。
 
 > [!NOTE]
 > CLIProxyAPIの移植版またはそれに触発されたプロジェクトを開発した場合は、PRを送ってこのリストに追加してください。

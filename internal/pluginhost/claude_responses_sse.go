@@ -10,11 +10,11 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	claudecommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/claude/common"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	tr "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -30,6 +30,13 @@ type claudePluginSSE struct {
 
 func claudePluginConversionError() error {
 	return coreauth.NewRequestScopedError("invalid or unsupported Anthropic plugin response", http.StatusBadGateway)
+}
+
+// pluginResponseConversionError reports a completed plugin response that the
+// host could not convert to the client protocol. It must not penalize the
+// credential or replay the plugin call.
+func pluginResponseConversionError() error {
+	return coreauth.NewRequestScopedError("invalid or unsupported plugin response", http.StatusBadGateway)
 }
 
 func (p *claudePluginSSE) feed(chunk []byte, emit func([]byte, string) error) error {

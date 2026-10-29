@@ -3,7 +3,7 @@ package chat_completions
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/tidwall/gjson"
 )
 
@@ -42,7 +42,7 @@ func TestConvertOpenAIRequestToGemini_ToolCallSignatureCompatibility(t *testing.
 				}]
 			}`)
 
-			output := ConvertOpenAIRequestToGemini("gemini-3.5-flash", input, false)
+			output, _ := ConvertOpenAIRequestToGemini("gemini-3.5-flash", input, false)
 			if got := gjson.GetBytes(output, "contents.0.parts.0.thoughtSignature").String(); got != tt.wantSignature {
 				t.Fatalf("thoughtSignature = %q, want %q. Output: %s", got, tt.wantSignature, output)
 			}

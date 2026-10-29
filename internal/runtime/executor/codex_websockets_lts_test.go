@@ -14,14 +14,41 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func TestCodexWebsocketTerminalErrorSurvivesActivationRace(t *testing.T) {
+	for _, invalidated := range []bool{false, true} {
+		conn := &websocket.Conn{}
+		session := &codexWebsocketSession{conn: conn, connGen: 1}
+		connection := codexWebsocketConnectionRef{conn: conn, generation: 1}
+		terminal := errors.New("synthetic upstream disconnect before activation")
+		if !session.markTerminalError(conn, terminal) {
+			t.Fatal("current connection did not retain its terminal error")
+		}
+		if invalidated {
+			session.conn = nil
+		}
+		if _, err := session.setActiveConnection(connection, make(chan codexWebsocketRead, 1)); !errors.Is(err, terminal) {
+			t.Fatalf("activation error = %v, want retained disconnect (invalidated=%t)", err, invalidated)
+		}
+		next := &websocket.Conn{}
+		session.conn, session.connGen = next, 2
+		session.resetTerminalError(next)
+		nextConnection := codexWebsocketConnectionRef{conn: next, generation: 2}
+		ch := make(chan codexWebsocketRead, 1)
+		if _, err := session.setActiveConnection(nextConnection, ch); err != nil {
+			t.Fatalf("new connection inherited old terminal error: %v", err)
+		}
+		session.clearActiveConnection(nextConnection, ch)
+	}
+}
 
 func TestCodexWebsocketHandshakeFailureReleasesExecutionSession(t *testing.T) {
 	tests := []struct {

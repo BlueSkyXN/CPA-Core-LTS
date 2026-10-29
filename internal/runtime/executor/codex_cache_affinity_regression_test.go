@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	chatconv "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/codex/openai/chat-completions"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	execpkg "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	translator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	chatconv "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/codex/openai/chat-completions"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -198,7 +198,7 @@ func TestCodexCacheAffinityCompletedRequestCapacity(t *testing.T) {
 // Checks actual translator representation, without relaxing equality rules.
 func TestCodexCacheAffinityTranslatedOutputAnchor(t *testing.T) {
 	original := []byte(`{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"synthetic question"}]}`)
-	first := chatconv.ConvertOpenAIRequestToCodex("gpt-5.6-sol", original, false)
+	first, _ := chatconv.ConvertOpenAIRequestToCodex("gpt-5.6-sol", original, false)
 	completed := []byte(`{"type":"response.completed","response":{"id":"synthetic","model":"gpt-5.6-sol","status":"completed","output":[{"id":"msg_synthetic","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"synthetic answer","annotations":[]}]}]}}`)
 	answer := chatconv.ConvertCodexResponseToOpenAINonStream(context.Background(), "gpt-5.6-sol", original, first, completed, nil)
 	message := gjson.GetBytes(answer, "choices.0.message")
@@ -207,7 +207,7 @@ func TestCodexCacheAffinityTranslatedOutputAnchor(t *testing.T) {
 	}
 	next, _ := sjson.SetRawBytes(original, "messages.-1", []byte(message.Raw))
 	next, _ = sjson.SetRawBytes(next, "messages.-1", []byte(`{"role":"user","content":"continue"}`))
-	nextBody := chatconv.ConvertOpenAIRequestToCodex("gpt-5.6-sol", next, false)
+	nextBody, _ := chatconv.ConvertOpenAIRequestToCodex("gpt-5.6-sol", next, false)
 	s := newCodexAffinityStore()
 	d := s.decide(context.Background(), "scope", "", "", "first", "fallback", "", false, codexAffinitySnapshotOf(first))
 	d.complete(completed)
