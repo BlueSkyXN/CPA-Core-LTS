@@ -1,4 +1,4 @@
-> **v8 development branch:** See [LTS v8 compatibility](docs/lts/v8-development-compatibility.md) for configuration paths, retained v0 APIs, cached-Panel write protection, and rollback requirements. This branch is not a released upgrade.
+> **V8 LTS:** `main` is the maintained V8 product line. Use the V8 configuration layout and companion V8 Panel. See [LTS V8 compatibility](docs/lts/v8-development-compatibility.md) for configuration paths, retained v0 APIs, cached-Panel write protection, and rollback requirements. Download builds from [Releases](https://github.com/BlueSkyXN/CPA-Core-LTS/releases/latest).
 
 # CPA Core LTS
 

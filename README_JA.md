@@ -1,4 +1,4 @@
-> **v8 開発ブランチ：** 設定パス、維持される v0 API、旧 Panel の書き込み保護、ロールバック要件は [LTS v8 互換性](docs/lts/v8-development-compatibility.md) を参照してください。リリース済み更新ではありません。
+> **V8 LTS:** `main` は V8 の保守対象ブランチです。V8 設定形式と対応する V8 Panel を使用してください。設定パス、維持される v0 API、旧 Panel の書き込み保護、ロールバック要件は [LTS V8 互換性](docs/lts/v8-development-compatibility.md) を参照してください。正式版は [Releases](https://github.com/BlueSkyXN/CPA-Core-LTS/releases/latest) から取得できます。
 
 # CPA Core LTS
 

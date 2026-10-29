@@ -1,4 +1,4 @@
-> **v8 开发分支：** 配置路径、保留的 v0 API、旧面板禁写保护及回退要求见 [LTS v8 兼容说明](docs/lts/v8-development-compatibility.md)。本分支不代表已发布升级。
+> **V8 LTS 主线：** `main` 维护 V8 产品线，使用 V8 配置布局与配套 V8 Panel。配置路径、保留的 v0 API、旧面板禁写保护及回退要求见 [LTS V8 兼容说明](docs/lts/v8-development-compatibility.md)，正式制品从 [Releases](https://github.com/BlueSkyXN/CPA-Core-LTS/releases/latest) 下载。
 
 # CPA Core LTS
 

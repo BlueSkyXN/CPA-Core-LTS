@@ -1,4 +1,4 @@
-> v8 开发线：本文的 `codex.abnormal-reasoning-retry` 继续作为 legacy 读取别名；canonical YAML 路径为 `upstream.codex.abnormal-reasoning-retry`，策略语义不变。详见 [v8 兼容说明](v8-development-compatibility.md)。
+> V8 LTS：本文的 `codex.abnormal-reasoning-retry` 继续作为 legacy 读取别名；canonical YAML 路径为 `upstream.codex.abnormal-reasoning-retry`，策略语义不变。详见 [v8 兼容说明](v8-development-compatibility.md)。
 
 # Codex Client Context Degradation Defense
 

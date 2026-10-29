@@ -1,6 +1,6 @@
-# v8 开发线兼容边界
+# V8 LTS 配置与兼容边界
 
-本开发线从 v7 LTS `572f8fade2c11aa52bd06c59930b8dd89e1b748c` 开始，按 protected full-sync 接入官方 `2044a01f422998de79a5da8015141b878886534d`（v8.0.12），随后跟进到 `d7914afdedca7af95ee974a42453dc49fc1388ce`；11 条新增提交与保护审查见 [follow-up intake](v8-intake-20261003-followup.md)。`v8-dev` 是隔离评审目标，不是已发布版本；不得据此推断 main、UAT 或 PRO 已升级 v8。
+`main` 维护 V8 LTS 产品线，正式版本从 [Core Releases](https://github.com/BlueSkyXN/CPA-Core-LTS/releases/latest) 与 [Panel Releases](https://github.com/BlueSkyXN/CPA-Panel-LTS/releases/latest) 获取。日常开发和上游接入统一以 `origin/main` 为基线。
 
 **支持范围（2026-10-05 决策）**：v8 LTS 只支持 v8 配置布局与配套 v8 Panel。用户按 v8 教程（`config.example.yaml`、`docs/management-api-v8.md`）重新配置；不提供 v7 配置迁移脚本，不保证 legacy/mixed 布局的编辑语义，新 Panel 也不管理 v7 Core。上游 v8 自带的旧布局读取逻辑原样保留（不删除、不增强、不作为 LTS 验收项），以免形成长期 protected delta。LTS 特色功能（完整 usage、Flow V3、Codex 策略、插件、Ampcode 等）必须在全新 v8 配置下完整成立。
 
@@ -45,10 +45,16 @@ Codex API-key 请求创建独立配置视图，共享 affinity store/generation�
 
 零上游字节断流可在输出承诺前 failover；已见 protocol frame 的不完整响应保留 LTS request-scoped 边界。不能因本地转换错误换号或 cooldown。
 
-v8-only 跟进修复见 [2026-10-05 v8-native fixes](v8-native-fixes-20261005.md)；上一轮修复与验证边界见 [2026-10-04 review fixes](v8-review-fixes-20261004.md)，包括尚未通过的 authenticated GUI 回归；不能用 API 测试替代该验收。
+开发期修复与当时的验证记录见 [2026-10-05 v8-native fixes](v8-native-fixes-20261005.md) 和 [2026-10-04 review fixes](v8-review-fixes-20261004.md)。
 
 ## 交付与恢复
 
-本轮仅提交 Core/Panel 开发 PR 到各自 `v8-dev`，不合 main、不发正式 Release、不升级 PRO。完整发布前仍须独立确认：Linux native/no-plugin 制品、四插件旧新交叉运行、完整 GUI、挂载/短写/进程中断故障注入、真实灰度与回退。
+安装时按 Release 说明选择平台制品和配套 Panel。需要 Coding Plan 等动态插件时，选择 PAT 镜像或与该 Core 版本一起构建的插件包；Linux no-plugin 制品不支持加载动态插件。
+
+部署升级独立执行：先备份原配置、auth 与 usage，再在隔离目录准备 V8 配置并验证实际 provider 请求、GUI 和恢复流程。主线合并和 Release 发布不会替代目标环境的灰度、挂载与故障恢复验证。
 
 回退组合包括 v7 Core、配套 Panel/插件、原配置/auth 备份和 canonical v3 usage；真实凭据远端刷新不可通过复制本地 auth 文件保证逆转。不得在 PRO 可写目录运行灰度。
+
+## V8 接入历史
+
+V8 接入从 v7 LTS `572f8fade2c11aa52bd06c59930b8dd89e1b748c` 开始，按 protected full-sync 接入官方 `2044a01f422998de79a5da8015141b878886534d`（v8.0.12），随后跟进到 `d7914afdedca7af95ee974a42453dc49fc1388ce`。后续记录见 [2026-10-03 follow-up intake](v8-intake-20261003-followup.md) 和 [2026-10-28 上游同步审查](upstream-sync-20261028-v8.md)。这些带日期的文档保留当时的评审与交付状态。
