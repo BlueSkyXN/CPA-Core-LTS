@@ -61,6 +61,9 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
+		if got := rec.Header().Get("X-CPA-REASONING-EFFORT-POLICY"); got != "1" {
+			t.Fatalf("effort policy capability = %q", got)
+		}
 		if got := rec.Header().Get("X-CPA-SUPPORT-PLUGIN"); got != pluginhost.SupportPluginHeaderValue() {
 			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
 		}
@@ -80,6 +83,9 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if got := rec.Header().Get("X-CPA-REASONING-EFFORT-POLICY"); got != "1" {
+			t.Fatalf("effort policy capability = %q", got)
 		}
 		if got := rec.Header().Get("X-CPA-SUPPORT-PLUGIN"); got != pluginhost.SupportPluginHeaderValue() {
 			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())

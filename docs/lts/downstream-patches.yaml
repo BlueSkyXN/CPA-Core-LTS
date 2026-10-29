@@ -1,6 +1,32 @@
 version: 1
 
 patches:
+  - id: reasoning-effort-policy
+    reason: A model-scoped semantic effort policy must own the final protocol-native fields and survive generic payload rules, plugin translation and dynamic controls without changing usage attribution.
+    introduced_in: da38437bf3a334cbaec4147781cce7b91a58e741
+    affected_upstream_range: V8 baseline 807ae9b54f0c96cb00f05650731baa00ddad06e5; downstream opt-in policy.
+    files:
+      - internal/config/reasoning_effort.go
+      - internal/config/reasoning_effort_test.go
+      - internal/runtime/executor/helps/reasoning_effort_policy_test.go
+      - internal/watcher/reasoning_effort_test.go
+      - examples/plugin/zcode-coding-plan/test-cpa.sh
+      - internal/thinking/effort_policy.go
+      - internal/runtime/executor/helps/reasoning_effort_policy.go
+      - internal/runtime/executor/helps/payload_finalizer.go
+      - internal/pluginhost/adapters_executors.go
+      - internal/api/handlers/management/handler.go
+      - docs/lts/reasoning-effort-policy.md
+    regression_tests:
+      - TestReasoningEffortConfigV8RoundTrip
+      - TestSemanticEffortPolicyModesAndFinalPayloadAuthority
+      - TestSemanticEffortProtectsDynamicControls
+      - TestSemanticEffortSteeringPreservesFrameShape
+      - TestReasoningEffortPolicyHotReload
+    upstream_issue_or_pr: downstream-only
+    state: required
+    retire_when: Upstream supplies equivalent model-scoped follow/default/force semantics, final field ownership and cross-protocol plugin usage preservation, and all regressions pass without this delta.
+
   - id: responses-effort-summary-independence
     reason: Responses reasoning effort controls computation and must not implicitly enable visible summaries. Explicit summary and generate_summary remain independent, including null disabling; only OpenAI Chat has the documented effort compatibility exception.
     introduced_in: dc27264665b9c7a142aadf1f65e59d7971d9a727

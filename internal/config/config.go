@@ -220,4 +220,7 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// ReasoningEffort selects a semantic effort policy for client-requested models.
+	ReasoningEffort []ReasoningEffortRule `yaml:"reasoning-effort,omitempty" json:"reasoning-effort,omitempty"`
 }

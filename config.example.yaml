@@ -144,6 +144,14 @@ client:
         # content is preserved.
         optimize-multi-agent-v2: false
 requests:
+    reasoning-effort: []
+    # 推理强度策略：最后匹配的规则优先。省略时保持现有行为。
+    # follow 跟随客户端；default 仅补缺省；force 覆盖客户端和模型后缀。
+    # 匹配专用策略后，Payload 规则不能改写强度。详见 docs/lts/reasoning-effort-policy.md。
+    # reasoning-effort:
+    #   - models: ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"]
+    #     mode: force
+    #     effort: max
     # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
     # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
     proxy-url: ""

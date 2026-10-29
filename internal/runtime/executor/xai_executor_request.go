@@ -94,7 +94,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = preserveXAIResponsesOutputControls(body, req.Payload, from)
 
-	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), e.Identifier(), e.Identifier(), updatesChanged)
+	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), e.Identifier(), e.Identifier(), updatesChanged)
 	if err != nil {
 		return nil, err
 	}

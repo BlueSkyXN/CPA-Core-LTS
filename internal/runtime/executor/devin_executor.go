@@ -396,6 +396,9 @@ func (e *DevinExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*http.Request, string, []byte, error) {
+	if _, active := helps.RequestEffortOverride(e.cfg, req, opts); active {
+		return nil, "", nil, thinking.NewThinkingError(thinking.ErrThinkingNotSupported, "reasoning effort policies are not supported by the Devin execution protocol")
+	}
 	apiKey, baseURL, deviceSeed := devinAuthCredentials(auth)
 	if apiKey == "" {
 		return nil, "", nil, fmt.Errorf("devin credentials missing: api_key or session_token required")
