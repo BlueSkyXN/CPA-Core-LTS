@@ -7,6 +7,8 @@ import (
 )
 
 func TestCodexConfigurationUpdateCapability(t *testing.T) {
+	// Counterexample: present in every tier without support_configuration_update.
+	const incapableModelID = "gpt-5.6-luna"
 	for _, tier := range []struct {
 		name    string
 		models  func() []*ModelInfo
@@ -24,13 +26,13 @@ func TestCodexConfigurationUpdateCapability(t *testing.T) {
 					byID[info.ID] = info
 				}
 			}
-			for _, id := range append([]string{"gpt-5.5"}, tier.capable...) {
+			for _, id := range append([]string{incapableModelID}, tier.capable...) {
 				info := byID[id]
 				if info == nil {
 					t.Errorf("%s is missing", id)
 					continue
 				}
-				want := id != "gpt-5.5"
+				want := id != incapableModelID
 				if info.SupportConfigurationUpdate != want {
 					t.Errorf("%s configuration_update = %v, want %v", id, info.SupportConfigurationUpdate, want)
 				}
@@ -328,10 +330,10 @@ func TestGetDevinModelsFallback(t *testing.T) {
 				t.Errorf("devin/deepseek-v4-flash OwnedBy = %q, want deepseek", m.OwnedBy)
 			}
 		}
-		if m != nil && m.ID == "devin/deepseek-v4-1-flash" {
+		if m != nil && m.ID == "devin/deepseek-v4-1-flash-1017" {
 			foundDeepSeekV41Flash = true
 			if m.OwnedBy != "deepseek" {
-				t.Errorf("devin/deepseek-v4-1-flash OwnedBy = %q, want deepseek", m.OwnedBy)
+				t.Errorf("devin/deepseek-v4-1-flash-1017 OwnedBy = %q, want deepseek", m.OwnedBy)
 			}
 		}
 	}
@@ -351,7 +353,7 @@ func TestGetDevinModelsFallback(t *testing.T) {
 		t.Error("expected devin/deepseek-v4-flash in GetDevinModels()")
 	}
 	if !foundDeepSeekV41Flash {
-		t.Error("expected devin/deepseek-v4-1-flash in GetDevinModels()")
+		t.Error("expected devin/deepseek-v4-1-flash-1017 in GetDevinModels()")
 	}
 
 	byChannel := GetStaticModelDefinitionsByChannel("devin")

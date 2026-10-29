@@ -9,35 +9,79 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// geminiSanitizeOptions scopes Gemini replay policy to the upstream endpoint.
+type geminiSanitizeOptions struct {
+	// rejectBareTink treats Vertex bare-Tink signatures as incompatible. Live
+	// replay on 2026-10-26 showed Antigravity (cloudcode-pa) and AI Studio
+	// (generativelanguage) reject them with 400 "Corrupted thought signature",
+	// while they are the native form for Vertex AI.
+	rejectBareTink bool
+}
+
 // GeminiReplaySignatureOrBypass returns a Gemini-replayable thoughtSignature.
 // Compatible Gemini signatures are normalized and preserved. Missing, unknown,
 // or cross-provider signatures are replaced with Gemini's bypass sentinel.
 func GeminiReplaySignatureOrBypass(rawSignature string, blockKind SignatureBlockKind) string {
-	if signature, ok := CompatibleSignatureForProviderBlock(SignatureProviderGemini, rawSignature, blockKind); ok {
-		return signature
+	return geminiReplaySignatureOrBypass(rawSignature, blockKind, geminiSanitizeOptions{})
+}
+
+func geminiReplaySignatureOrBypass(rawSignature string, blockKind SignatureBlockKind, opts geminiSanitizeOptions) string {
+	decision := geminiSanitizeDecision(rawSignature, blockKind, opts)
+	if decision.Compatible && decision.NormalizedSignature != "" {
+		return decision.NormalizedSignature
 	}
-	decision := DecideSignatureCompatibility(SignatureProviderGemini, rawSignature, blockKind)
 	if decision.Action == SignatureActionReplaceWithGeminiBypass && decision.ReplacementSignature != "" {
 		return decision.ReplacementSignature
 	}
 	return GeminiSkipThoughtSignatureValidator
 }
 
+// geminiSanitizeDecision applies endpoint scoping on top of the family-level
+// compatibility decision.
+func geminiSanitizeDecision(rawSignature string, blockKind SignatureBlockKind, opts geminiSanitizeOptions) SignatureCompatibilityDecision {
+	decision := DecideSignatureCompatibility(SignatureProviderGemini, rawSignature, blockKind)
+	if !opts.rejectBareTink || !decision.Compatible || !IsGeminiVertexBareTinkSignature(rawSignature) {
+		return decision
+	}
+	decision.Compatible = false
+	decision.NormalizedSignature = ""
+	decision.Action = SignatureActionReplaceWithGeminiBypass
+	decision.ReplacementSignature = GeminiSkipThoughtSignatureValidator
+	decision.Reason = "Vertex bare-Tink signature is not accepted by this Gemini endpoint"
+	return decision
+}
+
 // SanitizeGeminiRequestThoughtSignatures applies Gemini replay policy to a
 // Gemini-shaped request. Existing provider signatures stay on their original
 // model parts. Server-side tool blocks (toolCall and toolResponse) retain recognized
-// Gemini signatures without accepting unknown or foreign envelopes. Only a missing or incompatible first
-// functionCall gets the bypass sentinel; unsigned sibling calls remain unsigned,
-// matching native Gemini parallel-call history. functionResponse parts never carry
-// signatures.
+// Gemini signatures without accepting unknown or foreign envelopes. Only a missing
+// or incompatible first functionCall in each parallel-call group (at the start of
+// a model turn or after a non-thought part) gets the bypass sentinel; unsigned
+// sibling calls remain unsigned. functionResponse parts never carry signatures.
+//
+// Vertex bare-Tink signatures are preserved here because the target endpoint is
+// not known at this layer; executors for other Gemini endpoints must also call
+// SanitizeNonVertexGeminiRequestThoughtSignatures before sending.
 func SanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string) []byte {
+	return sanitizeGeminiRequestThoughtSignatures(payload, contentsPath, geminiSanitizeOptions{})
+}
+
+// SanitizeNonVertexGeminiRequestThoughtSignatures applies the same policy for
+// Gemini endpoints other than Vertex AI (Antigravity, AI Studio, Gemini API).
+// Vertex bare-Tink signatures are treated as incompatible: the first
+// functionCall in a group gets the bypass sentinel and other parts drop it.
+func SanitizeNonVertexGeminiRequestThoughtSignatures(payload []byte, contentsPath string) []byte {
+	return sanitizeGeminiRequestThoughtSignatures(payload, contentsPath, geminiSanitizeOptions{rejectBareTink: true})
+}
+
+func sanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string, opts geminiSanitizeOptions) []byte {
 	contentsPath = strings.TrimSpace(contentsPath)
 	if contentsPath == "" {
 		contentsPath = "contents"
 	}
 
 	contents := util.GetGJSONBytesNoCopy(payload, contentsPath)
-	if !contents.IsArray() || !geminiContentsThoughtSignaturesNeedSanitize(contents) {
+	if !contents.IsArray() || !geminiContentsThoughtSignaturesNeedSanitize(contents, opts) {
 		return payload
 	}
 
@@ -100,8 +144,10 @@ func SanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string)
 
 			hasFunctionCall := part.Get("functionCall").Exists()
 			isFirstFunctionCall := hasFunctionCall && !firstFunctionCallSeen
-			if hasFunctionCall {
-				firstFunctionCallSeen = true
+			// A text part, even an empty signature carrier, ends the parallel group:
+			// the Gemini API rejects an unsigned functionCall after it. Thought parts do not.
+			if hasFunctionCall || !part.Get("thought").Bool() {
+				firstFunctionCallSeen = hasFunctionCall
 			}
 			if !hasFunctionCall && !hasSignature {
 				partItems = append(partItems, partJSON)
@@ -112,11 +158,11 @@ func SanitizeGeminiRequestThoughtSignatures(payload []byte, contentsPath string)
 			if hasFunctionCall {
 				blockKind = SignatureBlockKindGeminiFunctionCall
 			}
-			decision := DecideSignatureCompatibility(SignatureProviderGemini, rawSignature, blockKind)
+			decision := geminiSanitizeDecision(rawSignature, blockKind, opts)
 			replaySignature := ""
 			switch {
 			case isFirstFunctionCall:
-				replaySignature = GeminiReplaySignatureOrBypass(rawSignature, blockKind)
+				replaySignature = geminiReplaySignatureOrBypass(rawSignature, blockKind, opts)
 				if decision.Action == SignatureActionReplaceWithGeminiBypass {
 					decision.Reason = "missing or incompatible signature"
 				}
@@ -220,7 +266,7 @@ func sanitizeSigTypeName(provider SignatureProvider) string {
 	}
 }
 
-func geminiContentsThoughtSignaturesNeedSanitize(contents gjson.Result) bool {
+func geminiContentsThoughtSignaturesNeedSanitize(contents gjson.Result, opts geminiSanitizeOptions) bool {
 	needsSanitize := false
 	contents.ForEach(func(_, content gjson.Result) bool {
 		parts := content.Get("parts")
@@ -240,11 +286,11 @@ func geminiContentsThoughtSignaturesNeedSanitize(contents gjson.Result) bool {
 			}
 			hasFunctionCall := part.Get("functionCall").Exists()
 			isFirstFunctionCall := hasFunctionCall && !firstFunctionCallSeen
-			if hasFunctionCall {
-				firstFunctionCallSeen = true
+			if hasFunctionCall || !part.Get("thought").Bool() {
+				firstFunctionCallSeen = hasFunctionCall
 			}
 			if isFirstFunctionCall {
-				replaySignature := GeminiReplaySignatureOrBypass(rawSignature, SignatureBlockKindGeminiFunctionCall)
+				replaySignature := geminiReplaySignatureOrBypass(rawSignature, SignatureBlockKindGeminiFunctionCall, opts)
 				needsSanitize = !hasNormalizedGeminiPartThoughtSignature(part, replaySignature)
 				return !needsSanitize
 			}
@@ -255,7 +301,7 @@ func geminiContentsThoughtSignaturesNeedSanitize(contents gjson.Result) bool {
 			if hasFunctionCall {
 				blockKind = SignatureBlockKindGeminiFunctionCall
 			}
-			decision := DecideSignatureCompatibility(SignatureProviderGemini, rawSignature, blockKind)
+			decision := geminiSanitizeDecision(rawSignature, blockKind, opts)
 			if decision.Action != SignatureActionPreserve || IsGeminiThoughtSignatureBypass(SignaturePayloadWithoutProviderPrefix(rawSignature)) {
 				needsSanitize = true
 				return false

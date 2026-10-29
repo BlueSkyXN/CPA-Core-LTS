@@ -74,6 +74,8 @@ func (s *codexWebsocketSession) setActiveConnection(connection codexWebsocketCon
 		s.active.signal.cancel(context.Canceled)
 	}
 	s.active = codexWebsocketActive{connection: connection, ch: ch, signal: signal}
+	s.activeResponseID = ""
+	s.activeResponseTerminal = false
 	s.activeMu.Unlock()
 	s.connMu.Unlock()
 	return signal, nil
@@ -201,7 +203,7 @@ func (s *codexWebsocketSession) detachConnectionRef(connection codexWebsocketCon
 // pre-payload fallback path) and retry headers for downstream error shaping.
 func newCodexWebsocketHandshakeStatusErr(status int, body []byte, headers http.Header, modelLevelCooling ...bool) error {
 	modelScoped := len(modelLevelCooling) > 0 && modelLevelCooling[0]
-	classified := newCodexStatusErrWithCooling(status, body, modelScoped)
+	classified := newCodexStatusErrWithHeadersAndCooling(status, headers, body, modelScoped)
 	return statusErrWithHeaders{statusErr: classified, headers: headers.Clone()}
 }
 

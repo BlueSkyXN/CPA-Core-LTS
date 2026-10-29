@@ -33,6 +33,9 @@ func codexRequestCompressionEnabled(cfg *config.Config, auth *cliproxyauth.Auth,
 		entry := resolveCodexKeyConfig(cfg, auth)
 		return entry != nil && strings.EqualFold(strings.TrimSpace(entry.RequestCompression), config.CodexRequestCompressionZstd)
 	}
+	if cfg.Codex.UpstreamRequestCompression {
+		return false
+	}
 	if cfg.Codex.Outbound.EffectiveRequestCompression() != config.CodexRequestCompressionAuto {
 		return false
 	}

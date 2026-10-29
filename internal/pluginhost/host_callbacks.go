@@ -279,7 +279,7 @@ func (h *Host) callHostHTTPDo(ctx context.Context, request []byte) ([]byte, erro
 		return nil, errAcquire
 	}
 	defer operation.finish()
-	resp, errDo := h.newHTTPClient(nil).Do(operation.ctx, httpReq)
+	resp, errDo := h.newHTTPClientWithProxy(nil, oauthProxyURLFromContext(operation.ctx)).Do(operation.ctx, httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -312,7 +312,7 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 		operation.finish()
 	}()
 
-	resp, errDo := h.newHTTPClient(nil).DoStream(streamCtx, httpReq)
+	resp, errDo := h.newHTTPClientWithProxy(nil, oauthProxyURLFromContext(streamCtx)).DoStream(streamCtx, httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -462,9 +462,7 @@ func (h *Host) callHostStreamEmit(ctx context.Context, request []byte) ([]byte, 
 		return nil, fmt.Errorf("decode stream emit request: %w", errUnmarshal)
 	}
 	chunk := pluginapi.ExecutorStreamChunk{Payload: append([]byte(nil), req.Payload...)}
-	if req.Error != "" {
-		chunk.Err = fmt.Errorf("%s", req.Error)
-	}
+	chunk.Err = rpcStreamError(req.Error, req.ErrorDetail)
 	if errEmit := h.streams.emit(ctx, req.StreamID, chunk); errEmit != nil {
 		return nil, errEmit
 	}
@@ -476,7 +474,11 @@ func (h *Host) callHostStreamClose(request []byte) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode stream close request: %w", errUnmarshal)
 	}
-	h.streams.closeWithDiagnostic(req.StreamID, req.Error, req.ErrorCode, req.Retryable, req.HTTPStatus, req.FailureReason)
+	if req.ErrorDetail != nil {
+		h.streams.closeWithError(req.StreamID, rpcStreamError(req.Error, req.ErrorDetail))
+	} else {
+		h.streams.closeWithDiagnostic(req.StreamID, req.Error, req.ErrorCode, req.Retryable, req.HTTPStatus, req.FailureReason)
+	}
 	return marshalRPCResult(rpcEmptyResponse{})
 }
 
@@ -524,6 +526,7 @@ func modelExecutionRequestFromPlugin(req pluginapi.HostModelExecutionRequest, sk
 		AuthID:                  req.AuthID,
 		ProxyURL:                strings.TrimSpace(req.ProxyURL),
 		Path:                    strings.TrimSpace(req.Path),
+		CallerScope:             strings.TrimSpace(req.CallerScope),
 	}
 }
 

@@ -92,7 +92,7 @@ func (h *Host) InterceptRequestBeforeAuth(ctx context.Context, req pluginapi.Req
 }
 
 func (h *Host) InterceptRequestBeforeAuthExcept(ctx context.Context, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
-	return h.interceptRequest(ctx, req, "RequestInterceptor.InterceptRequestBeforeAuth", skipPluginID)
+	return h.interceptRequest(ctx, req, true, "RequestInterceptor.InterceptRequestBeforeAuth", skipPluginID)
 }
 
 func (h *Host) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
@@ -100,10 +100,10 @@ func (h *Host) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.Requ
 }
 
 func (h *Host) InterceptRequestAfterAuthExcept(ctx context.Context, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
-	return h.interceptRequest(ctx, req, "RequestInterceptor.InterceptRequestAfterAuth", skipPluginID)
+	return h.interceptRequest(ctx, req, false, "RequestInterceptor.InterceptRequestAfterAuth", skipPluginID)
 }
 
-func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest, method string, skipPluginID string) pluginapi.RequestInterceptResponse {
+func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest, beforeAuth bool, method string, skipPluginID string) pluginapi.RequestInterceptResponse {
 	current := pluginapi.RequestInterceptResponse{
 		Headers: cloneHeader(req.Headers),
 	}
@@ -122,12 +122,24 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 		}
 		nextReq := req
 		nextReq.Headers = cloneHeader(current.Headers)
-		if len(currentBase) > 0 {
+		if requestInterceptorOmitsBody(record, beforeAuth) {
+			nextReq.Body = nil
+		} else if len(currentBase) > 0 {
 			nextReq.Body = bytes.Clone(currentBase)
 		} else {
 			nextReq.Body = nil
 		}
 		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
+		if nextReq.CallerScope == "" {
+			if scope, ok := nextReq.Metadata[coreexecutor.CallerScopeMetadataKey].(string); ok {
+				nextReq.CallerScope = strings.TrimSpace(scope)
+			}
+		} else if _, ok := nextReq.Metadata[coreexecutor.CallerScopeMetadataKey]; !ok {
+			if nextReq.Metadata == nil {
+				nextReq.Metadata = make(map[string]any, 1)
+			}
+			nextReq.Metadata[coreexecutor.CallerScopeMetadataKey] = strings.TrimSpace(nextReq.CallerScope)
+		}
 		if current.Path != "" {
 			if nextReq.Metadata == nil {
 				nextReq.Metadata = make(map[string]any, 1)
@@ -369,6 +381,17 @@ func (h *Host) StreamChunkPayloadIncludesHistory() bool {
 		}
 	}
 	return false
+}
+
+func requestInterceptorOmitsBody(record capabilityRecord, beforeAuth bool) bool {
+	if record.plugin.SchemaVersion < pluginabi.SchemaVersionRequestInterceptorOmitBody {
+		return false
+	}
+	caps := record.plugin.Capabilities
+	if caps.RequestInterceptor == nil {
+		return false
+	}
+	return requestInterceptorWantsOmitBody(caps, beforeAuth)
 }
 
 func (h *Host) HasRequestInterceptors() bool {

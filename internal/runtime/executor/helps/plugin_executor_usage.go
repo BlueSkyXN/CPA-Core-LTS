@@ -194,6 +194,11 @@ func MergeStreamUsageDetail(existing, update usage.Detail) usage.Detail {
 	}
 	inputBreakdown := inputSource.TokenBreakdown
 	outputBreakdown := outputSource.TokenBreakdown
+	if (inputBreakdown.Valid() && inputBreakdown.Quality == usage.TokenAccountingQualityInconsistent) ||
+		(outputBreakdown.Valid() && outputBreakdown.Quality == usage.TokenAccountingQualityInconsistent) {
+		merged.TokenBreakdown = invalidUsageTokenBreakdown(merged.TotalTokens)
+		return merged
+	}
 	if inputBreakdown.Valid() && outputBreakdown.Valid() &&
 		inputBreakdown.Quality == usage.TokenAccountingQualityComplete &&
 		outputBreakdown.Quality == usage.TokenAccountingQualityComplete &&

@@ -33,13 +33,52 @@ func TestClaudeMessageJSONResponses(t *testing.T) {
 
 func TestClaudeMessageJSONResponsesRejectsUnsupported(t *testing.T) {
 	for _, body := range []string{
-		`{"type":"message","id":"x","role":"assistant","content":[],"stop_reason":"pause_turn"}`,
+		`{"type":"message","id":"x","role":"assistant","content":[],"stop_reason":"spurious_reason"}`,
+		`{"type":"message","id":"x","role":"assistant","content":[],"stop_reason":""}`,
 		`{"type":"message","id":"x","role":"assistant","content":[{"type":"unknown_content","text":"lost"}],"stop_reason":"end_turn"}`,
 		`{"type":"message","role":"assistant","content":[],"stop_reason":"end_turn"}`,
 	} {
 		if out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, []byte(body), nil); len(out) != 0 {
 			t.Fatalf("unsupported JSON became success: %s", out)
 		}
+	}
+}
+
+// pause_turn, refusal, sensitive and model_context_window_exceeded are valid
+// Anthropic stop reasons the plugin validator must accept; the terminal event
+// maps each one instead of failing with an unsupported-response error.
+func TestClaudeMessageJSONResponsesStopReasonTerminals(t *testing.T) {
+	for _, tc := range []struct {
+		stop, status, event string
+	}{
+		{"pause_turn", "completed", "response.completed"},
+		{"refusal", "incomplete", "response.incomplete"},
+		{"sensitive", "incomplete", "response.incomplete"},
+		{"model_context_window_exceeded", "incomplete", "response.incomplete"},
+	} {
+		t.Run(tc.stop, func(t *testing.T) {
+			body := []byte(`{"type":"message","id":"msg-stop","role":"assistant","model":"fixture","content":[{"type":"text","text":"partial"}],"stop_reason":"` + tc.stop + `","usage":{"input_tokens":3,"output_tokens":5}}`)
+			var param any = &PluginResponseState{}
+			out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, body, &param)
+			root := gjson.ParseBytes(out)
+			if !root.Exists() || root.Get("status").String() != tc.status {
+				t.Fatalf("status = %q, want %q: %s", root.Get("status").String(), tc.status, out)
+			}
+			switch tc.stop {
+			case "pause_turn":
+				if root.Get("end_turn").Bool() {
+					t.Fatal("pause_turn end_turn must be false")
+				}
+			default:
+				want := "content_filter"
+				if tc.stop == "model_context_window_exceeded" {
+					want = "max_output_tokens"
+				}
+				if root.Get("incomplete_details.reason").String() != want {
+					t.Fatalf("incomplete_details.reason = %q", root.Get("incomplete_details.reason").String())
+				}
+			}
+		})
 	}
 }
 

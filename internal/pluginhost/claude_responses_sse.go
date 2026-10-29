@@ -276,7 +276,7 @@ func claudePluginHasResponsesTerminal(frames [][]byte) bool {
 				continue
 			}
 			event := gjson.ParseBytes(payload)
-			if (event.Get("type").String() == "response.completed" || event.Get("type").String() == "response.incomplete") && validClaudePluginResponsesJSON([]byte(event.Get("response").Raw)) {
+			if (event.Get("type").String() == "response.completed" || event.Get("type").String() == "response.incomplete" || event.Get("type").String() == "response.failed") && validClaudePluginResponsesJSON([]byte(event.Get("response").Raw)) {
 				return true
 			}
 		}
@@ -290,7 +290,9 @@ func validClaudePluginResponsesJSON(body []byte) bool {
 	}
 	root := gjson.ParseBytes(body)
 	status := root.Get("status").String()
-	return root.Get("object").String() == "response" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("output").IsArray() && (status == "completed" || status == "incomplete")
+	// `failed` is a valid terminal state: model_context_window_exceeded maps to
+	// response.failed with a context_length_exceeded error object.
+	return root.Get("object").String() == "response" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("output").IsArray() && (status == "completed" || status == "incomplete" || status == "failed")
 }
 
 func validClaudePluginChatJSON(body []byte) bool {

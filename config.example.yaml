@@ -459,6 +459,10 @@ upstream:
         # later creates on the socket do not re-enter per-request plugin interception, so use it
         # for native Codex traffic without per-request plugins.
         response-steering: false
+        # 官方 Codex OAuth HTTP 请求压缩；显式 outbound.request-compression: none 优先禁用。
+        upstream-request-compression: false
+        upstream-request-compression-min-bytes: 1024
+        websocket-compression: true
 access:
     # API keys for authentication
     api-keys:
@@ -479,6 +483,11 @@ server:
     port: 8317
     # 全局 HTTP 请求体上限；0 关闭。标准协议仍受 api-request-body-max-bytes 约束。
     max-request-body-bytes: 0
+    # 按客户端 Accept-Encoding 协商 HTTP/SSE 压缩；WebSocket 使用独立协商。
+    # 压缩 encoder 会在流存活期间占用内存，实际占用受复用池历史影响。
+    response-compression:
+        enabled: true
+        min-bytes: 1024
     # GitHub 请求共享 token；留空时使用 GITHUB_TOKEN 环境变量。
     github-token: ""
     # IP addresses or CIDRs of proxies allowed to supply forwarded client IP headers.

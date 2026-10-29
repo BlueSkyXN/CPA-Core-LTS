@@ -357,7 +357,7 @@ func TestWebSearchResultWithoutMatchingUseKeepsContinuationResult(t *testing.T) 
 		if got := item.Get("results.0.encrypted_content").String(); got != "ENC_P" {
 			t.Fatalf("continuation result = %q", got)
 		}
-		if got := item.Get("status").String() != "completed"; got {
+		if item.Get("status").String() != "completed" {
 			t.Fatalf("continuation status = %q", item.Get("status").String())
 		}
 	}

@@ -130,14 +130,18 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	}
 	reporter.SetOutboundServiceTier(body)
 	reporter.SetTranslatedReasoningEffort(body, "codex")
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
-	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
+	prepareHeaders := func(request *http.Request) {
+		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
+		applyFinalCodexClientHeaders(request.Header, modelHeaderProfile, auth)
+		applyCodexOutboundMetadataHeaders(request.Header, &identityState)
+		alignCodexContentEncoding(request)
+	}
+	prepareHeaders(httpReq)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := doCodexRequest(httpClient, httpReq, body, prepareHeaders, nil)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return resp, errDo
@@ -157,7 +161,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+		err = newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, data, e.modelLevelCooling())
 		return resp, err
 	}
 
@@ -240,14 +244,18 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	}
 	reporter.SetOutboundServiceTier(body)
 	reporter.SetTranslatedReasoningEffort(body, "codex")
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
-	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
+	prepareHeaders := func(request *http.Request) {
+		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
+		applyFinalCodexClientHeaders(request.Header, modelHeaderProfile, auth)
+		applyCodexOutboundMetadataHeaders(request.Header, &identityState)
+		alignCodexContentEncoding(request)
+	}
+	prepareHeaders(httpReq)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := doCodexRequest(httpClient, httpReq, body, prepareHeaders, nil)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return nil, errDo
@@ -264,7 +272,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+		err = newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, data, e.modelLevelCooling())
 		return nil, err
 	}
 
@@ -377,18 +385,22 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	httpReq.Body = io.NopCloser(bytes.NewReader(body))
 	httpReq.ContentLength = int64(len(body))
 	httpReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-	reporter.SetOutboundServiceTier(body)
-	applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
-	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	if contentType != "" {
-		httpReq.Header.Set("Content-Type", contentType)
+	prepareHeaders := func(request *http.Request) {
+		reporter.SetOutboundServiceTier(body)
+		applyCodexDirectImageHeaders(request, auth, apiKey, false, e.cfg, opts.Headers)
+		applyFinalCodexClientHeaders(request.Header, modelHeaderProfile, auth)
+		if contentType != "" {
+			request.Header.Set("Content-Type", contentType)
+		}
+		applyCodexOutboundMetadataHeaders(request.Header, &identityState)
+		alignCodexContentEncoding(request)
 	}
-	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
+	prepareHeaders(httpReq)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := doCodexRequest(httpClient, httpReq, body, prepareHeaders, nil)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return resp, errDo
@@ -408,7 +420,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+		err = newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, data, e.modelLevelCooling())
 		return resp, err
 	}
 
@@ -448,18 +460,22 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	httpReq.Body = io.NopCloser(bytes.NewReader(body))
 	httpReq.ContentLength = int64(len(body))
 	httpReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-	reporter.SetOutboundServiceTier(body)
-	applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
-	applyFinalCodexClientHeaders(httpReq.Header, modelHeaderProfile, auth)
-	if contentType != "" {
-		httpReq.Header.Set("Content-Type", contentType)
+	prepareHeaders := func(request *http.Request) {
+		reporter.SetOutboundServiceTier(body)
+		applyCodexDirectImageHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
+		applyFinalCodexClientHeaders(request.Header, modelHeaderProfile, auth)
+		if contentType != "" {
+			request.Header.Set("Content-Type", contentType)
+		}
+		applyCodexOutboundMetadataHeaders(request.Header, &identityState)
+		alignCodexContentEncoding(request)
 	}
-	applyCodexOutboundMetadataHeaders(httpReq.Header, &identityState)
+	prepareHeaders(httpReq)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := doCodexRequest(httpClient, httpReq, body, prepareHeaders, nil)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 		return nil, errDo
@@ -476,7 +492,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+		err = newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, data, e.modelLevelCooling())
 		return nil, err
 	}
 

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	neturl "net/url"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
@@ -20,6 +23,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -85,6 +89,7 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	alignCodexContentEncoding(req)
 	return nil
 }
 
@@ -143,12 +148,20 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 			return nil, nil, state, err
 		}
 		body, outbound := e.adaptOAuthCache(ctx, auth, req, from, url, userPayload, body, headers, base, &state)
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		wireBody := e.configuredWireBody(ctx, auth, url, body, headers)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(wireBody))
 		if err != nil {
 			state.affinity.close()
 			return nil, nil, state, err
 		}
 		request.Header = outbound
+		alignCodexContentEncoding(request)
+		if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && request.Header.Get("Accept-Encoding") == "" {
+			request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+		}
+		if len(wireBody) < len(body) {
+			request = request.WithContext(helps.WithUpstreamPayloadBytes(request.Context(), len(body)))
+		}
 		return request, body, state, nil
 	}
 	var cache helps.CodexCache
@@ -204,17 +217,49 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
+	wireBody := e.configuredWireBody(ctx, auth, url, rawJSON, headers)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(wireBody))
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
 	}
 	if turnMetadata := rawHeaderValueCaseInsensitive(headers, "X-Codex-Turn-Metadata"); turnMetadata != "" {
 		httpReq.Header["X-Codex-Turn-Metadata"] = []string{turnMetadata}
 	}
+	if len(wireBody) < len(rawJSON) {
+		httpReq.Header.Set("Content-Encoding", "zstd")
+	}
+	alignCodexContentEncoding(httpReq)
+	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && httpReq.Header.Get("Accept-Encoding") == "" {
+		httpReq.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	}
 	if cache.ID != "" {
 		httpReq.Header.Set("Session-Id", cache.ID)
 	}
+	if len(wireBody) < len(rawJSON) {
+		httpReq = httpReq.WithContext(helps.WithUpstreamPayloadBytes(httpReq.Context(), len(rawJSON)))
+	}
 	return httpReq, rawJSON, identityState, nil
+}
+
+func (e *CodexExecutor) configuredWireBody(ctx context.Context, auth *cliproxyauth.Auth, url string, rawJSON []byte, headers http.Header) []byte {
+	wireBody := rawJSON
+	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && e.cfg.Codex.Outbound.EffectiveRequestCompression() != config.CodexRequestCompressionNone && auth != nil &&
+		!codexAuthUsesAPIKey(auth) && !codexUseSIWCForRequest(ctx, auth, headers) &&
+		len(rawJSON) >= e.cfg.Codex.RequestCompressionMinBytes() {
+		parsedURL, errParse := neturl.Parse(url)
+		if errParse == nil && strings.EqualFold(parsedURL.Hostname(), "chatgpt.com") && strings.HasPrefix(parsedURL.Path, "/backend-api/codex/") {
+			encoder, errNewWriter := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+			if errNewWriter == nil {
+				compressed := encoder.EncodeAll(rawJSON, nil)
+				if errClose := encoder.Close(); errClose != nil {
+					log.Errorf("codex executor: close request encoder error: %v", errClose)
+				} else if len(compressed) < len(rawJSON) {
+					wireBody = compressed
+				}
+			}
+		}
+	}
+	return wireBody
 }
 
 func finalizeCodexPayloadForWire(ctx context.Context, body []byte, fallbackModel string) ([]byte, error) {
@@ -347,6 +392,131 @@ func codexIdentityConfuseEnabled(cfg *config.Config) bool {
 func codexIdentityConfuseUUID(authID string, kind string, value string) string {
 	name := strings.Join([]string{"cli-proxy-api", "codex", "identity-confuse", kind, strings.TrimSpace(authID), strings.TrimSpace(value)}, ":")
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+}
+
+// alignCodexContentEncoding inspects a replay copy without consuming the live request body.
+func alignCodexContentEncoding(req *http.Request) {
+	if req == nil || req.GetBody == nil {
+		return
+	}
+	body, errGetBody := req.GetBody()
+	if errGetBody != nil || body == nil {
+		return
+	}
+	defer func() {
+		if errClose := body.Close(); errClose != nil {
+			log.Errorf("codex executor: close request body copy error: %v", errClose)
+		}
+	}()
+	prefix, errRead := io.ReadAll(io.LimitReader(body, 512))
+	if errRead != nil {
+		return
+	}
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	plain := bytes.TrimSpace(prefix)
+	jsonPlaintext := len(plain) > 0 && (plain[0] == '{' || plain[0] == '[')
+	multipartPlaintext := strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Type"))), "multipart/") && bytes.HasPrefix(plain, []byte("--"))
+	if jsonPlaintext || multipartPlaintext {
+		req.Header.Del("Content-Encoding")
+		return
+	}
+	encodingCount := 0
+	for _, value := range req.Header.Values("Content-Encoding") {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token != "" && !strings.EqualFold(token, "identity") {
+				encodingCount++
+			}
+		}
+	}
+	// Magic identifies only the outermost layer, so trust declared encoding chains.
+	if encodingCount > 1 {
+		return
+	}
+	switch {
+	case bytes.HasPrefix(prefix, []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		req.Header.Set("Content-Encoding", "zstd")
+	case bytes.HasPrefix(prefix, []byte{0x1f, 0x8b}):
+		req.Header.Set("Content-Encoding", "gzip")
+	default:
+		// Our zstd encoder always emits its magic; preserve opaque non-zstd encodings.
+		var remaining []string
+		removedZstd := false
+		for _, value := range req.Header.Values("Content-Encoding") {
+			for _, token := range strings.Split(value, ",") {
+				token = strings.TrimSpace(token)
+				if strings.EqualFold(token, "zstd") {
+					removedZstd = true
+				} else if token != "" {
+					remaining = append(remaining, token)
+				}
+			}
+		}
+		if removedZstd {
+			req.Header.Del("Content-Encoding")
+			if len(remaining) > 0 {
+				req.Header.Set("Content-Encoding", strings.Join(remaining, ", "))
+			}
+		}
+	}
+}
+
+func decodeCodexUpstreamResponse(resp *http.Response) error {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	decoded, errDecode := helps.DecodeResponseBody(resp.Body, resp.Header)
+	if errDecode != nil {
+		return fmt.Errorf("codex executor: decode upstream response: %w", errDecode)
+	}
+	resp.Body = decoded
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	return nil
+}
+
+// doCodexRequest retries a rejected zstd body once without rerunning payload rules.
+func doCodexRequest(client *http.Client, req *http.Request, upstreamBody []byte, prepareHeaders func(*http.Request), responseReady func(*http.Response)) (*http.Response, error) {
+	alignCodexContentEncoding(req)
+	compressed := req.Header.Get("Content-Encoding") == "zstd"
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		return nil, errDo
+	}
+	if responseReady != nil {
+		responseReady(resp)
+	}
+	if errDecode := decodeCodexUpstreamResponse(resp); errDecode != nil {
+		return nil, errDecode
+	}
+	if !compressed || (resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusUnsupportedMediaType) {
+		return resp, nil
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		log.Errorf("codex executor: close rejected response body error: %v", errClose)
+	}
+	plainReq, errNewRequest := http.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), bytes.NewReader(upstreamBody))
+	if errNewRequest != nil {
+		return nil, errNewRequest
+	}
+	plainReq.Header = req.Header.Clone()
+	plainReq.Header.Del("Content-Encoding")
+	prepareHeaders(plainReq)
+	alignCodexContentEncoding(plainReq)
+	resp, errDo = client.Do(plainReq)
+	if errDo != nil {
+		return nil, errDo
+	}
+	if responseReady != nil {
+		responseReady(resp)
+	}
+	if errDecode := decodeCodexUpstreamResponse(resp); errDecode != nil {
+		return nil, errDecode
+	}
+	return resp, nil
 }
 
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {

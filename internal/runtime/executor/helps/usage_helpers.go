@@ -76,6 +76,7 @@ type UsageReporter struct {
 	clientRequestEncoding string
 	sizeMu                sync.Mutex
 	upstreamAttempt       *upstreamSizeAttempt
+	selectionID           string
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
@@ -141,6 +142,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	reporter := &UsageReporter{
 		requestID:       uuid.NewString(),
 		traceID:         traceID,
+		selectionID:     usage.SelectionIDFromContext(ctx),
 		provider:        provider,
 		baseURL:         usage.SafeBaseURL(baseURL),
 		model:           model,
@@ -846,6 +848,9 @@ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) 
 			ResponseBytes: record.Size.UpstreamResponseBytes,
 		})
 	}
+	if r != nil {
+		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
+	}
 	usage.PublishRecord(ctx, record)
 }
 
@@ -863,6 +868,14 @@ func (r *UsageReporter) TraceID() string {
 		return ""
 	}
 	return r.traceID
+}
+
+// SelectionID returns the scheduler selection ID for this reporter.
+func (r *UsageReporter) SelectionID() string {
+	if r == nil {
+		return ""
+	}
+	return r.selectionID
 }
 
 // IsNativeKey reports whether the client API key was authenticated by CPA's native config provider.
@@ -943,6 +956,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 			r.outboundTier,
 		),
 		ResponseCyberProgram: detail.ResponseCyberProgram,
+		SelectionID:          r.selectionID,
 		ResponseModel:        responseModel,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
@@ -992,10 +1006,14 @@ func failFromErrors(errs ...error) usage.Failure {
 				body = reason
 			}
 		}
-		return usage.Failure{
+		fail := usage.Failure{
 			Body:       body,
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
+		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
+			fail.Code = usage.FailureStreamTruncatedCode
+		}
+		return fail
 	}
 	return usage.Failure{}
 }
@@ -1099,9 +1117,12 @@ func APIKeyFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
+	if usage.HasCapturedIdentity(ctx) {
+		return usage.APIKeyFromContext(ctx)
+	}
 	ginCtx, ok := ctx.Value("gin").(*gin.Context)
 	if !ok || ginCtx == nil {
-		return ""
+		return usage.APIKeyFromContext(ctx)
 	}
 	if v, exists := ginCtx.Get("userApiKey"); exists {
 		switch value := v.(type) {
@@ -1113,13 +1134,16 @@ func APIKeyFromContext(ctx context.Context) string {
 			return fmt.Sprintf("%v", value)
 		}
 	}
-	return ""
+	return usage.APIKeyFromContext(ctx)
 }
 
 // AccessProviderFromContext extracts the client authentication provider identifier from the context.
 func AccessProviderFromContext(ctx context.Context) string {
 	if provider := usage.AccessProviderFromContext(ctx); provider != "" {
 		return provider
+	}
+	if usage.HasCapturedIdentity(ctx) {
+		return ""
 	}
 	if ctx == nil {
 		return ""

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -169,12 +170,36 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 				bufferedSendable++
 			}
 
+			appendCommentaryContent := func(part gjson.Result) {
+				if messageRole != "assistant" {
+					return
+				}
+				text := part.Get("thinking").String()
+				if text == "" {
+					return
+				}
+				// A relayed commentary block becomes its own assistant message item
+				// carrying phase "commentary", mirroring the Codex output item it
+				// came from. The internal marker is consumed here and never
+				// forwarded upstream.
+				flushMessage()
+				content := []byte(`{"type":"output_text","text":""}`)
+				content, _ = sjson.SetBytes(content, "text", text)
+				message := []byte(`{"type":"message","role":"assistant","phase":"commentary"}`)
+				message, _ = sjson.SetRawBytes(message, "content", translatorcommon.JoinRawArray([][]byte{content}))
+				inputItems = append(inputItems, message)
+			}
+
 			appendReasoningContent := func(part gjson.Result) {
 				if messageRole != "assistant" {
 					return
 				}
 
 				rawSignature := part.Get("signature").String()
+				if sigcompat.IsCodexCommentarySignatureMarker(rawSignature) {
+					appendCommentaryContent(part)
+					return
+				}
 				signature, ok := translatorcommon.CodexReplaySignatureForTarget(signatureTargetModel, rawSignature)
 				if !ok {
 					if preserveEmptyThinkingBlocks && strings.TrimSpace(rawSignature) == "" {

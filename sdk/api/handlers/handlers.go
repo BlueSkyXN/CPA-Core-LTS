@@ -279,6 +279,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
 	}
+	if finalizedFormatCallback := finalizedResponseFormatCallbackFromContext(ctx); finalizedFormatCallback != nil {
+		meta[coreexecutor.FinalizedResponseFormatCallbackMetadataKey] = finalizedFormatCallback
+	}
 	if ginCtx != nil && !websocket.IsWebSocketUpgrade(ginCtx.Request) {
 		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
 			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
@@ -355,6 +358,28 @@ func requestCallerScope(ginCtx *gin.Context) string {
 		return ""
 	}
 	return coresession.CallerScope(fmt.Sprint(value))
+}
+
+func addCallerScopeMetadata(meta map[string]any, callerScope string) {
+	if meta == nil {
+		return
+	}
+	callerScope = strings.TrimSpace(callerScope)
+	if callerScope == "" {
+		return
+	}
+	meta[coreexecutor.CallerScopeMetadataKey] = callerScope
+}
+
+func callerScopeFromMetadata(meta map[string]any) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	value, ok := meta[coreexecutor.CallerScopeMetadataKey].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func addAuthSelectionModelMetadata(meta map[string]any, model string) {
@@ -630,6 +655,8 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		}()
 	}
 	newCtx = context.WithValue(newCtx, "gin", c)
+	newCtx = coreusage.CaptureIdentity(newCtx)
+	newCtx = coreauth.WithCodexClientRequest(newCtx, coreauth.IsCodexClientRequest(newCtx))
 	newCtx = context.WithValue(newCtx, "handler", handler)
 	return newCtx, func(params ...interface{}) {
 		if c != nil {
