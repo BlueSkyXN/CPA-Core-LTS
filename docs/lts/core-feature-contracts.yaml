@@ -18,6 +18,29 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: reasoning-effort-policy
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Model-scoped semantic effort ownership must survive protocol translation, plugin execution and raw payload overrides while preserving usage attribution.
+    config_keys:
+      - requests.reasoning-effort
+    core_files:
+      - internal/config/reasoning_effort.go
+      - internal/thinking/effort_policy.go
+      - internal/runtime/executor/helps/reasoning_effort_policy.go
+      - internal/pluginhost/adapters_executors.go
+      - internal/api/handlers/management/handler.go
+      - docs/lts/reasoning-effort-policy.md
+      - config.example.yaml
+    required_markers:
+      - reasoning-effort
+      - X-CPA-REASONING-EFFORT-POLICY
+    validation:
+      - go test ./internal/config ./internal/runtime/executor/helps ./internal/watcher -run 'ReasoningEffort|SemanticEffort'
+      - sh examples/plugin/zcode-coding-plan/test-cpa.sh
+
   - id: zcode-codex-context-usage
     kind: lts-feature
     support: optional

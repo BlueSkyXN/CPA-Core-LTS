@@ -176,6 +176,12 @@ func TestCodexDuplexSteeringLifecycle(t *testing.T) {
 }
 
 func TestCodexDuplexSIWCSteerStripsConfigurationUpdates(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprint(force), func(t *testing.T) { testCodexDuplexSIWCSteerPolicy(t, force) })
+	}
+}
+
+func testCodexDuplexSIWCSteerPolicy(t *testing.T, force bool) {
 	captured := make(chan []byte, 1)
 	serverDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -223,7 +229,11 @@ func TestCodexDuplexSIWCSteerStripsConfigurationUpdates(t *testing.T) {
 	defer cancel()
 	input := make(chan core.WebsocketInput, 1)
 	ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
-	exec := NewCodexWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{ResponseSteering: true}})
+	cfg := &config.Config{Codex: config.CodexConfig{ResponseSteering: true}}
+	if force {
+		cfg.ReasoningEffort = []config.ReasoningEffortRule{{Models: []string{"gpt-6-astra"}, Mode: "force", Effort: "max"}}
+	}
+	exec := NewCodexWebsocketsExecutor(cfg)
 	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
 	req := core.Request{
 		Model:   "gpt-6-astra",

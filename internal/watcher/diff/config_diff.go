@@ -244,6 +244,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if !reflect.DeepEqual(oldCfg.Payload, newCfg.Payload) {
 		changes = appendPayloadConfigChanges(changes, oldCfg.Payload, newCfg.Payload)
 	}
+	if !reflect.DeepEqual(oldCfg.ReasoningEffort, newCfg.ReasoningEffort) {
+		changes = append(changes, fmt.Sprintf("requests.reasoning-effort: updated (%d -> %d rules)", len(oldCfg.ReasoningEffort), len(newCfg.ReasoningEffort)))
+	}
 
 	// API keys (redacted) and counts
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {

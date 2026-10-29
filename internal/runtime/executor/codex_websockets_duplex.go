@@ -360,6 +360,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					if codexUseSIWCForRequest(ctx, auth, opts.Headers) {
 						payload = thinking.StripConfigurationUpdates(payload)
 					}
+					var policyErr error
+					payload, policyErr = helps.ApplyConfiguredSteerThinking(e.cfg, payload, steerReq, opts)
+					if policyErr != nil {
+						if !reject(policyErr.Error()) {
+							return
+						}
+						continue
+					}
 					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, opts)(payload)
 					payload, _ = sjson.SetBytes(payload, "type", "response.steer")
 					parent := gjson.GetBytes(payload, "previous_response_id").String()

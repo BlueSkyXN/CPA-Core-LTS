@@ -577,7 +577,11 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 	if err != nil {
 		return nil, translatedPayload{}, err
 	}
-	payload, err = helps.ApplyThinkingWithSourcePayload(payload, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
+	if _, active := helps.RequestEffortOverride(e.cfg, req, opts); active {
+		payload, err = helps.ApplyConfiguredRequestThinking(e.cfg, payload, req, opts, from.String(), to.String(), e.Identifier())
+	} else {
+		payload, err = helps.ApplyThinkingWithSourcePayload(payload, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
+	}
 	if err != nil {
 		return nil, translatedPayload{}, err
 	}
@@ -609,7 +613,9 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 		payload, _ = sjson.DeleteBytes(payload, "tools")
 		payload, _ = sjson.DeleteBytes(payload, "safetySettings")
 	}
+	policyPayload := payload
 	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers)
+	payload = helps.ProtectConfiguredEffort(e.cfg, policyPayload, payload, to.String(), e.Identifier(), req, opts)
 	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
 }
 

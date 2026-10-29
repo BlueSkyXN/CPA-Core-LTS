@@ -933,7 +933,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 
-	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
+	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
 	if err != nil {
 		return nil, err
 	}

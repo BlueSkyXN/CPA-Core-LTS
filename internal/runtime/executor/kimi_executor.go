@@ -148,7 +148,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, fmt.Errorf("kimi executor: failed to set model in payload: %w", err)
 	}
 
-	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), "kimi", e.Identifier())
+	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), "kimi", e.Identifier())
 	if err != nil {
 		return resp, err
 	}
@@ -163,7 +163,9 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	body = normalizeKimiTemperature(body)
 
 	url := helps.ResolveKimiChatURL(auth)
+	policyPayload := body
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -282,7 +284,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, fmt.Errorf("kimi executor: failed to set model in payload: %w", err)
 	}
 
-	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), "kimi", e.Identifier())
+	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), "kimi", e.Identifier())
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +302,9 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	body = normalizeKimiTools(body)
 	body = normalizeKimiTemperature(body)
 	url := helps.ResolveKimiChatURL(auth)
+	policyPayload := body
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 	reporter.EnableSemanticTiming(to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -442,7 +446,7 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 	body = helps.SetBoolIfDifferent(body, "stream", false)
 
 	var errThinking error
-	body, errThinking = helps.ApplyRequestThinking(body, req, opts, opts.SourceFormat.String(), sdktranslator.FormatCodex.String(), e.Identifier())
+	body, errThinking = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, opts.SourceFormat.String(), sdktranslator.FormatCodex.String(), e.Identifier())
 	if errThinking != nil {
 		return resp, errThinking
 	}
@@ -463,7 +467,9 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 	body = normalizeKimiTemperature(body)
 
 	url := helps.ResolveKimiResponsesURL(auth)
+	policyPayload := body
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "openai-response", opts.SourceFormat.String(), "", body, req.Payload, requestedModel, requestPath, opts.Headers)
+	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "openai-response", e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 	httpReq, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewRequest != nil {
@@ -580,7 +586,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 
 	var errThinking error
-	body, errThinking = helps.ApplyRequestThinking(body, req, opts, opts.SourceFormat.String(), sdktranslator.FormatCodex.String(), e.Identifier())
+	body, errThinking = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, opts.SourceFormat.String(), sdktranslator.FormatCodex.String(), e.Identifier())
 	if errThinking != nil {
 		return nil, errThinking
 	}
@@ -600,7 +606,9 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 	body = normalizeKimiTools(body)
 	body = normalizeKimiTemperature(body)
 	url := helps.ResolveKimiResponsesURL(auth)
+	policyPayload := body
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "openai-response", opts.SourceFormat.String(), "", body, req.Payload, requestedModel, requestPath, opts.Headers)
+	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "openai-response", e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
 	reporter.EnableSemanticTiming(sdktranslator.FormatOpenAIResponse.String())
 	httpReq, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

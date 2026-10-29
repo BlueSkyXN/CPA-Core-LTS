@@ -166,12 +166,16 @@ func geminiInteractionsSameByteSlice(a, b []byte) bool {
 }
 
 // ApplyGeminiInteractionsThinking applies thinking/reasoning configuration to the interactions payload.
-func ApplyGeminiInteractionsThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) ([]byte, error) {
+func ApplyGeminiInteractionsThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, configs ...*config.Config) ([]byte, error) {
 	fromFormat := opts.SourceFormat.String()
 	if strings.TrimSpace(fromFormat) == "" {
 		fromFormat = sdktranslator.FormatInteractions.String()
 	}
-	return ApplyRequestThinking(body, req, opts, fromFormat, sdktranslator.FormatInteractions.String(), "gemini")
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	return ApplyConfiguredRequestThinking(cfg, body, req, opts, fromFormat, sdktranslator.FormatInteractions.String(), "gemini")
 }
 
 // ApplyGeminiInteractionsRevisionHeader sets the default Api-Revision header on outgoing HTTP requests.

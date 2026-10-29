@@ -51,6 +51,11 @@ forbid_grep_ci() {
   fi
 }
 
+require_path docs/lts/reasoning-effort-policy.md
+require_grep 'reasoning-effort' internal/config/config_v8.go config.example.yaml
+require_grep 'X-CPA-REASONING-EFFORT-POLICY' internal/api/handlers/management/handler.go
+require_grep 'X-CPA-REASONING-EFFORT-POLICY' internal/api/server_middleware.go
+
 require_path internal/pluginhost/zcode_context_usage.go
 require_path docs/lts/zcode-context-usage.md
 require_grep 'zcode-context-usage' config.example.yaml internal/config/config_types.go

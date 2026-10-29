@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -1021,6 +1022,10 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 }
 
 func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
+	var runtimeCfg *config.Config
+	if a.host != nil {
+		runtimeCfg = a.host.currentRuntimeConfig()
+	}
 	inputRequested := executorInputFormat(req, opts)
 	requestedFormat := executorRequestedFormat(req, opts)
 	inputFormat, errInput := a.selectExecutorInputFormat(inputRequested)
@@ -1074,7 +1079,9 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 	if len(nativeReq.Payload) > 0 {
 		var body []byte
 		var errThinking error
-		if translatedClaude {
+		if _, active := helps.RequestEffortOverride(runtimeCfg, req, opts); active {
+			body, errThinking = helps.ApplyConfiguredRequestThinkingWithModelInfo(runtimeCfg, nativeReq.Payload, req, opts, inputRequested.String(), inputFormat.String(), a.provider, modelInfo, updatesChanged)
+		} else if translatedClaude {
 			// Translation already used the selected account's capabilities. Its
 			// normalized native controls remain authoritative in this final pass.
 			body, errThinking = thinking.ApplyThinkingWithModelInfoAndSummary(
@@ -1103,7 +1110,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 	// the request, matching on the suffix-free model like the built-in executors
 	// and using the canonical client format as source protocol.
 	if a.host != nil {
-		if cfg := a.host.currentRuntimeConfig(); cfg != nil {
+		if cfg := runtimeCfg; cfg != nil {
 			finalizeOpts := opts
 			if inputRequested != "" {
 				finalizeOpts.SourceFormat = inputRequested

@@ -809,6 +809,9 @@ func (e *CodexExecutor) validateCodexOpenAIImageClientMetadata(ctx context.Conte
 }
 
 func (e *CodexExecutor) prepareCodexOpenAIImageBody(ctx context.Context, auth *cliproxyauth.Auth, body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, mainModel string) ([]byte, error) {
+	if _, active := helps.RequestEffortOverride(e.cfg, req, opts); active {
+		return nil, thinking.NewThinkingError(thinking.ErrThinkingNotSupported, "reasoning effort policies do not apply to image generation requests")
+	}
 	out := body
 	mainModel = strings.TrimSpace(mainModel)
 	if mainModel == "" {

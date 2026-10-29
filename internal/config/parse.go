@@ -44,6 +44,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
+	if err := cfg.ValidateReasoningEffort(); err != nil {
+		return nil, err
+	}
 	if err := cfg.Codex.CacheAffinity.normalizeAndValidate(); err != nil {
 		return nil, err
 	}
