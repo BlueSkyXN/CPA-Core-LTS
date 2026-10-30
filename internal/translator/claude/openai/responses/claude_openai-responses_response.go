@@ -10,6 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	applypatch "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/apply-patch"
+	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -78,6 +79,7 @@ type claudeToResponsesState struct {
 
 type claudeResponsesWebSearchItem struct {
 	ToolUseID   string
+	ToolName    string
 	OutputIndex int
 	InputBuf    strings.Builder
 	Results     []byte
@@ -86,7 +88,7 @@ type claudeResponsesWebSearchItem struct {
 }
 
 func (item *claudeResponsesWebSearchItem) render() []byte {
-	return buildResponsesWebSearchCallItem(item.ToolUseID, claudeWebSearchQuery(item.InputBuf.String()), item.Results)
+	return buildResponsesServerWebCallItem(item.ToolUseID, item.ToolName, item.InputBuf.String(), item.Results)
 }
 
 type claudeResponsesMessageItem struct {
@@ -1125,16 +1127,19 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			out = append(out, st.emitFuncItem(idx, false, nextSeq)...)
 			out = append(out, st.emitPendingFuncArgs(idx, nextSeq)...)
 		} else if typ == "server_tool_use" {
-			if name := cb.Get("name").String(); name != claudeWebSearchToolName && name != bigmodelWebSearchPrimeToolName {
-				// Reachability guard: only web_search can be enabled on Claude by
-				// this translator, so anything else means a new upstream tool.
+			if name := cb.Get("name").String(); name != claudeWebSearchToolName && name != bigmodelWebSearchPrimeToolName && name != claudecommon.BigModelWebReaderToolName {
+				// 仅转换已有明确映射的服务端网页工具。
 				log.Debugf("claude->responses: unmapped server_tool_use %q at block %d", name, idx)
 			} else {
 				item := st.startWebSearch(idx, cb.Get("id").String())
+				item.ToolName = name
 				added := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"web_search_call","status":"in_progress","action":{"type":"search","query":""}}}`)
 				added, _ = sjson.SetBytes(added, "sequence_number", nextSeq())
 				added, _ = sjson.SetBytes(added, "output_index", item.OutputIndex)
 				added, _ = sjson.SetBytes(added, "item.id", responsesWebSearchCallID(item.ToolUseID))
+				if name == claudecommon.BigModelWebReaderToolName {
+					added, _ = sjson.SetBytes(added, "item.action", map[string]any{"type": "open_page", "url": cb.Get("input.url").String()})
+				}
 				out = append(out, emitEvent("response.output_item.added", added))
 			}
 		} else if typ == "web_search_tool_result" {
@@ -1159,13 +1164,15 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				log.Debugf("claude->responses: web_search_tool_result without matching server_tool_use at block %d", idx)
 			}
 		} else if typ == "tool_result" {
-			// GLM Coding Plan reports provider-executed search hits as
-			// assistant-side bare tool_result blocks carrying a Python-repr
-			// string; fold them into the matching web_search_call item.
+			// 将 Coding Plan 助手侧结果归入对应的搜索或网页读取 item。
 			if item := st.WebSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && item.Results == nil && cb.Get("content").Type == gjson.String {
 				// The response validator already rejects unparsable payloads and
 				// duplicate results; Results==nil here keeps the first win.
-				item.Results = bigmodelToolResultToResponses(cb.Get("content").String())
+				if item.ToolName == claudecommon.BigModelWebReaderToolName {
+					item.Results = []byte(cb.Raw)
+				} else {
+					item.Results = bigmodelToolResultToResponses(cb.Get("content").String())
+				}
 			}
 		} else if typ == "thinking" || typ == "redacted_thinking" {
 			// start reasoning item
@@ -1596,7 +1603,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 		case "server_tool_use":
 			activeMessageItem = nil
 			name := cb.Get("name").String()
-			if name != claudeWebSearchToolName && name != bigmodelWebSearchPrimeToolName {
+			if name != claudeWebSearchToolName && name != bigmodelWebSearchPrimeToolName && name != claudecommon.BigModelWebReaderToolName {
 				log.Debugf("claude->responses: unmapped server_tool_use %q at block %d", name, idx)
 				return
 			}
@@ -1604,10 +1611,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 			item := newOutputItem("web_search_call", idx)
 			item.id = responsesWebSearchCallID(toolUseID)
 			item.callID = toolUseID
+			item.name = name
 			webSearchByToolID[toolUseID] = item
 			// Streaming announces an empty input and fills it through
 			// input_json_delta; only seed when the query is already present.
-			if input := cb.Get("input"); input.IsObject() && claudeWebSearchQuery(input.Raw) != "" {
+			if input := cb.Get("input"); input.IsObject() && (claudeWebSearchQuery(input.Raw) != "" || name == claudecommon.BigModelWebReaderToolName && input.Get("url").String() != "") {
 				item.args.WriteString(input.Raw)
 			}
 		case "web_search_tool_result":
@@ -1628,7 +1636,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 		case "tool_result":
 			// GLM Coding Plan bare assistant-side search hits (see stream path).
 			if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil && item.results == nil && cb.Get("content").Type == gjson.String {
-				item.results = bigmodelToolResultToResponses(cb.Get("content").String())
+				if item.name == claudecommon.BigModelWebReaderToolName {
+					item.results = []byte(cb.Raw)
+				} else {
+					item.results = bigmodelToolResultToResponses(cb.Get("content").String())
+				}
 			}
 		case "thinking", "redacted_thinking":
 			activeMessageItem = nil
@@ -1787,7 +1799,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 			summary, _ = sjson.SetBytes(summary, "text", outputItem.text.String())
 			item, _ = sjson.SetRawBytes(item, "summary", translatorcommon.JoinRawArray([][]byte{summary}))
 		case "web_search_call":
-			item = buildResponsesWebSearchCallItem(outputItem.callID, claudeWebSearchQuery(outputItem.args.String()), outputItem.results)
+			item = buildResponsesServerWebCallItem(outputItem.callID, outputItem.name, outputItem.args.String(), outputItem.results)
 			item, _ = sjson.SetBytes(item, "status", claudeResponsesWebSearchStatus(stopReason, itemStatus, len(outputItem.results) > 0))
 		case "message":
 			item = []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)

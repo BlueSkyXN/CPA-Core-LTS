@@ -138,6 +138,48 @@ func buildResponsesWebSearchCallItem(claudeToolUseID, query string, results []by
 	return item
 }
 
+// webReader 已在上游执行，用 open_page 表达读取动作，并在既有 results
+// 字段中保留原始结果块。网页正文及供应商附加字段都参与下一轮回放。
+func buildResponsesServerWebCallItem(toolUseID, name, input string, results []byte) []byte {
+	if name != claudecommon.BigModelWebReaderToolName {
+		return buildResponsesWebSearchCallItem(toolUseID, claudeWebSearchQuery(input), results)
+	}
+	url := gjson.Get(input, "url").String()
+	if url == "" {
+		url = gjson.Get(gjson.GetBytes(results, "content").String(), "0.url").String()
+	}
+	item := []byte(`{"id":"","type":"web_search_call","status":"completed","action":{"type":"open_page","url":""}}`)
+	item, _ = sjson.SetBytes(item, "id", responsesWebSearchCallID(toolUseID))
+	item, _ = sjson.SetBytes(item, "action.url", url)
+	if len(results) > 0 {
+		item, _ = sjson.SetRawBytes(item, "results", results)
+	}
+	return item
+}
+
+func responsesItemHasBigModelReaderResult(item gjson.Result) bool {
+	return item.Get("action.type").String() == "open_page" && item.Get("results.type").String() == "tool_result"
+}
+
+func convertResponsesWebReaderCallToClaudeBlocks(item gjson.Result, toolUseID, fallbackURL string, withResult bool) [][]byte {
+	url := item.Get("action.url").String()
+	if url == "" {
+		url = fallbackURL
+	}
+	use := []byte(`{"type":"server_tool_use","id":"","name":"webReader","input":{"url":""}}`)
+	use, _ = sjson.SetBytes(use, "id", toolUseID)
+	use, _ = sjson.SetBytes(use, "input.url", url)
+	if !withResult {
+		return [][]byte{use}
+	}
+	result := []byte(`{"type":"tool_result","tool_use_id":"","content":"[]"}`)
+	if original := item.Get("results"); original.IsObject() {
+		result = []byte(original.Raw)
+	}
+	result, _ = sjson.SetBytes(result, "tool_use_id", toolUseID)
+	return [][]byte{use, result}
+}
+
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
 // buildResponsesWebSearchCallItem: it rebuilds the Claude block pair so a
 // replayed turn still shows that the search happened and what it returned.
@@ -152,6 +194,9 @@ func convertResponsesWebSearchCallToClaudeBlocksWithQuery(item gjson.Result, fal
 	toolUseID := claudeWebSearchToolUseID(strings.TrimSpace(item.Get("id").String()))
 	if toolUseID == "" {
 		return nil
+	}
+	if allowBigModelReplay && (responsesItemHasBigModelReaderResult(item) || item.Get("action.type").String() == "open_page" && !item.Get("results").Exists()) {
+		return convertResponsesWebReaderCallToClaudeBlocks(item, toolUseID, fallbackQuery, withResult)
 	}
 
 	use := []byte(`{"type":"server_tool_use","id":"","name":"","input":{}}`)
@@ -279,6 +324,11 @@ func responsesWebSearchCallQuery(item gjson.Result) string {
 
 func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay bool) []byte {
 	if results.IsObject() {
+		// BigModel reader 的原始结果不能作为 Anthropic 的搜索结果对象回放。
+		// 跨供应商沿用现有缺少 encrypted_content 时的空搜索结果规则。
+		if results.Get("type").String() == "tool_result" {
+			return nil
+		}
 		return []byte(results.Raw)
 	}
 	if !results.IsArray() {

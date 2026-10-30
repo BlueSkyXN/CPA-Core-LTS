@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 func transformExecution(req executorRequest, c *config, session string) (map[string]any, error) {
@@ -52,6 +53,7 @@ func transformExecution(req executorRequest, c *config, session string) (map[str
 func validateToolHistory(body map[string]any) error {
 	messages, _ := body["messages"].([]any)
 	pending := map[string]bool{}
+	readers := map[string]bool{}
 	for _, v := range messages {
 		message, ok := v.(map[string]any)
 		if !ok {
@@ -68,6 +70,16 @@ func validateToolHistory(body map[string]any) error {
 				continue
 			}
 			switch block["type"] {
+			case "server_tool_use":
+				if block["name"] == "webReader" {
+					id, _ := block["id"].(string)
+					input, _ := block["input"].(map[string]any)
+					url, _ := input["url"].(string)
+					if role != "assistant" || id == "" || strings.TrimSpace(url) == "" || readers[id] {
+						return problem(400, "invalid_request", "Invalid webReader history")
+					}
+					readers[id] = true
+				}
 			case "tool_use":
 				id, _ := block["id"].(string)
 				name, _ := block["name"].(string)
@@ -78,6 +90,13 @@ func validateToolHistory(body map[string]any) error {
 				pending[id] = true
 			case "tool_result":
 				id, _ := block["tool_use_id"].(string)
+				if role == "assistant" && readers[id] {
+					if !validWebReaderHistoryResult(block["content"]) {
+						return problem(400, "invalid_request", "Invalid webReader result; retain the original page JSON")
+					}
+					delete(readers, id)
+					continue
+				}
 				if role != "user" || !pending[id] {
 					return problem(400, "invalid_request", "Unpaired tool result")
 				}
@@ -105,6 +124,28 @@ func validateToolHistory(body map[string]any) error {
 		return problem(400, "invalid_request", "Unresolved tool calls")
 	}
 	return nil
+}
+
+// 此嵌套 module 仅依赖标准库，与 Core 校验相同的已观察供应商结果形状。
+func validWebReaderHistoryResult(value any) bool {
+	content, ok := value.(string)
+	if !ok || !strings.HasPrefix(strings.TrimSpace(content), "[") {
+		return false
+	}
+	var pages []map[string]any
+	if json.Unmarshal([]byte(content), &pages) != nil {
+		return false
+	}
+	for _, page := range pages {
+		url, ok := page["url"].(string)
+		if !ok || strings.TrimSpace(url) == "" {
+			return false
+		}
+		if _, ok := page["content"].(string); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func rpcErrorCode(e *apiError) string {

@@ -118,7 +118,7 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 			case "text", "thinking", "redacted_thinking", "tool_use":
 			case "server_tool_use":
 				name, _ := block["name"].(string)
-				if name != "web_search" && name != "web_search_prime" {
+				if name != "web_search" && name != "web_search_prime" && name != "webReader" {
 					return nil, problem(400, "unsupported_content", "Unsupported server tool in Coding Plan history")
 				}
 			case "web_search_tool_result":
