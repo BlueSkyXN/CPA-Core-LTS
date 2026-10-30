@@ -17,6 +17,7 @@ ZCode 的 `model_limits.output` 控制模型允许的输出上限，内置 GLM �
 ## 输出支持集
 
 - 保留 text、thinking/signature、redacted_thinking、tool_use 的顺序、工具身份和参数。连续 signature_delta 按顺序拼接，流式与 SSE 汇总必须得到同一完整签名。现有 web_search server-tool 映射继续复用；其他承载内容的未知块不能静默丢弃。
+- Coding Plan 的 `webReader` 调用与助手侧 `tool_result` 映射为 Responses `web_search_call`，动作为 `open_page`。结果的 `content` 必须是含字符串 `url`、`content` 的网页对象数组 JSON；原始结果块保存在既有 `results` 字段中，正文和附加字段完整保留。下一轮在 `WebSearchReplay=bigmodel` 路由恢复 `webReader` 与配对结果。Core 和 Coding Plan 插件（0.6.2+）需要配套更新；Chat Completions 仍沿用原有服务端工具支持边界。
 - `end_turn`、`stop_sequence`、`tool_use` 表示本轮完成；`max_tokens` 表示 `incomplete/max_output_tokens`。未知、缺失或未支持的结束原因不伪装成完成。
 - tool-only、thinking-only、合法空 content 不因没有可见文字被拒绝。
 - SSE 支持 LF/CRLF/CR、完整帧/任意拆包、多 data 行、注释和 ping。data-only SSE 必须有标准空行事件分隔；内置执行器无分隔符的逐行调用保留原路径，不按网络块猜事件边界。

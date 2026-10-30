@@ -20,8 +20,16 @@ type PluginResponseState struct {
 	Terminal bool
 	stop     string
 	blocks   map[int]*pluginContentBlock
-	searches map[string]int
+	searches map[string]*pluginServerTool
 }
+
+type pluginServerTool struct {
+	name  string
+	state int
+}
+
+// BigModelWebReaderToolName 是 Coding Plan 返回的服务端网页读取工具名。
+const BigModelWebReaderToolName = "webReader"
 
 const (
 	searchStateCalled   = 1
@@ -57,7 +65,7 @@ func supportedPluginStop(reason string) bool {
 	}
 }
 
-func validatePluginContent(block gjson.Result, searches map[string]int, chat bool) error {
+func validatePluginContent(block gjson.Result, searches map[string]*pluginServerTool, chat bool) error {
 	blockType := block.Get("type").String()
 	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result") {
 		return PluginResponseError()
@@ -90,7 +98,8 @@ func validatePluginContent(block gjson.Result, searches map[string]int, chat boo
 			return PluginResponseError()
 		}
 		// GLM Coding Plan reports its provider-executed search as web_search_prime.
-		if name := block.Get("name").String(); name != "web_search" && name != "web_search_prime" {
+		name := block.Get("name").String()
+		if name != "web_search" && name != "web_search_prime" && name != BigModelWebReaderToolName {
 			return PluginResponseError()
 		}
 		id := block.Get("id").String()
@@ -99,35 +108,43 @@ func validatePluginContent(block gjson.Result, searches map[string]int, chat boo
 			// alias an existing search; reject it outright.
 			return PluginResponseError()
 		}
-		searches[id] = searchStateCalled
+		searches[id] = &pluginServerTool{name: name, state: searchStateCalled}
 	case "web_search_tool_result":
 		id := block.Get("tool_use_id").String()
-		switch searches[id] {
-		case searchStateCalled:
-			searches[id] = searchStateConsumed
-		case 0:
+		tool := searches[id]
+		switch {
+		case tool != nil && tool.state == searchStateCalled && tool.name != BigModelWebReaderToolName:
+			tool.state = searchStateConsumed
+		case tool == nil:
 			// A continuation after pause_turn delivers the result of a search
 			// whose server_tool_use arrived in the previous response; the
 			// translator surfaces it under the same id, so tolerate the orphan.
 			if id == "" {
 				return PluginResponseError()
 			}
-			searches[id] = searchStateConsumed
+			searches[id] = &pluginServerTool{name: "web_search", state: searchStateConsumed}
 		default:
 			return PluginResponseError()
 		}
 	case "tool_result":
-		// GLM Coding Plan returns provider-executed search hits as assistant-side
-		// bare tool_result blocks paired with a preceding web_search(_prime)
-		// server_tool_use. The repr payload must parse fully, and each search
-		// may consume exactly one result.
-		if searches[block.Get("tool_use_id").String()] != searchStateCalled {
+		// Coding Plan 的搜索和网页读取均可返回助手侧 tool_result，按调用名
+		// 校验各自的结果格式，每次调用只能消费一个配对结果。
+		tool := searches[block.Get("tool_use_id").String()]
+		if tool == nil || tool.state != searchStateCalled {
 			return PluginResponseError()
 		}
-		if content := block.Get("content"); content.Type != gjson.String || !bigmodelSearchContentParses(content.String()) {
+		content := block.Get("content")
+		if content.Type != gjson.String {
 			return PluginResponseError()
 		}
-		searches[block.Get("tool_use_id").String()] = searchStateConsumed
+		if tool.name == BigModelWebReaderToolName {
+			if !ValidBigModelWebReaderResult(content.String()) {
+				return PluginResponseError()
+			}
+		} else if !bigmodelSearchContentParses(content.String()) {
+			return PluginResponseError()
+		}
+		tool.state = searchStateConsumed
 	default:
 		return PluginResponseError()
 	}
@@ -138,7 +155,7 @@ func ValidatePluginMessage(message gjson.Result, chat bool) error {
 	if message.Get("type").String() != "message" || message.Get("id").String() == "" || message.Get("role").String() != "assistant" || !message.Get("content").IsArray() || !supportedPluginStop(message.Get("stop_reason").String()) {
 		return PluginResponseError()
 	}
-	searches := make(map[string]int)
+	searches := make(map[string]*pluginServerTool)
 	for _, block := range message.Get("content").Array() {
 		if err := validatePluginContent(block, searches, chat); err != nil {
 			return err
@@ -170,7 +187,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		}
 		s.Started = true
 		s.blocks = make(map[int]*pluginContentBlock)
-		s.searches = make(map[string]int)
+		s.searches = make(map[string]*pluginServerTool)
 	case "content_block_start":
 		index := root.Get("index")
 		idx := int(index.Int())
