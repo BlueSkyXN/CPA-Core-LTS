@@ -12,15 +12,16 @@ import (
 )
 
 type eventProjection struct {
-	requestID string
-	model     string
-	created   int64
-	sequence  uint64
-	text      strings.Builder
-	reasoning strings.Builder
-	usage     pluginapi.AgentUsageV1
-	terminal  *pluginapi.AgentTerminalPayloadV1
-	toolCalls map[int]*projectedToolCall
+	requestID       string
+	model           string
+	created         int64
+	sequence        uint64
+	text            strings.Builder
+	reasoning       strings.Builder
+	reasoningOpaque string
+	usage           pluginapi.AgentUsageV1
+	terminal        *pluginapi.AgentTerminalPayloadV1
+	toolCalls       map[int]*projectedToolCall
 }
 
 type projectedToolCall struct {
@@ -95,6 +96,9 @@ func (p *eventProjection) nonStreamResponse() (pluginapi.ExecutorResponse, error
 	if p.reasoning.Len() > 0 {
 		message["reasoning_content"] = p.reasoning.String()
 	}
+	if p.reasoningOpaque != "" {
+		message["reasoning_opaque"] = p.reasoningOpaque
+	}
 	if tools := p.toolCallPayload(); len(tools) > 0 {
 		message["tool_calls"] = tools
 		if p.text.Len() == 0 {
@@ -153,7 +157,11 @@ func (p *eventProjection) streamChunk(event pluginapi.AgentEventV1) ([]byte, boo
 			return chatChunk(p.requestID, p.model, p.created, map[string]any{"tool_calls": []any{call}}, nil, nil), false, nil
 		}
 	case pluginapi.AgentEventTurnCompleted:
-		return chatChunk(p.requestID, p.model, p.created, map[string]any{}, p.finishReason(), chatUsage(p.usage)), true, nil
+		delta := map[string]any{}
+		if p.reasoningOpaque != "" {
+			delta["reasoning_opaque"] = p.reasoningOpaque
+		}
+		return chatChunk(p.requestID, p.model, p.created, delta, p.finishReason(), chatUsage(p.usage)), true, nil
 	case pluginapi.AgentEventTurnFailed, pluginapi.AgentEventTurnCancelled, pluginapi.AgentEventSessionClosed:
 		return nil, true, p.terminalError()
 	}

@@ -16,13 +16,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	openaihandlers "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 func TestDynamicCopilotPluginLoadsWithLoginCatalogExecutionAndCancel(t *testing.T) {
@@ -53,6 +58,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	library := os.Getenv("COPILOT_PLUGIN_LIBRARY")
 	dir := filepath.Dir(library)
 	var failStream, hangStream atomic.Bool
+	var recoveryPhase, recoveryCalls atomic.Int32
 	started := make(chan struct{}, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
@@ -70,11 +76,49 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 			fmt.Fprint(w, `{"token":"cc-fixture","refresh_in":1800,"expires_at":4102444800}`)
 		case "/models":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5-codex","name":"GPT-5 Codex","capabilities":{"limits":{"max_context_window_tokens":272000,"max_output_tokens":128000},"supports":{"tool_calls":true,"streaming":true}},"policy":{"state":"enabled"}},{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}}]}`)
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5-codex","name":"GPT-5 Codex","capabilities":{"limits":{"max_context_window_tokens":272000,"max_output_tokens":128000},"supports":{"tool_calls":true,"streaming":true}},"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"]},{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}},{"id":"gemini-4-argon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["low","medium","high"],"tool_calls":true,"streaming":true}}}]}`)
 		case "/embeddings":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.125]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`)
 		case "/chat/completions":
+			if phase := recoveryPhase.Load(); phase > 0 {
+				recoveryCalls.Add(1)
+				recoveryPhase.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				switch phase {
+				case 1:
+					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", emptyCopilotUsage)
+				case 2:
+					var body map[string]any
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if body["reasoning_effort"] != "high" || body["tool_choice"] != "required" {
+						t.Error("HTTP request controls lost")
+					}
+					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", copilotToolResponse)
+				case 3:
+					var body struct {
+						Messages []map[string]any `json:"messages"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					found := false
+					for _, message := range body.Messages {
+						if message["role"] == "assistant" && message["tool_calls"] != nil {
+							found = message["reasoning_opaque"] == "fixture-opaque-state"
+						}
+					}
+					if !found {
+						t.Error("HTTP Responses continuation lost opaque state")
+					}
+					fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"tool-result-ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\ndata: [DONE]\n\n")
+				default:
+					t.Error("unexpected recovery attempt")
+				}
+				return
+			}
 			if hangStream.Load() {
 				w.Header().Set("Content-Type", "text/event-stream")
 				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hanging\"}}]}\n\n")
@@ -166,7 +210,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	}
 	auth := &coreauth.Auth{ID: "fixture-auth", Index: "fixture-index", Provider: pluginIdentifier, Metadata: stored, Attributes: poll.Auth.Attributes}
 	models := host.ModelsForAuth(ctx, auth)
-	if models.Err != nil || len(models.Models) != 2 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {
+	if models.Err != nil || len(models.Models) != 3 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {
 		t.Fatalf("dynamic catalog failed: %v, models=%#v", models.Err, models.Models)
 	}
 	sink := &copilotUsageSink{records: make(chan coreusage.Record, 4)}
@@ -205,6 +249,76 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 			t.Fatal("dynamic host did not publish usage")
 		}
 	}
+	// 真实 HTTP Responses → auth manager → 动态插件 → 本地 CAPI；先空流再工具调用。
+	if _, err := manager.Register(ctx, auth); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, pluginIdentifier, models.Models)
+	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	gin.SetMode(gin.TestMode)
+	api := openaihandlers.NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+	postResponses := func(body []byte) gjson.Result {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		c.Request.Header.Set("Session-Id", "fixture-copilot-http-session")
+		api.Responses(c)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("Responses status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		completed := gjson.Result{}
+		count := 0
+		for _, line := range strings.Split(recorder.Body.String(), "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			if kind := data.Get("type").String(); kind == "error" || kind == "response.failed" {
+				t.Fatalf("Responses terminal error: %s", data.Raw)
+			}
+			if data.Get("type").String() == "response.completed" {
+				completed = data.Get("response")
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("Responses completed count = %d", count)
+		}
+		return completed
+	}
+	recoveryPhase.Store(1)
+	first := postResponses([]byte(`{"model":"gemini-4-argon","stream":true,"input":[{"role":"user","content":"lookup Paris"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}],"tool_choice":"required","reasoning":{"effort":"high"}}`))
+	if first.Get("usage.input_tokens").Int() != 18 || first.Get("usage.output_tokens").Int() != 5 || first.Get("usage.total_tokens").Int() != 23 || first.Get("usage.output_tokens_details.reasoning_tokens").Int() != 2 {
+		t.Fatalf("Responses usage = %s", first.Get("usage").Raw)
+	}
+	select {
+	case record := <-sink.records:
+		if record.Failed || record.AuthIndex != auth.Index || record.Detail.TotalTokens != 23 || record.Detail.ReasoningTokens != 2 || record.Detail.TokenBreakdown.Quality != coreusage.TokenAccountingQualityComplete {
+			t.Fatalf("recovery usage = %#v", record)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery usage missing")
+	}
+	input := []json.RawMessage{json.RawMessage(`{"role":"user","content":"lookup Paris"}`)}
+	for _, item := range first.Get("output").Array() {
+		input = append(input, json.RawMessage(item.Raw))
+	}
+	input = append(input, json.RawMessage(`{"type":"function_call_output","call_id":"call-fixture","output":"fixture result"}`))
+	followBody, _ := json.Marshal(map[string]any{"model": "gemini-4-argon", "stream": true, "input": input})
+	second := postResponses(followBody)
+	if !strings.Contains(second.Raw, "tool-result-ok") || recoveryCalls.Load() != 3 {
+		t.Fatalf("tool loop calls = %d", recoveryCalls.Load())
+	}
+	select {
+	case record := <-sink.records:
+		if record.Failed || record.Detail.TotalTokens != 12 {
+			t.Fatalf("continuation usage = %#v", record)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("continuation usage missing")
+	}
+	recoveryPhase.Store(0)
 	// 截断流必须对下游暴露错误，且失败用量只记账一次。
 	failStream.Store(true)
 	failed, err := executor.ExecuteStream(ctx, auth,

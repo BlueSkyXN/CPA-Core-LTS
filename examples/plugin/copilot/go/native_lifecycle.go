@@ -11,13 +11,15 @@ import (
 
 // nativeExecution 只记录在途状态；对话历史仍由客户端逐次提供。
 type nativeExecution struct {
-	identity  executionIdentity
-	requestID string
-	mu        sync.Mutex
-	upstream  string
-	canceled  bool
-	done      chan struct{}
-	once      sync.Once
+	identity   executionIdentity
+	requestID  string
+	mu         sync.Mutex
+	upstream   string
+	canceled   bool
+	done       chan struct{}
+	once       sync.Once
+	open       func() (hostHTTPStreamResponse, error)
+	generation uint64
 }
 
 func (r *pluginRuntime) registerNative(req rpcExecutorRequest, auth copilotAuth) (*nativeExecution, error) {
@@ -36,7 +38,7 @@ func (r *pluginRuntime) registerNative(req rpcExecutorRequest, auth copilotAuth)
 	if r.nativeSessions[key] != nil {
 		return nil, newPluginCallError("turn_conflict", "Copilot execution session already has an active turn", http.StatusConflict, true)
 	}
-	exec := &nativeExecution{requestID: req.RequestID, done: make(chan struct{}), identity: executionIdentity{
+	exec := &nativeExecution{requestID: req.RequestID, done: make(chan struct{}), generation: r.generation, identity: executionIdentity{
 		key: key, authID: req.AuthID, authIndex: req.AuthIndex, callerScope: req.CallerScope,
 		workspaceIdentity: req.WorkspaceIdentity, executionSessionID: effectiveExecutionSessionID(req.ExecutorRequest),
 	}}

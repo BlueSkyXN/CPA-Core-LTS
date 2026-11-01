@@ -89,6 +89,11 @@ func incompleteByFinishReason(reason string) ([]byte, bool) {
 	}
 }
 
+func permitsEmptyChatResponse(reason string) bool {
+	_, incomplete := incompleteByFinishReason(reason)
+	return reason == "stop" || incomplete
+}
+
 // responsesRequestEcho carries the typed values of the Responses request
 // fields echoed into response objects. Extraction walks the top level of
 // the request once; apply writes the fields in the same fixed order and
@@ -402,6 +407,9 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 	}
 	if len(outputs) > 0 {
 		completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
+	} else {
+		// Zero-output streams still carry an explicit empty output array.
+		completed, _ = sjson.SetRawBytes(completed, "response.output", []byte("[]"))
 	}
 	if st.UsageSeen {
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", st.PromptTokens)
@@ -473,35 +481,6 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		}
 		if !root.Get("choices").Exists() || !root.Get("choices").IsArray() {
 			return [][]byte{}
-		}
-	}
-
-	if usage := root.Get("usage"); usage.Exists() {
-		if v := usage.Get("prompt_tokens"); v.Exists() {
-			st.PromptTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
-			st.CachedTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("completion_tokens"); v.Exists() {
-			st.CompletionTokens = v.Int()
-			st.UsageSeen = true
-		} else if v := usage.Get("output_tokens"); v.Exists() {
-			st.CompletionTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
-			st.ReasoningTokens = v.Int()
-			st.UsageSeen = true
-		} else if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() {
-			st.ReasoningTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("total_tokens"); v.Exists() {
-			st.TotalTokens = v.Int()
-			st.UsageSeen = true
 		}
 	}
 
@@ -668,6 +647,35 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		}
 		out = append(out, emitRespEvent("response.in_progress", inprog))
 		st.Started = true
+	}
+
+	if usage := root.Get("usage"); usage.Exists() {
+		if v := usage.Get("prompt_tokens"); v.Exists() {
+			st.PromptTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
+			st.CachedTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("completion_tokens"); v.Exists() {
+			st.CompletionTokens = v.Int()
+			st.UsageSeen = true
+		} else if v := usage.Get("output_tokens"); v.Exists() {
+			st.CompletionTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
+			st.ReasoningTokens = v.Int()
+			st.UsageSeen = true
+		} else if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() {
+			st.ReasoningTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("total_tokens"); v.Exists() {
+			st.TotalTokens = v.Int()
+			st.UsageSeen = true
+		}
 	}
 
 	stopReasoning := func(text string) {
@@ -896,7 +904,8 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		if hasActiveUnfinishedTool {
 			return out
 		}
-		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
+		// 空 output 仅接受明确的正常结束或截断；未知 finish reason 不构造成功。
+		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 && !permitsEmptyChatResponse(st.FinishReason) {
 			return out
 		}
 		st.CompletedEmitted = true
@@ -1246,7 +1255,10 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 }
 
 func (st *oaiToResponsesState) canFinalizeResponse() bool {
-	if st.ToolInputError() != nil || st.FinishReason == "" || (len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0) {
+	if st.ToolInputError() != nil || st.FinishReason == "" {
+		return false
+	}
+	if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 && !permitsEmptyChatResponse(st.FinishReason) {
 		return false
 	}
 	for idx := range st.MsgItemAdded {

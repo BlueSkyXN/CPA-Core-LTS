@@ -1,6 +1,6 @@
 # Qoder / CodeBuddy / Copilot / Coding Plan 原生插件
 
-三家保持原有 Provider 身份 `qoder`、`codebuddy`、`copilot`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。Copilot（0.1.0）支持 GitHub OAuth device 登录与自备 `github_token` 两种认证，同为纯 Go 原生动态库。
+三家保持原有 Provider 身份 `qoder`、`codebuddy`、`copilot`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。Copilot（0.1.1）支持 GitHub OAuth device 登录与自备 `github_token` 两种认证，同为纯 Go 原生动态库。
 
 ## 配置与兼容
 
@@ -37,13 +37,17 @@ SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw
 
 ## Copilot（GitHub Copilot provider）
 
-Copilot 插件（`cpa-provider-copilot`，0.1.0）以 Provider 身份 `copilot` 接入，纯 Go 原生动态库，无 Node、GitHub CLI 或 runner。认证两种模式：`oauth` 走 GitHub OAuth device flow（发起后经插件 Management 路由 `GET /v0/management/plugins/copilot/login-info` 查询 user_code 与状态，`device_code` 不外发到日志或响应）；`github_token` 直接使用用户自备的 GitHub PAT。两种模式的 auth 文件 `type` 均为 `copilot`。
+Copilot 插件（`cpa-provider-copilot`，0.1.1）以 Provider 身份 `copilot` 接入，纯 Go 原生动态库，无 Node、GitHub CLI 或 runner。认证两种模式：`oauth` 走 GitHub OAuth device flow（发起后经插件 Management 路由 `GET /v0/management/plugins/copilot/login-info` 查询 user_code 与状态，`device_code` 不外发到日志或响应）；`github_token` 直接使用用户自备的 GitHub PAT。两种模式的 auth 文件 `type` 均为 `copilot`。
 
 凭据安全：`POST /login/oauth/access_token`（长期 `ghu_` token）、`POST /login/device/code`（device_code）与 `GET /copilot_internal/v2/token`（短时 Copilot JWT）三个凭据交换端点在 Core HTTP 请求日志中做双向 body 脱敏，路径后缀匹配以兼容 GHES；`/copilot_internal/user` 与 chat/inference 端点不脱敏。脱敏范围 = 宿主内置规则 + 各插件注册时通过 `Metadata.SensitiveEndpoints` 自声明的端点（方法 + 大小写不敏感路径后缀）取并集；网络字节不变。
 
 端点覆盖：`github_api_endpoint` 显式覆盖 GitHub API base（token 交换、user、quota）；GHES 用 `enterprise_domain` 同时改写 `github.com`、`api.github.com` 与 Copilot API base。默认面向 github.com 云端。
 
 模型目录按账号发现（`ExecutorModelScopeOAuth`）；显示名、路由 ID、目录隔离语义与 Qoder/CodeBuddy 一致。执行协商格式为 `chat-completions` 与 `embeddings`：客户端四协议入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1beta generateContent` 经 Core 标准转换层进入 chat-completions 格式，`/v1/embeddings` 为 Core 公共入口直达插件。生命周期支持取消、readiness 与会话关闭（schema 与 capability 双门控）。usage 经 Core 正式 Provider 统计管道发布，插件不另建账本；配额 summary 查询 `copilot_internal/user`，不把配额快照当计费事实。
+
+上游结束或读尽但没有正文、推理或工具片段时，插件在同一账号内补试一次，两次尝试的 usage 合并到该请求。已有输出的截断流直接报错；`length` 和 `content_filter` 保留原终结语义。客户端的 `reasoning_effort` 与 `tool_choice` 沿用 Core 转换和配置规则。
+
+工具结果续接时，插件按账号、调用方、workspace、会话、模型和工具调用内容恢复 `reasoning_opaque`，支持经过 Responses 转换后只回传标准工具字段的客户端。客户端仍需提供对话历史及稳定的会话标识；Chat 响应也保留该扩展字段供客户端回传。opaque 缓存仅在当前插件进程内有效，最多 256 条、每条 64 KiB、保留 1 小时；关闭会话、重新配置或重启插件会清除对应状态。Copilot 顶层 `reasoning_tokens` 纳入 usage，total 明确表明 reasoning 独立于 completion 时会转换为 Chat Completions 的包含关系。
 
 ## Coding Plan（多账号 direct Anthropic）
 
