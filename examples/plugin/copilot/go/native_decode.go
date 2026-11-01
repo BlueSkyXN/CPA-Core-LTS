@@ -15,6 +15,7 @@ type nativeDecoder struct {
 	emit         func([]byte) error
 	finishReason string
 	sawResult    bool
+	nativeUsage  pluginapi.AgentUsageV1
 }
 
 func newNativeDecoder(requestID, model string, emit func([]byte) error) *nativeDecoder {
@@ -36,8 +37,8 @@ func (d *nativeDecoder) event(kind pluginapi.AgentEventType, payload any) error 
 
 func (d *nativeDecoder) data(raw []byte) (bool, error) {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("[DONE]")) {
-		if !d.sawResult {
-			return false, nativeInvalidResponse()
+		if err := d.resultError(); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
@@ -54,7 +55,8 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 		if json.Unmarshal(usageRaw, &usage) != nil {
 			return false, nativeInvalidResponse()
 		}
-		merged := mergeCopilotUsage(d.projection.usage, usage)
+		d.nativeUsage = mergeCopilotUsage(d.nativeUsage, usage)
+		merged := normalizeCopilotUsage(d.nativeUsage)
 		if chatUsage(merged) != nil {
 			if err := d.event(pluginapi.AgentEventUsageUpdated, merged); err != nil {
 				return false, err
@@ -79,7 +81,6 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 		}
 		if choice.FinishReason != "" {
 			d.finishReason = choice.FinishReason
-			d.sawResult = true
 		}
 		rawDelta := choice.Delta
 		if len(rawDelta) == 0 || bytes.Equal(rawDelta, []byte("null")) {
@@ -92,6 +93,8 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 			Content          string `json:"content"`
 			Reasoning        string `json:"reasoning"`
 			ReasoningContent string `json:"reasoning_content"`
+			ReasoningOpaque  string `json:"reasoning_opaque"`
+			Refusal          string `json:"refusal"`
 			FinishReason     string `json:"finish_reason"`
 			ToolCalls        []struct {
 				Index    *int   `json:"index"`
@@ -107,7 +110,12 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 		}
 		if delta.FinishReason != "" {
 			d.finishReason = delta.FinishReason
-			d.sawResult = true
+		}
+		if delta.ReasoningOpaque != "" {
+			d.projection.reasoningOpaque = delta.ReasoningOpaque
+		}
+		if delta.Content == "" {
+			delta.Content = delta.Refusal
 		}
 		if delta.Content != "" {
 			d.sawResult = true
@@ -159,10 +167,24 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 }
 
 func (d *nativeDecoder) finish() error {
-	if !d.sawResult {
-		return nativeInvalidResponse()
+	if err := d.resultError(); err != nil {
+		return err
 	}
 	return d.event(pluginapi.AgentEventTurnCompleted, pluginapi.AgentTerminalPayloadV1{State: pluginapi.AgentTerminalCompleted, FinishReason: d.finishReason})
+}
+
+func (d *nativeDecoder) resultError() error {
+	if d.finishReason == "tool_calls" && len(d.projection.toolCalls) == 0 {
+		return newPluginCallError("invalid_upstream_response", "Copilot finished tool calls without returning a tool call", http.StatusBadGateway, false)
+	}
+	if !d.sawResult {
+		switch d.finishReason {
+		case "length", "max_tokens", "content_filter":
+			return nil
+		}
+		return newPluginCallError("empty_upstream_response", "Copilot returned no content before finishing the stream", http.StatusBadGateway, true)
+	}
+	return nil
 }
 
 // 失败前已报告的用量仍交给 Core 统计；不伪造成功终结帧或另行发布账本。
@@ -217,9 +239,21 @@ func mergeCopilotUsage(previous pluginapi.AgentUsageV1, usage map[string]any) pl
 	set(&previous.CacheReadTokens, read(input, "cached_tokens", "cache_read_tokens"))
 	set(&previous.CacheCreationTokens, read(usage, "cache_creation_input_tokens", "cache_creation_tokens"))
 	set(&previous.CacheCreationTokens, read(input, "cache_creation_tokens", "cache_write_tokens"))
+	set(&previous.ReasoningTokens, read(usage, "reasoning_tokens"))
 	set(&previous.ReasoningTokens, read(output, "reasoning_tokens"))
 	if chatUsage(previous) != nil {
 		previous.Provenance = "provider_reported_unverified"
 	}
 	return previous
+}
+
+// Copilot Gemini 的顶层 reasoning 可独立计费；仅在 total 明确证明其与
+// completion 分开时，转换成 Chat Completions 的 output 包含 reasoning 语义。
+func normalizeCopilotUsage(usage pluginapi.AgentUsageV1) pluginapi.AgentUsageV1 {
+	if usage.InputTokens != nil && usage.OutputTokens != nil && usage.ReasoningTokens != nil && usage.TotalTokens != nil &&
+		*usage.ReasoningTokens > 0 && *usage.TotalTokens == *usage.InputTokens+*usage.OutputTokens+*usage.ReasoningTokens {
+		output := *usage.OutputTokens + *usage.ReasoningTokens
+		usage.OutputTokens = &output
+	}
+	return usage
 }

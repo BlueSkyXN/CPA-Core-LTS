@@ -11,7 +11,7 @@ import (
 const (
 	pluginIdentifier     = "copilot"
 	pluginName           = "cpa-provider-copilot"
-	pluginVersion        = "0.1.0"
+	pluginVersion        = "0.1.1"
 	maxSSEFrameBytes     = 1024 * 1024
 	maxExecutorBodyBytes = 4 * 1024 * 1024
 )

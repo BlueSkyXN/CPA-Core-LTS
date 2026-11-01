@@ -2151,3 +2151,140 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_MapsComp
 		})
 	}
 }
+
+// 明确正常结束或截断的空输出应保留终结语义；只有 usage 的流仍不可判成功。
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ZeroOutputStillCompletes(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"gemini-4-argon"}`)
+
+	tests := []struct {
+		name        string
+		in          []string
+		wantStatus  string
+		wantOutputs string // response.output 的期望原始 JSON；"omit" 表示不校验
+	}{
+		{
+			name: "finish reason without content completes on done",
+			in: []string{
+				`data: {"id":"resp_zero_1","object":"chat.completion.chunk","created":1773896263,"model":"gemini-4-argon","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
+				`data: [DONE]`,
+			},
+			wantStatus:  "completed",
+			wantOutputs: "[]",
+		},
+		{
+			name: "usage only then done without finish reason stays unterminated",
+			in: []string{
+				`data: {"id":"resp_zero_2","object":"chat.completion.chunk","created":1773896263,"model":"gemini-4-argon","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
+				`data: [DONE]`,
+			},
+			wantStatus:  "",
+			wantOutputs: "omit",
+		},
+		{
+			name: "zero output length finish maps to incomplete",
+			in: []string{
+				`data: {"id":"resp_zero_3","object":"chat.completion.chunk","created":1773896263,"model":"gemini-4-argon","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
+				`data: [DONE]`,
+			},
+			wantStatus:  "incomplete",
+			wantOutputs: "omit",
+		},
+		{
+			name: "empty tool finish cannot succeed",
+			in: []string{
+				`data: {"id":"resp_missing_tools","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+				`data: [DONE]`,
+			},
+			wantStatus:  "",
+			wantOutputs: "omit",
+		},
+		{
+			name: "unknown empty finish cannot succeed",
+			in: []string{
+				`data: {"id":"resp_unknown_finish","choices":[{"index":0,"delta":{},"finish_reason":"unknown"}]}`,
+				`data: [DONE]`,
+			},
+			wantOutputs: "omit",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var param any
+			var completedData gjson.Result
+			completedCount := 0
+			for _, line := range tt.in {
+				for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gemini-4-argon", request, request, []byte(line), &param) {
+					event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+					if event == "response.completed" || event == "response.incomplete" || event == "response.failed" {
+						completedCount++
+						completedData = data
+					}
+				}
+			}
+			if tt.wantStatus == "" {
+				if completedCount != 0 {
+					t.Fatalf("expected no terminal event, got %d (%s)", completedCount, completedData.Raw)
+				}
+				return
+			}
+			if completedCount != 1 {
+				t.Fatalf("expected exactly 1 terminal event, got %d", completedCount)
+			}
+			if got := completedData.Get("response.status").String(); got != tt.wantStatus {
+				t.Fatalf("response.status = %q, want %q", got, tt.wantStatus)
+			}
+			if tt.wantOutputs != "omit" {
+				if got := completedData.Get("response.output").Raw; got != tt.wantOutputs {
+					t.Fatalf("response.output = %s, want %s", got, tt.wantOutputs)
+				}
+			}
+			if tt.wantStatus == "completed" || tt.wantStatus == "incomplete" {
+				if got := completedData.Get("response.usage.input_tokens").Int(); got != 5 {
+					t.Fatalf("first-frame input usage = %d, want 5", got)
+				}
+			}
+		})
+	}
+}
+
+// EOF 终结路径：零输出 + finish_reason 后流干净结束（无 [DONE]），
+// CanFinalizeResponseStream 必须为 true，让 executor 合成终结事件。
+func TestZeroOutputStreamCanFinalizeOnCleanEOF(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"gemini-4-argon"}`)
+	var param any
+	lines := []string{
+		`data: {"id":"resp_zero_eof","object":"chat.completion.chunk","created":1773896263,"model":"gemini-4-argon","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
+	}
+	for _, line := range lines {
+		_ = ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gemini-4-argon", request, request, []byte(line), &param)
+	}
+	st, ok := param.(*oaiToResponsesState)
+	if !ok {
+		t.Fatalf("param state type = %T", param)
+	}
+	if !st.CanFinalizeResponseStream() {
+		t.Fatal("zero-output stream with finish reason must be finalizable on clean EOF")
+	}
+	// 无 finish_reason 的纯 usage 流仍不可终结。
+	var param2 any
+	usageOnly := `data: {"id":"resp_zero_usage","object":"chat.completion.chunk","created":1773896263,"model":"gemini-4-argon","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`
+	_ = ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gemini-4-argon", request, request, []byte(usageOnly), &param2)
+	if st2, ok := param2.(*oaiToResponsesState); !ok || st2.CanFinalizeResponseStream() {
+		t.Fatal("usage-only stream without finish reason must not finalize on EOF")
+	}
+}
+
+func TestEmptyChatToolFinishCannotFinalizeOnEOF(t *testing.T) {
+	request := []byte(`{"model":"fixture"}`)
+	var param any
+	_ = ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "fixture", request, request,
+		[]byte(`data: {"id":"missing-tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`), &param)
+	if param.(*oaiToResponsesState).CanFinalizeResponseStream() {
+		t.Fatal("empty tool finish must not synthesize successful EOF completion")
+	}
+}

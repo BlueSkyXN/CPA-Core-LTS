@@ -499,6 +499,10 @@ func TestNativeRejectsUnknownModelAndBadFrames(t *testing.T) {
 	} {
 		t.Run(fmt.Sprint(len(frame)), func(t *testing.T) {
 			var calls atomic.Int32
+			wantCalls := int32(1)
+			if frame == "data: [DONE]\n\n" {
+				wantCalls = 2
+			}
 			runtime, _ := copilotFixture(t, func(w http.ResponseWriter, request *http.Request) {
 				switch request.URL.Path {
 				case "/copilot_internal/v2/token":
@@ -515,13 +519,13 @@ func TestNativeRejectsUnknownModelAndBadFrames(t *testing.T) {
 			})
 			req := copilotReq("bad", false)
 			raw, _ := json.Marshal(req)
-			if _, err := runtime.execute(raw); err == nil || calls.Load() != 1 {
+			if _, err := runtime.execute(raw); err == nil || calls.Load() != wantCalls {
 				t.Fatalf("invalid frame accepted: %v", err)
 			}
 			req.Model = "not-in-catalog"
 			raw, _ = json.Marshal(req)
 			_, err := runtime.execute(raw)
-			if err == nil || calls.Load() != 1 {
+			if err == nil || calls.Load() != wantCalls {
 				t.Fatal("unknown model contacted inference")
 			}
 			if call, ok := err.(*pluginCallError); !ok || call.code != "unsupported_model" {
@@ -722,5 +726,48 @@ func TestNativeEmbeddingsExecutesThroughCatalog(t *testing.T) {
 	}
 	if embeddings.Load() != 1 {
 		t.Fatalf("embeddings upstream calls = %d", embeddings.Load())
+	}
+}
+
+// decoder 的 [DONE] 分类；真实 HTTP EOF 与重试路径见 TestNativeTerminalBoundaries。
+func TestNativeDecoderEmptyStreamYieldsReadableError(t *testing.T) {
+	cases := []struct {
+		name   string
+		frames []string
+	}{
+		{
+			name: "usage zero then done",
+			frames: []string{
+				`{"choices":[],"created":1,"id":"copilot-empty-fixture","usage":{"completion_tokens":0,"prompt_tokens":0,"prompt_tokens_details":{"cached_tokens":0},"total_tokens":0},"model":"gemini-4-argon"}`,
+				`[DONE]`,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decoder := newNativeDecoder("r", "gemini-4-argon", nil)
+			var err error
+			for _, frame := range tc.frames {
+				if _, err = decoder.data([]byte(frame)); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				err = decoder.finish()
+			}
+			callErr, ok := err.(*pluginCallError)
+			if !ok {
+				t.Fatalf("err = %v (%T), want *pluginCallError", err, err)
+			}
+			if callErr.code != "empty_upstream_response" {
+				t.Fatalf("code = %q, want empty_upstream_response", callErr.code)
+			}
+			if callErr.statusCode != http.StatusBadGateway {
+				t.Fatalf("statusCode = %d, want 502", callErr.statusCode)
+			}
+			if !callErr.retryable {
+				t.Fatal("empty upstream response should stay retryable")
+			}
+		})
 	}
 }

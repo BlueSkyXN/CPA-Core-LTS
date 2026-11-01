@@ -119,48 +119,60 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 	if exec.isCanceled() {
 		return nil, hostHTTPStreamResponse{}, nativeCanceled()
 	}
+	body = r.restoreNativeReasoning(exec, req.Model, body)
+	exec.open = func() (hostHTTPStreamResponse, error) {
+		return r.openNativeAttempt(req, exec, auth, cfg, body)
+	}
+	response, err := exec.open()
+	if err != nil {
+		return nil, response, err
+	}
+	failed = false
+	return exec, response, nil
+}
+
+func (r *pluginRuntime) openNativeAttempt(req rpcExecutorRequest, exec *nativeExecution, auth copilotAuth, cfg pluginConfig, body []byte) (hostHTTPStreamResponse, error) {
 	state, err := r.cachedCopilotToken(auth, req.HostCallbackID, cfg, "")
 	if err != nil {
-		return nil, hostHTTPStreamResponse{}, err
+		return hostHTTPStreamResponse{}, err
 	}
 	// 401 只重试一次：输出开始前带 rejectedToken 强制重换短时 token 并重放。
 	for attempt := 0; attempt < 2; attempt++ {
 		if exec.isCanceled() {
-			return nil, hostHTTPStreamResponse{}, nativeCanceled()
+			return hostHTTPStreamResponse{}, nativeCanceled()
 		}
 		response, errStream := openHostHTTPStream(r.caller, hostHTTPRequest{
 			HostCallbackID: req.HostCallbackID, Method: http.MethodPost,
 			URL: cfg.CopilotAPIEndpoint + "/chat/completions", Headers: copilotChatHeaders(cfg, state.Token, req.RequestID), Body: body,
 		})
 		if errStream != nil {
-			return nil, hostHTTPStreamResponse{}, newPluginCallError("connection_lifecycle", "Copilot direct connection failed", 0, true)
+			return hostHTTPStreamResponse{}, newPluginCallError("connection_lifecycle", "Copilot direct connection failed", 0, true)
 		}
 		if !exec.bind(r.caller, response.StreamID) {
-			return nil, response, nativeCanceled()
+			return response, nativeCanceled()
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			raw, _ := io.ReadAll(io.LimitReader(&nativeReader{caller: r.caller, execution: exec, id: response.StreamID}, 8192))
 			exec.closeUpstream(r.caller, false)
 			if exec.isCanceled() {
-				return nil, response, nativeCanceled()
+				return response, nativeCanceled()
 			}
 			if attempt == 0 && response.StatusCode == http.StatusUnauthorized {
 				state, err = r.cachedCopilotToken(auth, req.HostCallbackID, cfg, state.Token)
 				if err != nil {
-					return nil, response, err
+					return response, err
 				}
 				continue
 			}
-			return nil, response, copilotUpstreamError(response.StatusCode, raw)
+			return response, copilotUpstreamError(response.StatusCode, raw)
 		}
 		contentType := strings.ToLower(response.Headers.Get("Content-Type"))
 		if !strings.Contains(contentType, "text/event-stream") && !strings.Contains(contentType, "application/json") {
-			return nil, response, newPluginCallError("invalid_upstream_response", "Copilot returned an unsupported content type", http.StatusBadGateway, false)
+			return response, newPluginCallError("invalid_upstream_response", "Copilot returned an unsupported content type", http.StatusBadGateway, false)
 		}
-		failed = false
-		return exec, response, nil
+		return response, nil
 	}
-	return nil, hostHTTPStreamResponse{}, newPluginCallError("auth_expired", "Copilot authentication was rejected", http.StatusUnauthorized, false)
+	return hostHTTPStreamResponse{}, newPluginCallError("auth_expired", "Copilot authentication was rejected", http.StatusUnauthorized, false)
 }
 
 func (r *pluginRuntime) executeNative(req rpcExecutorRequest) (pluginapi.ExecutorResponse, error) {
@@ -169,8 +181,8 @@ func (r *pluginRuntime) executeNative(req rpcExecutorRequest) (pluginapi.Executo
 		return pluginapi.ExecutorResponse{}, err
 	}
 	defer r.releaseNative(exec)
-	decoder := newNativeDecoder(req.RequestID, req.Model, nil)
-	if err := r.consumeNative(exec, upstream, decoder); err != nil {
+	decoder, err := r.consumeNativeAttempts(req, exec, upstream, nil)
+	if err != nil {
 		return pluginapi.ExecutorResponse{}, err
 	}
 	if exec.isCanceled() {
@@ -179,6 +191,7 @@ func (r *pluginRuntime) executeNative(req rpcExecutorRequest) (pluginapi.Executo
 	if err := decoder.finish(); err != nil {
 		return pluginapi.ExecutorResponse{}, err
 	}
+	r.rememberNativeReasoning(exec, req.Model, decoder.projection)
 	return decoder.projection.nonStreamResponse()
 }
 
@@ -188,7 +201,7 @@ func (r *pluginRuntime) executeNativeStream(req rpcExecutorRequest) (rpcStreamRe
 		return rpcStreamResponse{}, err
 	}
 	go func() {
-		decoder := newNativeDecoder(req.RequestID, req.Model, func(raw []byte) error {
+		decoder, err := r.consumeNativeAttempts(req, exec, upstream, func(raw []byte) error {
 			if exec.isCanceled() {
 				return nativeCanceled()
 			}
@@ -198,13 +211,15 @@ func (r *pluginRuntime) executeNativeStream(req rpcExecutorRequest) (rpcStreamRe
 			}
 			return nil
 		})
-		err := r.consumeNative(exec, upstream, decoder)
 		if err != nil && !exec.isCanceled() {
 			// 上游失败但下游仍连接：先补发 usage-only 帧保证统计，再失败终结。
 			_ = decoder.emitFailureUsage()
 		}
 		if exec.isCanceled() {
 			err = nativeCanceled()
+		}
+		if err == nil {
+			r.rememberNativeReasoning(exec, req.Model, decoder.projection)
 		}
 		// 终结帧发出前释放会话占用，允许客户端立即提交下一轮。
 		r.releaseNative(exec)
@@ -235,8 +250,8 @@ func (r *pluginRuntime) consumeNative(exec *nativeExecution, upstream hostHTTPSt
 			return nativeResponseTooLarge()
 		}
 		_, err = decoder.data(raw)
-		if err == nil && !decoder.sawResult {
-			return nativeInvalidResponse()
+		if err == nil {
+			return decoder.resultError()
 		}
 		return err
 	}
@@ -286,6 +301,11 @@ func (r *pluginRuntime) consumeNative(exec *nativeExecution, upstream hostHTTPSt
 	}
 	if done {
 		return nil
+	}
+	if !decoder.sawResult {
+		if err := decoder.resultError(); err != nil {
+			return err
+		}
 	}
 	return newPluginCallError("stream_truncated", "Copilot stream ended before [DONE]", http.StatusBadGateway, true)
 }
