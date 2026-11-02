@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -546,6 +547,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}()
 
 	var lastRequest []byte
+	var lastPlaintextTools multiagentv2.PlaintextToolProvenance
 	lastResponseOutput := []byte("[]")
 	var observedCompaction responsesWebsocketObservedCompactionState
 	lastResponseID := ""
@@ -895,6 +897,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 
 		requestJSON = h.prepareCodexMultiAgentV2Tools(c, requestJSON)
+		plaintextTools := responsesPlaintextTools(c).InheritTurn(lastPlaintextTools, payload)
 		requestJSON = h.prepareCodexOrphanDelegation(c, requestJSON)
 
 		if isPrewarm {
@@ -905,6 +908,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				updatedLastRequest = updated
 			}
 			lastRequest = updatedLastRequest
+			lastPlaintextTools = plaintextTools
 			lastResponseOutput = []byte("[]")
 			observedCompaction.clear()
 			lastResponseID = ""
@@ -1051,6 +1055,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			wsTimelineLog,
 			passthroughSessionID,
 			responsesWebsocketForwardOptions{
+				plaintextTools:           plaintextTools,
 				preserveCompletionOutput: preserveNativeOutput.Load,
 				duplexStream:             codexDuplexStream.Load,
 				toolCacheTurn:            toolCacheTurn,
@@ -1116,6 +1121,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 
+		lastPlaintextTools = plaintextTools
 		toolCacheTurn.commit()
 		pendingPrewarmID = ""
 		upstreamMode = attemptedUpstreamMode

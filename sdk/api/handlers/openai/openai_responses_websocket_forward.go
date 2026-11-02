@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -24,6 +25,7 @@ import (
 )
 
 type responsesWebsocketForwardOptions struct {
+	plaintextTools           multiagentv2.PlaintextToolProvenance
 	preserveCompletionOutput func() bool
 	duplexStream             func() bool
 	toolCacheTurn            *responsesWebsocketToolCacheTurn
@@ -238,6 +240,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
+				payloads[i] = opts.plaintextTools.Restore(payloads[i])
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if eventType == "response.subscription_usage" ||
 					(eventType == "response.metadata" && !isCodexResponsesClientRequest(c)) {

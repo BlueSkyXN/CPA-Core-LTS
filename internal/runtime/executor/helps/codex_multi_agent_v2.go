@@ -10,6 +10,7 @@ import (
 	openaichatclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/chat-completions"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	codexclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/codex/claude"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	geminiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/claude"
 	interactionsclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/interactions/claude"
 	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
@@ -27,6 +28,17 @@ func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header,
 // standard Responses API messages when multi-agent v2 optimization is enabled.
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
 	return multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, payload, cfg)
+}
+
+// PrepareCodexMultiAgentV2PortableInput preserves the user-task boundary on
+// third-party Responses routes. Unreadable or ineligible delegation is refused
+// locally; it must not be forwarded as an unsupported item or silently omitted.
+func PrepareCodexMultiAgentV2PortableInput(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) ([]byte, error) {
+	updated := multiagentv2.RewriteCodexMultiAgentV2PortableInput(ctx, headers, payload, cfg)
+	if err := translatorcommon.RejectUnconvertedAgentMessages(updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // RewriteCodexMultiAgentV2MessageEncryption removes boolean-true encrypted
@@ -234,7 +246,7 @@ func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, 
 // request optimization and uses the execution attempt's resolved compatibility
 // flag to convert agent_message items into portable message/user input,
 // proactively stripping author, recipient, and internal passthrough metadata.
-func OptimizeCodexMultiAgentV2RequestForAuth(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, auth *cliproxyauth.Auth, isCompat bool) ([]byte, bool) {
+func OptimizeCodexMultiAgentV2RequestForAuth(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, auth *cliproxyauth.Auth, isCompat bool) ([]byte, bool, error) {
 	if auth != nil && auth.AuthKind() == cliproxyauth.AuthKindAPIKey {
 		cfg = cfg.ForAPIKey()
 	}
@@ -242,8 +254,11 @@ func OptimizeCodexMultiAgentV2RequestForAuth(ctx context.Context, headers http.H
 	updated, optimized := multiagentv2.OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
 	if isCompat {
 		updated = multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, updated, cfg, true)
+		if err := translatorcommon.RejectUnconvertedAgentMessages(updated); err != nil {
+			return nil, false, err
+		}
 	}
-	return updated, optimized
+	return updated, optimized, nil
 }
 
 // RestoreCodexMultiAgentV2Response restores optimized collaboration namespace

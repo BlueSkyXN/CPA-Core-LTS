@@ -372,11 +372,11 @@ func TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage(t 
 	}
 
 	message := gjson.GetBytes(prepared.body, "input.0")
-	if message.Get("type").String() != "message" || message.Get("role").String() != "assistant" {
+	if message.Get("type").String() != "message" || message.Get("role").String() != "user" {
 		t.Fatalf("agent message was not rewritten: %s", prepared.body)
 	}
-	if message.Get("content.0.type").String() != "output_text" {
-		t.Fatalf("content[0].type = %q, want output_text; body=%s", message.Get("content.0.type").String(), prepared.body)
+	if message.Get("content.0.type").String() != "input_text" {
+		t.Fatalf("content[0].type = %q, want input_text; body=%s", message.Get("content.0.type").String(), prepared.body)
 	}
 	wantText := "Message Type: NEW_TASK\nTask name: /root/arithmetic_question\nSender: /root\nPayload:\n\n请出一道四则运算题。只回复题目本身，不要解答；使用中文。"
 	if text := message.Get("content.0.text").String(); text != wantText {
@@ -392,7 +392,7 @@ func TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage(t 
 	}
 }
 
-func TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage(t *testing.T) {
+func TestXAIExecutorRejectsOpaqueCodexAgentMessage(t *testing.T) {
 	t.Parallel()
 
 	exec := NewXAIExecutor(&config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}})
@@ -401,6 +401,7 @@ func TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage(t *t
 		"content":[{"type":"input_text","text":"Payload:\n"},{"type":"encrypted_content","encrypted_content":"gAAAAABopaque"}],
 		"internal_chat_message_metadata_passthrough":{"turn_id":"turn_opaque"}
 	}]}`)
+	original := bytes.Clone(payload)
 	prepared, errPrepare := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
 		Model:   "grok-4.5",
 		Payload: payload,
@@ -408,22 +409,11 @@ func TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage(t *t
 		SourceFormat: sdktranslator.FormatOpenAIResponse,
 		Headers:      http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3.1"}},
 	}, true)
-	if errPrepare != nil {
-		t.Fatalf("prepareResponsesRequest() error = %v", errPrepare)
+	if errPrepare == nil || prepared != nil {
+		t.Fatal("opaque delegation must be rejected before an upstream request is prepared")
 	}
-
-	message := gjson.GetBytes(prepared.body, "input.0")
-	if message.Get("type").String() != "agent_message" || message.Get("role").Exists() {
-		t.Fatalf("opaque agent message boundary changed: %s", prepared.body)
-	}
-	if message.Get("content.1.type").String() != "encrypted_content" || message.Get("content.1.encrypted_content").String() != "gAAAAABopaque" {
-		t.Fatalf("opaque agent message content changed: %s", prepared.body)
-	}
-	if message.Get("id").String() != "amsg_opaque" || message.Get("author").String() != "/root" || message.Get("recipient").String() != "/root/worker" {
-		t.Fatalf("opaque agent message identity changed: %s", prepared.body)
-	}
-	if turnID := message.Get("internal_chat_message_metadata_passthrough.turn_id").String(); turnID != "turn_opaque" {
-		t.Fatalf("turn_id = %q; body=%s", turnID, prepared.body)
+	if !bytes.Equal(payload, original) {
+		t.Fatal("rejection must preserve the caller's encrypted history")
 	}
 }
 

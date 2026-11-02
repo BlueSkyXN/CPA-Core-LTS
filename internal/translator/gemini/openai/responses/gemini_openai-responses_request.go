@@ -24,6 +24,9 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	rawJSON := inputRawJSON
+	if err := translatorcommon.RejectUnconvertedAgentMessages(rawJSON); err != nil {
+		return nil, err
+	}
 	var drops translatorcommon.UserTurnDrops
 
 	// Note: stream parameter is part of the fixed method signature

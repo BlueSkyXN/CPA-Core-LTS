@@ -206,7 +206,6 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsAcrossI
 		name string
 		item string
 	}{
-		{name: "agent message", item: `{"type":"agent_message","content":[{"type":"input_text","text":"sub-agent event"}]}`},
 		{name: "web search call", item: `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"}}`},
 	}
 	for _, tt := range tests {
@@ -346,20 +345,6 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesCompleteM
 			]`,
 		},
 		{
-			name: "agent message remains omitted", model: "openai-compat-model",
-			input: `[
-				{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},
-				{"type":"function_call_output","call_id":"call_a","output":"ok"},
-				{"type":"agent_message","content":[{"type":"input_text","text":"sub"}]},
-				{"type":"message","role":"user","content":"next"}
-			]`,
-			want: `[
-				{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"tool_a","arguments":"{}"}}]},
-				{"role":"tool","tool_call_id":"call_a","content":"ok"},
-				{"role":"user","content":"next"}
-			]`,
-		},
-		{
 			name: "custom tool single pair", model: "openai-compat-model",
 			input: `[
 				{"type":"custom_tool_call","call_id":"call_a","name":"exec","input":"ls"},
@@ -398,4 +383,21 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesMidCallRea
 		{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"tool_a","arguments":"{}"}}],"reasoning_content":"think"},
 		{"role":"tool","tool_call_id":"call_a","content":"ok"}
 	]`)
+}
+
+// An unconverted delegation carries task data, so it cannot be treated as an
+// ignorable assistant item while grouping an otherwise valid tool turn.
+func TestResponsesChatRejectsUnconvertedDelegationDuringToolHistory(t *testing.T) {
+	for _, input := range []string{
+		`[{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},{"type":"agent_message","content":[{"type":"input_text","text":"sub-agent event"}]},{"type":"function_call","call_id":"call_b","name":"tool_b","arguments":"{}"},{"type":"function_call_output","call_id":"call_a","output":"ok_a"},{"type":"function_call_output","call_id":"call_b","output":"ok_b"}]`,
+		`[{"type":"function_call","call_id":"call_a","name":"tool_a","arguments":"{}"},{"type":"function_call_output","call_id":"call_a","output":"ok"},{"type":"agent_message","content":[{"type":"input_text","text":"sub"}]},{"type":"message","role":"user","content":"next"}]`,
+	} {
+		out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai-compat-model", []byte(`{"input":`+input+`}`), true)
+		if err == nil || len(out) != 0 {
+			t.Fatal("an unconverted delegated task must not be dropped from an otherwise valid history")
+		}
+		if scoped, ok := err.(interface{ IsRequestScoped() bool }); !ok || !scoped.IsRequestScoped() {
+			t.Fatalf("delegation rejection must be request-scoped: %v", err)
+		}
+	}
 }

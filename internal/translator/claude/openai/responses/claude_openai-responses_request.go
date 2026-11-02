@@ -76,6 +76,9 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	}
 	var drops common.UserTurnDrops
 	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
+	if err := common.RejectUnconvertedAgentMessages(rawJSON); err != nil {
+		return nil, err
+	}
 	// 字符串 input 是 Responses 的 user 消息简写，不能在数组遍历时丢失。
 	if input := gjson.GetBytes(rawJSON, "input"); input.Type == gjson.String {
 		message := []byte(`{"role":"user","content":""}`)

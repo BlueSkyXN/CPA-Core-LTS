@@ -905,6 +905,7 @@ patches:
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_CompleteToolCallsDoPairMessages
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DuplicateCallIDDoesNotReorder
       - TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DuplicateOutputCallIDDoesNotReorder
+      - TestResponsesChatRejectsUnconvertedDelegationDuringToolHistory
     upstream_issue_or_pr: "router-for-me/CLIProxyAPI#3213; related closed report router-for-me/CLIProxyAPI#3184"
     state: required
     retire_when: Upstream merges an equivalent turn-grouping fix that keeps one assistant turn of parallel function/custom tool calls grouped across reasoning and assistant-text items, preserves turn boundaries at user/developer messages, and a protected full-sync absorbs it with all listed regressions passing after removing the downstream implementation.
@@ -966,9 +967,9 @@ patches:
     retire_when: Upstream or the official client path gives non-GPT Direct models an equivalent explicitly bounded codex_app child surface, preserves byte-for-byte no-op behavior for GPT, Code Mode, subagents, malformed or ambiguous metadata, and forbidden tool surfaces, retains provider request and response namespace round trips, and all listed regressions pass after removing the downstream overlay.
 
   - id: codex-multi-agent-plaintext-contract
-    reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex and provider paths, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces. The 2026-09-07 baseline through 934fb792 adds Claude Responses normalization in d2f71220; it is adapted to the same proven-plaintext rule instead of exposing encrypted_content as text.
+    reason: Codex Multi-Agent history and message-tool schemas carry plaintext provenance that must not be inferred from an encrypted_content string or an unqualified short tool name. LTS therefore converts agent_message only when every content part is a non-empty string input_text, preserves opaque or mixed history on native Codex paths and rejects unconverted delegation before incompatible provider dispatch, and removes only a JSON boolean-true message.encrypted marker from positively identified collaboration, collaboration-optimize, or complete agents namespaces. The 2026-09-07 baseline through 934fb792 adds Claude Responses normalization in d2f71220; it is adapted to the same proven-plaintext rule instead of exposing encrypted_content as text.
     introduced_in: 798ad1854064361461225fe766db9b2f54a7653d
-    affected_upstream_range: "through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f inline local schema refs, broaden Codex App normalization, fold namespaces, and restore dispatcher calls. They improve tool-shape continuity but do not prove plaintext provenance: upstream still treats string encrypted_content as portable, recursively matches unrelated short tool names, and removes message.encrypted without requiring JSON boolean true. LTS absorbs the namespace work while retaining proven-plaintext, confirmed-namespace, boolean-marker, and opaque/mixed-content fail-closed rules, so the patch remains required."
+    affected_upstream_range: "Reviewed through 7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc (upstream main, 2026-11-02) against LTS baseline 139132ffa31b88a598df37dfa4d3fc6c6a793035. Upstream #4748 and later is-compat work provide schema and role adaptation, but the current helper still relabels string encrypted_content as text. LTS retains proven-plaintext, confirmed-namespace, boolean-marker, and native-history rules, and rejects unreadable delegation at incompatible conversion boundaries. Later tool-search and developer-role fixes remain separate protected full-sync work."
     files:
       - config.example.yaml
       - docs/lts/downstream-patches.yaml
@@ -978,8 +979,27 @@ patches:
       - internal/runtime/executor/codex_websockets_spawn_agent_test.go
       - internal/runtime/executor/helps/codex_multi_agent_v2.go
       - internal/runtime/executor/xai_executor_test.go
+      - internal/runtime/executor/xai_multi_agent_boundary_test.go
+      - internal/runtime/executor/xai_executor_request.go
+      - internal/runtime/executor/codex_executor_execute.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_websockets_execute.go
+      - internal/runtime/executor/codex_websockets_stream.go
       - internal/translator/claude/openai/responses/claude_openai-responses_request.go
       - internal/translator/claude/openai/responses/claude_openai-responses_request_test.go
+      - internal/translator/common/agent_messages.go
+      - internal/runtime/executor/kimi_executor.go
+      - internal/runtime/executor/kimi_delegation_test.go
+      - internal/runtime/executor/helps/responses_delegation_contract_test.go
+      - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_delegation_test.go
+      # TestV2DelegationContract runs in the nested module via zcode-coding-plan/test-cpa.sh.
+      - examples/plugin/zcode-coding-plan/integration/delegation_test.go
+      - internal/translator/claude/openai/responses/claude_agent_message_contract_test.go
+      - internal/translator/gemini/openai/responses/gemini_openai-responses_request.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_request.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_tool_turn_grouping_lts_test.go
+      - docs/lts/responses-client-compatibility.md
     regression_tests:
       - TestRewriteCodexMultiAgentV2MessageEncryptionNamespacesAndToolNames
       - TestRewriteCodexMultiAgentV2MessageEncryptionAdditionalToolsAndGates
@@ -996,17 +1016,27 @@ patches:
       - TestCodexExecutorOptimizeMultiAgentV2
       - TestCodexWebsocketsExecutorOptimizeMultiAgentV2
       - TestXAIExecutorPrepareResponsesRequestRewritesPlaintextCodexAgentMessage
-      - TestXAIExecutorPrepareResponsesRequestPreservesOpaqueCodexAgentMessage
+      - TestXAIExecutorRejectsOpaqueCodexAgentMessage
+      - TestXAIResponsesDelegatedTaskKeepsUserRole
+      - TestXAIResponsesRejectsOpaqueDelegatedTask
       - TestConvertOpenAIResponsesRequestToClaudeKeepsAgentMessageText
       - TestNormalizeCodexAgentMessagesPreservesUnprovenContent
+      - TestClaudeResponsesRejectsOpaqueDelegatedTask
+      - TestResponsesDelegationTranslationMatrix
+      - TestCodexNativeAndCompatDelegationBoundaries
+      - TestKimiResponsesDelegationBeforeTransport
+      - TestSubscriptionAdapterDelegationRequestContract
+      - TestResponsesPluginPassthroughKeepsNativeDelegation
+      - TestClaudeCodeSubscriptionToolTurnRemainsNative
+      - TestResponsesChatRejectsUnconvertedDelegationDuringToolHistory
     upstream_issue_or_pr: router-for-me/CLIProxyAPI#4748
     state: required
-    retire_when: Upstream converts only fully proven plaintext agent_message content, preserves opaque, encrypted, mixed, empty, and malformed history, limits spawn/message rewrites to equivalent positively identified Multi-Agent namespaces, removes only boolean-true message.encrypted markers without changing ordinary, MCP, custom, top-level, or incomplete agents tools, preserves native Codex HTTP and WebSocket history, and all listed regressions pass after removing the downstream implementation.
+    retire_when: Upstream converts only fully proven plaintext agent_message content, preserves opaque, encrypted, mixed, empty, and malformed history, limits spawn/message rewrites to equivalent positively identified Multi-Agent namespaces, removes only boolean-true message.encrypted markers without changing ordinary, MCP, custom, top-level, or incomplete agents tools, preserves native Codex HTTP and WebSocket history, retains the user role for portable delegated tasks, returns request-scoped errors instead of dropping unreadable delegation or sending it to incompatible routes, and all listed regressions pass after removing the downstream implementation.
 
   - id: xai-multi-agent-plaintext-provenance
-    reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS therefore records the exact root or additional_tools function declarations whose boolean-true marker was removed, restores namespace and short name first, then adds encrypted_function_args as an empty array only for response calls matching that request provenance across HTTP non-stream, SSE, and WebSocket.
+    reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS therefore records the exact root or additional_tools function declarations whose boolean-true marker was removed, restores namespace and short name first, then adds encrypted_function_args as an empty array only for response calls matching that request provenance across HTTP non-stream, SSE, and WebSocket. The Responses handler also captures the original before/after proof before executors receive prepared tools, restores it after provider translation, and carries accepted tool-declaration proof across incremental WebSocket turns until explicit replacement; native executor-side restoration remains available for SDK callers.
     introduced_in: 23caefe8b2495856c2c8df50b63823846ad6b910
-    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 2555cde2 and 9b88808f add the useful namespace restorer and dispatcher-call restoration used by xAI. They do not derive before/after plaintext provenance from the Multi-Agent schema rewrite or safely restore encrypted_function_args on HTTP, SSE, and WebSocket responses, so LTS composes them with its provenance layer and keeps the patch required.
+    affected_upstream_range: Reviewed through 7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc (upstream main, 2026-11-02) against LTS baseline 139132ffa31b88a598df37dfa4d3fc6c6a793035. Upstream namespace and dispatcher-call restoration does not retain the before/after plaintext provenance needed across the Responses handler/executor boundary or incremental WebSocket turns. LTS keeps its executor-side restoration and adds request-scoped handler restoration; the patch remains required.
     files:
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/xai_executor_execute.go
@@ -1016,6 +1046,12 @@ patches:
       - internal/runtime/executor/xai_executor_test.go
       - internal/runtime/executor/xai_websockets_executor.go
       - internal/runtime/executor/xai_websockets_executor_test.go
+      - internal/client/codex/optimize-multi-agent-v2/plaintext_tools.go
+      - internal/client/codex/optimize-multi-agent-v2/plaintext_tools_test.go
+      - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_responses_websocket.go
+      - sdk/api/handlers/openai/openai_responses_websocket_forward.go
+      - sdk/api/handlers/openai/openai_responses_plaintext_tools_test.go
     regression_tests:
       - TestXAIExecutorPrepareResponsesRequestRecordsPlaintextMultiAgentProvenance
       - TestXAIExecutorPrepareResponsesRequestDoesNotRecordPlaintextProvenanceWhenDisabled
@@ -1023,9 +1059,14 @@ patches:
       - TestXAIExecutorExecuteRestoresPlaintextMultiAgentMarker
       - TestXAIExecutorExecuteStreamRestoresPlaintextMultiAgentMarker
       - TestXAIWebsocketsExecuteStreamRestoresPlaintextMultiAgentMarker
+      - TestPlaintextToolProvenanceRestoresOnlyConfirmedCalls
+      - TestPlaintextToolProvenanceRejectsAmbiguousOrUnprovenSchemas
+      - TestPlaintextToolProvenanceTurnInheritance
+      - TestResponsesBoundaryRestoresPlaintextToolArguments
+      - TestResponsesWebsocketRestoresPlaintextToolArguments
     upstream_issue_or_pr: not-filed
     state: required
-    retire_when: Upstream records provenance only for Multi-Agent function schemas whose JSON boolean-true message.encrypted marker was actually removed, covers both root tools and input additional_tools, restores namespace before adding an empty encrypted_function_args without overwriting an existing field or changing arguments and call IDs, leaves ordinary, custom, disabled, and unproven calls untouched across HTTP non-stream, SSE, and WebSocket, and all listed regressions pass after removing the downstream implementation.
+    retire_when: Upstream records provenance only for Multi-Agent function schemas whose JSON boolean-true message.encrypted marker was actually removed, covers both root tools and input additional_tools, restores namespace before adding an empty encrypted_function_args without overwriting an existing field or changing arguments and call IDs, leaves ordinary, custom, disabled, and unproven calls untouched across HTTP non-stream, SSE, and WebSocket, retains proof across the handler/executor boundary and inherited WebSocket declarations while revoking explicit replacements, and all listed regressions pass after removing the downstream implementation.
 
   - id: provider-runtime-state-isolation
     reason: Runtime state belongs to one concrete auth provider generation and must not leak across same-ID provider replacement. Codex transient rate limits must remain distinct from quota exhaustion, non-buffering streams must not fail after delivering visible deltas merely because optional completion reconstruction exceeds its cap, and thinking-suffix cooldown reconciliation must restore only the intended concrete registry IDs without racing a newer success.

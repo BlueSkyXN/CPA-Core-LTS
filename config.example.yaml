@@ -140,8 +140,8 @@ client:
             limit: 1024
         # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
         # This refreshes Codex spawn_agent model details, requests plaintext message arguments,
-        # and converts only fully plaintext agent_message input. Opaque encrypted or mixed
-        # content is preserved.
+        # and converts only fully plaintext agent_message input. Native Codex preserves
+        # encrypted/mixed history; incompatible routes reject unconverted delegation.
         optimize-multi-agent-v2: false
 requests:
     reasoning-effort: []

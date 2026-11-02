@@ -423,6 +423,10 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 	if errExpand := helps.ExpandResponsesCompactionCapsules(&req, &opts, "kimi"); errExpand != nil {
 		return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
 	}
+	req.Payload, err = helps.PrepareCodexMultiAgentV2PortableInput(ctx, opts.Headers, req.Payload, e.cfg)
+	if err != nil {
+		return resp, err
+	}
 	if helps.HasResponsesCompactionTriggerRequest(req, opts) {
 		return e.executeKimiResponsesCompaction(ctx, auth, req, opts)
 	}
@@ -562,6 +566,10 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 	}
 	if errExpand := helps.ExpandResponsesCompactionCapsules(&req, &opts, "kimi"); errExpand != nil {
 		return nil, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+	}
+	req.Payload, err = helps.PrepareCodexMultiAgentV2PortableInput(ctx, opts.Headers, req.Payload, e.cfg)
+	if err != nil {
+		return nil, err
 	}
 	if helps.HasResponsesCompactionTriggerRequest(req, opts) {
 		return e.executeKimiResponsesCompactionStream(ctx, auth, req, opts)
