@@ -98,7 +98,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		return resp, err
 	}
 
-	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts)
+	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts, auth.AuthKind())
 	ctx = helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
 		out := finalize(body)
 		reporter.SetTranslatedRequestMetadata(out, to.String())
@@ -336,7 +336,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		return resp, err
 	}
 
-	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts)
+	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts, auth.AuthKind())
 	ctx = helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
 		out := finalize(body)
 		reporter.SetTranslatedRequestMetadata(out, to.String())

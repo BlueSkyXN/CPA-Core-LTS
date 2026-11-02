@@ -1219,7 +1219,8 @@ config-version: 8
 #         - "context_length_exceeded"
 #       action: "stop"
 
-# Optional payload configuration
+# Optional payload configuration (canonical v8 location: requests.payload).
+# Execution-scope examples and boundaries: docs/lts/payload-execution-scope.md
 # payload:
 #   default: # Default rules only set parameters when they are missing in the payload.
 #     - models:
@@ -1227,6 +1228,10 @@ config-version: 8
 #           scope: "any" # optional: any (default), requested (client model), or upstream (resolved model)
 #           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
 #           from-protocol: "responses" # restricts the rule to the source protocol, options: openai, responses, gemini, claude
+#           auth-kind: "apikey" # optional: selected upstream credential kind, apikey or oauth
+#           request-paths: # optional non-empty list of exact CPA business paths, not upstream URLs
+#             - /v1/responses
+#             - /backend-api/codex/responses
 #           headers: # all configured request headers must match; values support "*" wildcards
 #             X-Client-Tier: "tenant-*-region-*"
 #           match: # all payload JSON paths must equal the configured values

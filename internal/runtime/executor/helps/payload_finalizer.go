@@ -14,9 +14,10 @@ import (
 type PayloadFinalizer func([]byte) []byte
 
 // NewPayloadFinalizer snapshots matching context before built-in request mutations.
-func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) PayloadFinalizer {
+func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, selectedAuthKind ...string) PayloadFinalizer {
 	requestedModel := PayloadRequestedModel(opts, req.Model)
 	requestPath := PayloadRequestPath(opts)
+	authKind := payloadAuthKind(selectedAuthKind)
 	headers := opts.Headers.Clone()
 	source := append([]byte(nil), original...)
 	var formatCallback func(string)
@@ -24,7 +25,7 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 		formatCallback, _ = opts.Metadata[cliproxyexecutor.FinalizedResponseFormatCallbackMetadataKey].(func(string))
 	}
 	return func(body []byte) []byte {
-		out := ApplyPayloadConfigWithRequestForExecutor(cfg, executor, model, protocol, opts.SourceFormat.String(), root, body, source, requestedModel, requestPath, headers)
+		out := ApplyPayloadConfigWithRequestForExecutor(cfg, executor, model, protocol, opts.SourceFormat.String(), root, body, source, requestedModel, requestPath, headers, authKind)
 		out = ProtectConfiguredEffort(cfg, body, out, protocol, executor, req, opts)
 		if formatCallback != nil {
 			formatCallback(strings.TrimSpace(gjson.GetBytes(out, buildPayloadPath(root, "response_format")).String()))

@@ -150,6 +150,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}
 	}
+	if errValidate := newCfg.ValidatePayloadExecutionScopes(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid payload execution scope")
+		return configCommit{}
+	}
 	if errValidate := newCfg.ValidateOAuthModelPolicy(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected config update with invalid model policy")
 		return configCommit{}

@@ -97,7 +97,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		return nil, err
 	}
 
-	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts)
+	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts, auth.AuthKind())
 	ctx = helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
 		out := finalize(body)
 		reporter.SetTranslatedRequestMetadata(out, to.String())

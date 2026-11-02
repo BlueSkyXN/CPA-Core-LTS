@@ -35,14 +35,14 @@ func ApplyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 }
 
 // ApplyPayloadConfigWithRequest applies payload config using source protocol and request header gates.
-func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header) []byte {
-	out, _ := ApplyPayloadConfigWithRequestTracked(cfg, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, "")
+func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, selectedAuthKind ...string) []byte {
+	out, _ := applyPayloadConfigWithExecutionScope(cfg, "", payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
 	return out
 }
 
 // ApplyPayloadConfigWithRequestForExecutor applies payload config with explicit target executor context.
-func ApplyPayloadConfigWithRequestForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header) []byte {
-	out, _ := ApplyPayloadConfigWithTrackedPathsForExecutor(cfg, targetExecutor, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
+func ApplyPayloadConfigWithRequestForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, selectedAuthKind ...string) []byte {
+	out, _ := applyPayloadConfigWithExecutionScope(cfg, targetExecutor, payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
 	return out
 }
 
@@ -62,6 +62,23 @@ func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fro
 // it normalizes tool parameter integer types to satisfy client-side integer deserialization (#6237).
 // For Codex and Codex WebSocket targets, integer normalization is skipped (#6244).
 func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
+	return applyPayloadConfigWithExecutionScope(cfg, targetExecutor, "", model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPaths...)
+}
+
+// ApplyPayloadConfigWithAuthTrackedPaths uses the selected upstream credential kind.
+// The kind must come from the executor's Auth, never client headers or payload metadata.
+func ApplyPayloadConfigWithAuthTrackedPaths(cfg *config.Config, authKind, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
+	return applyPayloadConfigWithExecutionScope(cfg, "", authKind, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPaths...)
+}
+
+func payloadAuthKind(kinds []string) string {
+	if len(kinds) == 0 {
+		return ""
+	}
+	return kinds[0]
+}
+
+func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, authKind, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
 	touched := make(map[string]bool)
 	if len(payload) == 0 {
 		return payload, touched
@@ -105,7 +122,7 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 			// Apply default rules: first write wins per field across all matching rules.
 			for i := range rules.Default {
 				rule := &rules.Default[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates) {
+				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -133,7 +150,7 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 			// Apply default raw rules: first write wins per field across all matching rules.
 			for i := range rules.DefaultRaw {
 				rule := &rules.DefaultRaw[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates) {
+				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -165,7 +182,7 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 			// Apply override rules: last write wins per field across all matching rules.
 			for i := range rules.Override {
 				rule := &rules.Override[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates) {
+				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -185,7 +202,7 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 			// Apply override raw rules: last write wins per field across all matching rules.
 			for i := range rules.OverrideRaw {
 				rule := &rules.OverrideRaw[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates) {
+				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -209,7 +226,7 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 			// Apply filter rules: remove matching paths from payload.
 			for i := range rules.Filter {
 				rule := &rules.Filter[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates) {
+				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for _, path := range rule.Params {
@@ -290,11 +307,14 @@ func payloadModelCandidateSetFor(model, requestedModel string) payloadModelCandi
 	}
 }
 
-func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, payload []byte, root string, candidates payloadModelCandidateSet) bool {
+func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, payload []byte, root string, candidates payloadModelCandidateSet, authKind, requestPath string) bool {
 	if len(rules) == 0 || len(candidates.any) == 0 {
 		return false
 	}
 	for _, entry := range rules {
+		if !payloadExecutionScopeMatches(entry, authKind, requestPath) {
+			continue
+		}
 		name := strings.TrimSpace(entry.Name)
 		if name == "" {
 			continue
@@ -318,6 +338,26 @@ func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fr
 		}
 	}
 	return false
+}
+
+func payloadExecutionScopeMatches(rule config.PayloadModelRule, authKind, requestPath string) bool {
+	if rule.AuthKind != "" {
+		if (rule.AuthKind != "apikey" && rule.AuthKind != "oauth") || rule.AuthKind != authKind {
+			return false
+		}
+	}
+	if rule.RequestPaths != nil {
+		if requestPath == "" {
+			return false
+		}
+		for _, allowed := range rule.RequestPaths {
+			if allowed != "" && allowed == requestPath {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func payloadModelRuleCandidates(entry config.PayloadModelRule, candidates payloadModelCandidateSet) []string {

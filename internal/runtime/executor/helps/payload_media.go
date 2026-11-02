@@ -17,7 +17,7 @@ import (
 
 // ApplyMediaPayloadConfig exposes multipart fields as JSON business values. File
 // parts use {filename, content_type, data} with base64 data; framing stays opaque.
-func ApplyMediaPayloadConfig(cfg *config.Config, executor, model, protocol string, body []byte, contentType string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) ([]byte, string, error) {
+func ApplyMediaPayloadConfig(cfg *config.Config, executor, model, protocol string, body []byte, contentType string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, selectedAuthKind ...string) ([]byte, string, error) {
 	view, multipartBody, errDecode := mediaPayloadJSON(body, contentType)
 	if errDecode != nil {
 		return nil, "", errDecode
@@ -30,7 +30,7 @@ func ApplyMediaPayloadConfig(cfg *config.Config, executor, model, protocol strin
 	if errOriginal != nil {
 		return nil, "", errOriginal
 	}
-	out := NewPayloadFinalizer(cfg, executor, model, protocol, "", originalView, req, opts)(view)
+	out := NewPayloadFinalizer(cfg, executor, model, protocol, "", originalView, req, opts, selectedAuthKind...)(view)
 	if !multipartBody || bytes.Equal(out, view) {
 		return outOrBody(out, body, multipartBody), contentType, nil
 	}
