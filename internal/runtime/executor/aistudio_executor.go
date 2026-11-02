@@ -133,7 +133,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	translatedReq, body, err := e.translateRequest(ctx, req, opts, false)
+	translatedReq, body, err := e.translateRequest(ctx, req, opts, false, auth.AuthKind())
 	if err != nil {
 		return resp, err
 	}
@@ -219,7 +219,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	translatedReq, body, err := e.translateRequest(ctx, req, opts, true)
+	translatedReq, body, err := e.translateRequest(ctx, req, opts, true, auth.AuthKind())
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +498,7 @@ func (e *AIStudioExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.A
 	countMetadata["action"] = "countTokens"
 	countReq.Metadata = countMetadata
 
-	_, body, err := e.translateRequest(ctx, countReq, opts, false)
+	_, body, err := e.translateRequest(ctx, countReq, opts, false, auth.AuthKind())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -562,7 +562,7 @@ type translatedPayload struct {
 	toFormat sdktranslator.Format
 }
 
-func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) ([]byte, translatedPayload, error) {
+func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool, selectedAuthKind ...string) ([]byte, translatedPayload, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	from := opts.SourceFormat
@@ -614,7 +614,7 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 		payload, _ = sjson.DeleteBytes(payload, "safetySettings")
 	}
 	policyPayload := payload
-	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers)
+	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers, selectedAuthKind...)
 	payload = helps.ProtectConfiguredEffort(e.cfg, policyPayload, payload, to.String(), e.Identifier(), req, opts)
 	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
 }

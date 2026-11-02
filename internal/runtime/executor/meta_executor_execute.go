@@ -79,7 +79,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	body = helps.NormalizeCodexToolIntegerTypes(body, opts.Headers)
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, e.Identifier(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, e.Identifier(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, e.Identifier(), e.Identifier(), req, opts)
 	return &metaPreparedRequest{
 		applyPatch:      applyPatch,

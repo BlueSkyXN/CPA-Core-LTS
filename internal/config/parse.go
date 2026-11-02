@@ -47,6 +47,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := cfg.ValidateReasoningEffort(); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidatePayloadExecutionScopes(); err != nil {
+		return nil, err
+	}
 	if err := cfg.Codex.CacheAffinity.normalizeAndValidate(); err != nil {
 		return nil, err
 	}

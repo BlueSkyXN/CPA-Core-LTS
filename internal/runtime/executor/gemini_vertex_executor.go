@@ -477,7 +477,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", body, originalTranslated, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", body, originalTranslated, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "gemini", e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, "gemini")
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -635,7 +635,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -773,7 +773,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -1000,7 +1000,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -1208,7 +1208,7 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, "countTokens")
 
-	translatedReq = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(translatedReq)
+	translatedReq = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind())(translatedReq)
 	httpReq, errNewReq := http.NewRequestWithContext(respCtx, http.MethodPost, url, bytes.NewReader(translatedReq))
 	if errNewReq != nil {
 		return cliproxyexecutor.Response{}, errNewReq
@@ -1310,7 +1310,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 	// For API key auth, use simpler URL format without project/location
 	url := vertexAPIKeyModelsURL(baseURL, baseModel, "countTokens")
 
-	translatedReq = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(translatedReq)
+	translatedReq = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind())(translatedReq)
 	httpReq, errNewReq := http.NewRequestWithContext(respCtx, http.MethodPost, url, bytes.NewReader(translatedReq))
 	if errNewReq != nil {
 		return cliproxyexecutor.Response{}, errNewReq
@@ -1602,7 +1602,7 @@ func (e *GeminiVertexExecutor) executeInteractions(ctx context.Context, auth *cl
 	url := vertexInteractionsURL(baseURL, projectID, false)
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "interactions", e.Identifier(), req, opts)
 	reporter.SetTranslatedRequestMetadata(body, "interactions")
 
@@ -1734,7 +1734,7 @@ func (e *GeminiVertexExecutor) executeInteractionsStream(ctx context.Context, au
 	url := vertexInteractionsURL(baseURL, projectID, true)
 
 	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "interactions", e.Identifier(), req, opts)
 	reporter.SetTranslatedRequestMetadata(body, "interactions")
 

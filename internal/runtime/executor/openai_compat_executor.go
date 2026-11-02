@@ -178,7 +178,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	}
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	policyPayload := translated
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	translated = helps.ProtectConfiguredEffort(e.cfg, policyPayload, translated, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -275,7 +275,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	payload, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), baseModel, "openai", payload, contentType, req, opts)
+	payload, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), baseModel, "openai", payload, contentType, req, opts, auth.AuthKind())
 	if errPrepare != nil {
 		return resp, errPrepare
 	}
@@ -516,7 +516,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	policyPayload := translated
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
 	translated = helps.ProtectConfiguredEffort(e.cfg, policyPayload, translated, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -795,7 +795,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	payload, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), baseModel, "openai", payload, contentType, req, opts)
+	payload, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), baseModel, "openai", payload, contentType, req, opts, auth.AuthKind())
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -922,7 +922,7 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 		return cliproxyexecutor.Response{}, err
 	}
 
-	translated = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(translated)
+	translated = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind())(translated)
 	enc, err := helps.TokenizerForModel(modelForCounting)
 	if err != nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("openai compat executor: tokenizer init failed: %w", err)

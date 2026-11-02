@@ -471,7 +471,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		baseURL = xaiauth.DefaultAPIBaseURL
 	}
 
-	prepared, err := e.prepareResponsesWebsocketRequest(ctx, req, opts)
+	prepared, err := e.prepareResponsesWebsocketRequest(ctx, req, opts, auth.AuthKind())
 	if err != nil {
 		return nil, err
 	}
@@ -1148,8 +1148,8 @@ func xaiBareWebsocketErrorStatus(payload []byte) int {
 	return http.StatusInternalServerError
 }
 
-func (e *XAIWebsocketsExecutor) prepareResponsesWebsocketRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*xaiPreparedRequest, error) {
-	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true)
+func (e *XAIWebsocketsExecutor) prepareResponsesWebsocketRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, selectedAuthKind ...string) (*xaiPreparedRequest, error) {
+	prepared, err := e.prepareResponsesRequest(ctx, req, opts, true, selectedAuthKind...)
 	if err != nil {
 		return nil, err
 	}

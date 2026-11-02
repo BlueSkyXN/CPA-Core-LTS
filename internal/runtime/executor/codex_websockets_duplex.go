@@ -368,7 +368,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						}
 						continue
 					}
-					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, opts)(payload)
+					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, opts, auth.AuthKind())(payload)
 					payload, _ = sjson.SetBytes(payload, "type", "response.steer")
 					parent := gjson.GetBytes(payload, "previous_response_id").String()
 					metadataMu.Lock()

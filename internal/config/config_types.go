@@ -635,6 +635,12 @@ type PayloadModelRule struct {
 	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
+	// AuthKind restricts the rule to the selected upstream credential: "apikey" or "oauth".
+	// Empty keeps the existing unrestricted behavior; unknown runtime kinds do not match.
+	AuthKind string `yaml:"auth-kind,omitempty" json:"auth-kind,omitempty"`
+	// RequestPaths matches exact business request paths, before upstream URL translation.
+	// An omitted list is unrestricted; a configured list requires a known matching path.
+	RequestPaths []string `yaml:"request-paths,omitempty" json:"request-paths,omitempty"`
 	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").

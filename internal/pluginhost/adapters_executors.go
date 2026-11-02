@@ -1122,7 +1122,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			if inputFormat == sdktranslator.FormatAntigravity {
 				root = "request"
 			}
-			finalize := helps.NewPayloadFinalizer(cfg, a.provider, baseModel, inputFormat.String(), root, originalTranslated, req, finalizeOpts)
+			finalize := helps.NewPayloadFinalizer(cfg, a.provider, baseModel, inputFormat.String(), root, originalTranslated, req, finalizeOpts, auth.AuthKind())
 			nativeReq.Payload = finalize(nativeReq.Payload)
 		}
 	}
