@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+const (
+	// vmmap 在共享 CI runner 上可能需要数秒，子进程必须留出完成检查和清理的时间。
+	darwinVMMapTimeout         = 15 * time.Second
+	darwinLibraryHelperTimeout = darwinVMMapTimeout + 10*time.Second
+)
+
 func TestDarwinLibraryLifetime(t *testing.T) {
 	for _, kind := range []string{"go", "c", "hybrid"} {
 		t.Run(kind, func(t *testing.T) {
@@ -41,9 +47,9 @@ func TestDarwinLibraryLifetime(t *testing.T) {
 			if keepGoPluginMapped(library) != expectPinned {
 				t.Fatalf("%s library residency detection mismatch", kind)
 			}
-			childCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+			childCtx, stop := context.WithTimeout(context.Background(), darwinLibraryHelperTimeout+5*time.Second)
 			defer stop()
-			child := exec.CommandContext(childCtx, os.Args[0], "-test.run=^TestDarwinLibraryLifetimeHelper$", "-test.timeout=8s")
+			child := exec.CommandContext(childCtx, os.Args[0], "-test.run=^TestDarwinLibraryLifetimeHelper$", "-test.timeout="+darwinLibraryHelperTimeout.String())
 			child.Env = append(os.Environ(), "CPA_PLUGIN_LIFETIME_LIBRARY="+library, "CPA_PLUGIN_LIFETIME_MARKER="+marker, "CPA_PLUGIN_LIFETIME_KIND="+kind)
 			if output, err := child.CombinedOutput(); err != nil {
 				t.Fatalf("%s library shutdown: %v\n%s", kind, err, output)
@@ -79,10 +85,13 @@ func TestDarwinLibraryLifetimeHelper(t *testing.T) {
 	if string(content) != wantMarkers {
 		t.Fatalf("shutdown/finalizer markers = %q, want %s", content, wantMarkers)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), darwinVMMapTimeout)
 	defer cancel()
 	mapped, err := exec.CommandContext(ctx, "/usr/bin/vmmap", "-w", strconv.Itoa(os.Getpid())).CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("inspect mapped library exceeded %s: %v (command error: %v)\n%s", darwinVMMapTimeout, ctx.Err(), err, mapped)
+		}
 		t.Fatalf("inspect mapped library: %v\n%s", err, mapped)
 	}
 	resident := strings.Contains(string(mapped), loadedPath)
