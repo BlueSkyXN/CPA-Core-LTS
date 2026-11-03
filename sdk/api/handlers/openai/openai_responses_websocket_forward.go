@@ -240,7 +240,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
-				payloads[i] = opts.plaintextTools.Restore(payloads[i])
+				// Duplex restores from each response's own request in the executor.
+				// Applying the initial handler snapshot would revive revoked proof.
+				if opts.duplexStream == nil || !opts.duplexStream() {
+					payloads[i] = opts.plaintextTools.Restore(payloads[i])
+				}
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if eventType == "response.subscription_usage" ||
 					(eventType == "response.metadata" && !isCodexResponsesClientRequest(c)) {

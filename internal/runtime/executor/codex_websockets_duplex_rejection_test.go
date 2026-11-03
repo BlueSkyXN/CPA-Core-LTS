@@ -48,7 +48,7 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 					return gjson.GetBytes(p, "prompt_cache_key").String()
 				}
 				write := func(kind, id, key string) {
-					p := fmt.Sprintf(`{"type":%q,"response":{"id":%q,"prompt_cache_key":%q,"output":[],"error":{"type":"invalid_request_error","message":"rejected"}}}`, kind, id, key)
+					p := fmt.Sprintf(`{"type":%q,"response":{"id":%q,"prompt_cache_key":%q,"output":[{"type":"function_call","name":"send_message","namespace":"collaboration","call_id":"call-1","arguments":"{}"}],"error":{"type":"invalid_request_error","message":"rejected"}}}`, kind, id, key)
 					if e := c.WriteMessage(websocket.TextMessage, []byte(p)); e != nil {
 						t.Error(e)
 					}
@@ -77,15 +77,20 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 			input := make(chan core.WebsocketInput, 2)
 			ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
 			cfg := &config.Config{}
+			cfg.Client.Codex.OptimizeMultiAgentV2 = true
 			cfg.Codex.ResponseSteering = true
 			cfg.CodexResponseSteering = true
 			exec := NewCodexWebsocketsExecutor(cfg)
 			exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
 			credential := &auth.Auth{ID: "metadata-account", Provider: "codex", Attributes: map[string]string{"api_key": "test", "base_url": upstream.URL, "websockets": "true"}}
 			request := func(key string) []byte {
-				return []byte(fmt.Sprintf(`{"type":"response.create","model":"gpt-6-astra","prompt_cache_key":%q,"input":[]}`, key))
+				tools := ""
+				if key != "good-key" {
+					tools = fmt.Sprintf(`,"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"properties":{"message":{"type":"string","encrypted":%t}}}}]}]`, key == "first-key")
+				}
+				return []byte(fmt.Sprintf(`{"type":"response.create","model":"gpt-6-astra","prompt_cache_key":%q,"previous_response_id":"first","input":[]%s}`, key, tools))
 			}
-			result, err := exec.ExecuteStream(ctx, credential, core.Request{Model: "gpt-6-astra", Payload: request("first-key")}, core.Options{SourceFormat: translator.FromString("codex"), Metadata: map[string]any{core.ExecutionSessionMetadataKey: t.Name()}})
+			result, err := exec.ExecuteStream(ctx, credential, core.Request{Model: "gpt-6-astra", Payload: request("first-key")}, core.Options{SourceFormat: translator.FromString("codex"), Headers: http.Header{"User-Agent": []string{"Codex Desktop/0.163.0"}}, Metadata: map[string]any{core.ExecutionSessionMetadataKey: t.Name()}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,6 +128,9 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 				}
 				if kind == "response.completed" && id == "good" {
 					completed = true
+					if marker := gjson.GetBytes(chunk.Payload, "response.output.0.encrypted_function_args").Raw; marker != "[]" {
+						t.Errorf("rejected create revoked the named parent's plaintext tools: marker=%q", marker)
+					}
 					if got := gjson.GetBytes(chunk.Payload, "response.prompt_cache_key").String(); got != "good-key" {
 						t.Errorf("success consumed another create's metadata: %q", got)
 					}

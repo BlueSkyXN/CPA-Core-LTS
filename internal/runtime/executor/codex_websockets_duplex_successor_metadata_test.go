@@ -50,7 +50,7 @@ func TestCodexDuplexAutomaticSuccessorMetadata(t *testing.T) {
 					if id == "automatic" {
 						parent = "first"
 					}
-					write(fmt.Sprintf(`{"type":%q,"response":{"id":%q,"previous_response_id":%q,"prompt_cache_key":%q,"output":[],"incomplete_details":{"reason":"steered"}}}`, kind, id, parent, key))
+					write(fmt.Sprintf(`{"type":%q,"response":{"id":%q,"previous_response_id":%q,"prompt_cache_key":%q,"output":[{"type":"function_call","name":"send_message","namespace":"collaboration","call_id":"call-1","arguments":"{}"}],"incomplete_details":{"reason":"steered"}}}`, kind, id, parent, key))
 				}
 				first := read()
 				firstKey := gjson.GetBytes(first, "prompt_cache_key").String()
@@ -123,15 +123,16 @@ func TestCodexDuplexAutomaticSuccessorMetadata(t *testing.T) {
 			input := make(chan core.WebsocketInput)
 			ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
 			cfg := &config.Config{}
+			cfg.Client.Codex.OptimizeMultiAgentV2 = true
 			cfg.Codex.ResponseSteering = true
 			cfg.CodexResponseSteering = true
 			executor := NewCodexWebsocketsExecutor(cfg)
 			executor.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
 			credential := &auth.Auth{ID: t.Name(), Provider: "codex", Attributes: map[string]string{"api_key": "test", "base_url": upstream.URL, "websockets": "true"}}
 			request := func(key string) []byte {
-				return []byte(fmt.Sprintf(`{"type":"response.create","model":"gpt-6-astra","prompt_cache_key":%q,"previous_response_id":"first","input":[]}`, key))
+				return []byte(fmt.Sprintf(`{"type":"response.create","model":"gpt-6-astra","prompt_cache_key":%q,"previous_response_id":"first","input":[],"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"properties":{"message":{"type":"string","encrypted":%t}}}}]}]}`, key, key == "first-key"))
 			}
-			result, err := executor.ExecuteStream(ctx, credential, core.Request{Model: "gpt-6-astra", Payload: request("first-key")}, core.Options{SourceFormat: translator.FromString("codex"), Metadata: map[string]any{core.ExecutionSessionMetadataKey: t.Name()}})
+			result, err := executor.ExecuteStream(ctx, credential, core.Request{Model: "gpt-6-astra", Payload: request("first-key")}, core.Options{SourceFormat: translator.FromString("codex"), Headers: http.Header{"User-Agent": []string{"Codex Desktop/0.163.0"}}, Metadata: map[string]any{core.ExecutionSessionMetadataKey: t.Name()}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -142,6 +143,13 @@ func TestCodexDuplexAutomaticSuccessorMetadata(t *testing.T) {
 				}
 				event := gjson.GetBytes(chunk.Payload, "type").String()
 				id := gjson.GetBytes(chunk.Payload, "response.id").String()
+				if event == "response.completed" || event == "response.incomplete" {
+					marker := gjson.GetBytes(chunk.Payload, "response.output.0.encrypted_function_args")
+					want := id == "first" || id == "automatic"
+					if marker.Exists() != want || want && marker.Raw != "[]" {
+						t.Errorf("response %s used another create's plaintext tools: marker=%q", id, marker.Raw)
+					}
+				}
 				if event == "response.created" && id == "first" {
 					if scenario == "create_before_steer" {
 						input <- core.WebsocketInput{Payload: request("middle-key")}

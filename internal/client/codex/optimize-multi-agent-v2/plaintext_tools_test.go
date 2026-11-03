@@ -2,10 +2,39 @@ package multiagentv2
 
 import (
 	"bytes"
+	"context"
+	"net/http"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/tidwall/gjson"
 )
+
+func TestPreparePlaintextToolsKeepsClientEligibility(t *testing.T) {
+	before := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"properties":{"message":{"encrypted":true}}}}]}]}`)
+	previous := CapturePlaintextToolProvenance(before, rewriteCodexMultiAgentMessageEncryption(before))
+	response := []byte(`{"output":[{"type":"function_call","namespace":"collaboration","name":"send_message","arguments":"{}"}]}`)
+	for _, tc := range []struct {
+		name, userAgent string
+		enabled         bool
+	}{
+		{"disabled", "Codex Desktop/0.163.0", false},
+		{"unrelated client", "zcode/1.0", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Client.Codex.OptimizeMultiAgentV2 = tc.enabled
+			headers := http.Header{"User-Agent": []string{tc.userAgent}}
+			body, proof := PreparePlaintextTools(context.Background(), headers, before, cfg)
+			if !bytes.Equal(body, before) {
+				t.Fatal("ineligible client tool schema changed")
+			}
+			if got := proof.InheritTurn(previous, []byte(`{"input":[]}`)).Restore(response); !bytes.Equal(got, response) {
+				t.Fatal("ineligible client inherited a previous plaintext contract")
+			}
+		})
+	}
+}
 
 func TestPlaintextToolProvenanceRestoresOnlyConfirmedCalls(t *testing.T) {
 	before := []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"properties":{"message":{"type":"string","encrypted":true}}}}]}]}]}`)

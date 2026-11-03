@@ -1,9 +1,12 @@
 package multiagentv2
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -18,6 +21,37 @@ type plaintextToolKey struct {
 type PlaintextToolProvenance struct {
 	tools    map[plaintextToolKey]bool
 	prepared bool
+}
+
+type initialPlaintextToolProvenanceKey struct{}
+
+// WithInitialPlaintextToolProvenance carries the handler's proof before the
+// executor sees tools whose encryption markers have already been removed.
+func WithInitialPlaintextToolProvenance(ctx context.Context, proof PlaintextToolProvenance) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, initialPlaintextToolProvenanceKey{}, proof)
+}
+
+// InitialPlaintextToolProvenance applies only to the initial executor request,
+// never to later creates read directly from a duplex connection.
+func InitialPlaintextToolProvenance(ctx context.Context) (PlaintextToolProvenance, bool) {
+	if ctx == nil {
+		return PlaintextToolProvenance{}, false
+	}
+	proof, ok := ctx.Value(initialPlaintextToolProvenanceKey{}).(PlaintextToolProvenance)
+	return proof, ok
+}
+
+// PreparePlaintextTools captures proof before namespace optimization. A disabled
+// or unrelated client returns an ineligible snapshot that cannot inherit proof.
+func PreparePlaintextTools(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) ([]byte, PlaintextToolProvenance) {
+	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
+		return payload, PlaintextToolProvenance{}
+	}
+	updated := rewriteCodexMultiAgentMessageEncryption(payload)
+	return updated, CapturePlaintextToolProvenance(payload, updated)
 }
 
 // CapturePlaintextToolProvenance pairs the original and prepared client tool
