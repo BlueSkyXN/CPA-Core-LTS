@@ -18,6 +18,8 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
 )
 
@@ -38,6 +40,9 @@ func zcodeSearchStream(message string) []byte {
 }
 
 func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
+	previousHooks := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(previousHooks) })
+	hook := logtest.NewGlobal()
 	for _, stream := range []bool{false, true} {
 		for _, tc := range []struct {
 			name                     string
@@ -46,18 +51,22 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 			search, fail, replay     bool
 			wantCalls                int
 			wantTotal                int64
+			nativeCount              int64
 		}{
-			{"correct", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 1, 101100},
-			{"observe", config.ZcodeContextUsageObserve, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 1, 505500},
-			{"disabled", config.ZcodeContextUsageDisabled, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 0, 505500},
-			{"failed-count", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, true, true, 1, 505500},
-			{"other-client", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "python", "", true, false, true, 0, 505500},
-			{"other-provider", config.ZcodeContextUsageCorrect, "other-provider", "codex_cli_rs/0.1", "", true, false, true, 0, 505500},
-			{"no-search", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", false, false, true, 0, 505500},
-			{"originator", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "", "Codex Desktop/0.1", true, false, true, 1, 101100},
-			{"unknown-replay", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, false, 0, 505500},
+			{"correct", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 1, 101100, 101100},
+			{"correct-same-total", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 1, 505500, 505500},
+			{"correct-larger-total", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 1, 606000, 606000},
+			{"observe", config.ZcodeContextUsageObserve, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 1, 505500, 101100},
+			{"disabled", config.ZcodeContextUsageDisabled, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, true, 0, 505500, 101100},
+			{"failed-count", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, true, true, 1, 505500, 101100},
+			{"other-client", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "python", "", true, false, true, 0, 505500, 101100},
+			{"other-provider", config.ZcodeContextUsageCorrect, "other-provider", "codex_cli_rs/0.1", "", true, false, true, 0, 505500, 101100},
+			{"no-search", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", false, false, true, 0, 505500, 101100},
+			{"originator", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "", "Codex Desktop/0.1", true, false, true, 1, 101100, 101100},
+			{"unknown-replay", config.ZcodeContextUsageCorrect, "zcode-coding-plan", "codex_cli_rs/0.1", "", true, false, false, 0, 505500, 101100},
 		} {
 			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				hook.Reset()
 				host := New()
 				host.runtimeConfig = &config.Config{Codex: config.CodexConfig{ZcodeContextUsage: tc.mode}}
 				message := zcodeSearchMessage
@@ -106,7 +115,7 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 						if tc.fail {
 							return pluginapi.ExecutorResponse{}, errors.New("synthetic unsupported count")
 						}
-						return pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":101100}`)}, nil
+						return pluginapi.ExecutorResponse{Payload: []byte(fmt.Sprintf(`{"input_tokens":%d}`, tc.nativeCount))}, nil
 					},
 				}
 				adapter := newCurrentExecutorAdapterForTest(host, "zcode-context-fixture", executor, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
@@ -159,6 +168,27 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 				if gjson.GetBytes(response, "usage.input_tokens").Int() != 505000 || gjson.GetBytes(response, "usage.output_tokens").Int() != 500 {
 					t.Fatal("client accounting fields changed")
 				}
+				if tc.wantCalls > 0 {
+					entry := hook.LastEntry()
+					if entry == nil || entry.Message != "zcode context usage" {
+						t.Fatal("context count outcome was not logged")
+					}
+					applied := tc.mode == config.ZcodeContextUsageCorrect && !tc.fail
+					source := "translated_usage"
+					if applied {
+						source = "native_count"
+					}
+					if entry.Data["original_response_total_tokens"] != int64(505500) || entry.Data["client_total_tokens"] != tc.wantTotal || entry.Data["client_total_source"] != source || entry.Data["context_count_applied"] != applied {
+						t.Fatalf("count source or accounting origin is ambiguous: %+v", entry.Data)
+					}
+					if tc.fail {
+						if _, exists := entry.Data["context_count_delta_tokens"]; exists {
+							t.Fatal("failed count reported a measured difference")
+						}
+					} else if entry.Data["context_count_delta_tokens"] != tc.nativeCount-int64(505500) {
+						t.Fatal("count difference lost its sign", entry.Data)
+					}
+				}
 				select {
 				case record := <-records:
 					if record.Failed || record.Detail.TotalTokens != 505500 || record.Detail.CachedTokens != 105000 {
@@ -169,6 +199,91 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestZcodeContextUsageStreamsTextBeforeCountCompletes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	countStarted := make(chan struct{})
+	releaseCount := make(chan struct{})
+	host := New()
+	host.runtimeConfig = &config.Config{Codex: config.CodexConfig{ZcodeContextUsage: config.ZcodeContextUsageCorrect}}
+	executor := &fakeExecutor{
+		executeStream: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			chunks := make(chan pluginapi.ExecutorStreamChunk, 1)
+			chunks <- pluginapi.ExecutorStreamChunk{Payload: zcodeSearchStream(zcodeSearchMessage)}
+			close(chunks)
+			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
+		},
+		countTokens: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+			close(countStarted)
+			select {
+			case <-releaseCount:
+				return pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":101100}`)}, nil
+			case <-ctx.Done():
+				return pluginapi.ExecutorResponse{}, ctx.Err()
+			}
+		},
+	}
+	a := newCurrentExecutorAdapterForTest(host, "zcode-stream-count-fixture", executor, []tr.Format{tr.FormatClaude}, []tr.Format{tr.FormatClaude})
+	a.provider = "zcode-coding-plan"
+	info := &registry.ModelInfo{ID: "glm-fixture", NativeCapabilities: &registry.NativeCapabilities{WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
+	req := coreexecutor.Request{Model: "glm-fixture", Payload: []byte(`{"input":"hello"}`), Metadata: map[string]any{"cliproxy.resolved_api_key_model_info": info}}
+	result, err := a.ExecuteStream(ctx, &coreauth.Auth{ID: "stream-count-auth", Provider: a.provider}, req, coreexecutor.Options{SourceFormat: tr.FormatOpenAIResponse, Stream: true, Headers: http.Header{"User-Agent": {"codex_cli_rs/0.1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	textDelivered := make(chan struct{})
+	streamDone := make(chan struct{})
+	completed := make(chan []byte, 1)
+	go func() {
+		defer close(streamDone)
+		textSeen := false
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				t.Error(chunk.Err)
+			}
+			for _, line := range strings.Split(string(chunk.Payload), "\n") {
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if gjson.Get(data, "type").String() == "response.completed" {
+					completed <- []byte(gjson.Get(data, "response").Raw)
+				} else if !textSeen && strings.Contains(data, "delivered answer") {
+					textSeen = true
+					close(textDelivered)
+				}
+			}
+		}
+		close(completed)
+	}()
+	select {
+	case <-textDelivered:
+	case <-ctx.Done():
+		t.Fatal("text was buffered until the auxiliary count completed")
+	}
+	select {
+	case <-countStarted:
+	case <-ctx.Done():
+		t.Fatal("count never started")
+	}
+	select {
+	case <-completed:
+		t.Fatal("completion bypassed the pending count")
+	default:
+	}
+	close(releaseCount)
+	select {
+	case response := <-completed:
+		if gjson.GetBytes(response, "usage.total_tokens").Int() != 101100 || gjson.GetBytes(response, "usage.input_tokens").Int() != 505000 {
+			t.Fatal("terminal context count lost accounting fields", string(response))
+		}
+	case <-ctx.Done():
+		t.Fatal("completion did not resume after count")
+	}
+	select {
+	case <-streamDone:
+	case <-ctx.Done():
+		t.Fatal("stream did not close after completion")
 	}
 }
 

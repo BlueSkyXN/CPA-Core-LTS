@@ -134,6 +134,7 @@ routing:
 client:
     codex:
         enable-apply-patch: false
+        # 恢复 Codex 回放丢弃的搜索结果，支持 Claude executor 与 zcode-coding-plan。
         web-search-result-cache:
             enabled: false
             ttl: "24h"
@@ -218,7 +219,9 @@ upstream:
         # The injected tool is also added to tool_choice.allowed_tools when applicable.
         inject-x-search: false
     codex:
-        # Codex 客户端的 ZCode 搜索上下文计数：disabled / observe / correct。
+        # GLM 搜索后的 Codex 上下文校正：disabled / observe / correct。
+        # correct 仅校正客户端 total_tokens；输入、输出、缓存分项与后台用量保留上游口径。
+        # 历史 reasoning 含非空签名时保留原 total，避免与客户端额外估算叠加。
         zcode-context-usage: disabled
         # 出站策略适用于 HTTP 入口；请求体压缩默认仅用于 Codex OAuth。
         outbound:

@@ -53,6 +53,8 @@ features:
       - internal/config/codex_zcode_context_usage.go
       - internal/pluginhost/zcode_context_usage.go
       - internal/pluginhost/zcode_context_usage_test.go
+      - internal/pluginhost/zcode_search_replay.go
+      - internal/pluginhost/zcode_search_replay_test.go
       - internal/translator/claude/openai/responses/context_count.go
       - docs/lts/zcode-context-usage.md
       - config.example.yaml
@@ -61,6 +63,7 @@ features:
     validation:
       - go test ./internal/config ./internal/watcher/diff ./internal/pluginhost -run ZcodeContext
       - go test ./internal/translator/claude/openai/responses
+      - go test ./internal/logging -run ZcodeContext
 
   - id: codex-oauth-cache-affinity
     kind: lts-feature

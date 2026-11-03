@@ -79,6 +79,13 @@ var quotedLogFields = map[string]struct{}{
 
 var pluginPathFieldOrder = []string{"path", "active_path", "retired_path"}
 
+// 计数事件单独列出字段，避免放宽其他日志的字段白名单。
+var zcodeContextLogFieldOrder = []string{
+	"status", "provider_total_tokens", "original_response_total_tokens",
+	"counted_context_tokens", "context_count_delta_tokens", "client_total_tokens",
+	"client_total_source", "context_count_applied", "duration_ms",
+}
+
 func formatLogFieldValue(key string, value any) string {
 	if _, quoted := quotedLogFields[key]; quoted {
 		if stringValue, ok := value.(string); ok {
@@ -118,6 +125,13 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 		for _, k := range logFieldOrder {
 			if v, ok := entry.Data[k]; ok {
 				fields = append(fields, fmt.Sprintf("%s=%s", k, formatLogFieldValue(k, v)))
+			}
+		}
+		if message == "zcode context usage" {
+			for _, k := range zcodeContextLogFieldOrder {
+				if v, ok := entry.Data[k]; ok {
+					fields = append(fields, fmt.Sprintf("%s=%s", k, formatLogFieldValue(k, v)))
+				}
 			}
 		}
 		if pluginID, ok := entry.Data["plugin_id"]; ok && strings.TrimSpace(fmt.Sprint(pluginID)) != "" {
