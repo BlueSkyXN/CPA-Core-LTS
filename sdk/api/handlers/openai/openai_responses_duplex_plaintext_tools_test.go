@@ -23,8 +23,12 @@ import (
 // Exercise the handler and real Codex executor across ordinary and duplex turns.
 func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 	for _, steering := range []bool{false, true} {
-		for _, transition := range []string{"add", "redeclare_without_encryption", "inherit", "append", "inline_replace", "upstream_encrypted", "spawn_namespace"} {
+		for _, transition := range []string{"add", "redeclare_without_encryption", "inherit", "append", "inline_replace", "upstream_encrypted", "spawn_namespace", "branch_restore", "branch_revoke"} {
 			t.Run(fmt.Sprintf("steering=%t/%s", steering, transition), func(t *testing.T) {
+				turnCount := 2
+				if strings.HasPrefix(transition, "branch_") {
+					turnCount = 3
+				}
 				functionName := "send_message"
 				toolsDeclaration := collaborationPlaintextTestTools
 				if transition == "spawn_namespace" {
@@ -43,7 +47,7 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 					}
 					defer conn.Close()
 					_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
-					for turn := 1; turn <= 2; turn++ {
+					for turn := 1; turn <= turnCount; turn++ {
 						_, request, err := conn.ReadMessage()
 						if err != nil {
 							t.Errorf("upstream turn %d: %v", turn, err)
@@ -55,6 +59,9 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 						}
 						if turn == 2 && transition == "append" && steering && gjson.GetBytes(request, "previous_response_id").String() != "review-r1" {
 							t.Error("append did not resolve its implicit parent")
+						}
+						if turn == 3 && (gjson.GetBytes(request, "previous_response_id").String() != "review-r1" || gjson.GetBytes(request, "tools").Exists()) {
+							t.Errorf("branch must continue the first response without redeclaring tools: %s", request)
 						}
 						id := fmt.Sprintf("review-r%d", turn)
 						item := `{"id":"review-msg-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"ready"}]}`
@@ -84,6 +91,7 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 				}))
 				defer upstream.Close()
 				cfg := &config.Config{}
+				cfg.DisableImageGeneration = config.DisableImageGenerationPassthrough
 				cfg.Client.Codex.OptimizeMultiAgentV2 = true
 				cfg.Codex.ResponseSteering = steering
 				cfg.CodexResponseSteering = steering
@@ -108,7 +116,7 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 				}
 				defer client.Close()
 				_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
-				for turn := 1; turn <= 2; turn++ {
+				for turn := 1; turn <= turnCount; turn++ {
 					toolsField := `,"tools":` + toolsDeclaration
 					input := `[{"role":"user","content":"synthetic turn"}]`
 					if transition == "add" && turn == 1 {
@@ -135,6 +143,14 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 							toolsField = ""
 							input = strings.TrimSuffix(input, "]") + `,{"type":"additional_tools","tools":` + strings.ReplaceAll(collaborationPlaintextTestTools, `"encrypted":true`, `"encrypted":false`) + `}]`
 						}
+					}
+					if (transition == "branch_restore" && turn == 2) || (transition == "branch_revoke" && turn == 1) {
+						toolsField = strings.ReplaceAll(toolsField, `"encrypted":true`, `"encrypted":false`)
+					}
+					if turn == 3 {
+						toolsField = ""
+						parent = `,"previous_response_id":"review-r1"`
+						input = `[{"type":"function_call_output","call_id":"review-call-1","output":"continue the first response"}]`
 					}
 					request := fmt.Sprintf(`{"type":%q,"model":"review-duplex-model","input":%s%s%s}`, kind, input, toolsField, parent)
 					if err := client.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
@@ -167,6 +183,9 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 							}
 							if transition == "upstream_encrypted" {
 								want = `["message"]`
+							}
+							if (transition == "branch_restore" && turn == 2) || (transition == "branch_revoke" && (turn == 1 || turn == 3)) {
+								want = ""
 							}
 							if got := item.Get("encrypted_function_args").Raw; got != want {
 								t.Errorf("turn %d %s: plaintext marker=%q want=%q", turn, typ, got, want)

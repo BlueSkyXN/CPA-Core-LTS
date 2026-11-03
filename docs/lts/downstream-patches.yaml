@@ -1034,7 +1034,7 @@ patches:
     retire_when: Upstream converts only fully proven plaintext agent_message content, preserves opaque, encrypted, mixed, empty, and malformed history, limits spawn/message rewrites to equivalent positively identified Multi-Agent namespaces, removes only boolean-true message.encrypted markers without changing ordinary, MCP, custom, top-level, or incomplete agents tools, preserves native Codex HTTP and WebSocket history, retains the user role for portable delegated tasks, returns request-scoped errors instead of dropping unreadable delegation or sending it to incompatible routes, and all listed regressions pass after removing the downstream implementation.
 
   - id: xai-multi-agent-plaintext-provenance
-    reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS records declarations whose boolean-true marker was removed and restores an empty encrypted_function_args only on matching calls after namespace restoration. HTTP, SSE and ordinary WebSocket handlers retain request-local proof. Codex duplex requests retain independent proof in their prepared settings, inherit only from the referenced parent response, and restore via the settings associated with each response; the API does not reapply its initial snapshot. Native executor-side restoration remains available for SDK callers.
+    reason: xAI requires namespace tools to be flattened and cannot consume the Codex message.encrypted schema marker, while the returning Codex client needs encrypted_function_args to distinguish a plaintext Multi-Agent call. LTS records declarations whose boolean-true marker was removed and restores an empty encrypted_function_args only on matching calls after namespace restoration. WebSocket handlers capture current declarations before reconstructing history; ordinary native WebSockets retain a bounded credential-scoped response history, select the referenced parent, and clear proof after upstream loss. Codex duplex requests retain independent proof in their prepared settings, inherit only from the referenced parent response, and restore via the settings associated with each response; the API does not reapply its initial snapshot. Native executor-side restoration remains available for SDK callers.
     introduced_in: 23caefe8b2495856c2c8df50b63823846ad6b910
     affected_upstream_range: Reviewed through 6e6afab99a1939525ecb6bb1f0873c8e7a9df877 (upstream main, 2026-11-03) against LTS baseline 139132ffa31b88a598df37dfa4d3fc6c6a793035. Upstream namespace and dispatcher-call restoration does not retain the before/after plaintext provenance needed across the Responses handler/executor boundary or individual duplex responses. The patch remains required.
     files:
@@ -1053,6 +1053,8 @@ patches:
       - sdk/api/handlers/openai/openai_responses_websocket_forward.go
       - sdk/api/handlers/openai/openai_responses_plaintext_tools_test.go
       - sdk/api/handlers/openai/openai_responses_duplex_plaintext_tools_test.go
+      - sdk/api/handlers/openai/openai_responses_websocket_plaintext_tools.go
+      - sdk/api/handlers/openai/openai_responses_websocket_plaintext_tools_test.go
       - internal/runtime/executor/codex_websockets_stream.go
       - internal/runtime/executor/codex_websockets_duplex.go
       - internal/runtime/executor/codex_websockets_duplex_rejection_test.go
@@ -1071,6 +1073,8 @@ patches:
       - TestResponsesWebsocketRestoresPlaintextToolArguments
       - TestPreparePlaintextToolsKeepsClientEligibility
       - TestResponsesWebsocketPlaintextToolsWithCodexExecutor
+      - TestResponsesWebsocketInlinePlaintextToolRedeclaration
+      - TestResponsesWebsocketPlaintextHistoryScopeAndLifetime
       - TestCodexDuplexRejectedCreateMetadata
       - TestCodexDuplexAutomaticSuccessorMetadata
     upstream_issue_or_pr: not-filed

@@ -548,6 +548,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 
 	var lastRequest []byte
 	var lastPlaintextTools multiagentv2.PlaintextToolProvenance
+	var plaintextHistory responsesWebsocketPlaintextHistory
 	lastResponseOutput := []byte("[]")
 	var observedCompaction responsesWebsocketObservedCompactionState
 	lastResponseID := ""
@@ -819,6 +820,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 		}
 
+		// 在拼接已处理的历史前捕获本轮声明，避免旧声明抵消新取得的依据。
+		preparedPayload := h.prepareCodexMultiAgentV2Tools(c, payload)
 		var requestJSON []byte
 		var updatedLastRequest []byte
 		var errMsg *interfaces.ErrorMessage
@@ -828,7 +831,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if previousResponseID != pendingPrewarmID {
 				errMsg = responsesWebsocketPreviousResponseNotFoundError()
 			} else {
-				requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketPrewarmFollowup(payload, lastRequest)
+				requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketPrewarmFollowup(preparedPayload, lastRequest)
 			}
 		} else if isPrewarm && previousResponseID == "" {
 			input := gjson.GetBytes(payload, "input")
@@ -839,7 +842,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 			} else {
 				// Mid-connection self-contained prewarm without previous_response_id is a new transcript root.
-				requestJSON, updatedLastRequest, errMsg = normalizeResponseCreateRequest(normalizeResponseTranscriptReplacement(payload, lastRequest))
+				requestJSON, updatedLastRequest, errMsg = normalizeResponseCreateRequest(normalizeResponseTranscriptReplacement(preparedPayload, lastRequest))
 			}
 		} else if pendingPrewarmID != "" && gjson.GetBytes(payload, "type").String() == wsRequestTypeCreate {
 			input := gjson.GetBytes(payload, "input")
@@ -850,16 +853,16 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 			} else {
 				// No parent reference means a self-contained replacement, not a delta.
-				requestJSON, updatedLastRequest, errMsg = normalizeResponseCreateRequest(normalizeResponseTranscriptReplacement(payload, lastRequest))
+				requestJSON, updatedLastRequest, errMsg = normalizeResponseCreateRequest(normalizeResponseTranscriptReplacement(preparedPayload, lastRequest))
 			}
 		} else if nativeWebsocketPassthrough {
-			requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(payload, requestModelName)
+			requestJSON, errMsg = normalizeResponsesWebsocketPassthroughRequest(preparedPayload, requestModelName)
 		} else if previousResponseID != "" && (len(lastRequest) == 0 || previousResponseID != lastResponseID) {
 			// HTTP/SSE 续接只拥有当前连接的最近历史，不能把错误父 ID 静默改接到最新一轮。
 			errMsg = responsesWebsocketPreviousResponseNotFoundError()
 		} else {
 			requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(
-				payload,
+				preparedPayload,
 				lastRequest,
 				lastResponseOutput,
 				lastResponseID,
@@ -896,8 +899,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 
-		requestJSON = h.prepareCodexMultiAgentV2Tools(c, requestJSON)
-		plaintextTools := responsesPlaintextTools(c).InheritTurn(lastPlaintextTools, payload)
+		parentPlaintextTools := lastPlaintextTools
+		if nativeWebsocketPassthrough {
+			parentPlaintextTools = plaintextHistory.parent(pinnedAuthID, payload)
+		}
+		plaintextTools := responsesPlaintextTools(c).InheritTurn(parentPlaintextTools, payload)
 		requestJSON = h.prepareCodexOrphanDelegation(c, requestJSON)
 
 		if isPrewarm {
@@ -1028,6 +1034,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		var lossWriteErr error
 		replayPinnedAuthFailure := func(errMsg *interfaces.ErrorMessage) bool {
 			if cliproxyexecutor.IsUpstreamWebsocketTurnError(errMsg.Error) {
+				plaintextHistory.forgetAuth(lastAttemptedAuthID)
 				// The upstream websocket was lost: tell the client, keep its socket open, and
 				// fence the input it sent before the loss. A refused continuation is not a loss.
 				var turnErr *cliproxyexecutor.UpstreamWebsocketTurnError
@@ -1036,8 +1043,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 						turnErr.EventID == "" && !turnErr.Idle && len(turnErr.Abandoned) == 0 {
 						turnErr.EventID = strings.TrimSpace(gjson.GetBytes(payload, "event_id").String())
 					}
-					if !turnErr.FullContextRequired && !turnErr.NotSent && inputEpoch.Load() == turnStartEpoch {
-						inputEpoch.Add(1)
+					if !turnErr.FullContextRequired && !turnErr.NotSent {
+						if inputEpoch.Load() == turnStartEpoch {
+							inputEpoch.Add(1)
+						}
 					}
 				}
 				lossWriteErr = writeResponsesWebsocketUpstreamLoss(writer, wsTimelineLog, errMsg)
@@ -1127,6 +1136,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		pendingPrewarmID = ""
 		upstreamMode = attemptedUpstreamMode
 		if upstreamMode == responsesWebsocketUpstreamModeWS {
+			plaintextHistory.remember(lastAttemptedAuthID, completedResponseID, plaintextTools)
 			upstreamWebsocketAuthID = lastAttemptedAuthID
 			if lastAttemptedAuthID != "" {
 				rememberPinnedAuth(lastAttemptedAuthID, modelName)

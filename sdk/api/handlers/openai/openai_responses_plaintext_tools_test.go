@@ -102,3 +102,62 @@ func TestResponsesWebsocketRestoresPlaintextToolArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesWebsocketInlinePlaintextToolRedeclaration(t *testing.T) {
+	for _, declaration := range []string{"renew", "revoke", "conflicting_duplicates"} {
+		t.Run(declaration, func(t *testing.T) {
+			executor := &responsesMultiAgentCaptureExecutor{output: []byte(collaborationPlaintextTestOutput)}
+			handler, model := newResponsesMultiAgentTestHandler(t, executor)
+			router := gin.New()
+			router.GET("/v1/responses", handler.ResponsesWebsocket)
+			server := httptest.NewServer(router)
+			defer server.Close()
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", http.Header{"User-Agent": []string{"Codex Desktop/0.163.0"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			for turn := 1; turn <= 2; turn++ {
+				tools := collaborationPlaintextTestTools
+				if turn == 2 && declaration == "revoke" {
+					tools = strings.ReplaceAll(tools, `"encrypted":true`, `"encrypted":false`)
+				}
+				input := `[{"type":"additional_tools","tools":` + tools + `}]`
+				if turn == 2 {
+					input = `[{"type":"function_call_output","call_id":"call-1","output":"ok"},` + input[1:]
+					if declaration == "conflicting_duplicates" {
+						input = strings.TrimSuffix(input, "]") + `,{"type":"additional_tools","tools":` + strings.ReplaceAll(tools, `"encrypted":true`, `"encrypted":false`) + `}]`
+					}
+				}
+				request := fmt.Sprintf(`{"type":"response.create","model":%q,"input":%s}`, model, input)
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+					t.Fatal(err)
+				}
+				for {
+					_, payload, err := conn.ReadMessage()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if kind := gjson.GetBytes(payload, "type").String(); kind == "error" || kind == "response.failed" {
+						t.Fatalf("unexpected error: %s", payload)
+					} else if kind != "response.completed" {
+						continue
+					}
+					want := "[]"
+					if turn == 2 && declaration != "renew" {
+						want = ""
+					}
+					if got := gjson.GetBytes(payload, "response.output.0.encrypted_function_args").Raw; got != want {
+						t.Errorf("turn %d: plaintext marker=%q want=%q", turn, got, want)
+					}
+					break
+				}
+			}
+			payloads := executor.Payloads()
+			if len(payloads) != 2 || len(gjson.GetBytes(payloads[1], "input").Array()) < 4 {
+				t.Fatal("test did not exercise reconstructed HTTP/SSE history")
+			}
+		})
+	}
+}

@@ -21,7 +21,7 @@ client:
     optimize-multi-agent-v2: true
 ```
 
-开启后，从父会话创建不携带旧加密任务历史的新子会话。适配会对已确认的协作工具声明请求明文参数，并在返回客户端时补齐本次调用的明文参数标记。HTTP、SSE 使用各自请求的证据；WebSocket 沿用未被替换的工具声明来源，明确替换声明时重新校验。启用 response steering 的双向 WebSocket 会按具体响应保留来源，使排队请求和自动后续响应使用各自的工具声明。已有加密标记、调用 ID、参数正文和无关工具保持原样。
+开启后，从父会话创建不携带旧加密任务历史的新子会话。适配会对已确认的协作工具声明请求明文参数，并在返回客户端时补齐本次调用的明文参数标记。HTTP、SSE 使用各自请求的证据；WebSocket 在历史拼接前捕获本轮声明，明确替换声明时重新校验。普通原生 WebSocket 按 `previous_response_id` 选择对应来源，省略父 ID 的 `response.append` 续接当前上游的最近响应；各凭据的来源独立保存，上游连接丢失时清理。启用 response steering 的双向 WebSocket 会按具体响应保留来源，使排队请求和自动后续响应使用各自的工具声明。已有加密标记、调用 ID、参数正文和无关工具保持原样。
 
 如果返回 `agent_message cannot be sent to this provider`：
 
