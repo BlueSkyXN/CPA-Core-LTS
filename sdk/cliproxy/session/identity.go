@@ -147,7 +147,11 @@ func ClaudeMetadataIdentities(payload []byte) (sessionID, parentSessionID, agent
 	if len(payload) == 0 {
 		return "", "", ""
 	}
-	root := util.ParseGJSONBytesNoCopy(payload)
+	return claudeMetadataIdentitiesFromObject(util.ParseGJSONBytesNoCopy(payload))
+}
+
+// 复用会话字段索引，避免缺失 metadata 时再次扫描完整消息正文。
+func claudeMetadataIdentitiesFromObject(root interface{ Get(string) gjson.Result }) (sessionID, parentSessionID, agentID string) {
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
 	if userID == "" {
 		req := root.Get("request")
@@ -454,7 +458,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 			return true
 		}
 	}
-	if ClaudeMetadataSessionID(payload) != "" {
+	if sessionID, _, _ := claudeMetadataIdentitiesFromObject(root); sessionID != "" {
 		return true
 	}
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())

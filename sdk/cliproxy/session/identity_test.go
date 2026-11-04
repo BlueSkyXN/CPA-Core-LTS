@@ -6,6 +6,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -392,6 +393,30 @@ func TestClaudeMetadataIdentitiesNormalizesAgentID(t *testing.T) {
 	_, _, badAgentID := ClaudeMetadataIdentities(invalidPayload)
 	if badAgentID != "" {
 		t.Fatalf("expected badAgentID to be empty for control character, got %q", badAgentID)
+	}
+}
+
+func TestClaudeMetadataIdentitiesIndexedLookupCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, session, parent, agent string
+	}{
+		{"top-level", `{"metadata":{"user_id":"{\"session_id\":\"child\",\"parent_session_id\":\"parent\",\"agent_id\":\"worker\"}"}}`, "child", "parent", "worker"},
+		{"duplicate-metadata", `{"metadata":{},"metadata":{"user_id":"{\"session_id\":\"child\",\"parent_session_id\":\"parent\",\"agent_id\":\"worker\"}"}}`, "child", "parent", "worker"},
+		{"nested-request", `{"request":{"metadata":{"user_id":"{\"session_id\":\"child\",\"parent_session_id\":\"parent\",\"agent_id\":\"worker\"}"}}}`, "child", "parent", "worker"},
+		{"contents-blocks-wrapper", `{"contents":[],"request":{"metadata":{"user_id":"{\"session_id\":\"ignored\"}"}}}`, "", "", ""},
+		{"top-level-priority", `{"metadata":{"user_id":"{\"session_id\":\"top\"}"},"request":{"metadata":{"user_id":"{\"session_id\":\"nested\"}"}}}`, "top", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(sessionID, parentID, agentID string) {
+				t.Helper()
+				if sessionID != tc.session || parentID != tc.parent || agentID != tc.agent {
+					t.Fatalf("identities=(%q,%q,%q), want=(%q,%q,%q)", sessionID, parentID, agentID, tc.session, tc.parent, tc.agent)
+				}
+			}
+			payload := []byte(tc.payload)
+			check(ClaudeMetadataIdentities(payload))
+			check(claudeMetadataIdentitiesFromObject(newSessionObject(util.ParseGJSONBytesNoCopy(payload))))
+		})
 	}
 }
 
