@@ -1,6 +1,6 @@
 # Qoder / CodeBuddy / Copilot / Coding Plan 原生插件
 
-三家保持原有 Provider 身份 `qoder`、`codebuddy`、`copilot`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。Copilot（0.1.1）支持 GitHub OAuth device 登录与自备 `github_token` 两种认证，同为纯 Go 原生动态库。
+三家保持原有 Provider 身份 `qoder`、`codebuddy`、`copilot`，通过 CPA 的账号选择、模型注册、协议转换和 usage 链路执行。CodeBuddy 已经是原生 Go HTTP Provider；Qoder 从插件 0.3.0 起只支持 PAT 认证和原生 Go HTTP，不再包含 runner、Node、Qoder CLI/SDK 或 `sdk_cli` 兼容路径。中国区默认使用 COSY 签名推理；显式配置的 OpenAI 兼容 `direct_endpoint` 保留原有 Bearer 请求格式。Copilot（0.1.2）支持 GitHub OAuth device 登录与自备 `github_token` 两种认证，同为纯 Go 原生动态库。
 
 ## 配置与兼容
 
@@ -19,7 +19,7 @@ Qoder 目录有两种使用方式：
 
 Management 的 `GET /v0/management/auth-files/models?name=...` 只读取当前 registry。若凭证暂无已注册模型，Panel 会调用 `POST /v0/management/auth-files/models/refresh?name=...` 重新发现单个凭证的目录；Core 沿原注册路径更新 registry 和 scheduler。重新发现可能触发 PAT 换票和目录 HTTP 请求，但不执行推理。成功返回 `status=ready|empty` 和 `models`；凭证不存在返回 404、已禁用返回 409、目录失败返回 502 与安全错误码、超时返回 504，不回传插件原始错误或上游响应体。旧 Core 没有此 POST 时，Panel 仍按原有空列表处理。
 
-CodeBuddy 0.2.1 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
+CodeBuddy 0.2.2 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
 
 新的模型元数据包含可选 reasoning levels、能否关闭 thinking、默认 context tier 和原始 credits 提示；不拼接其他场景名单，不把显示名当可执行 ID，不根据 `credits` 估算真实扣费。Summary 的 `catalog` 包含来源、场景、数量、获取时间、过期状态、模型能力和提示。Core `ModelInfo` 与 ABI 不变。
 
@@ -37,7 +37,7 @@ SSE 必须读到 `[DONE]`；finish 后的 usage 仍会被读取。`usage` / `raw
 
 ## Copilot（GitHub Copilot provider）
 
-Copilot 插件（`cpa-provider-copilot`，0.1.1）以 Provider 身份 `copilot` 接入，纯 Go 原生动态库，无 Node、GitHub CLI 或 runner。认证两种模式：`oauth` 走 GitHub OAuth device flow（发起后经插件 Management 路由 `GET /v0/management/plugins/copilot/login-info` 查询 user_code 与状态，`device_code` 不外发到日志或响应）；`github_token` 直接使用用户自备的 GitHub PAT。两种模式的 auth 文件 `type` 均为 `copilot`。
+Copilot 插件（`cpa-provider-copilot`，0.1.2）以 Provider 身份 `copilot` 接入，纯 Go 原生动态库，无 Node、GitHub CLI 或 runner。认证两种模式：`oauth` 走 GitHub OAuth device flow（发起后经插件 Management 路由 `GET /v0/management/plugins/copilot/login-info` 查询 user_code 与状态，`device_code` 不外发到日志或响应）；`github_token` 直接使用用户自备的 GitHub PAT。两种模式的 auth 文件 `type` 均为 `copilot`。
 
 凭据安全：`POST /login/oauth/access_token`（长期 `ghu_` token）、`POST /login/device/code`（device_code）与 `GET /copilot_internal/v2/token`（短时 Copilot JWT）三个凭据交换端点在 Core HTTP 请求日志中做双向 body 脱敏，路径后缀匹配以兼容 GHES；`/copilot_internal/user` 与 chat/inference 端点不脱敏。脱敏范围 = 宿主内置规则 + 各插件注册时通过 `Metadata.SensitiveEndpoints` 自声明的端点（方法 + 大小写不敏感路径后缀）取并集；网络字节不变。
 
