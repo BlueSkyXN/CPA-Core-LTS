@@ -43,7 +43,7 @@ Copilot 插件（`cpa-provider-copilot`，0.1.1）以 Provider 身份 `copilot` 
 
 端点覆盖：`github_api_endpoint` 显式覆盖 GitHub API base（token 交换、user、quota）；GHES 用 `enterprise_domain` 同时改写 `github.com`、`api.github.com` 与 Copilot API base。默认面向 github.com 云端。
 
-模型目录按账号发现（`ExecutorModelScopeOAuth`）；显示名、路由 ID、目录隔离语义与 Qoder/CodeBuddy 一致。执行协商格式为 `chat-completions` 与 `embeddings`：客户端四协议入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1beta generateContent` 经 Core 标准转换层进入 chat-completions 格式，`/v1/embeddings` 为 Core 公共入口直达插件。生命周期支持取消、readiness 与会话关闭（schema 与 capability 双门控）。usage 经 Core 正式 Provider 统计管道发布，插件不另建账本；配额 summary 查询 `copilot_internal/user`，不把配额快照当计费事实。
+模型目录按账号发现（`ExecutorModelScopeOAuth`）；显示名、路由 ID、目录隔离语义与 Qoder/CodeBuddy 一致。除 embeddings 外，模型须声明 `supported_endpoints` 才会注册；上游显式声明的 policy 须为 `enabled`，管理员配置的排除前缀继续生效。执行协商格式为 `chat-completions` 与 `embeddings`：客户端四协议入口 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1beta generateContent` 经 Core 标准转换层进入 chat-completions 格式，`/v1/embeddings` 为 Core 公共入口直达插件。生命周期支持取消、readiness 与会话关闭（schema 与 capability 双门控）。usage 经 Core 正式 Provider 统计管道发布，插件不另建账本；配额 summary 查询 `copilot_internal/user`，不把配额快照当计费事实。
 
 上游结束或读尽但没有正文、推理或工具片段时，插件在同一账号内补试一次，两次尝试的 usage 合并到该请求。已有输出的截断流直接报错；`length` 和 `content_filter` 保留原终结语义。客户端的 `reasoning_effort` 与 `tool_choice` 沿用 Core 转换和配置规则。
 
