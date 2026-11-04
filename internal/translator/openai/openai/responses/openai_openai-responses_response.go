@@ -94,6 +94,13 @@ func permitsEmptyChatResponse(reason string) bool {
 	return reason == "stop" || incomplete
 }
 
+func missingChatToolCallsFailure(responseID string, sequence int) []byte {
+	failure := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","status":"failed","output":[],"error":{"code":"invalid_upstream_response","message":"upstream finished tool calls without returning a tool call"}}}`)
+	failure, _ = sjson.SetBytes(failure, "response.id", responseID)
+	failure, _ = sjson.SetBytes(failure, "sequence_number", sequence)
+	return failure
+}
+
 // responsesRequestEcho carries the typed values of the Responses request
 // fields echoed into response objects. Extraction walks the top level of
 // the request once; apply writes the fields in the same fixed order and
@@ -1048,6 +1055,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			// can still populate response.usage.
 			if fr := choice.Get("finish_reason"); fr.Exists() && fr.String() != "" {
 				st.FinishReason = fr.String()
+				if st.FinishReason == "tool_calls" && len(st.FuncArgsBuf) == 0 {
+					st.SetToolInputError(fmt.Errorf("upstream finished tool calls without returning a tool call"))
+					st.CompletedEmitted = true
+					st.CompletionPending = false
+					out = append(out, emitRespEvent("response.failed", missingChatToolCallsFailure(st.ResponseID, nextSeq())))
+					return false
+				}
 				finalizeOpenItems()
 				st.CompletionPending = st.canFinalizeResponse()
 			}
@@ -1091,6 +1105,10 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 		id = fmt.Sprintf("resp_%x_%d", time.Now().UnixNano(), atomic.AddUint64(&responseIDCounter, 1))
 	}
 	resp, _ = sjson.SetBytes(resp, "id", id)
+	if finishReason == "tool_calls" && len(root.Get("choices.0.message.tool_calls").Array()) == 0 {
+		st.SetToolInputError(fmt.Errorf("upstream finished tool calls without returning a tool call"))
+		return []byte(gjson.GetBytes(missingChatToolCallsFailure(id, 0), "response").Raw)
+	}
 
 	// created_at: map from chat.completion created
 	created := root.Get("created").Int()

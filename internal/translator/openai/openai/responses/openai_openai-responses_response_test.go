@@ -2192,13 +2192,13 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ZeroOutputStillCo
 			wantOutputs: "omit",
 		},
 		{
-			name: "empty tool finish cannot succeed",
+			name: "tool finish without calls fails",
 			in: []string{
 				`data: {"id":"resp_missing_tools","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 				`data: [DONE]`,
 			},
-			wantStatus:  "",
-			wantOutputs: "omit",
+			wantStatus:  "failed",
+			wantOutputs: "[]",
 		},
 		{
 			name: "unknown empty finish cannot succeed",
@@ -2279,12 +2279,31 @@ func TestZeroOutputStreamCanFinalizeOnCleanEOF(t *testing.T) {
 	}
 }
 
-func TestEmptyChatToolFinishCannotFinalizeOnEOF(t *testing.T) {
-	request := []byte(`{"model":"fixture"}`)
+func TestChatToolFinishWithoutCallsFailsStreamingAndNonStream(t *testing.T) {
+	request := []byte(`{"model":"fixture","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`)
 	var param any
-	_ = ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "fixture", request, request,
-		[]byte(`data: {"id":"missing-tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`), &param)
-	if param.(*oaiToResponsesState).CanFinalizeResponseStream() {
-		t.Fatal("empty tool finish must not synthesize successful EOF completion")
+	frames := ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "fixture", request, request,
+		[]byte(`data: {"id":"missing-tool","choices":[{"index":0,"delta":{"content":"checking"},"finish_reason":"tool_calls"}]}`), &param)
+	failed := 0
+	for _, frame := range frames {
+		event, data := parseOpenAIResponsesSSEEvent(t, frame)
+		if event == "response.failed" {
+			failed++
+			if data.Get("response.error.code").String() != "invalid_upstream_response" {
+				t.Fatal("missing tools must report an upstream protocol error")
+			}
+		}
+	}
+	state := param.(*oaiToResponsesState)
+	if failed != 1 || state.CanFinalizeResponseStream() {
+		t.Fatal("missing tools were accepted as a successful EOF")
+	}
+	if tail := ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "fixture", request, request, []byte("data: [DONE]"), &param); len(tail) != 0 {
+		t.Fatal("stream emitted another terminal after failure")
+	}
+	nonStream := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "fixture", request, request,
+		[]byte(`{"id":"missing-tool","choices":[{"message":{"content":"checking"},"finish_reason":"tool_calls"}]}`), &param)
+	if gjson.GetBytes(nonStream, "status").String() != "failed" || gjson.GetBytes(nonStream, "error.code").String() != "invalid_upstream_response" {
+		t.Fatal("non-stream missing tools were accepted")
 	}
 }

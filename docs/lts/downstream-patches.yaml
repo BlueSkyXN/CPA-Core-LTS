@@ -1925,9 +1925,13 @@ patches:
       - internal/runtime/executor/openai_compat_executor.go
       - internal/runtime/executor/codex_translation_request_scoped_test.go
       - internal/runtime/executor/codex_translation_usage_test.go
+      - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_executor_usage.go
+      - internal/pluginhost/missing_tool_calls_test.go
     regression_tests:
       - TestCodexTranslationFailureDoesNotRotateOrCooldown
       - TestCodexNonStreamTranslationUsageOutcome
+      - TestExecutorMissingToolCallsPreservesFailureUsage
     upstream_issue_or_pr: not-filed
     state: required
     retire_when: Upstream classifies local translation failures as request-scoped (no cooldown, no credential rotation) and the regressions pass without the statusErr IsRequestScoped override.

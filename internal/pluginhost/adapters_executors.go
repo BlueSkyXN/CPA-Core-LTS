@@ -1293,11 +1293,15 @@ func (a *executorAdapter) translateExecutorResponse(ctx context.Context, prepare
 }
 
 func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
+	return a.translateExecutorStreamChunksWithUsage(ctx, prepared, in, nil)
+}
+
+func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk, reporter *helps.UsageReporter) <-chan pluginapi.ExecutorStreamChunk {
 	if prepared.requestedFormat == "" || (prepared.outputFormat == prepared.requestedFormat && prepared.requestedFormat != sdktranslator.FormatOpenAIResponse) {
-		return in
+		return observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, in)
 	}
 	if in == nil {
-		return nil
+		return observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, nil)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1306,41 +1310,57 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 	go func() {
 		defer close(out)
 		var param any
+		usage := formalPluginStreamUsage{reporter: reporter, format: prepared.outputFormat}
+		var streamErr error
+		defer func() { usage.publish(ctx, streamErr) }()
 		var completionDelta, completionStop []byte
 		deferClaudeCompletion := prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatClaude
-		failed := false
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-in:
 				if !ok {
-					if failed || ctx.Err() != nil {
+					if ctx.Err() != nil {
 						return
 					}
+					frames := a.translatedExecutorStreamTail(ctx, prepared, &param)
+					if helps.ApplyPatchTranslationError(param) != nil {
+						streamErr = pluginResponseConversionError()
+						completionDelta, completionStop = nil, nil
+					}
+					// 先记录已知结果，避免客户端收到结束事件后取消请求改变统计。
+					usage.publish(ctx, streamErr)
 					for _, frame := range [][]byte{completionDelta, completionStop} {
 						if len(frame) > 0 && !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
 							return
 						}
 					}
-					a.emitTranslatedExecutorStreamTail(ctx, prepared, out, &param)
+					for _, frame := range frames {
+						if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+							return
+						}
+					}
+					if streamErr != nil {
+						_ = sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr})
+					}
 					return
 				}
-				if failed {
-					continue
-				}
 				if chunk.Err != nil {
-					failed = true
-					completionDelta, completionStop = nil, nil
-					if !sendExecutorPluginStreamChunk(ctx, out, chunk) {
-						return
-					}
-					continue
+					streamErr = chunk.Err
+					usage.publish(ctx, streamErr)
+					_ = sendExecutorPluginStreamChunk(ctx, out, chunk)
+					return
 				}
+				usage.observe(chunk.Payload)
 				frames := a.translateExecutorStreamPayload(ctx, prepared, chunk.Payload, &param)
+				if helps.ApplyPatchTranslationError(param) != nil {
+					streamErr = pluginResponseConversionError()
+					usage.publish(ctx, streamErr)
+				}
 				for _, frame := range frames {
 					// usage 尾帧之后仍可能报告失败；完成事件等待插件无错误关闭。
-					// 原始用量已由上游观察器记录，正文和工具参数继续直接交付。
+					// 正文和工具参数继续直接交付。
 					if deferClaudeCompletion {
 						switch executorClaudeCompletionEvent(frame) {
 						case "message_delta":
@@ -1354,6 +1374,10 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 					if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
 						return
 					}
+				}
+				if streamErr != nil {
+					_ = sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr})
+					return
 				}
 			}
 		}
@@ -1416,17 +1440,12 @@ func executorStreamTranslationFellBack(prepared preparedExecutorCall, payload []
 	return executorNativeStreamResponseTranslatorExists(prepared.outputFormat, prepared.requestedFormat)
 }
 
-func (a *executorAdapter) emitTranslatedExecutorStreamTail(ctx context.Context, prepared preparedExecutorCall, out chan<- pluginapi.ExecutorStreamChunk, param *any) {
+func (a *executorAdapter) translatedExecutorStreamTail(ctx context.Context, prepared preparedExecutorCall, param *any) [][]byte {
 	tail := executorStreamDonePayload(prepared.outputFormat)
 	if len(tail) == 0 {
-		return
+		return nil
 	}
-	frames := a.translateExecutorStreamPayload(ctx, prepared, tail, param)
-	for _, frame := range frames {
-		if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
-			return
-		}
-	}
+	return a.translateExecutorStreamPayload(ctx, prepared, tail, param)
 }
 
 func executorStreamDonePayload(format sdktranslator.Format) []byte {
@@ -1633,6 +1652,12 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		chunks := a.translateClaudePluginStream(parent, cancelStream, pluginReq, prepared, reporter, pluginResp.Chunks)
 		streamHandedOff = true
 		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(parent, chunks)}, nil
+	}
+	if prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatOpenAIResponse {
+		// 转换和原始 usage 观察使用同一协程，避免上游先关闭时抢先发布成功。
+		pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, pluginResp.Chunks)
+		translated := a.translateExecutorStreamChunksWithUsage(ctx, prepared, pluginChunks, reporter)
+		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(ctx, translated)}, nil
 	}
 	rawPluginChunks := observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, pluginResp.Chunks)
 	pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, rawPluginChunks)
