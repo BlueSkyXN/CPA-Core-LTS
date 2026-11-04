@@ -150,7 +150,7 @@ the safe fingerprint fallback.
 - 支持 `stream=true` 和 `stream=false`；均使用一次上游 SSE，保留工具片段、reasoning 和成功响应的最终 usage。两种模式都要求各 choice 有 finish reason 及 `[DONE]`；非流式聚合上限为 4 MiB。
 - SSE 按完整事件解析，支持分片、多行 `data:`、LF/CRLF/CR 和 UTF-8 BOM；单行上限 1 MiB、事件上限 4 MiB。
 - `event:error`、业务错误码和 `finish_reason: error` 返回结构化失败。error finish 没有 usage 时继续读取尾帧；流式路径在关闭错误流前保留已取得的 usage。插件不重放生成请求。
-- 非 2xx 和非 SSE 响应最多读取 64 KiB 错误体，仅向 Core 返回错误类别与数值码。`6000–6008` / `14003` 为 429，额度或 Token 预算耗尽为 402，许可过期或未激活为 403，`11115` 为 400；HTTP 401/403 优先保留。
+- HTTP 401/403 直接关闭上游连接并返回鉴权失败。其余非 2xx 和非 SSE 响应最多读取 64 KiB 错误体，仅向 Core 返回错误类别与数值码。`6000–6008` / `14003` 为 429，额度或 Token 预算耗尽为 402，许可过期或未激活为 403，`11115` 为 400。
 - 模型显式 `compat.maxTokensField` 优先；缺失时沿用 WorkBuddy 的旧 OpenAI 模型前缀规则选择 `max_completion_tokens`。未知模型保留客户端字段，显式同时提供两个上限时保持原请求。
 - Upstream SSE must terminate with `data: [DONE]`.
 - Downstream disconnect and explicit execution cancellation close the host-owned upstream stream.

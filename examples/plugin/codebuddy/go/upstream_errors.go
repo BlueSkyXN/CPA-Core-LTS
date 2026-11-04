@@ -85,6 +85,10 @@ func codeBuddyFrameError(frame map[string]any, errorEvent bool) error {
 }
 
 func (r *pluginRuntime) codeBuddyHTTPError(execution *activeExecution, status int) error {
+	// 鉴权状态已足够分类，直接交回 Core，避免等待停滞的错误正文。
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return codeBuddyUpstreamError(status, 0)
+	}
 	var body []byte
 	for reads := 0; reads < 64 && len(body) < maxCodeBuddyErrorBytes; reads++ {
 		if execution.canceled() {
