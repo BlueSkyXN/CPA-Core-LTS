@@ -1,6 +1,6 @@
 # CodeBuddy Provider Plugin
 
-`cpa-provider-codebuddy` is a schema 5 dynamic plugin for the CodeBuddy and
+`cpa-provider-codebuddy` is a native Go dynamic plugin for the CodeBuddy and
 WorkBuddy-compatible direct HTTPS Chat Completions lane. `workbuddy` is not a
 separate CPA Provider: the selected CodeBuddy CLI PAT/API key is the only
 credential passed to the vendor service.
@@ -147,7 +147,11 @@ the safe fingerprint fallback.
 - Dynamic per-auth model catalog with exact ID forwarding.
 - Text, image, tools, and reasoning capabilities follow the selected vendor catalog and live capability checks.
 - The complete client-supplied `messages` array is preserved, including system and prior-turn context.
-- 支持 `stream=true` 和 `stream=false`；均使用一次上游 SSE，保留工具片段、reasoning 和最终 usage。非流式聚合有 4 MiB 上限，并要求 finish reason 与 `[DONE]`。
+- 支持 `stream=true` 和 `stream=false`；均使用一次上游 SSE，保留工具片段、reasoning 和成功响应的最终 usage。两种模式都要求各 choice 有 finish reason 及 `[DONE]`；非流式聚合上限为 4 MiB。
+- SSE 按完整事件解析，支持分片、多行 `data:`、LF/CRLF/CR 和 UTF-8 BOM；单行上限 1 MiB、事件上限 4 MiB。
+- `event:error`、业务错误码和 `finish_reason: error` 返回结构化失败。error finish 没有 usage 时继续读取尾帧；流式路径在关闭错误流前保留已取得的 usage。插件不重放生成请求。
+- 非 2xx 和非 SSE 响应最多读取 64 KiB 错误体，仅向 Core 返回错误类别与数值码。`6000–6008` / `14003` 为 429，额度或 Token 预算耗尽为 402，许可过期或未激活为 403，`11115` 为 400；HTTP 401/403 优先保留。
+- 模型显式 `compat.maxTokensField` 优先；缺失时沿用 WorkBuddy 的旧 OpenAI 模型前缀规则选择 `max_completion_tokens`。未知模型保留客户端字段，显式同时提供两个上限时保持原请求。
 - Upstream SSE must terminate with `data: [DONE]`.
 - Downstream disconnect and explicit execution cancellation close the host-owned upstream stream.
 - OpenAI Responses clients use CPA's existing Responses-to-Chat translation; the plugin itself remains a Chat provider.
@@ -155,16 +159,28 @@ the safe fingerprint fallback.
 CLI-native workspace sessions, skill discovery, MCP configuration, and native
 Agent tool execution remain outside this direct plugin boundary.
 
+## 协议参考与诊断
+
+0.2.1 的主要协议依据是 WorkBuddy 5.8.2 随附 CLI（product commit
+`b8f6c953610cb16e2bd275c003ded4bc315ec528`）的 ModelProvider、错误枚举和
+MaxTokensFieldRule。API Key 推理同时携带 `X-API-Key` 与 Bearer，与该客户端一致。
+客户端身份和 endpoint 继续由插件配置指定；模型名单仍按所选 Key 的 `cli` / `craft`
+目录隔离。消息角色、提示词和模型 ID 按原请求保留。
+
+readiness 检查本地配置和凭据格式；远端目录可通过刷新模型查询验证。真实推理、缓存
+命中和企业扣费需分别验收。非流式执行若返回错误，现有错误 RPC 只能报告失败与账号
+归属，usage 标记为 `unavailable`；流式错误之前已收到的 usage 仍由 Core 记录。
+
 ## 企业账号与后续 OAuth
 
 PAT/API Key 模式没有网页 Cookie 会话，不能假定有企业余额查询权限。当前版本
 **尚未实现原生 OAuth 登录和企业额度查询**；企业账号的 Key 不会因此被禁用、改写
 为个人账号或自动切换到另一凭证。个人资源查询失败与推理权限分开处理。
 
-后续使用同一个 `codebuddy` Provider 增加显式 OAuth 凭据模式，通过厂商 HTTP
-登录/刷新取得并核对成员 UID 和 enterpriseId，再查询企业成员额度。
-不导出浏览器 Cookie，不后台登录，不将 PAT 强行当作 OAuth。企业与个人模式需
-明确绑定，企业接口 401/403 不能自动降级到个人额度或切换计费账号。
+下一步先验证现有 CLI Key 对企业成员额度接口的权限，并核对成员 UID、enterpriseId
+和计费范围。确需登录 Token 时，再在同一个 `codebuddy` Provider 下增加显式 OAuth
+模式。企业与个人模式需明确绑定，企业接口 401/403 不能自动降级到个人额度或切换
+计费账号。
 实现范围和验收条件见 [PAT Provider 指南](../../../docs/lts/pat-providers.md)。
 
 本地动态库到 Core 的统计回归：在仓库根运行

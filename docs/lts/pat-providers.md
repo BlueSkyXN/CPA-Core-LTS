@@ -19,11 +19,11 @@ Qoder 目录有两种使用方式：
 
 Management 的 `GET /v0/management/auth-files/models?name=...` 只读取当前 registry。若凭证暂无已注册模型，Panel 会调用 `POST /v0/management/auth-files/models/refresh?name=...` 重新发现单个凭证的目录；Core 沿原注册路径更新 registry 和 scheduler。重新发现可能触发 PAT 换票和目录 HTTP 请求，但不执行推理。成功返回 `status=ready|empty` 和 `models`；凭证不存在返回 404、已禁用返回 409、目录失败返回 502 与安全错误码、超时返回 504，不回传插件原始错误或上游响应体。旧 Core 没有此 POST 时，Panel 仍按原有空列表处理。
 
-CodeBuddy 0.2.0 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
+CodeBuddy 0.2.1 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
 
 新的模型元数据包含可选 reasoning levels、能否关闭 thinking、默认 context tier 和原始 credits 提示；不拼接其他场景名单，不把显示名当可执行 ID，不根据 `credits` 估算真实扣费。Summary 的 `catalog` 包含来源、场景、数量、获取时间、过期状态、模型能力和提示。Core `ModelInfo` 与 ABI 不变。
 
-CodeBuddy 同时支持流式和非流式。普通 JSON 响应由同一次上游 SSE 聚合，保留文字、reasoning、工具参数分片和最终 usage；要求 `[DONE]`，非流式还要求 finish reason，聚合上限 4 MiB。不新增厂商 Agent 或本机工具执行能力。
+CodeBuddy 同时支持流式和非流式。普通 JSON 响应由同一次上游 SSE 聚合，保留文字、reasoning、工具参数分片和成功响应的最终 usage；两种模式都要求各 choice 有 finish reason 和 `[DONE]`，聚合上限 4 MiB。0.2.1 主要参考 WorkBuddy 5.8.2 随附 CLI 的协议：按完整 SSE 事件处理错误，保留 error finish 后的流式 usage 尾帧，按业务码区分限流、额度、许可和上下文错误，并按模型 `compat.maxTokensField` 选择输出上限字段。Core 将裸 Chat JSON chunk 适配为 Claude 转换器要求的 SSE data 行，保留 `/v1/messages` 的正文与 usage。详细行为和诊断范围见 [CodeBuddy 插件说明](../../examples/plugin/codebuddy/README.md#协议参考与诊断)。
 
 ## 认证、生命周期与统计
 
@@ -116,9 +116,9 @@ COSY 签名参考 Sliverkiss/cpa-plugin 的 MIT QoderWork 实现，归属和许�
 
 ### 建议的最小后续实现
 
-1. 同一 `codebuddy` Provider 下新增显式 OAuth 凭据通道，复用 Core `AuthProvider` 的 Start/Poll/Refresh、auth storage 和 host HTTP。参考 WorkBuddy 原生 HTTP 登录，不依赖厂商 CLI/SDK或浏览器 Cookie 导出。
-2. 把 region、credential kind、成员 UID、enterpriseId、选定 billing scope 分开保存。OAuth 登录结果必须与用户选择的企业/个人身份核对；不能只比较 enterpriseId 就认为是同一成员。
-3. 企业模式使用 `POST /billing/meter/get-enterprise-user-usage`，按实际 OAuth 接口契约携带身份，读取成员 `credit`（已用）、`limitNum`（上限）和周期。保持小数，不四舍五入成整数，不称为公司总池。个人模式继续 `get-user-resource`。
+1. 先验证现有 CLI Key 对企业成员额度接口的实际权限；确需登录 Token 时，再在同一 `codebuddy` Provider 下新增显式 OAuth 通道，复用 Core `AuthProvider` 的 Start/Poll/Refresh、auth storage 和 host HTTP。
+2. 把 region、credential kind、成员 UID、enterpriseId、选定 billing scope 分开保存。凭据身份必须与用户选择的企业/个人身份核对；不能只比较 enterpriseId 就认为是同一成员。
+3. 企业模式使用 `POST /billing/meter/get-enterprise-user-usage`，按验证后的接口契约携带身份，读取成员 `credit`（已用）、`limitNum`（上限）和周期。保持小数，不四舍五入成整数，不称为公司总池。个人模式继续 `get-user-resource`。
 4. 企业 401/403 显示 `needs_login` / `forbidden`；只有厂商明确表示不支持且用户配置允许，才考虑回退查询。**查询回退不能变成推理的计费账号回退**。余额查询失败也不能直接禁用可用推理凭据。
 5. 先做状态机、刷新持久化、并发和身份绑定 fixture，再由用户完成一次登录 UAT。付费闭环另需授权：固定一个非零费率模型、一次请求、无重试/回退，核对企业明细的唯一标记与实际扣费。免费模型成功仅证明调用和明细归属，不证明付费企业扣减。个人真实账号也需独立验收。
 

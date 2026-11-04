@@ -5,6 +5,7 @@ package test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 	if library == "" {
 		return
 	}
-	var truncated atomic.Bool
+	var responseMode atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("X-API-Key") != "fixture-key" {
 			t.Error("selected credential lost")
@@ -63,9 +64,32 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3","credits":"x0.00"}],"agents":[{"name":"cli","models":["hy3"]}]}}`)
 		case "/v2/chat/completions":
+			mode := responseMode.Load()
+			if mode == 3 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"code":6004,"msg":"fixture daily token limit"}`)
+				return
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"model\":\"hy3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"native-ok\",\"reasoning_content\":\"fixture-reasoning\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
-			if !truncated.Load() {
+			finish := "stop"
+			if mode == 2 || mode >= 4 {
+				finish = ""
+			}
+			delta := `{"content":"native-ok","reasoning_content":"fixture-reasoning"}`
+			if mode == 4 || mode == 6 {
+				delta = `{"tool_calls":[{"index":0,"id":"call-fixture","type":"function","function":{"name":"lookup","arguments":"{\"query\":"}}]}`
+			}
+			fmt.Fprintf(w, "data: {\"id\":\"fixture\",\"model\":\"hy3\",\"choices\":[{\"index\":0,\"delta\":%s,\"finish_reason\":%q}]}\n\n", delta, finish)
+			if mode == 2 || mode == 4 {
+				fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}]}\n\n")
+			}
+			if mode == 5 || mode == 6 {
+				fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
+			} else {
+				fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
+			}
+			if mode != 1 {
 				fmt.Fprint(w, "data: [DONE]\n\n")
 			}
 		default:
@@ -78,6 +102,8 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 连续错误用例共用同一测试凭据，避免前一用例的冷却阻止下一次请求。
+	cfg.DisableCooling = true
 	host := pluginhost.New()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -107,35 +133,59 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 	defer modelRegistry.UnregisterClient(auth.ID)
 	sink := &codeBuddyFixtureUsage{records: make(chan coreusage.Record, 8)}
 	coreusage.RegisterNamedPlugin("codebuddy-dynamic-fixture", sink)
-	for _, mode := range []string{"json", "sse", "truncated-sse"} {
-		truncated.Store(mode == "truncated-sse")
-		options := coreexecutor.Options{Stream: mode != "json", SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{coreexecutor.RequestIDMetadataKey: "fixture-" + mode}}
+	for _, tc := range []struct {
+		name       string
+		stream     bool
+		mode       int32
+		failed     bool
+		tokens     int64
+		provenance string
+	}{
+		{"json", false, 0, false, 12, "provider_reported_unverified"},
+		{"sse", true, 0, false, 12, "provider_reported_unverified"},
+		{"truncated-sse", true, 1, true, 12, "provider_reported_unverified"},
+		{"error-sse", true, 2, true, 12, "provider_reported_unverified"},
+		{"error-json", false, 2, true, 0, "unavailable"},
+		{"http-error-json", false, 3, true, 0, "unavailable"},
+		{"http-error-sse", true, 3, true, 0, "unavailable"},
+	} {
+		responseMode.Store(tc.mode)
+		options := coreexecutor.Options{Stream: tc.stream, SourceFormat: sdktranslator.FormatOpenAI, Metadata: map[string]any{coreexecutor.RequestIDMetadataKey: "fixture-" + tc.name}}
 		request := coreexecutor.Request{Model: "hy3", Payload: []byte(`{"model":"hy3","messages":[{"role":"user","content":"fixture"}]}`)}
 		var output []byte
 		var failed bool
-		if mode == "json" {
+		if !tc.stream {
 			result, err := executor.Execute(ctx, auth, request, options)
-			if err != nil {
+			failed = err != nil
+			if failed != tc.failed {
 				t.Fatal(err)
 			}
 			output = result.Payload
 		} else {
 			result, err := executor.ExecuteStream(ctx, auth, request, options)
 			if err != nil {
-				t.Fatal(err)
-			}
-			for chunk := range result.Chunks {
-				output = append(output, chunk.Payload...)
-				failed = failed || chunk.Err != nil
+				failed = true
+				status, ok := err.(interface{ StatusCode() int })
+				if tc.mode != 3 || !ok || status.StatusCode() != http.StatusTooManyRequests {
+					t.Fatalf("%s unexpected stream error: %v", tc.name, err)
+				}
+			} else {
+				for chunk := range result.Chunks {
+					output = append(output, chunk.Payload...)
+					failed = failed || chunk.Err != nil
+				}
 			}
 		}
-		if failed != truncated.Load() || !bytes.Contains(output, []byte("native-ok")) || !bytes.Contains(output, []byte(`"total_tokens":12`)) {
-			t.Fatalf("%s response lost content, usage or failure", mode)
+		if failed != tc.failed {
+			t.Fatalf("%s failed=%v want=%v", tc.name, failed, tc.failed)
+		}
+		if tc.tokens > 0 && (!bytes.Contains(output, []byte("native-ok")) || !bytes.Contains(output, []byte(`"total_tokens":12`))) {
+			t.Fatalf("%s response lost content or usage", tc.name)
 		}
 		select {
 		case record := <-sink.records:
-			if record.Failed != failed || record.AuthIndex != "fixture-index" || record.Detail.TotalTokens != 12 || record.UsageProvenance != "provider_reported_unverified" {
-				t.Fatalf("%s usage attribution failed", mode)
+			if record.Failed != failed || record.AuthIndex != "fixture-index" || record.Detail.TotalTokens != tc.tokens || record.UsageProvenance != tc.provenance {
+				t.Fatalf("%s usage attribution failed: failed=%v tokens=%d provenance=%s", tc.name, record.Failed, record.Detail.TotalTokens, record.UsageProvenance)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("usage not published")
@@ -149,32 +199,78 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 
 	// 最后一层使用真正的 CPA HTTP handler，覆盖客户端 API key、模型路由、
 	// plugin executor、普通 JSON / SSE 输出和正式 usage 归属。
-	truncated.Store(false)
+	responseMode.Store(0)
 	cfg.APIKeys = []string{"fixture-client-key"}
 	cfg.AuthDir = t.TempDir()
 	cfg.LoggingToFile = false
 	cfg.RequestLog = false
 	server := coreapi.NewServer(cfg, manager, sdkaccess.NewManager(), filepath.Join(t.TempDir(), "config.yaml"), coreapi.WithPluginHost(host))
-	for _, stream := range []bool{false, true} {
-		body := fmt.Sprintf(`{"model":"hy3","messages":[{"role":"user","content":"HTTP API fixture"}],"stream":%t}`, stream)
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	for _, tc := range []struct {
+		path, payload, end string
+	}{
+		{"/v1/chat/completions", `"messages":[{"role":"user","content":"HTTP API fixture"}]`, "[DONE]"},
+		{"/v1/responses", `"input":"HTTP API fixture"`, "response.completed"},
+		{"/v1/messages", `"messages":[{"role":"user","content":"HTTP API fixture"}],"max_tokens":64`, "message_stop"},
+	} {
+		for _, stream := range []bool{false, true} {
+			body := fmt.Sprintf(`{"model":"hy3",%s,"stream":%t}`, tc.payload, stream)
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(body))
+			req.Header.Set("Authorization", "Bearer fixture-client-key")
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, req)
+			if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("native-ok")) || !stream && !json.Valid(response.Body.Bytes()) {
+				t.Fatalf("HTTP path=%s stream=%t status=%d body=%s", tc.path, stream, response.Code, response.Body.String())
+			}
+			if stream && (!bytes.Contains(response.Body.Bytes(), []byte("data:")) || !bytes.Contains(response.Body.Bytes(), []byte(tc.end))) {
+				t.Fatalf("HTTP streaming response lost SSE framing: %s", response.Body.String())
+			}
+			select {
+			case record := <-sink.records:
+				if record.Failed || record.AuthIndex != auth.Index || record.Detail.TotalTokens != 12 {
+					t.Fatalf("HTTP stream=%t usage attribution failed: %+v", stream, record)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("HTTP stream=%t did not publish usage", stream)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name, content string
+		mode          int32
+	}{
+		{"text-error-tail", "native-ok", 2},
+		{"tool-error-tail", "input_json_delta", 4},
+		{"text-error-with-usage", "native-ok", 5},
+		{"tool-error-with-usage", "input_json_delta", 6},
+		{"truncated-after-finish", "native-ok", 1},
+	} {
+		responseMode.Store(tc.mode)
+		body := `{"model":"hy3","messages":[{"role":"user","content":"failure fixture"}],"max_tokens":64,"stream":true,"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
 		req.Header.Set("Authorization", "Bearer fixture-client-key")
 		req.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, req)
-		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("native-ok")) || !bytes.Contains(response.Body.Bytes(), []byte(`"total_tokens":12`)) {
-			t.Fatalf("HTTP stream=%t status=%d body=%s", stream, response.Code, response.Body.String())
+		got := response.Body.Bytes()
+		if response.Code != http.StatusOK || !bytes.Contains(got, []byte(tc.content)) || bytes.Count(got, []byte("event: error\n")) != 1 {
+			t.Fatalf("%s lost partial output or terminal error: status=%d body=%s", tc.name, response.Code, got)
 		}
-		if stream && (!bytes.Contains(response.Body.Bytes(), []byte("data:")) || !bytes.Contains(response.Body.Bytes(), []byte("[DONE]"))) {
-			t.Fatalf("HTTP streaming response lost SSE framing: %s", response.Body.String())
+		if bytes.Contains(got, []byte("event: message_delta\n")) || bytes.Contains(got, []byte("event: message_stop\n")) {
+			t.Fatalf("%s failed stream emitted successful completion: %s", tc.name, got)
 		}
 		select {
 		case record := <-sink.records:
-			if record.Failed || record.AuthIndex != auth.Index || record.Detail.TotalTokens != 12 {
-				t.Fatalf("HTTP stream=%t usage attribution failed: %+v", stream, record)
+			if !record.Failed || record.AuthIndex != auth.Index || record.Detail.TotalTokens != 12 || record.UsageProvenance != "provider_reported_unverified" {
+				t.Fatalf("%s lost failed usage attribution: %+v", tc.name, record)
 			}
 		case <-time.After(2 * time.Second):
-			t.Fatalf("HTTP stream=%t did not publish usage", stream)
+			t.Fatalf("%s did not publish failed usage", tc.name)
+		}
+		select {
+		case duplicate := <-sink.records:
+			t.Fatalf("%s published duplicate usage: %+v", tc.name, duplicate)
+		default:
 		}
 	}
 }
