@@ -305,7 +305,7 @@ func TestInvalidNonStreamReturnsStableClientErrorWithoutUpstreamCall(t *testing.
 func TestExecuteStreamUsesExactHeadersAndForwardsSSE(t *testing.T) {
 	host := newFakeHost()
 	host.reads = []hostHTTPStreamReadResponse{
-		{Payload: []byte("data: {\"id\":\"one\",\"choices\":[]}" + "\n\n")},
+		{Payload: []byte("data: {\"id\":\"one\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}" + "\n\n")},
 		{Payload: []byte("data: [DO")},
 		{Payload: []byte("NE]\n\n"), Done: true},
 	}

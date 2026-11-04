@@ -1,6 +1,7 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -82,6 +84,38 @@ func TestExecutorAdapterExecuteTranslationFailureIsRequestScoped(t *testing.T) {
 				t.Fatal("conversion failure was recorded as a successful request")
 			}
 			plugin.assertNoRecord(t, 50*time.Millisecond)
+		})
+	}
+}
+
+func TestExecutorChatStreamToClaudeAcceptsRawAndFramedChunks(t *testing.T) {
+	for _, prefix := range []string{"", "data: "} {
+		t.Run(prefix, func(t *testing.T) {
+			prepared := preparedExecutorCall{
+				outputFormat:    sdktranslator.FormatOpenAI,
+				requestedFormat: sdktranslator.FormatClaude,
+				req:             coreexecutor.Request{Model: "fixture-model"},
+				opts:            coreexecutor.Options{OriginalRequest: []byte(`{"model":"fixture-model","stream":true,"messages":[{"role":"user","content":"hello"}]}`)},
+			}
+			adapter := &executorAdapter{}
+			var param any
+			var output []byte
+			for _, raw := range []string{
+				`{"id":"fixture","model":"fixture-model","choices":[{"index":0,"delta":{"content":"native-ok"},"finish_reason":"stop"}]}`,
+				`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+			} {
+				for _, chunk := range adapter.translateExecutorStreamPayload(context.Background(), prepared, []byte(prefix+raw), &param) {
+					output = append(output, chunk...)
+				}
+			}
+			for _, chunk := range adapter.translateExecutorStreamPayload(context.Background(), prepared, []byte("data: [DONE]"), &param) {
+				output = append(output, chunk...)
+			}
+			for _, expected := range []string{"native-ok", "message_start", "message_stop", `"output_tokens":2`} {
+				if !bytes.Contains(output, []byte(expected)) {
+					t.Fatalf("lost %s: %s", expected, output)
+				}
+			}
 		})
 	}
 }

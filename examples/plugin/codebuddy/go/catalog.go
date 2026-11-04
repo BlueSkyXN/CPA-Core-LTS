@@ -34,6 +34,7 @@ type codeBuddyModelHints struct {
 	Credits          string  `json:"credits_hint,omitempty"`
 	DefaultEffort    string  `json:"default_effort,omitempty"`
 	SupportedLengths []int64 `json:"supported_context_lengths,omitempty"`
+	MaxTokensField   string  `json:"-"`
 }
 
 type codeBuddyCatalogCacheEntry struct {
@@ -79,7 +80,10 @@ type codeBuddyCatalogModel struct {
 	SupportsToolCall   bool   `json:"supportsToolCall"`
 	Credits            string `json:"credits"`
 	CanDisableThinking *bool  `json:"canDisableThinking"`
-	ContextWindow      struct {
+	Compat             struct {
+		MaxTokensField string `json:"maxTokensField"`
+	} `json:"compat"`
+	ContextWindow struct {
 		DefaultLength    int64   `json:"defaultLength"`
 		SupportedLengths []int64 `json:"supportedLengths"`
 	} `json:"contextWindow"`
@@ -267,7 +271,7 @@ func parseCodeBuddyCatalog(raw []byte) (codeBuddyCatalog, error) {
 		}
 		models = append(models, codeBuddyModelInfo(modelByID[id]))
 		model := modelByID[id]
-		hints[id] = codeBuddyModelHints{Credits: strings.TrimSpace(model.Credits), DefaultEffort: codeBuddyDefaultEffort(model.Reasoning), SupportedLengths: append([]int64(nil), model.ContextWindow.SupportedLengths...)}
+		hints[id] = codeBuddyModelHints{Credits: strings.TrimSpace(model.Credits), DefaultEffort: codeBuddyDefaultEffort(model.Reasoning), SupportedLengths: append([]int64(nil), model.ContextWindow.SupportedLengths...), MaxTokensField: model.Compat.MaxTokensField}
 		seen[id] = struct{}{}
 	}
 	missingIDs := make([]string, 0)
@@ -372,15 +376,15 @@ func minimalCodeBuddyModel(id string) pluginapi.ModelInfo {
 	}
 }
 
-func (r *pluginRuntime) codeBuddyModelAllowed(auth codeBuddyAuth, model, callbackID string) error {
+func (r *pluginRuntime) codeBuddyModelHintsForAuth(auth codeBuddyAuth, model, callbackID string) (codeBuddyModelHints, error) {
 	catalog, errCatalog := r.catalogForAuth(auth, callbackID)
 	if errCatalog != nil {
-		return errCatalog
+		return codeBuddyModelHints{}, errCatalog
 	}
 	if _, ok := catalog.Allowed[strings.TrimSpace(model)]; !ok {
-		return newPluginCallError("unsupported_model", "CodeBuddy model is not authorized for the selected credential", http.StatusBadRequest, false)
+		return codeBuddyModelHints{}, newPluginCallError("unsupported_model", "CodeBuddy model is not authorized for the selected credential", http.StatusBadRequest, false)
 	}
-	return nil
+	return catalog.Hints[strings.TrimSpace(model)], nil
 }
 
 func codeBuddyCatalogCacheKey(auth codeBuddyAuth, endpoint, userAgent string) string {

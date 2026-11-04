@@ -1334,6 +1334,13 @@ func (a *executorAdapter) translateExecutorStreamPayload(ctx context.Context, pr
 	if len(originalRequest) == 0 {
 		originalRequest = prepared.req.Payload
 	}
+	// Chat 插件可以输出裸 JSON；现有 OpenAI→Claude 流转换器按 SSE data 行读取。
+	if prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatClaude {
+		trimmed := bytes.TrimSpace(payload)
+		if json.Valid(trimmed) {
+			payload = append([]byte("data: "), trimmed...)
+		}
+	}
 	frames := sdktranslator.TranslateStream(ctx, prepared.outputFormat, prepared.requestedFormat, prepared.req.Model, originalRequest, prepared.req.Payload, payload, param)
 	if executorStreamTranslationFellBack(prepared, payload, frames) {
 		return nil

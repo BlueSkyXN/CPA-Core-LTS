@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 )
-
-const maxSSELineBytes = 1024 * 1024
 
 const codeBuddyConnectionLifecycleErrorCode = "connection_lifecycle"
 
@@ -40,10 +37,11 @@ func (r *pluginRuntime) openExecution(raw []byte, stream bool) (*activeExecution
 	if errAuth != nil {
 		return nil, newPluginCallError("invalid_auth", errAuth.Error(), http.StatusUnauthorized, false)
 	}
-	if errModel := r.codeBuddyModelAllowed(auth, model, req.HostCallbackID); errModel != nil {
+	hints, errModel := r.codeBuddyModelHintsForAuth(auth, model, req.HostCallbackID)
+	if errModel != nil {
 		return nil, errModel
 	}
-	body, errPayload := codeBuddyRequestPayload(req.Payload, model)
+	body, errPayload := codeBuddyRequestPayload(req.Payload, model, hints)
 	if errPayload != nil {
 		return nil, errPayload
 	}
@@ -82,23 +80,21 @@ func (r *pluginRuntime) openExecution(raw []byte, stream bool) (*activeExecution
 		return nil, newPluginCallError(codeBuddyConnectionLifecycleErrorCode, "CodeBuddy request was canceled", 0, true)
 	}
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+		errUpstream := r.codeBuddyHTTPError(execution, upstream.StatusCode)
 		execution.closeUpstream(r.caller)
-		status := upstream.StatusCode
-		if status < 400 || status > 599 {
-			status = http.StatusBadGateway
-		}
-		return nil, newPluginCallError("upstream_error", fmt.Sprintf("CodeBuddy upstream returned HTTP %d", status), status, status == 429 || status >= 500)
+		return nil, errUpstream
 	}
 	if !strings.Contains(strings.ToLower(upstream.Headers.Get("Content-Type")), "text/event-stream") {
+		errUpstream := r.codeBuddyHTTPError(execution, upstream.StatusCode)
 		execution.closeUpstream(r.caller)
-		return nil, newPluginCallError("invalid_upstream_response", "CodeBuddy upstream did not return text/event-stream", http.StatusBadGateway, true)
+		return nil, errUpstream
 	}
 
 	releaseOnError = false
 	return execution, nil
 }
 
-func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
+func codeBuddyRequestPayload(raw []byte, model string, hints ...codeBuddyModelHints) ([]byte, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, newPluginCallError("unsupported_model", "CodeBuddy model is required", http.StatusBadRequest, false)
@@ -118,6 +114,11 @@ func codeBuddyRequestPayload(raw []byte, model string) ([]byte, error) {
 	if errToolChoice := normalizeCodeBuddyToolChoice(body); errToolChoice != nil {
 		return nil, errToolChoice
 	}
+	maxTokensField := ""
+	if len(hints) > 0 {
+		maxTokensField = hints[0].MaxTokensField
+	}
+	normalizeCodeBuddyMaxTokens(body, model, maxTokensField)
 	body["model"] = model
 	body["stream"] = true
 	options, _ := body["stream_options"].(map[string]any)
@@ -226,9 +227,6 @@ func (r *pluginRuntime) readExecution(execution *activeExecution, accept func([]
 		if execution.canceled() {
 			return canceled()
 		}
-		if chunk.Error != "" {
-			return fmt.Errorf("CodeBuddy upstream stream failed")
-		}
 		if len(chunk.Payload) > 0 {
 			frames, errValidate := validator.consume(chunk.Payload)
 			if err := emit(frames); err != nil {
@@ -238,6 +236,9 @@ func (r *pluginRuntime) readExecution(execution *activeExecution, accept func([]
 				return errValidate
 			}
 		}
+		if chunk.Error != "" {
+			return fmt.Errorf("CodeBuddy upstream stream failed")
+		}
 		if validator.doneReceived || chunk.Done {
 			frames, err := validator.finish()
 			if emitErr := emit(frames); emitErr != nil {
@@ -246,73 +247,6 @@ func (r *pluginRuntime) readExecution(execution *activeExecution, accept func([]
 			return err
 		}
 	}
-}
-
-type sseValidator struct {
-	buffer       []byte
-	doneReceived bool
-}
-
-func (v *sseValidator) consume(payload []byte) ([][]byte, error) {
-	if v.doneReceived && len(bytes.TrimSpace(payload)) > 0 {
-		return nil, fmt.Errorf("CodeBuddy upstream sent data after [DONE]")
-	}
-	v.buffer = append(v.buffer, payload...)
-	if len(v.buffer) > maxSSELineBytes && !bytes.Contains(v.buffer, []byte{'\n'}) {
-		return nil, fmt.Errorf("CodeBuddy upstream SSE line exceeds the bounded limit")
-	}
-	var frames [][]byte
-	for {
-		lineEnd := bytes.IndexByte(v.buffer, '\n')
-		if lineEnd < 0 {
-			if len(v.buffer) > maxSSELineBytes {
-				return nil, fmt.Errorf("CodeBuddy upstream SSE line exceeds the bounded limit")
-			}
-			return frames, nil
-		}
-		if lineEnd > maxSSELineBytes {
-			return nil, fmt.Errorf("CodeBuddy upstream SSE line exceeds the bounded limit")
-		}
-		line := bytes.TrimSuffix(v.buffer[:lineEnd], []byte{'\r'})
-		v.buffer = v.buffer[lineEnd+1:]
-		frame, errLine := v.consumeLine(line)
-		if errLine != nil {
-			return frames, errLine
-		}
-		if len(frame) > 0 {
-			frames = append(frames, frame)
-		}
-	}
-}
-
-func (v *sseValidator) consumeLine(line []byte) ([]byte, error) {
-	line = bytes.TrimSpace(line)
-	if len(line) == 0 || bytes.HasPrefix(line, []byte(":")) || !bytes.HasPrefix(line, []byte("data:")) {
-		return nil, nil
-	}
-	if v.doneReceived {
-		return nil, fmt.Errorf("CodeBuddy upstream sent data after [DONE]")
-	}
-	data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-	if bytes.Equal(data, []byte("[DONE]")) {
-		v.doneReceived = true
-		return nil, nil
-	}
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var frame map[string]any
-	if errDecode := json.Unmarshal(data, &frame); errDecode != nil {
-		return nil, fmt.Errorf("CodeBuddy upstream returned malformed SSE data")
-	}
-	if _, hasError := frame["error"]; hasError {
-		return nil, fmt.Errorf("CodeBuddy upstream stream reported an error")
-	}
-	normalized, errNormalize := normalizeCodeBuddyFrame(frame)
-	if errNormalize != nil {
-		return nil, errNormalize
-	}
-	return normalized, nil
 }
 
 func normalizeCodeBuddyFrame(frame map[string]any) ([]byte, error) {
@@ -355,25 +289,4 @@ func normalizeCodeBuddyFrame(frame map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("CodeBuddy upstream frame could not be normalized")
 	}
 	return normalized, nil
-}
-
-func (v *sseValidator) finish() ([][]byte, error) {
-	var frames [][]byte
-	trimmed := bytes.TrimSpace(v.buffer)
-	if len(trimmed) > maxSSELineBytes {
-		return nil, fmt.Errorf("CodeBuddy upstream SSE line exceeds the bounded limit")
-	}
-	if len(trimmed) > 0 {
-		frame, errLine := v.consumeLine(trimmed)
-		if errLine != nil {
-			return nil, errLine
-		}
-		if len(frame) > 0 {
-			frames = append(frames, frame)
-		}
-	}
-	if !v.doneReceived {
-		return nil, fmt.Errorf("CodeBuddy upstream stream ended before [DONE]")
-	}
-	return frames, nil
 }
