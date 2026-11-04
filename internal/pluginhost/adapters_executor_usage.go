@@ -53,6 +53,66 @@ func pluginExecutorUsageDetail(format sdktranslator.Format, payload []byte) core
 	}
 }
 
+// formalPluginStreamUsage 由单个流协程观察原始用量，按最终交付结果发布统计。
+type formalPluginStreamUsage struct {
+	reporter   *helps.UsageReporter
+	format     sdktranslator.Format
+	buffer     helps.StreamUsageBuffer
+	lineBuffer []byte
+	sawPayload bool
+}
+
+func (u *formalPluginStreamUsage) observe(payload []byte) {
+	if u.reporter == nil || len(payload) == 0 {
+		return
+	}
+	if !u.sawPayload {
+		u.reporter.MarkFirstResponseByte()
+		u.sawPayload = true
+	}
+	u.reporter.ObserveTimingPayload(u.format.String(), payload)
+	helps.ObservePluginExecutorStreamTTFT(u.format.String(), u.reporter, payload)
+	u.lineBuffer = append(u.lineBuffer, payload...)
+	for {
+		idx := bytes.IndexByte(u.lineBuffer, '\n')
+		if idx < 0 {
+			break
+		}
+		line := u.lineBuffer[:idx+1]
+		u.lineBuffer = u.lineBuffer[idx+1:]
+		helps.ObservePluginExecutorStreamUsage(u.format.String(), line, &u.buffer)
+	}
+	if payload := helps.ExtractStreamJSONPayload(u.lineBuffer); len(payload) > 0 && json.Valid(payload) {
+		helps.ObservePluginExecutorStreamUsage(u.format.String(), u.lineBuffer, &u.buffer)
+		u.lineBuffer = nil
+	}
+}
+
+func (u *formalPluginStreamUsage) publish(ctx context.Context, err error) {
+	if u.reporter == nil {
+		return
+	}
+	if len(u.lineBuffer) > 0 {
+		helps.ObservePluginExecutorStreamUsage(u.format.String(), u.lineBuffer, &u.buffer)
+		u.lineBuffer = nil
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil && !u.sawPayload {
+		err = emptyFormalPluginStreamError()
+	}
+	setPluginUsageProvenance(u.reporter, &u.buffer)
+	if err != nil {
+		if !u.buffer.PublishFailure(ctx, u.reporter, err) {
+			u.reporter.PublishFailure(ctx, err)
+		}
+		return
+	}
+	u.buffer.Publish(ctx, u.reporter)
+	u.reporter.EnsurePublished(ctx)
+}
+
 func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageReporter, format sdktranslator.Format, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
 	if reporter == nil {
 		return in
@@ -69,88 +129,24 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 	out := make(chan pluginapi.ExecutorStreamChunk)
 	go func() {
 		defer close(out)
-		var usageBuffer helps.StreamUsageBuffer
-		sawPayload := false
-		firstPayload := true
-		var lineBuffer []byte
-
-		observePayload := func(payload []byte) {
-			if firstPayload {
-				reporter.MarkFirstResponseByte()
-				firstPayload = false
-			}
-			reporter.ObserveTimingPayload(format.String(), payload)
-			helps.ObservePluginExecutorStreamTTFT(format.String(), reporter, payload)
-			lineBuffer = append(lineBuffer, payload...)
-			for {
-				idx := bytes.IndexByte(lineBuffer, '\n')
-				if idx < 0 {
-					break
-				}
-				line := lineBuffer[:idx+1]
-				lineBuffer = lineBuffer[idx+1:]
-				helps.ObservePluginExecutorStreamUsage(format.String(), line, &usageBuffer)
-			}
-			if jsonPayload := helps.ExtractStreamJSONPayload(lineBuffer); len(jsonPayload) > 0 && json.Valid(jsonPayload) {
-				helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
-				lineBuffer = nil
-			}
-		}
-		flushUsage := func() {
-			if len(lineBuffer) == 0 {
-				return
-			}
-			helps.ObservePluginExecutorStreamUsage(format.String(), lineBuffer, &usageBuffer)
-			lineBuffer = nil
-		}
+		usage := formalPluginStreamUsage{reporter: reporter, format: format}
+		var streamErr error
+		defer func() { usage.publish(ctx, streamErr) }()
 		for {
 			select {
 			case <-ctx.Done():
-				flushUsage()
-				setPluginUsageProvenance(reporter, &usageBuffer)
-				if !usageBuffer.PublishFailure(ctx, reporter, ctx.Err()) {
-					reporter.PublishFailure(ctx, ctx.Err())
-				}
 				return
 			case chunk, ok := <-in:
 				if !ok {
-					flushUsage()
-					if errContext := ctx.Err(); errContext != nil {
-						setPluginUsageProvenance(reporter, &usageBuffer)
-						if !usageBuffer.PublishFailure(ctx, reporter, errContext) {
-							reporter.PublishFailure(ctx, errContext)
-						}
-						return
-					}
-					if !sawPayload {
-						reporter.PublishFailure(ctx, emptyFormalPluginStreamError())
-						return
-					}
-					setPluginUsageProvenance(reporter, &usageBuffer)
-					usageBuffer.Publish(ctx, reporter)
-					reporter.EnsurePublished(ctx)
 					return
 				}
 				if chunk.Err != nil {
-					flushUsage()
-					setPluginUsageProvenance(reporter, &usageBuffer)
-					if !usageBuffer.PublishFailure(ctx, reporter, chunk.Err) {
-						reporter.PublishFailure(ctx, chunk.Err)
-					}
-				} else if len(chunk.Payload) > 0 {
-					sawPayload = true
-					observePayload(chunk.Payload)
+					streamErr = chunk.Err
+					usage.publish(ctx, streamErr)
+				} else {
+					usage.observe(chunk.Payload)
 				}
-				select {
-				case out <- chunk:
-				case <-ctx.Done():
-					setPluginUsageProvenance(reporter, &usageBuffer)
-					if !usageBuffer.PublishFailure(ctx, reporter, ctx.Err()) {
-						reporter.PublishFailure(ctx, ctx.Err())
-					}
-					return
-				}
-				if chunk.Err != nil {
+				if !sendExecutorPluginStreamChunk(ctx, out, chunk) || streamErr != nil {
 					return
 				}
 			}
