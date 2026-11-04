@@ -123,6 +123,12 @@ func parseNativeCatalog(raw []byte, excludedPrefixes []string) (nativeCatalogEnt
 		if model.Policy != nil && !strings.EqualFold(strings.TrimSpace(model.Policy.State), "enabled") {
 			continue
 		}
+		// 只发布声明了端点的现行模型。上游目录里的存档老模型（gpt-4o/4.1/3.5 等）
+		// 没有 supported_endpoints 声明、picker 关闭；embeddings 模型无端点概念但
+		// embeddings 线使用，按 capabilities.type 保留。
+		if !catalogModelPublishable(model) {
+			continue
+		}
 		if modelExcludedByPrefix(id, excludedPrefixes) {
 			continue
 		}
@@ -169,4 +175,14 @@ func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 		}
 	}
 	return out
+}
+
+// catalogModelPublishable 判断目录条目是否面向本插件发布：
+//   - embeddings 类型：无端点声明也保留（embeddings 线按 ID 匹配使用）；
+//   - 其余类型：必须声明 supported_endpoints，未声明的存档老模型不发布。
+func catalogModelPublishable(model copilotCatalogModel) bool {
+	if model.Capabilities != nil && strings.EqualFold(strings.TrimSpace(model.Capabilities.Type), "embeddings") {
+		return true
+	}
+	return len(model.SupportedEndpoints) > 0
 }

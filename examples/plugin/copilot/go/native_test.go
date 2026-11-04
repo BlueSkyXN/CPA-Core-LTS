@@ -292,7 +292,7 @@ func copilotModelsPayload() string {
 		 "supports":{"tool_calls":true,"parallel_tool_calls":true,"streaming":true,"structured_outputs":true,"vision":true,"adaptive_thinking":true,"max_thinking_budget":32000,"min_thinking_budget":0}},
 		 "policy":{"state":"enabled","terms":"https://example.invalid/terms"},"supported_endpoints":["/chat/completions"]},
 		{"id":"claude-sonnet-4","name":"Claude Sonnet 4","policy":{"state":"disabled"}},
-		{"id":"gpt-4.1-mini","name":"GPT-4.1 Mini"},
+		{"id":"gpt-4.1-mini","name":"GPT-4.1 Mini","supported_endpoints":["/chat/completions"]},
 		{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}},
 		{"id":"gpt-5-codex","name":"duplicate"}
 	]}`
@@ -352,14 +352,14 @@ func TestNativeCatalogPolicyPrefixExclusionAndCache(t *testing.T) {
 
 func TestNativeCatalogRespectsExcludedPrefixConfig(t *testing.T) {
 	// 全部命中排除前缀时目录必须显式失败，不允许伪造静态模型。
-	if _, err := parseNativeCatalog([]byte(`{"data":[{"id":"o3-mini"},{"id":"gpt-5"}]}`), []string{"o3", "gpt"}); err == nil {
+	if _, err := parseNativeCatalog([]byte(`{"data":[{"id":"o3-mini","supported_endpoints":["/chat/completions"]},{"id":"gpt-5","supported_endpoints":["/chat/completions"]}]}`), []string{"o3", "gpt"}); err == nil {
 		t.Fatal("excluded-only catalog published models")
 	}
-	entry, err := parseNativeCatalog([]byte(`{"data":[{"id":"o3-mini"},{"id":"gpt-5"}]}`), []string{"o3"})
+	entry, err := parseNativeCatalog([]byte(`{"data":[{"id":"o3-mini","supported_endpoints":["/chat/completions"]},{"id":"gpt-5","supported_endpoints":["/chat/completions"]}]}`), []string{"o3"})
 	if err != nil || len(entry.models) != 1 || entry.models[0].ID != "gpt-5" {
 		t.Fatalf("prefix exclusion changed exact IDs: %#v, %v", entry.models, err)
 	}
-	if _, err := parseNativeCatalog([]byte(`{"data":[{"id":"disabled","policy":{"state":"unavailable"}}]}`), nil); err == nil {
+	if _, err := parseNativeCatalog([]byte(`{"data":[{"id":"disabled","supported_endpoints":["/chat/completions"],"policy":{"state":"unavailable"}}]}`), nil); err == nil {
 		t.Fatal("non-enabled policy state was published")
 	}
 	if _, err := parseNativeCatalog([]byte(`{"data":[]}`), nil); err == nil {
@@ -769,5 +769,51 @@ func TestNativeDecoderEmptyStreamYieldsReadableError(t *testing.T) {
 				t.Fatal("empty upstream response should stay retryable")
 			}
 		})
+	}
+}
+
+// 目录发布过滤：无 supported_endpoints 声明的存档老模型（gpt-4o/4.1/3.5、
+// completion 型 gpt-41-copilot）不发布；现行模型与 embeddings 全保留。
+// 夹具覆盖目录中的端点声明与 embeddings 例外。
+func TestParseNativeCatalogDropsLegacyEndpointlessModels(t *testing.T) {
+	legacy := []string{
+		`{"id":"gpt-4o","name":"GPT-4o","vendor":"Azure OpenAI","capabilities":{"type":"chat","limits":{"max_context_window_tokens":131072}}}`,
+		`{"id":"gpt-4o-mini","vendor":"Azure OpenAI","capabilities":{"type":"chat"}}`,
+		`{"id":"gpt-41-copilot","vendor":"Azure OpenAI","capabilities":{"type":"completion"}}`,
+	}
+	current := []string{
+		`{"id":"gemini-4-argon","vendor":"Google","supported_endpoints":["/chat/completions"],"policy":{"state":"enabled"},"capabilities":{"type":"chat","supports":{"tool_calls":true}}}`,
+		`{"id":"claude-sonnet-5.5","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"],"capabilities":{"type":"chat"}}`,
+		`{"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","ws:/responses"],"capabilities":{"type":"chat"}}`, // 无 policy 块但声明端点
+		`{"id":"text-embedding-3-small","vendor":"Azure OpenAI","capabilities":{"type":"embeddings"}}`,
+	}
+	var b strings.Builder
+	b.WriteString(`{"data":[`)
+	first := true
+	for _, raw := range append(append([]string{}, legacy...), current...) {
+		if !first {
+			b.WriteString(",")
+		}
+		first = false
+		b.WriteString(raw)
+	}
+	b.WriteString(`]}`)
+	entry, err := parseNativeCatalog([]byte(b.String()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, m := range entry.models {
+		got[m.ID] = true
+	}
+	for _, id := range []string{"gpt-4o", "gpt-4o-mini", "gpt-41-copilot"} {
+		if got[id] {
+			t.Errorf("legacy model %s should not be published", id)
+		}
+	}
+	for _, id := range []string{"gemini-4-argon", "claude-sonnet-5.5", "gpt-5.3-codex", "text-embedding-3-small"} {
+		if !got[id] {
+			t.Errorf("model %s should stay published", id)
+		}
 	}
 }
