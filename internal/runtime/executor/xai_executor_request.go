@@ -106,7 +106,10 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
-	body = helps.RewriteCodexMultiAgentV2Input(ctx, opts.Headers, body, e.cfg)
+	body, err = helps.PrepareCodexMultiAgentV2PortableInput(ctx, opts.Headers, body, e.cfg)
+	if err != nil {
+		return nil, err
+	}
 	beforeMultiAgentEncryption := bytes.Clone(body)
 	body = helps.RewriteCodexMultiAgentV2MessageEncryption(ctx, opts.Headers, body, e.cfg)
 	plaintextMultiAgentTools := collectXAIPlaintextMultiAgentTools(beforeMultiAgentEncryption, body)

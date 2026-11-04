@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -311,6 +312,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	if input := cliproxyexecutor.WebsocketInputFromContext(ctx); input != nil && e.cfg != nil && (e.cfg.Codex.ResponseSteering || e.cfg.CodexResponseSteering) {
+		if proof, ok := multiagentv2.InitialPlaintextToolProvenance(ctx); ok {
+			prepared.plaintextTools = proof
+		}
 		affinityTransferred = true
 		return e.streamCodexDuplex(ctx, auth, req, opts, sess, connection, readCh, requestSignal, input, prepared, reporter, upstreamHeaders, unlockStreamSession), nil
 	}
@@ -890,6 +894,7 @@ type codexWebsocketPrepared struct {
 	wsHeaders            http.Header
 	useSIWC              bool
 	replayScope          codexReasoningReplayScope
+	plaintextTools       multiagentv2.PlaintextToolProvenance
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
 }
@@ -952,7 +957,11 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)
-	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
+	body, plaintextTools := multiagentv2.PreparePlaintextTools(ctx, opts.Headers, body, e.cfg)
+	body, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
+	if err != nil {
+		return nil, err
+	}
 	var replayScope codexReasoningReplayScope
 	var skipReplay bool
 	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
@@ -1023,6 +1032,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		wsHeaders:            wsHeaders,
 		useSIWC:              useSIWC,
 		replayScope:          replayScope,
+		plaintextTools:       plaintextTools,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,
 	}, nil

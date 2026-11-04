@@ -2331,7 +2331,6 @@ func TestConvertOpenAIResponsesRequestToClaude_StripsTrailingThinkingBlocksFromA
 func TestConvertOpenAIResponsesRequestToClaudeKeepsAgentMessageText(t *testing.T) {
 	in := []byte(`{"model":"claude-fable-5-1","input":[
 		{"type":"agent_message","content":[{"type":"input_text","text":"do X"}]},
-		{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"secret task"}]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"plain"}]}]}`)
 
 	for _, tc := range []struct {

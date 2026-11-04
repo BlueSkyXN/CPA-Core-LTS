@@ -78,6 +78,7 @@ type responsesSSEFramer struct {
 	dataFrames           int
 	writeErr             error
 	canComplete          func() bool
+	plaintextTools       multiagentv2.PlaintextToolProvenance
 }
 
 func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
@@ -304,6 +305,10 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 	}
 	if !json.Valid(payload) {
 		return frame
+	}
+	if restored := f.plaintextTools.Restore(payload); !bytes.Equal(restored, payload) {
+		payload = restored
+		frame = responsesSSEFrameWithData(frame, payload)
 	}
 
 	f.dataFrames++
@@ -794,7 +799,23 @@ func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
 	})
 }
 
+const responsesPlaintextToolsContextKey = "responses_plaintext_collaboration_tools"
+
+func responsesPlaintextTools(c *gin.Context) multiagentv2.PlaintextToolProvenance {
+	if c != nil {
+		value, _ := c.Get(responsesPlaintextToolsContextKey)
+		if proof, ok := value.(multiagentv2.PlaintextToolProvenance); ok {
+			return proof
+		}
+	}
+	return multiagentv2.PlaintextToolProvenance{}
+}
+
 func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context, payload []byte) []byte {
+	if c != nil {
+		// A WebSocket reuses its Gin context. Every turn starts with fresh proof.
+		c.Set(responsesPlaintextToolsContextKey, multiagentv2.PlaintextToolProvenance{})
+	}
 	if h == nil {
 		return payload
 	}
@@ -823,6 +844,7 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context
 	)
 	if prepared && c != nil {
 		c.Set(multiagentv2.CodexMultiAgentV2ToolsPreparedContextKey, true)
+		c.Set(responsesPlaintextToolsContextKey, multiagentv2.CapturePlaintextToolProvenance(payload, updated))
 	}
 	return updated
 }
@@ -941,6 +963,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 //   - rawJSON: The raw JSON bytes of the OpenAIResponses-compatible request
 func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
+	plaintextTools := responsesPlaintextTools(c)
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
@@ -954,6 +977,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	resp = plaintextTools.Restore(resp)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -966,6 +990,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 //   - c: The Gin context containing the HTTP request and response
 //   - rawJSON: The raw JSON bytes of the OpenAIResponses-compatible request
 func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte) {
+	plaintextTools := responsesPlaintextTools(c)
 	// Get the http.Flusher interface to manually flush the response.
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -1031,7 +1056,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	if isCodexClient {
 		failureEvent = "response.failed"
 	}
-	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient, canComplete: func() bool { return usage.StreamDeliverySupported(cliCtx) }}
+	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient, plaintextTools: plaintextTools, canComplete: func() bool { return usage.StreamDeliverySupported(cliCtx) }}
 	var initialOutput bytes.Buffer
 
 	// Peek at the first complete SSE data frame.

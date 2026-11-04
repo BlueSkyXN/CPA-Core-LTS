@@ -88,13 +88,22 @@ func TestResponsesPreparesCodexMultiAgentV2ToolsForHTTPAndSSE(t *testing.T) {
 
 type responsesMultiAgentCaptureExecutor struct {
 	websocketDirectCaptureExecutor
+	output []byte
+}
+
+func (e *responsesMultiAgentCaptureExecutor) response() []byte {
+	output := e.output
+	if len(output) == 0 {
+		output = []byte(`[]`)
+	}
+	return []byte(fmt.Sprintf(`{"id":"resp-1","object":"response","status":"completed","output":%s}`, output))
 }
 
 func (e *responsesMultiAgentCaptureExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
 	e.mu.Lock()
 	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
 	e.mu.Unlock()
-	return coreexecutor.Response{Payload: []byte(`{"id":"resp-1","output":[]}`)}, nil
+	return coreexecutor.Response{Payload: e.response()}, nil
 }
 
 func (e *responsesMultiAgentCaptureExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
@@ -102,7 +111,7 @@ func (e *responsesMultiAgentCaptureExecutor) ExecuteStream(_ context.Context, _ 
 	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
 	e.mu.Unlock()
 	chunks := make(chan coreexecutor.StreamChunk, 1)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n")}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf("data: {\"type\":\"response.completed\",\"response\":%s}\n\n", e.response()))}
 	close(chunks)
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -110,8 +119,8 @@ func (e *responsesMultiAgentCaptureExecutor) ExecuteStream(_ context.Context, _ 
 func newResponsesMultiAgentTestHandler(t *testing.T, executor *responsesMultiAgentCaptureExecutor) (*OpenAIResponsesAPIHandler, string) {
 	t.Helper()
 
-	modelID := "responses-multi-agent-test-model"
-	authID := "responses-multi-agent-test-auth"
+	modelID := "responses-multi-agent-" + strings.ReplaceAll(t.Name(), "/", "-")
+	authID := modelID + "-auth"
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
 	auth := &coreauth.Auth{ID: authID, Provider: "codex", Status: coreauth.StatusActive, ProxyURL: "direct"}

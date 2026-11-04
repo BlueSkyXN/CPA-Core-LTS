@@ -37,6 +37,9 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 // nothing to send.
 func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	rawJSON := inputRawJSON
+	if err := translatorcommon.RejectUnconvertedAgentMessages(rawJSON); err != nil {
+		return nil, err
+	}
 	var drops translatorcommon.UserTurnDrops
 	// Base OpenAI chat completions template with default values
 	out := []byte(`{"model":"","messages":[],"stream":false}`)

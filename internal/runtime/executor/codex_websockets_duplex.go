@@ -199,6 +199,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				prevID = responseID
 				payload, _ = sjson.SetBytes(payload, "previous_response_id", prevID)
 			}
+			parentSettings := responseSettings[prevID]
 			wrongParent := false
 			for _, accepted := range acceptedSteers {
 				if accepted.successorID == "" && prevID != waitingParent {
@@ -225,9 +226,6 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				payload, _ = sjson.SetBytes(payload, "model", model)
 			}
 			if isAppend && !gjson.GetBytes(payload, "instructions").Exists() {
-				metadataMu.Lock()
-				parentSettings := responseSettings[prevID]
-				metadataMu.Unlock()
 				targetSettings := parentSettings
 				if targetSettings == nil {
 					targetSettings = initial
@@ -256,6 +254,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			if errPrepare != nil {
 				fail(errPrepare)
 				return false
+			}
+			if parentSettings != nil {
+				prepared.plaintextTools = prepared.plaintextTools.InheritTurn(parentSettings.plaintextTools, payload)
 			}
 			if prepared.wsURL != initial.wsURL {
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
@@ -726,6 +727,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			payload = applyCodexIdentityConfuseResponsePayload(payload, eventPrepared.identityState)
 			restoreMultiAgent := !eventPrepared.multiAgentV2Conflict && (eventPrepared.optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgent)
+			payload = eventPrepared.plaintextTools.Restore(payload)
 			// Parse and invalidate replay for every rejected request, using the
 			// metadata that belongs to this event. Only the first rejection can
 			// enter conductor bootstrap retry; later failures stay on this socket.

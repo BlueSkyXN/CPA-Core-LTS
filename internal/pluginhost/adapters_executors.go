@@ -1062,7 +1062,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			envelope.ModelInfo = modelInfo
 			translatedClaude = true
 		}
-		translated := sdktranslator.TranslateRequestEnvelope(ctx, inputRequested, inputFormat, envelope)
+		translated := helps.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, opts.Headers, runtimeCfg, inputRequested, inputFormat, envelope)
 		if translated.Err != nil {
 			return preparedExecutorCall{}, translated.Err
 		}
