@@ -1297,21 +1297,51 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 	go func() {
 		defer close(out)
 		var param any
+		var completionDelta, completionStop []byte
+		deferClaudeCompletion := prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatClaude
+		failed := false
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-in:
 				if !ok {
+					if failed || ctx.Err() != nil {
+						return
+					}
+					for _, frame := range [][]byte{completionDelta, completionStop} {
+						if len(frame) > 0 && !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+							return
+						}
+					}
 					a.emitTranslatedExecutorStreamTail(ctx, prepared, out, &param)
 					return
 				}
+				if failed {
+					continue
+				}
 				if chunk.Err != nil {
-					_ = sendExecutorPluginStreamChunk(ctx, out, chunk)
+					failed = true
+					completionDelta, completionStop = nil, nil
+					if !sendExecutorPluginStreamChunk(ctx, out, chunk) {
+						return
+					}
 					continue
 				}
 				frames := a.translateExecutorStreamPayload(ctx, prepared, chunk.Payload, &param)
 				for _, frame := range frames {
+					// usage 尾帧之后仍可能报告失败；完成事件等待插件无错误关闭。
+					// 原始用量已由上游观察器记录，正文和工具参数继续直接交付。
+					if deferClaudeCompletion {
+						switch executorClaudeCompletionEvent(frame) {
+						case "message_delta":
+							completionDelta = bytes.Clone(frame)
+							continue
+						case "message_stop":
+							completionStop = bytes.Clone(frame)
+							continue
+						}
+					}
 					if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
 						return
 					}
@@ -1320,6 +1350,17 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 		}
 	}()
 	return out
+}
+
+func executorClaudeCompletionEvent(frame []byte) string {
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		payload := helps.ExtractStreamJSONPayload(line)
+		switch event := gjson.GetBytes(payload, "type").String(); event {
+		case "message_delta", "message_stop":
+			return event
+		}
+	}
+	return ""
 }
 
 func (a *executorAdapter) translateExecutorStreamPayload(ctx context.Context, prepared preparedExecutorCall, payload []byte, param *any) [][]byte {

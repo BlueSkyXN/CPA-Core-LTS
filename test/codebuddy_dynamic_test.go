@@ -64,7 +64,8 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3","credits":"x0.00"}],"agents":[{"name":"cli","models":["hy3"]}]}}`)
 		case "/v2/chat/completions":
-			if responseMode.Load() == 3 {
+			mode := responseMode.Load()
+			if mode == 3 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
 				fmt.Fprint(w, `{"code":6004,"msg":"fixture daily token limit"}`)
@@ -72,15 +73,23 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			finish := "stop"
-			if responseMode.Load() == 2 {
+			if mode == 2 || mode >= 4 {
 				finish = ""
 			}
-			fmt.Fprintf(w, "data: {\"id\":\"fixture\",\"model\":\"hy3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"native-ok\",\"reasoning_content\":\"fixture-reasoning\"},\"finish_reason\":%q}]}\n\n", finish)
-			if responseMode.Load() == 2 {
+			delta := `{"content":"native-ok","reasoning_content":"fixture-reasoning"}`
+			if mode == 4 || mode == 6 {
+				delta = `{"tool_calls":[{"index":0,"id":"call-fixture","type":"function","function":{"name":"lookup","arguments":"{\"query\":"}}]}`
+			}
+			fmt.Fprintf(w, "data: {\"id\":\"fixture\",\"model\":\"hy3\",\"choices\":[{\"index\":0,\"delta\":%s,\"finish_reason\":%q}]}\n\n", delta, finish)
+			if mode == 2 || mode == 4 {
 				fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}]}\n\n")
 			}
-			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
-			if responseMode.Load() != 1 {
+			if mode == 5 || mode == 6 {
+				fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
+			} else {
+				fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
+			}
+			if mode != 1 {
 				fmt.Fprint(w, "data: [DONE]\n\n")
 			}
 		default:
@@ -93,6 +102,8 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 连续错误用例共用同一测试凭据，避免前一用例的冷却阻止下一次请求。
+	cfg.DisableCooling = true
 	host := pluginhost.New()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -222,6 +233,44 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatalf("HTTP stream=%t did not publish usage", stream)
 			}
+		}
+	}
+	for _, tc := range []struct {
+		name, content string
+		mode          int32
+	}{
+		{"text-error-tail", "native-ok", 2},
+		{"tool-error-tail", "input_json_delta", 4},
+		{"text-error-with-usage", "native-ok", 5},
+		{"tool-error-with-usage", "input_json_delta", 6},
+		{"truncated-after-finish", "native-ok", 1},
+	} {
+		responseMode.Store(tc.mode)
+		body := `{"model":"hy3","messages":[{"role":"user","content":"failure fixture"}],"max_tokens":64,"stream":true,"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer fixture-client-key")
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, req)
+		got := response.Body.Bytes()
+		if response.Code != http.StatusOK || !bytes.Contains(got, []byte(tc.content)) || bytes.Count(got, []byte("event: error\n")) != 1 {
+			t.Fatalf("%s lost partial output or terminal error: status=%d body=%s", tc.name, response.Code, got)
+		}
+		if bytes.Contains(got, []byte("event: message_delta\n")) || bytes.Contains(got, []byte("event: message_stop\n")) {
+			t.Fatalf("%s failed stream emitted successful completion: %s", tc.name, got)
+		}
+		select {
+		case record := <-sink.records:
+			if !record.Failed || record.AuthIndex != auth.Index || record.Detail.TotalTokens != 12 || record.UsageProvenance != "provider_reported_unverified" {
+				t.Fatalf("%s lost failed usage attribution: %+v", tc.name, record)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s did not publish failed usage", tc.name)
+		}
+		select {
+		case duplicate := <-sink.records:
+			t.Fatalf("%s published duplicate usage: %+v", tc.name, duplicate)
+		default:
 		}
 	}
 }
