@@ -11,7 +11,7 @@ import (
 const (
 	pluginIdentifier      = "codebuddy"
 	pluginName            = "cpa-provider-codebuddy"
-	pluginVersion         = "0.2.1"
+	pluginVersion         = "0.2.2"
 	codeBuddyModel        = "hy3"
 	codeBuddyPreviewModel = "hy3-preview-agent"
 )
