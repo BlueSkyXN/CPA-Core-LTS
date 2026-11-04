@@ -190,6 +190,7 @@ func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cance
 				return claudePluginConversionError()
 			}
 			for _, frame := range frames {
+				prepared.zcodeReplay.recordFrame(ctx, frame)
 				if state.Terminal && !state.Chat {
 					frame = a.adjustZcodeContextFrame(ctx, prepared, req, frame, func(waitCtx context.Context) bool {
 						// The plugin releases its generation slot before closing this

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	clauderesponses "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -75,12 +76,22 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 	var counted int64
 	originalTotal := root.Get("usage.total_tokens").Int()
 	clientTotal := originalTotal
+	clientTotalSource := "translated_usage"
+	countApplied := false
 	defer func() {
-		log.WithFields(log.Fields{
-			"mode": mode, "status": status, "provider_total_tokens": originalTotal,
-			"counted_context_tokens": counted, "client_total_tokens": clientTotal,
+		fields := log.Fields{
+			"request_id": internallogging.GetRequestID(ctx),
+			"mode":       mode, "status": status, "provider_total_tokens": originalTotal,
+			// provider_total_tokens 保留为旧日志字段；这里的原值由 Claude → Responses 转换生成。
+			"original_response_total_tokens": originalTotal,
+			"counted_context_tokens":         counted, "client_total_tokens": clientTotal,
+			"client_total_source": clientTotalSource, "context_count_applied": countApplied,
 			"duration_ms": time.Since(started).Milliseconds(),
-		}).Info("zcode context usage")
+		}
+		if counted > 0 {
+			fields["context_count_delta_tokens"] = counted - originalTotal
+		}
+		log.WithFields(fields).Info("zcode context usage")
 	}()
 	if len(req.Payload)+len(response) > zcodeContextMaxBytes {
 		status = "size_limit"
@@ -93,12 +104,10 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 		status = "unsupported_replay"
 		return response
 	}
-	payload, err := clauderesponses.AppendResponseOutputForTokenCount(prepared.req.Model, req.Payload, []byte(root.Get("output").Raw), prepared.modelInfo)
-	if err != nil {
-		return response
-	}
-	if len(payload) > zcodeContextMaxBytes {
-		status = "size_limit"
+	// Codex 可能另行估算历史 encrypted_content。流式 headers 先于计数提交，
+	// 无法仅在计数成功时声明 X-Reasoning-Included；保留原 total 并报告回退。
+	if mode == config.ZcodeContextUsageCorrect && prepared.zcodeSignedReasoningHistory {
+		status = "client_reasoning_unconfirmed"
 		return response
 	}
 	// This auxiliary call inherits transport and cancellation, not generation usage,
@@ -122,6 +131,20 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 		status = "stream_cleanup_incomplete"
 		return response
 	}
+	if !prepared.zcodeReplay.historyUnchanged(countCtx) {
+		status = "replay_changed"
+		return response
+	}
+	// Codex 的 WebSearchCall 不保留 results；按下一轮相同的缓存恢复路径计数。
+	output := prepared.zcodeReplay.countOutput(countCtx, []byte(root.Get("output").Raw))
+	payload, err := clauderesponses.AppendResponseOutputForTokenCount(prepared.req.Model, req.Payload, output, prepared.modelInfo)
+	if err != nil {
+		return response
+	}
+	if len(payload) > zcodeContextMaxBytes {
+		status = "size_limit"
+		return response
+	}
 	req.Payload = payload
 	req.Stream = false
 	req.OriginalRequest = nil
@@ -141,8 +164,19 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 		return response
 	}
 	clientTotal = counted // The count already includes the delivered assistant output.
+	clientTotalSource = "native_count"
+	countApplied = true
 	status = "corrected"
 	return adjusted
+}
+
+func hasZcodeSignedReasoningHistory(payload []byte) bool {
+	for _, item := range gjson.GetBytes(payload, "input").Array() {
+		if item.Get("type").String() == "reasoning" && item.Get("encrypted_content").String() != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *executorAdapter) countZcodeContext(ctx context.Context, req pluginapi.ExecutorRequest) (count int64, status string) {

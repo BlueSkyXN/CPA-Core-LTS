@@ -106,69 +106,76 @@ func TestZcodeContextUsageHTTPAndNativeCount(t *testing.T) {
 	f.cfg.Plugins.Configs["zcode-coding-plan"] = pluginConfig
 	transport := &contextCountTransport{base: f.transport}
 	f.manager.SetRoundTripperProvider(transport)
-	for _, stream := range []bool{false, true} {
-		for _, mode := range []config.CodexZcodeContextUsageMode{config.ZcodeContextUsageDisabled, config.ZcodeContextUsageObserve, config.ZcodeContextUsageCorrect} {
-			f.cfg.Codex.ZcodeContextUsage = mode
-			f.host.ApplyConfig(context.Background(), f.cfg)
-			before := transport.counts
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"instructions":"caller","input":"hello","stream":%t}`, v2Model, stream))).WithContext(ctx)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("User-Agent", "codex_cli_rs/0.1")
-			res := httptest.NewRecorder()
-			f.router.ServeHTTP(res, req)
-			cancel()
-			if res.Code != http.StatusOK {
-				t.Fatalf("mode=%s stream=%t HTTP=%d %s", mode, stream, res.Code, res.Body.String())
-			}
-			body := res.Body.Bytes()
-			if stream {
-				for _, line := range strings.Split(res.Body.String(), "\n") {
-					data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-					if gjson.Get(data, "type").String() == "response.completed" {
-						body = []byte(gjson.Get(data, "response").Raw)
+	for _, cacheEnabled := range []bool{false, true} {
+		f.cfg.Client.Codex.WebSearchResultCache.Enabled = cacheEnabled
+		for _, stream := range []bool{false, true} {
+			for _, mode := range []config.CodexZcodeContextUsageMode{config.ZcodeContextUsageDisabled, config.ZcodeContextUsageObserve, config.ZcodeContextUsageCorrect} {
+				f.cfg.Codex.ZcodeContextUsage = mode
+				f.host.ApplyConfig(context.Background(), f.cfg)
+				before := transport.counts
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"instructions":"caller","input":"hello","stream":%t}`, v2Model, stream))).WithContext(ctx)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("User-Agent", "codex_cli_rs/0.1")
+				req.Header.Set("Session_id", fmt.Sprintf("context-cache-%t-stream-%t-mode-%s", cacheEnabled, stream, mode))
+				res := httptest.NewRecorder()
+				f.router.ServeHTTP(res, req)
+				cancel()
+				if res.Code != http.StatusOK {
+					t.Fatalf("mode=%s stream=%t HTTP=%d %s", mode, stream, res.Code, res.Body.String())
+				}
+				body := res.Body.Bytes()
+				if stream {
+					for _, line := range strings.Split(res.Body.String(), "\n") {
+						data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+						if gjson.Get(data, "type").String() == "response.completed" {
+							body = []byte(gjson.Get(data, "response").Raw)
+						}
 					}
 				}
-			}
-			want := int64(505500)
-			if mode == config.ZcodeContextUsageCorrect {
-				want = 101100
-			}
-			if got := gjson.GetBytes(body, "usage.total_tokens").Int(); got != want {
-				t.Fatalf("mode=%s stream=%t total=%d want=%d", mode, stream, got, want)
-			}
-			if mode == config.ZcodeContextUsageDisabled {
-				if transport.counts != before {
-					t.Fatal("disabled mode counted")
+				want := int64(505500)
+				if mode == config.ZcodeContextUsageCorrect {
+					want = 101100
 				}
-			} else {
-				if transport.counts != before+1 {
-					t.Fatal("native count missing")
+				if got := gjson.GetBytes(body, "usage.total_tokens").Int(); got != want {
+					t.Fatalf("mode=%s stream=%t total=%d want=%d", mode, stream, got, want)
 				}
-				if transport.countSession == "" || transport.generationSession == "" {
-					t.Fatal("signed session missing")
+				if mode == config.ZcodeContextUsageDisabled {
+					if transport.counts != before {
+						t.Fatal("disabled mode counted")
+					}
+				} else {
+					if transport.counts != before+1 {
+						t.Fatal("native count missing")
+					}
+					if transport.countSession == "" || transport.generationSession == "" {
+						t.Fatal("signed session missing")
+					}
+					if gjson.GetBytes(transport.countBody, "stream").Exists() || gjson.GetBytes(transport.countBody, "max_tokens").Exists() {
+						t.Fatal("count retained generation controls")
+					}
+					if bytes.Contains(transport.countBody, []byte("retained search body")) != cacheEnabled {
+						t.Fatalf("native count did not follow client replay cache enabled=%t", cacheEnabled)
+					}
+					if !bytes.Contains(transport.countBody, []byte("before search")) || !bytes.Contains(transport.countBody, []byte("delivered answer")) {
+						t.Fatal("delivered context was not replayed")
+					}
 				}
-				if gjson.GetBytes(transport.countBody, "stream").Exists() || gjson.GetBytes(transport.countBody, "max_tokens").Exists() {
-					t.Fatal("count retained generation controls")
+				select {
+				case record := <-f.usage.records:
+					if record.Failed || record.Detail.TotalTokens != 505500 || record.Detail.CachedTokens != 105000 {
+						t.Fatalf("provider usage changed: %+v", record.Detail)
+					}
+					if record.Size.UpstreamRequestBytes != int64(len(transport.generationBody)) {
+						t.Fatalf("count polluted request size: %+v", record.Size)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("missing usage")
 				}
-				if !bytes.Contains(transport.countBody, []byte("retained search body")) || !bytes.Contains(transport.countBody, []byte("before search")) || !bytes.Contains(transport.countBody, []byte("delivered answer")) {
-					t.Fatal("delivered context was not replayed")
-				}
-			}
-			select {
-			case record := <-f.usage.records:
-				if record.Failed || record.Detail.TotalTokens != 505500 || record.Detail.CachedTokens != 105000 {
-					t.Fatalf("provider usage changed: %+v", record.Detail)
-				}
-				if record.Size.UpstreamRequestBytes != int64(len(transport.generationBody)) {
-					t.Fatalf("count polluted request size: %+v", record.Size)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("missing usage")
 			}
 		}
 	}
-	if transport.generations != 6 {
+	if transport.generations != 12 {
 		t.Fatal("generation retried", transport.generations)
 	}
 }

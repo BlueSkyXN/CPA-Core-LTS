@@ -1008,13 +1008,15 @@ func firstUnreadyRequiredLevel(req pluginapi.ReadinessRequest, checks []pluginap
 }
 
 type preparedExecutorCall struct {
-	req             coreexecutor.Request
-	opts            coreexecutor.Options
-	inputRequested  sdktranslator.Format
-	requestedFormat sdktranslator.Format
-	inputFormat     sdktranslator.Format
-	outputFormat    sdktranslator.Format
-	modelInfo       *registry.ModelInfo
+	req                         coreexecutor.Request
+	opts                        coreexecutor.Options
+	inputRequested              sdktranslator.Format
+	requestedFormat             sdktranslator.Format
+	inputFormat                 sdktranslator.Format
+	outputFormat                sdktranslator.Format
+	modelInfo                   *registry.ModelInfo
+	zcodeReplay                 zcodeSearchReplay
+	zcodeSignedReasoningHistory bool
 }
 
 func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts coreexecutor.Options) (preparedExecutorCall, error) {
@@ -1051,6 +1053,7 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 	nativeOpts := opts
 	var updatesChanged bool
 	translatedClaude := false
+	var zcodeReplay zcodeSearchReplay
 	if inputRequested != "" && inputRequested != inputFormat {
 		envelope := sdktranslator.RequestEnvelope{Format: inputRequested, Model: baseModel, Body: req.Payload, Stream: opts.Stream}
 		if (inputRequested == sdktranslator.FormatOpenAIResponse || inputRequested == sdktranslator.FormatOpenAI) && inputFormat == sdktranslator.FormatClaude {
@@ -1061,6 +1064,10 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			}
 			envelope.ModelInfo = modelInfo
 			translatedClaude = true
+			if inputRequested == sdktranslator.FormatOpenAIResponse {
+				zcodeReplay = a.zcodeSearchReplayScope(ctx, runtimeCfg, auth, req, opts, modelInfo)
+				envelope.Body = zcodeReplay.restoreRequest(ctx, envelope.Body)
+			}
 		}
 		translated := helps.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, opts.Headers, runtimeCfg, inputRequested, inputFormat, envelope)
 		if translated.Err != nil {
@@ -1134,13 +1141,15 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 	nativeOpts.ResponseFormat = outputFormat
 
 	return preparedExecutorCall{
-		req:             nativeReq,
-		opts:            nativeOpts,
-		inputRequested:  inputRequested,
-		requestedFormat: requestedFormat,
-		inputFormat:     inputFormat,
-		outputFormat:    outputFormat,
-		modelInfo:       modelInfo,
+		req:                         nativeReq,
+		opts:                        nativeOpts,
+		inputRequested:              inputRequested,
+		requestedFormat:             requestedFormat,
+		inputFormat:                 inputFormat,
+		outputFormat:                outputFormat,
+		modelInfo:                   modelInfo,
+		zcodeReplay:                 zcodeReplay,
+		zcodeSignedReasoningHistory: a.provider == "zcode-coding-plan" && inputRequested == sdktranslator.FormatOpenAIResponse && hasZcodeSignedReasoningHistory(req.Payload),
 	}, nil
 }
 
@@ -1490,6 +1499,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 	if translated == nil {
 		translated = a.translateExecutorResponse(ctx, prepared, pluginResp.Payload, false, nil)
 	}
+	prepared.zcodeReplay.recordResponse(ctx, translated)
 	translated = a.adjustZcodeContextUsage(ctx, prepared, pluginReq, translated, nil)
 	return coreexecutor.Response{
 		Payload:  translated,

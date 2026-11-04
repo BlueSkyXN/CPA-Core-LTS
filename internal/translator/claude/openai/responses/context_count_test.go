@@ -1,9 +1,14 @@
 package responses
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/tidwall/gjson"
-	"testing"
+	"github.com/tidwall/sjson"
 )
 
 func TestContextCountPreservesDeliveredReplayWithoutSyntheticFuture(t *testing.T) {
@@ -44,6 +49,78 @@ func TestContextCountPreservesDeliveredReplayWithoutSyntheticFuture(t *testing.T
 	got, err = AppendResponseOutputForTokenCount("glm-fixture", native, trailing, info)
 	if err != nil || gjson.GetBytes(got, "messages.1.content.0.thinking").String() != "trailing" {
 		t.Fatal("trailing thinking dropped", err)
+	}
+}
+
+func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testing.T) {
+	request := []byte(`{"instructions":"system","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"input":[{"role":"user","content":"first question"},{"type":"reasoning","encrypted_content":"history-signature","summary":[{"type":"summary_text","text":"historical thinking"}]},{"role":"assistant","content":"first answer"},{"role":"user","content":"search again"}]}`)
+	output := []byte(`[
+	 {"type":"reasoning","encrypted_content":"search-signature","summary":[{"type":"summary_text","text":"current thinking"}]},
+	 {"type":"web_search_call","id":"ws_srvtoolu_1","status":"completed","action":{"type":"search","query":"first search"},"results":[{"type":"web_search_result","url":"https://example.com/first","title":"First","refer":"ref_1","content":"first search body"}]},
+	 {"type":"web_search_call","id":"ws_srvtoolu_2","status":"completed","action":{"type":"search","query":"second search"},"results":[{"type":"web_search_result","url":"https://example.com/second","title":"Second","refer":"ref_2","content":"second search body"}]},
+	 {"type":"message","role":"assistant","content":[{"type":"output_text","text":"delivered answer"}]}
+	]`)
+	info := &registry.ModelInfo{ID: "glm-fixture", IsCompat: true, NativeCapabilities: &registry.NativeCapabilities{WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
+	// Codex 的 WebSearchCall 不保留扩展 results；无缓存时下一轮只有搜索动作。
+	for i, item := range gjson.ParseBytes(output).Array() {
+		if item.Get("type").String() == "web_search_call" {
+			var err error
+			output, err = sjson.DeleteBytes(output, fmt.Sprintf("%d.results", i))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	native, err := convertOpenAIResponsesRequestToClaude(info.ID, request, false, true, info, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	countPayload, err := AppendResponseOutputForTokenCount(info.ID, native, output, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := make([]json.RawMessage, 0)
+	for _, item := range gjson.GetBytes(request, "input").Array() {
+		items = append(items, json.RawMessage(item.Raw))
+	}
+	for _, item := range gjson.ParseBytes(output).Array() {
+		items = append(items, json.RawMessage(item.Raw))
+	}
+	items = append(items, json.RawMessage(`{"role":"user","content":"next question"}`))
+	input, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextRequest, err := sjson.SetRawBytes(request, "input", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextNative, err := convertOpenAIResponsesRequestToClaude(info.ID, nextRequest, false, true, info, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextMessages := gjson.GetBytes(nextNative, "messages").Array()
+	countMessages := gjson.GetBytes(countPayload, "messages").Array()
+	if len(nextMessages) != len(countMessages)+1 || nextMessages[len(nextMessages)-1].Get("role").String() != "user" {
+		t.Fatal("unexpected next-turn boundary")
+	}
+	for i, message := range countMessages {
+		if message.Raw != nextMessages[i].Raw {
+			t.Fatalf("counted history differs from actual next-turn replay at message %d", i)
+		}
+	}
+	for _, key := range []string{"system", "tools"} {
+		if gjson.GetBytes(countPayload, key).Raw != gjson.GetBytes(nextNative, key).Raw {
+			t.Fatalf("counted %s differs from next-turn replay", key)
+		}
+	}
+	for _, text := range []string{"historical thinking", "current thinking", "delivered answer"} {
+		if !strings.Contains(string(countPayload), text) {
+			t.Fatalf("counted replay lost %q", text)
+		}
+	}
+	if strings.Contains(string(countPayload), "search body") {
+		t.Fatal("count included results that the client did not preserve")
 	}
 }
 
