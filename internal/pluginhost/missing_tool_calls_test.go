@@ -95,3 +95,33 @@ func TestExecutorMissingToolCallsPreservesFailureUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutorTranslatedFailureClosesWithoutSourceClose(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conversion=%t", conversion), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			in := make(chan pluginapi.ExecutorStreamChunk, 1)
+			defer close(in)
+			if conversion {
+				in <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)}
+			} else {
+				in <- pluginapi.ExecutorStreamChunk{Err: errors.New("fixture upstream error")}
+			}
+			prepared := preparedExecutorCall{
+				outputFormat: sdktranslator.FormatOpenAI, requestedFormat: sdktranslator.FormatOpenAIResponse,
+				req: coreexecutor.Request{Model: "fixture"},
+			}
+			out := (&executorAdapter{}).translateExecutorStreamChunks(ctx, prepared, in)
+			errorsSeen := 0
+			for chunk := range out {
+				if chunk.Err != nil {
+					errorsSeen++
+				}
+			}
+			if ctx.Err() != nil || errorsSeen != 1 {
+				t.Fatalf("terminal failure waited for source closure: context=%v errors=%d", ctx.Err(), errorsSeen)
+			}
+		})
+	}
+}

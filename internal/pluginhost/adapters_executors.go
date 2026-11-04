@@ -1315,14 +1315,13 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 		defer func() { usage.publish(ctx, streamErr) }()
 		var completionDelta, completionStop []byte
 		deferClaudeCompletion := prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatClaude
-		failed := false
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-in:
 				if !ok {
-					if failed || ctx.Err() != nil {
+					if ctx.Err() != nil {
 						return
 					}
 					frames := a.translatedExecutorStreamTail(ctx, prepared, &param)
@@ -1347,23 +1346,15 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 					}
 					return
 				}
-				if failed {
-					continue
-				}
 				if chunk.Err != nil {
-					failed = true
 					streamErr = chunk.Err
 					usage.publish(ctx, streamErr)
-					completionDelta, completionStop = nil, nil
-					if !sendExecutorPluginStreamChunk(ctx, out, chunk) {
-						return
-					}
-					continue
+					_ = sendExecutorPluginStreamChunk(ctx, out, chunk)
+					return
 				}
 				usage.observe(chunk.Payload)
 				frames := a.translateExecutorStreamPayload(ctx, prepared, chunk.Payload, &param)
 				if helps.ApplyPatchTranslationError(param) != nil {
-					failed = true
 					streamErr = pluginResponseConversionError()
 					usage.publish(ctx, streamErr)
 				}
@@ -1384,7 +1375,8 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 						return
 					}
 				}
-				if failed && !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr}) {
+				if streamErr != nil {
+					_ = sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr})
 					return
 				}
 			}
