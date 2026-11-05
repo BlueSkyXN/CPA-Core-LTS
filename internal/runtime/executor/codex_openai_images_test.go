@@ -825,6 +825,14 @@ func TestCodexExecutorDirectOpenAIImage25Models(t *testing.T) {
 		"codex/gpt-image-2.5-sunburst",
 		"GPT-Image-2.5(medium)",
 		"codex/GPT-Image-2.5-Flare(high)",
+		"gpt-image-2.6",
+		"gpt-image-2.6-flare",
+		"gpt-image-2.6-sunburst",
+		"codex/gpt-image-2.6",
+		"codex/gpt-image-2.6-flare",
+		"codex/gpt-image-2.6-sunburst",
+		"GPT-Image-2.6(medium)",
+		"codex/GPT-Image-2.6-Flare(high)",
 	}
 
 	for _, model := range testModels {
