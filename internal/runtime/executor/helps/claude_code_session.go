@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
@@ -30,8 +29,6 @@ func ExtractClaudeCodeAgentID(ctx context.Context, headers http.Header) string {
 func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.Header) (string, bool) {
 	return internalcache.ClaudeCodeExecutionScope(ctx, payload, headers)
 }
-
-// ClaudeCodePromptCache maps one Claude Code agent execution scope to a stable upstream prompt_cache_key.
 
 // HeaderValueCaseInsensitive returns the first non-empty header value matching name case-insensitively.
 func HeaderValueCaseInsensitive(headers http.Header, name string) string {
@@ -76,22 +73,14 @@ func headerValueCaseInsensitive(headers http.Header, name string) string {
 	return ""
 }
 
+// ClaudeCodePromptCache 按 upstream 的确定性规则派生模型和 session/agent 对应的 PCK。
+// 身份不依赖本地或 Home KV 映射的生命周期，首次并发请求也使用相同的 key。
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
 	modelName = strings.TrimSpace(modelName)
 	executionScope, ok := ClaudeCodeExecutionScope(ctx, payload, headers)
 	if modelName == "" || !ok {
 		return CodexCache{}, false, nil
 	}
-	key := CodexPromptCacheKey(modelName, executionScope)
-	if cache, found, errCache := GetCodexCacheRequired(ctx, key); errCache != nil || found {
-		return cache, found, errCache
-	}
-	cache := CodexCache{
-		ID:     uuid.New().String(),
-		Expire: time.Now().Add(time.Hour),
-	}
-	if errSet := SetCodexCacheRequired(ctx, key, cache); errSet != nil {
-		return CodexCache{}, false, errSet
-	}
-	return cache, true, nil
+	identity := strings.Join([]string{"cli-proxy-api:codex:claude-code", modelName, executionScope}, "\x00")
+	return CodexCache{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()}, true, nil
 }
