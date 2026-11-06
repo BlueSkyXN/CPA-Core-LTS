@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexExecutorCacheHelper_OpenAIChatCompletions_PreservesExplicitPromptCacheKey(t *testing.T) {
@@ -35,7 +35,7 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_PreservesExplicitPromptC
 	if err != nil {
 		t.Fatalf("cacheHelper error: %v", err)
 	}
-	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
+	if got := ojson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
 		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
 	}
 	if got := codexSessionHeaderValue(httpReq.Header); got != "tenant:explicit" {
@@ -76,7 +76,7 @@ func TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse(
 	if state.enabled || state.promptCacheKey != "" || !state.clientMetadata.CanonicalPresent {
 		t.Fatalf("canonical state unexpectedly enabled legacy identity mapping: %+v", state)
 	}
-	metadata := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
+	metadata := ojson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
 	for key, want := range map[string]string{
 		"installation_id": "install-1",
 		"session_id":      "thread-1",
@@ -84,20 +84,20 @@ func TestCodexExecutorCacheHelperCanonicalMetadataBypassesLegacyIdentityConfuse(
 		"turn_id":         "turn-1",
 		"window_id":       "thread-1:1",
 	} {
-		if got := gjson.Get(metadata, key).String(); got != want {
+		if got := ojson.Get(metadata, key).String(); got != want {
 			t.Fatalf("canonical %s = %q, want %q", key, got, want)
 		}
 	}
 	if strings.Contains(metadata, "secret") || strings.Contains(metadata, "token=leak") || strings.Contains(metadata, "#fragment") {
 		t.Fatalf("canonical workspace remote was not sanitized: %s", metadata)
 	}
-	if got := gjson.Get(metadata, "workspaces./Users/private/project.associated_remote_urls.origin").String(); got != "https://example.com/org/repo.git" {
+	if got := ojson.Get(metadata, "workspaces./Users/private/project.associated_remote_urls.origin").String(); got != "https://example.com/org/repo.git" {
 		t.Fatalf("sanitized remote = %q", got)
 	}
-	if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != "install-1" {
+	if got := ojson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != "install-1" {
 		t.Fatalf("flat installation = %q", got)
 	}
-	if got := gjson.GetBytes(body, "client_metadata.x-codex-window-id").String(); got != "thread-1:1" {
+	if got := ojson.GetBytes(body, "client_metadata.x-codex-window-id").String(); got != "thread-1:1" {
 		t.Fatalf("flat window = %q", got)
 	}
 	if got := httpReq.Header.Get("X-Codex-Window-Id"); got != "thread-1:1" {
@@ -181,7 +181,7 @@ func TestCodexExecutorCacheHelperOffModePreservesSDKHeaderOnlyCanonical(t *testi
 	if err != nil {
 		t.Fatalf("cacheHelper() error = %v", err)
 	}
-	if !bytes.Equal(body, rawJSON) || gjson.GetBytes(body, "client_metadata").Exists() {
+	if !bytes.Equal(body, rawJSON) || ojson.GetBytes(body, "client_metadata").Exists() {
 		t.Fatalf("off mode rebuilt body canonical metadata: got %s want %s", body, rawJSON)
 	}
 	applyCodexOutboundMetadataHeaders(httpReq.Header, &state)

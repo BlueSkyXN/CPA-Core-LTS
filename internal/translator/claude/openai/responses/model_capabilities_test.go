@@ -3,12 +3,12 @@ package responses
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesEnvelopeUsesSelectedModelCapabilities(t *testing.T) {
@@ -57,19 +57,19 @@ func TestResponsesEnvelopeUsesSelectedModelCapabilities(t *testing.T) {
 							out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
 								Model: model, Body: body, Stream: stream, ModelInfo: selected,
 							}).Body
-							if got := gjson.GetBytes(out, "output_config.effort").String(); got != tc.effort {
+							if got := ojson.GetBytes(out, "output_config.effort").String(); got != tc.effort {
 								t.Errorf("effort = %q, want %q", got, tc.effort)
 							}
-							if got := gjson.GetBytes(out, "max_tokens").Int(); got != tc.max {
+							if got := ojson.GetBytes(out, "max_tokens").Int(); got != tc.max {
 								t.Errorf("max_tokens = %d, want %d", got, tc.max)
 							}
-							if gjson.GetBytes(out, "thinking.type").String() != "adaptive" || gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+							if ojson.GetBytes(out, "thinking.type").String() != "adaptive" || ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 								t.Error("selected adaptive thinking was replaced with peer capabilities")
 							}
-							if gjson.GetBytes(body, "reasoning.summary").Exists() && gjson.GetBytes(out, "thinking.display").String() != "summarized" {
+							if ojson.GetBytes(body, "reasoning.summary").Exists() && ojson.GetBytes(out, "thinking.display").String() != "summarized" {
 								t.Error("summary intent lost")
 							}
-							if gjson.GetBytes(out, "stream").Bool() != stream {
+							if ojson.GetBytes(out, "stream").Bool() != stream {
 								t.Error("stream flag changed")
 							}
 						}
@@ -103,12 +103,12 @@ func TestResponsesEnvelopeEmptyCapabilitiesAndLegacyFallback(t *testing.T) {
 		out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
 			Model: model, Body: body, ModelInfo: selected,
 		}).Body
-		if gjson.GetBytes(out, "thinking").Exists() || gjson.GetBytes(out, "max_tokens").Int() != 64000 {
+		if ojson.GetBytes(out, "thinking").Exists() || ojson.GetBytes(out, "max_tokens").Int() != 64000 {
 			t.Errorf("authoritative empty capability inherited peer fields, user-defined=%t", userDefined)
 		}
 	}
 	legacy := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, body, false)
-	if gjson.GetBytes(legacy, "thinking.type").String() != "adaptive" || gjson.GetBytes(legacy, "max_tokens").Int() != 4096 {
+	if ojson.GetBytes(legacy, "thinking.type").String() != "adaptive" || ojson.GetBytes(legacy, "max_tokens").Int() != 4096 {
 		t.Fatal("legacy metadata-free translation lost its fallback")
 	}
 	for _, convert := range []func(string, []byte, bool) ([]byte, error){ConvertOpenAIResponsesRequestToClaude, ConvertOpenAIResponsesRequestToClaudeWithCompat} {
@@ -116,7 +116,7 @@ func TestResponsesEnvelopeEmptyCapabilitiesAndLegacyFallback(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if gjson.GetBytes(out, "max_tokens").Int() != 4096 {
+		if ojson.GetBytes(out, "max_tokens").Int() != 4096 {
 			t.Error("legacy conversion wrapper changed its fallback")
 		}
 	}
@@ -133,10 +133,10 @@ func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
 		out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
 			Model: model, Body: body, ModelInfo: selected,
 		}).Body
-		if got := gjson.GetBytes(out, "output_config.effort").String(); got != "high" {
+		if got := ojson.GetBytes(out, "output_config.effort").String(); got != "high" {
 			t.Errorf("effort passthrough = %q, want high (user-defined=%t)", got, userDefined)
 		}
-		if gjson.GetBytes(out, "thinking").Exists() {
+		if ojson.GetBytes(out, "thinking").Exists() {
 			t.Errorf("undeclared thinking invented thinking controls (user-defined=%t)", userDefined)
 		}
 	}
@@ -146,7 +146,7 @@ func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
 	out := sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
 		Model: model, Body: body, ModelInfo: budgetStyle,
 	}).Body
-	if !gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+	if !ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 		t.Error("budget-style thinking declaration lost its budget fallback")
 	}
 
@@ -154,12 +154,12 @@ func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
 	// when the global lookup misses and when it hits a model without thinking data.
 	reg := registry.GetGlobalRegistry()
 	legacyBody := []byte(`{"input":"hello","reasoning":{"effort":"high"}}`)
-	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !ojson.GetBytes(got, "thinking.budget_tokens").Exists() {
 		t.Error("legacy lookup-miss budget fallback changed")
 	}
 	reg.RegisterClient(model+"-no-thinking-peer", "claude", []*registry.ModelInfo{{ID: model, MaxCompletionTokens: 4096}})
 	t.Cleanup(func() { reg.UnregisterClient(model + "-no-thinking-peer") })
-	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+	if got := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, model, legacyBody, false); !ojson.GetBytes(got, "thinking.budget_tokens").Exists() {
 		t.Error("legacy no-thinking-hit budget fallback changed")
 	}
 
@@ -169,7 +169,7 @@ func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
 	out = sdktranslator.TranslateRequestEnvelope(context.Background(), sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
 		Model: model, Body: body, ModelInfo: emptySupport,
 	}).Body
-	if !gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+	if !ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 		t.Error("empty thinking support struct lost its budget fallback")
 	}
 
@@ -185,13 +185,13 @@ func TestResponsesEffortWithoutThinkingDeclaration(t *testing.T) {
 		Body:      []byte(`{"input":"hello","reasoning":{"effort":"max"},"max_output_tokens":64000}`),
 		ModelInfo: &registry.ModelInfo{ID: model},
 	}).Body
-	if got := gjson.GetBytes(combined, "output_config.effort").String(); got != "max" {
+	if got := ojson.GetBytes(combined, "output_config.effort").String(); got != "max" {
 		t.Errorf("effort downgraded by peer = %q, want max", got)
 	}
-	if gjson.GetBytes(combined, "thinking").Exists() {
+	if ojson.GetBytes(combined, "thinking").Exists() {
 		t.Error("peer thinking levels leaked into an undeclared route")
 	}
-	if got := gjson.GetBytes(combined, "max_tokens").Int(); got != 64000 {
+	if got := ojson.GetBytes(combined, "max_tokens").Int(); got != 64000 {
 		t.Errorf("max_tokens clamped by peer = %d, want 64000", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +21,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexWebsocketTerminalErrorSurvivesActivationRace(t *testing.T) {
@@ -814,7 +814,7 @@ func TestApplyCodexPromptCacheHeadersOpenAIChatPreservesExplicitKey(t *testing.T
 	}
 
 	body, headers := applyCodexPromptCacheHeaders("openai", req, []byte(`{"model":"gpt-5.6-sol"}`))
-	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
+	if got := ojson.GetBytes(body, "prompt_cache_key").String(); got != "tenant:explicit" {
 		t.Fatalf("prompt_cache_key = %q, want explicit client key; body=%s", got, body)
 	}
 	if got := headers["Session-Id"]; len(got) != 1 || got[0] != "tenant:explicit" {
@@ -841,8 +841,8 @@ func TestApplyCodexPromptCacheHeadersOpenAIChatUsesStableAPIKeyFallback(t *testi
 		t.Fatalf("second prompt cache headers: %v", err)
 	}
 
-	firstKey := gjson.GetBytes(firstBody, "prompt_cache_key").String()
-	secondKey := gjson.GetBytes(secondBody, "prompt_cache_key").String()
+	firstKey := ojson.GetBytes(firstBody, "prompt_cache_key").String()
+	secondKey := ojson.GetBytes(secondBody, "prompt_cache_key").String()
 	if firstKey == "" || secondKey != firstKey {
 		t.Fatalf("stable fallback keys = (%q, %q), want same non-empty key", firstKey, secondKey)
 	}
@@ -887,14 +887,14 @@ func TestApplyCodexWebsocketHeadersCanonicalMetadataBypassesLegacyIdentityConfus
 	if state.enabled || !state.clientMetadata.CanonicalPresent {
 		t.Fatalf("canonical websocket state unexpectedly used legacy identity mapping: %+v", state)
 	}
-	metadata := gjson.GetBytes(upstreamBody, "client_metadata.x-codex-turn-metadata").String()
+	metadata := ojson.GetBytes(upstreamBody, "client_metadata.x-codex-turn-metadata").String()
 	if strings.Contains(metadata, `"workspaces"`) || strings.Contains(metadata, "token@example.com") {
 		t.Fatalf("drop policy did not remove websocket workspace metadata: %s", metadata)
 	}
-	if got := gjson.GetBytes(upstreamBody, "client_metadata.thread_id").String(); got != "thread-ws-1" {
+	if got := ojson.GetBytes(upstreamBody, "client_metadata.thread_id").String(); got != "thread-ws-1" {
 		t.Fatalf("flat thread_id = %q", got)
 	}
-	if got := gjson.GetBytes(upstreamBody, "client_metadata.x-codex-window-id").String(); got != "thread-ws-1:2" {
+	if got := ojson.GetBytes(upstreamBody, "client_metadata.x-codex-window-id").String(); got != "thread-ws-1:2" {
 		t.Fatalf("flat window_id = %q", got)
 	}
 	if got := headers.Get("X-Codex-Window-Id"); got != "thread-ws-1:2" {

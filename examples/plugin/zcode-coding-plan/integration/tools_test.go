@@ -2,13 +2,13 @@ package integration
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 func TestThreeProtocolClientTools(t *testing.T) {
@@ -29,12 +29,12 @@ func TestThreeProtocolClientTools(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			f.router.ServeHTTP(rec, req)
-			if rec.Code != 200 || (!stream && gjson.GetBytes(rec.Body.Bytes(), protocol.callPath).String() != "lookup") || (stream && !strings.Contains(rec.Body.String(), "lookup")) {
+			if rec.Code != 200 || (!stream && ojson.GetBytes(rec.Body.Bytes(), protocol.callPath).String() != "lookup") || (stream && !strings.Contains(rec.Body.String(), "lookup")) {
 				t.Fatalf("client tools failed: path=%s stream=%t status=%d body=%s", protocol.path, stream, rec.Code, rec.Body.String())
 			}
 			f.checkUsage(t, false)
 			wire := f.transport.captured[len(f.transport.captured)-1]
-			tools := gjson.GetBytes(wire, "tools").Array()
+			tools := ojson.GetBytes(wire, "tools").Array()
 			if len(tools) != 2 || tools[0].Get("name").String() != "lookup" || tools[1].Get("name").String() != "mcp__search__lookup" || !tools[0].Get("input_schema").IsObject() || !tools[1].Get("input_schema").IsObject() {
 				t.Fatal("client tools dropped or their schemas were lost")
 			}
@@ -68,10 +68,10 @@ func TestNativeSearchToolsDispatch(t *testing.T) {
 			}
 			f.checkUsage(t, false)
 			captured := f.transport.captured[len(f.transport.captured)-1]
-			if !gjson.GetBytes(captured, "tools.#").Exists() || gjson.GetBytes(captured, "tools.#").Int() == 0 {
-				t.Fatalf("native search tool was dropped: %s", gjson.GetBytes(captured, "tools").Raw)
+			if !ojson.GetBytes(captured, "tools.#").Exists() || ojson.GetBytes(captured, "tools.#").Int() == 0 {
+				t.Fatalf("native search tool was dropped: %s", ojson.GetBytes(captured, "tools").Raw)
 			}
-			if typ := gjson.GetBytes(captured, "tools.@reverse.0.type").String(); typ != "web_search_20250305" && typ != "web_search_20260209" {
+			if typ := ojson.GetBytes(captured, "tools.@reverse.0.type").String(); typ != "web_search_20250305" && typ != "web_search_20260209" {
 				t.Fatalf("dispatched tool type = %q", typ)
 			}
 		}

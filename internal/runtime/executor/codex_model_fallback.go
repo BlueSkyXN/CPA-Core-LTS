@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
@@ -12,8 +13,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type codexModelFallbackContinuityError struct {
@@ -138,7 +137,7 @@ func prepareCodexModelFallbackBody(ctx context.Context, from sdktranslator.Forma
 	}
 
 	hasContinuity := codexInputHasReasoningItem(body) || len(sourceItems) > 0
-	hasPreviousResponse := strings.TrimSpace(gjson.GetBytes(req.Payload, "previous_response_id").String()) != ""
+	hasPreviousResponse := strings.TrimSpace(ojson.GetBytes(req.Payload, "previous_response_id").String()) != ""
 	hasPinnedAuth := metadataString(opts.Metadata, cliproxyexecutor.PinnedAuthMetadataKey) != ""
 	hasExecutionSession := metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey) != ""
 	hasStatefulContinuity := hasContinuity || hasPreviousResponse || hasPinnedAuth || hasExecutionSession
@@ -168,7 +167,7 @@ func prepareCodexModelFallbackBody(ctx context.Context, from sdktranslator.Forma
 		var errReset error
 		updated, errReset = dropCodexReasoningInputItems(updated)
 		if errReset == nil {
-			updated, errReset = sjson.DeleteBytes(updated, "previous_response_id")
+			updated, errReset = ojson.DeleteBytes(updated, "previous_response_id")
 		}
 		if errReset != nil || codexInputHasReasoningItem(updated) {
 			return body, codexReasoningReplayScope{}, true, &codexModelFallbackContinuityError{
@@ -196,7 +195,7 @@ func prepareCodexModelFallbackBody(ctx context.Context, from sdktranslator.Forma
 }
 
 func codexInputHasReasoningItem(body []byte) bool {
-	input := gjson.GetBytes(body, "input")
+	input := ojson.GetBytes(body, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -209,7 +208,7 @@ func codexInputHasReasoningItem(body []byte) bool {
 }
 
 func dropCodexReasoningInputItems(body []byte) ([]byte, error) {
-	input := gjson.GetBytes(body, "input")
+	input := ojson.GetBytes(body, "input")
 	if !input.IsArray() {
 		return body, nil
 	}
@@ -226,7 +225,7 @@ func dropCodexReasoningInputItems(body []byte) ([]byte, error) {
 	if !changed {
 		return body, nil
 	}
-	updated, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(kept, ",")+"]"))
+	updated, err := ojson.SetRawBytes(body, "input", []byte("["+strings.Join(kept, ",")+"]"))
 	if err != nil {
 		return body, err
 	}
@@ -239,7 +238,7 @@ func codexModelFallbackToolReplayItems(items [][]byte) [][]byte {
 	}
 	out := make([][]byte, 0, len(items))
 	for _, item := range items {
-		switch strings.TrimSpace(gjson.GetBytes(item, "type").String()) {
+		switch strings.TrimSpace(ojson.GetBytes(item, "type").String()) {
 		case "function_call", "custom_tool_call":
 			out = append(out, append([]byte(nil), item...))
 		}

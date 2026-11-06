@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestAnthropicPluginWebReaderStreamAndUsage(t *testing.T) {
@@ -79,11 +79,11 @@ func TestAnthropicPluginWebReaderStreamAndUsage(t *testing.T) {
 			if (streamErr != nil) != tc.truncated || calls.Load() != 1 {
 				t.Fatalf("truncated=%t err=%v dispatches=%d", tc.truncated, streamErr, calls.Load())
 			}
-			var completed gjson.Result
+			var completed ojson.Result
 			terminals := 0
 			for _, line := range strings.Split(output.String(), "\n") {
 				if strings.HasPrefix(line, "data:") {
-					event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+					event := ojson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 					if event.Get("type").String() == "response.completed" {
 						terminals++
 						completed = event.Get("response")

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestXAIExecutorCodexDesktopToolOverlayRoundTrip(t *testing.T) {
@@ -50,7 +50,7 @@ func TestXAIExecutorCodexDesktopToolOverlayRoundTrip(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	tool := gjson.GetBytes(upstreamBody, `tools.#(name=="codex_app__read_thread")`)
+	tool := ojson.GetBytes(upstreamBody, `tools.#(name=="codex_app__read_thread")`)
 	if !tool.Exists() {
 		t.Fatalf("flattened codex_app tool missing: %s", upstreamBody)
 	}
@@ -64,7 +64,7 @@ func TestXAIExecutorCodexDesktopToolOverlayRoundTrip(t *testing.T) {
 		t.Fatalf("maxOutputCharsPerItem.maximum = %d, want 20000; tool=%s", got, tool.Raw)
 	}
 
-	output := gjson.GetBytes(response.Payload, "output.0")
+	output := ojson.GetBytes(response.Payload, "output.0")
 	if got := output.Get("name").String(); got != "read_thread" {
 		t.Fatalf("restored name = %q, want read_thread; response=%s", got, response.Payload)
 	}

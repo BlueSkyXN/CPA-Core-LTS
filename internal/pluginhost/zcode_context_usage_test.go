@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,13 +21,12 @@ import (
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
-	"github.com/tidwall/gjson"
 )
 
 const zcodeSearchMessage = `{"type":"message","id":"synthetic-search","model":"glm-fixture","role":"assistant","stop_reason":"end_turn","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search_prime","input":{"search_query":"fixture"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","title":"Fixture","url":"https://example.com/","encrypted_content":"fixture-content"}]},{"type":"text","text":"delivered answer"}],"usage":{"input_tokens":400000,"cache_read_input_tokens":105000,"output_tokens":500}}`
 
 func zcodeSearchStream(message string) []byte {
-	root := gjson.Parse(message)
+	root := ojson.Parse(message)
 	var out strings.Builder
 	emit := func(v any) { b, _ := json.Marshal(v); fmt.Fprintf(&out, "data: %s\n\n", b) }
 	emit(map[string]any{"type": "message_start", "message": map[string]any{"id": "synthetic-search", "type": "message", "role": "assistant", "content": []any{}, "usage": json.RawMessage(root.Get("usage").Raw)}})
@@ -71,7 +71,7 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 				host.runtimeConfig = &config.Config{Codex: config.CodexConfig{ZcodeContextUsage: tc.mode}}
 				message := zcodeSearchMessage
 				if !tc.search {
-					message = strings.Replace(message, gjson.Parse(message).Get("content").Raw, `[{"type":"text","text":"delivered answer"}]`, 1)
+					message = strings.Replace(message, ojson.Parse(message).Get("content").Raw, `[{"type":"text","text":"delivered answer"}]`, 1)
 				}
 				calls := 0
 				var original pluginapi.ExecutorRequest
@@ -104,11 +104,11 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 							t.Error("count inherited generation usage")
 						}
 						for _, key := range []string{"system", "tools", "messages.0"} {
-							if gjson.GetBytes(req.Payload, key).Raw != gjson.GetBytes(original.Payload, key).Raw {
+							if ojson.GetBytes(req.Payload, key).Raw != ojson.GetBytes(original.Payload, key).Raw {
 								t.Errorf("prompt field %s changed", key)
 							}
 						}
-						blocks := gjson.GetBytes(req.Payload, "messages.1.content").Array()
+						blocks := ojson.GetBytes(req.Payload, "messages.1.content").Array()
 						if len(blocks) != 3 || blocks[0].Get("type").String() != "server_tool_use" || blocks[1].Get("type").String() != "web_search_tool_result" || blocks[2].Get("text").String() != "delivered answer" {
 							t.Errorf("replay missing: %s", req.Payload)
 						}
@@ -151,8 +151,8 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 					}
 					for _, line := range strings.Split(all.String(), "\n") {
 						data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-						if gjson.Get(data, "type").String() == "response.completed" {
-							response = []byte(gjson.Get(data, "response").Raw)
+						if ojson.Get(data, "type").String() == "response.completed" {
+							response = []byte(ojson.Get(data, "response").Raw)
 						}
 					}
 				} else {
@@ -162,10 +162,10 @@ func TestZcodeContextUsageAccountingAndClientScope(t *testing.T) {
 					}
 					response = result.Payload
 				}
-				if got := gjson.GetBytes(response, "usage.total_tokens").Int(); got != tc.wantTotal || calls != tc.wantCalls {
+				if got := ojson.GetBytes(response, "usage.total_tokens").Int(); got != tc.wantTotal || calls != tc.wantCalls {
 					t.Errorf("client=%d calls=%d want=%d/%d", got, calls, tc.wantTotal, tc.wantCalls)
 				}
-				if gjson.GetBytes(response, "usage.input_tokens").Int() != 505000 || gjson.GetBytes(response, "usage.output_tokens").Int() != 500 {
+				if ojson.GetBytes(response, "usage.input_tokens").Int() != 505000 || ojson.GetBytes(response, "usage.output_tokens").Int() != 500 {
 					t.Fatal("client accounting fields changed")
 				}
 				if tc.wantCalls > 0 {
@@ -246,8 +246,8 @@ func TestZcodeContextUsageStreamsTextBeforeCountCompletes(t *testing.T) {
 			}
 			for _, line := range strings.Split(string(chunk.Payload), "\n") {
 				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				if gjson.Get(data, "type").String() == "response.completed" {
-					completed <- []byte(gjson.Get(data, "response").Raw)
+				if ojson.Get(data, "type").String() == "response.completed" {
+					completed <- []byte(ojson.Get(data, "response").Raw)
 				} else if !textSeen && strings.Contains(data, "delivered answer") {
 					textSeen = true
 					close(textDelivered)
@@ -274,7 +274,7 @@ func TestZcodeContextUsageStreamsTextBeforeCountCompletes(t *testing.T) {
 	close(releaseCount)
 	select {
 	case response := <-completed:
-		if gjson.GetBytes(response, "usage.total_tokens").Int() != 101100 || gjson.GetBytes(response, "usage.input_tokens").Int() != 505000 {
+		if ojson.GetBytes(response, "usage.total_tokens").Int() != 101100 || ojson.GetBytes(response, "usage.input_tokens").Int() != 505000 {
 			t.Fatal("terminal context count lost accounting fields", string(response))
 		}
 	case <-ctx.Done():

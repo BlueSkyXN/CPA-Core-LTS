@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,14 +14,13 @@ import (
 	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestServiceReloadPreservesCodexCacheAffinity(t *testing.T) {
 	keys := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if gjson.GetBytes(body, "prompt_cache_key").Exists() {
+		if ojson.GetBytes(body, "prompt_cache_key").Exists() {
 			t.Error("unexpected automatic pck")
 		}
 		keys <- r.Header.Get("Session-Id")

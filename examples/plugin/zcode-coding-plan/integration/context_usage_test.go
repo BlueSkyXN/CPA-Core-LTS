@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 // The whole HTTP path, signing and native plugin run locally. No transport in
@@ -61,8 +61,8 @@ func (f *contextCountTransport) RoundTrip(req *http.Request) (*http.Response, er
 	f.generationBody = bytes.Clone(body)
 	f.generationSession = req.Header.Get("X-Session-Id")
 	message := `{"type":"message","id":"fixture-search","role":"assistant","model":"GLM-5.3-Flash","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"before search","signature":"opaque-fixture"},{"type":"server_tool_use","id":"srvtoolu_fixture","name":"web_search_prime","input":{"search_query":"fixture"}},{"type":"tool_result","tool_use_id":"srvtoolu_fixture","content":"[{'text': [{'refer': 'ref_1', 'title': 'Fixture', 'link': 'https://example.com/', 'content': 'retained search body'}]}]"},{"type":"text","text":"delivered answer"}],"usage":{"input_tokens":400000,"cache_read_input_tokens":105000,"output_tokens":500}}`
-	if gjson.GetBytes(body, "stream").Bool() {
-		root := gjson.Parse(message)
+	if ojson.GetBytes(body, "stream").Bool() {
+		root := ojson.Parse(message)
 		var stream strings.Builder
 		emit := func(value any) { raw, _ := json.Marshal(value); fmt.Fprintf(&stream, "data: %s\n\n", raw) }
 		emit(map[string]any{"type": "message_start", "message": map[string]any{"id": "fixture-search", "type": "message", "role": "assistant", "content": []any{}, "usage": json.RawMessage(root.Get("usage").Raw)}})
@@ -128,8 +128,8 @@ func TestZcodeContextUsageHTTPAndNativeCount(t *testing.T) {
 				if stream {
 					for _, line := range strings.Split(res.Body.String(), "\n") {
 						data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-						if gjson.Get(data, "type").String() == "response.completed" {
-							body = []byte(gjson.Get(data, "response").Raw)
+						if ojson.Get(data, "type").String() == "response.completed" {
+							body = []byte(ojson.Get(data, "response").Raw)
 						}
 					}
 				}
@@ -137,7 +137,7 @@ func TestZcodeContextUsageHTTPAndNativeCount(t *testing.T) {
 				if mode == config.ZcodeContextUsageCorrect {
 					want = 101100
 				}
-				if got := gjson.GetBytes(body, "usage.total_tokens").Int(); got != want {
+				if got := ojson.GetBytes(body, "usage.total_tokens").Int(); got != want {
 					t.Fatalf("mode=%s stream=%t total=%d want=%d", mode, stream, got, want)
 				}
 				if mode == config.ZcodeContextUsageDisabled {
@@ -151,7 +151,7 @@ func TestZcodeContextUsageHTTPAndNativeCount(t *testing.T) {
 					if transport.countSession == "" || transport.generationSession == "" {
 						t.Fatal("signed session missing")
 					}
-					if gjson.GetBytes(transport.countBody, "stream").Exists() || gjson.GetBytes(transport.countBody, "max_tokens").Exists() {
+					if ojson.GetBytes(transport.countBody, "stream").Exists() || ojson.GetBytes(transport.countBody, "max_tokens").Exists() {
 						t.Fatal("count retained generation controls")
 					}
 					if bytes.Contains(transport.countBody, []byte("retained search body")) != cacheEnabled {

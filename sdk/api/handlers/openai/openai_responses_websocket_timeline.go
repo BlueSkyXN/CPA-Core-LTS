@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	requestlogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 type websocketTimelineAppender interface {
@@ -218,7 +218,7 @@ func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []
 }
 
 func websocketPayloadEventType(payload []byte) string {
-	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	eventType := strings.TrimSpace(ojson.GetBytesNoCopy(payload, "type").String())
 	if eventType == "" {
 		return "-"
 	}
@@ -259,9 +259,9 @@ func (e *responsesWebsocketPayloadError) StatusCode() int {
 }
 
 func responsesWebsocketErrorMessageFromPayload(payload []byte) *interfaces.ErrorMessage {
-	status := int(gjson.GetBytes(payload, "status").Int())
+	status := int(ojson.GetBytesNoCopy(payload, "status").Int())
 	if status <= 0 {
-		status = int(gjson.GetBytes(payload, "status_code").Int())
+		status = int(ojson.GetBytesNoCopy(payload, "status_code").Int())
 	}
 	if status <= 0 {
 		status = http.StatusInternalServerError

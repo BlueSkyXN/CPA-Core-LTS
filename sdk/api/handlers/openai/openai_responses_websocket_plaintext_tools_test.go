@@ -2,11 +2,11 @@ package openai
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
 
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesWebsocketPlaintextHistoryScopeAndLifetime(t *testing.T) {
@@ -22,7 +22,7 @@ func TestResponsesWebsocketPlaintextHistoryScopeAndLifetime(t *testing.T) {
 	assertMarker := func(authID, request, want string) {
 		t.Helper()
 		got := history.parent(authID, []byte(request)).Restore(response)
-		if marker := gjson.GetBytes(got, "output.0.encrypted_function_args").Raw; marker != want {
+		if marker := ojson.GetBytes(got, "output.0.encrypted_function_args").Raw; marker != want {
 			t.Fatalf("auth=%s request=%s: marker=%q want=%q", authID, request, marker, want)
 		}
 	}

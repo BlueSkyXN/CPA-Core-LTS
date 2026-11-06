@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	modelregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func TestRegistrySummaryUsesAuthoritativeModelInfo(t *testing.T) {
@@ -44,13 +43,13 @@ func TestRegistrySummaryUsesAuthoritativeModelInfo(t *testing.T) {
 				out := r.TranslateRequestEnvelope(context.Background(), FormatOpenAIResponse, FormatClaude, RequestEnvelope{
 					Model: model, ModelInfo: selected, Body: []byte(`{"input":"hello","reasoning":{"summary":"auto"}}`),
 				}).Body
-				if got := gjson.GetBytes(out, "thinking.type").String(); got != wantMode {
+				if got := ojson.GetBytes(out, "thinking.type").String(); got != wantMode {
 					t.Errorf("thinking.type = %q, want %q", got, wantMode)
 				}
-				if got := gjson.GetBytes(out, "thinking.budget_tokens").Int(); got != wantBudget {
+				if got := ojson.GetBytes(out, "thinking.budget_tokens").Int(); got != wantBudget {
 					t.Errorf("budget = %d, want %d", got, wantBudget)
 				}
-				if gjson.GetBytes(out, "thinking.display").Exists() != (wantMode != "") {
+				if ojson.GetBytes(out, "thinking.display").Exists() != (wantMode != "") {
 					t.Error("unexpected summary visibility")
 				}
 			})
@@ -68,7 +67,7 @@ func TestRegistryModelInfoPreservesNormalizerAuthority(t *testing.T) {
 				hooks.requestTranslateBody = []byte(`{"messages":[],"max_tokens":32000}`)
 				hooks.requestTranslateOK = true
 				hooks.normalizeRequest = func(body []byte) []byte {
-					out, _ := sjson.DeleteBytes(body, "reasoning.summary")
+					out, _ := ojson.DeleteBytes(body, "reasoning.summary")
 					return out
 				}
 			} else {
@@ -76,10 +75,10 @@ func TestRegistryModelInfoPreservesNormalizerAuthority(t *testing.T) {
 					return []byte(`{"messages":[],"max_tokens":32000}`), nil
 				}, ResponseTransform{})
 				hooks.normalizeRequest = func(body []byte) []byte {
-					if gjson.GetBytes(body, "thinking.type").String() != "adaptive" || gjson.GetBytes(body, "thinking.display").String() != "summarized" {
+					if ojson.GetBytes(body, "thinking.type").String() != "adaptive" || ojson.GetBytes(body, "thinking.display").String() != "summarized" {
 						t.Error("normalizer did not receive the selected model's summary")
 					}
-					out, _ := sjson.DeleteBytes(body, "thinking")
+					out, _ := ojson.DeleteBytes(body, "thinking")
 					return out
 				}
 			}
@@ -87,7 +86,7 @@ func TestRegistryModelInfoPreservesNormalizerAuthority(t *testing.T) {
 			out := r.TranslateRequestEnvelope(context.Background(), FormatOpenAIResponse, FormatClaude, RequestEnvelope{
 				Model: selected.ID, ModelInfo: selected, Body: []byte(`{"input":"hello","reasoning":{"summary":"auto"}}`),
 			}).Body
-			if gjson.GetBytes(out, "thinking").Exists() {
+			if ojson.GetBytes(out, "thinking").Exists() {
 				t.Error("normalizer summary removal was reversed")
 			}
 		})

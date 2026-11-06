@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexResponseCyberProgramTransports(t *testing.T) {
@@ -62,7 +62,7 @@ func TestCodexResponseCyberProgramTransports(t *testing.T) {
 								fmt.Fprintf(w, "data: %s\n\n", event)
 							}
 						}
-						if gjson.GetBytes(body, "access_programs").Exists() {
+						if ojson.GetBytes(body, "access_programs").Exists() {
 							t.Error("omitted request program was injected")
 						}
 					}))

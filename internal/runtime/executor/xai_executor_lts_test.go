@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 
 	"strings"
 	"testing"
@@ -15,7 +16,6 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
-	"github.com/tidwall/gjson"
 )
 
 func TestXAIExecutorPrepareDoesNotInjectUnauthorizedXSearch(t *testing.T) {
@@ -37,10 +37,10 @@ func TestXAIExecutorPrepareDoesNotInjectUnauthorizedXSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
-	if gjson.GetBytes(prepared.body, "tools").Exists() {
+	if ojson.GetBytes(prepared.body, "tools").Exists() {
 		t.Fatalf("no-tools request gained x_search: %s", prepared.body)
 	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+	if got := ojson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
 		t.Fatalf("tool_choice = %q, want none; body=%s", got, prepared.body)
 	}
 }
@@ -64,13 +64,13 @@ func TestXAIExecutorPrepareCanonicalizesCustomToolChoices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
-	if got := gjson.GetBytes(prepared.body, "tools.0.type").String(); got != "function" {
+	if got := ojson.GetBytes(prepared.body, "tools.0.type").String(); got != "function" {
 		t.Fatalf("tools.0.type = %q, want function; body=%s", got, prepared.body)
 	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice.tools.0.type").String(); got != "function" {
+	if got := ojson.GetBytes(prepared.body, "tool_choice.tools.0.type").String(); got != "function" {
 		t.Fatalf("tool_choice.tools.0.type = %q, want function; body=%s", got, prepared.body)
 	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice.tools.0.name").String(); got != "apply_change" {
+	if got := ojson.GetBytes(prepared.body, "tool_choice.tools.0.name").String(); got != "apply_change" {
 		t.Fatalf("tool_choice.tools.0.name = %q, want apply_change; body=%s", got, prepared.body)
 	}
 
@@ -89,10 +89,10 @@ func TestXAIExecutorPrepareCanonicalizesCustomToolChoices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareResponsesRequest() forced choice error = %v", err)
 	}
-	if got := gjson.GetBytes(forced.body, "tool_choice.type").String(); got != "function" {
+	if got := ojson.GetBytes(forced.body, "tool_choice.type").String(); got != "function" {
 		t.Fatalf("forced tool_choice.type = %q, want function; body=%s", got, forced.body)
 	}
-	if got := gjson.GetBytes(forced.body, "tool_choice.name").String(); got != "apply_change" {
+	if got := ojson.GetBytes(forced.body, "tool_choice.name").String(); got != "apply_change" {
 		t.Fatalf("forced tool_choice.name = %q, want apply_change; body=%s", got, forced.body)
 	}
 }
@@ -137,10 +137,10 @@ func TestXAIExecutorPrepareFailsClosedWhenRestrictedChoiceIsOrphaned(t *testing.
 			if err != nil {
 				t.Fatalf("prepareResponsesRequest() error = %v", err)
 			}
-			if got := gjson.GetBytes(prepared.body, "tools.0.name").String(); got != "destructive_action" {
+			if got := ojson.GetBytes(prepared.body, "tools.0.name").String(); got != "destructive_action" {
 				t.Fatalf("surviving tool = %q, want destructive_action fixture: %s", got, prepared.body)
 			}
-			if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+			if got := ojson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
 				t.Fatalf("orphaned restricted choice = %q, want none: %s", got, prepared.body)
 			}
 		})
@@ -168,10 +168,10 @@ func TestXAIExecutorPrepareDropsOrphanedToolChoiceWithoutXSearchInject(t *testin
 		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
 
-	if gjson.GetBytes(prepared.body, "tools").Exists() {
+	if ojson.GetBytes(prepared.body, "tools").Exists() {
 		t.Fatalf("removed-only tools should not be replaced: %s", prepared.body)
 	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+	if got := ojson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
 		t.Fatalf("orphaned image_generation tool_choice = %q, want none: %s", got, prepared.body)
 	}
 }
@@ -200,7 +200,7 @@ func TestXAIExecutorPrepareAllowedToolsDoesNotExpandWithXSearch(t *testing.T) {
 		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
 
-	tools := gjson.GetBytes(prepared.body, "tools").Array()
+	tools := ojson.GetBytes(prepared.body, "tools").Array()
 	if len(tools) != 1 {
 		t.Fatalf("tools length = %d, want 1; body=%s", len(tools), prepared.body)
 	}
@@ -219,7 +219,7 @@ func TestXAIExecutorPrepareAllowedToolsDoesNotExpandWithXSearch(t *testing.T) {
 		t.Fatalf("expected lookup tool; body=%s", prepared.body)
 	}
 
-	allowed := gjson.GetBytes(prepared.body, "tool_choice.tools").Array()
+	allowed := ojson.GetBytes(prepared.body, "tool_choice.tools").Array()
 	if len(allowed) != 1 {
 		t.Fatalf("tool_choice.tools length = %d, want 1; body=%s", len(allowed), prepared.body)
 	}
@@ -253,13 +253,13 @@ func TestXAIExecutorPrepareDropsParallelToolCallsWithoutToolsEvenForExplicitNone
 		t.Fatalf("prepareResponsesRequest() error = %v", err)
 	}
 
-	if gjson.GetBytes(prepared.body, "tools").Exists() {
+	if ojson.GetBytes(prepared.body, "tools").Exists() {
 		t.Fatalf("tool_choice:none request gained a tool: %s", prepared.body)
 	}
-	if got := gjson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
+	if got := ojson.GetBytes(prepared.body, "tool_choice").String(); got != "none" {
 		t.Fatalf("tool_choice = %q, want none; body=%s", got, prepared.body)
 	}
-	if gjson.GetBytes(prepared.body, "parallel_tool_calls").Exists() {
+	if ojson.GetBytes(prepared.body, "parallel_tool_calls").Exists() {
 		t.Fatalf("parallel_tool_calls should be removed when tools are absent: %s", prepared.body)
 	}
 }
@@ -283,10 +283,10 @@ func TestNormalizeXAIToolChoiceForTools_PreservesNoneButDropsParallelCallsWithou
 		t.Run(tt.name, func(t *testing.T) {
 			out := normalizeXAIToolChoiceForTools(tt.body)
 
-			if got := gjson.GetBytes(out, "tool_choice").String(); got != "none" {
+			if got := ojson.GetBytes(out, "tool_choice").String(); got != "none" {
 				t.Fatalf("tool_choice = %q, want none: %s", got, out)
 			}
-			if gjson.GetBytes(out, "parallel_tool_calls").Exists() {
+			if ojson.GetBytes(out, "parallel_tool_calls").Exists() {
 				t.Fatalf("parallel_tool_calls should be removed without tools: %s", out)
 			}
 		})

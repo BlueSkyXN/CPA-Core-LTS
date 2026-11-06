@@ -2,12 +2,12 @@ package thinking_test
 
 import (
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/codex"
-	"github.com/tidwall/gjson"
 )
 
 func TestParseLevelSuffixUltra(t *testing.T) {
@@ -105,7 +105,7 @@ func TestGPT56UltraCodexThinking(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyThinking() unexpected error: %v", err)
 			}
-			if got := gjson.GetBytes(out, "reasoning.effort").String(); got != tt.wantEffort {
+			if got := ojson.GetBytes(out, "reasoning.effort").String(); got != tt.wantEffort {
 				t.Fatalf("reasoning.effort = %q, want %q; body=%s", got, tt.wantEffort, out)
 			}
 		})
@@ -122,7 +122,7 @@ func TestGPT56MaxCodexThinkingPreserved(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyThinking() error = %v", err)
 			}
-			if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "max" {
+			if got := ojson.GetBytes(out, "reasoning.effort").String(); got != "max" {
 				t.Fatalf("reasoning.effort = %q, want max; body=%s", got, out)
 			}
 		})
@@ -132,7 +132,7 @@ func TestGPT56MaxCodexThinkingPreserved(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyThinking() error = %v", err)
 			}
-			if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "max" {
+			if got := ojson.GetBytes(out, "reasoning.effort").String(); got != "max" {
 				t.Fatalf("reasoning.effort = %q, want max; body=%s", got, out)
 			}
 		})
@@ -145,7 +145,7 @@ func TestUnknownCustomCodexModelPreservesLiteralUltra(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyThinking() error = %v", err)
 	}
-	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
+	if got := ojson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
 		t.Fatalf("reasoning.effort = %q, want ultra; body=%s", got, out)
 	}
 }

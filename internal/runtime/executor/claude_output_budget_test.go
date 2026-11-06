@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestClaudeExecutorOutputBudget(t *testing.T) {
@@ -56,7 +56,7 @@ data: {"type":"message_stop"}
 					}
 					seen <- body
 					response, contentType := reply, "application/json"
-					if gjson.GetBytes(body, "stream").Bool() {
+					if ojson.GetBytes(body, "stream").Bool() {
 						response, contentType = events, "text/event-stream"
 					}
 					response = strings.ReplaceAll(response, "claude-opus-4-6", tc.model)
@@ -85,7 +85,7 @@ data: {"type":"message_stop"}
 				}
 				select {
 				case wire := <-seen:
-					if got := gjson.GetBytes(wire, "max_tokens").Int(); got != tc.want {
+					if got := ojson.GetBytes(wire, "max_tokens").Int(); got != tc.want {
 						t.Fatalf("upstream max_tokens = %d, want %d", got, tc.want)
 					}
 				default:

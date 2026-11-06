@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"math"
 	"net/http"
@@ -22,8 +23,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func TestCodexAbnormalReasoningRetryUsageFailsClosedOnTokenOverflow(t *testing.T) {
@@ -461,16 +460,16 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerRecordsAttemptLevelUsageAndD
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
 		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
 		t.Fatalf("client response usage.input_tokens = %d, want delivered input 5; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 7 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 7 {
 		t.Fatalf("client response usage.output_tokens = %d, want delivered output 7; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 128 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 128 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want delivered reasoning 128; payload=%s", got, resp.Payload)
 	}
 
@@ -626,16 +625,16 @@ func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumSumsFields
 	if err != nil {
 		t.Fatalf("Execute error = %v, want nil", err)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
 		t.Fatalf("client response usage.total_tokens = %d, want summed total 15; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
 		t.Fatalf("client response usage.input_tokens = %d, want summed input 6; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
 		t.Fatalf("client response usage.output_tokens = %d, want summed output 9; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
 	}
 }
@@ -649,7 +648,7 @@ func TestCodexExecutorModelFallbackPreservesSourceAbnormalPolicyAndUsageAggregat
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+		model := strings.TrimSpace(ojson.GetBytes(body, "model").String())
 		switch model {
 		case "gpt-source":
 			sourceCalls++
@@ -706,16 +705,16 @@ func TestCodexExecutorModelFallbackPreservesSourceAbnormalPolicyAndUsageAggregat
 	if sourceCalls != 2 || targetCalls != 1 {
 		t.Fatalf("upstream calls = source:%d target:%d, want source:2 target:1", sourceCalls, targetCalls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
 		t.Fatalf("client response usage.total_tokens = %d, want shared source+target total 15; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
 		t.Fatalf("client response usage.input_tokens = %d, want shared input 6; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
 		t.Fatalf("client response usage.output_tokens = %d, want shared output 9; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want shared reasoning 644; payload=%s", got, resp.Payload)
 	}
 }
@@ -762,7 +761,7 @@ func TestCodexExecutorModelFallbackPreflightUsesAfterAuthRewrittenReplayScope(t 
 			interceptedModels = append(interceptedModels, request.Model)
 			body := request.Body
 			if request.Model == "gpt-source" {
-				body, _ = sjson.SetBytes(body, "prompt_cache_key", "after-auth-rewritten")
+				body, _ = ojson.SetBytes(body, "prompt_cache_key", "after-auth-rewritten")
 			}
 			return cliproxyexecutor.RequestAfterAuthInterceptResponse{Body: body}
 		},
@@ -791,10 +790,10 @@ func TestPatchCodexAbnormalReasoningClientUsageSumsCacheReadAndWrite(t *testing.
 	}}
 
 	patched := patchCodexAbnormalReasoningClientUsageWithSnapshot(current, previous, config.CodexAbnormalReasoningRetryClientUsageAggregationSum)
-	if got := gjson.GetBytes(patched, "response.usage.input_tokens_details.cached_tokens").Int(); got != 35 {
+	if got := ojson.GetBytes(patched, "response.usage.input_tokens_details.cached_tokens").Int(); got != 35 {
 		t.Fatalf("cached_tokens = %d, want 35; payload=%s", got, patched)
 	}
-	if got := gjson.GetBytes(patched, "response.usage.input_tokens_details.cache_write_tokens").Int(); got != 47 {
+	if got := ojson.GetBytes(patched, "response.usage.input_tokens_details.cache_write_tokens").Int(); got != 47 {
 		t.Fatalf("cache_write_tokens = %d, want 47; payload=%s", got, patched)
 	}
 }
@@ -855,16 +854,16 @@ func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumUsesCodexF
 	if err != nil {
 		t.Fatalf("Execute error = %v, want nil", err)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 15 {
 		t.Fatalf("client response usage.total_tokens = %d, want summed Codex fallback total 15; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
 		t.Fatalf("client response usage.input_tokens = %d, want summed input 6; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
 		t.Fatalf("client response usage.output_tokens = %d, want summed output 9; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
 	}
 }
@@ -907,16 +906,16 @@ func TestCodexExecutorAbnormalReasoningRetry_ClientUsageAggregationSumWithDelive
 	if err != nil {
 		t.Fatalf("Execute error = %v, want nil", err)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
 		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 6 {
 		t.Fatalf("client response usage.input_tokens = %d, want summed input 6; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 9 {
 		t.Fatalf("client response usage.output_tokens = %d, want summed output 9; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 644 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want summed reasoning 644; payload=%s", got, resp.Payload)
 	}
 }
@@ -971,16 +970,16 @@ func TestCodexExecutorAbnormalReasoningRetry_DefaultMaxRetriesDeliversFinalUsage
 	if calls != 3 {
 		t.Fatalf("upstream calls = %d, want 3", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
 		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
 		t.Fatalf("client response usage.input_tokens = %d, want delivered input 5; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 7 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 7 {
 		t.Fatalf("client response usage.output_tokens = %d, want delivered output 7; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 128 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 128 {
 		t.Fatalf("client response usage.reasoning_tokens = %d, want delivered reasoning 128; payload=%s", got, resp.Payload)
 	}
 
@@ -1054,7 +1053,7 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerMaxRetriesIndependentFromReq
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2 despite request-retry=0", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 12 {
 		t.Fatalf("client response usage.total_tokens = %d, want delivered total 12; payload=%s", got, resp.Payload)
 	}
 }
@@ -1102,16 +1101,16 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughWhenExhaustedNonStreamin
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 3 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 3 {
 		t.Fatalf("client response usage.total_tokens = %d, want delivered abnormal total 3; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 1 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 1 {
 		t.Fatalf("client response usage.input_tokens = %d, want delivered abnormal input 1; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 2 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 2 {
 		t.Fatalf("client response usage.output_tokens = %d, want delivered abnormal output 2; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 516 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 516 {
 		t.Fatalf("client response reasoning_tokens = %d, want 516; payload=%s", got, resp.Payload)
 	}
 
@@ -1168,16 +1167,16 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughDeliversSelectedFallback
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 10 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 10 {
 		t.Fatalf("client response usage.total_tokens = %d, want selected fallback total 10; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 4 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 4 {
 		t.Fatalf("client response usage.input_tokens = %d, want selected fallback input 4; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 6 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 6 {
 		t.Fatalf("client response usage.output_tokens = %d, want selected fallback output 6; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1034 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1034 {
 		t.Fatalf("client response reasoning_tokens = %d, want selected fallback reasoning 1034; payload=%s", got, resp.Payload)
 	}
 }
@@ -1227,16 +1226,16 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughSumWithDeliveredTotalKee
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 10 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 10 {
 		t.Fatalf("client response usage.total_tokens = %d, want selected fallback total 10; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 5 {
 		t.Fatalf("client response usage.input_tokens = %d, want summed input 5; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 8 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 8 {
 		t.Fatalf("client response usage.output_tokens = %d, want summed output 8; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1550 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens_details.reasoning_tokens").Int(); got != 1550 {
 		t.Fatalf("client response reasoning_tokens = %d, want summed reasoning 1550; payload=%s", got, resp.Payload)
 	}
 }
@@ -1288,7 +1287,7 @@ func TestCodexExecutorAbnormalReasoningRetry_PassThroughReturnsLongestNonStreami
 	if !bytes.Contains(resp.Payload, []byte("long")) || bytes.Contains(resp.Payload, []byte("short")) {
 		t.Fatalf("client response payload = %s, want longest fallback only", resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 81 {
+	if got := ojson.GetBytes(resp.Payload, "usage.total_tokens").Int(); got != 81 {
 		t.Fatalf("client response usage.total_tokens = %d, want longest fallback total 81; payload=%s", got, resp.Payload)
 	}
 }

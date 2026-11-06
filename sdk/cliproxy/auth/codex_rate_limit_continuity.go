@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"sync"
@@ -9,7 +10,6 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
 )
 
 type codexRateLimitContinuityKey struct {
@@ -552,7 +552,7 @@ func codexRateLimitStableSessionID(opts cliproxyexecutor.Options) string {
 			return "amp:" + threadID
 		}
 	}
-	if conversationID := strings.TrimSpace(gjson.GetBytes(opts.OriginalRequest, "conversation_id").String()); conversationID != "" {
+	if conversationID := strings.TrimSpace(ojson.GetBytes(opts.OriginalRequest, "conversation_id").String()); conversationID != "" {
 		return "conv:" + conversationID
 	}
 	return ""

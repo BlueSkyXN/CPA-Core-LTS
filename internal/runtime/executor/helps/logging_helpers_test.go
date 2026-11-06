@@ -415,3 +415,90 @@ func TestAPIResponseAttemptsAreSeparated(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordAPIRequestDeferredCapturePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		disabled  bool
+		fullLog   bool
+		wantDefer bool
+	}{
+		{name: "HTTP with upgrade headers", wantDefer: true},
+		{name: "established WebSocket", disabled: true},
+		{name: "WebSocket with full logging", disabled: true, fullLog: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			ginCtx.Request.Header.Set("Connection", "Upgrade")
+			ginCtx.Request.Header.Set("Upgrade", "websocket")
+			ctx := context.WithValue(context.Background(), "gin", ginCtx)
+			if tt.disabled {
+				ctx = logging.WithDeferredAPIRequestCaptureDisabled(ctx)
+			}
+			cfg := &config.Config{SDKConfig: config.SDKConfig{RequestLog: tt.fullLog}}
+			RecordAPIRequest(ctx, cfg, UpstreamRequestLog{Method: http.MethodPost, Body: []byte("request-payload")})
+			value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey)
+			if exists != tt.wantDefer {
+				t.Fatalf("deferred capture present = %t, want %t", exists, tt.wantDefer)
+			}
+			if tt.wantDefer {
+				state, _ := value.(*deferredAPIRequestState)
+				requests := state.SnapshotDeferredAPIRequests()
+				if len(requests) != 1 || !strings.Contains(string(requests[0]()), "request-payload") {
+					t.Fatal("ordinary HTTP lost its error-only request body")
+				}
+			}
+			if tt.fullLog {
+				logged, _ := ginCtx.Get(apiRequestKey)
+				if body, _ := logged.([]byte); !strings.Contains(string(body), "request-payload") {
+					t.Fatal("full logging lost the upstream request body")
+				}
+			}
+		})
+	}
+}
+
+func TestRecordAPIRequestAsyncCapturePolicySurvivesGinContextReuse(t *testing.T) {
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	parent := context.WithValue(context.Background(), "gin", ginCtx)
+	socketCtx, cancel := context.WithCancel(logging.WithDeferredAPIRequestCaptureDisabled(parent))
+	cancel()
+	callbackCtx := context.WithoutCancel(socketCtx)
+
+	// A completed socket can leave asynchronous plugin callbacks holding the
+	// same Gin pointer that is now serving an unrelated HTTP request.
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	RecordAPIRequest(parent, &config.Config{}, UpstreamRequestLog{Body: []byte("new-http-request")})
+	var callbacks sync.WaitGroup
+	for range 8 {
+		callbacks.Go(func() {
+			RecordAPIRequest(callbackCtx, &config.Config{}, UpstreamRequestLog{Body: []byte("old-websocket-request")})
+		})
+	}
+	callbacks.Wait()
+	value, _ := ginCtx.Get(logging.DeferredAPIRequestContextKey)
+	state, _ := value.(*deferredAPIRequestState)
+	requests := state.SnapshotDeferredAPIRequests()
+	if len(requests) != 1 || !strings.Contains(string(requests[0]()), "new-http-request") {
+		t.Fatal("old WebSocket callbacks changed the new HTTP request's deferred log")
+	}
+	if state := deferredAPIRequestStateFor(ginCtx); state == nil || state.bytesUsed != len("new-http-request") {
+		t.Fatalf("deferred bytes state = %+v, want only the new HTTP body", state)
+	}
+}
+
+func TestRecordAPIRequestDisabledCaptureDoesNotRetainLargeTurns(t *testing.T) {
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx := logging.WithDeferredAPIRequestCaptureDisabled(context.WithValue(context.Background(), "gin", ginCtx))
+	body := []byte(strings.Repeat("x", 1<<20))
+	for range 40 {
+		RecordAPIRequest(ctx, &config.Config{}, UpstreamRequestLog{Body: body})
+	}
+	if _, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
+		t.Fatal("disabled capture retained deferred requests after 40 MiB of upstream requests")
+	}
+	if state := deferredAPIRequestStateFor(ginCtx); state != nil && state.bytesUsed != 0 {
+		t.Fatalf("disabled capture retained %d deferred bytes", state.bytesUsed)
+	}
+}

@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"sync"
 	"testing"
@@ -10,8 +11,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type anthropicTestHooks struct {
@@ -23,9 +22,9 @@ type anthropicTestHooks struct {
 }
 
 func (h *anthropicTestHooks) NormalizeRequest(_ context.Context, _, _ tr.Format, _ string, body []byte, _ bool) []byte {
-	out, _ := sjson.DeleteBytes(body, "messages.1.content.0")
+	out, _ := ojson.DeleteBytes(body, "messages.1.content.0")
 	if h.removeThinking {
-		out, _ = sjson.DeleteBytes(out, "thinking")
+		out, _ = ojson.DeleteBytes(out, "thinking")
 	}
 	return out
 }
@@ -58,7 +57,7 @@ func (h *anthropicTestHooks) NormalizeResponseAfter(_ context.Context, _, _ tr.F
 	if h.chat {
 		wantObject = "chat.completion"
 	}
-	if !stream && gjson.GetBytes(body, "object").String() != wantObject {
+	if !stream && ojson.GetBytes(body, "object").String() != wantObject {
 		h.badShape = true
 	}
 	return body

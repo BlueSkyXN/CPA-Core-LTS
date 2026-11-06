@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -12,7 +13,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // formalUsageReporter returns a reporter only for the selected-auth provider
@@ -171,7 +171,7 @@ func setPluginUsageProvenance(reporter *helps.UsageReporter, buffer *helps.Strea
 }
 
 func pluginExecutorUsageReported(format sdktranslator.Format, payload []byte) bool {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return false
 	}
 	paths := []string{"usage"}
@@ -197,8 +197,8 @@ func pluginExecutorUsageReported(format sdktranslator.Format, payload []byte) bo
 		paths = append(paths, "response.usageMetadata", "usageMetadata", "usage_metadata")
 	}
 	for _, path := range paths {
-		value := gjson.GetBytes(payload, path)
-		if value.Exists() && value.Type != gjson.Null {
+		value := ojson.GetBytes(payload, path)
+		if value.Exists() && value.Type != ojson.Null {
 			return true
 		}
 	}

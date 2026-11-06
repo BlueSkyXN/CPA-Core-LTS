@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"time"
@@ -17,8 +18,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type codexAbnormalReasoningRetryPolicy struct {
@@ -496,36 +495,36 @@ func patchCodexAbnormalReasoningClientUsageWithSnapshot(eventData []byte, previo
 		return eventData
 	}
 	total := codexAbnormalReasoningRetryAggregateClientUsage(previous, current, aggregation)
-	usageNode := gjson.GetBytes(eventData, "response.usage")
+	usageNode := ojson.GetBytes(eventData, "response.usage")
 	if !usageNode.Exists() {
 		return eventData
 	}
 
 	out := eventData
-	out, _ = sjson.SetBytes(out, "response.usage.input_tokens", total.InputTokens)
-	out, _ = sjson.SetBytes(out, "response.usage.output_tokens", total.OutputTokens)
-	out, _ = sjson.SetBytes(out, "response.usage.total_tokens", total.TotalTokens)
+	out, _ = ojson.SetBytes(out, "response.usage.input_tokens", total.InputTokens)
+	out, _ = ojson.SetBytes(out, "response.usage.output_tokens", total.OutputTokens)
+	out, _ = ojson.SetBytes(out, "response.usage.total_tokens", total.TotalTokens)
 	cacheReadTokens := total.CacheReadTokens
 	if cacheReadTokens == 0 {
 		cacheReadTokens = total.CachedTokens
 	}
 	if usageNode.Get("input_tokens_details.cached_tokens").Exists() || cacheReadTokens != 0 {
-		out, _ = sjson.SetBytes(out, "response.usage.input_tokens_details.cached_tokens", cacheReadTokens)
+		out, _ = ojson.SetBytes(out, "response.usage.input_tokens_details.cached_tokens", cacheReadTokens)
 	}
 	if usageNode.Get("prompt_tokens_details.cached_tokens").Exists() {
-		out, _ = sjson.SetBytes(out, "response.usage.prompt_tokens_details.cached_tokens", cacheReadTokens)
+		out, _ = ojson.SetBytes(out, "response.usage.prompt_tokens_details.cached_tokens", cacheReadTokens)
 	}
 	if usageNode.Get("input_tokens_details.cache_write_tokens").Exists() || total.CacheCreationTokens != 0 {
-		out, _ = sjson.SetBytes(out, "response.usage.input_tokens_details.cache_write_tokens", total.CacheCreationTokens)
+		out, _ = ojson.SetBytes(out, "response.usage.input_tokens_details.cache_write_tokens", total.CacheCreationTokens)
 	}
 	if usageNode.Get("prompt_tokens_details.cache_write_tokens").Exists() {
-		out, _ = sjson.SetBytes(out, "response.usage.prompt_tokens_details.cache_write_tokens", total.CacheCreationTokens)
+		out, _ = ojson.SetBytes(out, "response.usage.prompt_tokens_details.cache_write_tokens", total.CacheCreationTokens)
 	}
 	if usageNode.Get("output_tokens_details.reasoning_tokens").Exists() || total.ReasoningTokens != 0 {
-		out, _ = sjson.SetBytes(out, "response.usage.output_tokens_details.reasoning_tokens", total.ReasoningTokens)
+		out, _ = ojson.SetBytes(out, "response.usage.output_tokens_details.reasoning_tokens", total.ReasoningTokens)
 	}
 	if usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() {
-		out, _ = sjson.SetBytes(out, "response.usage.completion_tokens_details.reasoning_tokens", total.ReasoningTokens)
+		out, _ = ojson.SetBytes(out, "response.usage.completion_tokens_details.reasoning_tokens", total.ReasoningTokens)
 	}
 	return out
 }
@@ -772,13 +771,13 @@ func patchCodexAbnormalReasoningStreamPayload(payload []byte, previous cliproxye
 	}
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
 		data := bytes.TrimSpace(trimmed[len("data:"):])
-		if !gjson.GetBytes(data, "response.usage").Exists() {
+		if !ojson.GetBytes(data, "response.usage").Exists() {
 			return payload
 		}
 		patched := patchCodexAbnormalReasoningClientUsageWithSnapshot(data, previous, aggregation)
 		return append([]byte("data: "), patched...)
 	}
-	if !gjson.GetBytes(trimmed, "response.usage").Exists() {
+	if !ojson.GetBytes(trimmed, "response.usage").Exists() {
 		return payload
 	}
 	return patchCodexAbnormalReasoningClientUsageWithSnapshot(trimmed, previous, aggregation)

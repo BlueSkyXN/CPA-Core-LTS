@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -14,7 +15,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesWebsocketHTTPRejectsMismatchedParentWithoutLosingHistory(t *testing.T) {
@@ -52,15 +52,15 @@ func TestResponsesWebsocketHTTPRejectsMismatchedParentWithoutLosingHistory(t *te
 		return payload
 	}
 	first := turn(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"role":"user","content":"first"}]}`, model))
-	if gjson.GetBytes(first, "type").String() != "response.completed" {
+	if ojson.GetBytes(first, "type").String() != "response.completed" {
 		t.Fatal("initial turn failed")
 	}
 	rejected := turn(`{"type":"response.create","previous_response_id":"other-connection","input":[{"role":"user","content":"must-not-survive"}]}`)
-	if gjson.GetBytes(rejected, "error.code").String() != "previous_response_not_found" || executor.calls.Load() != 1 {
+	if ojson.GetBytes(rejected, "error.code").String() != "previous_response_not_found" || executor.calls.Load() != 1 {
 		t.Fatal("unknown parent dispatched model")
 	}
 	recovered := turn(`{"type":"response.create","previous_response_id":"home-response","input":[{"role":"user","content":"next"}]}`)
-	if gjson.GetBytes(recovered, "type").String() != "response.completed" || executor.calls.Load() != 2 {
+	if ojson.GetBytes(recovered, "type").String() != "response.completed" || executor.calls.Load() != 2 {
 		t.Fatal("valid parent did not recover")
 	}
 	executor.mu.Lock()

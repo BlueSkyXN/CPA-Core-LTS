@@ -144,6 +144,11 @@ client:
         # and converts only fully plaintext agent_message input. Native Codex preserves
         # encrypted/mixed history; incompatible routes reject unconverted delegation.
         optimize-multi-agent-v2: false
+    claude:
+        # Show public Codex commentary as visible Claude text, retaining phase markers
+        # for replay. Genuine reasoning summaries remain thinking blocks.
+        # Default false preserves existing behavior for clients such as TTS consumers.
+        show-codex-commentary: false
 requests:
     reasoning-effort: []
     # 推理强度策略：最后匹配的规则优先。省略时保持现有行为。
@@ -801,6 +806,18 @@ config-version: 8
 #         # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #       proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #       # proxy-url: "direct" # optional: explicit direct connect for this credential
+#       # Optional connection reuse for this credential group. Writing the block is the opt-in;
+#       # `connection-pool: {}` opts in with the defaults below. Pools stay per key, so pooling
+#       # one key never shares connections with another key. Applies to the standard transport
+#       # and the Claude Code TLS transport (Anthropic upstreams); the ChatGPT browser-profile
+#       # transport keeps its one-connection-per-request lifecycle.
+#       # Defaults: idle-conn-timeout 300s, max-idle-conns-per-host 2. Zero or negative values
+#       # disable keep-alives (every request dials). Authenticated proxy URLs are isolated per
+#       # proxy credential digest so rotating user:pass or sticky-session usernames never mix.
+#       # connection-pool:
+#       #   enabled: true
+#       #   idle-conn-timeout: "300s" # defaults to 300s; measured upstreams reuse idle conns >600s
+#       #   max-idle-conns-per-host: 2 # defaults to 2
 #       models:
 #         - name: "gpt-5-codex"   # upstream model name
 #           alias: "codex-latest" # client alias mapped to the upstream model
@@ -822,6 +839,8 @@ config-version: 8
 #       keys:
 #         - api-key: "sk-atSM..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           # connection-pool:                # optional: per-key override of the group pool setting
+#           #   enabled: false                # opt this key out while the group stays pooled
 #           disable-codex-cloaking: false # optional: true disables cloaking; OAuth provider settings do not apply here
 #           alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
 #           websockets: false # optional: use the Codex upstream WebSocket transport
@@ -1030,6 +1049,8 @@ config-version: 8
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #           # proxy-url: "direct" # optional: explicit direct connect for this credential
+#           # connection-pool: # optional: per-key override of the group pool block
+#           #   enabled: true
 #         - api-key: "sk-or-v1-...b781" # without proxy-url
 #       models: # The models supported by the provider.
 #         - name: "moonshotai/kimi-k2:free" # The actual model name.
