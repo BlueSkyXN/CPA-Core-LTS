@@ -981,7 +981,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Latency:              r.latency(),
 		TimingVersion:        timing.TimingVersion,
 		TTFB:                 timing.TTFB,
-		TTFT:                 timing.TTFT,
+		TTFT:                 usageTimingTTFT(timing, r.ttftDuration()),
 		TTFA:                 timing.TTFA,
 		OutputTiming:         timing.OutputTiming.Clone(),
 		Failed:               failed,
@@ -1075,6 +1075,21 @@ func (r *UsageReporter) timingSnapshot() ResponseTimingSnapshot {
 
 // ttftDuration exposes upstream's effective-token/fallback measurement to its
 // package-local protocol tests. Canonical v3 records use timingSnapshot.
+// usageTimingTTFT prefers the semantic timing tracker's reasoning-first TTFT.
+// Only paths without any HTTP response observation (plugin executors, native
+// transports) fall back to the protocol-aware first-token/first-packet
+// measurement; once an HTTP attempt is tracked, a missing canonical TTFT means
+// "no reasoning token", not "unmeasured".
+func usageTimingTTFT(timing ResponseTimingSnapshot, fallback time.Duration) time.Duration {
+	if timing.TTFT > 0 {
+		return timing.TTFT
+	}
+	if timing.TTFB > 0 {
+		return 0
+	}
+	return fallback
+}
+
 func (r *UsageReporter) ttftDuration() time.Duration {
 	if r == nil {
 		return 0
@@ -1495,6 +1510,8 @@ func (b *StreamUsageBuffer) observeGeminiFamilyStream(line []byte, allowResponse
 			{&detail.VideoInputTokens, update.VideoInputTokens},
 			{&detail.FileInputTokens, update.FileInputTokens},
 			{&detail.CachedTextTokens, update.CachedTextTokens},
+			{&detail.CachedImageTokens, update.CachedImageTokens},
+			{&detail.CachedAudioTokens, update.CachedAudioTokens},
 			{&detail.TextOutputTokens, update.TextOutputTokens},
 			{&detail.ImageOutputTokens, update.ImageOutputTokens},
 			{&detail.AudioOutputTokens, update.AudioOutputTokens},
@@ -2185,6 +2202,7 @@ func hasStructuredUsageDetail(d usage.Detail) bool {
 		d.CacheCreation1hTokens != nil || d.CacheCreation12hTokens != nil ||
 		d.TextInputTokens != nil || d.ImageInputTokens != nil || d.AudioInputTokens != nil ||
 		d.VideoInputTokens != nil || d.FileInputTokens != nil || d.CachedTextTokens != nil ||
+		d.CachedImageTokens != nil || d.CachedAudioTokens != nil ||
 		d.TextOutputTokens != nil || d.ImageOutputTokens != nil || d.AudioOutputTokens != nil ||
 		d.AcceptedPredictionTokens != nil || d.RejectedPredictionTokens != nil ||
 		d.Speed != "" || d.InferenceGeo != ""
@@ -2321,14 +2339,34 @@ func parseOpenAIStyleUsageNode(usageNode ojson.Result) usage.Detail {
 				if v.Type == ojson.Number && detail.FileInputTokens == nil {
 					detail.FileInputTokens = usage.Int64Ptr(v.Int())
 				}
-			case "cached_prompt_text_tokens":
+			case "cached_prompt_text_tokens", "cached_text_tokens":
 				if v.Type == ojson.Number && detail.CachedTextTokens == nil {
 					detail.CachedTextTokens = usage.Int64Ptr(v.Int())
 				}
+			case "cached_image_tokens":
+				if v.Type == ojson.Number && detail.CachedImageTokens == nil {
+					detail.CachedImageTokens = usage.Int64Ptr(v.Int())
+				}
+			case "cached_audio_tokens":
+				if v.Type == ojson.Number && detail.CachedAudioTokens == nil {
+					detail.CachedAudioTokens = usage.Int64Ptr(v.Int())
+				}
 			case "cached_tokens_details":
-				if detail.CachedTextTokens == nil && v.IsObject() {
-					if tv := v.Get("text_tokens"); tv.Type == ojson.Number {
-						detail.CachedTextTokens = usage.Int64Ptr(tv.Int())
+				if v.IsObject() {
+					if detail.CachedTextTokens == nil {
+						if tv := v.Get("text_tokens"); tv.Type == ojson.Number {
+							detail.CachedTextTokens = usage.Int64Ptr(tv.Int())
+						}
+					}
+					if detail.CachedImageTokens == nil {
+						if iv := v.Get("image_tokens"); iv.Type == ojson.Number {
+							detail.CachedImageTokens = usage.Int64Ptr(iv.Int())
+						}
+					}
+					if detail.CachedAudioTokens == nil {
+						if av := v.Get("audio_tokens"); av.Type == ojson.Number {
+							detail.CachedAudioTokens = usage.Int64Ptr(av.Int())
+						}
 					}
 				}
 			}
@@ -3785,16 +3823,29 @@ func parseGeminiFamilyUsageDetail(node ojson.Result) usage.Detail {
 		}
 	}
 	if cacheDetails.Exists() {
-		var cachedText int64
-		var hasCachedText bool
+		var cachedText, cachedImg, cachedAudio int64
+		var hasCachedText, hasCachedImg, hasCachedAudio bool
 		parseModalityList(cacheDetails, func(mod string, cnt int64) {
-			if mod == "TEXT" {
+			switch mod {
+			case "TEXT":
 				cachedText += cnt
 				hasCachedText = true
+			case "IMAGE":
+				cachedImg += cnt
+				hasCachedImg = true
+			case "AUDIO":
+				cachedAudio += cnt
+				hasCachedAudio = true
 			}
 		})
 		if hasCachedText {
 			detail.CachedTextTokens = usage.Int64Ptr(cachedText)
+		}
+		if hasCachedImg {
+			detail.CachedImageTokens = usage.Int64Ptr(cachedImg)
+		}
+		if hasCachedAudio {
+			detail.CachedAudioTokens = usage.Int64Ptr(cachedAudio)
 		}
 	}
 	if candDetails.Exists() {
@@ -4131,6 +4182,86 @@ func parseInteractionsUsageDetail(node ojson.Result) usage.Detail {
 		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
+	parseInteractionsModalities := func(arr ojson.Result, target func(mod string, cnt int64)) {
+		if !arr.Exists() || !arr.IsArray() {
+			return
+		}
+		arr.ForEach(func(_, entry ojson.Result) bool {
+			mod := strings.ToUpper(strings.TrimSpace(entry.Get("modality").String()))
+			if mod == "" {
+				return true
+			}
+			cntNode := firstExistingUsageNode(entry, "tokens", "tokenCount", "token_count")
+			if cntNode.Type == ojson.Number {
+				target(mod, cntNode.Int())
+			}
+			return true
+		})
+	}
+	if inMod := firstExistingUsageNode(node, "input_tokens_by_modality", "inputTokensByModality"); inMod.Exists() {
+		var textIn, imgIn, audioIn, videoIn, docIn int64
+		var hasTextIn, hasImgIn, hasAudioIn, hasVideoIn, hasDocIn bool
+		parseInteractionsModalities(inMod, func(mod string, cnt int64) {
+			switch mod {
+			case "TEXT":
+				textIn += cnt
+				hasTextIn = true
+			case "IMAGE":
+				imgIn += cnt
+				hasImgIn = true
+			case "AUDIO":
+				audioIn += cnt
+				hasAudioIn = true
+			case "VIDEO":
+				videoIn += cnt
+				hasVideoIn = true
+			case "DOCUMENT", "FILE":
+				docIn += cnt
+				hasDocIn = true
+			}
+		})
+		if hasTextIn {
+			detail.TextInputTokens = usage.Int64Ptr(textIn)
+		}
+		if hasImgIn {
+			detail.ImageInputTokens = usage.Int64Ptr(imgIn)
+		}
+		if hasAudioIn {
+			detail.AudioInputTokens = usage.Int64Ptr(audioIn)
+		}
+		if hasVideoIn {
+			detail.VideoInputTokens = usage.Int64Ptr(videoIn)
+		}
+		if hasDocIn {
+			detail.FileInputTokens = usage.Int64Ptr(docIn)
+		}
+	}
+	if cacheMod := firstExistingUsageNode(node, "cached_tokens_by_modality", "cachedTokensByModality"); cacheMod.Exists() {
+		var cachedText, cachedImg, cachedAudio int64
+		var hasCachedText, hasCachedImg, hasCachedAudio bool
+		parseInteractionsModalities(cacheMod, func(mod string, cnt int64) {
+			switch mod {
+			case "TEXT":
+				cachedText += cnt
+				hasCachedText = true
+			case "IMAGE":
+				cachedImg += cnt
+				hasCachedImg = true
+			case "AUDIO":
+				cachedAudio += cnt
+				hasCachedAudio = true
+			}
+		})
+		if hasCachedText {
+			detail.CachedTextTokens = usage.Int64Ptr(cachedText)
+		}
+		if hasCachedImg {
+			detail.CachedImageTokens = usage.Int64Ptr(cachedImg)
+		}
+		if hasCachedAudio {
+			detail.CachedAudioTokens = usage.Int64Ptr(cachedAudio)
+		}
+	}
 	return detail
 }
 

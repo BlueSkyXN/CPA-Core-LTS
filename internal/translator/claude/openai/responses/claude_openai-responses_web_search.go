@@ -1,12 +1,14 @@
 package responses
 
 import (
+	"context"
 	"regexp"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
 	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 // Claude reports server-side web search as a pair of assistant content blocks: a
@@ -195,6 +197,36 @@ func convertResponsesWebReaderCallToClaudeBlocks(item ojson.Result, toolUseID, f
 	return [][]byte{use, result}
 }
 
+type webSearchResultLookupContextKey struct{}
+
+// WithWebSearchResultLookup attaches a request-scoped lookup that restores
+// cached Claude web_search_tool_result content for a given server_tool_use id
+// when a Responses web_search_call item arrives without results.
+func WithWebSearchResultLookup(ctx context.Context, lookup func(toolUseID string) ([]byte, bool)) context.Context {
+	if lookup == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, webSearchResultLookupContextKey{}, lookup)
+}
+
+func lookupWebSearchResultFor(ctx context.Context, toolUseID string) []byte {
+	if ctx == nil || toolUseID == "" {
+		return nil
+	}
+	lookup, ok := ctx.Value(webSearchResultLookupContextKey{}).(func(string) ([]byte, bool))
+	if !ok || lookup == nil {
+		return nil
+	}
+	content, found := lookup(toolUseID)
+	if !found || len(content) == 0 {
+		return nil
+	}
+	return content
+}
+
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
 // buildResponsesWebSearchCallItem: it rebuilds the Claude block pair so a
 // replayed turn still shows that the search happened and what it returned.
@@ -206,6 +238,10 @@ func convertResponsesWebSearchCallToClaudeBlocks(item ojson.Result, allowBigMode
 // block, using fallbackQuery when the item carries none, and the result block
 // only when withResult is set.
 func convertResponsesWebSearchCallToClaudeBlocksWithQuery(item ojson.Result, fallbackQuery string, withResult, allowBigModelReplay bool) [][]byte {
+	return convertResponsesWebSearchCallToClaudeBlocksWithContext(context.Background(), item, fallbackQuery, withResult, allowBigModelReplay)
+}
+
+func convertResponsesWebSearchCallToClaudeBlocksWithContext(ctx context.Context, item ojson.Result, fallbackQuery string, withResult, allowBigModelReplay bool) [][]byte {
 	toolUseID := claudeWebSearchToolUseID(strings.TrimSpace(item.Get("id").String()))
 	if toolUseID == "" {
 		return nil
@@ -230,7 +266,11 @@ func convertResponsesWebSearchCallToClaudeBlocksWithQuery(item ojson.Result, fal
 
 	resultDoc := ojson.NewDocString(`{"type":"web_search_tool_result","tool_use_id":"","content":[]}`)
 	_ = resultDoc.Set("tool_use_id", toolUseID)
-	if content := responsesWebSearchResultsToClaude(item.Get("results"), allowBigModelReplay); len(content) > 0 {
+	content := responsesWebSearchResultsToClaude(item.Get("results"), allowBigModelReplay)
+	if len(content) == 0 {
+		content = lookupWebSearchResultFor(ctx, toolUseID)
+	}
+	if len(content) > 0 {
 		_ = resultDoc.SetRawBytes("content", content)
 	}
 	return [][]byte{useDoc.Bytes(), resultDoc.Bytes()}
@@ -313,15 +353,19 @@ func scanResponsesWebSearchHistory(items []ojson.Result) responsesWebSearchHisto
 }
 
 func (h responsesWebSearchHistory) claudeBlocks(index int, item ojson.Result, allowBigModelReplay bool) [][]byte {
+	return h.claudeBlocksWithContext(context.Background(), index, item, allowBigModelReplay)
+}
+
+func (h responsesWebSearchHistory) claudeBlocksWithContext(ctx context.Context, index int, item ojson.Result, allowBigModelReplay bool) [][]byte {
 	if h.skip[index] {
 		return nil
 	}
 	query := h.pausedQuery[index]
 	tail := index >= len(h.boundaryAfter) || !h.boundaryAfter[index]
 	if responsesWebSearchItemIsPaused(item) && tail {
-		return convertResponsesWebSearchCallToClaudeBlocksWithQuery(item, query, false, allowBigModelReplay)
+		return convertResponsesWebSearchCallToClaudeBlocksWithContext(ctx, item, query, false, allowBigModelReplay)
 	}
-	return convertResponsesWebSearchCallToClaudeBlocksWithQuery(item, query, true, allowBigModelReplay)
+	return convertResponsesWebSearchCallToClaudeBlocksWithContext(ctx, item, query, true, allowBigModelReplay)
 }
 
 // responsesWebSearchCallQuery reads the query from a Responses web_search_call,
@@ -407,4 +451,69 @@ func attachClaudeCitations(textBlock []byte, annotations ojson.Result) []byte {
 		return textBlock
 	}
 	return updated
+}
+
+func claudeBlocksHaveEmptyWebSearchResult(blocks [][]byte) bool {
+	for _, raw := range blocks {
+		block := util.ParseGJSONBytesNoCopy(raw)
+		if block.Get("type").String() != "web_search_tool_result" {
+			continue
+		}
+		content := block.Get("content")
+		if !content.Exists() || content.Type == ojson.Null || (content.IsArray() && len(content.Array()) == 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripClaudeWebSearchCitationsFromParts removes web_search_result_location
+// citations from text blocks when a web_search_tool_result in the same
+// assistant turn ended up without content. Anthropic intermittently rejects
+// citations whose encrypted_index has no matching search result in the turn.
+func stripClaudeWebSearchCitationsFromParts(parts [][]byte) ([][]byte, int) {
+	droppedTotal := 0
+	for i, raw := range parts {
+		part := util.ParseGJSONBytesNoCopy(raw)
+		if part.Get("type").String() != "text" {
+			continue
+		}
+		updated, dropped := stripClaudeWebSearchCitationsFromTextBlock(raw, part.Get("citations"))
+		if dropped > 0 {
+			parts[i] = updated
+			droppedTotal += dropped
+		}
+	}
+	return parts, droppedTotal
+}
+
+func stripClaudeWebSearchCitationsFromTextBlock(textBlock []byte, citations ojson.Result) ([]byte, int) {
+	if !citations.Exists() || !citations.IsArray() {
+		return textBlock, 0
+	}
+	var kept [][]byte
+	dropped := 0
+	citations.ForEach(func(_, citation ojson.Result) bool {
+		if citation.Get("type").String() == "web_search_result_location" {
+			dropped++
+			return true
+		}
+		kept = append(kept, []byte(citation.Raw))
+		return true
+	})
+	if dropped == 0 {
+		return textBlock, 0
+	}
+	if len(kept) == 0 {
+		updated, errDelete := ojson.DeleteBytes(textBlock, "citations")
+		if errDelete != nil {
+			return textBlock, 0
+		}
+		return updated, dropped
+	}
+	updated, errSet := ojson.SetRawBytes(textBlock, "citations", translatorcommon.JoinRawArray(kept))
+	if errSet != nil {
+		return textBlock, 0
+	}
+	return updated, dropped
 }

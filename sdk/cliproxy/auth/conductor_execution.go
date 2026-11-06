@@ -171,6 +171,13 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
+func isOpenAIImageExecutionOptions(opts cliproxyexecutor.Options) bool {
+	return strings.EqualFold(strings.TrimSpace(opts.SourceFormat.String()), "openai-image")
+}
+
+// executeRequestUncontrolled is the LTS execution core driven by the Flow V3
+// Manager.Execute wrapper in flow_control.go; upstream's plain Execute entry
+// is replaced by that flow-aware wrapper.
 func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
@@ -180,7 +187,7 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
@@ -291,7 +298,7 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	if m.HomeEnabled() {
@@ -610,7 +617,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
 		execCtx = newUpstreamAttemptContext(execCtx)
 
-		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
 		if len(models) == 0 {
 			continue
 		}
@@ -893,7 +900,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
 		execCtx = newUpstreamAttemptContext(execCtx)
 
-		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
 		if len(models) == 0 {
 			continue
 		}
@@ -1050,10 +1057,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
 				applyRequestScopedActionToResult(action, okAction, &result)
-				// Some Anthropic-compatible upstreams do not implement the
-				// count_tokens route and return a generic endpoint 404. Record
-				// the failure for hooks and metrics without suspending a model
-				// that remains usable through the messages endpoint.
+				// Some Anthropic-compatible upstreams and plugin executors do not
+				// implement count_tokens and return a generic endpoint 404 or an
+				// explicit 501 / unsupported-capability error. Record the failure
+				// for hooks and metrics without suspending a model that remains
+				// usable through the messages endpoint.
 				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
@@ -1300,7 +1308,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
 		// Home owns dispatched credential availability; only local selections need state filtering.
 		if selection == nil {
-			models = m.filterExecutionModels(auth, routeModel, models, pooled)
+			models = m.filterExecutionModelsForRequest(execCtx, auth, routeModel, models, pooled, pickOpts.Headers)
 		}
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias

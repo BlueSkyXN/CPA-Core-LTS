@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/MoeForge/moego/ojson"
@@ -33,7 +34,7 @@ func AppendResponseOutputForTokenCount(model string, nativeRequest, output []byt
 	if err != nil {
 		return nil, err
 	}
-	converted, err := convertOpenAIResponsesRequestToClaude(model, replay, false, modelInfo != nil && modelInfo.IsCompat, modelInfo, true)
+	converted, err := convertOpenAIResponsesRequestToClaude(context.Background(), model, replay, false, modelInfo != nil && modelInfo.IsCompat, true, modelInfo, ClientToolSearchEnabled())
 	if err != nil {
 		return nil, err
 	}

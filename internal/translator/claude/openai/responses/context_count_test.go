@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/MoeForge/moego/ojson"
@@ -71,7 +72,7 @@ func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testi
 			}
 		}
 	}
-	native, err := convertOpenAIResponsesRequestToClaude(info.ID, request, false, true, info, false)
+	native, err := convertOpenAIResponsesRequestToClaude(context.Background(), info.ID, request, false, true, false, info, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextNative, err := convertOpenAIResponsesRequestToClaude(info.ID, nextRequest, false, true, info, false)
+	nextNative, err := convertOpenAIResponsesRequestToClaude(context.Background(), info.ID, nextRequest, false, true, false, info, false)
 	if err != nil {
 		t.Fatal(err)
 	}

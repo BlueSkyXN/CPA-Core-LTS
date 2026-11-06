@@ -32,26 +32,26 @@ const defaultClaudeResponsesMaxTokens = 64000
 //   - max_output_tokens -> max_tokens
 //   - stream passthrough via parameter
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, nil, false)
+	return convertOpenAIResponsesRequestToClaude(context.Background(), modelName, inputRawJSON, stream, false, false, nil, ClientToolSearchEnabled())
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithCompat preserves reasoning items
 // whose encrypted content is empty for configured compatibility endpoints.
 func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, nil, false)
+	return convertOpenAIResponsesRequestToClaude(context.Background(), modelName, inputRawJSON, stream, true, false, nil, ClientToolSearchEnabled())
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithModelInfo lets executor adapters
 // pass the selected model metadata; a model that declares the BigModel search
 // replay protocol also unlocks refer-tagged search history replay.
 func ConvertOpenAIResponsesRequestToClaudeWithModelInfo(modelName string, inputRawJSON []byte, stream bool, modelInfo *registry.ModelInfo) ([]byte, error) {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, modelInfo, false)
+	return convertOpenAIResponsesRequestToClaude(context.Background(), modelName, inputRawJSON, stream, false, false, modelInfo, ClientToolSearchEnabled())
 }
 
 // ConvertOpenAIResponsesRequestEnvelopeToClaude translates with the
 // upstream.claude.tool-search value pinned in ctx, if any.
 func ConvertOpenAIResponsesRequestEnvelopeToClaude(ctx context.Context, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
-	req.Body, req.Err = convertOpenAIResponsesRequestToClaude(req.Model, req.Body, req.Stream, req.ModelInfo != nil && req.ModelInfo.IsCompat, req.ModelInfo, false, ClientToolSearchEnabledFor(ctx))
+	req.Body, req.Err = convertOpenAIResponsesRequestToClaude(ctx, req.Model, req.Body, req.Stream, req.ModelInfo != nil && req.ModelInfo.IsCompat, false, req.ModelInfo, ClientToolSearchEnabledFor(ctx))
 	return req
 }
 
@@ -59,14 +59,10 @@ func ConvertOpenAIResponsesRequestEnvelopeToClaude(ctx context.Context, req sdkt
 // ConvertOpenAIResponsesRequestToClaudeWithCompat with the
 // upstream.claude.tool-search value pinned in ctx, if any.
 func ConvertOpenAIResponsesRequestToClaudeWithCompatContext(ctx context.Context, modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, nil, false, ClientToolSearchEnabledFor(ctx))
+	return convertOpenAIResponsesRequestToClaude(ctx, modelName, inputRawJSON, stream, true, false, nil, ClientToolSearchEnabledFor(ctx))
 }
 
-func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool, modelInfo *registry.ModelInfo, countOnly bool, toolSearchOverride ...bool) ([]byte, error) {
-	toolSearch := ClientToolSearchEnabled()
-	if len(toolSearchOverride) > 0 {
-		toolSearch = toolSearchOverride[0]
-	}
+func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks, countOnly bool, modelInfo *registry.ModelInfo, toolSearch bool) ([]byte, error) {
 	// modelInfo keeps its caller-supplied value as the authority flag; metadata-free
 	// callers fall back to the legacy global lookup for capability hints.
 	resolvedModelInfo := modelInfo
@@ -263,6 +259,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	var pendingRole string
 	var pendingParts [][]byte
 	var pendingToolUseParts [][]byte
+	var turnHasEmptyWebSearchResult bool
 	appendMessage := func(msg []byte) {
 		messageBlocks = append(messageBlocks, msg)
 	}
@@ -280,6 +277,13 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			}
 			combined = append(combined, pendingToolUseParts...)
 			parts = combined
+		}
+		if pendingRole == "assistant" && (turnHasEmptyWebSearchResult || claudeBlocksHaveEmptyWebSearchResult(parts)) {
+			var droppedCitations int
+			parts, droppedCitations = stripClaudeWebSearchCitationsFromParts(parts)
+			if droppedCitations > 0 {
+				log.Debugf("responses->claude: dropped %d web_search_result_location citation(s) from assistant turn without search results", droppedCitations)
+			}
 		}
 		if len(parts) > 0 {
 			msgDoc := ojson.NewDoc([]byte(`{"role":"","content":[]}`))
@@ -534,16 +538,23 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					partsJSON[lastIdx] = common.AttachCacheControl(partsJSON[lastIdx], item)
 				}
 				appendParts(role, partsJSON...)
+				if role == "user" {
+					turnHasEmptyWebSearchResult = false
+				}
 			}
 
 		case "web_search_call":
+			// Rebuild the Claude server-side search pair so the replayed turn
 			// Rebuild the Claude server-side search pair so the replayed turn
 			// still shows the search and its hits. The BigModel replay protocol
 			// is selected by an explicit WebSearchReplay discriminator, not by
 			// search capability: native Anthropic models are search-capable too
 			// and must keep the strict encrypted_content replay contract.
 			allowBigModelReplay := resolvedModelInfo != nil && resolvedModelInfo.NativeCapabilities != nil && resolvedModelInfo.NativeCapabilities.WebSearchReplay == registry.NativeWebSearchReplayBigModel
-			if blocks := webSearchHistory.claudeBlocks(itemIndex, item, allowBigModelReplay); len(blocks) > 0 {
+			if blocks := webSearchHistory.claudeBlocksWithContext(ctx, itemIndex, item, allowBigModelReplay); len(blocks) > 0 {
+				if claudeBlocksHaveEmptyWebSearchResult(blocks) {
+					turnHasEmptyWebSearchResult = true
+				}
 				appendParts("assistant", blocks...)
 			}
 
@@ -610,6 +621,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			// same Claude id are not mistaken for the same call.
 			if _, paired := emittedRawToolUses[rawID]; rawID == "" || !paired {
 				appendParts("user", convertResponsesStandaloneToolOutputToClaudeText(output)...)
+				turnHasEmptyWebSearchResult = false
 				continue
 			}
 			callID := util.SanitizeClaudeToolID(rawID)
@@ -654,6 +666,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				text := []byte(`{"type":"text","text":""}`)
 				text, _ = ojson.SetBytes(text, "text", responsesToolSearchOutputText(item, names))
 				appendParts("user", text)
+				turnHasEmptyWebSearchResult = false
 				continue
 			}
 			toolResultDoc := ojson.NewDoc([]byte(`{"type":"tool_result","tool_use_id":"","content":""}`))
