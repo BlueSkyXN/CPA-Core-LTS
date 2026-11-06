@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 	"strings"
@@ -62,7 +63,15 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 			key := &body[:1][0]
 			if v, ok := payloadDocProbes.LoadAndDelete(key); ok {
 				if doc, okDoc := v.(*ojson.Doc); okDoc && doc != nil {
-					ApplyPayloadConfigWithRequestForExecutorDoc(cfg, executor, model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers)
+					// LTS parity with the byte path below: keep the auth-kind
+					// rule scoping and re-assert the reasoning-effort policy
+					// after generic payload rules (ledger reasoning-effort-policy).
+					before := doc.Bytes()
+					ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(cfg, executor, authKind, model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers)
+					out := doc.Bytes()
+					if protected := ProtectConfiguredEffort(cfg, before, out, protocol, executor, req, opts); !bytes.Equal(protected, out) {
+						*doc = *ojson.NewDoc(protected)
+					}
 					if formatCallback != nil {
 						formatCallback(strings.Clone(strings.TrimSpace(doc.Get(buildPayloadPath(root, "response_format")).String())))
 					}
