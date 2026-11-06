@@ -557,11 +557,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					identityState.affinity.complete(completedPayload)
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				}
-				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {
+				if detail, ok := helps.ParseCodexUsageWithOutputItems(completedPayload, outputItemsByIndex, outputItemsFallback); ok {
 					reporter.Publish(ctx, detail)
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
+				publishCodexImageToolUsageWithOutputItems(ctx, reporter, clientBody, completedPayload, outputItemsByIndex, outputItemsFallback)
 			}
 
 			var currentChunks [][]byte
@@ -829,11 +830,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					identityState.affinity.complete(completedPayload)
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				}
-				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {
+				if detail, ok := helps.ParseCodexUsageWithOutputItems(completedPayload, outputItemsByIndex, outputItemsFallback); ok {
 					reporter.Publish(ctx, detail)
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
+				publishCodexImageToolUsageWithOutputItems(ctx, reporter, clientBody, completedPayload, outputItemsByIndex, outputItemsFallback)
 			}
 
 			if cliproxyexecutor.DownstreamWebsocket(ctx) {

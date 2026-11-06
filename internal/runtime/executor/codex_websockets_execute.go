@@ -439,7 +439,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				identityState.affinity.complete(payload)
 				cacheCodexReasoningReplayFromCompleted(replayScope, payload)
 			}
-			detail, hasUsage := helps.ParseCodexUsage(payload)
+			detail, hasUsage := helps.ParseCodexUsageWithOutputItems(payload, outputItemsByIndex, outputItemsFallback)
 			var param any
 			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
 			out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, clientBody, clientPayload, &param)
@@ -453,6 +453,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			} else {
 				reporter.EnsurePublished(ctx)
 			}
+			publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, payload, outputItemsByIndex, outputItemsFallback)
 			if responseFormat == sdktranslator.FormatOpenAIResponse {
 				out = helps.EnsureResponsesUsageDetails(out)
 			}

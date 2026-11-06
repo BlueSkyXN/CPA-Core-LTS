@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -210,10 +211,18 @@ func TestOpenAICompatStreamFailurePreservesObservedUsage(t *testing.T) {
 					t.Error("failure lost request, model, stream or credential attribution")
 				}
 				want := coreusage.Detail{TokenBreakdown: coreusage.NewSubsetTokenBreakdown(0, 0, 0, 0, 0, 0)}
-				if withUsage {
-					want = coreusage.Detail{InputTokens: 3, OutputTokens: 4, ReasoningTokens: 1, CachedTokens: 2, CacheReadTokens: 2, TotalTokens: 7, TokenBreakdown: coreusage.NewSubsetTokenBreakdown(3, 2, 0, 4, 1, 7), ResponseServiceTier: "priority"}
+				if strings.HasPrefix(scenario, "apply-patch-") {
+					// Upstream structured usage counts streamed tool_calls into
+					// ToolUsageDetails.ToolCallsRequested.
+					want.ToolUsageDetails = &coreusage.ToolUsageDetails{ToolCallsRequested: coreusage.Int64Ptr(1)}
 				}
-				if record.Detail != want || record.ResponseServiceTier != want.ResponseServiceTier || record.EffectiveServiceTier != want.ResponseServiceTier {
+				if withUsage {
+					want.InputTokens, want.OutputTokens, want.ReasoningTokens = 3, 4, 1
+					want.CachedTokens, want.CacheReadTokens, want.TotalTokens = 2, 2, 7
+					want.TokenBreakdown = coreusage.NewSubsetTokenBreakdown(3, 2, 0, 4, 1, 7)
+					want.ResponseServiceTier, want.UpstreamServiceTier = "priority", "priority"
+				}
+				if !reflect.DeepEqual(record.Detail, want) || record.ResponseServiceTier != want.ResponseServiceTier || record.EffectiveServiceTier != want.ResponseServiceTier {
 					t.Errorf("failure usage=%+v tier=%q, want %+v", record.Detail, record.ResponseServiceTier, want)
 				}
 				if next := capture.await(t); next.Model != "dispatch-barrier" {
