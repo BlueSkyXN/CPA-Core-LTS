@@ -815,7 +815,7 @@ func TestCodexExecutorDirectOpenAIImageEditUsesImagesEditEndpointForMultipart(t 
 	}
 }
 
-func TestCodexExecutorDirectOpenAIImage25Models(t *testing.T) {
+func TestCodexExecutorDirectOpenAIImage25And26Models(t *testing.T) {
 	testModels := []string{
 		"gpt-image-2.5",
 		"gpt-image-2.5-flare",
