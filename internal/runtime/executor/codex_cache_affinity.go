@@ -141,10 +141,29 @@ func codexAffinityIdentity(headers http.Header, payload []byte) (kind, id, paren
 	}
 	// A parent label or subagent UA is not evidence of ancestry.
 	if id != "" {
+		// 与通用会话解析保持同族 parent header 优先于 body 的顺序。
+		// 保留 kind/id，避免改变已有身份摘要和已建立的缓存组绑定。
+		var parentHeaders []string
+		switch kind {
+		case "x-session-id":
+			parentHeaders = []string{"X-Parent-Session-Id", "X-Parent-Id"}
+		case "x-thread-id", "thread-id":
+			parentHeaders = []string{"X-Parent-Thread-Id", "X-Parent-Id"}
+		case "x-conversation-id", "conversation-id":
+			parentHeaders = []string{"X-Parent-Conversation-Id", "X-Parent-Id"}
+		}
+		for _, name := range parentHeaders {
+			if candidate := session.NormalizeExplicitID(rawHeaderValueCaseInsensitive(headers, name)); candidate != "" {
+				if candidate != id {
+					return kind, id, candidate
+				}
+				break
+			}
+		}
 		for _, p := range []string{"parent_session_id", "parent_thread_id", "parent_conversation_id", "forked_from_thread_id", "metadata.parent_session_id"} {
 			value := gjson.GetBytes(payload, p)
 			if value.Type == gjson.String {
-				if normalized := session.NormalizeExplicitID(value.String()); normalized != "" {
+				if normalized := session.NormalizeExplicitID(value.String()); normalized != "" && normalized != id {
 					parent = normalized
 					break
 				}

@@ -36,6 +36,8 @@ codex:
 
 官方根 fork 的 `pck=P / session-id=P / metadata.session_id=F` 会保留 P/P/F。例外要求原始 pck 和原生 header 明确一致、载体无歧义且 canonical metadata 已通过原有校验。任意不一致 header 仍由 canonical metadata 处理；strict/repair/off 与重复载体检查保持原语义。
 
+Claude Code 协议转换使用的自动 PCK 按 upstream 相同的 UUIDv5 规则，由模型和 session＋agent scope 确定性派生。旧随机映射不再参与派生；升级后这类请求的自动 PCK 会切换一次，可能需要重新建立上游缓存。之后同一身份的 PCK 不随映射过期、进程重启或首次并发变化。已有显式缓存字段继续遵循各入口的既有优先级，模型和 agent 的隔离规则保持不变。
+
 ## 检查与采用
 
 原始 UA、originator 和经过校验的原生字段仅用于解释协议。cloaking 后的出站 UA 不参与客户端判断。完整官方缓存语义及明确缓存选择不做无必要的全文推断。其余可隔离的第三方请求，包括 **已有 XSID 的 ZCode**，检查实际出站内容的历史连续性。
@@ -50,7 +52,7 @@ HTTP 和 WS 在严格摘要之前均运行现有 input item ID 规范化（包�
 
 - 显式缓存意图优先。
 - 可靠身份保留既有组；编辑、compact、工具变化和前缀失败不会令它换号。
-- 新可靠身份建立确定性映射；明确的父会话/fork 关系且严格前缀相符时可继承父组。UA 或 subagent 标签不证明父子关系。
+- 新可靠身份建立确定性映射；明确的父会话/fork 关系且严格前缀相符时可继承父组。session/thread/conversation 请求头支持对应的 `X-Parent-Session-Id`、`X-Parent-Thread-Id`、`X-Parent-Conversation-Id` 和通用 `X-Parent-Id`，同族父请求头优先于 body 父字段；自引用父身份不参与继承。UA 或 subagent 标签不证明父子关系。
 - 弱/无身份仅在最佳合格候选指向唯一组时采用。不同组同分则回退，不按访问时间强选。
 - 无候选可采用未冲突的 legacy 种子，否则原子预留一个 UUID；同一冷请求内容并发到达会复用预留结果，不兼容内容不会因种子相同而合组。
 - 完整重发可精确复用；其他自动延续要求已完成的用户—助手/工具交互锚点，或明确父关系。成功响应的 output 只在后续请求完整保留相同有效表示时作为延续锚点，不做宽松文本相似匹配。
@@ -87,6 +89,7 @@ Claude replay scope 在新推断组应用前计算，继续使用原有合法 se
 
 ```sh
 go test ./internal/runtime/executor -run '^TestCodexCacheAffinity' -count=1
+go test ./internal/runtime/executor/helps -run ClaudeCodePromptCache -count=1
 go test ./sdk/cliproxy/auth -run 'ManagerLogicalRequestLifetime|CodexCacheLifetime' -count=1
 go test ./sdk/api/handlers -run CodexCacheLifetime -count=1
 go test ./internal/config ./internal/watcher/... -run 'CacheAffinity' -count=1
