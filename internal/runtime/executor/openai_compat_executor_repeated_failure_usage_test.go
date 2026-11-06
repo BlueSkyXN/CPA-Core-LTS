@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,9 +105,9 @@ func TestOpenAICompatRepeatedStreamFailuresPreserveObservedUsage(t *testing.T) {
 					previousID = record.RequestID
 					want := coreusage.Detail{TokenBreakdown: coreusage.NewSubsetTokenBreakdown(0, 0, 0, 0, 0, 0)}
 					if withUsage {
-						want = coreusage.Detail{InputTokens: 3, OutputTokens: 4, ReasoningTokens: 1, CachedTokens: 2, CacheReadTokens: 2, TotalTokens: 7, TokenBreakdown: coreusage.NewSubsetTokenBreakdown(3, 2, 0, 4, 1, 7), ResponseServiceTier: "priority"}
+						want = coreusage.Detail{InputTokens: 3, OutputTokens: 4, ReasoningTokens: 1, CachedTokens: 2, CacheReadTokens: 2, TotalTokens: 7, TokenBreakdown: coreusage.NewSubsetTokenBreakdown(3, 2, 0, 4, 1, 7), ResponseServiceTier: "priority", UpstreamServiceTier: "priority"}
 					}
-					if record.Detail != want || record.ResponseServiceTier != want.ResponseServiceTier || record.EffectiveServiceTier != want.ResponseServiceTier {
+					if !reflect.DeepEqual(record.Detail, want) || record.ResponseServiceTier != want.ResponseServiceTier || record.EffectiveServiceTier != want.ResponseServiceTier {
 						t.Errorf("usage=%+v, want %+v", record.Detail, want)
 					}
 				}
