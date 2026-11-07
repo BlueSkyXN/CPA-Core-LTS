@@ -29,7 +29,12 @@ const (
 	// request.patch_body_before / request.patch_body_after methods; the host passes
 	// raw request body bytes directly across the C ABI without JSON/Base64 wrapping
 	// and splices validated byte-range edits in a single pass.
-	SchemaVersion uint32 = 8
+	// Version 9 lets ModelRegistrar.RegisterModels and ModelProvider.StaticModels
+	// publish model catalogs for multiple providers in one response via Registrations.
+	// Version 10 lets a plugin expose multiple OAuth/auth provider identifiers and
+	// per-entry display metadata via auth.identifier (identifiers/entries) or
+	// Capabilities.AuthProviders / MultiAuthProvider / AuthProviderEntries.
+	SchemaVersion uint32 = 10
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -54,6 +59,12 @@ const (
 	// SchemaVersionRequestInterceptorBodyPatch is the first schema version where
 	// request interceptors may opt into raw request body delivery and byte-range patching.
 	SchemaVersionRequestInterceptorBodyPatch uint32 = 8
+	// SchemaVersionMultiProviderModels is the first schema version where model
+	// registration responses may publish models for multiple providers via Registrations.
+	SchemaVersionMultiProviderModels uint32 = 9
+	// SchemaVersionMultiAuthProviders is the first schema version where a plugin
+	// may register multiple auth provider identifiers.
+	SchemaVersionMultiAuthProviders uint32 = 10
 )
 
 const (

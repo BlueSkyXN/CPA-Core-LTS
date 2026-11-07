@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 // TestOAuthDaybreakBlueOfficialAlias locks the official Daybreak Blue alias
@@ -86,20 +86,20 @@ func TestOAuthDaybreakBlueOfficialAlias(t *testing.T) {
 
 	// Default selection: alias forwarded verbatim, no program auto-injected.
 	rec, got := post(fmt.Sprintf(`{"model":%q,"input":"OK"}`, officialAlias))
-	if model := gjson.GetBytes(got.body, "model").String(); model != officialAlias {
+	if model := ojson.GetBytes(got.body, "model").String(); model != officialAlias {
 		t.Fatalf("official alias reached upstream as %q, want verbatim %q (body=%s)", model, officialAlias, got.body)
 	}
-	if gjson.GetBytes(got.body, "access_programs").Exists() {
+	if ojson.GetBytes(got.body, "access_programs").Exists() {
 		t.Fatalf("default selection must not inject access_programs: %s", got.body)
 	}
 	assertBackingModelRelayed(t, rec, backingModel)
 
 	// Explicit daybreak_blue selection must survive the outbound translation.
 	rec, got = post(fmt.Sprintf(`{"model":%q,"input":"OK","access_programs":{"cyber":"daybreak_blue"}}`, officialAlias))
-	if model := gjson.GetBytes(got.body, "model").String(); model != officialAlias {
+	if model := ojson.GetBytes(got.body, "model").String(); model != officialAlias {
 		t.Fatalf("explicit-program selection changed upstream model: %s", got.body)
 	}
-	if program := gjson.GetBytes(got.body, "access_programs.cyber").String(); program != "daybreak_blue" {
+	if program := ojson.GetBytes(got.body, "access_programs.cyber").String(); program != "daybreak_blue" {
 		t.Fatalf("explicit daybreak_blue selection was stripped: %s", got.body)
 	}
 	assertBackingModelRelayed(t, rec, backingModel)
@@ -111,7 +111,7 @@ func TestOAuthDaybreakBlueOfficialAlias(t *testing.T) {
 		t.Fatalf("models status=%d body=%s", modelsRec.Code, modelsRec.Body.String())
 	}
 	listed := false
-	for _, entry := range gjson.Get(modelsRec.Body.String(), "data").Array() {
+	for _, entry := range ojson.Get(modelsRec.Body.String(), "data").Array() {
 		if entry.Get("id").String() == officialAlias {
 			listed = true
 		}
@@ -124,10 +124,10 @@ func TestOAuthDaybreakBlueOfficialAlias(t *testing.T) {
 func assertBackingModelRelayed(t *testing.T, rec *httptest.ResponseRecorder, backingModel string) {
 	t.Helper()
 	body := rec.Body.String()
-	if model := gjson.Get(body, "model").String(); model != backingModel {
+	if model := ojson.Get(body, "model").String(); model != backingModel {
 		t.Fatalf("relayed response model = %q, want upstream backing model %q: %s", model, backingModel, body)
 	}
-	if program := gjson.Get(body, "access_programs.cyber").String(); program != "daybreak_blue" {
+	if program := ojson.Get(body, "access_programs.cyber").String(); program != "daybreak_blue" {
 		t.Fatalf("relayed access program = %q, want daybreak_blue: %s", program, body)
 	}
 }

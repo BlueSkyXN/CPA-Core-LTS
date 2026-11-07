@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,7 +12,6 @@ import (
 
 	responses "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 )
 
 const copilotToolResponse = `{"choices":[{"index":0,"message":{"role":"assistant","content":"checking","reasoning_opaque":"fixture-opaque-state","tool_calls":[{"id":"call-fixture","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"reasoning_tokens":2,"total_tokens":16}}`
@@ -68,7 +68,7 @@ func TestNativeReasoningSurvivesResponsesToolRoundTrip(t *testing.T) {
 							if !strings.HasPrefix(line, "data: ") {
 								continue
 							}
-							data := gjson.Parse(strings.TrimPrefix(line, "data: "))
+							data := ojson.Parse(strings.TrimPrefix(line, "data: "))
 							if data.Get("type").String() == "response.completed" {
 								outputs = data.Get("response.output").Raw
 							}
@@ -80,12 +80,12 @@ func TestNativeReasoningSurvivesResponsesToolRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if gjson.GetBytes(response.Payload, "choices.0.message.reasoning_opaque").String() != "fixture-opaque-state" {
+				if ojson.GetBytes(response.Payload, "choices.0.message.reasoning_opaque").String() != "fixture-opaque-state" {
 					t.Fatal("Chat response lost opaque state")
 				}
 				var param any
 				translated := responses.ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), req.Model, req.Payload, req.Payload, response.Payload, &param)
-				outputs = gjson.GetBytes(translated, "output").Raw
+				outputs = ojson.GetBytes(translated, "output").Raw
 			}
 			if outputs == "" {
 				t.Fatal("Responses output missing")
@@ -137,7 +137,7 @@ func TestNativeReasoningReplayScopeAndLifetime(t *testing.T) {
 	runtime.rememberNativeReasoning(exec, req.Model, decoder.projection)
 	body := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"id":"call-fixture","type":"function","function":{"name":"lookup","arguments":"{ \"city\": \"Paris\" }"}}]}]}`)
 	hasOpaque := func(out []byte) bool {
-		return gjson.GetBytes(out, "messages.0.reasoning_opaque").String() == "fixture-opaque-state"
+		return ojson.GetBytes(out, "messages.0.reasoning_opaque").String() == "fixture-opaque-state"
 	}
 	if !hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body)) {
 		t.Fatal("matching call did not replay")

@@ -11,13 +11,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -66,19 +66,28 @@ func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header,
 // items to portable message/user input and proactively removes non-standard metadata
 // fields (author, recipient, internal_chat_message_metadata_passthrough).
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, isCompat ...bool) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	doc := ojson.NewDoc(payload)
+	if !RewriteCodexMultiAgentV2InputDoc(doc, ctx, headers, cfg, isCompat...) {
+		return payload
+	}
+	return doc.Bytes()
+}
+
+// RewriteCodexMultiAgentV2InputDoc converts official Codex multi-agent input in doc
+// into standard Responses API messages in place.
+func RewriteCodexMultiAgentV2InputDoc(doc *ojson.Doc, ctx context.Context, headers http.Header, cfg *config.Config, isCompat ...bool) bool {
+	if doc == nil || doc.Len() == 0 {
+		return false
+	}
 	compatMode := len(isCompat) > 0 && isCompat[0]
-	updated := payload
-	if codexMultiAgentV2Enabled(ctx, headers, cfg) || (compatMode && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers))) {
-		if compatMode {
-			updated = rewriteCodexAgentMessageInput(updated, "user", "input_text")
-		} else {
-			updated = rewriteCodexAgentMessageInput(updated, "assistant", "output_text")
-		}
+	optimizeEnabled := compatMode || (cfg != nil && cfg.Client.Codex.OptimizeMultiAgentV2 && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers)))
+	if !compatMode && !optimizeEnabled {
+		return false
 	}
-	if compatMode {
-		updated = stripCompatMessageMetadata(updated)
-	}
-	return updated
+	return rewriteCodexAgentMessageInputDoc(doc, optimizeEnabled, compatMode, false)
 }
 
 // RewriteCodexMultiAgentV2PortableInput converts proven plaintext agent messages
@@ -87,7 +96,11 @@ func RewriteCodexMultiAgentV2PortableInput(ctx context.Context, headers http.Hea
 	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
 		return payload
 	}
-	return rewriteCodexAgentMessageInput(payload, "user", "input_text")
+	doc := ojson.NewDoc(payload)
+	if !rewriteCodexAgentMessageInputDoc(doc, true, false, true) {
+		return payload
+	}
+	return doc.Bytes()
 }
 
 // RewriteCodexMultiAgentV2MessageEncryption removes a Codex-only marker from
@@ -96,7 +109,12 @@ func RewriteCodexMultiAgentV2MessageEncryption(ctx context.Context, headers http
 	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
 		return payload
 	}
-	return rewriteCodexMultiAgentMessageEncryption(payload)
+	doc := ojson.NewDoc(payload)
+	paths := codexCollaborationMessageToolPathsDoc(doc)
+	if !removeCodexCollaborationMessageEncryptionDoc(doc, paths) {
+		return payload
+	}
+	return doc.Bytes()
 }
 
 // RewriteCodexOrphanDelegationInputForConfig applies RewriteCodexOrphanDelegationInput
@@ -106,6 +124,15 @@ func RewriteCodexOrphanDelegationInputForConfig(ctx context.Context, headers htt
 		return payload
 	}
 	return RewriteCodexOrphanDelegationInput(ctx, headers, payload, true)
+}
+
+// RewriteCodexOrphanDelegationInputForConfigDoc applies RewriteCodexOrphanDelegationInputDoc
+// in place on doc based on cfg.Codex.OrphanDelegationCompatibility and the X-Openai-Subagent header.
+func RewriteCodexOrphanDelegationInputForConfigDoc(doc *ojson.Doc, ctx context.Context, headers http.Header, cfg *config.Config) bool {
+	if cfg == nil || !cfg.Codex.OrphanDelegationCompatibility {
+		return false
+	}
+	return RewriteCodexOrphanDelegationInputDoc(doc, ctx, headers, true)
 }
 
 // TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
@@ -122,11 +149,17 @@ func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Hea
 // TranslateRequestEnvelopeWithCodexMultiAgentV2 normalizes official Codex
 // multi-agent input while preserving request-scoped translation metadata.
 func TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
-	if from == sdktranslator.FormatOpenAIResponse {
-		req.Body = RewriteCodexOrphanDelegationInputForConfig(ctx, headers, req.Body, cfg)
-		if to != sdktranslator.FormatCodex && to != sdktranslator.FormatOpenAIResponse && codexMultiAgentV2Enabled(ctx, headers, cfg) {
+	if from == sdktranslator.FormatOpenAIResponse && len(req.Body) > 0 {
+		doc := ojson.NewDoc(req.Body)
+		changed := RewriteCodexOrphanDelegationInputForConfigDoc(doc, ctx, headers, cfg)
+		if to != sdktranslator.FormatCodex && to != sdktranslator.FormatOpenAIResponse {
 			// 保留非 Responses 目标的用户轮次边界。
-			req.Body = rewriteCodexAgentMessageInput(req.Body, "user", "input_text")
+			if RewriteCodexMultiAgentV2InputDoc(doc, ctx, headers, cfg) {
+				changed = true
+			}
+		}
+		if changed {
+			req.Body = doc.Bytes()
 		}
 	}
 	return sdktranslator.TranslateRequestEnvelope(ctx, from, to, req)
@@ -135,18 +168,38 @@ func TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx context.Context, headers 
 // PrepareCodexMultiAgentV2Tools prepares collaboration tool definitions at the
 // Responses API boundary without changing the collaboration namespace.
 func PrepareCodexMultiAgentV2Tools(ctx context.Context, headers http.Header, payload []byte, enabled, homeEnabled bool) ([]byte, bool) {
+	if len(payload) == 0 {
+		return payload, codexMultiAgentV2ClientEnabled(ctx, headers, enabled)
+	}
+	doc := ojson.NewDoc(payload)
+	changed, prepared := prepareCodexMultiAgentV2ToolsDoc(doc, ctx, headers, enabled, homeEnabled)
+	if !changed {
+		return payload, prepared
+	}
+	return doc.Bytes(), prepared
+}
+
+// PrepareCodexMultiAgentV2ToolsDoc prepares collaboration tool definitions in doc at the
+// Responses API boundary without changing the collaboration namespace.
+func PrepareCodexMultiAgentV2ToolsDoc(doc *ojson.Doc, ctx context.Context, headers http.Header, enabled, homeEnabled bool) (bool, bool) {
+	return prepareCodexMultiAgentV2ToolsDoc(doc, ctx, headers, enabled, homeEnabled)
+}
+
+func prepareCodexMultiAgentV2ToolsDoc(doc *ojson.Doc, ctx context.Context, headers http.Header, enabled, homeEnabled bool) (bool, bool) {
 	if !codexMultiAgentV2ClientEnabled(ctx, headers, enabled) {
-		return payload, false
+		return false, false
+	}
+	if doc == nil || doc.Len() == 0 {
+		return false, true
 	}
 
-	updated := rewriteCodexMultiAgentMessageEncryption(payload)
-	toolPaths := codexSpawnAgentToolPaths(updated)
-	messageToolPaths := codexMultiAgentMessageToolPaths(updated)
+	toolPaths := codexSpawnAgentToolPathsDoc(doc)
+	messageToolPaths := codexCollaborationMessageToolPathsDoc(doc)
 	if len(toolPaths) == 0 && len(messageToolPaths) == 0 {
-		return updated, true
+		return false, true
 	}
-	if hasCodexOptimizedCollaborationConflict(updated) {
-		return updated, true
+	if hasCodexOptimizedCollaborationConflictDoc(doc) {
+		return removeCodexCollaborationMessageEncryptionDoc(doc, messageToolPaths), true
 	}
 
 	var models []codexSpawnAgentModel
@@ -155,27 +208,53 @@ func PrepareCodexMultiAgentV2Tools(ctx context.Context, headers http.Header, pay
 		models, formattedMarkdown = codexSpawnAgentModelsAndMarkdownForRequest(ctx, headers, homeEnabled)
 	}
 
-	updated = rewriteCodexCollaborationTools(updated, messageToolPaths, toolPaths, models, formattedMarkdown)
-	return updated, true
+	return rewriteCodexCollaborationToolsDoc(doc, messageToolPaths, toolPaths, models, formattedMarkdown), true
 }
 
 // OptimizeCodexMultiAgentV2Request rewrites an eligible spawn_agent request and
 // reports whether the collaboration namespace was renamed for upstream use.
 func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) ([]byte, bool) {
-	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
+	if len(payload) == 0 {
 		return payload, false
 	}
-	updated := payload
+	doc := ojson.NewDoc(payload)
+	changed, optimized := optimizeCodexMultiAgentV2RequestDoc(doc, ctx, headers, cfg)
+	if !changed {
+		return payload, false
+	}
+	return doc.Bytes(), optimized
+}
+
+// OptimizeCodexMultiAgentV2RequestDoc rewrites an eligible spawn_agent request in doc
+// and reports whether the collaboration namespace was renamed for upstream use.
+func OptimizeCodexMultiAgentV2RequestDoc(doc *ojson.Doc, ctx context.Context, headers http.Header, cfg *config.Config) bool {
+	_, optimized := optimizeCodexMultiAgentV2RequestDoc(doc, ctx, headers, cfg)
+	return optimized
+}
+
+func optimizeCodexMultiAgentV2RequestDoc(doc *ojson.Doc, ctx context.Context, headers http.Header, cfg *config.Config) (bool, bool) {
+	if doc == nil || doc.Len() == 0 || !codexMultiAgentV2Enabled(ctx, headers, cfg) {
+		return false, false
+	}
+	changed := rewriteCodexAgentMessageContentDoc(doc)
 	if codexMultiAgentV2ToolsPrepared(ctx) {
-		updated = rewriteCodexMultiAgentMessageEncryption(updated)
+		if removeCodexCollaborationMessageEncryptionDoc(doc, codexCollaborationMessageToolPathsDoc(doc)) {
+			changed = true
+		}
 	} else {
-		updated, _ = PrepareCodexMultiAgentV2Tools(ctx, headers, updated, cfg.Client.Codex.OptimizeMultiAgentV2, cfg.Home.Enabled)
+		if toolsChanged, _ := prepareCodexMultiAgentV2ToolsDoc(doc, ctx, headers, cfg.Client.Codex.OptimizeMultiAgentV2, cfg.Home.Enabled); toolsChanged {
+			changed = true
+		}
 	}
-	toolPaths := codexSpawnAgentToolPaths(updated)
-	if len(toolPaths) == 0 || hasCodexOptimizedCollaborationConflict(updated) {
-		return updated, false
+	toolPaths := codexSpawnAgentToolPathsDoc(doc)
+	if len(toolPaths) == 0 || hasCodexOptimizedCollaborationConflictDoc(doc) {
+		return changed, false
 	}
-	return optimizeCodexCollaborationNamespace(updated, toolPaths)
+	optimized := optimizeCodexCollaborationNamespaceDoc(doc, toolPaths)
+	if optimized {
+		changed = true
+	}
+	return changed, optimized
 }
 
 func codexMultiAgentV2Enabled(ctx context.Context, headers http.Header, cfg *config.Config) bool {
@@ -636,7 +715,7 @@ func mapInt(values map[string]any, key string) int {
 
 func rewriteCodexSpawnAgentDescription(payload []byte, models []codexSpawnAgentModel) []byte {
 	updated := rewriteCodexMultiAgentMessageEncryption(payload)
-	return rewriteCodexSpawnAgentTools(updated, codexSpawnAgentToolPaths(updated), models)
+	return rewriteCodexSpawnAgentTools(updated, codexSpawnAgentToolPathsDoc(ojson.NewDoc(updated)), models)
 }
 
 func rewriteCodexSpawnAgentTools(payload []byte, toolPaths []string, models []codexSpawnAgentModel) []byte {
@@ -644,28 +723,48 @@ func rewriteCodexSpawnAgentTools(payload []byte, toolPaths []string, models []co
 }
 
 func rewriteCodexCollaborationTools(payload []byte, messageToolPaths, spawnAgentToolPaths []string, models []codexSpawnAgentModel, modelList string) []byte {
-	if len(messageToolPaths) == 0 && len(spawnAgentToolPaths) == 0 {
+	if len(payload) == 0 || (len(messageToolPaths) == 0 && len(spawnAgentToolPaths) == 0) {
 		return payload
+	}
+	doc := ojson.NewDoc(payload)
+	if !rewriteCodexCollaborationToolsDoc(doc, messageToolPaths, spawnAgentToolPaths, models, modelList) {
+		return payload
+	}
+	return doc.Bytes()
+}
+
+func rewriteCodexCollaborationToolsDoc(doc *ojson.Doc, messageToolPaths, spawnAgentToolPaths []string, models []codexSpawnAgentModel, modelList string) bool {
+	if doc == nil || (len(messageToolPaths) == 0 && len(spawnAgentToolPaths) == 0) {
+		return false
 	}
 	if modelList == "" && len(models) > 0 {
 		modelList = formatCodexSpawnAgentModels(models)
 	}
-	updated := payload
+	changed := false
 	for _, toolPath := range spawnAgentToolPaths {
 		descriptionPath := toolPath + ".description"
-		description := gjson.GetBytes(updated, descriptionPath)
-		if description.Type == gjson.String && modelList != "" {
+		description := doc.Get(descriptionPath)
+		if description.Type == ojson.String && modelList != "" {
 			rewritten := replaceCodexSpawnAgentModels(description.String(), modelList)
 			if rewritten != description.String() {
-				var errSet error
-				updated, errSet = sjson.SetBytes(updated, descriptionPath, rewritten)
-				if errSet != nil {
-					return payload
+				if errSet := doc.Set(descriptionPath, rewritten); errSet != nil {
+					return false
 				}
+				changed = true
 			}
 		}
 	}
-	return updated
+
+	for _, toolPath := range messageToolPaths {
+		encryptedPath := toolPath + ".parameters.properties.message.encrypted"
+		if doc.Get(encryptedPath).Exists() {
+			if errDelete := doc.Delete(encryptedPath); errDelete != nil {
+				return false
+			}
+			changed = true
+		}
+	}
+	return changed
 }
 
 // HasCodexMultiAgentV2NamespaceConflict reports whether the request defines
@@ -674,11 +773,17 @@ func HasCodexMultiAgentV2NamespaceConflict(payload []byte) bool {
 	return hasCodexOptimizedCollaborationConflict(payload)
 }
 
+// HasCodexMultiAgentV2NamespaceConflictDoc reports whether doc defines
+// the reserved optimized namespace, which must remain untouched.
+func HasCodexMultiAgentV2NamespaceConflictDoc(doc *ojson.Doc) bool {
+	return hasCodexOptimizedCollaborationConflictDoc(doc)
+}
+
 func hasCodexOptimizedCollaborationConflict(payload []byte) bool {
-	if codexToolsHaveOptimizedCollaborationConflict(gjson.GetBytes(payload, "tools")) {
+	if codexToolsHaveOptimizedCollaborationConflict(util.GetGJSONBytesNoCopy(payload, "tools")) {
 		return true
 	}
-	input := gjson.GetBytes(payload, "input")
+	input := util.GetGJSONBytesNoCopy(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -690,7 +795,26 @@ func hasCodexOptimizedCollaborationConflict(payload []byte) bool {
 	return false
 }
 
-func codexToolsHaveOptimizedCollaborationConflict(tools gjson.Result) bool {
+func hasCodexOptimizedCollaborationConflictDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	if codexToolsHaveOptimizedCollaborationConflict(doc.Get("tools")) {
+		return true
+	}
+	input := doc.Get("input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) == "additional_tools" && codexToolsHaveOptimizedCollaborationConflict(item.Get("tools")) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexToolsHaveOptimizedCollaborationConflict(tools ojson.Result) bool {
 	if !tools.IsArray() {
 		return false
 	}
@@ -707,7 +831,20 @@ func codexToolsHaveOptimizedCollaborationConflict(tools gjson.Result) bool {
 }
 
 func optimizeCodexCollaborationNamespace(payload []byte, toolPaths []string) ([]byte, bool) {
-	updated := payload
+	if len(payload) == 0 || len(toolPaths) == 0 {
+		return payload, false
+	}
+	doc := ojson.NewDoc(payload)
+	if !optimizeCodexCollaborationNamespaceDoc(doc, toolPaths) {
+		return payload, false
+	}
+	return doc.Bytes(), true
+}
+
+func optimizeCodexCollaborationNamespaceDoc(doc *ojson.Doc, toolPaths []string) bool {
+	if doc == nil || len(toolPaths) == 0 {
+		return false
+	}
 	optimized := false
 	for _, toolPath := range toolPaths {
 		separatorIndex := strings.LastIndex(toolPath, ".tools.")
@@ -715,24 +852,22 @@ func optimizeCodexCollaborationNamespace(payload []byte, toolPaths []string) ([]
 			continue
 		}
 		namespacePath := toolPath[:separatorIndex]
-		namespace := gjson.GetBytes(updated, namespacePath)
+		namespace := doc.Get(namespacePath)
 		if strings.TrimSpace(namespace.Get("type").String()) != "namespace" || strings.TrimSpace(namespace.Get("name").String()) != codexCollaborationNamespace {
 			continue
 		}
-		var errSet error
-		updated, errSet = sjson.SetBytes(updated, namespacePath+".name", codexOptimizedCollaborationNamespace)
-		if errSet != nil {
-			return payload, false
+		if errSet := doc.Set(namespacePath+".name", codexOptimizedCollaborationNamespace); errSet != nil {
+			return false
 		}
 		optimized = true
 	}
-	return updated, optimized
+	return optimized
 }
 
 // RestoreCodexMultiAgentV2Response restores optimized collaboration namespace
 // values before an upstream response is translated and returned to the client.
 func RestoreCodexMultiAgentV2Response(payload []byte, optimized bool) []byte {
-	if !optimized || len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if !optimized || len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return payload
 	}
 
@@ -799,101 +934,188 @@ func restoreCodexCollaborationValue(value any) bool {
 	return changed
 }
 
-func rewriteCodexAgentMessageInput(payload []byte, role, contentType string) []byte {
-	input := gjson.GetBytes(payload, "input")
-	if !input.IsArray() {
+func rewriteCodexAgentMessageInput(payload []byte, optimizeEnabled bool, compatMode bool, portable bool) []byte {
+	if len(payload) == 0 {
 		return payload
 	}
+	doc := ojson.NewDoc(payload)
+	if !rewriteCodexAgentMessageInputDoc(doc, optimizeEnabled, compatMode, portable) {
+		return payload
+	}
+	return doc.Bytes()
+}
 
-	updated := rewriteCodexAgentMessageContent(payload, contentType)
+func rewriteCodexAgentMessageInputDoc(doc *ojson.Doc, optimizeEnabled bool, compatMode bool, portable bool) bool {
+	if doc == nil {
+		return false
+	}
+	input := doc.Get("input")
+	if !input.IsArray() {
+		return false
+	}
+	// Portable targets (compat models, third-party and cross-protocol routes)
+	// read one coherent user turn: the proven plaintext parts are collapsed into
+	// a single input_text part and routing-only envelope fields are dropped.
+	// The native optimize path keeps upstream's in-place conversion instead.
+	portableStyle := portable || compatMode
+
+	changed := false
+	if optimizeEnabled {
+		if rewriteCodexAgentMessageContentInItemsDoc(doc, input) {
+			changed = true
+		}
+	}
 	for itemIndex, item := range input.Array() {
-		if strings.TrimSpace(item.Get("type").String()) != "agent_message" {
-			continue
-		}
-		if _, ok := codexPlaintextAgentMessageText(item); !ok {
-			continue
-		}
+		itemType := strings.TrimSpace(item.Get("type").String())
 		itemPath := fmt.Sprintf("input.%d", itemIndex)
-		var errSet error
-		updated, errSet = sjson.SetBytes(updated, itemPath+".role", role)
-		if errSet != nil {
-			return payload
+		if itemType == "agent_message" && optimizeEnabled {
+			// LTS delegation contract: only proven plaintext agent messages become
+			// portable user turns; opaque delegated tasks survive for rejection.
+			text, ok := codexPlaintextAgentMessageText(item)
+			if !ok {
+				continue
+			}
+			if errSet := doc.Set(itemPath+".role", "user"); errSet != nil {
+				return false
+			}
+			if errSet := doc.Set(itemPath+".type", "message"); errSet != nil {
+				return false
+			}
+			if portableStyle {
+				content, errMarshal := json.Marshal([]map[string]string{{
+					"type": "input_text",
+					"text": text,
+				}})
+				if errMarshal != nil {
+					return false
+				}
+				if errSetRaw := doc.SetRaw(itemPath+".content", string(content)); errSetRaw != nil {
+					return false
+				}
+				for _, field := range []string{"id", "author", "recipient", "internal_chat_message_metadata_passthrough"} {
+					if item.Get(field).Exists() {
+						_ = doc.Delete(itemPath + "." + field)
+					}
+				}
+			}
+			changed = true
 		}
-		updated, errSet = sjson.SetBytes(updated, itemPath+".type", "message")
-		if errSet != nil {
-			return payload
-		}
-		for _, field := range []string{"author", "recipient", "id", "internal_chat_message_metadata_passthrough"} {
-			updated, errSet = sjson.DeleteBytes(updated, itemPath+"."+field)
-			if errSet != nil {
-				return payload
+		if compatMode {
+			if item.Get("author").Exists() {
+				if errDelete := doc.Delete(itemPath + ".author"); errDelete != nil {
+					return false
+				}
+				changed = true
+			}
+			if item.Get("recipient").Exists() {
+				if errDelete := doc.Delete(itemPath + ".recipient"); errDelete != nil {
+					return false
+				}
+				changed = true
+			}
+			if item.Get("internal_chat_message_metadata_passthrough").Exists() {
+				if errDelete := doc.Delete(itemPath + ".internal_chat_message_metadata_passthrough"); errDelete != nil {
+					return false
+				}
+				changed = true
 			}
 		}
 	}
-	return updated
+	return changed
 }
 
-func stripCompatMessageMetadata(payload []byte) []byte {
-	input := gjson.GetBytes(payload, "input")
-	if !input.IsArray() {
-		return payload
+func stripCompatMessageMetadataDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
 	}
-	updated := payload
+	input := doc.Get("input")
+	if !input.IsArray() {
+		return false
+	}
+	changed := false
 	for index, item := range input.Array() {
 		itemType := strings.TrimSpace(item.Get("type").String())
 		if itemType == "agent_message" {
 			if _, ok := codexPlaintextAgentMessageText(item); !ok {
 				continue
 			}
-		} else if itemType != "message" && !(itemType == "" && item.Get("role").Type == gjson.String) {
+		} else if itemType != "message" && !(itemType == "" && item.Get("role").Type == ojson.String) {
 			continue
 		}
 		for _, field := range []string{"author", "recipient", "internal_chat_message_metadata_passthrough"} {
 			if !item.Get(field).Exists() {
 				continue
 			}
-			var err error
-			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d.%s", index, field))
-			if err != nil {
-				return payload
+			if doc.Delete(fmt.Sprintf("input.%d.%s", index, field)) == nil {
+				changed = true
 			}
 		}
 	}
-	return updated
+	return changed
 }
 
-func rewriteCodexAgentMessageContent(payload []byte, contentType string) []byte {
-	input := gjson.GetBytes(payload, "input")
-	if !input.IsArray() {
+func rewriteCodexAgentMessageContent(payload []byte) []byte {
+	if len(payload) == 0 {
 		return payload
 	}
+	doc := ojson.NewDoc(payload)
+	if !rewriteCodexAgentMessageContentDoc(doc) {
+		return payload
+	}
+	return doc.Bytes()
+}
 
-	updated := payload
+func rewriteCodexAgentMessageContentDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	input := doc.Get("input")
+	if !input.IsArray() {
+		return false
+	}
+	return rewriteCodexAgentMessageContentInItemsDoc(doc, input)
+}
+
+func rewriteCodexAgentMessageContentInItemsDoc(doc *ojson.Doc, input ojson.Result) bool {
+	changed := false
 	for itemIndex, item := range input.Array() {
 		if strings.TrimSpace(item.Get("type").String()) != "agent_message" {
 			continue
 		}
-		text, ok := codexPlaintextAgentMessageText(item)
-		if !ok {
+		// LTS delegation contract: only proven plaintext agent messages convert;
+		// encrypted/opaque tasks stay for translator-level rejection.
+		if _, ok := codexPlaintextAgentMessageText(item); !ok {
 			continue
 		}
-		content, errMarshal := json.Marshal([]map[string]string{{
-			"type": contentType,
-			"text": text,
-		}})
-		if errMarshal != nil {
-			return payload
+		content := item.Get("content")
+		if !content.IsArray() {
+			continue
 		}
-		var errSet error
-		updated, errSet = sjson.SetRawBytes(updated, fmt.Sprintf("input.%d.content", itemIndex), content)
-		if errSet != nil {
-			return payload
+		for partIndex, part := range content.Array() {
+			if strings.TrimSpace(part.Get("type").String()) != "encrypted_content" {
+				continue
+			}
+			encryptedContent := part.Get("encrypted_content")
+			if encryptedContent.Type != ojson.String {
+				continue
+			}
+			partPath := fmt.Sprintf("input.%d.content.%d", itemIndex, partIndex)
+			if errSet := doc.Set(partPath+".type", "input_text"); errSet != nil {
+				return false
+			}
+			if errSet := doc.Set(partPath+".text", encryptedContent.String()); errSet != nil {
+				return false
+			}
+			if errDelete := doc.Delete(partPath + ".encrypted_content"); errDelete != nil {
+				return false
+			}
+			changed = true
 		}
 	}
-	return updated
+	return changed
 }
 
-func codexPlaintextAgentMessageText(item gjson.Result) (string, bool) {
+func codexPlaintextAgentMessageText(item ojson.Result) (string, bool) {
 	content := item.Get("content")
 	if !content.IsArray() {
 		return "", false
@@ -907,7 +1129,7 @@ func codexPlaintextAgentMessageText(item gjson.Result) (string, bool) {
 	for index, part := range parts {
 		partText := part.Get("text")
 		if strings.TrimSpace(part.Get("type").String()) != "input_text" ||
-			partText.Type != gjson.String || strings.TrimSpace(partText.String()) == "" {
+			partText.Type != ojson.String || strings.TrimSpace(partText.String()) == "" {
 			return "", false
 		}
 		if index > 0 {
@@ -918,34 +1140,37 @@ func codexPlaintextAgentMessageText(item gjson.Result) (string, bool) {
 	return text.String(), true
 }
 
-func codexSpawnAgentToolPaths(payload []byte) []string {
-	return codexMultiAgentToolPaths(payload, map[string]struct{}{"spawn_agent": {}})
+func codexSpawnAgentToolPathsDoc(doc *ojson.Doc) []string {
+	return codexToolPathsByNamesDoc(doc, map[string]struct{}{"spawn_agent": {}})
 }
 
-func codexMultiAgentMessageToolPaths(payload []byte) []string {
-	return codexMultiAgentToolPaths(payload, codexMultiAgentMessageToolNames)
+// codexCollaborationMessageToolPaths discovers function tools named
+// spawn_agent, send_message, or followup_task inside top-level tools arrays and
+// input[].additional_tools arrays, including nested namespace tools.
+func codexCollaborationMessageToolPathsDoc(doc *ojson.Doc) []string {
+	return codexToolPathsByNamesDoc(doc, codexMultiAgentMessageToolNames)
 }
 
-func codexMultiAgentToolPaths(payload []byte, names map[string]struct{}) []string {
-	if !gjson.ValidBytes(payload) {
+func codexToolPathsByNamesDoc(doc *ojson.Doc, names map[string]struct{}) []string {
+	if doc == nil {
 		return nil
 	}
 	paths := make([]string, 0, len(names))
-	collectCodexMultiAgentToolPaths(gjson.GetBytes(payload, "tools"), "tools", &paths, names)
+	collectCodexToolPathsByNames(doc.Get("tools"), "tools", &paths, names)
 
-	input := gjson.GetBytes(payload, "input")
+	input := doc.Get("input")
 	if input.IsArray() {
 		for index, item := range input.Array() {
 			if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
 				continue
 			}
-			collectCodexMultiAgentToolPaths(item.Get("tools"), fmt.Sprintf("input.%d.tools", index), &paths, names)
+			collectCodexToolPathsByNames(item.Get("tools"), fmt.Sprintf("input.%d.tools", index), &paths, names)
 		}
 	}
 	return paths
 }
 
-func collectCodexMultiAgentToolPaths(tools gjson.Result, path string, paths *[]string, names map[string]struct{}) {
+func collectCodexToolPathsByNames(tools ojson.Result, path string, paths *[]string, names map[string]struct{}) {
 	if !tools.IsArray() {
 		return
 	}
@@ -955,63 +1180,61 @@ func collectCodexMultiAgentToolPaths(tools gjson.Result, path string, paths *[]s
 			continue
 		}
 		childTools := tool.Get("tools")
-		if isCodexMultiAgentNamespace(tool.Get("name").String(), childTools) {
-			for childIndex, child := range childTools.Array() {
-				if strings.TrimSpace(child.Get("type").String()) != "function" {
-					continue
-				}
-				if _, ok := names[strings.TrimSpace(child.Get("name").String())]; ok {
-					*paths = append(*paths, fmt.Sprintf("%s.tools.%d", toolPath, childIndex))
-				}
+		// LTS namespace eligibility: collaboration namespaces always qualify;
+		// the plain "agents" namespace only with the complete message tool set.
+		if !isCodexMultiAgentNamespace(tool.Get("name").String(), childTools) {
+			// Nested namespaces are evaluated independently; eligibility never
+			// inherits from an outer namespace.
+			collectCodexToolPathsByNames(childTools, toolPath+".tools", paths, names)
+			continue
+		}
+		for childIndex, child := range childTools.Array() {
+			if strings.TrimSpace(child.Get("type").String()) != "function" {
+				continue
+			}
+			if _, ok := names[strings.TrimSpace(child.Get("name").String())]; ok {
+				*paths = append(*paths, fmt.Sprintf("%s.tools.%d", toolPath, childIndex))
 			}
 		}
-		// Nested namespaces are evaluated independently; eligibility never
-		// inherits from an outer namespace.
-		collectCodexMultiAgentToolPaths(childTools, toolPath+".tools", paths, names)
+		collectCodexToolPathsByNames(childTools, toolPath+".tools", paths, names)
 	}
 }
 
-func isCodexMultiAgentNamespace(name string, tools gjson.Result) bool {
-	name = strings.TrimSpace(name)
-	if name == codexCollaborationNamespace || name == codexOptimizedCollaborationNamespace {
-		return true
+// removeCodexCollaborationMessageEncryption deletes the
+// parameters.properties.message.encrypted field from each discovered
+// collaboration message tool so the proxy can read the plaintext message.
+func removeCodexCollaborationMessageEncryption(payload []byte, toolPaths []string) []byte {
+	if len(payload) == 0 {
+		return payload
 	}
-	if name != codexAgentsNamespace || !tools.IsArray() {
+	doc := ojson.NewDoc(payload)
+	allPaths := append([]string(nil), toolPaths...)
+	collectTopLevelMessageToolPathsDoc(doc, &allPaths)
+	if len(allPaths) == 0 {
+		return payload
+	}
+	removeCodexCollaborationMessageEncryptionDoc(doc, allPaths)
+	return doc.Bytes()
+}
+
+func removeCodexCollaborationMessageEncryptionDoc(doc *ojson.Doc, toolPaths []string) bool {
+	if doc == nil || len(toolPaths) == 0 {
 		return false
 	}
-
-	seen := make(map[string]struct{}, len(codexMultiAgentMessageToolNames))
-	for _, tool := range tools.Array() {
-		if strings.TrimSpace(tool.Get("type").String()) != "function" {
+	changed := false
+	for _, toolPath := range toolPaths {
+		encryptedPath := toolPath + ".parameters.properties.message.encrypted"
+		// Only a JSON boolean-true marker is a proven plaintext declaration;
+		// false and string variants keep their explicit client intent.
+		if encrypted := doc.Get(encryptedPath); !encrypted.Exists() || encrypted.Type != ojson.True {
 			continue
 		}
-		toolName := strings.TrimSpace(tool.Get("name").String())
-		if _, ok := codexMultiAgentMessageToolNames[toolName]; ok {
-			seen[toolName] = struct{}{}
-		}
-	}
-	for toolName := range codexMultiAgentMessageToolNames {
-		if _, ok := seen[toolName]; !ok {
+		if errDelete := doc.Delete(encryptedPath); errDelete != nil {
 			return false
 		}
+		changed = true
 	}
-	return true
-}
-
-func rewriteCodexMultiAgentMessageEncryption(payload []byte) []byte {
-	updated := payload
-	for _, toolPath := range codexMultiAgentMessageToolPaths(payload) {
-		markerPath := toolPath + ".parameters.properties.message.encrypted"
-		if gjson.GetBytes(updated, markerPath).Type != gjson.True {
-			continue
-		}
-		var errDelete error
-		updated, errDelete = sjson.DeleteBytes(updated, markerPath)
-		if errDelete != nil {
-			return payload
-		}
-	}
-	return updated
+	return changed
 }
 
 func formatCodexSpawnAgentModels(models []codexSpawnAgentModel) string {
@@ -1120,4 +1343,34 @@ func removeCodexSpawnAgentModelSections(description string) (string, string) {
 		}
 	}
 	return cleaned.String(), headingIndent
+}
+
+// isCodexMultiAgentNamespace reports whether a namespace block qualifies as a
+// Codex collaboration namespace: the renamed namespaces always qualify, and the
+// plain "agents" namespace only when it carries the full message tool set.
+func isCodexMultiAgentNamespace(name string, tools ojson.Result) bool {
+	name = strings.TrimSpace(name)
+	if name == codexCollaborationNamespace || name == codexOptimizedCollaborationNamespace {
+		return true
+	}
+	if name != codexAgentsNamespace || !tools.IsArray() {
+		return false
+	}
+
+	seen := make(map[string]struct{}, len(codexMultiAgentMessageToolNames))
+	for _, tool := range tools.Array() {
+		if strings.TrimSpace(tool.Get("type").String()) != "function" {
+			continue
+		}
+		toolName := strings.TrimSpace(tool.Get("name").String())
+		if _, ok := codexMultiAgentMessageToolNames[toolName]; ok {
+			seen[toolName] = struct{}{}
+		}
+	}
+	for toolName := range codexMultiAgentMessageToolNames {
+		if _, ok := seen[toolName]; !ok {
+			return false
+		}
+	}
+	return true
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -11,7 +12,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestExecutorModelInfoResolvesSelectedRoute(t *testing.T) {
@@ -124,7 +124,7 @@ func TestExecutorModelInfoPreventsGlobalFallbackOnCatalogMiss(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if gjson.GetBytes(prepared.req.Payload, "max_tokens").Int() != 64000 || gjson.GetBytes(prepared.req.Payload, "thinking").Exists() {
+		if ojson.GetBytes(prepared.req.Payload, "max_tokens").Int() != 64000 || ojson.GetBytes(prepared.req.Payload, "thinking").Exists() {
 			t.Fatal("selected catalog miss inherited global capability")
 		}
 	}
@@ -192,7 +192,7 @@ func TestExecutorSelectedCapabilitiesAcrossExecutionCalls(t *testing.T) {
 				if authID == "selected-execution-second" {
 					wantEffort, wantMax = "high", 4096
 				}
-				if captured.AuthID != authID || gjson.GetBytes(captured.Payload, "output_config.effort").String() != wantEffort || gjson.GetBytes(captured.Payload, "max_tokens").Int() != wantMax {
+				if captured.AuthID != authID || ojson.GetBytes(captured.Payload, "output_config.effort").String() != wantEffort || ojson.GetBytes(captured.Payload, "max_tokens").Int() != wantMax {
 					t.Fatalf("%s reused another account's capabilities for %s", operation, authID)
 				}
 			}
@@ -231,7 +231,7 @@ func TestExecutorSummaryIntentAndNormalizerAuthority(t *testing.T) {
 				if remove {
 					display = ""
 				}
-				if gjson.GetBytes(prepared.req.Payload, "thinking.display").String() != display || gjson.GetBytes(prepared.req.Payload, "output_config.effort").String() != tc.effort {
+				if ojson.GetBytes(prepared.req.Payload, "thinking.display").String() != display || ojson.GetBytes(prepared.req.Payload, "output_config.effort").String() != tc.effort {
 					t.Errorf("summary intent mismatch source=%s remove=%v controls=%s", source, remove, tc.controls)
 				}
 			}

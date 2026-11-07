@@ -3,28 +3,28 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexapptools"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexDesktopToolOverlayOpenAIChatRoundTrip(t *testing.T) {
 	originalRequest := codexDesktopToolOverlayRequest(t, "read_thread")
 	chatRequest, _ := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k3", originalRequest, false)
-	if got := gjson.GetBytes(chatRequest, "tools.0.function.name").String(); got != "codex_app__read_thread" {
+	if got := ojson.GetBytesNoCopy(chatRequest, "tools.0.function.name").String(); got != "codex_app__read_thread" {
 		t.Fatalf("flattened name = %q, want codex_app__read_thread; request=%s", got, chatRequest)
 	}
-	if got := gjson.GetBytes(chatRequest, "tools.0.function.parameters.properties.turnLimit.minimum").Int(); got != 1 {
+	if got := ojson.GetBytesNoCopy(chatRequest, "tools.0.function.parameters.properties.turnLimit.minimum").Int(); got != 1 {
 		t.Fatalf("turnLimit.minimum = %d, want 1; request=%s", got, chatRequest)
 	}
-	if got := gjson.GetBytes(chatRequest, "tools.0.function.parameters.properties.maxOutputCharsPerItem.maximum").Int(); got != 20000 {
+	if got := ojson.GetBytesNoCopy(chatRequest, "tools.0.function.parameters.properties.maxOutputCharsPerItem.maximum").Int(); got != 20000 {
 		t.Fatalf("maxOutputCharsPerItem.maximum = %d, want 20000; request=%s", got, chatRequest)
 	}
 
 	chatResponse := []byte(`{"id":"chatcmpl_overlay","object":"chat.completion","created":1773896263,"model":"kimi-k3","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"codex_app__read_thread","arguments":"{\"threadId\":\"019fc266\",\"turnLimit\":3}"}}]},"finish_reason":"tool_calls"}]}`)
 	response := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "kimi-k3", originalRequest, chatRequest, chatResponse, nil)
-	output := gjson.GetBytes(response, "output.0")
+	output := ojson.GetBytesNoCopy(response, "output.0")
 	if got := output.Get("name").String(); got != "read_thread" {
 		t.Fatalf("restored name = %q, want read_thread; response=%s", got, response)
 	}

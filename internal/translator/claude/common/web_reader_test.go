@@ -2,9 +2,8 @@ package claudecommon
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestPluginWebReaderResultValidation(t *testing.T) {
@@ -22,7 +21,7 @@ func TestPluginWebReaderResultValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			message := fmt.Sprintf(`{"type":"message","id":"reader","role":"assistant","stop_reason":"end_turn","content":[{"type":"server_tool_use","id":"call_reader","name":"webReader","input":{"url":"https://example.com/doc"}},{"type":"text","text":"Output:"},{"type":"tool_result","tool_use_id":"call_reader","content":%q}]}`, tc.content)
-			if err := ValidatePluginMessage(gjson.Parse(message), false); (err == nil) != tc.valid {
+			if err := ValidatePluginMessage(ojson.Parse(message), false); (err == nil) != tc.valid {
 				t.Fatalf("valid=%t, err=%v", tc.valid, err)
 			}
 		})
@@ -42,7 +41,7 @@ func TestPluginWebReaderPairing(t *testing.T) {
 		{"duplicate call", use + "," + use, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			msg := gjson.Parse(`{"type":"message","id":"reader","role":"assistant","stop_reason":"end_turn","content":[` + tc.blocks + `]}`)
+			msg := ojson.Parse(`{"type":"message","id":"reader","role":"assistant","stop_reason":"end_turn","content":[` + tc.blocks + `]}`)
 			if err := ValidatePluginMessage(msg, false); (err == nil) != tc.valid {
 				t.Fatalf("valid=%t err=%v", tc.valid, err)
 			}

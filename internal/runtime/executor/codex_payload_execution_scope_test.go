@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func codexScopedFlexConfig() *config.Config {
@@ -129,7 +129,7 @@ func TestCodexPayloadExecutionScopeCredentialRetry(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
 				mu.Lock()
-				tiers = append(tiers, gjson.GetBytes(body, "service_tier").String())
+				tiers = append(tiers, ojson.GetBytes(body, "service_tier").String())
 				attempt := len(tiers)
 				mu.Unlock()
 				if attempt == 1 {
@@ -186,7 +186,7 @@ func TestCodexPayloadExecutionScopeImages(t *testing.T) {
 			var tier string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
-				tier = gjson.GetBytes(body, "service_tier").String()
+				tier = ojson.GetBytes(body, "service_tier").String()
 				if r.URL.Path == "/responses" {
 					w.Header().Set("Content-Type", "text/event-stream")
 					_, _ = io.WriteString(w, "data: "+`{"type":"response.completed","response":{"id":"image-scope","status":"completed","output":[{"id":"img","type":"image_generation_call","status":"completed","result":"AA=="}]}}`+"\n\n")

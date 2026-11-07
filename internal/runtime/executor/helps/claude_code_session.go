@@ -3,9 +3,11 @@ package helps
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 )
@@ -15,6 +17,10 @@ const (
 	ClaudeCodeAgentHeader   = internalcache.ClaudeCodeAgentHeader
 	ClaudeCodeMainAgentID   = internalcache.ClaudeCodeMainAgentID
 )
+
+// claudeCodeSessionSuffixPattern mirrors the internal/cache pattern for
+// resolving session IDs embedded in agent user IDs.
+var claudeCodeSessionSuffixPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
 // ExtractClaudeCodeSessionID resolves a Claude Code session ID, preferring X-Claude-Code-Session-Id over payload metadata.
 func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers http.Header) string {
@@ -76,6 +82,24 @@ func headerValueCaseInsensitive(headers http.Header, name string) string {
 	return ""
 }
 
+func extractClaudeCodeSessionIDFromPayload(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	userID := ojson.GetBytesNoCopy(payload, "metadata.user_id").String()
+	if userID == "" {
+		return ""
+	}
+	if matches := claudeCodeSessionSuffixPattern.FindStringSubmatch(userID); len(matches) >= 2 {
+		return strings.Clone(matches[1])
+	}
+	if len(userID) > 0 && userID[0] == '{' {
+		return strings.Clone(strings.TrimSpace(ojson.Get(userID, "session_id").String()))
+	}
+	return ""
+}
+
+// ClaudeCodePromptCache derives a deterministic upstream prompt_cache_key for one Claude Code agent.
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
 	modelName = strings.TrimSpace(modelName)
 	executionScope, ok := ClaudeCodeExecutionScope(ctx, payload, headers)

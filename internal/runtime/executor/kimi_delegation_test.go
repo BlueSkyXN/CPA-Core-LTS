@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestKimiResponsesDelegationBeforeTransport(t *testing.T) {
@@ -68,7 +68,7 @@ func TestKimiResponsesDelegationBeforeTransport(t *testing.T) {
 					}
 					return
 				}
-				if err != nil || calls != 1 || gjson.GetBytes(sent, "input.0.role").String() != "user" || gjson.GetBytes(sent, "input.0.content.0.text").String() != "perform the delegated task" {
+				if err != nil || calls != 1 || ojson.GetBytes(sent, "input.0.role").String() != "user" || ojson.GetBytes(sent, "input.0.content.0.text").String() != "perform the delegated task" {
 					t.Fatalf("Kimi did not receive the task as a user turn: calls=%d err=%v body=%s", calls, err, sent)
 				}
 			})

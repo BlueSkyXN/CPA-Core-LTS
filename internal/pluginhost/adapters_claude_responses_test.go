@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -15,8 +16,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const claudePluginFixture = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"role\":\"assistant\",\"id\":\"fixture\",\"content\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\ndata: \"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -72,7 +71,7 @@ func TestAnthropicPluginResponsesStopReasons(t *testing.T) {
 					last = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 				}
 			}
-			if got := gjson.Get(last, "response.status").String(); got != tc.status {
+			if got := ojson.Get(last, "response.status").String(); got != tc.status {
 				t.Fatalf("stop=%q response.status=%q want %q", tc.stop, got, tc.status)
 			}
 		})
@@ -168,7 +167,7 @@ func TestAnthropicPluginResponsesStream(t *testing.T) {
 						continue
 					}
 					data := []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-					data, _ = sjson.DeleteBytes(data, "response.created_at")
+					data, _ = ojson.DeleteBytes(data, "response.created_at")
 					normalized = append(normalized, string(data))
 				}
 				if baseline == nil {
@@ -176,7 +175,7 @@ func TestAnthropicPluginResponsesStream(t *testing.T) {
 				} else if !reflect.DeepEqual(baseline, normalized) {
 					t.Error("chunking changed response semantics")
 				}
-				last := gjson.Parse(normalized[len(normalized)-1])
+				last := ojson.Parse(normalized[len(normalized)-1])
 				if last.Get("response.usage.output_tokens").Int() != 7 {
 					t.Error("client usage lost")
 				}

@@ -3,16 +3,16 @@ package cache
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/base64"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/tidwall/gjson"
 )
 
 type fakeCodexReasoningReplayKVClient struct {
@@ -244,10 +244,10 @@ func TestCodexReasoningReplayAppendPreservesCumulativeTurnsInHome(t *testing.T) 
 	if len(items) != 4 {
 		t.Fatalf("cumulative item count = %d, want 4: %q", len(items), items)
 	}
-	if got := gjson.GetBytes(items[0], "id").String(); got != "turn-1" {
+	if got := ojson.GetBytes(items[0], "id").String(); got != "turn-1" {
 		t.Fatalf("first turn id = %q, want turn-1", got)
 	}
-	if got := gjson.GetBytes(items[2], "id").String(); got != "turn-2" {
+	if got := ojson.GetBytes(items[2], "id").String(); got != "turn-2" {
 		t.Fatalf("second turn id = %q, want turn-2", got)
 	}
 }
@@ -281,13 +281,13 @@ func TestCodexReasoningReplayAppendMigratesLegacyFlatEntryInHome(t *testing.T) {
 	if len(after) != 4 {
 		t.Fatalf("legacy migrated item count = %d, want 4: %q", len(after), after)
 	}
-	if got := gjson.GetBytes(after[0], "id").String(); got != codexReasoningReplayLegacyTurnID {
+	if got := ojson.GetBytes(after[0], "id").String(); got != codexReasoningReplayLegacyTurnID {
 		t.Fatalf("legacy marker id = %q, want %q", got, codexReasoningReplayLegacyTurnID)
 	}
 	if !bytes.Equal(after[1], legacyItem) {
 		t.Fatalf("legacy item changed during migration: got %s want %s", after[1], legacyItem)
 	}
-	if got := gjson.GetBytes(after[2], "id").String(); got != "turn-new" {
+	if got := ojson.GetBytes(after[2], "id").String(); got != "turn-new" {
 		t.Fatalf("new turn id = %q, want turn-new", got)
 	}
 }
@@ -337,7 +337,7 @@ func TestCodexReasoningReplayAppendBoundsTurnsPerEntry(t *testing.T) {
 	if len(trimmed) != CodexReasoningReplayCacheMaxTurnsPerEntry*2 {
 		t.Fatalf("trimmed item count = %d, want %d", len(trimmed), CodexReasoningReplayCacheMaxTurnsPerEntry*2)
 	}
-	if firstID := gjson.GetBytes(trimmed[0], "id").String(); firstID != "turn-1" {
+	if firstID := ojson.GetBytes(trimmed[0], "id").String(); firstID != "turn-1" {
 		t.Fatalf("first retained turn = %q, want turn-1", firstID)
 	}
 }

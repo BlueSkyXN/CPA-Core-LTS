@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 )
 
 type readinessFixture struct {
@@ -77,7 +77,7 @@ func TestPluginReadinessManagementScopeAndErrors(t *testing.T) {
 		return rec
 	}
 	res := request("fixture", selected.Index)
-	if res.Code != 200 || !gjson.GetBytes(res.Body.Bytes(), "Ready").Bool() || f.calls != 1 || f.req.AuthID != "selected" || f.req.Purpose != pluginapi.ReadinessPurposeDiagnostic {
+	if res.Code != 200 || !ojson.GetBytes(res.Body.Bytes(), "Ready").Bool() || f.calls != 1 || f.req.AuthID != "selected" || f.req.Purpose != pluginapi.ReadinessPurposeDiagnostic {
 		t.Fatalf("selected scope failed: %d %s", res.Code, res.Body.String())
 	}
 	if strings.Contains(res.Body.String(), "synthetic-private-value") {

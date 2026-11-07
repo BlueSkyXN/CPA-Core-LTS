@@ -8,12 +8,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -34,16 +34,48 @@ func ApplyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	return ApplyPayloadConfigWithRequest(cfg, model, protocol, "", root, payload, original, requestedModel, requestPath, nil)
 }
 
+// ApplyPayloadConfigWithRootDoc applies payload config in place on doc with parameter paths relative to root.
+func ApplyPayloadConfigWithRootDoc(cfg *config.Config, model, protocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string) {
+	ApplyPayloadConfigWithRequestDoc(cfg, model, protocol, "", root, doc, original, requestedModel, requestPath, nil)
+}
+
 // ApplyPayloadConfigWithRequest applies payload config using source protocol and request header gates.
 func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, selectedAuthKind ...string) []byte {
-	out, _ := applyPayloadConfigWithExecutionScope(cfg, "", payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
-	return out
+	if len(payload) == 0 {
+		return payload
+	}
+	doc := ojson.NewDoc(payload)
+	touched, mutated := applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, "", payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers)
+	if !mutated {
+		return payload
+	}
+	_ = touched
+	return doc.Bytes()
+}
+
+// ApplyPayloadConfigWithRequestDoc applies payload config in place on doc using source protocol and request header gates.
+// selectedAuthKind carries the selected upstream credential kind for auth-kind scoped rules.
+func ApplyPayloadConfigWithRequestDoc(cfg *config.Config, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header, selectedAuthKind ...string) {
+	ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(cfg, "", payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers)
 }
 
 // ApplyPayloadConfigWithRequestForExecutor applies payload config with explicit target executor context.
 func ApplyPayloadConfigWithRequestForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, selectedAuthKind ...string) []byte {
-	out, _ := applyPayloadConfigWithExecutionScope(cfg, targetExecutor, payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers)
-	return out
+	if len(payload) == 0 {
+		return payload
+	}
+	doc := ojson.NewDoc(payload)
+	touched, mutated := applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers)
+	if !mutated {
+		return payload
+	}
+	_ = touched
+	return doc.Bytes()
+}
+
+// ApplyPayloadConfigWithRequestForExecutorDoc applies payload config in place on doc with explicit target executor context.
+func ApplyPayloadConfigWithRequestForExecutorDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header) {
+	_ = ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers)
 }
 
 func isCodexTargetExecutor(targetExecutor string) bool {
@@ -54,21 +86,57 @@ func isCodexTargetExecutor(targetExecutor string) bool {
 // ApplyPayloadConfigWithTrackedPaths applies payload config and reports which
 // tracked paths (or their descendants) were targeted by an applied rule.
 func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
-	return ApplyPayloadConfigWithTrackedPathsForExecutor(cfg, "", model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPaths...)
+	return ApplyPayloadConfigWithTrackedPathsForExecutor(cfg, "", model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, nil, trackedPaths...)
+}
+
+// ApplyPayloadConfigWithTrackedPathsDoc applies payload config in place on doc and reports which
+// tracked paths (or their descendants) were targeted by an applied rule.
+func ApplyPayloadConfigWithTrackedPathsDoc(cfg *config.Config, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) map[string]bool {
+	return ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, "", model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
 }
 
 // ApplyPayloadConfigWithTrackedPathsForExecutor applies payload config with target executor awareness.
 // When headers indicate a Codex client and the target executor is not Codex or Codex WebSocket,
 // it normalizes tool parameter integer types to satisfy client-side integer deserialization (#6237).
 // For Codex and Codex WebSocket targets, integer normalization is skipped (#6244).
-func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
-	return applyPayloadConfigWithExecutionScope(cfg, targetExecutor, "", model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPaths...)
+func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, selectedAuthKind []string, trackedPaths ...string) ([]byte, map[string]bool) {
+	if len(payload) == 0 {
+		return payload, make(map[string]bool)
+	}
+	doc := ojson.NewDoc(payload)
+	touched, mutated := applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, payloadAuthKind(selectedAuthKind), model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
+	if !mutated {
+		return payload, touched
+	}
+	return doc.Bytes(), touched
 }
 
-// ApplyPayloadConfigWithAuthTrackedPaths uses the selected upstream credential kind.
-// The kind must come from the executor's Auth, never client headers or payload metadata.
+// ApplyPayloadConfigWithTrackedPathsForExecutorDoc applies payload config in place on doc with target executor awareness.
+// selectedAuthKind carries the selected upstream credential kind for auth-kind scoped rules.
+func ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, trackedPaths ...string) map[string]bool {
+	return ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(cfg, targetExecutor, "", model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
+}
+
+// ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc applies payload config in place on doc
+// using the selected upstream credential kind. The kind must come from the executor's Auth,
+// never client headers or payload metadata.
+// ApplyPayloadConfigWithAuthTrackedPaths is the byte form kept for tests and
+// legacy callers: it resolves the auth kind itself and reports touched paths.
 func ApplyPayloadConfigWithAuthTrackedPaths(cfg *config.Config, authKind, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
-	return applyPayloadConfigWithExecutionScope(cfg, "", authKind, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPaths...)
+	if len(payload) == 0 {
+		return payload, make(map[string]bool)
+	}
+	doc := ojson.NewDoc(payload)
+	touched := ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(cfg, "", authKind, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
+	if len(touched) == 0 {
+		return payload, touched
+	}
+	return doc.Bytes(), touched
+}
+
+func ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(cfg *config.Config, targetExecutor, authKind, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, trackedPaths ...string) map[string]bool {
+	touched, _ := applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, targetExecutor, authKind, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPaths...)
+	return touched
 }
 
 func payloadAuthKind(kinds []string) string {
@@ -78,18 +146,20 @@ func payloadAuthKind(kinds []string) string {
 	return kinds[0]
 }
 
-func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, authKind, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
+func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, targetExecutor, authKind, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, trackedPaths ...string) (map[string]bool, bool) {
 	touched := make(map[string]bool)
-	if len(payload) == 0 {
-		return payload, touched
+	if doc == nil || doc.Len() == 0 {
+		return touched, false
 	}
+	mutated := false
 	if IsCodexUserAgent(headers) && !isCodexTargetExecutor(targetExecutor) {
-		payload = NormalizeCodexToolIntegerTypes(payload, headers)
+		if NormalizeCodexToolIntegerTypesDoc(doc, headers) {
+			mutated = true
+		}
 	}
 	if cfg == nil {
-		return payload, touched
+		return touched, mutated
 	}
-	out := payload
 
 	markTouched := func(resolvedPath string) {
 		for _, tp := range trackedPaths {
@@ -100,11 +170,17 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 		}
 	}
 
+	var strippedToolChoicePath string
 	// Apply disable-image-generation filtering before payload rules so config payload
 	// overrides can explicitly re-enable image_generation when desired.
 	if shouldStripImageGeneration(cfg.DisableImageGeneration, requestPath) {
-		out = removeToolTypeFromPayloadWithRoot(out, root, "image_generation")
-		out = removeToolChoiceFromPayloadWithRoot(out, root, "image_generation")
+		if removeToolTypeFromPayloadWithRootDoc(doc, root, "image_generation") {
+			mutated = true
+		}
+		if removeToolChoiceFromPayloadWithRootDoc(doc, root, "image_generation") {
+			mutated = true
+			strippedToolChoicePath = buildPayloadPath(root, "tool_choice")
+		}
 	}
 
 	rules := cfg.Payload
@@ -114,15 +190,75 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 		requestedModel = strings.TrimSpace(requestedModel)
 		if model != "" || requestedModel != "" {
 			candidates := payloadModelCandidateSetFor(model, requestedModel)
-			source := original
-			if len(source) == 0 {
-				source = payload
-			}
 			appliedDefaults := make(map[string]struct{})
+			var createdByDefault map[string]struct{}
+			var initialArrayLengths map[string]int
+			sourcePathExists := func(resolvedPath string) bool {
+				if len(original) > 0 {
+					return ojson.GetBytesNoCopy(original, resolvedPath).Exists()
+				}
+				if strippedToolChoicePath != "" && resolvedPath == strippedToolChoicePath {
+					return true
+				}
+				if createdByDefault != nil || initialArrayLengths != nil {
+					if _, created := createdByDefault[resolvedPath]; created {
+						return false
+					}
+					for idx := 0; idx < len(resolvedPath); idx++ {
+						if resolvedPath[idx] == '.' && (idx == 0 || resolvedPath[idx-1] != '\\') {
+							prefix := resolvedPath[:idx]
+							if _, created := createdByDefault[prefix]; created {
+								return false
+							}
+							if initLen, ok := initialArrayLengths[prefix]; ok {
+								nextEnd := len(resolvedPath)
+								for j := idx + 1; j < len(resolvedPath); j++ {
+									if resolvedPath[j] == '.' && resolvedPath[j-1] != '\\' {
+										nextEnd = j
+										break
+									}
+								}
+								if arrIdx, errIdx := strconv.Atoi(resolvedPath[idx+1 : nextEnd]); errIdx == nil && arrIdx >= initLen {
+									return false
+								}
+							}
+						}
+					}
+				}
+				return doc.Get(resolvedPath).Exists()
+			}
+			recordDefaultCreation := func(resolvedPath string) {
+				if len(original) > 0 {
+					return
+				}
+				if createdByDefault == nil {
+					createdByDefault = make(map[string]struct{})
+				}
+				for idx := 0; idx < len(resolvedPath); idx++ {
+					if resolvedPath[idx] == '.' && (idx == 0 || resolvedPath[idx-1] != '\\') {
+						prefix := resolvedPath[:idx]
+						prefixNode := doc.Get(prefix)
+						if !prefixNode.Exists() {
+							createdByDefault[prefix] = struct{}{}
+						} else if prefixNode.IsArray() {
+							if initialArrayLengths == nil {
+								initialArrayLengths = make(map[string]int)
+							}
+							if _, recorded := initialArrayLengths[prefix]; !recorded {
+								initialArrayLengths[prefix] = len(prefixNode.Array())
+							}
+						}
+					}
+				}
+				if !doc.Get(resolvedPath).Exists() {
+					createdByDefault[resolvedPath] = struct{}{}
+				}
+			}
+
 			// Apply default rules: first write wins per field across all matching rules.
 			for i := range rules.Default {
 				rule := &rules.Default[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -130,18 +266,18 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 					if fullPath == "" {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePaths(out, fullPath) {
-						if gjson.GetBytes(source, resolvedPath).Exists() {
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
+						if sourcePathExists(resolvedPath) {
 							continue
 						}
 						if _, ok := appliedDefaults[resolvedPath]; ok {
 							continue
 						}
-						updated, errSet := sjson.SetBytes(out, resolvedPath, value)
-						if errSet != nil {
+						recordDefaultCreation(resolvedPath)
+						if errSet := doc.Set(resolvedPath, value); errSet != nil {
 							continue
 						}
-						out = updated
+						mutated = true
 						appliedDefaults[resolvedPath] = struct{}{}
 						markTouched(resolvedPath)
 					}
@@ -150,7 +286,7 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 			// Apply default raw rules: first write wins per field across all matching rules.
 			for i := range rules.DefaultRaw {
 				rule := &rules.DefaultRaw[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -158,8 +294,8 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 					if fullPath == "" {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePaths(out, fullPath) {
-						if gjson.GetBytes(source, resolvedPath).Exists() {
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
+						if sourcePathExists(resolvedPath) {
 							continue
 						}
 						if _, ok := appliedDefaults[resolvedPath]; ok {
@@ -169,11 +305,11 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 						if !ok {
 							continue
 						}
-						updated, errSet := sjson.SetRawBytes(out, resolvedPath, rawValue)
-						if errSet != nil {
+						recordDefaultCreation(resolvedPath)
+						if errSet := doc.SetRawBytes(resolvedPath, rawValue); errSet != nil {
 							continue
 						}
-						out = updated
+						mutated = true
 						appliedDefaults[resolvedPath] = struct{}{}
 						markTouched(resolvedPath)
 					}
@@ -182,7 +318,7 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 			// Apply override rules: last write wins per field across all matching rules.
 			for i := range rules.Override {
 				rule := &rules.Override[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -190,9 +326,11 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 					if fullPath == "" {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePaths(out, fullPath) {
-						var applied bool
-						out, applied = setPayloadValueIfDifferentTracked(out, resolvedPath, value)
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
+						changed, applied := setPayloadValueIfDifferentDocTracked(doc, resolvedPath, value)
+						if changed {
+							mutated = true
+						}
 						if applied {
 							markTouched(resolvedPath)
 						}
@@ -202,7 +340,7 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 			// Apply override raw rules: last write wins per field across all matching rules.
 			for i := range rules.OverrideRaw {
 				rule := &rules.OverrideRaw[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -214,9 +352,11 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 					if !ok {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePaths(out, fullPath) {
-						var applied bool
-						out, applied = setPayloadRawValueIfDifferentTracked(out, resolvedPath, rawValue)
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
+						changed, applied := setPayloadRawValueIfDifferentDocTracked(doc, resolvedPath, rawValue)
+						if changed {
+							mutated = true
+						}
 						if applied {
 							markTouched(resolvedPath)
 						}
@@ -226,7 +366,7 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 			// Apply filter rules: remove matching paths from payload.
 			for i := range rules.Filter {
 				rule := &rules.Filter[i]
-				if !payloadModelRulesMatch(rule.Models, protocol, fromProtocol, headers, out, root, candidates, authKind, requestPath) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates, authKind, requestPath) {
 					continue
 				}
 				for _, path := range rule.Params {
@@ -234,21 +374,23 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 					if fullPath == "" {
 						continue
 					}
-					resolvedPaths := resolvePayloadRulePaths(out, fullPath)
-					for i := len(resolvedPaths) - 1; i >= 0; i-- {
-						resolvedPath := resolvedPaths[i]
-						updated, errDel := sjson.DeleteBytes(out, resolvedPath)
-						if errDel != nil {
+					resolvedPaths := resolvePayloadRulePathsDoc(doc, fullPath)
+					for idx := len(resolvedPaths) - 1; idx >= 0; idx-- {
+						resolvedPath := resolvedPaths[idx]
+						existed := doc.Get(resolvedPath).Exists()
+						if errDel := doc.Delete(resolvedPath); errDel != nil {
 							continue
 						}
-						out = updated
+						if existed {
+							mutated = true
+						}
 						markTouched(resolvedPath)
 					}
 				}
 			}
 		}
 	}
-	return out, touched
+	return touched, mutated
 }
 
 // ApplyPayloadConfigWithRequestTracked applies payload config and reports whether
@@ -256,6 +398,13 @@ func applyPayloadConfigWithExecutionScope(cfg *config.Config, targetExecutor, au
 func ApplyPayloadConfigWithRequestTracked(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPath string) ([]byte, bool) {
 	out, touched := ApplyPayloadConfigWithTrackedPaths(cfg, model, protocol, fromProtocol, root, payload, original, requestedModel, requestPath, headers, trackedPath)
 	return out, touched[trackedPath]
+}
+
+// ApplyPayloadConfigWithRequestTrackedDoc applies payload config in place on doc and reports whether
+// an applied rule targeted trackedPath or one of its descendants.
+func ApplyPayloadConfigWithRequestTrackedDoc(cfg *config.Config, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPath string) bool {
+	touched := ApplyPayloadConfigWithTrackedPathsDoc(cfg, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, trackedPath)
+	return touched[trackedPath]
 }
 
 func isImagesEndpointRequestPath(path string) bool {
@@ -307,8 +456,8 @@ func payloadModelCandidateSetFor(model, requestedModel string) payloadModelCandi
 	}
 }
 
-func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, payload []byte, root string, candidates payloadModelCandidateSet, authKind, requestPath string) bool {
-	if len(rules) == 0 || len(candidates.any) == 0 {
+func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, doc *ojson.Doc, root string, candidates payloadModelCandidateSet, authKind, requestPath string) bool {
+	if len(rules) == 0 || len(candidates.any) == 0 || doc == nil {
 		return false
 	}
 	for _, entry := range rules {
@@ -332,7 +481,7 @@ func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fr
 			if !matchModelPattern(name, model) {
 				continue
 			}
-			if payloadModelRuleConditionsMatch(payload, root, entry) {
+			if payloadModelRuleConditionsMatchDoc(doc, root, entry) {
 				return true
 			}
 		}
@@ -387,29 +536,29 @@ func warnUnknownPayloadModelScope(scope string) {
 	log.Warnf("unknown payload model scope %q; falling back to any", scope)
 }
 
-func payloadModelRuleConditionsMatch(payload []byte, root string, rule config.PayloadModelRule) bool {
-	if !payloadMatchConditionsMatch(payload, root, rule.Match) {
+func payloadModelRuleConditionsMatchDoc(doc *ojson.Doc, root string, rule config.PayloadModelRule) bool {
+	if !payloadMatchConditionsMatchDoc(doc, root, rule.Match) {
 		return false
 	}
-	if !payloadNotMatchConditionsMatch(payload, root, rule.NotMatch) {
+	if !payloadNotMatchConditionsMatchDoc(doc, root, rule.NotMatch) {
 		return false
 	}
-	if !payloadExistConditionsMatch(payload, root, rule.Exist) {
+	if !payloadExistConditionsMatchDoc(doc, root, rule.Exist) {
 		return false
 	}
-	if !payloadNotExistConditionsMatch(payload, root, rule.NotExist) {
+	if !payloadNotExistConditionsMatchDoc(doc, root, rule.NotExist) {
 		return false
 	}
 	return true
 }
 
-func payloadMatchConditionsMatch(payload []byte, root string, conditions []map[string]any) bool {
+func payloadMatchConditionsMatchDoc(doc *ojson.Doc, root string, conditions []map[string]any) bool {
 	for _, condition := range conditions {
 		for path, value := range condition {
 			if strings.TrimSpace(path) == "" {
 				continue
 			}
-			if !payloadPathMatchesValue(payload, buildPayloadPath(root, path), value) {
+			if !payloadPathMatchesValueDoc(doc, buildPayloadPath(root, path), value) {
 				return false
 			}
 		}
@@ -417,13 +566,13 @@ func payloadMatchConditionsMatch(payload []byte, root string, conditions []map[s
 	return true
 }
 
-func payloadNotMatchConditionsMatch(payload []byte, root string, conditions []map[string]any) bool {
+func payloadNotMatchConditionsMatchDoc(doc *ojson.Doc, root string, conditions []map[string]any) bool {
 	for _, condition := range conditions {
 		for path, value := range condition {
 			if strings.TrimSpace(path) == "" {
 				continue
 			}
-			if payloadPathMatchesValue(payload, buildPayloadPath(root, path), value) {
+			if payloadPathMatchesValueDoc(doc, buildPayloadPath(root, path), value) {
 				return false
 			}
 		}
@@ -431,33 +580,56 @@ func payloadNotMatchConditionsMatch(payload []byte, root string, conditions []ma
 	return true
 }
 
-func payloadExistConditionsMatch(payload []byte, root string, paths []string) bool {
+func payloadExistConditionsMatchDoc(doc *ojson.Doc, root string, paths []string) bool {
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue
 		}
-		if !payloadPathExists(payload, buildPayloadPath(root, path)) {
+		if !payloadPathExistsDoc(doc, buildPayloadPath(root, path)) {
 			return false
 		}
 	}
 	return true
 }
 
-func payloadNotExistConditionsMatch(payload []byte, root string, paths []string) bool {
+func payloadNotExistConditionsMatchDoc(doc *ojson.Doc, root string, paths []string) bool {
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue
 		}
-		if payloadPathExists(payload, buildPayloadPath(root, path)) {
+		if payloadPathExistsDoc(doc, buildPayloadPath(root, path)) {
 			return false
 		}
 	}
 	return true
+}
+
+func payloadPathMatchesValueDoc(doc *ojson.Doc, path string, value any) bool {
+	for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, path) {
+		result := doc.Get(resolvedPath)
+		if !result.Exists() {
+			continue
+		}
+		if payloadResultEquals(result, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func payloadPathExistsDoc(doc *ojson.Doc, path string) bool {
+	for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, path) {
+		result := doc.Get(resolvedPath)
+		if result.Exists() && result.Type != ojson.Null {
+			return true
+		}
+	}
+	return false
 }
 
 func payloadPathMatchesValue(payload []byte, path string, value any) bool {
 	for _, resolvedPath := range resolvePayloadRulePaths(payload, path) {
-		result := gjson.GetBytes(payload, resolvedPath)
+		result := ojson.GetBytesNoCopy(payload, resolvedPath)
 		if !result.Exists() {
 			continue
 		}
@@ -470,15 +642,15 @@ func payloadPathMatchesValue(payload []byte, path string, value any) bool {
 
 func payloadPathExists(payload []byte, path string) bool {
 	for _, resolvedPath := range resolvePayloadRulePaths(payload, path) {
-		result := gjson.GetBytes(payload, resolvedPath)
-		if result.Exists() && result.Type != gjson.Null {
+		result := ojson.GetBytesNoCopy(payload, resolvedPath)
+		if result.Exists() && result.Type != ojson.Null {
 			return true
 		}
 	}
 	return false
 }
 
-func payloadResultEquals(result gjson.Result, value any) bool {
+func payloadResultEquals(result ojson.Result, value any) bool {
 	actual, ok := normalizedPayloadResult(result)
 	if !ok {
 		return false
@@ -490,7 +662,7 @@ func payloadResultEquals(result gjson.Result, value any) bool {
 	return reflect.DeepEqual(actual, expected)
 }
 
-func normalizedPayloadResult(result gjson.Result) (any, bool) {
+func normalizedPayloadResult(result ojson.Result) (any, bool) {
 	if !result.Exists() {
 		return nil, false
 	}
@@ -678,7 +850,20 @@ func payloadRuleTargetsPath(path, trackedPath string) bool {
 	return path == trackedPath || strings.HasPrefix(path, trackedPath+".") || strings.HasPrefix(trackedPath, path+".")
 }
 
+func resolvePayloadRulePathsDoc(doc *ojson.Doc, path string) []string {
+	if doc == nil {
+		return nil
+	}
+	return resolvePayloadRulePathsFromGetter(doc.Get, path)
+}
+
 func resolvePayloadRulePaths(payload []byte, path string) []string {
+	return resolvePayloadRulePathsFromGetter(func(p string) ojson.Result {
+		return payloadValueAtPath(payload, p)
+	}, path)
+}
+
+func resolvePayloadRulePathsFromGetter(get func(string) ojson.Result, path string) []string {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil
@@ -701,7 +886,7 @@ func resolvePayloadRulePaths(payload []byte, path string) []string {
 		}
 		nextPaths := make([]string, 0, len(paths))
 		for _, basePath := range paths {
-			array := payloadValueAtPath(payload, basePath)
+			array := get(basePath)
 			if !array.Exists() || !array.IsArray() {
 				continue
 			}
@@ -831,14 +1016,14 @@ func appendPayloadPathPart(path, part string) string {
 	return path + "." + part
 }
 
-func payloadValueAtPath(payload []byte, path string) gjson.Result {
+func payloadValueAtPath(payload []byte, path string) ojson.Result {
 	if path == "" {
-		return gjson.ParseBytes(payload)
+		return util.ParseGJSONBytesNoCopy(payload)
 	}
-	return gjson.GetBytes(payload, path)
+	return ojson.GetBytesNoCopy(payload, path)
 }
 
-func payloadQueryMatches(item gjson.Result, query string) bool {
+func payloadQueryMatches(item ojson.Result, query string) bool {
 	for _, orPart := range splitPayloadLogical(query, "||") {
 		if payloadQueryAndMatches(item, orPart) {
 			return true
@@ -847,7 +1032,7 @@ func payloadQueryMatches(item gjson.Result, query string) bool {
 	return false
 }
 
-func payloadQueryAndMatches(item gjson.Result, query string) bool {
+func payloadQueryAndMatches(item ojson.Result, query string) bool {
 	parts := splitPayloadLogical(query, "&&")
 	if len(parts) == 0 {
 		return false
@@ -895,7 +1080,7 @@ func splitPayloadLogical(query, operator string) []string {
 	return parts
 }
 
-func payloadQueryTermMatches(item gjson.Result, term string) bool {
+func payloadQueryTermMatches(item ojson.Result, term string) bool {
 	term = strings.TrimSpace(term)
 	if term == "" || item.Raw == "" {
 		return false
@@ -904,74 +1089,64 @@ func payloadQueryTermMatches(item gjson.Result, term string) bool {
 	wrapped = append(wrapped, '[')
 	wrapped = append(wrapped, item.Raw...)
 	wrapped = append(wrapped, ']')
-	return gjson.GetBytes(wrapped, "#("+term+")").Exists()
+	return ojson.GetBytesNoCopy(wrapped, "#("+term+")").Exists()
 }
 
-func removeToolTypeFromPayloadWithRoot(payload []byte, root string, toolType string) []byte {
-	if len(payload) == 0 {
-		return payload
+func removeToolTypeFromPayloadWithRootDoc(doc *ojson.Doc, root string, toolType string) bool {
+	if doc == nil || doc.Len() == 0 {
+		return false
 	}
 	toolType = strings.TrimSpace(toolType)
 	if toolType == "" {
-		return payload
+		return false
 	}
 	toolsPath := buildPayloadPath(root, "tools")
-	return removeToolTypeFromToolsArray(payload, toolsPath, toolType)
+	return removeToolTypeFromToolsArrayDoc(doc, toolsPath, toolType)
 }
 
-func removeToolChoiceFromPayloadWithRoot(payload []byte, root string, toolType string) []byte {
-	if len(payload) == 0 {
-		return payload
+func removeToolChoiceFromPayloadWithRootDoc(doc *ojson.Doc, root string, toolType string) bool {
+	if doc == nil || doc.Len() == 0 {
+		return false
 	}
 	toolType = strings.TrimSpace(toolType)
 	if toolType == "" {
-		return payload
+		return false
 	}
 	toolChoicePath := buildPayloadPath(root, "tool_choice")
-	return removeToolChoiceFromPayload(payload, toolChoicePath, toolType)
+	return removeToolChoiceFromPayloadDoc(doc, toolChoicePath, toolType)
 }
 
-func removeToolChoiceFromPayload(payload []byte, toolChoicePath string, toolType string) []byte {
-	choice := gjson.GetBytes(payload, toolChoicePath)
+func removeToolChoiceFromPayloadDoc(doc *ojson.Doc, toolChoicePath string, toolType string) bool {
+	choice := doc.Get(toolChoicePath)
 	if !choice.Exists() {
-		return payload
+		return false
 	}
-	if choice.Type == gjson.String {
+	if choice.Type == ojson.String {
 		if strings.EqualFold(strings.TrimSpace(choice.String()), toolType) {
-			updated, errDel := sjson.DeleteBytes(payload, toolChoicePath)
-			if errDel == nil {
-				return updated
-			}
+			return doc.Delete(toolChoicePath) == nil
 		}
-		return payload
+		return false
 	}
-	if choice.Type != gjson.JSON {
-		return payload
+	if choice.Type != ojson.JSON {
+		return false
 	}
 	choiceType := strings.TrimSpace(choice.Get("type").String())
 	if strings.EqualFold(choiceType, toolType) {
-		updated, errDel := sjson.DeleteBytes(payload, toolChoicePath)
-		if errDel == nil {
-			return updated
-		}
-		return payload
+		return doc.Delete(toolChoicePath) == nil
 	}
 	if strings.EqualFold(choiceType, "tool") {
 		name := strings.TrimSpace(choice.Get("name").String())
 		if strings.EqualFold(name, toolType) {
-			updated, errDel := sjson.DeleteBytes(payload, toolChoicePath)
-			if errDel == nil {
-				return updated
-			}
+			return doc.Delete(toolChoicePath) == nil
 		}
 	}
-	return payload
+	return false
 }
 
-func removeToolTypeFromToolsArray(payload []byte, toolsPath string, toolType string) []byte {
-	tools := gjson.GetBytes(payload, toolsPath)
+func removeToolTypeFromToolsArrayDoc(doc *ojson.Doc, toolsPath string, toolType string) bool {
+	tools := doc.Get(toolsPath)
 	if !tools.Exists() || !tools.IsArray() {
-		return payload
+		return false
 	}
 	toolItems := tools.Array()
 	removed := false
@@ -982,7 +1157,7 @@ func removeToolTypeFromToolsArray(payload []byte, toolsPath string, toolType str
 		}
 	}
 	if !removed {
-		return payload
+		return false
 	}
 	filtered := make([][]byte, 0, len(toolItems))
 	for _, tool := range toolItems {
@@ -990,11 +1165,18 @@ func removeToolTypeFromToolsArray(payload []byte, toolsPath string, toolType str
 			filtered = append(filtered, []byte(tool.Raw))
 		}
 	}
-	updated, errSet := sjson.SetRawBytes(payload, toolsPath, JoinRawJSONArray(filtered))
-	if errSet != nil {
+	return doc.SetRawBytes(toolsPath, JoinRawJSONArray(filtered)) == nil
+}
+
+func removeToolTypeFromToolsArray(payload []byte, toolsPath string, toolType string) []byte {
+	if len(payload) == 0 {
 		return payload
 	}
-	return updated
+	doc := ojson.NewDoc(payload)
+	if !removeToolTypeFromToolsArrayDoc(doc, toolsPath, toolType) {
+		return payload
+	}
+	return doc.Bytes()
 }
 
 func setPayloadValueIfDifferent(payload []byte, path string, value any) []byte {
@@ -1003,14 +1185,14 @@ func setPayloadValueIfDifferent(payload []byte, path string, value any) []byte {
 }
 
 func setPayloadValueIfDifferentTracked(payload []byte, path string, value any) ([]byte, bool) {
-	current := gjson.GetBytes(payload, path)
+	current := ojson.GetBytesNoCopy(payload, path)
 	switch typed := value.(type) {
 	case string:
-		if current.Type == gjson.String && current.String() == typed {
+		if current.Type == ojson.String && current.String() == typed {
 			return payload, true
 		}
 	case bool:
-		if (typed && current.Type == gjson.True) || (!typed && current.Type == gjson.False) {
+		if (typed && current.Type == ojson.True) || (!typed && current.Type == ojson.False) {
 			return payload, true
 		}
 	case nil:
@@ -1018,40 +1200,83 @@ func setPayloadValueIfDifferentTracked(payload []byte, path string, value any) (
 			return payload, true
 		}
 	default:
-		expectedJSON, errSet := sjson.SetBytes([]byte(`{}`), "value", value)
+		expectedJSON, errSet := ojson.SetBytes([]byte(`{}`), "value", value)
 		if errSet != nil {
 			return payload, false
 		}
-		expected := gjson.GetBytes(expectedJSON, "value")
+		expected := ojson.GetBytesNoCopy(expectedJSON, "value")
 		if expected.Raw == "" {
 			return payload, false
 		}
 		if len(current.Indexes) == 0 && current.Raw == expected.Raw {
 			return payload, true
 		}
-		updated, errSet := sjson.SetRawBytes(payload, path, []byte(expected.Raw))
+		updated, errSet := ojson.SetRawBytes(payload, path, []byte(expected.Raw))
 		if errSet != nil {
 			return payload, false
 		}
 		return updated, true
 	}
-	updated, errSet := sjson.SetBytes(payload, path, value)
+	updated, errSet := ojson.SetBytes(payload, path, value)
 	if errSet != nil {
 		return payload, false
 	}
 	return updated, true
 }
 
-func setPayloadRawValueIfDifferentTracked(payload []byte, path string, value []byte) ([]byte, bool) {
-	current := gjson.GetBytes(payload, path)
+func setPayloadValueIfDifferentDocTracked(doc *ojson.Doc, path string, value any) (bool, bool) {
+	if doc == nil {
+		return false, false
+	}
+	current := doc.Get(path)
+	switch typed := value.(type) {
+	case string:
+		if len(current.Indexes) == 0 && current.Type == ojson.String && current.String() == typed {
+			return false, true
+		}
+	case bool:
+		if len(current.Indexes) == 0 && ((typed && current.Type == ojson.True) || (!typed && current.Type == ojson.False)) {
+			return false, true
+		}
+	case nil:
+		if len(current.Indexes) == 0 && current.Raw == "null" {
+			return false, true
+		}
+	default:
+		expectedJSON, errSet := ojson.SetBytes([]byte(`{}`), "value", value)
+		if errSet != nil {
+			return false, false
+		}
+		expected := ojson.GetBytesNoCopy(expectedJSON, "value")
+		if expected.Raw == "" {
+			return false, false
+		}
+		if len(current.Indexes) == 0 && current.Raw == expected.Raw {
+			return false, true
+		}
+		if errSet := doc.SetRaw(path, expected.Raw); errSet != nil {
+			return false, false
+		}
+		return true, true
+	}
+	if errSet := doc.Set(path, value); errSet != nil {
+		return false, false
+	}
+	return true, true
+}
+
+func setPayloadRawValueIfDifferentDocTracked(doc *ojson.Doc, path string, value []byte) (bool, bool) {
+	if doc == nil {
+		return false, false
+	}
+	current := doc.Get(path)
 	if current.Exists() && len(current.Indexes) == 0 && current.Raw == string(value) {
-		return payload, true
+		return false, true
 	}
-	updated, errSet := sjson.SetRawBytes(payload, path, value)
-	if errSet != nil {
-		return payload, false
+	if errSet := doc.SetRawBytes(path, value); errSet != nil {
+		return false, false
 	}
-	return updated, true
+	return true, true
 }
 
 func payloadRawValue(value any) ([]byte, bool) {

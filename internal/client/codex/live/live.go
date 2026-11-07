@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -27,7 +28,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -617,7 +617,7 @@ func liveStatusSuccessful(statusCode int) bool {
 
 func liveResponseErrorField(body []byte, paths ...string) string {
 	for _, path := range paths {
-		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
+		if value := strings.TrimSpace(ojson.GetBytes(body, path).String()); value != "" {
 			return value
 		}
 	}

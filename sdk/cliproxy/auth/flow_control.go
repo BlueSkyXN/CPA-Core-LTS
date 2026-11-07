@@ -6,11 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/tidwall/gjson"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -195,7 +194,7 @@ func (m *Manager) flowRequest(ctx context.Context, req cliproxyexecutor.Request,
 	if ctx.Value(flowRequestContextKey{}) != nil || !m.flowControl.Enabled() {
 		return ctx, nil, nil
 	}
-	if gjson.GetBytes(req.Payload, "previous_response_id").String() != "" {
+	if ojson.GetBytes(req.Payload, "previous_response_id").String() != "" {
 		ctx = context.WithValue(ctx, flowKeepAccountContextKey{}, true)
 	}
 	if m.flowControl.Version() >= 3 {

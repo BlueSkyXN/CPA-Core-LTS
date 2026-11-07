@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 // TestOAuthDaybreakBlueVirtualAlias locks the documented Daybreak Blue model-name
@@ -99,10 +99,10 @@ func TestOAuthDaybreakBlueVirtualAlias(t *testing.T) {
 	}
 
 	rec, got := post(blueVirtual)
-	if model := gjson.GetBytes(got.body, "model").String(); model != blueBase {
+	if model := ojson.GetBytes(got.body, "model").String(); model != blueBase {
 		t.Fatalf("virtual name reached upstream as %q, want base model %q (body=%s)", model, blueBase, got.body)
 	}
-	if program := gjson.GetBytes(got.body, "access_programs.cyber").String(); program != "daybreak_blue" {
+	if program := ojson.GetBytes(got.body, "access_programs.cyber").String(); program != "daybreak_blue" {
 		t.Fatalf("upstream program = %q, want daybreak_blue (body=%s)", program, got.body)
 	}
 	if !strings.Contains(rec.Body.String(), upstreamHit) {
@@ -110,10 +110,10 @@ func TestOAuthDaybreakBlueVirtualAlias(t *testing.T) {
 	}
 
 	_, got = post(blueBase)
-	if model := gjson.GetBytes(got.body, "model").String(); model != blueBase {
+	if model := ojson.GetBytes(got.body, "model").String(); model != blueBase {
 		t.Fatalf("plain model changed upstream: %s", got.body)
 	}
-	if gjson.GetBytes(got.body, "access_programs").Exists() {
+	if ojson.GetBytes(got.body, "access_programs").Exists() {
 		t.Fatalf("plain base model received program injection: %s", got.body)
 	}
 

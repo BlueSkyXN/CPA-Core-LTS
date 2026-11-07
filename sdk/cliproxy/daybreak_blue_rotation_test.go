@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestOAuthDaybreakBlueVirtualAliasRotation(t *testing.T) {
@@ -58,9 +58,9 @@ func testOAuthDaybreakBlueVirtualAliasRotation(t *testing.T, stream bool, errorT
 		}
 		current := attempt{
 			auth:       strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
-			model:      gjson.GetBytes(body, "model").String(),
-			blue:       gjson.GetBytes(body, "access_programs.cyber").String() == "daybreak_blue",
-			hasProgram: gjson.GetBytes(body, "access_programs").Exists(),
+			model:      ojson.GetBytes(body, "model").String(),
+			blue:       ojson.GetBytes(body, "access_programs.cyber").String() == "daybreak_blue",
+			hasProgram: ojson.GetBytes(body, "access_programs").Exists(),
 			path:       r.URL.Path,
 		}
 		mu.Lock()
@@ -132,7 +132,7 @@ func testOAuthDaybreakBlueVirtualAliasRotation(t *testing.T, stream bool, errorT
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() { usage.RegisterNamedPlugin(t.Name(), &daybreakUsageCapture{}) })
 	handler := coreapi.NewServer(cfg, manager, nil, "", coreapi.WithRequestLoggerFactory(nil)).Handler()
-	post := func(model string) gjson.Result {
+	post := func(model string) ojson.Result {
 		t.Helper()
 		body := fmt.Sprintf(`{"model":%q,"input":"OK","stream":%t}`, model, stream)
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(body))
@@ -143,16 +143,16 @@ func testOAuthDaybreakBlueVirtualAliasRotation(t *testing.T, stream bool, errorT
 			t.Fatalf("response status = %d, body = %s", rec.Code, rec.Body.String())
 		}
 		if !stream {
-			return gjson.Parse(rec.Body.String())
+			return ojson.Parse(rec.Body.String())
 		}
 		for line := range strings.SplitSeq(rec.Body.String(), "\n") {
 			data, ok := strings.CutPrefix(line, "data:")
-			if ok && gjson.Get(data, "type").String() == "response.completed" {
-				return gjson.Get(data, "response")
+			if ok && ojson.Get(data, "type").String() == "response.completed" {
+				return ojson.Get(data, "response")
 			}
 		}
 		t.Fatalf("stream has no response.completed: %s", rec.Body.String())
-		return gjson.Result{}
+		return ojson.Result{}
 	}
 
 	blueResponse := post(virtualModel)

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"strconv"
 	"strings"
 	"time"
@@ -18,8 +20,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -57,7 +57,7 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 	if mode == config.ZcodeContextUsageDisabled || !json.Valid(response) {
 		return response
 	}
-	root := gjson.ParseBytes(response)
+	root := util.ParseGJSONBytesNoCopy(response)
 	if root.Get("status").String() != "completed" || !root.Get("output").IsArray() {
 		return response
 	}
@@ -158,7 +158,7 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 	if status != "counted" || mode != config.ZcodeContextUsageCorrect {
 		return response
 	}
-	adjusted, err := sjson.SetBytes(response, "usage.total_tokens", counted)
+	adjusted, err := ojson.SetBytes(response, "usage.total_tokens", counted)
 	if err != nil {
 		status = "invalid_usage"
 		return response
@@ -171,7 +171,7 @@ func (a *executorAdapter) adjustZcodeContextUsage(ctx context.Context, prepared 
 }
 
 func hasZcodeSignedReasoningHistory(payload []byte) bool {
-	for _, item := range gjson.GetBytes(payload, "input").Array() {
+	for _, item := range ojson.GetBytes(payload, "input").Array() {
 		if item.Get("type").String() == "reasoning" && item.Get("encrypted_content").String() != "" {
 			return true
 		}
@@ -224,8 +224,8 @@ func (a *executorAdapter) invokeZcodeContextCount(ctx context.Context, req plugi
 	if len(response.Payload) > 1024*1024 || !json.Valid(response.Payload) {
 		return 0, "invalid_count"
 	}
-	value := gjson.GetBytes(response.Payload, "input_tokens")
-	if value.Type != gjson.Number {
+	value := ojson.GetBytes(response.Payload, "input_tokens")
+	if value.Type != ojson.Number {
 		return 0, "invalid_count"
 	}
 	count, err = strconv.ParseInt(value.Raw, 10, 64)
@@ -242,13 +242,13 @@ func (a *executorAdapter) adjustZcodeContextFrame(ctx context.Context, prepared 
 			continue
 		}
 		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if gjson.GetBytes(data, "type").String() != "response.completed" {
+		if ojson.GetBytes(data, "type").String() != "response.completed" {
 			continue
 		}
-		response := []byte(gjson.GetBytes(data, "response").Raw)
+		response := []byte(ojson.GetBytes(data, "response").Raw)
 		adjusted := a.adjustZcodeContextUsage(ctx, prepared, req, response, waitClosed)
 		if !bytes.Equal(adjusted, response) {
-			updated, err := sjson.SetRawBytes(data, "response", adjusted)
+			updated, err := ojson.SetRawBytes(data, "response", adjusted)
 			if err == nil {
 				lines[i] = append([]byte("data: "), updated...)
 			}

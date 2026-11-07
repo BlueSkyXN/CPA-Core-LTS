@@ -2,12 +2,11 @@ package thinking
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // HasEffortIntent includes explicit off/auto/budget settings and in-turn
@@ -18,11 +17,11 @@ func HasEffortIntent(body []byte, format, model string) bool {
 		return true
 	}
 	for _, path := range []string{"reasoning_effort", "reasoning.effort", "output_config.effort", "thinking.budget_tokens", "thinking.effort", "generationConfig.thinkingConfig.thinkingBudget", "generationConfig.thinkingConfig.thinkingLevel", "generation_config.thinking_budget", "generation_config.thinking_level"} {
-		if gjson.GetBytes(body, path).Exists() {
+		if ojson.GetBytes(body, path).Exists() {
 			return true
 		}
 	}
-	if kind := gjson.GetBytes(body, "thinking.type").String(); kind == "disabled" || kind == "enabled" {
+	if kind := ojson.GetBytes(body, "thinking.type").String(); kind == "disabled" || kind == "enabled" {
 		return true
 	}
 	if isResponsesFormat(format) {
@@ -31,7 +30,7 @@ func HasEffortIntent(body []byte, format, model string) bool {
 			return true
 		}
 	}
-	for _, message := range gjson.GetBytes(body, "messages").Array() {
+	for _, message := range ojson.GetBytes(body, "messages").Array() {
 		if message.Get("output_config.effort").Exists() {
 			return true
 		}
@@ -53,7 +52,7 @@ func ApplyEffortPolicy(body, source []byte, model, from, to, provider, effort st
 	if modelInfo != nil && modelInfo.Thinking != nil && len(modelInfo.Thinking.Levels) > 0 && !HasLevel(modelInfo.Thinking.Levels, effort) {
 		return nil, NewThinkingError(ErrLevelNotSupported, "the configured reasoning effort is not supported by the selected model")
 	}
-	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+	if !ojson.ValidBytes(body) || !util.ParseGJSONBytesNoCopy(body).IsObject() {
 		return nil, NewThinkingError(ErrInvalidPolicyRequest, "reasoning effort policy requires a valid request object")
 	}
 	base := ParseSuffix(model).ModelName
@@ -104,7 +103,7 @@ func clearForeignEffortFields(body []byte, format string) []byte {
 	}
 	for _, path := range effortAliasPaths(format) {
 		if !native[path] {
-			body, _ = sjson.DeleteBytes(body, path)
+			body, _ = ojson.DeleteBytes(body, path)
 		}
 	}
 	return body
@@ -125,11 +124,11 @@ func ProtectPolicyEffort(before, after []byte, format string) []byte {
 	format = policyFormat(format)
 	paths := append(effortAliasPaths(format), effortPaths(format)...)
 	for _, path := range paths {
-		value := gjson.GetBytes(before, path)
+		value := ojson.GetBytes(before, path)
 		if value.Exists() {
-			after, _ = sjson.SetRawBytes(after, path, []byte(value.Raw))
+			after, _ = ojson.SetRawBytes(after, path, []byte(value.Raw))
 		} else {
-			after, _ = sjson.DeleteBytes(after, path)
+			after, _ = ojson.DeleteBytes(after, path)
 		}
 	}
 	return protectDynamicPolicyEffort(before, after, format)
@@ -147,15 +146,15 @@ func protectDynamicPolicyEffort(before, after []byte, format string) []byte {
 	default:
 		return after
 	}
-	oldItems, newItems := gjson.GetBytes(before, array).Array(), gjson.GetBytes(after, array).Array()
-	isControl := func(item gjson.Result) bool {
+	oldItems, newItems := ojson.GetBytes(before, array).Array(), ojson.GetBytes(after, array).Array()
+	isControl := func(item ojson.Result) bool {
 		if array == "input" {
 			return item.Get("type").String() == "configuration_update"
 		}
 		return item.Get(field).Exists()
 	}
 	hasControl := false
-	for _, items := range [][]gjson.Result{oldItems, newItems} {
+	for _, items := range [][]ojson.Result{oldItems, newItems} {
 		for _, item := range items {
 			hasControl = hasControl || isControl(item)
 		}
@@ -184,11 +183,11 @@ func protectDynamicPolicyEffort(before, after []byte, format string) []byte {
 }
 
 func restorePolicyPath(before, after []byte, path string) []byte {
-	value := gjson.GetBytes(before, path)
+	value := ojson.GetBytes(before, path)
 	if value.Exists() {
-		after, _ = sjson.SetRawBytes(after, path, []byte(value.Raw))
+		after, _ = ojson.SetRawBytes(after, path, []byte(value.Raw))
 	} else {
-		after, _ = sjson.DeleteBytes(after, path)
+		after, _ = ojson.DeleteBytes(after, path)
 	}
 	return after
 }
@@ -199,32 +198,32 @@ func applyCurrentPolicyControl(body []byte, format string, modelInfo *registry.M
 	switch format {
 	case "codex", "xai":
 		controls, err := util.InspectResponsesControls(body)
-		if err != nil || (!controls.HasConfigurationUpdate && !gjson.GetBytes(body, "previous_response_id").Exists()) {
+		if err != nil || (!controls.HasConfigurationUpdate && !ojson.GetBytes(body, "previous_response_id").Exists()) {
 			return body
 		}
 		if (modelInfo == nil || !modelInfo.SupportConfigurationUpdate) && !controls.HasConfigurationUpdate {
 			return body
 		}
-		effort := gjson.GetBytes(body, "reasoning.effort").String()
+		effort := ojson.GetBytes(body, "reasoning.effort").String()
 		if effort == "" {
 			return body
 		}
-		input := gjson.GetBytes(body, "input")
-		if input.Type == gjson.String {
-			body, _ = sjson.SetBytes(body, "input", []any{map[string]any{"role": "user", "content": input.String()}})
+		input := ojson.GetBytes(body, "input")
+		if input.Type == ojson.String {
+			body, _ = ojson.SetBytes(body, "input", []any{map[string]any{"role": "user", "content": input.String()}})
 		}
-		items := gjson.GetBytes(body, "input").Array()
+		items := ojson.GetBytes(body, "input").Array()
 		if len(items) > 0 && items[len(items)-1].Get("type").String() == "configuration_update" {
-			body, _ = sjson.SetBytes(body, fmt.Sprintf("input.%d.reasoning.effort", len(items)-1), effort)
+			body, _ = ojson.SetBytes(body, fmt.Sprintf("input.%d.reasoning.effort", len(items)-1), effort)
 		} else {
-			body, _ = sjson.SetBytes(body, "input.-1", map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": effort}})
+			body, _ = ojson.SetBytes(body, "input.-1", map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": effort}})
 		}
 	case "claude":
-		effort := gjson.GetBytes(body, "output_config.effort").String()
+		effort := ojson.GetBytes(body, "output_config.effort").String()
 		if effort == "" {
 			return body
 		}
-		messages := gjson.GetBytes(body, "messages").Array()
+		messages := ojson.GetBytes(body, "messages").Array()
 		hasControl := false
 		for _, message := range messages {
 			hasControl = hasControl || message.Get("output_config.effort").Exists()
@@ -234,9 +233,9 @@ func applyCurrentPolicyControl(body []byte, format string, modelInfo *registry.M
 		}
 		last := messages[len(messages)-1]
 		if last.Get("role").String() == "system" && last.Get("output_config.effort").Exists() && last.Get("content").IsArray() && len(last.Get("content").Array()) == 0 {
-			body, _ = sjson.SetBytes(body, fmt.Sprintf("messages.%d.output_config.effort", len(messages)-1), effort)
+			body, _ = ojson.SetBytes(body, fmt.Sprintf("messages.%d.output_config.effort", len(messages)-1), effort)
 		} else {
-			body, _ = sjson.SetBytes(body, "messages.-1", map[string]any{"role": "system", "content": []any{}, "output_config": map[string]any{"effort": effort}})
+			body, _ = ojson.SetBytes(body, "messages.-1", map[string]any{"role": "system", "content": []any{}, "output_config": map[string]any{"effort": effort}})
 		}
 	}
 	return body
