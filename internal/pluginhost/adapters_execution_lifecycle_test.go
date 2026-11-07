@@ -1145,3 +1145,92 @@ func TestExecutorStreamEarlyTerminationCancelsUpstream(t *testing.T) {
 		})
 	}
 }
+
+// 同协议直通路径没有转换协程接管清理，不得创建派生执行 ctx：
+// 插件必须直接运行在请求 ctx 上，客户端取消原生传播。
+func TestExecutorPassthroughStreamRunsUnderRequestContext(t *testing.T) {
+	host := NewForTest(nil)
+	var executeCtx context.Context
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			executeCtx = ctx
+			chunks := make(chan pluginapi.ExecutorStreamChunk, 1)
+			chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)}
+			close(chunks)
+			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"passthrough-request-ctx",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+	if executeCtx == nil {
+		t.Fatal("plugin was not executed")
+	}
+	if executeCtx.Done() != ctx.Done() {
+		t.Fatal("passthrough stream must run on the request context, not a derived execution context")
+	}
+}
+
+// Chat→Responses 正常完成同样必须释放派生执行 ctx（没有收尾协程，
+// 由转换协程终态 defer 负责）。
+func TestExecutorConvertedStreamReleasesExecutionContext(t *testing.T) {
+	host := NewForTest(nil)
+	var executeCtx context.Context
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			executeCtx = ctx
+			chunks := make(chan pluginapi.ExecutorStreamChunk, 1)
+			chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)}
+			close(chunks)
+			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"converted-release-ctx",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for executeCtx.Err() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("converted stream did not release the derived execution context after completion")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
