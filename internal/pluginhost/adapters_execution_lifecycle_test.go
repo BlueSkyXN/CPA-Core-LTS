@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -1041,5 +1042,106 @@ func TestRegisterExecutorsLifecycleReplacementDoesNotDeadlockOrCloseEquivalentAd
 		}
 	case <-time.After(time.Second):
 		t.Fatal("replaced adapter did not receive all-session close")
+	}
+}
+
+// 转换失败或上游 Err 提前终止流后，插件执行必须被取消：派生 ctx 取消、
+// CancelExecution 触发，且下游不必等上游关闭就能收到终止。
+func TestExecutorStreamEarlyTerminationCancelsUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		upstreamErr bool
+	}{
+		{name: "conversion_error", upstreamErr: false},
+		{name: "upstream_error", upstreamErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previousWindow := pluginStreamUsageTailWindow
+			pluginStreamUsageTailWindow = 200 * time.Millisecond
+			t.Cleanup(func() { pluginStreamUsageTailWindow = previousWindow })
+
+			host := NewForTest(nil)
+			pluginChunks := make(chan pluginapi.ExecutorStreamChunk)
+			var executeCtx context.Context
+			cancelRequests := make(chan pluginapi.CancelExecutionRequest, 4)
+			executor := &fakeExecutor{
+				identifier: "plugin-provider",
+				executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+					executeCtx = ctx
+					return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+				},
+			}
+			adapter := newCurrentExecutorAdapterForTest(
+				host,
+				"lifecycle-early-cancel",
+				executor,
+				[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+				[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+			)
+			adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+				cancelRequests <- req
+				return nil
+			})
+			auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+			req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+			opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{
+				coreexecutor.RequestIDMetadataKey:        "request-early-cancel",
+				coreexecutor.ExecutionSessionMetadataKey: "session-early-cancel",
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+			if errStream != nil {
+				t.Fatalf("ExecuteStream() error = %v", errStream)
+			}
+			select {
+			case pluginChunks <- func() pluginapi.ExecutorStreamChunk {
+				if tc.upstreamErr {
+					return pluginapi.ExecutorStreamChunk{Err: errors.New("fixture upstream error")}
+				}
+				return pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)}
+			}():
+			case <-time.After(time.Second):
+				t.Fatal("plugin chunk was not consumed by the adapter")
+			}
+			errCount := 0
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					errCount++
+				}
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("downstream termination waited for caller context: %v", ctx.Err())
+			}
+			if errCount != 1 {
+				t.Fatalf("terminal errors = %d, want 1", errCount)
+			}
+			var cancelReq pluginapi.CancelExecutionRequest
+			select {
+			case cancelReq = <-cancelRequests:
+			case <-time.After(2 * time.Second):
+				t.Fatal("plugin did not receive explicit cancellation after early termination")
+			}
+			if cancelReq.RequestID != "request-early-cancel" || cancelReq.ExecutionSessionID != "session-early-cancel" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
+				t.Fatalf("cancel request = %#v", cancelReq)
+			}
+			select {
+			case extra := <-cancelRequests:
+				t.Fatalf("duplicate cancellation = %#v", extra)
+			case <-time.After(300 * time.Millisecond):
+			}
+			deadline := time.Now().Add(time.Second)
+			for executeCtx == nil || executeCtx.Err() == nil {
+				if time.Now().After(deadline) {
+					t.Fatalf("plugin execution context not canceled: ctx=%v err=%v", executeCtx != nil, func() error {
+						if executeCtx == nil {
+							return nil
+						}
+						return executeCtx.Err()
+					}())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
 	}
 }

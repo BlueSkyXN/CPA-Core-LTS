@@ -96,6 +96,60 @@ func TestExecutorMissingToolCallsPreservesFailureUsage(t *testing.T) {
 	}
 }
 
+func TestExecutorConversionFailureKeepsUsageTailFrame(t *testing.T) {
+	provider := "missing-tools-tail-fixture"
+	sink := newTestUsageCapturePlugin(provider)
+	registerTestUsagePlugin(t, "missing-tools-tail-fixture", sink)
+	record := normalizeTestCapabilityRecord(capabilityRecord{id: "missing-tools-tail-fixture"})
+	host := newHostWithRecords(record)
+	chunks := make(chan pluginapi.ExecutorStreamChunk, 2)
+	// include_usage 布局：finish_reason 帧先行，usage 位于独立尾帧。
+	chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{"content":"checking"},"finish_reason":"tool_calls"}]}`)}
+	chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)}
+	close(chunks)
+	exec := &fakeExecutor{
+		identifier: provider,
+		executeStream: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
+		},
+	}
+	adapter := newExecutorAdapterForRecordForTest(host, record, exec, []sdktranslator.Format{sdktranslator.FormatOpenAI}, []sdktranslator.Format{sdktranslator.FormatOpenAI})
+	adapter.provider = provider
+	auth := &coreauth.Auth{ID: "fixture-auth", Index: "fixture-index", Provider: provider}
+	payload := []byte(`{"model":"fixture","messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
+	request := coreexecutor.Request{Model: "fixture", Payload: payload}
+	options := coreexecutor.Options{Stream: true, SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse, OriginalRequest: payload}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := adapter.ExecuteStream(ctx, auth, request, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome error
+	var body []byte
+	for chunk := range response.Chunks {
+		body = append(body, chunk.Payload...)
+		if chunk.Err != nil {
+			outcome = chunk.Err
+			cancel()
+		}
+	}
+	if outcome == nil {
+		t.Fatalf("expected conversion failure terminal, body=%s", body)
+	}
+	if scoped, ok := errors.AsType[coreexecutor.RequestScopedError](outcome); !ok || !scoped.IsRequestScoped() {
+		t.Fatalf("conversion error must be request-scoped: %v", outcome)
+	}
+	if bytes.Count(body, []byte("event: response.failed\n")) != 1 || bytes.Contains(body, []byte("event: response.completed\n")) {
+		t.Fatalf("invalid failure terminal: %s", body)
+	}
+	rec := sink.waitRecord(t, time.Second)
+	if !rec.Failed || rec.AuthIndex != "fixture-index" || rec.Detail.TotalTokens != 30 || rec.UsageProvenance != "provider_reported_unverified" {
+		t.Fatalf("usage tail frame lost on conversion failure: failed=%t index=%q detail=%+v provenance=%q", rec.Failed, rec.AuthIndex, rec.Detail, rec.UsageProvenance)
+	}
+	sink.assertNoRecord(t, 50*time.Millisecond)
+}
+
 func TestExecutorTranslatedFailureClosesWithoutSourceClose(t *testing.T) {
 	for _, conversion := range []bool{false, true} {
 		t.Run(fmt.Sprintf("conversion=%t", conversion), func(t *testing.T) {
