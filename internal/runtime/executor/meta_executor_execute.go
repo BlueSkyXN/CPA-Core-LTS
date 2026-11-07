@@ -24,6 +24,7 @@ import (
 type metaPreparedRequest struct {
 	applyPatch      *helps.ApplyPatchResponsesState
 	baseModel       string
+	effectiveModel  string
 	from            sdktranslator.Format
 	responseFormat  sdktranslator.Format
 	to              sdktranslator.Format
@@ -78,11 +79,16 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 
 	policyPayload := doc.Bytes()
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, e.Identifier(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	effectiveModel := strings.TrimSpace(doc.Get("model").String())
+	if effectiveModel == "" {
+		effectiveModel = baseModel
+	}
 	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, e.Identifier(), e.Identifier(), req, opts)
 	return &metaPreparedRequest{
 		applyPatch:      applyPatch,
 		baseModel:       baseModel,
+		effectiveModel:  effectiveModel,
 		from:            from,
 		responseFormat:  responseFormat,
 		to:              to,
@@ -127,7 +133,7 @@ func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if errRequest != nil {
 		return resp, errRequest
 	}
-	applyMetaAPIHeaders(httpReq, enriched, token, true, opts.Headers)
+	applyMetaAPIHeaders(httpReq, enriched, token, true, opts.Headers, prepared.effectiveModel)
 	e.recordMetaRequest(ctx, enriched, url, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, enriched, 0)
@@ -385,10 +391,14 @@ func applyMetaClientIdentity(req *http.Request) {
 	req.Header.Set("X-Tbh-Thread-Id", sessionID)
 	req.Header.Set("X-Tbh-Root-Session-Id", sessionID)
 	req.Header.Set("X-Tbh-Agent-Role", "main")
-	req.Header.Set("X-Tbh-Contributor-Mode", "1")
 }
 
-func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token string, stream bool, clientHeaders http.Header) {
+func isMetaContributorModel(model string) bool {
+	base := strings.TrimSpace(thinking.ParseSuffix(strings.TrimSpace(model)).ModelName)
+	return strings.HasSuffix(strings.ToLower(base), "-contributor")
+}
+
+func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token string, stream bool, clientHeaders http.Header, model ...string) {
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -396,6 +406,12 @@ func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token strin
 		req.Header.Del("Authorization")
 	}
 	applyMetaClientIdentity(req)
+	for _, m := range model {
+		if isMetaContributorModel(m) {
+			req.Header.Set("X-Tbh-Contributor-Mode", "1")
+			break
+		}
+	}
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Cache-Control", "no-cache")

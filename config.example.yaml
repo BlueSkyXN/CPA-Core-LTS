@@ -190,7 +190,18 @@ upstream:
     claude:
         # 在 Claude Responses 路由启用 Codex tool_search；自定义网关需 native-tool-search 明确支持。
         tool-search: false
+        # header-defaults 共享 Claude CLI 指纹基线与操作员覆盖。未测量的客户端版本使用该基线；
+        # 验证过的原生 Claude Code 请求仅在版本线匹配时保留其实测 entrypoint。
         # header-defaults:
+        #     user-agent: "claude-cli/2.1.280 (external, cli)"
+        #     package-version: "0.112.1"
+        #     runtime-version: "v26.3.0"
+        #     os: "MacOS"
+        #     arch: "arm64"
+        #     timeout: "600"
+        #     timezone: "Asia/Singapore"  # cloaked currentDate 的回退 IANA 时区；凭据 JSON 的 "timezone" 优先
+        #     stabilize-device-profile: false  # 默认 false；true 时按凭据固定 OS/arch 指纹
+        #     native-entrypoints: ["t3-code"]  # 额外视为原生 Claude Code 的 entrypoint 标签（强信号匹配时透传）
         #     anthropic-beta-strip: []  # 从派生 beta 列表移除这些名称。
         #     anthropic-beta-append: [] # 在末尾补充尚不存在的 beta 名称。
         #     inject-diagnostics: true # 为官方 Claude Code 路由注入诊断字段。
@@ -202,6 +213,10 @@ upstream:
         # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
         disable-cloaking-model-list: false
         # Provider-wide Claude settings.
+        # 内存模式下（server.kv-store.disabled: true 且无 Home）每个 session 的 cloaked currentDate
+        # 保留天数：空闲间隔或凭据切换不能重新锚定日期、使既有 thinking 签名与 prompt cache 失效。
+        # 默认 7；显式 0 保留 continuity 作用域 pin（1h 生命周期）。KV store（本地 bbolt 或 Home KV）
+        # 生效时 session date pin 永久持久化，忽略该值。
         session-date-pin-days: 7
 
 
@@ -537,6 +552,12 @@ server:
         #   include: []                     # White-listed interfaces (empty: auto-detect physical interfaces)
         #   exclude: []                     # Additional interface patterns to exclude
         # auth-required: true               # Advertise that credentials are required
+    # Local persistent KV store settings (bbolt). Ignored when Home mode is enabled.
+    kv-store:
+        # Disable local bbolt KV persistence and fall back to in-memory maps (default: false).
+        disabled: false
+        # File path for the bbolt database (default: "<auth-dir>/kv.db" when empty).
+        path: ""
     # When true, disable high-overhead request logging and HTTP middleware features to reduce per-request memory usage under high concurrency.
     commercial-mode: false
 management:

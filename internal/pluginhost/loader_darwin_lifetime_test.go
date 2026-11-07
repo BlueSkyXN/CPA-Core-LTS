@@ -64,6 +64,14 @@ func TestDarwinLibraryLifetimeHelper(t *testing.T) {
 		return
 	}
 	marker := os.Getenv("CPA_PLUGIN_LIFETIME_MARKER")
+	// The fixture writes its marker from init/shutdown hooks keyed by env, so
+	// the preflight probe child (which inherits this environment) must not run
+	// them. Pre-seed the probe cache for this shadow: content-addressed shadow
+	// paths are deterministic, so Open reuses the same path and skips probing.
+	if preloadPath, errPreload := shadowCopyPlugin(pluginFile{ID: "lifetime", Path: library}); errPreload == nil {
+		probedPluginShadows.Store(filepath.Base(preloadPath), "")
+		removeShadowPlugin(preloadPath)
+	}
 	client, err := (dynamicLibraryLoader{}).Open(pluginFile{ID: "lifetime", Path: library}, New())
 	if err != nil {
 		t.Fatal(err)
