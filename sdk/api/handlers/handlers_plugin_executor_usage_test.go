@@ -831,7 +831,7 @@ func advanceMonotonicClock() time.Duration {
 	}
 }
 
-func TestHandlerPluginExecutorPublishesNonZeroTTFTNonStream(t *testing.T) {
+func TestHandlerPluginExecutorKeepsCanonicalTTFTMissingNonStream(t *testing.T) {
 	targetPluginID := "custom-ttft-nonstream-plugin"
 	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
 	registerUsagePluginForTest(t, "test-plugin-executor-ttft-nonstream", plugin)
@@ -862,38 +862,29 @@ func TestHandlerPluginExecutorPublishesNonZeroTTFTNonStream(t *testing.T) {
 	}
 
 	record := plugin.waitRecord(t)
-	if record.TTFT <= 0 {
-		t.Fatalf("record.TTFT = %v, want > 0", record.TTFT)
+	if record.TTFT != 0 {
+		t.Fatalf("record.TTFT = %v, want 0: a non-stream answer-only response has no reasoning event, so the v3 ttft_ms stays missing", record.TTFT)
 	}
 	if record.Latency <= 0 {
 		t.Fatalf("record.Latency = %v, want > 0", record.Latency)
 	}
 }
 
-func TestHandlerPluginExecutorPublishesNonZeroTTFTStream(t *testing.T) {
-	targetPluginID := "custom-ttft-stream-plugin"
+func TestHandlerPluginExecutorKeepsCanonicalTTFTMissingAnswerOnlyStream(t *testing.T) {
+	targetPluginID := "custom-ttft-answer-only-stream-plugin"
 	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
-	registerUsagePluginForTest(t, "test-plugin-executor-ttft-stream", plugin)
+	registerUsagePluginForTest(t, "test-plugin-executor-ttft-answer-only-stream", plugin)
 
 	originalModel := "codex-5.2"
-	firstChunkDelivered := make(chan struct{})
-	var minTokenOffset time.Duration
 
 	mockHost := &mockPluginUsageHost{
 		streamFunc: func(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-			streamStart := time.Now()
-			chunks := make(chan coreexecutor.StreamChunk)
-			go func() {
-				defer close(chunks)
-				advanceMonotonicClock()
-				chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")}
-				<-firstChunkDelivered
-				advanceMonotonicClock()
-				minTokenOffset = time.Since(streamStart)
-				chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n")}
-				chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n")}
-				chunks <- coreexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
-			}()
+			chunks := make(chan coreexecutor.StreamChunk, 3)
+			advanceMonotonicClock()
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n")}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
+			close(chunks)
 			return &coreexecutor.StreamResult{Chunks: chunks}, nil
 		},
 	}
@@ -906,15 +897,7 @@ func TestHandlerPluginExecutorPublishesNonZeroTTFTStream(t *testing.T) {
 	handler.SetModelRouterHost(mockHost)
 
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", originalModel, []byte(fmt.Sprintf(`{"model":%q,"stream":true}`, originalModel)), "")
-	firstSeen := false
 	for range dataChan {
-		if !firstSeen {
-			firstSeen = true
-			close(firstChunkDelivered)
-		}
-	}
-	if !firstSeen {
-		close(firstChunkDelivered)
 	}
 	for err := range errChan {
 		if err != nil {
@@ -923,15 +906,15 @@ func TestHandlerPluginExecutorPublishesNonZeroTTFTStream(t *testing.T) {
 	}
 
 	record := plugin.waitRecord(t)
-	if record.TTFT <= 0 {
-		t.Fatalf("record.TTFT = %v, want > 0", record.TTFT)
+	if record.TTFT != 0 {
+		t.Fatalf("record.TTFT = %v, want 0: assistant answer text is not reasoning content under the v3 contract", record.TTFT)
 	}
-	if record.TTFT < minTokenOffset {
-		t.Fatalf("record.TTFT = %v, want >= token delta offset %v (must reflect token event, not metadata first packet)", record.TTFT, minTokenOffset)
+	if record.TimingVersion != helps.UsageTimingVersionV1 {
+		t.Fatalf("record.TimingVersion = %d, want %d: missing reasoning must not invalidate v1 timing", record.TimingVersion, helps.UsageTimingVersionV1)
 	}
 }
 
-func TestHandlerPluginExecutorPublishesFirstPacketFallbackTTFTStream(t *testing.T) {
+func TestHandlerPluginExecutorKeepsCanonicalTTFTMissingFirstPacketOnlyStream(t *testing.T) {
 	targetPluginID := "custom-ttft-fallback-stream-plugin"
 	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
 	registerUsagePluginForTest(t, "test-plugin-executor-ttft-fallback-stream", plugin)
@@ -966,7 +949,7 @@ func TestHandlerPluginExecutorPublishesFirstPacketFallbackTTFTStream(t *testing.
 	}
 
 	record := plugin.waitRecord(t)
-	if record.TTFT <= 0 {
-		t.Fatalf("record.TTFT = %v, want > 0 for first-packet fallback", record.TTFT)
+	if record.TTFT != 0 {
+		t.Fatalf("record.TTFT = %v, want 0: v3 ttft_ms requires a non-empty reasoning event and must not fall back to the first packet", record.TTFT)
 	}
 }

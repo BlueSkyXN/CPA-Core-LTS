@@ -981,7 +981,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Latency:              r.latency(),
 		TimingVersion:        timing.TimingVersion,
 		TTFB:                 timing.TTFB,
-		TTFT:                 usageTimingTTFT(timing, r.ttftDuration()),
+		TTFT:                 timing.TTFT,
 		TTFA:                 timing.TTFA,
 		OutputTiming:         timing.OutputTiming.Clone(),
 		Failed:               failed,
@@ -1074,22 +1074,10 @@ func (r *UsageReporter) timingSnapshot() ResponseTimingSnapshot {
 }
 
 // ttftDuration exposes upstream's effective-token/fallback measurement to its
-// package-local protocol tests. Canonical v3 records use timingSnapshot.
-// usageTimingTTFT prefers the semantic timing tracker's reasoning-first TTFT.
-// Only paths without any HTTP response observation (plugin executors, native
-// transports) fall back to the protocol-aware first-token/first-packet
-// measurement; once an HTTP attempt is tracked, a missing canonical TTFT means
-// "no reasoning token", not "unmeasured".
-func usageTimingTTFT(timing ResponseTimingSnapshot, fallback time.Duration) time.Duration {
-	if timing.TTFT > 0 {
-		return timing.TTFT
-	}
-	if timing.TTFB > 0 {
-		return 0
-	}
-	return fallback
-}
-
+// package-local protocol tests. Canonical v3 records use timingSnapshot: the
+// canonical TTFT comes only from the semantic tracker's first non-empty
+// reasoning content and stays missing when that event was never observed,
+// regardless of any protocol-level first-token/first-packet measurement.
 func (r *UsageReporter) ttftDuration() time.Duration {
 	if r == nil {
 		return 0
