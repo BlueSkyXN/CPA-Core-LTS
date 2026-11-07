@@ -1674,6 +1674,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	}
 	streamCtx := ctx
 	var cancelStream context.CancelFunc
+	var stopCallerBridge func()
 	streamHandedOff := false
 	// Claude 转换路径沿用请求子 ctx；其余需要转换的流派生与请求取消解耦的
 	// 执行 ctx：错误终止交付后的有界 usage 收尾不能被客户端取消掐断，终态
@@ -1687,6 +1688,24 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			streamCtx, cancelStream = context.WithCancel(streamCtx)
 		} else {
 			streamCtx, cancelStream = context.WithCancel(context.WithoutCancel(streamCtx))
+			// 建流桥接：插件 ExecuteStream 返回前转换协程尚未接管，请求取消
+			// 必须显式转发到解耦的执行 ctx；桥接在插件调用返回后立即解除，
+			// 此后由跟随请求 ctx 的转换协程负责清理。
+			if ctx != nil && ctx.Done() != nil {
+				bridgeStop := make(chan struct{})
+				var bridgeOnce sync.Once
+				stopCallerBridge = func() {
+					bridgeOnce.Do(func() { close(bridgeStop) })
+				}
+				defer stopCallerBridge()
+				go func() {
+					select {
+					case <-ctx.Done():
+						cancelStream()
+					case <-bridgeStop:
+					}
+				}()
+			}
 		}
 		defer func() {
 			if !streamHandedOff {
@@ -1714,6 +1733,10 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			reporter.PublishFailure(ctx, errExecuteStream)
 		}
 		return nil, errExecuteStream
+	}
+	// 插件调用已返回，建流桥接解除；后续请求取消由跟随请求 ctx 的转换协程处理。
+	if stopCallerBridge != nil {
+		stopCallerBridge()
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
 	if isClaudePluginOpenAI(prepared) {
@@ -1743,7 +1766,8 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	streamHandedOff = true
 	return &coreexecutor.StreamResult{
 		Headers: cloneHeader(pluginResp.Headers),
-		Chunks:  mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunksWithUsage(streamCtx, prepared, pluginChunks, nil, cancelStream)),
+		// 转换协程同样跟随请求 ctx：客户端取消要能终止转换与上游执行。
+		Chunks: mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunksWithUsage(ctx, prepared, pluginChunks, nil, cancelStream)),
 	}, nil
 }
 

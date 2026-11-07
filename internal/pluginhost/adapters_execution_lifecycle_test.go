@@ -1146,6 +1146,128 @@ func TestExecutorStreamEarlyTerminationCancelsUpstream(t *testing.T) {
 	}
 }
 
+// 建流阶段（插件 ExecuteStream 阻塞期间）请求取消必须转发到解耦的执行 ctx，
+// 否则等待上游响应头的插件调用无法被终止。
+func TestExecutorStreamBootstrapCancelAbortsPluginCall(t *testing.T) {
+	host := NewForTest(nil)
+	started := make(chan struct{})
+	cancelRequests := make(chan pluginapi.CancelExecutionRequest, 4)
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			close(started)
+			<-ctx.Done()
+			return pluginapi.ExecutorStreamResponse{}, ctx.Err()
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"bootstrap-cancel",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+		cancelRequests <- req
+		return nil
+	})
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{
+		coreexecutor.RequestIDMetadataKey: "request-bootstrap-cancel",
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errResult := make(chan error, 1)
+	go func() {
+		_, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+		errResult <- errStream
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+	cancel()
+	select {
+	case errStream := <-errResult:
+		if errStream != context.Canceled {
+			t.Fatalf("ExecuteStream() error = %v, want context.Canceled", errStream)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ExecuteStream did not return after cancellation during plugin call")
+	}
+	select {
+	case cancelReq := <-cancelRequests:
+		if cancelReq.RequestID != "request-bootstrap-cancel" {
+			t.Fatalf("cancel request = %#v", cancelReq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive cancellation during bootstrap")
+	}
+}
+
+// 通用转换路径（如 Chat→Claude）的转换协程必须跟随请求 ctx：客户端取消后
+// 上游执行要被终止，而不是卡在无人接收的输出 channel 上。
+func TestExecutorGenericConversionCancelAbortsUpstream(t *testing.T) {
+	host := NewForTest(nil)
+	pluginChunks := make(chan pluginapi.ExecutorStreamChunk)
+	var executeCtx context.Context
+	cancelRequests := make(chan pluginapi.CancelExecutionRequest, 4)
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			executeCtx = ctx
+			return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"generic-cancel",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+		cancelRequests <- req
+		return nil
+	})
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatClaude, Metadata: map[string]any{
+		coreexecutor.RequestIDMetadataKey: "request-generic-cancel",
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	select {
+	case pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{"content":"hello"}}]}`)}:
+	case <-time.After(time.Second):
+		t.Fatal("plugin chunk was not consumed by the adapter")
+	}
+	cancel()
+	for range result.Chunks {
+	}
+	deadline := time.Now().Add(time.Second)
+	for executeCtx == nil || executeCtx.Err() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("generic conversion stream did not abort the upstream after client cancellation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case cancelReq := <-cancelRequests:
+		if cancelReq.RequestID != "request-generic-cancel" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
+			t.Fatalf("cancel request = %#v", cancelReq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive cancellation after client disconnect")
+	}
+}
+
 // 同协议直通路径没有转换协程接管清理，不得创建派生执行 ctx：
 // 插件必须直接运行在请求 ctx 上，客户端取消原生传播。
 func TestExecutorPassthroughStreamRunsUnderRequestContext(t *testing.T) {
