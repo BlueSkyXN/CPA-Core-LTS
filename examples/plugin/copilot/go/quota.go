@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,11 +16,11 @@ import (
 type copilotQuotaSnapshots map[string]copilotQuotaSnapshot
 
 type copilotQuotaSnapshot struct {
-	Entitlement      float64 `json:"entitlement"`
-	QuotaRemaining   float64 `json:"quota_remaining"`
-	Remaining        float64 `json:"remaining"`
-	PercentRemaining float64 `json:"percent_remaining"`
-	Unlimited        bool    `json:"unlimited"`
+	Entitlement      float64  `json:"entitlement"`
+	QuotaRemaining   *float64 `json:"quota_remaining"`
+	Remaining        float64  `json:"remaining"`
+	PercentRemaining float64  `json:"percent_remaining"`
+	Unlimited        bool     `json:"unlimited"`
 }
 
 // copilotQuotaGroupOrder 固定展示顺序，避免 map 遍历导致 UI 顺序抖动。
@@ -53,6 +54,9 @@ func (r *pluginRuntime) fetchQuota(raw []byte) (pluginapi.QuotaFetchResponse, er
 	cached, okCached := r.summaryCache[cacheKey]
 	r.mu.Unlock()
 	if okCached && time.Since(cached.FetchedAt) < copilotSummaryCacheTTL {
+		if cached.Summary.Account.Status != "available" {
+			return pluginapi.QuotaFetchResponse{}, newPluginCallError("copilot_quota_unavailable", "Copilot quota upstream is unavailable: "+cached.Summary.Account.Status, http.StatusBadGateway, true)
+		}
 		return copilotQuotaResponseFromSummary(cached.Summary), nil
 	}
 	summary := r.copilotSummary(auth, req.HostCallbackID, cfg)
@@ -79,11 +83,6 @@ func copilotQuotaResponseFromSummary(summary copilotSummary) pluginapi.QuotaFetc
 	if plan := strings.TrimSpace(summary.Account.CopilotPlan); plan != "" {
 		response.Subscription = &pluginapi.QuotaSubscription{Plan: plan}
 	}
-	if summary.Account.QuotaResetDate != "" {
-		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
-			Key: "quota_reset_date", Label: "Quota reset date", Value: 0,
-		})
-	}
 	snapshots := parseCopilotQuotaSnapshots(summary.QuotaSnapshots)
 	if len(snapshots) == 0 {
 		return response
@@ -107,18 +106,27 @@ func copilotQuotaResponseFromSummary(summary copilotSummary) pluginapi.QuotaFetc
 		group.Buckets = append(group.Buckets, pluginapi.QuotaBucket{
 			Window:            key,
 			RemainingFraction: remainingFraction,
+			ResetTime:         summary.Account.QuotaResetDate,
 			Description:       copilotQuotaBucketDescription(key, snapshot),
 		})
-		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
-			Key: key + "_remaining", Label: copilotQuotaGroupLabel(key) + " remaining",
-			Value: copilotSnapshotRemaining(snapshot), Unit: "requests",
-		})
+		if !snapshot.Unlimited {
+			response.Summary = append(response.Summary, pluginapi.QuotaMetric{
+				Key: key + "_remaining", Label: copilotQuotaGroupLabel(key) + " remaining",
+				Value: copilotSnapshotRemaining(snapshot), Unit: "requests",
+			})
+		}
 	}
 	// 未知 quota_id 也要展示，避免 GitHub 新增分组时静默丢失。
-	for key, snapshot := range snapshots {
+	unknownKeys := make([]string, 0)
+	for key := range snapshots {
 		if _, known := copilotQuotaGroupLabels[key]; known {
 			continue
 		}
+		unknownKeys = append(unknownKeys, key)
+	}
+	sort.Strings(unknownKeys)
+	for _, key := range unknownKeys {
+		snapshot := snapshots[key]
 		remainingFraction := snapshot.PercentRemaining / 100
 		if remainingFraction < 0 {
 			remainingFraction = 0
@@ -132,6 +140,7 @@ func copilotQuotaResponseFromSummary(summary copilotSummary) pluginapi.QuotaFetc
 		group.Buckets = append(group.Buckets, pluginapi.QuotaBucket{
 			Window:            key,
 			RemainingFraction: remainingFraction,
+			ResetTime:         summary.Account.QuotaResetDate,
 			Description:       copilotQuotaBucketDescription(key, snapshot),
 		})
 	}
@@ -162,8 +171,8 @@ func copilotQuotaBucketDescription(key string, snapshot copilotQuotaSnapshot) st
 }
 
 func copilotSnapshotRemaining(snapshot copilotQuotaSnapshot) float64 {
-	if snapshot.QuotaRemaining > 0 {
-		return snapshot.QuotaRemaining
+	if snapshot.QuotaRemaining != nil {
+		return *snapshot.QuotaRemaining
 	}
 	return snapshot.Remaining
 }

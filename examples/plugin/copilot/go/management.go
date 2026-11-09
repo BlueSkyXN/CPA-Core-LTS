@@ -72,11 +72,29 @@ func (r *pluginRuntime) handleSummary(req rpcManagementRequest) pluginapi.Manage
 	r.mu.Unlock()
 	if okCached && time.Since(cached.FetchedAt) < copilotSummaryCacheTTL {
 		result := cloneCopilotSummary(cached.Summary)
+		if result.AuthIndex == "" {
+			r.setSummaryIdentity(&result, authIndex, authFile.Name, auth.Label)
+		}
 		result.Cached = true
 		return managementJSONResponse(http.StatusOK, result)
 	}
-	name := strings.TrimSpace(authFile.Name)
-	label := auth.Label
+	result := r.copilotSummary(auth, req.HostCallbackID, cfg)
+	r.setSummaryIdentity(&result, authIndex, authFile.Name, auth.Label)
+	result.UpdatedAt = time.Now().UTC()
+	r.mu.Lock()
+	// configure() 会整体重置 summaryCache；旧配置代次的在途结果不再写回新缓存。
+	if r.generation == epoch {
+		if r.summaryCache == nil {
+			r.summaryCache = make(map[string]copilotSummaryCacheEntry)
+		}
+		r.summaryCache[cacheKey] = copilotSummaryCacheEntry{FetchedAt: time.Now(), Summary: cloneCopilotSummary(result)}
+	}
+	r.mu.Unlock()
+	return managementJSONResponse(http.StatusOK, result)
+}
+
+func (r *pluginRuntime) setSummaryIdentity(result *copilotSummary, authIndex, name, label string) {
+	name = strings.TrimSpace(name)
 	if runtimeInfo, errRuntime := callCopilotHostAuthGetRuntime(r.caller, authIndex); errRuntime == nil {
 		if strings.TrimSpace(runtimeInfo.Auth.Name) != "" {
 			name = strings.TrimSpace(runtimeInfo.Auth.Name)
@@ -91,21 +109,9 @@ func (r *pluginRuntime) handleSummary(req rpcManagementRequest) pluginapi.Manage
 	if label == "" {
 		label = "GitHub Copilot"
 	}
-	result := r.copilotSummary(auth, req.HostCallbackID, cfg)
 	result.AuthIndex = authIndex
 	result.Name = name
 	result.Label = label
-	result.UpdatedAt = time.Now().UTC()
-	r.mu.Lock()
-	// configure() 会整体重置 summaryCache；旧配置代次的在途结果不再写回新缓存。
-	if r.generation == epoch {
-		if r.summaryCache == nil {
-			r.summaryCache = make(map[string]copilotSummaryCacheEntry)
-		}
-		r.summaryCache[cacheKey] = copilotSummaryCacheEntry{FetchedAt: time.Now(), Summary: cloneCopilotSummary(result)}
-	}
-	r.mu.Unlock()
-	return managementJSONResponse(http.StatusOK, result)
 }
 
 func managementJSONResponse(status int, value any) pluginapi.ManagementResponse {
