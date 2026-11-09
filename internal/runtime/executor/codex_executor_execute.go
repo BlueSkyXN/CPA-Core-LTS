@@ -290,13 +290,15 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			publishCodexImageToolUsage(ctx, reporter, body, eventData)
 			return cliproxyexecutor.Response{}, err
 		}
-		if completedUsageOK {
+		if detail, ok := helps.ParseCodexUsageWithOutputItems(completedData, outputItemsByIndex, outputItemsFallback); ok {
+			reporter.Publish(ctx, detail)
+		} else if completedUsageOK {
 			reporter.Publish(ctx, completedUsage)
 		} else {
 			// A completed response without usage is still a successful request.
 			reporter.EnsurePublished(ctx)
 		}
-		publishCodexImageToolUsage(ctx, reporter, body, eventData)
+		publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, completedData, outputItemsByIndex, outputItemsFallback)
 		if responseFormat == sdktranslator.FormatOpenAIResponse {
 			out = helps.EnsureResponsesUsageDetails(out)
 		}
