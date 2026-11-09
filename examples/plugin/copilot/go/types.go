@@ -88,6 +88,7 @@ type registrationCapabilities struct {
 	ExecutorInputFormats   []string                     `json:"executor_input_formats"`
 	ExecutorOutputFormats  []string                     `json:"executor_output_formats"`
 	ManagementAPI          bool                         `json:"management_api"`
+	QuotaProvider          bool                         `json:"quota_provider"`
 }
 
 type identifierResponse struct {
@@ -126,6 +127,16 @@ type managementRoute struct {
 
 type rpcManagementRequest struct {
 	pluginapi.ManagementRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcQuotaFetchRequest struct {
+	pluginapi.QuotaFetchRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcQuotaResetRequest struct {
+	pluginapi.QuotaResetRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
