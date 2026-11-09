@@ -156,7 +156,7 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 }
 
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, metadata map[string]any, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, executionSeq uint64) *cliproxyexecutor.StreamResult {
-	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	accessToken := authAccessTokenForRequest(ctx, auth, opts.Headers)
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
@@ -562,6 +562,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			rerr := resultErrorFromError(errStream)
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)
+			result.AccessToken = authAccessTokenForRequest(ctx, auth, execOpts.Headers)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
 			result.RetryAfter = retryAfterFromError(errStream)
@@ -678,6 +679,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if okAction {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)
+				result.AccessToken = authAccessTokenForRequest(ctx, auth, execOpts.Headers)
 				result.RouteModel = routeModel
 				result.ExecutionSeq = executionSeq
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
@@ -704,6 +706,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if isRequestInvalidError(bootstrapErr) || cliproxyexecutor.IsUpstreamWebsocketTurnError(bootstrapErr) {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)
+				result.AccessToken = authAccessTokenForRequest(ctx, auth, execOpts.Headers)
 				result.RouteModel = routeModel
 				result.ExecutionSeq = executionSeq
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
@@ -720,6 +723,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if idx < len(execModels)-1 {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)
+				result.AccessToken = authAccessTokenForRequest(ctx, auth, execOpts.Headers)
 				result.RouteModel = routeModel
 				result.ExecutionSeq = executionSeq
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
@@ -745,6 +749,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			rerr := resultErrorFromError(bootstrapErr)
 			result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)
+			result.AccessToken = authAccessTokenForRequest(ctx, auth, execOpts.Headers)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
 			result.RetryAfter = retryAfterFromError(bootstrapErr)

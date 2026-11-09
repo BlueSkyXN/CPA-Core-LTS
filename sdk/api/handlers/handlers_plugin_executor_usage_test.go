@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"testing"
 	"time"
 
@@ -790,6 +791,7 @@ type mockPluginUsageHost struct {
 	execErr      error
 	execFunc     func(context.Context, string, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error)
 	streamResult *coreexecutor.StreamResult
+	streamFunc   func(context.Context, string, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error)
 }
 
 func (h *mockPluginUsageHost) ExecutePluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
@@ -809,8 +811,145 @@ func (h *mockPluginUsageHost) ExecutePluginExecutorStream(ctx context.Context, p
 	h.lastPluginID = pluginID
 	h.lastRequest = req
 	h.lastOptions = opts
+	if h.streamFunc != nil {
+		return h.streamFunc(ctx, pluginID, req, opts)
+	}
 	if h.stream != nil {
 		return h.stream(ctx, pluginID, req, opts)
 	}
 	return h.streamResult, nil
+}
+
+func advanceMonotonicClock() time.Duration {
+	start := time.Now()
+	for {
+		elapsed := time.Since(start)
+		if elapsed > 0 {
+			return elapsed
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestHandlerPluginExecutorKeepsCanonicalTTFTMissingNonStream(t *testing.T) {
+	targetPluginID := "custom-ttft-nonstream-plugin"
+	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
+	registerUsagePluginForTest(t, "test-plugin-executor-ttft-nonstream", plugin)
+
+	originalModel := "gpt-4o"
+	openAIResponseBody := []byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46}}`)
+
+	mockHost := &mockPluginUsageHost{
+		execFunc: func(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+			advanceMonotonicClock()
+			return coreexecutor.Response{Payload: openAIResponseBody}, nil
+		},
+	}
+	mockHost.hasRouters = true
+	mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(mockHost)
+
+	body, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai", originalModel, []byte(fmt.Sprintf(`{"model":%q}`, originalModel)), "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	if len(body) == 0 {
+		t.Fatal("empty response body")
+	}
+
+	record := plugin.waitRecord(t)
+	if record.TTFT != 0 {
+		t.Fatalf("record.TTFT = %v, want 0: a non-stream answer-only response has no reasoning event, so the v3 ttft_ms stays missing", record.TTFT)
+	}
+	if record.Latency <= 0 {
+		t.Fatalf("record.Latency = %v, want > 0", record.Latency)
+	}
+}
+
+func TestHandlerPluginExecutorKeepsCanonicalTTFTMissingAnswerOnlyStream(t *testing.T) {
+	targetPluginID := "custom-ttft-answer-only-stream-plugin"
+	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
+	registerUsagePluginForTest(t, "test-plugin-executor-ttft-answer-only-stream", plugin)
+
+	originalModel := "codex-5.2"
+
+	mockHost := &mockPluginUsageHost{
+		streamFunc: func(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+			chunks := make(chan coreexecutor.StreamChunk, 3)
+			advanceMonotonicClock()
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n")}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
+			close(chunks)
+			return &coreexecutor.StreamResult{Chunks: chunks}, nil
+		},
+	}
+	mockHost.hasRouters = true
+	mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(mockHost)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", originalModel, []byte(fmt.Sprintf(`{"model":%q,"stream":true}`, originalModel)), "")
+	for range dataChan {
+	}
+	for err := range errChan {
+		if err != nil {
+			t.Fatalf("stream error = %+v", err)
+		}
+	}
+
+	record := plugin.waitRecord(t)
+	if record.TTFT != 0 {
+		t.Fatalf("record.TTFT = %v, want 0: assistant answer text is not reasoning content under the v3 contract", record.TTFT)
+	}
+	if record.TimingVersion != helps.UsageTimingVersionV1 {
+		t.Fatalf("record.TimingVersion = %d, want %d: missing reasoning must not invalidate v1 timing", record.TimingVersion, helps.UsageTimingVersionV1)
+	}
+}
+
+func TestHandlerPluginExecutorKeepsCanonicalTTFTMissingFirstPacketOnlyStream(t *testing.T) {
+	targetPluginID := "custom-ttft-fallback-stream-plugin"
+	plugin := newCapturePluginExecutorUsagePlugin(targetPluginID)
+	registerUsagePluginForTest(t, "test-plugin-executor-ttft-fallback-stream", plugin)
+
+	originalModel := "codex-5.2"
+
+	mockHost := &mockPluginUsageHost{
+		streamFunc: func(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+			chunks := make(chan coreexecutor.StreamChunk, 2)
+			advanceMonotonicClock()
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")}
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
+			close(chunks)
+			return &coreexecutor.StreamResult{Chunks: chunks}, nil
+		},
+	}
+	mockHost.hasRouters = true
+	mockHost.route = func(ctx context.Context, req pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: targetPluginID}, true
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(mockHost)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", originalModel, []byte(fmt.Sprintf(`{"model":%q,"stream":true}`, originalModel)), "")
+	for range dataChan {
+	}
+	for err := range errChan {
+		if err != nil {
+			t.Fatalf("stream error = %+v", err)
+		}
+	}
+
+	record := plugin.waitRecord(t)
+	if record.TTFT != 0 {
+		t.Fatalf("record.TTFT = %v, want 0: v3 ttft_ms requires a non-empty reasoning event and must not fall back to the first packet", record.TTFT)
+	}
 }
