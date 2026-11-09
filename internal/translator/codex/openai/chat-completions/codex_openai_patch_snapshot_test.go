@@ -2,10 +2,9 @@ package chat_completions
 
 import (
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func streamPatchChat(t *testing.T, deltas []string, doneEvent string) (string, *ConvertCliToOpenAIParams) {
@@ -18,7 +17,7 @@ func streamPatchChat(t *testing.T, deltas []string, doneEvent string) (string, *
 	var args strings.Builder
 	collect := func(out [][]byte) {
 		for _, chunk := range out {
-			args.WriteString(gjson.GetBytes(chunk, "choices.0.delta.tool_calls.0.function.arguments").String())
+			args.WriteString(ojson.GetBytesNoCopy(chunk, "choices.0.delta.tool_calls.0.function.arguments").String())
 		}
 	}
 	collect(send(`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"a","call_id":"c","name":"apply_patch","input":""}}`))
@@ -42,7 +41,7 @@ func TestApplyPatchChatStreamCompletesMissingTail(t *testing.T) {
 		`{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"a","call_id":"c","name":"apply_patch","input":` + jsonString(full) + `}}`,
 	} {
 		args, p := streamPatchChat(t, []string{"*** Begin Patch\n"}, done)
-		if got := gjson.Get(args, "input").String(); got != full {
+		if got := ojson.Get(args, "input").String(); got != full {
 			t.Fatalf("arguments=%s, want full input %q", args, full)
 		}
 		if err := p.ToolInputError(); err != nil {

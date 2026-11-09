@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestSelectedAccountCapabilitiesIgnorePeerModels(t *testing.T) {
@@ -80,7 +80,7 @@ func TestSelectedAccountCapabilitiesIgnorePeerModels(t *testing.T) {
 						}
 						wire := append([]byte(nil), captured[calls-1]...)
 						f.transport.lock.Unlock()
-						if gjson.GetBytes(wire, "model").String() != upstream || gjson.GetBytes(wire, "reasoning_effort").String() != "max" || gjson.GetBytes(wire, "max_tokens").Int() != 64000 || gjson.GetBytes(wire, "thinking.type").String() != "enabled" || gjson.GetBytes(wire, "thinking.budget_tokens").Exists() {
+						if ojson.GetBytes(wire, "model").String() != upstream || ojson.GetBytes(wire, "reasoning_effort").String() != "max" || ojson.GetBytes(wire, "max_tokens").Int() != 64000 || ojson.GetBytes(wire, "thinking.type").String() != "enabled" || ojson.GetBytes(wire, "thinking.budget_tokens").Exists() {
 							t.Fatal("selected account inherited another provider's model capabilities")
 						}
 					}

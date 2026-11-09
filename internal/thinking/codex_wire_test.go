@@ -2,11 +2,11 @@ package thinking_test
 
 import (
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/tidwall/gjson"
 )
 
 func TestCanonicalCodexWireEffortIsModelAware(t *testing.T) {
@@ -86,7 +86,7 @@ func TestNormalizeCodexReasoningEffortForWire(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("NormalizeCodexReasoningEffortForWire() error = %v", err)
 			}
-			if got := gjson.GetBytes(out, "reasoning.effort").String(); got != tt.wantEffort {
+			if got := ojson.GetBytes(out, "reasoning.effort").String(); got != tt.wantEffort {
 				t.Fatalf("reasoning.effort = %q, want %q; body=%s", got, tt.wantEffort, out)
 			}
 		})
@@ -110,7 +110,7 @@ func TestNormalizeCodexReasoningEffortForWirePreservesUserDefinedGPT56Ultra(t *t
 	if err != nil {
 		t.Fatalf("NormalizeCodexReasoningEffortForWire() error = %v", err)
 	}
-	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
+	if got := ojson.GetBytes(out, "reasoning.effort").String(); got != "ultra" {
 		t.Fatalf("reasoning.effort = %q, want literal ultra for user-defined model; body=%s", got, out)
 	}
 }

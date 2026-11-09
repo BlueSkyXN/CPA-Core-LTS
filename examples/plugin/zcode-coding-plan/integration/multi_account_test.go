@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 type multiAccountTransport struct {
@@ -34,7 +34,7 @@ func (m *multiAccountTransport) RoundTripperFor(auth *coreauth.Auth) http.RoundT
 	if auth != nil {
 		key, _ := auth.Metadata["api_key"].(string)
 		if storage, ok := auth.Storage.(interface{ RawJSON() []byte }); ok {
-			key = gjson.GetBytes(storage.RawJSON(), "api_key").String()
+			key = ojson.GetBytes(storage.RawJSON(), "api_key").String()
 		}
 		if transport := m.transports[key]; transport != nil {
 			return transport
@@ -139,7 +139,7 @@ func TestMultiAccountManagementModelsSchedulingAndUsage(t *testing.T) {
 	for _, name := range []string{"synthetic.json", "second.json"} {
 		rec := httptest.NewRecorder()
 		f.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/models?name="+name, nil))
-		if rec.Code != http.StatusOK || gjson.GetBytes(rec.Body.Bytes(), "models.#").Int() != 2 {
+		if rec.Code != http.StatusOK || ojson.GetBytes(rec.Body.Bytes(), "models.#").Int() != 2 {
 			t.Fatalf("account %s has no independently registered models", name)
 		}
 	}
@@ -170,7 +170,7 @@ func TestMultiAccountManagementModelsSchedulingAndUsage(t *testing.T) {
 			t.Error("account did not reuse its own signer")
 		}
 		for _, body := range item.transport.captured {
-			if !strings.Contains(gjson.GetBytes(body, "metadata.user_id").String(), item.device) {
+			if !strings.Contains(ojson.GetBytes(body, "metadata.user_id").String(), item.device) {
 				t.Error("device identity crossed accounts")
 			}
 		}
@@ -208,7 +208,7 @@ func TestMultiAccountManagementModelsSchedulingAndUsage(t *testing.T) {
 	if record := takeAccountUsage(t, f); record.Failed || record.AuthIndex != second.Index {
 		t.Fatal("rotation changed usage attribution")
 	}
-	if rotatedTransport.handshakes != 1 || !strings.Contains(gjson.GetBytes(rotatedTransport.captured[0], "metadata.user_id").String(), "rotated-device") {
+	if rotatedTransport.handshakes != 1 || !strings.Contains(ojson.GetBytes(rotatedTransport.captured[0], "metadata.user_id").String(), "rotated-device") {
 		t.Fatal("rotation did not replace the signer or device identity")
 	}
 }
@@ -227,7 +227,7 @@ func TestExtraModelsRouteOnlyToEnabledAccounts(t *testing.T) {
 	} {
 		rec := httptest.NewRecorder()
 		f.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/models?name="+tc.id, nil))
-		if rec.Code != http.StatusOK || gjson.GetBytes(rec.Body.Bytes(), "models.#").Int() != 3 || !strings.Contains(rec.Body.String(), tc.model) || strings.Contains(rec.Body.String(), tc.excluded) {
+		if rec.Code != http.StatusOK || ojson.GetBytes(rec.Body.Bytes(), "models.#").Int() != 3 || !strings.Contains(rec.Body.String(), tc.model) || strings.Contains(rec.Body.String(), tc.excluded) {
 			t.Fatalf("account model directory incorrect for %s", tc.id)
 		}
 	}
@@ -255,7 +255,7 @@ func TestExtraModelsRouteOnlyToEnabledAccounts(t *testing.T) {
 		transport *v2Transport
 		model     string
 	}{{f.transport, "glm-5.3-highspeed"}, {secondTransport, "glm-5.3-flashx"}} {
-		if gjson.GetBytes(tc.transport.captured[0], "model").String() != tc.model {
+		if ojson.GetBytes(tc.transport.captured[0], "model").String() != tc.model {
 			t.Fatal("template lookup replaced the wire model")
 		}
 	}

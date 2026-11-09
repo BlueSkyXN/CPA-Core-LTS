@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/tidwall/gjson"
 )
 
 const collaborationPlaintextTestTools = `[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}]}]`
@@ -37,14 +37,14 @@ func TestResponsesBoundaryRestoresPlaintextToolArguments(t *testing.T) {
 				path := "output.0"
 				if stream {
 					for _, line := range bytes.Split(response, []byte("\n")) {
-						if bytes.HasPrefix(line, []byte("data:")) && gjson.GetBytes(bytes.TrimSpace(line[5:]), "type").String() == "response.completed" {
+						if bytes.HasPrefix(line, []byte("data:")) && ojson.GetBytes(bytes.TrimSpace(line[5:]), "type").String() == "response.completed" {
 							response = bytes.TrimSpace(line[5:])
 							break
 						}
 					}
 					path = "response.output.0"
 				}
-				item := gjson.GetBytes(response, path)
+				item := ojson.GetBytes(response, path)
 				if item.Get("arguments").String() != `{"message":"task text"}` || item.Get("call_id").String() != "call-1" {
 					t.Fatalf("tool identity or content changed: %s", response)
 				}
@@ -92,8 +92,8 @@ func TestResponsesWebsocketRestoresPlaintextToolArguments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if gjson.GetBytes(payload, "type").String() == "response.completed" {
-				marker := gjson.GetBytes(payload, "response.output.0.encrypted_function_args")
+			if ojson.GetBytes(payload, "type").String() == "response.completed" {
+				marker := ojson.GetBytes(payload, "response.output.0.encrypted_function_args")
 				if want := turn < 2; marker.Exists() != want || want && marker.Raw != "[]" {
 					t.Fatalf("turn %d: plaintext marker did not follow inherited/replaced tools: %s", turn, payload)
 				}
@@ -139,7 +139,7 @@ func TestResponsesWebsocketInlinePlaintextToolRedeclaration(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if kind := gjson.GetBytes(payload, "type").String(); kind == "error" || kind == "response.failed" {
+					if kind := ojson.GetBytes(payload, "type").String(); kind == "error" || kind == "response.failed" {
 						t.Fatalf("unexpected error: %s", payload)
 					} else if kind != "response.completed" {
 						continue
@@ -148,14 +148,14 @@ func TestResponsesWebsocketInlinePlaintextToolRedeclaration(t *testing.T) {
 					if turn == 2 && declaration != "renew" {
 						want = ""
 					}
-					if got := gjson.GetBytes(payload, "response.output.0.encrypted_function_args").Raw; got != want {
+					if got := ojson.GetBytes(payload, "response.output.0.encrypted_function_args").Raw; got != want {
 						t.Errorf("turn %d: plaintext marker=%q want=%q", turn, got, want)
 					}
 					break
 				}
 			}
 			payloads := executor.Payloads()
-			if len(payloads) != 2 || len(gjson.GetBytes(payloads[1], "input").Array()) < 4 {
+			if len(payloads) != 2 || len(ojson.GetBytes(payloads[1], "input").Array()) < 4 {
 				t.Fatal("test did not exercise reconstructed HTTP/SSE history")
 			}
 		})

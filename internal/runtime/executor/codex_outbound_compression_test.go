@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const codexCompressionCompletedSSE = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
@@ -144,7 +144,7 @@ func TestCodexExecutorCompressesOptedInAPIKeyRequests(t *testing.T) {
 	if len(got) != 1 || got[0].encoding != "zstd" {
 		t.Fatalf("captured = %+v, want one zstd request", got)
 	}
-	if model := gjson.GetBytes(got[0].decoded, "model").String(); model != "gpt-5.4" {
+	if model := ojson.GetBytes(got[0].decoded, "model").String(); model != "gpt-5.4" {
 		t.Fatalf("decoded body model = %q, want gpt-5.4 (body must round-trip)", model)
 	}
 }
@@ -165,7 +165,7 @@ func TestCodexExecutorRetriesUncompressedAfter415(t *testing.T) {
 	if len(got) != 2 || got[0].encoding != "zstd" || got[1].encoding != "" {
 		t.Fatalf("captured = %+v, want zstd attempt then uncompressed retry", got)
 	}
-	if model := gjson.GetBytes(got[1].decoded, "model").String(); model != "gpt-5.4" {
+	if model := ojson.GetBytes(got[1].decoded, "model").String(); model != "gpt-5.4" {
 		t.Fatalf("retry body model = %q, want original body", model)
 	}
 }

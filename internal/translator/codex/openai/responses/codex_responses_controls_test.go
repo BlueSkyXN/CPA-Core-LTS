@@ -2,7 +2,7 @@ package responses
 
 import (
 	"bytes"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 )
 
@@ -10,14 +10,14 @@ func TestCodexAstraControlsSurviveNativeTranslation(t *testing.T) {
 	input := []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"medium"},"prompt_cache_key":"stable-key","parallel_tool_calls":false,"top_logprobs":5,"include":["message.output_text.logprobs"],"input":[{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"function_call_output","call_id":"pending-previous-turn","output":"done"},{"type":"compaction_trigger"}],"tools":[{"type":"function","name":"slow","async":true,"parameters":{"type":"object","properties":{}}}]}`)
 	output, _ := ConvertOpenAIResponsesRequestToCodex("gpt-6-astra", input, true)
 	for _, path := range []string{"input", "tools", "reasoning.effort", "prompt_cache_key", "parallel_tool_calls"} {
-		if got, want := gjson.GetBytes(output, path).Raw, gjson.GetBytes(input, path).Raw; got != want {
+		if got, want := ojson.GetBytesNoCopy(output, path).Raw, ojson.GetBytesNoCopy(input, path).Raw; got != want {
 			t.Fatalf("%s changed: got %s want %s", path, got, want)
 		}
 	}
-	if gjson.GetBytes(output, "top_logprobs").Exists() {
+	if ojson.GetBytesNoCopy(output, "top_logprobs").Exists() {
 		t.Fatal("unsupported top_logprobs forwarded")
 	}
-	if got := gjson.GetBytes(output, "include").Raw; got != `["reasoning.encrypted_content"]` {
+	if got := ojson.GetBytesNoCopy(output, "include").Raw; got != `["reasoning.encrypted_content"]` {
 		t.Fatalf("include = %s", got)
 	}
 	if repeated, _ := ConvertOpenAIResponsesRequestToCodex("gpt-6-astra", output, true); !bytes.Equal(output, repeated) {
@@ -35,7 +35,7 @@ func TestCodexParallelToolDefaultAndExplicitValues(t *testing.T) {
 		{`{"input":"hello","parallel_tool_calls":false}`, false},
 	} {
 		output, _ := ConvertOpenAIResponsesRequestToCodex("gpt-6-astra", []byte(tt.body), true)
-		if got := gjson.GetBytes(output, "parallel_tool_calls").Bool(); got != tt.want {
+		if got := ojson.GetBytesNoCopy(output, "parallel_tool_calls").Bool(); got != tt.want {
 			t.Fatalf("got %v want %v", got, tt.want)
 		}
 	}

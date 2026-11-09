@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"net/http"
 	"strings"
 
@@ -16,8 +18,6 @@ import (
 	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	session "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type codexCacheSource string
@@ -82,16 +82,16 @@ func affinityUUID(parts ...string) string {
 // oauthCacheBase keeps established mappings, but records their origin before
 // automatic fields can be confused with an explicit client/config choice.
 func oauthCacheBase(ctx context.Context, from translator.Format, req execpkg.Request, body []byte, headers http.Header) (codexCacheBase, []byte, error) {
-	b := codexCacheBase{originalPCK: strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())}
+	b := codexCacheBase{originalPCK: strings.TrimSpace(ojson.GetBytes(body, "prompt_cache_key").String())}
 	b.key = b.originalPCK
 	if b.key == "" {
-		b.key = strings.TrimSpace(gjson.GetBytes(req.Payload, "prompt_cache_key").String())
+		b.key = strings.TrimSpace(ojson.GetBytes(req.Payload, "prompt_cache_key").String())
 	}
 	if b.key != "" {
 		b.source = cacheExplicit
 	}
 	if b.key == "" && sourceFormatEqual(from, translator.FormatClaude) {
-		cached, ok, err := helps.ClaudeCodePromptCache(ctx, gjson.GetBytes(body, "model").String(), req.Payload, headers)
+		cached, ok, err := helps.ClaudeCodePromptCache(ctx, ojson.GetBytes(body, "model").String(), req.Payload, headers)
 		if err != nil {
 			return b, nil, err
 		}
@@ -130,8 +130,8 @@ func codexAffinityIdentity(headers http.Header, payload []byte) (kind, id, paren
 	}
 	if id == "" {
 		for _, p := range []string{"session_id", "sessionId", "thread_id", "threadId", "conversation_id", "conversation.id", "metadata.session_id", "metadata.thread_id", "metadata.conversation_id"} {
-			v := gjson.GetBytes(payload, p)
-			if v.Type == gjson.String {
+			v := ojson.GetBytes(payload, p)
+			if v.Type == ojson.String {
 				if s := session.NormalizeExplicitID(v.String()); s != "" {
 					kind, id = p, s
 					break
@@ -141,9 +141,28 @@ func codexAffinityIdentity(headers http.Header, payload []byte) (kind, id, paren
 	}
 	// A parent label or subagent UA is not evidence of ancestry.
 	if id != "" {
+		// 与通用会话解析保持同族 parent header 优先于 body 的顺序。
+		// 保留 kind/id，避免改变已有身份摘要和已建立的缓存组绑定。
+		var parentHeaders []string
+		switch kind {
+		case "x-session-id":
+			parentHeaders = []string{"X-Parent-Session-Id", "X-Parent-Id"}
+		case "x-thread-id", "thread-id":
+			parentHeaders = []string{"X-Parent-Thread-Id", "X-Parent-Id"}
+		case "x-conversation-id", "conversation-id":
+			parentHeaders = []string{"X-Parent-Conversation-Id", "X-Parent-Id"}
+		}
+		for _, name := range parentHeaders {
+			if candidate := session.NormalizeExplicitID(rawHeaderValueCaseInsensitive(headers, name)); candidate != "" {
+				if candidate != id {
+					return kind, id, candidate
+				}
+				break
+			}
+		}
 		for _, p := range []string{"parent_session_id", "parent_thread_id", "parent_conversation_id", "forked_from_thread_id", "metadata.parent_session_id"} {
-			value := gjson.GetBytes(payload, p)
-			if value.Type == gjson.String {
+			value := ojson.GetBytes(payload, p)
+			if value.Type == ojson.String {
 				if normalized := session.NormalizeExplicitID(value.String()); normalized != "" {
 					parent = normalized
 					break
@@ -167,7 +186,7 @@ func (e *CodexExecutor) adaptOAuthCache(ctx context.Context, auth *authpkg.Auth,
 	headers := make(http.Header)
 	strategy := codexAffinityStrategy(e.cfg)
 	native := codexSessionHeaderValue(incoming)
-	pck := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	pck := strings.TrimSpace(ojson.GetBytes(body, "prompt_cache_key").String())
 	key, source := base.key, base.source
 	if state.promptCacheKey != "" {
 		key, pck = state.promptCacheKey, state.promptCacheKey
@@ -180,7 +199,7 @@ func (e *CodexExecutor) adaptOAuthCache(ctx context.Context, auth *authpkg.Auth,
 	}
 	explicit := base.source == cacheExplicit || native != ""
 	// Native root forks deliberately route on pck while metadata names the child.
-	originalPCK := strings.TrimSpace(gjson.GetBytes(original, "prompt_cache_key").String())
+	originalPCK := strings.TrimSpace(ojson.GetBytes(original, "prompt_cache_key").String())
 	if state.clientMetadata.CanonicalPresent && native != "" && native == originalPCK && codexUnambiguousCacheRoute(incoming, original, native) {
 		state.cacheRoute = native
 	}
@@ -207,7 +226,7 @@ func (e *CodexExecutor) adaptOAuthCache(ctx context.Context, auth *authpkg.Auth,
 	if strategy == "client-aware" && caller != "" && (base.source == cacheDerived || base.source == cacheCaller) {
 		seed = base.key
 		if base.originalPCK == "" {
-			body, _ = sjson.DeleteBytes(body, "prompt_cache_key")
+			body, _ = ojson.DeleteBytes(body, "prompt_cache_key")
 			pck = ""
 		}
 		if !explicit {
@@ -225,9 +244,9 @@ func (e *CodexExecutor) adaptOAuthCache(ctx context.Context, auth *authpkg.Auth,
 	}
 	state.cacheSource = source
 	state.cachePCK = pck
-	if strategy == "client-aware" && !codexNativeAffinity(incoming, *state, originalPCK) && !explicit && caller != "" && auth.ID != "" && endpoint != "" && gjson.GetBytes(body, "model").String() != "" {
+	if strategy == "client-aware" && !codexNativeAffinity(incoming, *state, originalPCK) && !explicit && caller != "" && auth.ID != "" && endpoint != "" && ojson.GetBytes(body, "model").String() != "" {
 		snap := codexAffinitySnapshotOf(body)
-		scope := affinityDigest(caller, endpoint, auth.ID, gjson.GetBytes(body, "model").String())
+		scope := affinityDigest(caller, endpoint, auth.ID, ojson.GetBytes(body, "model").String())
 		parentIdentity := ""
 		if parent != "" {
 			parentIdentity = affinityDigest(caller, kind, parent)
@@ -285,10 +304,10 @@ func (s *codexIdentityConfuseState) verifyAffinityHeader(headers http.Header) {
 func codexUnambiguousCacheRoute(headers http.Header, body []byte, key string) bool {
 	count := 0
 	valid := true
-	gjson.ParseBytes(body).ForEach(func(k, v gjson.Result) bool {
+	util.ParseGJSONBytesNoCopy(body).ForEach(func(k, v ojson.Result) bool {
 		if k.String() == "prompt_cache_key" {
 			count++
-			if v.Type != gjson.String || strings.TrimSpace(v.String()) != key {
+			if v.Type != ojson.String || strings.TrimSpace(v.String()) != key {
 				valid = false
 			}
 		}

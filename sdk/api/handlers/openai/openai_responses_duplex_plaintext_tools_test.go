@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,6 @@ import (
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 // Exercise the handler and real Codex executor across ordinary and duplex turns.
@@ -53,14 +53,14 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 							t.Errorf("upstream turn %d: %v", turn, err)
 							return
 						}
-						marker := gjson.GetBytes(request, `tools.#(name=="collaboration").tools.0.parameters.properties.message.encrypted`)
-						if marker.Type == gjson.True {
+						marker := ojson.GetBytes(request, `tools.#(name=="collaboration").tools.0.parameters.properties.message.encrypted`)
+						if marker.Type == ojson.True {
 							t.Error("encryption marker was not removed before dispatch")
 						}
-						if turn == 2 && transition == "append" && steering && gjson.GetBytes(request, "previous_response_id").String() != "review-r1" {
+						if turn == 2 && transition == "append" && steering && ojson.GetBytes(request, "previous_response_id").String() != "review-r1" {
 							t.Error("append did not resolve its implicit parent")
 						}
-						if turn == 3 && (gjson.GetBytes(request, "previous_response_id").String() != "review-r1" || gjson.GetBytes(request, "tools").Exists()) {
+						if turn == 3 && (ojson.GetBytes(request, "previous_response_id").String() != "review-r1" || ojson.GetBytes(request, "tools").Exists()) {
 							t.Errorf("branch must continue the first response without redeclaring tools: %s", request)
 						}
 						id := fmt.Sprintf("review-r%d", turn)
@@ -161,7 +161,7 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 						if err != nil {
 							t.Fatalf("downstream turn %d: %v", turn, err)
 						}
-						typ := gjson.GetBytes(payload, "type").String()
+						typ := ojson.GetBytes(payload, "type").String()
 						if typ == "error" || typ == "response.failed" {
 							t.Fatalf("unexpected protocol error: %s", payload)
 						}
@@ -172,7 +172,7 @@ func TestResponsesWebsocketPlaintextToolsWithCodexExecutor(t *testing.T) {
 						if typ == "response.output_item.done" {
 							path = "item"
 						}
-						item := gjson.GetBytes(payload, path)
+						item := ojson.GetBytes(payload, path)
 						if (turn == 2 || transition != "add") && item.Get("type").String() != "function_call" {
 							t.Errorf("turn %d %s: function call disappeared", turn, typ)
 						}

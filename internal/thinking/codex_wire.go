@@ -2,11 +2,10 @@ package thinking
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // CanonicalCodexWireEffort maps a logical Codex reasoning preset to the value
@@ -36,12 +35,12 @@ func CanonicalCodexWireEffortForModel(effort, model string) string {
 // to known, non-user-defined Codex models so custom upstreams can continue to
 // accept provider-specific values such as a literal ultra.
 func NormalizeCodexReasoningEffortForWire(body []byte, model string) ([]byte, error) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
 		return body, nil
 	}
 
-	effortResult := gjson.GetBytes(body, "reasoning.effort")
-	if !effortResult.Exists() || effortResult.Type != gjson.String {
+	effortResult := ojson.GetBytes(body, "reasoning.effort")
+	if !effortResult.Exists() || effortResult.Type != ojson.String {
 		return body, nil
 	}
 	requestedEffort := strings.ToLower(strings.TrimSpace(effortResult.String()))
@@ -62,7 +61,7 @@ func NormalizeCodexReasoningEffortForWire(body []byte, model string) ([]byte, er
 		return body, NewThinkingErrorWithModel(ErrLevelNotSupported, message, modelInfo.ID)
 	}
 
-	result, err := sjson.SetBytes(body, "reasoning.effort", CanonicalCodexWireEffort(effortResult.String(), modelInfo))
+	result, err := ojson.SetBytes(body, "reasoning.effort", CanonicalCodexWireEffort(effortResult.String(), modelInfo))
 	if err != nil {
 		return body, err
 	}

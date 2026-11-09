@@ -3,13 +3,12 @@ package integration
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestV2DelegationContract(t *testing.T) {
@@ -73,7 +72,7 @@ func TestV2DelegationContract(t *testing.T) {
 					f.transport.lock.Lock()
 					last := append([]byte(nil), f.transport.captured[len(f.transport.captured)-1]...)
 					f.transport.lock.Unlock()
-					messages := gjson.GetBytes(last, "messages").Array()
+					messages := ojson.GetBytes(last, "messages").Array()
 					if len(messages) == 0 || messages[len(messages)-1].Get("role").String() != "user" || !strings.Contains(messages[len(messages)-1].Raw, "plaintext delegated task") {
 						t.Fatalf("delegated user task was lost or changed role: %s", last)
 					}

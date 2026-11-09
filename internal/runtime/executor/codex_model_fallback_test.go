@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func codexFallbackTestOptions(sourceModel, mode string) cliproxyexecutor.Options {
@@ -164,7 +164,7 @@ func TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair(t 
 	if got := calls.Load(); got != 1 || len(bodies) != 1 {
 		t.Fatalf("upstream calls/bodies = %d/%d, want 1/1", got, len(bodies))
 	}
-	input := gjson.GetBytes(bodies[0], "input")
+	input := ojson.GetBytes(bodies[0], "input")
 	if !input.IsArray() {
 		t.Fatalf("input is not array: %s", bodies[0])
 	}
@@ -173,10 +173,10 @@ func TestCodexExecutorModelFallbackContextResetDropsReasoningAndKeepsToolPair(t 
 			t.Fatalf("context-reset request retained reasoning item: %s", bodies[0])
 		}
 	}
-	if got := gjson.GetBytes(bodies[0], "input.0.type").String(); got != "function_call" {
+	if got := ojson.GetBytes(bodies[0], "input.0.type").String(); got != "function_call" {
 		t.Fatalf("input.0.type = %q, want function_call; body=%s", got, bodies[0])
 	}
-	if got := gjson.GetBytes(bodies[0], "input.1.type").String(); got != "function_call_output" {
+	if got := ojson.GetBytes(bodies[0], "input.1.type").String(); got != "function_call_output" {
 		t.Fatalf("input.1.type = %q, want function_call_output; body=%s", got, bodies[0])
 	}
 }
@@ -191,7 +191,7 @@ func TestPrepareCodexModelFallbackContextResetDropsPreviousResponseID(t *testing
 	if err != nil || !skipReplay {
 		t.Fatalf("prepare error/skip = %v/%v, want safe reset", err, skipReplay)
 	}
-	if gjson.GetBytes(updated, "previous_response_id").Exists() {
+	if ojson.GetBytes(updated, "previous_response_id").Exists() {
 		t.Fatalf("context-reset retained previous_response_id: %s", updated)
 	}
 }
@@ -229,7 +229,7 @@ func TestCodexExecutorModelFallbackWithoutReasoningReachesTarget(t *testing.T) {
 	if got := calls.Load(); got != 1 || len(bodies) != 1 {
 		t.Fatalf("upstream calls/bodies = %d/%d, want 1/1", got, len(bodies))
 	}
-	if got := gjson.GetBytes(bodies[0], "model").String(); got != "gpt-target" {
+	if got := ojson.GetBytes(bodies[0], "model").String(); got != "gpt-target" {
 		t.Fatalf("upstream model = %q, want gpt-target; body=%s", got, bodies[0])
 	}
 }

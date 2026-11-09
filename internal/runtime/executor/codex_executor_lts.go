@@ -2,6 +2,7 @@ package executor
 
 import (
 	"crypto/sha256"
+	"github.com/MoeForge/moego/ojson"
 
 	"fmt"
 
@@ -13,9 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type codexModelHeaderProfile struct {
@@ -103,13 +101,13 @@ func sanitizeCodexUnsupportedReasoningSummary(body []byte, modelName string) []b
 	}
 
 	out := body
-	if gjson.GetBytes(out, "reasoning.summary").Exists() {
-		out, _ = sjson.DeleteBytes(out, "reasoning.summary")
+	if ojson.GetBytes(out, "reasoning.summary").Exists() {
+		out, _ = ojson.DeleteBytes(out, "reasoning.summary")
 	}
 
-	reasoning := gjson.GetBytes(out, "reasoning")
+	reasoning := ojson.GetBytes(out, "reasoning")
 	if reasoning.IsObject() && len(reasoning.Map()) == 0 {
-		out, _ = sjson.DeleteBytes(out, "reasoning")
+		out, _ = ojson.DeleteBytes(out, "reasoning")
 	}
 	return out
 }
@@ -181,10 +179,10 @@ func isCodexCredentialError(body []byte) bool {
 		return false
 	}
 	candidates := []string{
-		gjson.GetBytes(body, "error.type").String(),
-		gjson.GetBytes(body, "error.code").String(),
-		gjson.GetBytes(body, "type").String(),
-		gjson.GetBytes(body, "code").String(),
+		ojson.GetBytes(body, "error.type").String(),
+		ojson.GetBytes(body, "error.code").String(),
+		ojson.GetBytes(body, "type").String(),
+		ojson.GetBytes(body, "code").String(),
 	}
 	for _, candidate := range candidates {
 		switch strings.ToLower(strings.TrimSpace(candidate)) {
@@ -225,8 +223,8 @@ func isCodexRequestScopedNotFound(body []byte) bool {
 		return true
 	}
 	if !strings.Contains(lower, "model not found") ||
-		!strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()), "invalid_request_error") {
+		!strings.EqualFold(strings.TrimSpace(ojson.GetBytes(body, "error.type").String()), "invalid_request_error") {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.param").String()), "model")
+	return strings.EqualFold(strings.TrimSpace(ojson.GetBytes(body, "error.param").String()), "model")
 }

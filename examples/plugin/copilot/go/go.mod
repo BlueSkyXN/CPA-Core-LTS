@@ -3,9 +3,12 @@ module github.com/router-for-me/CLIProxyAPI/v8/examples/plugin/copilot/go
 go 1.26.10
 
 require (
+	github.com/MoeForge/moego v0.1.0-alpha.1
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/gin-gonic/gin v1.10.1
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
@@ -17,7 +20,6 @@ require (
 	github.com/dlclark/regexp2/v2 v2.5.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
-	github.com/gin-gonic/gin v1.10.1 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
@@ -36,13 +38,10 @@ require (
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.0 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/tiktoken-go/tokenizer v0.8.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
+	go.etcd.io/bbolt v1.5.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
@@ -55,3 +54,6 @@ require (
 )
 
 replace github.com/router-for-me/CLIProxyAPI/v8 => ../../../..
+
+// Keep the root module's Moego fork replacement when tests compile root packages.
+replace github.com/MoeForge/moego v0.1.0-alpha.1 => github.com/router-for-me/moego v0.1.1

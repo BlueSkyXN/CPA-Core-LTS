@@ -1,10 +1,10 @@
 package thinking
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 func TestApplySummaryConfigWithModelInfo(t *testing.T) {
@@ -33,7 +33,7 @@ func TestApplySummaryConfigWithModelInfo(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := ApplySummaryConfigWithModelInfo([]byte(tc.body), "claude", model, tc.info, tc.summary)
-			if gjson.GetBytes(out, "thinking.type").String() != tc.mode || gjson.GetBytes(out, "thinking.budget_tokens").Int() != tc.budget || gjson.GetBytes(out, "thinking.display").String() != tc.display {
+			if ojson.GetBytes(out, "thinking.type").String() != tc.mode || ojson.GetBytes(out, "thinking.budget_tokens").Int() != tc.budget || ojson.GetBytes(out, "thinking.display").String() != tc.display {
 				t.Fatalf("unexpected selected-model summary: %s", out)
 			}
 		})

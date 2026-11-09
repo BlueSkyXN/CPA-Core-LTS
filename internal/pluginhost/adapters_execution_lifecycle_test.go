@@ -1270,6 +1270,8 @@ func TestExecutorGenericConversionCancelAbortsUpstream(t *testing.T) {
 
 // 同协议直通路径没有转换协程接管清理，不得创建派生执行 ctx：
 // 插件必须直接运行在请求 ctx 上，客户端取消原生传播。
+// 注：OpenAI→OpenAI 自 upstream SSE 归一化后注册了同格式 stream transformer，
+// 不再是直通；真直通用 Claude→Claude 代表（无 transformer、无 hook）。
 func TestExecutorPassthroughStreamRunsUnderRequestContext(t *testing.T) {
 	host := NewForTest(nil)
 	var executeCtx context.Context
@@ -1287,12 +1289,12 @@ func TestExecutorPassthroughStreamRunsUnderRequestContext(t *testing.T) {
 		host,
 		"passthrough-request-ctx",
 		executor,
-		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
-		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatClaude},
+		[]sdktranslator.Format{sdktranslator.FormatClaude},
 	)
 	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
-	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
-	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatClaude}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)

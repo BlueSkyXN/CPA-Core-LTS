@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestOpenAICompatExecutorChatCompletionUsageObservesCompleteFrames(t *testing.T) {
@@ -252,16 +252,16 @@ func TestOpenAICompatExecutorChatCompletionUsageObservesCompleteFrames(t *testin
 			var clientModel string
 			for _, payload := range payloads {
 				payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
-				if !gjson.ValidBytes(payload) {
+				if !ojson.ValidBytes(payload) {
 					t.Fatalf("invalid forwarded JSON: %s", payload)
 				}
-				if value := gjson.GetBytes(payload, "model").String(); value != "" {
+				if value := ojson.GetBytes(payload, "model").String(); value != "" {
 					clientModel = value
 				}
 				if tc.nonStream {
-					text.WriteString(gjson.GetBytes(payload, "choices.0.message.content").String())
+					text.WriteString(ojson.GetBytes(payload, "choices.0.message.content").String())
 				} else {
-					text.WriteString(gjson.GetBytes(payload, "choices.0.delta.content").String())
+					text.WriteString(ojson.GetBytes(payload, "choices.0.delta.content").String())
 				}
 			}
 			if text.String() != tc.wantText {

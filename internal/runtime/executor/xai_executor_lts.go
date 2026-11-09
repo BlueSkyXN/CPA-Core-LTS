@@ -1,8 +1,8 @@
 package executor
 
-import "github.com/tidwall/sjson"
+import "github.com/MoeForge/moego/ojson"
 
 func failClosedXAIToolChoice(body []byte) []byte {
-	body, _ = sjson.SetBytes(body, "tool_choice", "none")
+	body, _ = ojson.SetBytes(body, "tool_choice", "none")
 	return body
 }

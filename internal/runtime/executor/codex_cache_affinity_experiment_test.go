@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"testing"
@@ -11,8 +12,6 @@ import (
 	authpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Isolated factorial constructor. Override H and K only AFTER the production
@@ -20,24 +19,24 @@ import (
 func codexAffinityExperimentRequest(ctx context.Context, auth *authpkg.Auth, endpoint, group, run string, payload []byte) (*http.Request, error) {
 	e := NewCodexExecutor(affinityTestConfig("legacy"))
 	incoming := http.Header{"X-Session-Id": {"synthetic-experiment"}, "User-Agent": {"synthetic-client"}}
-	r, body, state, err := e.cacheHelper(ctx, translator.FormatOpenAIResponse, endpoint, auth, execpkg.Request{Model: gjson.GetBytes(payload, "model").String(), Payload: payload}, payload, payload, incoming)
+	r, body, state, err := e.cacheHelper(ctx, translator.FormatOpenAIResponse, endpoint, auth, execpkg.Request{Model: ojson.GetBytes(payload, "model").String(), Payload: payload}, payload, payload, incoming)
 	if err != nil {
 		return nil, err
 	}
 	token, _ := codexCreds(auth)
 	applyCodexHeaders(r, auth, token, true, e.cfg, incoming)
-	applyFinalCodexClientHeaders(r.Header, resolveCodexModelHeaderProfile(gjson.GetBytes(payload, "model").String()), auth)
+	applyFinalCodexClientHeaders(r.Header, resolveCodexModelHeaderProfile(ojson.GetBytes(payload, "model").String()), auth)
 	applyCodexOutboundMetadataHeaders(r.Header, &state)
 	switch group {
 	case "B":
 		r.Header.Set("Session-Id", affinityUUID("experiment", run, "B"))
-		body, _ = sjson.DeleteBytes(body, "prompt_cache_key")
+		body, _ = ojson.DeleteBytes(body, "prompt_cache_key")
 	case "C":
-		body, _ = sjson.SetBytes(body, "prompt_cache_key", affinityUUID("experiment", run, "C"))
+		body, _ = ojson.SetBytes(body, "prompt_cache_key", affinityUUID("experiment", run, "C"))
 	case "D":
 		key := affinityUUID("experiment", run, "D")
 		r.Header.Set("Session-Id", key)
-		body, _ = sjson.SetBytes(body, "prompt_cache_key", key)
+		body, _ = ojson.SetBytes(body, "prompt_cache_key", key)
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
@@ -61,7 +60,7 @@ func TestCodexCacheAffinityExperimentWireIndependence(t *testing.T) {
 			_, _ = io.Copy(io.Discard, response.Body)
 			response.Body.Close()
 			wire := <-captured
-			h, k := wire.headers.Get("Session-Id"), gjson.GetBytes(wire.body, "prompt_cache_key").String()
+			h, k := wire.headers.Get("Session-Id"), ojson.GetBytes(wire.body, "prompt_cache_key").String()
 			if h == "" {
 				t.Fatal("missing H")
 			}
@@ -124,7 +123,7 @@ func TestCodexCacheAffinityExperimentWebsocketWireIndependence(t *testing.T) {
 				t.Fatal(err)
 			}
 			wire := <-captured
-			h, k := wire.headers.Get("Session-Id"), gjson.GetBytes(wire.body, "prompt_cache_key").String()
+			h, k := wire.headers.Get("Session-Id"), ojson.GetBytes(wire.body, "prompt_cache_key").String()
 			if group == "C" && (h == k || k == "") {
 				t.Fatal("WS C coupled to D")
 			}

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,7 +13,6 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
 )
 
 type codexContinuityTestClock struct {
@@ -1257,7 +1257,7 @@ func codexContinuitySession(opts cliproxyexecutor.Options) string {
 	if sessionID := contextStringValue(opts.Metadata[cliproxyexecutor.ExecutionSessionMetadataKey]); sessionID != "" {
 		return sessionID
 	}
-	return strings.TrimSpace(gjson.GetBytes(opts.OriginalRequest, "conversation_id").String())
+	return strings.TrimSpace(ojson.GetBytes(opts.OriginalRequest, "conversation_id").String())
 }
 
 func (e *codexContinuityTestExecutor) callKey(auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {

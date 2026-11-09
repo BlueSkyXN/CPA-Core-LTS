@@ -2,11 +2,10 @@ package integration
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestThreeProtocolReasoningDisplay(t *testing.T) {
@@ -37,11 +36,11 @@ func TestThreeProtocolReasoningDisplay(t *testing.T) {
 					if !strings.Contains(rec.Body.String(), field) || !strings.Contains(rec.Body.String(), "synthetic reason") {
 						t.Fatal("stream reasoning missing")
 					}
-				} else if gjson.GetBytes(rec.Body.Bytes(), tc.path).String() != "synthetic reason" {
+				} else if ojson.GetBytes(rec.Body.Bytes(), tc.path).String() != "synthetic reason" {
 					t.Fatal("JSON reasoning missing")
 				}
 				last := f.transport.captured[len(f.transport.captured)-1]
-				if gjson.GetBytes(last, "thinking.display").Exists() || gjson.GetBytes(last, "reasoning_effort").String() != "max" || gjson.GetBytes(last, "thinking.type").String() != "enabled" {
+				if ojson.GetBytes(last, "thinking.display").Exists() || ojson.GetBytes(last, "reasoning_effort").String() != "max" || ojson.GetBytes(last, "thinking.type").String() != "enabled" {
 					t.Fatal("effective controls changed")
 				}
 				f.checkUsage(t, false)

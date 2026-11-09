@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -18,7 +19,6 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/xai"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func policyFixture(mode string) *config.Config {
@@ -61,16 +61,16 @@ func TestSemanticEffortPolicyModesAndFinalPayloadAuthority(t *testing.T) {
 				if mode == "force" {
 					want = "max"
 				}
-				if gjson.GetBytes(got, field).String() != want {
-					t.Fatalf("effort=%s, want %s; body=%s", gjson.GetBytes(got, field).String(), want, got)
+				if ojson.GetBytes(got, field).String() != want {
+					t.Fatalf("effort=%s, want %s; body=%s", ojson.GetBytes(got, field).String(), want, got)
 				}
 				if !bytes.Equal(body, original) {
 					t.Fatal("policy modified caller-owned bytes")
 				}
-				if format == "claude" && (gjson.GetBytes(got, "thinking.display").String() != "summarized" || gjson.GetBytes(got, "output_config.format.type").String() != "json_schema" || gjson.GetBytes(got, "max_tokens").Int() != 32000) {
+				if format == "claude" && (ojson.GetBytes(got, "thinking.display").String() != "summarized" || ojson.GetBytes(got, "output_config.format.type").String() != "json_schema" || ojson.GetBytes(got, "max_tokens").Int() != 32000) {
 					t.Fatal("policy changed independent output controls")
 				}
-				if format == "codex" && gjson.GetBytes(got, "reasoning.summary").String() != "auto" {
+				if format == "codex" && ojson.GetBytes(got, "reasoning.summary").String() != "auto" {
 					t.Fatal("policy changed summary intent")
 				}
 			})
@@ -103,7 +103,7 @@ func TestSemanticEffortForceSuffixAndModelCapabilities(t *testing.T) {
 	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
 	info := &registry.ModelInfo{ID: "policy-model", Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high", "max"}}}
 	got, err := ApplyConfiguredRequestThinkingWithModelInfo(cfg, req.Payload, req, opts, "openai", "openai", "openai", info)
-	if err != nil || gjson.GetBytes(got, "reasoning_effort").String() != "max" || req.Model != "policy-model(low)" {
+	if err != nil || ojson.GetBytes(got, "reasoning_effort").String() != "max" || req.Model != "policy-model(low)" {
 		t.Fatalf("force/suffix: %s %v", got, err)
 	}
 	info.Thinking.Levels = []string{"low", "high"}
@@ -122,14 +122,14 @@ func TestSemanticEffortCurrentControlsPreserveHistory(t *testing.T) {
 				body = []byte(`{"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}},{"role":"user","content":"new turn"}]}`)
 				array, field = "messages", "output_config.effort"
 			}
-			before := gjson.GetBytes(body, array).Array()
+			before := ojson.GetBytes(body, array).Array()
 			req := coreexecutor.Request{Model: "policy-model", Payload: body}
 			opts := coreexecutor.Options{SourceFormat: sdktranslator.FromString(format)}
 			got, err := ApplyConfiguredRequestThinkingWithModelInfo(policyFixture("force"), body, req, opts, format, format, format, info)
 			if err != nil {
 				t.Fatal(err)
 			}
-			after := gjson.GetBytes(got, array).Array()
+			after := ojson.GetBytes(got, array).Array()
 			if len(after) != len(before)+1 || after[0].Raw != before[0].Raw || after[1].Raw != before[1].Raw || after[len(after)-1].Get(field).String() != "max" {
 				t.Fatalf("current policy rewrote history or lost override: %s", got)
 			}
@@ -155,7 +155,7 @@ func TestSemanticEffortNativeProtocols(t *testing.T) {
 			req := coreexecutor.Request{Model: "policy-model", Payload: []byte(`{"messages":[],"max_tokens":32000,"reasoning":{"effort":"low"}}`)}
 			opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
 			got, err := ApplyConfiguredRequestThinkingWithModelInfo(cfg, req.Payload, req, opts, "openai", tc.format, tc.format, info)
-			if err != nil || gjson.GetBytes(got, tc.path).String() != "high" {
+			if err != nil || ojson.GetBytes(got, tc.path).String() != "high" {
 				t.Fatalf("native effort: %s %v", got, err)
 			}
 		})
@@ -170,7 +170,7 @@ func TestSemanticEffortBudgetAndUnsupportedModels(t *testing.T) {
 	info := &registry.ModelInfo{ID: "policy-model", Thinking: &registry.ThinkingSupport{Min: 1024, Max: 32768}}
 	for _, tc := range []struct{ format, path string }{{"claude", "thinking.budget_tokens"}, {"gemini", "generationConfig.thinkingConfig.thinkingBudget"}} {
 		got, err := ApplyConfiguredRequestThinkingWithModelInfo(cfg, req.Payload, req, opts, "claude", tc.format, tc.format, info)
-		if err != nil || gjson.GetBytes(got, tc.path).Int() != 8192 {
+		if err != nil || ojson.GetBytes(got, tc.path).Int() != 8192 {
 			t.Fatalf("budget %s: %s %v", tc.format, got, err)
 		}
 	}
@@ -218,12 +218,12 @@ func TestSemanticEffortProtectsDynamicControls(t *testing.T) {
 			req := coreexecutor.Request{Model: "policy-model", Payload: before}
 			opts := coreexecutor.Options{SourceFormat: sdktranslator.FromString(format)}
 			got := NewPayloadFinalizer(cfg, format, req.Model, format, "", before, req, opts)(before)
-			if gjson.GetBytes(got, array+".0."+field).String() != "high" || gjson.GetBytes(got, array+".1.content").String() != "rewritten" || gjson.GetBytes(got, "max_tokens").Int() != 24000 {
+			if ojson.GetBytes(got, array+".0."+field).String() != "high" || ojson.GetBytes(got, array+".1.content").String() != "rewritten" || ojson.GetBytes(got, "max_tokens").Int() != 24000 {
 				t.Fatalf("%s/%s lost ownership or unrelated edits: %s", format, mode, got)
 			}
 			cfg.Payload.Override[0].Params = map[string]any{array: []any{map[string]any{"role": "user", "content": "replacement"}}, "max_tokens": 24000}
 			got = NewPayloadFinalizer(cfg, format, req.Model, format, "", before, req, opts)(before)
-			if gjson.GetBytes(got, array).Raw != gjson.GetBytes(before, array).Raw {
+			if ojson.GetBytes(got, array).Raw != ojson.GetBytes(before, array).Raw {
 				t.Fatalf("dynamic history replaced: %s", got)
 			}
 		}
@@ -244,11 +244,11 @@ func TestSemanticEffortSteeringPreservesFrameShape(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if gjson.GetBytes(got, "reasoning").Exists() {
+		if ojson.GetBytes(got, "reasoning").Exists() {
 			t.Fatalf("steering gained top-level settings: %s", got)
 		}
-		if gjson.GetBytes(req.Payload, "input").IsArray() {
-			if gjson.GetBytes(got, "input.0.reasoning.effort").String() != "max" {
+		if ojson.GetBytes(req.Payload, "input").IsArray() {
+			if ojson.GetBytes(got, "input.0.reasoning.effort").String() != "max" {
 				t.Fatalf("control not forced: %s", got)
 			}
 		} else if !bytes.Equal(got, req.Payload) {

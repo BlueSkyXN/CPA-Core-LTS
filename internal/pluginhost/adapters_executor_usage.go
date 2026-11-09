@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -12,7 +13,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // formalUsageReporter returns a reporter only for the selected-auth provider
@@ -114,7 +114,25 @@ func (u *formalPluginStreamUsage) publish(ctx context.Context, err error) {
 }
 
 func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageReporter, format sdktranslator.Format, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
+	return observeFormalPluginStreamUsageWithCancel(ctx, reporter, format, in, nil)
+}
+
+// observeFormalPluginStreamUsageWithCancel 在 usage 结算完成后释放派生的执行 ctx
+// （cancelStream）。直通分支没有转换协程，观察协程就是最后一个持有者。
+func observeFormalPluginStreamUsageWithCancel(ctx context.Context, reporter *helps.UsageReporter, format sdktranslator.Format, in <-chan pluginapi.ExecutorStreamChunk, cancelStream context.CancelFunc) <-chan pluginapi.ExecutorStreamChunk {
 	if reporter == nil {
+		if cancelStream != nil {
+			// 没有 usage 可结算，观察协程不启动；同步释放派生 ctx。
+			if in == nil {
+				cancelStream()
+			} else {
+				go func() {
+					defer cancelStream()
+					for range in { //nolint:revive // 排空上游，等待其自然结束
+					}
+				}()
+			}
+		}
 		return in
 	}
 	if ctx == nil {
@@ -122,6 +140,9 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 	}
 	if in == nil {
 		reporter.PublishFailure(ctx, emptyFormalPluginStreamError())
+		if cancelStream != nil {
+			cancelStream()
+		}
 		closed := make(chan pluginapi.ExecutorStreamChunk)
 		close(closed)
 		return closed
@@ -131,7 +152,12 @@ func observeFormalPluginStreamUsage(ctx context.Context, reporter *helps.UsageRe
 		defer close(out)
 		usage := formalPluginStreamUsage{reporter: reporter, format: format}
 		var streamErr error
-		defer func() { usage.publish(ctx, streamErr) }()
+		defer func() {
+			usage.publish(ctx, streamErr)
+			if cancelStream != nil {
+				cancelStream()
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -171,7 +197,7 @@ func setPluginUsageProvenance(reporter *helps.UsageReporter, buffer *helps.Strea
 }
 
 func pluginExecutorUsageReported(format sdktranslator.Format, payload []byte) bool {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return false
 	}
 	paths := []string{"usage"}
@@ -197,8 +223,8 @@ func pluginExecutorUsageReported(format sdktranslator.Format, payload []byte) bo
 		paths = append(paths, "response.usageMetadata", "usageMetadata", "usage_metadata")
 	}
 	for _, path := range paths {
-		value := gjson.GetBytes(payload, path)
-		if value.Exists() && value.Type != gjson.Null {
+		value := ojson.GetBytes(payload, path)
+		if value.Exists() && value.Type != ojson.Null {
 			return true
 		}
 	}

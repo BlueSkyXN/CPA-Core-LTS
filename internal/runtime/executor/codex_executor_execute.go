@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -15,12 +16,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+	ctx = helps.WithCodexCommentaryPolicy(ctx, e.cfg)
+	if errExpand := helps.ExpandRecognizedResponsesCompactionCapsules(&req, &opts); errExpand != nil {
+		return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+	}
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
 	}
@@ -62,46 +65,60 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	originalPayload := originalPayloadSource
 	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
-	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntent(from, to, targetModel, originalPayload, req.Payload, false, isCompat)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	abnormalRetry := newCodexAbnormalReasoningRetryPolicy(e.cfg, auth, requestedModel, req.Model, baseModel)
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, false, isCompat)
 	if err != nil {
 		return resp, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
+	doc := ojson.NewDoc(body)
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
-	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
-	if err != nil {
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return resp, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	abnormalRetry := newCodexAbnormalReasoningRetryPolicy(e.cfg, auth, requestedModel, req.Model, baseModel)
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, auth.AuthKind()))
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
-	body = helps.SetBoolIfDifferent(body, "stream", true)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "generate")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	body, _ = sjson.DeleteBytes(body, "stream_options")
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	helps.SetBoolIfDifferentDoc(doc, "stream", true)
+	_ = doc.Delete("previous_response_id")
+	_ = doc.Delete("generate")
+	_ = doc.Delete("prompt_cache_retention")
+	_ = doc.Delete("safety_identifier")
+	_ = doc.Delete("stream_options")
 	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
-	hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
-	body = ensureWebSearchToolForHistory(body, opts.Headers)
+	instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
+	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
+	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
+	upstreamModel := baseModel
 	if !useSIWC {
-		body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
+		normalizeCodexInstructionsDoc(doc, helps.IsNativeCodexRequest(req.Payload, opts))
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+			ensureImageGenerationToolDoc(doc, baseModel, auth, opts.Headers)
+			if !codexAuthUsesAPIKey(auth) {
+				normalizeCodexImageGenerationToolsDoc(doc)
+				var errHostedModel error
+				upstreamModel, errHostedModel = applyCodexHostedImageGenerationModelDoc(e.cfg, doc, baseModel, req.Model)
+				if errHostedModel != nil {
+					return resp, errHostedModel
+				}
+			}
 		}
 	} else {
-		body = applyCodexSIWCRequestBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		applyCodexSIWCRequestBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
-	body = normalizeCodexParallelToolCalls(body, opts.Headers)
-	body = helps.NormalizeCodexToolSchemas(body)
-	body, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
+	if upstreamModel != baseModel {
+		reporter.SetUpstreamModel(upstreamModel)
+	}
+	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
+	helps.NormalizeCodexToolSchemasDoc(doc)
+	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
 	if err != nil {
 		return resp, err
 	}
+	*doc = *ojson.NewDoc(optimizedBody)
+	body = doc.Bytes()
 	var skipReplay bool
 	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
 	if err != nil {
@@ -127,10 +144,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
+	body = upstreamBody
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
-		applyCodexRoutingHint(ctx, request.Header, auth, baseModel, upstreamBody, opts.Headers)
+		applyCodexRoutingHint(ctx, request.Header, auth, upstreamModel, upstreamBody, opts.Headers)
 		applyFinalCodexClientHeaders(request.Header, modelHeaderProfile, auth)
 		applyCodexOutboundMetadataHeaders(request.Header, &identityState)
 		alignCodexContentEncoding(request)
@@ -197,7 +215,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		eventData := bytes.TrimSpace(line[5:])
 		eventData = helps.RestoreCodexMultiAgentV2Response(eventData, optimizeMultiAgentV2)
 		reporter.ObserveResponseModel(eventData)
-		eventType := gjson.GetBytes(eventData, "type").String()
+		eventType := ojson.GetBytesNoCopy(eventData, "type").String()
 
 		if helps.HasMeaningfulCodexOutputDelta(eventData) {
 			sawOutputDelta = true
@@ -212,11 +230,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if eventType == "response.output_item.done" {
-			itemResult := gjson.GetBytes(eventData, "item")
-			if !itemResult.Exists() || itemResult.Type != gjson.JSON {
+			itemResult := ojson.GetBytesNoCopy(eventData, "item")
+			if !itemResult.Exists() || itemResult.Type != ojson.JSON {
 				continue
 			}
-			outputIndexResult := gjson.GetBytes(eventData, "output_index")
+			outputIndexResult := ojson.GetBytesNoCopy(eventData, "output_index")
 			if outputIndexResult.Exists() {
 				outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
 			} else {
@@ -290,17 +308,19 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			publishCodexImageToolUsage(ctx, reporter, body, eventData)
 			return cliproxyexecutor.Response{}, err
 		}
-		if completedUsageOK {
+		if detail, ok := helps.ParseCodexUsageWithOutputItems(completedData, outputItemsByIndex, outputItemsFallback); ok {
+			reporter.Publish(ctx, detail)
+		} else if completedUsageOK {
 			reporter.Publish(ctx, completedUsage)
 		} else {
 			// A completed response without usage is still a successful request.
 			reporter.EnsurePublished(ctx)
 		}
-		publishCodexImageToolUsage(ctx, reporter, body, eventData)
+		publishCodexImageToolUsageWithOutputItems(ctx, reporter, body, completedData, outputItemsByIndex, outputItemsFallback)
 		if responseFormat == sdktranslator.FormatOpenAIResponse {
 			out = helps.EnsureResponsesUsageDetails(out)
 		}
-		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+		resp = cliproxyexecutor.Response{Payload: out, Incomplete: eventType == "response.incomplete", Headers: httpResp.Header.Clone()}
 		if completedUsageOK {
 			resp.Metadata = codexAbnormalReasoningRetryResponseMetadata(completedUsage, responseFinalizer, abnormalRetry)
 		}
@@ -319,6 +339,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 }
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if errExpand := helps.ExpandRecognizedResponsesCompactionCapsules(&req, &opts); errExpand != nil {
+		return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
 
@@ -347,35 +370,37 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	originalPayload := originalPayloadSource
 	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
-	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntent(from, to, targetModel, originalPayload, req.Payload, false, isCompat)
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, false, isCompat)
 	if err != nil {
 		return resp, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 
-	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
-	if err != nil {
+	doc := ojson.NewDoc(body)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return resp, err
 	}
 
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, auth.AuthKind()))
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = sanitizeCodexUnsupportedReasoningSummary(body, baseModel)
-	body, _ = sjson.DeleteBytes(body, "stream")
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	_ = doc.Delete("stream")
 	if !codexUseSIWCForRequest(ctx, auth, opts.Headers) {
-		body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
+		normalizeCodexInstructionsDoc(doc, helps.IsNativeCodexRequest(req.Payload, opts))
 	} else {
-		hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
-		body = applyCodexSIWCCompactBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
+		hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
+		applyCodexSIWCCompactBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
-	body = ensureWebSearchToolForHistory(body, opts.Headers)
-	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
-	body = normalizeCodexParallelToolCalls(body, opts.Headers)
-	body = helps.NormalizeCodexToolSchemas(body)
-	body, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
+	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
+	sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "codex executor", doc, isCompat, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
+	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
+	helps.NormalizeCodexToolSchemasDoc(doc)
+	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
 	if err != nil {
 		return resp, err
 	}
+	*doc = *ojson.NewDoc(optimizedBody)
+	body = doc.Bytes()
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
 	if err != nil {
 		return resp, err

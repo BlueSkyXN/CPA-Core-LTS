@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestAntigravityCompactionRequiresCompleteSummary(t *testing.T) {
@@ -72,8 +72,8 @@ func TestAntigravityCompactionRequiresCompleteSummary(t *testing.T) {
 								}
 								for _, line := range bytes.Split(chunk.Payload, []byte("\n")) {
 									data := bytes.TrimPrefix(line, []byte("data: "))
-									if gjson.GetBytes(data, "type").String() == "response.completed" {
-										result = []byte(gjson.GetBytes(data, "response").Raw)
+									if ojson.GetBytes(data, "type").String() == "response.completed" {
+										result = []byte(ojson.GetBytes(data, "response").Raw)
 									}
 								}
 							}
@@ -101,15 +101,15 @@ func TestAntigravityCompactionRequiresCompleteSummary(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if gjson.GetBytes(result, "status").String() != "completed" {
+					if ojson.GetBytes(result, "status").String() != "completed" {
 						t.Fatalf("missing completed response: %s", result)
 					}
-					summary, err := helps.UnsealAntigravityCompaction(gjson.GetBytes(result, "output.0.encrypted_content").String())
+					summary, err := helps.UnsealAntigravityCompaction(ojson.GetBytes(result, "output.0.encrypted_content").String())
 					if err != nil || summary != tc.summary {
 						t.Fatalf("summary = %q, error = %v", summary, err)
 					}
 					for key, want := range map[string]int64{"input_tokens": 10, "output_tokens": 7, "total_tokens": 17} {
-						if got := gjson.GetBytes(result, "usage."+key).Int(); got != want {
+						if got := ojson.GetBytes(result, "usage."+key).Int(); got != want {
 							t.Errorf("usage.%s = %d, want %d", key, got, want)
 						}
 					}

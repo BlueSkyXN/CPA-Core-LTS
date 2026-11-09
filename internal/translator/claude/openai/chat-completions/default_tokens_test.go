@@ -2,10 +2,10 @@ package chat_completions
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 func TestChatDefaultOutputBudget(t *testing.T) {
@@ -29,7 +29,7 @@ func TestChatDefaultOutputBudget(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
 				body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]%s}`, tc.model, tc.control))
 				out, _ := convertOpenAIRequestToClaude(tc.model, body, stream, false, tc.info)
-				if got := gjson.GetBytes(out, "max_tokens").Int(); got != tc.want {
+				if got := ojson.GetBytes(out, "max_tokens").Int(); got != tc.want {
 					t.Fatalf("max_tokens = %d, want %d", got, tc.want)
 				}
 			})
