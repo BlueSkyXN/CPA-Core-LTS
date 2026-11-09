@@ -221,6 +221,22 @@ func (r *pluginRuntime) dispatch(method string, raw []byte) ([]byte, error) {
 			return nil, errManagement
 		}
 		return okEnvelope(resp)
+	case pluginabi.MethodQuotaIdentifier:
+		return okEnvelope(identifierResponse{Identifier: pluginIdentifier})
+	case pluginabi.MethodQuotaDescribe:
+		return okEnvelope(pluginapi.QuotaDescribeResponse{
+			DisplayName:        "GitHub Copilot",
+			SupportedProviders: []string{pluginIdentifier},
+			SupportsReset:      false,
+		})
+	case pluginabi.MethodQuotaFetch:
+		resp, errQuota := r.fetchQuota(raw)
+		if errQuota != nil {
+			return nil, errQuota
+		}
+		return okEnvelope(resp)
+	case pluginabi.MethodQuotaReset:
+		return nil, newPluginCallError("unsupported_operation", "Copilot quota is managed by GitHub and cannot be reset", http.StatusNotImplemented, false)
 	case pluginabi.MethodExecutorExecute:
 		resp, errExecute := r.execute(raw)
 		if errExecute != nil {
@@ -299,6 +315,7 @@ func pluginRegistration() registration {
 			ExecutorModelScope:   pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats: []string{"chat-completions", "embeddings"}, ExecutorOutputFormats: []string{"chat-completions", "embeddings"},
 			ManagementAPI: true,
+			QuotaProvider: true,
 		},
 	}
 }
