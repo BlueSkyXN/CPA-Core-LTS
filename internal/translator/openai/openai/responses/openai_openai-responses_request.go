@@ -706,22 +706,8 @@ func convertResponsesTextFormatToChatResponseFormat(textFormat ojson.Result) []b
 
 func appendStandaloneResponsesToolOutputAsUser(output ojson.Result, setContentDoc func(*ojson.Doc, ojson.Result) [][]byte, appendMessage func([]byte) int) {
 	userMessageDoc := ojson.NewDocString(`{"role":"user","content":""}`)
-	var relayItems [][]byte
 	if output.Exists() {
-		relayItems = setContentDoc(userMessageDoc, output)
-	}
-	if len(relayItems) > 0 {
-		// Orphan outputs land in a user message, which handles image parts
-		// natively; merge what the setter pulled out back into this message.
-		content := ojson.GetBytesNoCopy(userMessageDoc.Bytes(), "content")
-		items := make([][]byte, 0, len(relayItems)+2)
-		if content.IsArray() {
-			for _, part := range content.Array() {
-				items = append(items, []byte(part.Raw))
-			}
-		}
-		items = append(items, relayItems...)
-		translatorcommon.SetRawArrayItemsDoc(userMessageDoc, "content", items)
+		setContentDoc(userMessageDoc, output)
 	}
 	userMessage := userMessageDoc.Bytes()
 	content := ojson.GetBytesNoCopy(userMessage, "content")
@@ -737,11 +723,8 @@ func appendStandaloneResponsesToolOutputAsUser(output ojson.Result, setContentDo
 	appendMessage(userMessage)
 }
 
-// responsesToolImageRelayNotice labels the user message that carries images
-// pulled out of tool outputs. Chat Completions tool messages with image parts
-// are spec-legal but some upstream models (e.g. Copilot gemini-4-argon) skip
-// vision extraction for them and tokenize the data URL as plain text; relaying
-// to a user message keeps the same bytes billable and visible as vision.
+// Chat Completions tool messages support text content only. Tool-output images
+// are relayed to a user message while retaining their original data and detail.
 const responsesToolImageRelayNotice = "Images returned by the preceding tool call(s):"
 
 func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Result) [][]byte {
@@ -755,10 +738,11 @@ func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Res
 	}
 
 	if hasChatToolOutputImagePart(structuredContent) {
+		relayImages := ojson.GetBytesNoCopy(toolMessageDoc.Bytes(), "role").String() == "tool"
 		contentItems := make([][]byte, 0, len(structuredContent.Array()))
 		relayItems := make([][]byte, 0, 2)
 		for _, item := range structuredContent.Array() {
-			if itemType := item.Get("type").String(); itemType == "image_url" || itemType == "input_image" {
+			if itemType := item.Get("type").String(); relayImages && (itemType == "image_url" || itemType == "input_image") {
 				if relayPart := chatToolOutputContentPart(item); relayPart != nil {
 					relayItems = append(relayItems, relayPart)
 					continue
@@ -766,10 +750,11 @@ func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Res
 			}
 			contentItems = append(contentItems, chatToolOutputContentPart(item))
 		}
-		// Keep the tool message non-empty so its tool_call_id stays meaningful;
-		// the image bytes move to the relay user message emitted right after it.
-		placeholder := []byte(`{"type":"text","text":"[image moved to the next user message]"}`)
-		contentItems = append(contentItems, placeholder)
+		if len(relayItems) > 0 {
+			// Parallel tool results are aligned before the following user messages.
+			placeholder := []byte(`{"type":"text","text":"[Tool images are included in a following user message.]"}`)
+			contentItems = append(contentItems, placeholder)
+		}
 		translatorcommon.SetRawArrayItemsDoc(toolMessageDoc, "content", contentItems)
 		return relayItems
 	}
