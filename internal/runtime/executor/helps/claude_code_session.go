@@ -3,11 +3,8 @@ package helps
 import (
 	"context"
 	"net/http"
-	"regexp"
 	"strings"
-	"time"
 
-	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 )
@@ -17,10 +14,6 @@ const (
 	ClaudeCodeAgentHeader   = internalcache.ClaudeCodeAgentHeader
 	ClaudeCodeMainAgentID   = internalcache.ClaudeCodeMainAgentID
 )
-
-// claudeCodeSessionSuffixPattern mirrors the internal/cache pattern for
-// resolving session IDs embedded in agent user IDs.
-var claudeCodeSessionSuffixPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
 // ExtractClaudeCodeSessionID resolves a Claude Code session ID, preferring X-Claude-Code-Session-Id over payload metadata.
 func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers http.Header) string {
@@ -36,8 +29,6 @@ func ExtractClaudeCodeAgentID(ctx context.Context, headers http.Header) string {
 func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.Header) (string, bool) {
 	return internalcache.ClaudeCodeExecutionScope(ctx, payload, headers)
 }
-
-// ClaudeCodePromptCache maps one Claude Code agent execution scope to a stable upstream prompt_cache_key.
 
 // HeaderValueCaseInsensitive returns the first non-empty header value matching name case-insensitively.
 func HeaderValueCaseInsensitive(headers http.Header, name string) string {
@@ -82,40 +73,16 @@ func headerValueCaseInsensitive(headers http.Header, name string) string {
 	return ""
 }
 
-func extractClaudeCodeSessionIDFromPayload(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	userID := ojson.GetBytesNoCopy(payload, "metadata.user_id").String()
-	if userID == "" {
-		return ""
-	}
-	if matches := claudeCodeSessionSuffixPattern.FindStringSubmatch(userID); len(matches) >= 2 {
-		return strings.Clone(matches[1])
-	}
-	if len(userID) > 0 && userID[0] == '{' {
-		return strings.Clone(strings.TrimSpace(ojson.Get(userID, "session_id").String()))
-	}
-	return ""
-}
-
-// ClaudeCodePromptCache derives a deterministic upstream prompt_cache_key for one Claude Code agent.
+// ClaudeCodePromptCache 按 upstream 的确定性规则派生模型和 session/agent 对应的 PCK。
+// 身份不依赖本地或 Home KV 映射的生命周期，首次并发请求也使用相同的 key。
+// （merge note: upstream moego 迁移同步改写过旧实现的 gjson 调用；确定性派生落地后
+// extractClaudeCodeSessionIDFromPayload 已无调用者，随旧实现一并移除。）
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
 	modelName = strings.TrimSpace(modelName)
 	executionScope, ok := ClaudeCodeExecutionScope(ctx, payload, headers)
 	if modelName == "" || !ok {
 		return CodexCache{}, false, nil
 	}
-	key := CodexPromptCacheKey(modelName, executionScope)
-	if cache, found, errCache := GetCodexCacheRequired(ctx, key); errCache != nil || found {
-		return cache, found, errCache
-	}
-	cache := CodexCache{
-		ID:     uuid.New().String(),
-		Expire: time.Now().Add(time.Hour),
-	}
-	if errSet := SetCodexCacheRequired(ctx, key, cache); errSet != nil {
-		return CodexCache{}, false, errSet
-	}
-	return cache, true, nil
+	identity := strings.Join([]string{"cli-proxy-api:codex:claude-code", modelName, executionScope}, "\x00")
+	return CodexCache{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()}, true, nil
 }
