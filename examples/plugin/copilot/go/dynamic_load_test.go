@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,7 +28,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestDynamicCopilotPluginLoadsWithLoginCatalogExecutionAndCancel(t *testing.T) {
@@ -257,7 +257,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 	gin.SetMode(gin.TestMode)
 	api := openaihandlers.NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
-	postResponses := func(body []byte) gjson.Result {
+	postResponses := func(body []byte) ojson.Result {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
@@ -267,13 +267,13 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("Responses status = %d, body = %s", recorder.Code, recorder.Body.String())
 		}
-		completed := gjson.Result{}
+		completed := ojson.Result{}
 		count := 0
 		for _, line := range strings.Split(recorder.Body.String(), "\n") {
 			if !strings.HasPrefix(line, "data: ") {
 				continue
 			}
-			data := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			data := ojson.Parse(strings.TrimPrefix(line, "data: "))
 			if kind := data.Get("type").String(); kind == "error" || kind == "response.failed" {
 				t.Fatalf("Responses terminal error: %s", data.Raw)
 			}

@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -10,7 +11,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestPluginSelectedModelCompatibility(t *testing.T) {
@@ -40,7 +40,7 @@ func TestPluginSelectedModelCompatibility(t *testing.T) {
 			t.Fatal(err)
 		}
 		found := false
-		for _, message := range gjson.GetBytes(captured.Payload, "messages").Array() {
+		for _, message := range ojson.GetBytes(captured.Payload, "messages").Array() {
 			for _, block := range message.Get("content").Array() {
 				if block.Get("type").String() == "thinking" {
 					found = true
@@ -57,7 +57,7 @@ func TestPluginSelectedModelCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(captured.Payload, "messages.1.content.0.type").String() == "thinking" {
+	if ojson.GetBytes(captured.Payload, "messages.1.content.0.type").String() == "thinking" {
 		t.Error("compat restored content removed by final normalizer")
 	}
 }

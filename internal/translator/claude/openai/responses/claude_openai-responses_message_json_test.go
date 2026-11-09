@@ -2,9 +2,9 @@ package responses
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestClaudeMessageJSONResponses(t *testing.T) {
@@ -20,7 +20,7 @@ func TestClaudeMessageJSONResponses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`{"type":"message","id":"msg-1","role":"assistant","model":"fixture","content":` + tc.content + `,"stop_reason":"` + tc.stop + `","usage":{"input_tokens":3,"cache_read_input_tokens":2,"cache_creation_input_tokens":4,"output_tokens":7}}`)
 			out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", []byte(`{"model":"fixture"}`), nil, body, nil)
-			root := gjson.ParseBytes(out)
+			root := util.ParseGJSONBytesNoCopy(out)
 			if root.Get("id").String() != "msg-1" || root.Get("status").String() != tc.status || root.Get("usage.input_tokens").Int() != 9 || root.Get("usage.output_tokens").Int() != 7 || root.Get("usage.total_tokens").Int() != 16 {
 				t.Fatalf("message identity, status or usage lost: %s", out)
 			}
@@ -60,7 +60,7 @@ func TestClaudeMessageJSONResponsesStopReasonTerminals(t *testing.T) {
 			body := []byte(`{"type":"message","id":"msg-stop","role":"assistant","model":"fixture","content":[{"type":"text","text":"partial"}],"stop_reason":"` + tc.stop + `","usage":{"input_tokens":3,"output_tokens":5}}`)
 			var param any = &PluginResponseState{}
 			out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, body, &param)
-			root := gjson.ParseBytes(out)
+			root := util.ParseGJSONBytesNoCopy(out)
 			if !root.Exists() || root.Get("status").String() != tc.status {
 				t.Fatalf("status = %q, want %q: %s", root.Get("status").String(), tc.status, out)
 			}
@@ -86,7 +86,7 @@ func TestClaudeMessageJSONResponsesMixedOrder(t *testing.T) {
 	body := []byte(`{"type":"message","id":"mixed","role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":"synthetic"},{"type":"text","text":"first"},{"type":"tool_use","id":"tool-1","name":"lookup","input":{}},{"type":"text","text":"last"}],"stop_reason":"tool_use","usage":{"input_tokens":2,"output_tokens":8}}`)
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, body, nil)
 	for i, kind := range []string{"reasoning", "message", "function_call", "message"} {
-		items := gjson.GetBytes(out, "output").Array()
+		items := ojson.GetBytes(out, "output").Array()
 		if len(items) != 4 || items[i].Get("type").String() != kind {
 			t.Fatal("content order lost")
 		}

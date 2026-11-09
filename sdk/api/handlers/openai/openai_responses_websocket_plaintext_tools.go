@@ -1,10 +1,10 @@
 package openai
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
-	"github.com/tidwall/gjson"
 )
 
 const responsesWebsocketPlaintextHistoryLimit = 16
@@ -20,8 +20,8 @@ type responsesWebsocketPlaintextHistory []responsesWebsocketPlaintextSnapshot
 
 func (h responsesWebsocketPlaintextHistory) parent(authID string, payload []byte) multiagentv2.PlaintextToolProvenance {
 	authID = strings.TrimSpace(authID)
-	parentID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
-	if authID == "" || (parentID == "" && gjson.GetBytes(payload, "type").String() != wsRequestTypeAppend) {
+	parentID := strings.TrimSpace(ojson.GetBytes(payload, "previous_response_id").String())
+	if authID == "" || (parentID == "" && ojson.GetBytes(payload, "type").String() != wsRequestTypeAppend) {
 		return multiagentv2.PlaintextToolProvenance{}
 	}
 	for i := len(h) - 1; i >= 0; i-- {

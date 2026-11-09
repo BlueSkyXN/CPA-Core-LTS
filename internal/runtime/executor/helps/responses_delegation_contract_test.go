@@ -3,6 +3,7 @@ package helps
 import (
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,7 +11,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesDelegationTranslationMatrix(t *testing.T) {
@@ -43,7 +43,7 @@ func TestResponsesDelegationTranslationMatrix(t *testing.T) {
 			}
 			plain := []byte(`{"input":[{"type":"agent_message","content":[{"type":"input_text","text":"delegated task"}]}]}`)
 			out, err := TranslateRequestReturningError(context.Background(), http.Header{"User-Agent": []string{"codex_exec/0.163.0"}}, cfg, sdktranslator.FormatOpenAIResponse, target.format, "test-model", plain, true, false)
-			if err != nil || gjson.GetBytes(out, target.role).String() != "user" || !strings.Contains(string(out), "delegated task") {
+			if err != nil || ojson.GetBytes(out, target.role).String() != "user" || !strings.Contains(string(out), "delegated task") {
 				t.Fatalf("plaintext task lost its user turn: %v %s", err, out)
 			}
 		})

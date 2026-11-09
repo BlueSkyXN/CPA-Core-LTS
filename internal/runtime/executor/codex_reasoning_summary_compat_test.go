@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const sparkUnsupportedReasoningSummaryError = `{"error":{"message":"Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model.","type":"invalid_request_error","param":"reasoning.summary","code":"unsupported_parameter"}}`
@@ -49,7 +49,7 @@ func TestCodexExecutorDropsUnsupportedReasoningSummaryForSpark(t *testing.T) {
 					return
 				}
 				gotBody = bytes.Clone(body)
-				if gjson.GetBytes(body, "reasoning.summary").Exists() {
+				if ojson.GetBytes(body, "reasoning.summary").Exists() {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte(sparkUnsupportedReasoningSummaryError))
@@ -72,10 +72,10 @@ func TestCodexExecutorDropsUnsupportedReasoningSummaryForSpark(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Execute() returned the upstream compatibility error: %v", err)
 			}
-			if gjson.GetBytes(gotBody, "reasoning.summary").Exists() {
+			if ojson.GetBytes(gotBody, "reasoning.summary").Exists() {
 				t.Fatalf("reasoning.summary still exists in Spark request: %s", gotBody)
 			}
-			if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
+			if got := ojson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
 				t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, gotBody)
 			}
 		})
@@ -91,7 +91,7 @@ func TestCodexExecutorDropsUnsupportedReasoningSummaryAfterPayloadOverride(t *te
 			return
 		}
 		gotBody = bytes.Clone(body)
-		if gjson.GetBytes(body, "reasoning.summary").Exists() {
+		if ojson.GetBytes(body, "reasoning.summary").Exists() {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(sparkUnsupportedReasoningSummaryError))
@@ -124,10 +124,10 @@ func TestCodexExecutorDropsUnsupportedReasoningSummaryAfterPayloadOverride(t *te
 	if err != nil {
 		t.Fatalf("Execute() returned the upstream compatibility error: %v", err)
 	}
-	if gjson.GetBytes(gotBody, "reasoning.summary").Exists() {
+	if ojson.GetBytes(gotBody, "reasoning.summary").Exists() {
 		t.Fatalf("payload.override restored reasoning.summary in Spark request: %s", gotBody)
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
+	if got := ojson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
 		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, gotBody)
 	}
 }
@@ -173,7 +173,7 @@ func TestCodexExecutorExecuteStreamDropsUnsupportedReasoningSummaryForSpark(t *t
 			return
 		}
 		gotBody = bytes.Clone(body)
-		if gjson.GetBytes(body, "reasoning.summary").Exists() {
+		if ojson.GetBytes(body, "reasoning.summary").Exists() {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(sparkUnsupportedReasoningSummaryError))
@@ -201,10 +201,10 @@ func TestCodexExecutorExecuteStreamDropsUnsupportedReasoningSummaryForSpark(t *t
 			t.Fatalf("stream chunk error = %v", chunk.Err)
 		}
 	}
-	if gjson.GetBytes(gotBody, "reasoning.summary").Exists() {
+	if ojson.GetBytes(gotBody, "reasoning.summary").Exists() {
 		t.Fatalf("reasoning.summary still exists in Spark stream request: %s", gotBody)
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
+	if got := ojson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
 		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, gotBody)
 	}
 }
@@ -218,7 +218,7 @@ func TestCodexExecutorCompactDropsUnsupportedReasoningSummaryForSpark(t *testing
 			return
 		}
 		gotBody = bytes.Clone(body)
-		if gjson.GetBytes(body, "reasoning.summary").Exists() {
+		if ojson.GetBytes(body, "reasoning.summary").Exists() {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(sparkUnsupportedReasoningSummaryError))
@@ -242,10 +242,10 @@ func TestCodexExecutorCompactDropsUnsupportedReasoningSummaryForSpark(t *testing
 	if err != nil {
 		t.Fatalf("Execute compact returned the upstream compatibility error: %v", err)
 	}
-	if gjson.GetBytes(gotBody, "reasoning.summary").Exists() {
+	if ojson.GetBytes(gotBody, "reasoning.summary").Exists() {
 		t.Fatalf("reasoning.summary still exists in Spark compact request: %s", gotBody)
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
+	if got := ojson.GetBytes(gotBody, "reasoning.effort").String(); got != "xhigh" {
 		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, gotBody)
 	}
 }
@@ -267,7 +267,7 @@ func TestCodexWebsocketsExecutorDropsUnsupportedReasoningSummaryForSpark(t *test
 			return
 		}
 		capturedPayload <- bytes.Clone(payload)
-		if gjson.GetBytes(payload, "reasoning.summary").Exists() {
+		if ojson.GetBytes(payload, "reasoning.summary").Exists() {
 			upstreamErr := []byte(`{"type":"error","status":400,"error":` + sparkUnsupportedReasoningSummaryError[len(`{"error":`):len(sparkUnsupportedReasoningSummaryError)-1] + `}`)
 			if errWrite := conn.WriteMessage(websocket.TextMessage, upstreamErr); errWrite != nil {
 				t.Errorf("write websocket error: %v", errWrite)
@@ -296,10 +296,10 @@ func TestCodexWebsocketsExecutorDropsUnsupportedReasoningSummaryForSpark(t *test
 
 	select {
 	case payload := <-capturedPayload:
-		if gjson.GetBytes(payload, "reasoning.summary").Exists() {
+		if ojson.GetBytes(payload, "reasoning.summary").Exists() {
 			t.Fatalf("reasoning.summary still exists in Spark websocket request: %s", payload)
 		}
-		if got := gjson.GetBytes(payload, "reasoning.effort").String(); got != "xhigh" {
+		if got := ojson.GetBytes(payload, "reasoning.effort").String(); got != "xhigh" {
 			t.Fatalf("reasoning.effort = %q, want xhigh; payload=%s", got, payload)
 		}
 	case <-time.After(5 * time.Second):
@@ -324,7 +324,7 @@ func TestCodexWebsocketsExecutorExecuteStreamDropsUnsupportedReasoningSummaryFor
 			return
 		}
 		capturedPayload <- bytes.Clone(payload)
-		if gjson.GetBytes(payload, "reasoning.summary").Exists() {
+		if ojson.GetBytes(payload, "reasoning.summary").Exists() {
 			upstreamErr := []byte(`{"type":"error","status":400,"error":` + sparkUnsupportedReasoningSummaryError[len(`{"error":`):len(sparkUnsupportedReasoningSummaryError)-1] + `}`)
 			if errWrite := conn.WriteMessage(websocket.TextMessage, upstreamErr); errWrite != nil {
 				t.Errorf("write websocket error: %v", errWrite)
@@ -360,10 +360,10 @@ func TestCodexWebsocketsExecutorExecuteStreamDropsUnsupportedReasoningSummaryFor
 
 	select {
 	case payload := <-capturedPayload:
-		if gjson.GetBytes(payload, "reasoning.summary").Exists() {
+		if ojson.GetBytes(payload, "reasoning.summary").Exists() {
 			t.Fatalf("reasoning.summary still exists in Spark websocket stream request: %s", payload)
 		}
-		if got := gjson.GetBytes(payload, "reasoning.effort").String(); got != "xhigh" {
+		if got := ojson.GetBytes(payload, "reasoning.effort").String(); got != "xhigh" {
 			t.Fatalf("reasoning.effort = %q, want xhigh; payload=%s", got, payload)
 		}
 	case <-ctx.Done():
@@ -373,7 +373,7 @@ func TestCodexWebsocketsExecutorExecuteStreamDropsUnsupportedReasoningSummaryFor
 
 func TestSanitizeCodexUnsupportedReasoningSummaryRemovesEmptyReasoningObject(t *testing.T) {
 	got := sanitizeCodexUnsupportedReasoningSummary([]byte(`{"reasoning":{"summary":"auto"},"input":"hello"}`), "gpt-5.3-codex-spark")
-	if gjson.GetBytes(got, "reasoning").Exists() {
+	if ojson.GetBytes(got, "reasoning").Exists() {
 		t.Fatalf("empty reasoning object still exists: %s", got)
 	}
 }
@@ -404,7 +404,7 @@ func TestCodexExecutorPreservesReasoningSummaryForSupportedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if got := gjson.GetBytes(gotBody, "reasoning.summary").String(); got != "auto" {
+	if got := ojson.GetBytes(gotBody, "reasoning.summary").String(); got != "auto" {
 		t.Fatalf("reasoning.summary = %q, want auto; body=%s", got, gotBody)
 	}
 }

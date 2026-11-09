@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,6 @@ import (
 	authpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const affinityCompleted = `{"type":"response.completed","response":{"id":"synthetic","status":"completed","model":"gpt-5.6-sol","output":[],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}}}`
@@ -131,7 +131,7 @@ func TestCodexCacheAffinityFinalWireProtocolMatrix(t *testing.T) {
 									t.Fatal("excluded credential entered adapter")
 								}
 								previous = key
-								if gjson.GetBytes(wire.body, "prompt_cache_key").Exists() {
+								if ojson.GetBytes(wire.body, "prompt_cache_key").Exists() {
 									t.Fatalf("unexpected synthesized pck: %s", p.name)
 								}
 							case <-time.After(3 * time.Second):
@@ -167,7 +167,7 @@ func TestCodexCacheAffinityCredentialsAndLegacyFinalWire(t *testing.T) {
 					}
 					wire := <-ch
 					keys = append(keys, wire.headers.Get("Session-Id"))
-					if gjson.GetBytes(wire.body, "prompt_cache_key").Exists() {
+					if ojson.GetBytes(wire.body, "prompt_cache_key").Exists() {
 						t.Fatal("unexpected pck")
 					}
 				}
@@ -204,7 +204,7 @@ func TestCodexCacheAffinityNativeSemantics(t *testing.T) {
 				if got := codexSessionHeaderValue(request.Header); got != test.header {
 					t.Fatalf("header=%q expected=%q", got, test.header)
 				}
-				if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != test.pck {
+				if got := ojson.GetBytes(body, "prompt_cache_key").String(); got != test.pck {
 					t.Fatal("pck changed")
 				}
 				if state.clientMetadata.SessionID != test.real {
@@ -483,7 +483,7 @@ func TestCodexCacheAffinityPreservesMappingsAndReplay(t *testing.T) {
 				if codexSessionHeaderValue(h) != "native" {
 					t.Fatal("native mapping changed")
 				}
-			} else if base.key == "" || gjson.GetBytes(b, "prompt_cache_key").String() != base.key {
+			} else if base.key == "" || ojson.GetBytes(b, "prompt_cache_key").String() != base.key {
 				t.Fatal("healthy pck changed")
 			}
 			if test.name == "claude" {
@@ -717,7 +717,7 @@ func TestCodexCacheAffinityFailedLateCompletionAndPCKFreeze(t *testing.T) {
 	}
 	defer first.affinity.close()
 	defer second.affinity.close()
-	if r.Header.Get("Session-Id") != r2.Header.Get("Session-Id") || gjson.GetBytes(b, "prompt_cache_key").String() == "" || gjson.GetBytes(b, "prompt_cache_key").String() != gjson.GetBytes(b2, "prompt_cache_key").String() {
+	if r.Header.Get("Session-Id") != r2.Header.Get("Session-Id") || ojson.GetBytes(b, "prompt_cache_key").String() == "" || ojson.GetBytes(b, "prompt_cache_key").String() != ojson.GetBytes(b2, "prompt_cache_key").String() {
 		t.Fatal("H/K were not frozen together")
 	}
 }
@@ -744,7 +744,7 @@ func TestCodexCacheAffinityExcludedOptionsDoNotChangeLegacyBody(t *testing.T) {
 		}
 		wire := <-ch
 		server.Close()
-		if gjson.GetBytes(wire.body, "prompt_cache_key").Exists() {
+		if ojson.GetBytes(wire.body, "prompt_cache_key").Exists() {
 			t.Fatal("excluded path gained an option-derived pck")
 		}
 	}

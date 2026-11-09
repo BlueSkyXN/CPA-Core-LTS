@@ -2,12 +2,12 @@ package cache
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -78,13 +78,13 @@ func CodexReasoningReplaySessionKeyFromPayload(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
 	}
-	if value := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); value != "" {
+	if value := strings.TrimSpace(ojson.GetBytes(payload, "prompt_cache_key").String()); value != "" {
 		return "prompt-cache:" + value
 	}
-	if value := strings.TrimSpace(gjson.GetBytes(payload, "client_metadata.x-codex-window-id").String()); value != "" {
+	if value := strings.TrimSpace(ojson.GetBytes(payload, "client_metadata.x-codex-window-id").String()); value != "" {
 		return "window:" + value
 	}
-	return CodexReasoningReplaySessionKeyFromTurnMetadata(gjson.GetBytes(payload, "client_metadata.x-codex-turn-metadata").String())
+	return CodexReasoningReplaySessionKeyFromTurnMetadata(ojson.GetBytes(payload, "client_metadata.x-codex-turn-metadata").String())
 }
 
 func CodexReasoningReplaySessionKeyFromHeaders(headers http.Header) string {
@@ -109,10 +109,10 @@ func CodexReasoningReplaySessionKeyFromHeaders(headers http.Header) string {
 }
 
 func CodexReasoningReplaySessionKeyFromTurnMetadata(raw string) string {
-	if value := strings.TrimSpace(gjson.Get(raw, "prompt_cache_key").String()); value != "" {
+	if value := strings.TrimSpace(ojson.Get(raw, "prompt_cache_key").String()); value != "" {
 		return "prompt-cache:" + value
 	}
-	if value := strings.TrimSpace(gjson.Get(raw, "window_id").String()); value != "" {
+	if value := strings.TrimSpace(ojson.Get(raw, "window_id").String()); value != "" {
 		return "window:" + value
 	}
 	return ""
@@ -132,7 +132,7 @@ func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers htt
 	if len(payload) == 0 {
 		return ""
 	}
-	userID := strings.TrimSpace(gjson.GetBytes(payload, "metadata.user_id").String())
+	userID := strings.TrimSpace(ojson.GetBytes(payload, "metadata.user_id").String())
 	if userID == "" {
 		return ""
 	}
@@ -140,7 +140,7 @@ func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers htt
 		return strings.TrimSpace(matches[1])
 	}
 	if strings.HasPrefix(userID, "{") {
-		return strings.TrimSpace(gjson.Get(userID, "session_id").String())
+		return strings.TrimSpace(ojson.Get(userID, "session_id").String())
 	}
 	return ""
 }

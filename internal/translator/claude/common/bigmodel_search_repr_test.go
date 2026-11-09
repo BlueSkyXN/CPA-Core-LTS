@@ -2,11 +2,10 @@ package claudecommon
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/tidwall/gjson"
 )
 
 func acceptLines(t *testing.T, lines ...string) (*PluginResponseState, int) {
@@ -362,6 +361,6 @@ func firstTitle(hits []BigModelSearchHit) string {
 	return hits[0].Title
 }
 
-func mustParse(raw string) gjson.Result {
-	return gjson.Parse(raw)
+func mustParse(raw string) ojson.Result {
+	return ojson.Parse(raw)
 }

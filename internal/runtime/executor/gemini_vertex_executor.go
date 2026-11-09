@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	vertexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/vertex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -25,8 +26,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -59,7 +58,7 @@ func getVertexAction(model string, isStream bool) string {
 // so it can be processed by the standard translation pipeline.
 // This ensures Imagen models return responses in the same format as gemini-3-pro-image-preview.
 func convertImagenToGeminiResponse(data []byte, model string) []byte {
-	predictions := gjson.GetBytes(data, "predictions")
+	predictions := ojson.GetBytesNoCopy(data, "predictions")
 	if !predictions.Exists() || !predictions.IsArray() {
 		return data
 	}
@@ -117,14 +116,14 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	prompt := ""
 
 	// Try to get prompt from contents[0].parts[0].text
-	contentsText := gjson.GetBytes(payload, "contents.0.parts.0.text")
+	contentsText := ojson.GetBytesNoCopy(payload, "contents.0.parts.0.text")
 	if contentsText.Exists() {
 		prompt = contentsText.String()
 	}
 
 	// If no contents, try messages format (OpenAI-compatible)
 	if prompt == "" {
-		messagesText := gjson.GetBytes(payload, "messages.#.content")
+		messagesText := ojson.GetBytesNoCopy(payload, "messages.#.content")
 		if messagesText.Exists() && messagesText.IsArray() {
 			for _, msg := range messagesText.Array() {
 				if msg.String() != "" {
@@ -137,7 +136,7 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 
 	// If still no prompt, try direct prompt field
 	if prompt == "" {
-		directPrompt := gjson.GetBytes(payload, "prompt")
+		directPrompt := ojson.GetBytesNoCopy(payload, "prompt")
 		if directPrompt.Exists() {
 			prompt = directPrompt.String()
 		}
@@ -160,13 +159,13 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	}
 
 	// Extract optional parameters
-	if aspectRatio := gjson.GetBytes(payload, "aspectRatio"); aspectRatio.Exists() {
+	if aspectRatio := ojson.GetBytesNoCopy(payload, "aspectRatio"); aspectRatio.Exists() {
 		imagenReq["parameters"].(map[string]any)["aspectRatio"] = aspectRatio.String()
 	}
-	if sampleCount := gjson.GetBytes(payload, "sampleCount"); sampleCount.Exists() {
+	if sampleCount := ojson.GetBytesNoCopy(payload, "sampleCount"); sampleCount.Exists() {
 		imagenReq["parameters"].(map[string]any)["sampleCount"] = int(sampleCount.Int())
 	}
-	if negativePrompt := gjson.GetBytes(payload, "negativePrompt"); negativePrompt.Exists() {
+	if negativePrompt := ojson.GetBytesNoCopy(payload, "negativePrompt"); negativePrompt.Exists() {
 		imagenReq["instances"].([]map[string]any)[0]["negativePrompt"] = negativePrompt.String()
 	}
 
@@ -416,6 +415,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 
 	var body []byte
 	var originalTranslated []byte
+	var doc *ojson.Doc
 
 	// Handle Imagen models with special request format
 	if isImagenModel(baseModel) {
@@ -431,6 +431,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 				return resp, errImagen
 			}
 		}
+		doc = ojson.NewDoc(body)
 	} else {
 		// Standard Gemini translation flow
 		from := opts.SourceFormat
@@ -447,15 +448,15 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 			return resp, err
 		}
 
-		body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier())
-		if err != nil {
+		doc = ojson.NewDoc(body)
+		if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
 			return resp, err
 		}
 
-		body = fixGeminiImageAspectRatio(baseModel, body)
-		body = helps.SetStringIfDifferent(body, "model", baseModel)
-		body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
-		body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
+		fixGeminiImageAspectRatioDoc(baseModel, doc)
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+		helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+		internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 	}
 
 	action := getVertexAction(baseModel, false)
@@ -464,20 +465,24 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 			action = "countTokens"
 		}
 	}
-	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
+	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 	if action != "countTokens" {
-		body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
-		body = helps.EnsureGeminiTrailingUserContent(body, "contents")
+		helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
+		helps.EnsureGeminiTrailingUserContentDoc(doc, "contents")
 	}
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	if opts.Alt != "" && action != "countTokens" {
 		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
-	body, _ = sjson.DeleteBytes(body, "session_id")
+	_ = doc.Delete("session_id")
 
-	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", opts.SourceFormat.String(), "", body, originalTranslated, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers, auth.AuthKind())
+	from := opts.SourceFormat
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	policyPayload := doc.Bytes()
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, "gemini", from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "gemini", e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, "gemini")
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -602,17 +607,17 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		return resp, err
 	}
 
-	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
+	doc := ojson.NewDoc(body)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
 		return resp, err
 	}
 
-	body = fixGeminiImageAspectRatio(baseModel, body)
+	fixGeminiImageAspectRatioDoc(baseModel, doc)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
-	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 
 	action := getVertexAction(baseModel, false)
 	if req.Metadata != nil {
@@ -620,10 +625,10 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 			action = "countTokens"
 		}
 	}
-	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
+	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 	if action != "countTokens" {
-		body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
-		body = helps.EnsureGeminiTrailingUserContent(body, "contents")
+		helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
+		helps.EnsureGeminiTrailingUserContentDoc(doc, "contents")
 	}
 
 	// For API key auth, use simpler URL format without project/location.
@@ -634,10 +639,11 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	if opts.Alt != "" && action != "countTokens" {
 		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
-	body, _ = sjson.DeleteBytes(body, "session_id")
+	_ = doc.Delete("session_id")
 
-	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	policyPayload := doc.Bytes()
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -749,21 +755,21 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		return nil, err
 	}
 
-	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
+	doc := ojson.NewDoc(body)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
 		return nil, err
 	}
 
-	body = fixGeminiImageAspectRatio(baseModel, body)
+	fixGeminiImageAspectRatioDoc(baseModel, doc)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
-	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 
 	action := getVertexAction(baseModel, true)
-	body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
-	body = helps.EnsureGeminiBoundaryUserContent(body, "contents")
+	helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
+	helps.EnsureGeminiBoundaryUserContentDoc(doc, "contents")
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
@@ -774,10 +780,11 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 		}
 	}
-	body, _ = sjson.DeleteBytes(body, "session_id")
+	_ = doc.Delete("session_id")
 
-	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	policyPayload := doc.Bytes()
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -975,21 +982,21 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		return nil, err
 	}
 
-	body, err = helps.ApplyConfiguredRequestThinking(e.cfg, body, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
+	doc := ojson.NewDoc(body)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
 		return nil, err
 	}
 
-	body = fixGeminiImageAspectRatio(baseModel, body)
+	fixGeminiImageAspectRatioDoc(baseModel, doc)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
-	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
-	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
+	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
 
 	action := getVertexAction(baseModel, true)
-	body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
-	body = helps.EnsureGeminiBoundaryUserContent(body, "contents")
+	helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "contents")
+	helps.EnsureGeminiBoundaryUserContentDoc(doc, "contents")
 	// For API key auth, use simpler URL format without project/location
 	url := vertexAPIKeyModelsURL(baseURL, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
@@ -1000,10 +1007,11 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 		}
 	}
-	body, _ = sjson.DeleteBytes(body, "session_id")
+	_ = doc.Delete("session_id")
 
-	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	policyPayload := doc.Bytes()
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, to.String(), e.Identifier(), req, opts)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -1192,25 +1200,27 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 		originalTranslatedForPayload = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, false)
 	}
 
-	translatedReq, err = helps.ApplyConfiguredRequestThinking(e.cfg, translatedReq, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
+	doc := ojson.NewDoc(translatedReq)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 
-	translatedReq = fixGeminiImageAspectRatio(baseModel, translatedReq)
-	translatedReq, _ = sjson.SetBytes(translatedReq, "model", baseModel)
-	translatedReq = helps.StripVertexOpenAIResponsesToolCallIDs(translatedReq, from.String())
+	fixGeminiImageAspectRatioDoc(baseModel, doc)
+	_ = doc.Set("model", baseModel)
+	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
 	respCtx := context.WithValue(ctx, "alt", opts.Alt)
-	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
-	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
-	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
-	translatedReq = internalsignature.SanitizeGeminiRequestThoughtSignatures(translatedReq, "contents")
-	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
+	_ = doc.Delete("tools")
+	_ = doc.Delete("generationConfig")
+	_ = doc.Delete("safetySettings")
+	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, "countTokens")
 
-	translatedReq = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind())(translatedReq)
+	ctxWithFinalizer := helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind()))
+	helps.FinalizePayloadDoc(ctxWithFinalizer, doc)
+	translatedReq = doc.Bytes()
 	httpReq, errNewReq := http.NewRequestWithContext(respCtx, http.MethodPost, url, bytes.NewReader(translatedReq))
 	if errNewReq != nil {
 		return cliproxyexecutor.Response{}, errNewReq
@@ -1272,7 +1282,7 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 		return cliproxyexecutor.Response{}, errRead
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-	count := gjson.GetBytes(data, "totalTokens").Int()
+	count := ojson.GetBytesNoCopy(data, "totalTokens").Int()
 	out := sdktranslator.TranslateTokenCount(ctx, to, responseFormat, count, data)
 	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
 }
@@ -1294,25 +1304,27 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 		originalTranslatedForPayload = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, false)
 	}
 
-	translatedReq, err = helps.ApplyConfiguredRequestThinking(e.cfg, translatedReq, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
+	doc := ojson.NewDoc(translatedReq)
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 
-	translatedReq = fixGeminiImageAspectRatio(baseModel, translatedReq)
-	translatedReq, _ = sjson.SetBytes(translatedReq, "model", baseModel)
-	translatedReq = helps.StripVertexOpenAIResponsesToolCallIDs(translatedReq, from.String())
+	fixGeminiImageAspectRatioDoc(baseModel, doc)
+	_ = doc.Set("model", baseModel)
+	helps.StripVertexOpenAIResponsesToolCallIDsDoc(doc, from.String())
 	respCtx := context.WithValue(ctx, "alt", opts.Alt)
-	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
-	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
-	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
-	translatedReq = internalsignature.SanitizeGeminiRequestThoughtSignatures(translatedReq, "contents")
-	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
+	_ = doc.Delete("tools")
+	_ = doc.Delete("generationConfig")
+	_ = doc.Delete("safetySettings")
+	internalsignature.SanitizeGeminiRequestThoughtSignaturesDoc(doc, "contents")
+	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 
 	// For API key auth, use simpler URL format without project/location
 	url := vertexAPIKeyModelsURL(baseURL, baseModel, "countTokens")
 
-	translatedReq = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind())(translatedReq)
+	ctxWithFinalizer := helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts, auth.AuthKind()))
+	helps.FinalizePayloadDoc(ctxWithFinalizer, doc)
+	translatedReq = doc.Bytes()
 	httpReq, errNewReq := http.NewRequestWithContext(respCtx, http.MethodPost, url, bytes.NewReader(translatedReq))
 	if errNewReq != nil {
 		return cliproxyexecutor.Response{}, errNewReq
@@ -1371,7 +1383,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 		return cliproxyexecutor.Response{}, errRead
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-	count := gjson.GetBytes(data, "totalTokens").Int()
+	count := ojson.GetBytesNoCopy(data, "totalTokens").Int()
 	out := sdktranslator.TranslateTokenCount(ctx, to, responseFormat, count, data)
 	return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
 }
@@ -1570,18 +1582,18 @@ func (e *GeminiVertexExecutor) executeInteractions(ctx context.Context, auth *cl
 	if errTranslate != nil {
 		return resp, errTranslate
 	}
-	if gjson.GetBytes(body, "model").Exists() && targetName != "" {
-		body = helps.SetStringIfDifferent(body, "model", targetName)
+	doc := ojson.NewDoc(body)
+	if doc.Get("model").Exists() && targetName != "" {
+		helps.SetStringIfDifferentDoc(doc, "model", targetName)
 	}
-	var errThinking error
-	body, errThinking = helps.ApplyGeminiInteractionsThinking(body, req, opts, e.cfg)
-	if errThinking != nil {
+	if errThinking := helps.ApplyGeminiInteractionsThinkingDoc(doc, req, opts); errThinking != nil {
 		return resp, errThinking
 	}
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	fromProtocol := opts.SourceFormat.String()
-	body = helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body, true)
+	baseModel := strings.TrimSpace(thinking.ParseSuffix(req.Model).ModelName)
+	from := opts.SourceFormat
+	helps.SanitizeGeminiInteractionsUnsupportedInputIDsDoc(doc, true)
 
 	apiKey, baseURL := vertexAPICreds(auth)
 	var projectID string
@@ -1603,8 +1615,9 @@ func (e *GeminiVertexExecutor) executeInteractions(ctx context.Context, auth *cl
 
 	url := vertexInteractionsURL(baseURL, projectID, false)
 
-	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	policyPayload := doc.Bytes()
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, "interactions", from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "interactions", e.Identifier(), req, opts)
 	reporter.SetTranslatedRequestMetadata(body, "interactions")
 
@@ -1701,19 +1714,19 @@ func (e *GeminiVertexExecutor) executeInteractionsStream(ctx context.Context, au
 	if errTranslate != nil {
 		return nil, errTranslate
 	}
-	if gjson.GetBytes(body, "model").Exists() && targetName != "" {
-		body = helps.SetStringIfDifferent(body, "model", targetName)
+	doc := ojson.NewDoc(body)
+	if doc.Get("model").Exists() && targetName != "" {
+		helps.SetStringIfDifferentDoc(doc, "model", targetName)
 	}
-	var errThinking error
-	body, errThinking = helps.ApplyGeminiInteractionsThinking(body, req, opts, e.cfg)
-	if errThinking != nil {
+	if errThinking := helps.ApplyGeminiInteractionsThinkingDoc(doc, req, opts); errThinking != nil {
 		return nil, errThinking
 	}
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	fromProtocol := opts.SourceFormat.String()
-	body = helps.SanitizeGeminiInteractionsUnsupportedInputIDs(body, true)
-	body = helps.SetBoolIfDifferent(body, "stream", true)
+	baseModel := strings.TrimSpace(thinking.ParseSuffix(req.Model).ModelName)
+	from := opts.SourceFormat
+	helps.SanitizeGeminiInteractionsUnsupportedInputIDsDoc(doc, true)
+	helps.SetBoolIfDifferentDoc(doc, "stream", true)
 
 	apiKey, baseURL := vertexAPICreds(auth)
 	var projectID string
@@ -1735,8 +1748,9 @@ func (e *GeminiVertexExecutor) executeInteractionsStream(ctx context.Context, au
 
 	url := vertexInteractionsURL(baseURL, projectID, true)
 
-	policyPayload := body
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	policyPayload := doc.Bytes()
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, "interactions", from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, auth.AuthKind())
+	body = doc.Bytes()
 	body = helps.ProtectConfiguredEffort(e.cfg, policyPayload, body, "interactions", e.Identifier(), req, opts)
 	reporter.SetTranslatedRequestMetadata(body, "interactions")
 

@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -8,8 +9,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // RequestEffortPolicy selects by the client-requested, suffix-free model name.
@@ -58,16 +57,16 @@ func ApplyConfiguredSteerThinking(cfg *config.Config, body []byte, req coreexecu
 	if _, active := RequestEffortOverride(cfg, req, opts); !active || !thinking.HasEffortIntent(body, "codex", "") {
 		return body, nil
 	}
-	hadEffort := gjson.GetBytes(body, "reasoning.effort").Exists()
-	hadReasoning := gjson.GetBytes(body, "reasoning").Exists()
+	hadEffort := ojson.GetBytes(body, "reasoning.effort").Exists()
+	hadReasoning := ojson.GetBytes(body, "reasoning").Exists()
 	result, err := ApplyConfiguredRequestThinking(cfg, body, req, opts, "codex", "codex", "codex")
 	if err != nil {
 		return nil, err
 	}
 	if !hadEffort {
-		result, _ = sjson.DeleteBytes(result, "reasoning.effort")
-		if !hadReasoning && len(gjson.GetBytes(result, "reasoning").Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "reasoning")
+		result, _ = ojson.DeleteBytes(result, "reasoning.effort")
+		if !hadReasoning && len(ojson.GetBytes(result, "reasoning").Map()) == 0 {
+			result, _ = ojson.DeleteBytes(result, "reasoning")
 		}
 	}
 	return result, nil

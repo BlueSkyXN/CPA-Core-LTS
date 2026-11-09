@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 const flashImageFixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII="
@@ -39,7 +39,7 @@ func TestGLMEffortAliasesAcrossProtocols(t *testing.T) {
 					}
 					f.checkUsage(t, false)
 					wire := f.transport.captured[len(f.transport.captured)-1]
-					if gjson.GetBytes(wire, "model").String() != model || gjson.GetBytes(wire, "reasoning_effort").String() != expected || gjson.GetBytes(wire, "thinking.type").String() != "enabled" || gjson.GetBytes(wire, "thinking.budget_tokens").Exists() {
+					if ojson.GetBytes(wire, "model").String() != model || ojson.GetBytes(wire, "reasoning_effort").String() != expected || ojson.GetBytes(wire, "thinking.type").String() != "enabled" || ojson.GetBytes(wire, "thinking.budget_tokens").Exists() {
 						t.Fatalf("%s/%s/%s controls changed before dispatch", tc.path, model, effort)
 					}
 				}
@@ -62,7 +62,7 @@ func TestResponsesThinkingAndImageControls(t *testing.T) {
 				}
 				f.checkUsage(t, false)
 				body := f.transport.captured[len(f.transport.captured)-1]
-				if gjson.GetBytes(body, "reasoning_effort").String() != effort || gjson.GetBytes(body, "thinking.type").String() != "enabled" || gjson.GetBytes(body, "thinking.budget_tokens").Exists() || gjson.GetBytes(body, "output_config").Exists() {
+				if ojson.GetBytes(body, "reasoning_effort").String() != effort || ojson.GetBytes(body, "thinking.type").String() != "enabled" || ojson.GetBytes(body, "thinking.budget_tokens").Exists() || ojson.GetBytes(body, "output_config").Exists() {
 					t.Fatal("thinking effort not preserved in the dispatched GLM request")
 				}
 			}
@@ -81,7 +81,7 @@ func TestResponsesThinkingAndImageControls(t *testing.T) {
 		}
 		f.checkUsage(t, false)
 		body := f.transport.captured[len(f.transport.captured)-1]
-		if gjson.GetBytes(body, "messages.0.content.1.type").String() != "image" || gjson.GetBytes(body, "messages.0.content.1.source.data").String() != flashImageFixture {
+		if ojson.GetBytes(body, "messages.0.content.1.type").String() != "image" || ojson.GetBytes(body, "messages.0.content.1.source.data").String() != flashImageFixture {
 			t.Fatal("image was dropped or changed during translation")
 		}
 	}
@@ -103,7 +103,7 @@ func TestMessagesThinkingAndToolImages(t *testing.T) {
 				}
 				f.checkUsage(t, false)
 				last := f.transport.captured[len(f.transport.captured)-1]
-				if gjson.GetBytes(last, "reasoning_effort").String() != effort || gjson.GetBytes(last, "thinking.type").String() != "enabled" {
+				if ojson.GetBytes(last, "reasoning_effort").String() != effort || ojson.GetBytes(last, "thinking.type").String() != "enabled" {
 					t.Fatal("native Messages effort did not reach the provider")
 				}
 			}
@@ -126,7 +126,7 @@ func TestMessagesThinkingAndToolImages(t *testing.T) {
 				f.checkUsage(t, true)
 				continue
 			}
-			if rec.Code != 200 || gjson.GetBytes(f.transport.captured[len(f.transport.captured)-1], imagePath).String() != flashImageFixture {
+			if rec.Code != 200 || ojson.GetBytes(f.transport.captured[len(f.transport.captured)-1], imagePath).String() != flashImageFixture {
 				t.Fatalf("native Messages image nested=%v HTTP=%d", nested, rec.Code)
 			}
 			f.checkUsage(t, false)
@@ -167,7 +167,7 @@ func TestWebsocketThinkingAndImageControls(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		switch gjson.GetBytes(event, "type").String() {
+		switch ojson.GetBytes(event, "type").String() {
 		case "error", "response.failed":
 			t.Fatal("WebSocket thinking/image request failed", string(event))
 		case "response.completed":
@@ -175,7 +175,7 @@ func TestWebsocketThinkingAndImageControls(t *testing.T) {
 			f.transport.lock.Lock()
 			defer f.transport.lock.Unlock()
 			last := f.transport.captured[len(f.transport.captured)-1]
-			if gjson.GetBytes(last, "reasoning_effort").String() != "max" || gjson.GetBytes(last, "thinking.type").String() != "enabled" || gjson.GetBytes(last, "messages.0.content.0.source.data").String() != flashImageFixture {
+			if ojson.GetBytes(last, "reasoning_effort").String() != "max" || ojson.GetBytes(last, "thinking.type").String() != "enabled" || ojson.GetBytes(last, "messages.0.content.0.source.data").String() != flashImageFixture {
 				t.Fatal("WebSocket controls/image did not reach the provider")
 			}
 			return
@@ -206,7 +206,7 @@ func TestHostLoggingAcknowledgementRevocation(t *testing.T) {
 			}
 			status := httptest.NewRecorder()
 			f.router.ServeHTTP(status, httptest.NewRequest("GET", "/v0/management/plugins/zcode-coding-plan/readiness?auth_index=v2-fixture-index", nil))
-			if status.Code != 200 || gjson.GetBytes(status.Body.Bytes(), "Ready").Bool() {
+			if status.Code != 200 || ojson.GetBytes(status.Body.Bytes(), "Ready").Bool() {
 				t.Fatal("revoked acknowledgement still reports readiness")
 			}
 			f.host.ApplyConfig(context.Background(), f.cfg)
@@ -256,7 +256,7 @@ func TestManagementAccountRotationAndReplacement(t *testing.T) {
 		t.Fatal("rotation reused the old signing key")
 	}
 	last := f.transport.captured[len(f.transport.captured)-1]
-	if !strings.Contains(gjson.GetBytes(last, "metadata.user_id").String(), "rotated-device") {
+	if !strings.Contains(ojson.GetBytes(last, "metadata.user_id").String(), "rotated-device") {
 		t.Fatal("updated device identity did not reach upstream")
 	}
 	removed := httptest.NewRecorder()

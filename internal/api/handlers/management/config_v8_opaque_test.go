@@ -2,6 +2,7 @@ package management
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -66,10 +66,10 @@ func TestConfigV8OpaquePluginJSONBoundary(t *testing.T) {
 				if w.Header().Get("ETag") != configRevision([]byte(raw)) {
 					t.Errorf("GET %s lost persisted revision", target.path)
 				}
-				if target.status == http.StatusUnprocessableEntity && gjson.GetBytes(w.Body.Bytes(), "error").String() != "config_not_json_compatible" {
+				if target.status == http.StatusUnprocessableEntity && ojson.GetBytes(w.Body.Bytes(), "error").String() != "config_not_json_compatible" {
 					t.Errorf("GET %s did not classify opaque YAML", target.path)
 				}
-				if target.path == "/config/api-keys/codex" && gjson.GetBytes(w.Body.Bytes(), "0.keys.0.auth_index").String() == "" {
+				if target.path == "/config/api-keys/codex" && ojson.GetBytes(w.Body.Bytes(), "0.keys.0.auth_index").String() == "" {
 					t.Error("provider subtree lost auth index")
 				}
 				if target.path == "/config.yaml" && !strings.Contains(w.Body.String(), "table:") {

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 )
 
 const v2Model = "GLM-5.3-Flash"
@@ -97,7 +97,7 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !ed25519.Verify(f.pub, []byte(id+"\n"+h.Get("X-Client-Ts")+"\n3.14.3\n"+h.Get("X-Session-Id")+"\n"+h.Get("X-Client-Nonce")), sig) {
 		return nil, fmt.Errorf("invalid synthetic signature")
 	}
-	if h.Get("X-Coding-Plan-Prompt") != "" || gjson.GetBytes(body, "x_coding_plan").Exists() {
+	if h.Get("X-Coding-Plan-Prompt") != "" || ojson.GetBytes(body, "x_coding_plan").Exists() {
 		return nil, fmt.Errorf("prompt control leaked")
 	}
 	f.captured = append(f.captured, bytes.Clone(body))
@@ -109,7 +109,7 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: f.errorStatus, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(f.errorBody)), Request: req}, nil
 	}
 	text, ct := v2Reply(body, len(f.captured)), "application/json"
-	if gjson.GetBytes(body, "stream").Bool() {
+	if ojson.GetBytes(body, "stream").Bool() {
 		ct = "text/event-stream"
 		text = v2Events(text)
 		if f.mode == "truncate" || f.mode == "business-error" {
@@ -127,11 +127,11 @@ func (f *v2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 func v2Reply(body []byte, n int) string {
 	content := []any{map[string]any{"type": "text", "text": "fixture-ok"}}
 	stop := "end_turn"
-	if gjson.GetBytes(body, "tools.#").Int() > 0 && !bytes.Contains(body, []byte(`"tool_result"`)) {
+	if ojson.GetBytes(body, "tools.#").Int() > 0 && !bytes.Contains(body, []byte(`"tool_result"`)) {
 		content = []any{map[string]any{"type": "thinking", "thinking": "synthetic reason", "signature": "synthetic-opaque"}, map[string]any{"type": "tool_use", "id": "call-fixture", "name": "lookup", "input": map[string]any{"q": "hello"}}}
 		stop = "tool_use"
 	}
-	b, _ := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("message-%d", n), "model": gjson.GetBytes(body, "model").String(), "role": "assistant", "content": content, "stop_reason": stop, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}})
+	b, _ := json.Marshal(map[string]any{"type": "message", "id": fmt.Sprintf("message-%d", n), "model": ojson.GetBytes(body, "model").String(), "role": "assistant", "content": content, "stop_reason": stop, "usage": map[string]int{"input_tokens": 10, "output_tokens": 2}})
 	return string(b)
 }
 func v2Events(reply string) string {
@@ -302,7 +302,7 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 		}
 		f.checkUsage(t, false)
 		body := f.transport.captured[len(f.transport.captured)-1]
-		system := gjson.GetBytes(body, "system").Raw
+		system := ojson.GetBytes(body, "system").Raw
 		if !strings.Contains(system, "caller") {
 			t.Fatal("caller system prompt lost")
 		}
@@ -313,11 +313,11 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 		t.Fatal(first.Body.String())
 	}
 	f.checkUsage(t, false)
-	if gjson.Get(first.Body.String(), "output.0.encrypted_content").String() != "synthetic-opaque" {
+	if ojson.Get(first.Body.String(), "output.0.encrypted_content").String() != "synthetic-opaque" {
 		t.Fatal("thinking carrier lost")
 	}
 	history := []any{map[string]any{"role": "user", "content": "hello"}}
-	for _, item := range gjson.Get(first.Body.String(), "output").Array() {
+	for _, item := range ojson.Get(first.Body.String(), "output").Array() {
 		history = append(history, item.Value())
 	}
 	history = append(history, map[string]any{"type": "function_call_output", "call_id": "call-fixture", "output": "found"})
@@ -332,7 +332,7 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 		t.Fatal("tool/thinking history not preserved")
 	}
 	clamped := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","max_output_tokens":128001}`, v2Model))
-	if clamped.Code != 200 || gjson.GetBytes(f.transport.captured[len(f.transport.captured)-1], "max_tokens").Int() != 128000 {
+	if clamped.Code != 200 || ojson.GetBytes(f.transport.captured[len(f.transport.captured)-1], "max_tokens").Int() != 128000 {
 		t.Fatal("host model limit not respected")
 	}
 	f.checkUsage(t, false)
@@ -347,10 +347,10 @@ func TestV2ResponsesHTTPHistoryAndLimits(t *testing.T) {
 		t.Fatal("invalid request reached model")
 	}
 	summary := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":"high","summary":"auto"},"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`, v2Model))
-	if summary.Code != 200 || gjson.GetBytes(summary.Body.Bytes(), "output.0.summary.0.text").String() != "synthetic reason" {
+	if summary.Code != 200 || ojson.GetBytes(summary.Body.Bytes(), "output.0.summary.0.text").String() != "synthetic reason" {
 		t.Fatalf("summary display failed: %d %s", summary.Code, summary.Body.String())
 	}
-	if gjson.GetBytes(f.transport.captured[len(f.transport.captured)-1], "thinking.display").Exists() {
+	if ojson.GetBytes(f.transport.captured[len(f.transport.captured)-1], "thinking.display").Exists() {
 		t.Fatal("display leaked upstream")
 	}
 	before = len(f.transport.captured)
@@ -395,7 +395,7 @@ func TestV2WebsocketToolContinuation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			typ := gjson.GetBytes(b, "type").String()
+			typ := ojson.GetBytes(b, "type").String()
 			if typ == "response.completed" || typ == "error" || typ == "response.failed" {
 				return b
 			}
@@ -409,14 +409,14 @@ func TestV2WebsocketToolContinuation(t *testing.T) {
 	}
 	send(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"role":"user","content":"hello"}],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`, v2Model))
 	first := read()
-	if gjson.GetBytes(first, "type").String() != "response.completed" {
+	if ojson.GetBytes(first, "type").String() != "response.completed" {
 		t.Fatalf("first turn: %s", first)
 	}
 	f.checkUsage(t, false)
-	parent := gjson.GetBytes(first, "response.id").String()
+	parent := ojson.GetBytes(first, "response.id").String()
 	send(fmt.Sprintf(`{"type":"response.create","previous_response_id":%q,"input":[{"type":"function_call_output","call_id":"call-fixture","output":"found"}]}`, parent))
 	second := read()
-	if gjson.GetBytes(second, "type").String() != "response.completed" {
+	if ojson.GetBytes(second, "type").String() != "response.completed" {
 		t.Fatalf("second turn: %s", second)
 	}
 	f.checkUsage(t, false)
@@ -429,7 +429,7 @@ func TestV2WebsocketToolContinuation(t *testing.T) {
 	}
 	send(`{"type":"response.create","previous_response_id":"not-on-this-connection","input":[]}`)
 	bad := read()
-	if gjson.GetBytes(bad, "type").String() != "error" {
+	if ojson.GetBytes(bad, "type").String() != "error" {
 		t.Fatalf("bad parent accepted: %s", bad)
 	}
 	f.transport.lock.Lock()

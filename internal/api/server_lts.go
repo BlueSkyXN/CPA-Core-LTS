@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 
 	"errors"
 
@@ -17,8 +18,6 @@ import (
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -73,9 +72,9 @@ func markCodexAlphaSearchResult(manager *auth.Manager, ctx context.Context, sele
 		return statusCode
 	}
 	if !result.Success {
-		message := strings.TrimSpace(gjson.GetBytes(body, "error.message").String())
+		message := strings.TrimSpace(ojson.GetBytes(body, "error.message").String())
 		if message == "" {
-			message = strings.TrimSpace(gjson.GetBytes(body, "message").String())
+			message = strings.TrimSpace(ojson.GetBytes(body, "message").String())
 		}
 		if message == "" {
 			message = http.StatusText(statusCode)
@@ -100,7 +99,7 @@ func markCodexAlphaSearchResult(manager *auth.Manager, ctx context.Context, sele
 
 func codexAlphaSearchErrorCode(body []byte) string {
 	for _, path := range []string{"error.code", "error.type", "code", "type"} {
-		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
+		if value := strings.TrimSpace(ojson.GetBytes(body, path).String()); value != "" {
 			return value
 		}
 	}

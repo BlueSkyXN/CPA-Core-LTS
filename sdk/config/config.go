@@ -13,6 +13,7 @@ type Config = internalconfig.Config
 type ModelCatalogs = internalconfig.ModelCatalogs
 
 type ClientConfig = internalconfig.ClientConfig
+type ClaudeClientConfig = internalconfig.ClaudeClientConfig
 type CodexClientConfig = internalconfig.CodexClientConfig
 type CodexWebSearchResultCacheConfig = internalconfig.CodexWebSearchResultCacheConfig
 type StreamingConfig = internalconfig.StreamingConfig
@@ -30,6 +31,7 @@ type PayloadFilterRule = internalconfig.PayloadFilterRule
 type PayloadModelRule = internalconfig.PayloadModelRule
 type ReasoningEffortRule = internalconfig.ReasoningEffortRule
 
+type ProxyConnectionPoolConfig = internalconfig.ProxyConnectionPoolConfig
 type GeminiKey = internalconfig.GeminiKey
 type CodexKey = internalconfig.CodexKey
 type XAIKey = internalconfig.XAIKey

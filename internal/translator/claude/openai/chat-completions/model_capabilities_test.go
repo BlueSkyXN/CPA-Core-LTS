@@ -3,11 +3,11 @@ package chat_completions
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestChatEnvelopeSelectedCapabilities(t *testing.T) {
@@ -32,13 +32,13 @@ func TestChatEnvelopeSelectedCapabilities(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
 				body := []byte(`{"messages":[{"role":"user","content":"hello"}],"reasoning_effort":" MAX ","max_completion_tokens":64000}`)
 				out := tr.TranslateRequestEnvelope(context.Background(), tr.FormatOpenAI, tr.FormatClaude, tr.RequestEnvelope{Model: model, Body: body, Stream: stream, ModelInfo: tc.info}).Body
-				if gjson.GetBytes(out, "output_config.effort").String() != tc.effort || gjson.GetBytes(out, "thinking.budget_tokens").Exists() != tc.budget || gjson.GetBytes(out, "max_tokens").Int() != tc.max || gjson.GetBytes(out, "stream").Bool() != stream {
+				if ojson.GetBytes(out, "output_config.effort").String() != tc.effort || ojson.GetBytes(out, "thinking.budget_tokens").Exists() != tc.budget || ojson.GetBytes(out, "max_tokens").Int() != tc.max || ojson.GetBytes(out, "stream").Bool() != stream {
 					t.Fatalf("unexpected translation: %s", out)
 				}
-				if tc.info.Thinking == nil && gjson.GetBytes(out, "thinking").Exists() {
+				if tc.info.Thinking == nil && ojson.GetBytes(out, "thinking").Exists() {
 					t.Fatal("undeclared capability invented thinking")
 				}
-				if tc.info.Thinking != nil && gjson.GetBytes(out, "thinking.display").String() != "summarized" {
+				if tc.info.Thinking != nil && ojson.GetBytes(out, "thinking.display").String() != "summarized" {
 					t.Fatal("Chat effort display intent lost")
 				}
 			})
@@ -49,13 +49,13 @@ func TestChatEnvelopeSelectedCapabilities(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if gjson.GetBytes(out, "output_config.effort").String() != "high" || gjson.GetBytes(out, "max_tokens").Int() != 64000 {
+		if ojson.GetBytes(out, "output_config.effort").String() != "high" || ojson.GetBytes(out, "max_tokens").Int() != 64000 {
 			t.Fatal("legacy wrapper changed")
 		}
 	}
 	for _, compat := range []bool{false, true} {
 		out := tr.TranslateRequestEnvelope(context.Background(), tr.FormatOpenAI, tr.FormatClaude, tr.RequestEnvelope{Model: model, ModelInfo: &registry.ModelInfo{ID: model, IsCompat: compat}, Body: []byte(`{"messages":[{"role":"assistant","content":"answer","reasoning_content":"public thought"}]}`)}).Body
-		if (gjson.GetBytes(out, "messages.0.content.0.type").String() == "thinking") != compat {
+		if (ojson.GetBytes(out, "messages.0.content.0.type").String() == "thinking") != compat {
 			t.Fatal("compat reasoning replay changed")
 		}
 	}

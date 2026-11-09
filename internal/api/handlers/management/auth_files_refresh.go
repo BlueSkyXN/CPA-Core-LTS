@@ -77,6 +77,21 @@ func (h *Handler) RefreshAuthFiles(c *gin.Context) {
 
 	refreshed.EnsureIndex()
 	// Refresh is a status operation, not the explicit credential download route.
+	if c.GetBool(ConfigV8ContextKey) {
+		h.mu.Lock()
+		host := h.pluginHost
+		h.mu.Unlock()
+		quota := authFileQuotaContext{v8: true}
+		if host != nil {
+			quota.pluginIDs = host.QuotaProviderPluginIDs(ctx)
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"ok":   true,
+			"auth": h.buildAuthFileEntry(refreshed, quota),
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"ok": true,
 		"auth": gin.H{

@@ -4,10 +4,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Claude reports server-side web search as a pair of assistant content blocks: a
@@ -66,11 +65,11 @@ func claudeWebSearchQuery(input string) string {
 	if input == "" {
 		return ""
 	}
-	if query := strings.TrimSpace(gjson.Get(input, "query").String()); query != "" {
+	if query := strings.TrimSpace(ojson.Get(input, "query").String()); query != "" {
 		return query
 	}
 	// GLM Coding Plan reports the query as search_query.
-	return strings.TrimSpace(gjson.Get(input, "search_query").String())
+	return strings.TrimSpace(ojson.Get(input, "search_query").String())
 }
 
 // bigmodelToolResultToResponses converts the Python-repr hit string GLM
@@ -85,13 +84,13 @@ func bigmodelToolResultToResponses(content string) []byte {
 	results := make([][]byte, 0, len(hits))
 	for _, hit := range hits {
 		entry := []byte(`{"type":"web_search_result","title":"","url":""}`)
-		entry, _ = sjson.SetBytes(entry, "title", hit.Title)
-		entry, _ = sjson.SetBytes(entry, "url", hit.URL)
+		entry, _ = ojson.SetBytes(entry, "title", hit.Title)
+		entry, _ = ojson.SetBytes(entry, "url", hit.URL)
 		if refer, exists := hit.Fields["refer"]; exists {
-			entry, _ = sjson.SetBytes(entry, "refer", refer)
+			entry, _ = ojson.SetBytes(entry, "refer", refer)
 		}
 		if body, exists := hit.Fields["content"]; exists {
-			entry, _ = sjson.SetBytes(entry, "content", body)
+			entry, _ = ojson.SetBytes(entry, "content", body)
 		}
 		results = append(results, entry)
 	}
@@ -105,7 +104,7 @@ func bigmodelToolResultToResponses(content string) []byte {
 // Anthropic requires a genuine `encrypted_content` on every result it is asked
 // to replay and rejects fabricated values, so anything we drop here can never be
 // reconstructed later.
-func claudeWebSearchResultsToResponses(content gjson.Result) []byte {
+func claudeWebSearchResultsToResponses(content ojson.Result) []byte {
 	if content.IsObject() {
 		return []byte(content.Raw)
 	}
@@ -113,7 +112,7 @@ func claudeWebSearchResultsToResponses(content gjson.Result) []byte {
 		return nil
 	}
 	var results [][]byte
-	content.ForEach(func(_, entry gjson.Result) bool {
+	content.ForEach(func(_, entry ojson.Result) bool {
 		if entry.Get("type").String() == "web_search_tool_result_error" || strings.TrimSpace(entry.Get("url").String()) != "" {
 			results = append(results, []byte(entry.Raw))
 		}
@@ -129,46 +128,62 @@ func claudeWebSearchResultsToResponses(content gjson.Result) []byte {
 // Claude server-side search. results may be nil when the upstream turn ended
 // before the result block arrived.
 func buildResponsesWebSearchCallItem(claudeToolUseID, query string, results []byte) []byte {
-	item := []byte(`{"id":"","type":"web_search_call","status":"completed","action":{"type":"search","query":""}}`)
-	item, _ = sjson.SetBytes(item, "id", responsesWebSearchCallID(claudeToolUseID))
-	item, _ = sjson.SetBytes(item, "action.query", query)
-	if len(results) > 0 {
-		item, _ = sjson.SetRawBytes(item, "results", results)
+	return buildResponsesWebSearchCallItemWithStatus(claudeToolUseID, query, "completed", results)
+}
+
+func buildResponsesWebSearchCallItemWithStatus(claudeToolUseID, query, status string, results []byte) []byte {
+	if status == "" {
+		status = "completed"
 	}
-	return item
+	itemDoc := ojson.NewDocString(`{"id":"","type":"web_search_call","status":"completed","action":{"type":"search","query":""}}`)
+	_ = itemDoc.Set("id", responsesWebSearchCallID(claudeToolUseID))
+	_ = itemDoc.Set("status", status)
+	_ = itemDoc.Set("action.query", query)
+	if len(results) > 0 {
+		_ = itemDoc.SetRawBytes("results", results)
+	}
+	return itemDoc.Bytes()
 }
 
 // webReader 已在上游执行，用 open_page 表达读取动作，并在既有 results
 // 字段中保留原始结果块。网页正文及供应商附加字段都参与下一轮回放。
 func buildResponsesServerWebCallItem(toolUseID, name, input string, results []byte) []byte {
+	return buildResponsesServerWebCallItemWithStatus(toolUseID, name, input, "completed", results)
+}
+
+func buildResponsesServerWebCallItemWithStatus(toolUseID, name, input, status string, results []byte) []byte {
 	if name != claudecommon.BigModelWebReaderToolName {
-		return buildResponsesWebSearchCallItem(toolUseID, claudeWebSearchQuery(input), results)
+		return buildResponsesWebSearchCallItemWithStatus(toolUseID, claudeWebSearchQuery(input), status, results)
 	}
-	url := gjson.Get(input, "url").String()
+	url := ojson.Get(input, "url").String()
 	if url == "" {
-		url = gjson.Get(gjson.GetBytes(results, "content").String(), "0.url").String()
+		url = ojson.Get(ojson.GetBytesNoCopy(results, "content").String(), "0.url").String()
+	}
+	if status == "" {
+		status = "completed"
 	}
 	item := []byte(`{"id":"","type":"web_search_call","status":"completed","action":{"type":"open_page","url":""}}`)
-	item, _ = sjson.SetBytes(item, "id", responsesWebSearchCallID(toolUseID))
-	item, _ = sjson.SetBytes(item, "action.url", url)
+	item, _ = ojson.SetBytes(item, "id", responsesWebSearchCallID(toolUseID))
+	item, _ = ojson.SetBytes(item, "status", status)
+	item, _ = ojson.SetBytes(item, "action.url", url)
 	if len(results) > 0 {
-		item, _ = sjson.SetRawBytes(item, "results", results)
+		item, _ = ojson.SetRawBytes(item, "results", results)
 	}
 	return item
 }
 
-func responsesItemHasBigModelReaderResult(item gjson.Result) bool {
+func responsesItemHasBigModelReaderResult(item ojson.Result) bool {
 	return item.Get("action.type").String() == "open_page" && item.Get("results.type").String() == "tool_result"
 }
 
-func convertResponsesWebReaderCallToClaudeBlocks(item gjson.Result, toolUseID, fallbackURL string, withResult bool) [][]byte {
+func convertResponsesWebReaderCallToClaudeBlocks(item ojson.Result, toolUseID, fallbackURL string, withResult bool) [][]byte {
 	url := item.Get("action.url").String()
 	if url == "" {
 		url = fallbackURL
 	}
 	use := []byte(`{"type":"server_tool_use","id":"","name":"webReader","input":{"url":""}}`)
-	use, _ = sjson.SetBytes(use, "id", toolUseID)
-	use, _ = sjson.SetBytes(use, "input.url", url)
+	use, _ = ojson.SetBytes(use, "id", toolUseID)
+	use, _ = ojson.SetBytes(use, "input.url", url)
 	if !withResult {
 		return [][]byte{use}
 	}
@@ -176,21 +191,21 @@ func convertResponsesWebReaderCallToClaudeBlocks(item gjson.Result, toolUseID, f
 	if original := item.Get("results"); original.IsObject() {
 		result = []byte(original.Raw)
 	}
-	result, _ = sjson.SetBytes(result, "tool_use_id", toolUseID)
+	result, _ = ojson.SetBytes(result, "tool_use_id", toolUseID)
 	return [][]byte{use, result}
 }
 
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
 // buildResponsesWebSearchCallItem: it rebuilds the Claude block pair so a
 // replayed turn still shows that the search happened and what it returned.
-func convertResponsesWebSearchCallToClaudeBlocks(item gjson.Result, allowBigModelReplay bool) [][]byte {
+func convertResponsesWebSearchCallToClaudeBlocks(item ojson.Result, allowBigModelReplay bool) [][]byte {
 	return convertResponsesWebSearchCallToClaudeBlocksWithQuery(item, "", true, allowBigModelReplay)
 }
 
 // convertResponsesWebSearchCallToClaudeBlocksWithQuery rebuilds the server_tool_use
 // block, using fallbackQuery when the item carries none, and the result block
 // only when withResult is set.
-func convertResponsesWebSearchCallToClaudeBlocksWithQuery(item gjson.Result, fallbackQuery string, withResult, allowBigModelReplay bool) [][]byte {
+func convertResponsesWebSearchCallToClaudeBlocksWithQuery(item ojson.Result, fallbackQuery string, withResult, allowBigModelReplay bool) [][]byte {
 	toolUseID := claudeWebSearchToolUseID(strings.TrimSpace(item.Get("id").String()))
 	if toolUseID == "" {
 		return nil
@@ -199,26 +214,26 @@ func convertResponsesWebSearchCallToClaudeBlocksWithQuery(item gjson.Result, fal
 		return convertResponsesWebReaderCallToClaudeBlocks(item, toolUseID, fallbackQuery, withResult)
 	}
 
-	use := []byte(`{"type":"server_tool_use","id":"","name":"","input":{}}`)
-	use, _ = sjson.SetBytes(use, "id", toolUseID)
-	use, _ = sjson.SetBytes(use, "name", claudeWebSearchToolName)
+	useDoc := ojson.NewDocString(`{"type":"server_tool_use","id":"","name":"","input":{}}`)
+	_ = useDoc.Set("id", toolUseID)
+	_ = useDoc.Set("name", claudeWebSearchToolName)
 	query := responsesWebSearchCallQuery(item)
 	if query == "" {
 		query = fallbackQuery
 	}
 	if query != "" {
-		use, _ = sjson.SetBytes(use, "input.query", query)
+		_ = useDoc.Set("input.query", query)
 	}
 	if !withResult {
-		return [][]byte{use}
+		return [][]byte{useDoc.Bytes()}
 	}
 
-	result := []byte(`{"type":"web_search_tool_result","tool_use_id":"","content":[]}`)
-	result, _ = sjson.SetBytes(result, "tool_use_id", toolUseID)
+	resultDoc := ojson.NewDocString(`{"type":"web_search_tool_result","tool_use_id":"","content":[]}`)
+	_ = resultDoc.Set("tool_use_id", toolUseID)
 	if content := responsesWebSearchResultsToClaude(item.Get("results"), allowBigModelReplay); len(content) > 0 {
-		result, _ = sjson.SetRawBytes(result, "content", content)
+		_ = resultDoc.SetRawBytes("content", content)
 	}
-	return [][]byte{use, result}
+	return [][]byte{useDoc.Bytes(), resultDoc.Bytes()}
 }
 
 // responsesWebSearchHistory indexes web_search_call items of one request so a
@@ -241,7 +256,7 @@ type responsesWebSearchHistory struct {
 	pausedQuery map[int]string
 }
 
-func responsesWebSearchItemIsPaused(item gjson.Result) bool {
+func responsesWebSearchItemIsPaused(item ojson.Result) bool {
 	return item.Get("type").String() == "web_search_call" &&
 		strings.EqualFold(strings.TrimSpace(item.Get("status").String()), "in_progress") &&
 		!item.Get("results").Exists()
@@ -249,7 +264,7 @@ func responsesWebSearchItemIsPaused(item gjson.Result) bool {
 
 // responsesItemIsTurnBoundary reports a user turn. Tool outputs do not end the
 // assistant turn: Anthropic runs a deferred search right after them.
-func responsesItemIsTurnBoundary(item gjson.Result) bool {
+func responsesItemIsTurnBoundary(item ojson.Result) bool {
 	typ := item.Get("type").String()
 	role := item.Get("role").String()
 	if typ == "" && role != "" {
@@ -258,7 +273,7 @@ func responsesItemIsTurnBoundary(item gjson.Result) bool {
 	return typ == "message" && role != "assistant"
 }
 
-func scanResponsesWebSearchHistory(items []gjson.Result) responsesWebSearchHistory {
+func scanResponsesWebSearchHistory(items []ojson.Result) responsesWebSearchHistory {
 	history := responsesWebSearchHistory{
 		boundaryAfter: make([]bool, len(items)),
 		skip:          map[int]bool{},
@@ -297,7 +312,7 @@ func scanResponsesWebSearchHistory(items []gjson.Result) responsesWebSearchHisto
 	return history
 }
 
-func (h responsesWebSearchHistory) claudeBlocks(index int, item gjson.Result, allowBigModelReplay bool) [][]byte {
+func (h responsesWebSearchHistory) claudeBlocks(index int, item ojson.Result, allowBigModelReplay bool) [][]byte {
 	if h.skip[index] {
 		return nil
 	}
@@ -312,7 +327,7 @@ func (h responsesWebSearchHistory) claudeBlocks(index int, item gjson.Result, al
 // responsesWebSearchCallQuery reads the query from a Responses web_search_call,
 // tolerating the `queries` array and the `open_page` action shape that OpenAI
 // clients emit.
-func responsesWebSearchCallQuery(item gjson.Result) string {
+func responsesWebSearchCallQuery(item ojson.Result) string {
 	if query := strings.TrimSpace(item.Get("action.query").String()); query != "" {
 		return query
 	}
@@ -322,7 +337,7 @@ func responsesWebSearchCallQuery(item gjson.Result) string {
 	return strings.TrimSpace(item.Get("action.url").String())
 }
 
-func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay bool) []byte {
+func responsesWebSearchResultsToClaude(results ojson.Result, allowBigModelReplay bool) []byte {
 	if results.IsObject() {
 		// BigModel reader 的原始结果不能作为 Anthropic 的搜索结果对象回放。
 		// 跨供应商沿用现有缺少 encrypted_content 时的空搜索结果规则。
@@ -335,7 +350,7 @@ func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay
 		return nil
 	}
 	var blocks [][]byte
-	results.ForEach(func(_, entry gjson.Result) bool {
+	results.ForEach(func(_, entry ojson.Result) bool {
 		if entry.Get("type").String() == "web_search_tool_result_error" {
 			blocks = append(blocks, []byte(entry.Raw))
 			return true
@@ -347,7 +362,7 @@ func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay
 		// encrypted_content replay contract below.
 		if allowBigModelReplay && strings.TrimSpace(entry.Get("refer").String()) != "" {
 			block := []byte(entry.Raw)
-			block, _ = sjson.SetBytes(block, "type", "web_search_result")
+			block, _ = ojson.SetBytes(block, "type", "web_search_result")
 			blocks = append(blocks, block)
 			return true
 		}
@@ -359,7 +374,7 @@ func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay
 			return true
 		}
 		block := []byte(entry.Raw)
-		block, _ = sjson.SetBytes(block, "type", "web_search_result")
+		block, _ = ojson.SetBytes(block, "type", "web_search_result")
 		blocks = append(blocks, block)
 		return true
 	})
@@ -373,12 +388,12 @@ func responsesWebSearchResultsToClaude(results gjson.Result, allowBigModelReplay
 // block as `citations`. The annotations were copied verbatim from Claude on the
 // way out, so they ride back unchanged; entries without the mandatory
 // `encrypted_index` cannot be replayed and are dropped rather than rejected.
-func attachClaudeCitations(textBlock []byte, annotations gjson.Result) []byte {
+func attachClaudeCitations(textBlock []byte, annotations ojson.Result) []byte {
 	if !annotations.IsArray() {
 		return textBlock
 	}
 	var citations [][]byte
-	annotations.ForEach(func(_, annotation gjson.Result) bool {
+	annotations.ForEach(func(_, annotation ojson.Result) bool {
 		if strings.TrimSpace(annotation.Get("encrypted_index").String()) != "" {
 			citations = append(citations, []byte(annotation.Raw))
 		}
@@ -387,7 +402,7 @@ func attachClaudeCitations(textBlock []byte, annotations gjson.Result) []byte {
 	if len(citations) == 0 {
 		return textBlock
 	}
-	updated, err := sjson.SetRawBytes(textBlock, "citations", translatorcommon.JoinRawArray(citations))
+	updated, err := ojson.SetRawBytes(textBlock, "citations", translatorcommon.JoinRawArray(citations))
 	if err != nil {
 		return textBlock
 	}

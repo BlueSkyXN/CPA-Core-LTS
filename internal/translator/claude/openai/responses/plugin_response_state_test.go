@@ -2,10 +2,9 @@ package responses
 
 import (
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestPluginResponseStateToolsAndThinking(t *testing.T) {
@@ -46,23 +45,23 @@ func TestPluginResponseStateToolsAndThinking(t *testing.T) {
 		if state.Err != nil || !state.Terminal {
 			t.Fatalf("state=%+v", state)
 		}
-		if gjson.GetBytes(last, "response.output.0.type").String() != "reasoning" || gjson.GetBytes(last, "response.output.1.call_id").String() != "call-1" || gjson.GetBytes(last, "response.output.1.arguments").String() != args {
+		if ojson.GetBytes(last, "response.output.0.type").String() != "reasoning" || ojson.GetBytes(last, "response.output.1.call_id").String() != "call-1" || ojson.GetBytes(last, "response.output.1.arguments").String() != args {
 			t.Fatal("tool/reasoning semantics lost")
 		}
-		if gjson.GetBytes(last, "response.output.0.encrypted_content").String() != "synthetic-opaque" {
+		if ojson.GetBytes(last, "response.output.0.encrypted_content").String() != "synthetic-opaque" {
 			t.Error("fragmented thinking signature lost")
 		}
 		transcript := "data: " + strings.Join(events, "\n\ndata: ") + "\n\n"
 		var aggregateParam any
 		aggregate := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, []byte(transcript), &aggregateParam)
-		if gjson.GetBytes(aggregate, "output.0.encrypted_content").String() != "synthetic-opaque" {
+		if ojson.GetBytes(aggregate, "output.0.encrypted_content").String() != "synthetic-opaque" {
 			t.Error("aggregate thinking signature lost")
 		}
 		want := "completed"
 		if truncated {
 			want = "incomplete"
 		}
-		if gjson.GetBytes(last, "response.status").String() != want {
+		if ojson.GetBytes(last, "response.status").String() != want {
 			t.Error("wrong terminal state")
 		}
 	}
@@ -89,7 +88,7 @@ func TestPluginResponseStateInitialContent(t *testing.T) {
 			}
 		}
 	}
-	if state.Err != nil || gjson.GetBytes(last, "response.output.0.content.0.text").String() != "initial" || gjson.GetBytes(last, "response.output.1.arguments").String() != `{"q":"seed"}` {
+	if state.Err != nil || ojson.GetBytes(last, "response.output.0.content.0.text").String() != "initial" || ojson.GetBytes(last, "response.output.1.arguments").String() != `{"q":"seed"}` {
 		t.Fatal("initial stream content lost")
 	}
 }
@@ -153,23 +152,23 @@ func TestPluginResponseStopReasons(t *testing.T) {
 		if state.Err != nil || !state.Terminal {
 			t.Fatalf("stop=%q state=%+v", tc.stop, state)
 		}
-		if got := gjson.GetBytes(last, "type").String(); got != tc.wantEvent {
+		if got := ojson.GetBytes(last, "type").String(); got != tc.wantEvent {
 			t.Errorf("stop=%q terminal event=%q want %q", tc.stop, got, tc.wantEvent)
 		}
-		if got := gjson.GetBytes(last, "response.status").String(); got != tc.wantStatus {
+		if got := ojson.GetBytes(last, "response.status").String(); got != tc.wantStatus {
 			t.Errorf("stop=%q response.status=%q want %q", tc.stop, got, tc.wantStatus)
 		}
 		switch tc.stop {
 		case "refusal", "sensitive":
-			if got := gjson.GetBytes(last, "response.incomplete_details.reason").String(); got != "content_filter" {
+			if got := ojson.GetBytes(last, "response.incomplete_details.reason").String(); got != "content_filter" {
 				t.Errorf("stop=%q incomplete_details.reason=%q want content_filter", tc.stop, got)
 			}
 		case "model_context_window_exceeded":
-			if got := gjson.GetBytes(last, "response.incomplete_details.reason").String(); got != "max_output_tokens" {
+			if got := ojson.GetBytes(last, "response.incomplete_details.reason").String(); got != "max_output_tokens" {
 				t.Errorf("stop=%q incomplete_details.reason=%q want max_output_tokens", tc.stop, got)
 			}
 		case "pause_turn":
-			if gjson.GetBytes(last, "response.end_turn").Exists() && gjson.GetBytes(last, "response.end_turn").Bool() {
+			if ojson.GetBytes(last, "response.end_turn").Exists() && ojson.GetBytes(last, "response.end_turn").Bool() {
 				t.Errorf("stop=pause_turn end_turn must be false")
 			}
 		}
@@ -184,10 +183,10 @@ func TestPluginResponseStopReasons(t *testing.T) {
 		}
 		var aggregateParam any = &PluginResponseState{}
 		aggregate := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "fixture", nil, nil, []byte("data: "+strings.Join(transcript, "\n\ndata: ")+"\n\n"), &aggregateParam)
-		if !gjson.GetBytes(aggregate, "status").Exists() {
+		if !ojson.GetBytes(aggregate, "status").Exists() {
 			t.Fatalf("stop=%q aggregate missing status", tc.stop)
 		}
-		if got := gjson.GetBytes(aggregate, "status").String(); got != tc.wantStatus {
+		if got := ojson.GetBytes(aggregate, "status").String(); got != tc.wantStatus {
 			t.Errorf("stop=%q aggregate status=%q want %q", tc.stop, got, tc.wantStatus)
 		}
 	}
@@ -221,14 +220,14 @@ func TestPluginResponsePauseTurnSearchStatus(t *testing.T) {
 	}
 	done := ""
 	for _, item := range items {
-		if gjson.Get(item, "type").String() == "response.output_item.done" && gjson.Get(item, "item.type").String() == "web_search_call" {
+		if ojson.Get(item, "type").String() == "response.output_item.done" && ojson.Get(item, "item.type").String() == "web_search_call" {
 			done = item
 		}
 	}
 	if done == "" {
 		t.Fatal("paused web_search_call item never finalized")
 	}
-	if got := gjson.Get(done, "item.status").String(); got != "in_progress" {
+	if got := ojson.Get(done, "item.status").String(); got != "in_progress" {
 		t.Fatalf("paused search status=%q want in_progress", got)
 	}
 
@@ -257,8 +256,8 @@ func TestPluginResponsePauseTurnSearchStatus(t *testing.T) {
 	}
 	sawResult := false
 	for _, item := range cItems {
-		if gjson.Get(item, "type").String() == "response.output_item.done" && gjson.Get(item, "item.type").String() == "web_search_call" {
-			if gjson.Get(item, "item.results.0.url").String() == "https://example.com/pause" {
+		if ojson.Get(item, "type").String() == "response.output_item.done" && ojson.Get(item, "item.type").String() == "web_search_call" {
+			if ojson.Get(item, "item.results.0.url").String() == "https://example.com/pause" {
 				sawResult = true
 			}
 		}

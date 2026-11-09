@@ -6,9 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type plaintextToolKey struct {
@@ -50,7 +49,13 @@ func PreparePlaintextTools(ctx context.Context, headers http.Header, payload []b
 	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
 		return payload, PlaintextToolProvenance{}
 	}
-	updated := rewriteCodexMultiAgentMessageEncryption(payload)
+	doc := ojson.NewDoc(payload)
+	paths := codexCollaborationMessageToolPathsDoc(doc)
+	removeCodexCollaborationMessageEncryptionDoc(doc, paths)
+	updated := payload
+	if doc.Len() > 0 {
+		updated = doc.Bytes()
+	}
 	return updated, CapturePlaintextToolProvenance(payload, updated)
 }
 
@@ -59,19 +64,19 @@ func PreparePlaintextTools(ctx context.Context, headers http.Header, payload []b
 // allowing a same-name tool to inherit another declaration's plaintext marker.
 func CapturePlaintextToolProvenance(before, after []byte) PlaintextToolProvenance {
 	proof := PlaintextToolProvenance{tools: make(map[plaintextToolKey]bool), prepared: true}
-	for _, path := range codexMultiAgentMessageToolPaths(before) {
+	for _, path := range codexCollaborationMessageToolPathsDoc(ojson.NewDoc(before)) {
 		separator := strings.LastIndex(path, ".tools.")
 		if separator < 0 {
 			continue
 		}
-		oldTool := gjson.GetBytes(before, path)
-		newTool := gjson.GetBytes(after, path)
+		oldTool := ojson.GetBytes(before, path)
+		newTool := ojson.GetBytes(after, path)
 		key := plaintextToolKey{
-			namespace: strings.TrimSpace(gjson.GetBytes(before, path[:separator]+".name").String()),
+			namespace: strings.TrimSpace(ojson.GetBytes(before, path[:separator]+".name").String()),
 			name:      strings.TrimSpace(oldTool.Get("name").String()),
 		}
-		confirmed := oldTool.Get("parameters.properties.message.encrypted").Type == gjson.True &&
-			strings.TrimSpace(gjson.GetBytes(after, path[:separator]+".name").String()) == key.namespace &&
+		confirmed := oldTool.Get("parameters.properties.message.encrypted").Type == ojson.True &&
+			strings.TrimSpace(ojson.GetBytes(after, path[:separator]+".name").String()) == key.namespace &&
 			newTool.Get("type").String() == "function" && newTool.Get("name").String() == oldTool.Get("name").String() &&
 			!newTool.Get("parameters.properties.message.encrypted").Exists()
 		if previous, seen := proof.tools[key]; seen {
@@ -86,12 +91,12 @@ func CapturePlaintextToolProvenance(before, after []byte) PlaintextToolProvenanc
 // Explicit top-level tools replace prior proof; inline declarations revoke only
 // the identities they redefine. An ineligible current turn inherits nothing.
 func (p PlaintextToolProvenance) InheritTurn(previous PlaintextToolProvenance, incoming []byte) PlaintextToolProvenance {
-	if !p.prepared || gjson.GetBytes(incoming, "tools").Exists() || len(previous.tools) == 0 {
+	if !p.prepared || ojson.GetBytes(incoming, "tools").Exists() || len(previous.tools) == 0 {
 		return p
 	}
 	explicit := make(map[plaintextToolKey]bool)
-	var declarations func(gjson.Result, string)
-	declarations = func(tools gjson.Result, namespace string) {
+	var declarations func(ojson.Result, string)
+	declarations = func(tools ojson.Result, namespace string) {
 		for _, tool := range tools.Array() {
 			name := strings.TrimSpace(tool.Get("name").String())
 			if tool.Get("type").String() == "namespace" {
@@ -101,7 +106,7 @@ func (p PlaintextToolProvenance) InheritTurn(previous PlaintextToolProvenance, i
 			}
 		}
 	}
-	for _, item := range gjson.GetBytes(incoming, "input").Array() {
+	for _, item := range ojson.GetBytes(incoming, "input").Array() {
 		if kind := item.Get("type").String(); kind == "additional_tools" || kind == "tool_search_output" {
 			declarations(item.Get("tools"), "")
 		}
@@ -124,12 +129,12 @@ func (p PlaintextToolProvenance) InheritTurn(previous PlaintextToolProvenance, i
 // have been restored to the client namespace. Existing encryption information,
 // arguments, call IDs and unrelated tools are left intact.
 func (p PlaintextToolProvenance) Restore(payload []byte) []byte {
-	if len(p.tools) == 0 || !gjson.ValidBytes(payload) {
+	if len(p.tools) == 0 || !ojson.ValidBytes(payload) {
 		return payload
 	}
 	updated := payload
 	restore := func(path string) {
-		item := gjson.GetBytes(updated, path)
+		item := ojson.GetBytes(updated, path)
 		if item.Get("type").String() != "function_call" || item.Get("encrypted_function_args").Exists() {
 			return
 		}
@@ -137,15 +142,54 @@ func (p PlaintextToolProvenance) Restore(payload []byte) []byte {
 		if !p.tools[key] {
 			return
 		}
-		if result, err := sjson.SetRawBytes(updated, path+".encrypted_function_args", []byte(`[]`)); err == nil {
+		if result, err := ojson.SetRawBytes(updated, path+".encrypted_function_args", []byte(`[]`)); err == nil {
 			updated = result
 		}
 	}
 	restore("item")
 	for _, path := range []string{"output", "response.output"} {
-		for index := range gjson.GetBytes(updated, path).Array() {
+		for index := range ojson.GetBytes(updated, path).Array() {
 			restore(fmt.Sprintf("%s.%d", path, index))
 		}
 	}
 	return updated
+}
+
+// rewriteCodexMultiAgentMessageEncryption is the byte form of
+// removeCodexCollaborationMessageEncryptionDoc kept for tests and legacy
+// byte-path callers.
+func rewriteCodexMultiAgentMessageEncryption(payload []byte) []byte {
+	doc := ojson.NewDoc(payload)
+	paths := codexCollaborationMessageToolPathsDoc(doc)
+	// Top-level and additional_tools direct function matches follow the same
+	// boolean-true marker removal as namespace members.
+	collectTopLevelMessageToolPathsDoc(doc, &paths)
+	removeCodexCollaborationMessageEncryptionDoc(doc, paths)
+	return doc.Bytes()
+}
+
+func collectTopLevelMessageToolPathsDoc(doc *ojson.Doc, paths *[]string) {
+	if doc == nil {
+		return
+	}
+	appendMatches := func(tools ojson.Result, prefix string) {
+		for index, tool := range tools.Array() {
+			if strings.TrimSpace(tool.Get("type").String()) != "function" {
+				continue
+			}
+			if _, ok := codexMultiAgentMessageToolNames[strings.TrimSpace(tool.Get("name").String())]; ok {
+				*paths = append(*paths, fmt.Sprintf("%s.%d", prefix, index))
+			}
+		}
+	}
+	appendMatches(doc.Get("tools"), "tools")
+	input := doc.Get("input")
+	if input.IsArray() {
+		for index, item := range input.Array() {
+			if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
+				continue
+			}
+			appendMatches(item.Get("tools"), fmt.Sprintf("input.%d.tools", index))
+		}
+	}
 }

@@ -3,15 +3,14 @@ package responses
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 // toolTurnMessageShapesForTest renders converted messages as compact shape tokens
 // such as assistant[call_a,call_b]{rc}, assistant(text), tool(call_a), user.
 func toolTurnMessageShapesForTest(out []byte) []string {
-	msgs := gjson.GetBytes(out, "messages").Array()
+	msgs := ojson.GetBytesNoCopy(out, "messages").Array()
 	shapes := make([]string, 0, len(msgs))
 	for _, msg := range msgs {
 		role := msg.Get("role").String()
@@ -71,7 +70,7 @@ func canonicalToolTurnJSONForTest(t *testing.T, raw []byte) []byte {
 
 func assertToolTurnMessagesJSONEqualForTest(t *testing.T, out []byte, want string) {
 	t.Helper()
-	got := gjson.GetBytes(out, "messages")
+	got := ojson.GetBytesNoCopy(out, "messages")
 	if !got.Exists() || !got.IsArray() {
 		t.Fatalf("messages should be an array; output=%s", out)
 	}
@@ -127,7 +126,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCallsSplitBy
 		"tool(call_a)",
 		"tool(call_b)",
 	})
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "think" {
+	if got := ojson.GetBytesNoCopy(out, "messages.0.reasoning_content").String(); got != "think" {
 		t.Fatalf("messages.0.reasoning_content = %q, want %q; output=%s", got, "think", out)
 	}
 }
@@ -151,7 +150,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergesCustomToolCa
 		"tool(call_b)",
 		"assistant(text)",
 	})
-	if got := gjson.GetBytes(out, "messages.0.tool_calls.0.function.arguments").String(); got != `{"input":"ls"}` {
+	if got := ojson.GetBytesNoCopy(out, "messages.0.tool_calls.0.function.arguments").String(); got != `{"input":"ls"}` {
 		t.Fatalf("messages.0.tool_calls.0.function.arguments = %q, want wrapped input; output=%s", got, out)
 	}
 }

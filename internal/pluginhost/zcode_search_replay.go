@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"strings"
 	"time"
 
@@ -17,8 +19,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type zcodeSearchReplay struct {
@@ -33,13 +33,13 @@ func (r *zcodeSearchReplay) restoreRequest(ctx context.Context, payload []byte) 
 	if r.scope == "" {
 		return restored
 	}
-	for i, item := range gjson.GetBytes(payload, "input").Array() {
+	for i, item := range ojson.GetBytes(payload, "input").Array() {
 		id := item.Get("id").String()
 		if item.Get("type").String() == "web_search_call" && id != "" && !item.Get("results").Exists() {
 			if r.history == nil {
 				r.history = make(map[string]string)
 			}
-			r.history[id] = gjson.GetBytes(restored, fmt.Sprintf("input.%d.results", i)).Raw
+			r.history[id] = ojson.GetBytes(restored, fmt.Sprintf("input.%d.results", i)).Raw
 		}
 	}
 	return restored
@@ -80,7 +80,7 @@ func (a *executorAdapter) zcodeSearchReplayScope(ctx context.Context, cfg *confi
 	return zcodeSearchReplay{scope: "zcode-codex-search-v1:" + hex.EncodeToString(sum[:]), ttl: c.EffectiveTTL(), limit: c.EffectiveLimit()}
 }
 
-func (r zcodeSearchReplay) recordItem(ctx context.Context, item gjson.Result) {
+func (r zcodeSearchReplay) recordItem(ctx context.Context, item ojson.Result) {
 	results := item.Get("results")
 	if r.scope == "" || item.Get("type").String() != "web_search_call" || item.Get("id").String() == "" ||
 		(!results.IsArray() && !results.IsObject()) || len(results.Raw) > zcodeContextMaxBytes {
@@ -93,7 +93,7 @@ func (r zcodeSearchReplay) recordResponse(ctx context.Context, response []byte) 
 	if r.scope == "" {
 		return
 	}
-	for _, item := range gjson.GetBytes(response, "output").Array() {
+	for _, item := range ojson.GetBytes(response, "output").Array() {
 		r.recordItem(ctx, item)
 	}
 }
@@ -107,8 +107,8 @@ func (r zcodeSearchReplay) recordFrame(ctx context.Context, frame []byte) {
 			continue
 		}
 		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if gjson.GetBytes(data, "type").String() == "response.output_item.done" {
-			r.recordItem(ctx, gjson.GetBytes(data, "item"))
+		if ojson.GetBytes(data, "type").String() == "response.output_item.done" {
+			r.recordItem(ctx, ojson.GetBytes(data, "item"))
 		}
 	}
 }
@@ -117,7 +117,7 @@ func (r zcodeSearchReplay) restoreItems(ctx context.Context, payload []byte, pat
 	if r.scope == "" {
 		return payload
 	}
-	for i, item := range gjson.GetBytes(payload, path).Array() {
+	for i, item := range ojson.GetBytes(payload, path).Array() {
 		if item.Get("type").String() != "web_search_call" || item.Get("results").Exists() || item.Get("id").String() == "" {
 			continue
 		}
@@ -126,7 +126,7 @@ func (r zcodeSearchReplay) restoreItems(ctx context.Context, payload []byte, pat
 		if err != nil || !found || !json.Valid(results) {
 			continue
 		}
-		if updated, err := sjson.SetRawBytes(payload, fmt.Sprintf("%s.%d.results", path, i), results); err == nil {
+		if updated, err := ojson.SetRawBytes(payload, fmt.Sprintf("%s.%d.results", path, i), results); err == nil {
 			payload = updated
 		}
 	}
@@ -134,15 +134,15 @@ func (r zcodeSearchReplay) restoreItems(ctx context.Context, payload []byte, pat
 }
 
 func (r zcodeSearchReplay) countOutput(ctx context.Context, output []byte) []byte {
-	wrapped, err := sjson.SetRawBytes([]byte(`{}`), "input", output)
+	wrapped, err := ojson.SetRawBytes([]byte(`{}`), "input", output)
 	if err != nil {
 		return nil
 	}
-	for i, item := range gjson.ParseBytes(output).Array() {
+	for i, item := range util.ParseGJSONBytesNoCopy(output).Array() {
 		if item.Get("type").String() == "web_search_call" {
-			wrapped, _ = sjson.DeleteBytes(wrapped, fmt.Sprintf("input.%d.results", i))
+			wrapped, _ = ojson.DeleteBytes(wrapped, fmt.Sprintf("input.%d.results", i))
 		}
 	}
 	wrapped = r.restoreItems(ctx, wrapped, "input")
-	return []byte(gjson.GetBytes(wrapped, "input").Raw)
+	return []byte(ojson.GetBytes(wrapped, "input").Raw)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"reflect"
 	"sync/atomic"
@@ -12,7 +13,6 @@ import (
 
 	responses "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
 )
 
 const emptyCopilotUsage = `{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":0,"total_tokens":7}}`
@@ -140,7 +140,7 @@ func TestNativeTerminalBoundaries(t *testing.T) {
 			}
 			if tc.code != "" {
 				for _, frame := range host.emitted {
-					if gjson.GetBytes(frame, "choices.0.finish_reason").String() != "" {
+					if ojson.GetBytes(frame, "choices.0.finish_reason").String() != "" {
 						t.Fatal("failure emitted successful terminal")
 					}
 				}
@@ -175,7 +175,7 @@ func TestNativeRequestPreservesReasoningEffortAndToolChoice(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if gjson.GetBytes(payload, "reasoning_effort").String() != "high" || !reflect.DeepEqual(gjson.GetBytes(payload, "tool_choice").Value(), gjson.Parse(choice).Value()) {
+		if ojson.GetBytes(payload, "reasoning_effort").String() != "high" || !reflect.DeepEqual(ojson.GetBytes(payload, "tool_choice").Value(), ojson.Parse(choice).Value()) {
 			t.Fatal("request controls changed")
 		}
 	}

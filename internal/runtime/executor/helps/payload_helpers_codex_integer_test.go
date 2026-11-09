@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestApplyPayloadConfigWithTrackedPathsForExecutorCodexIntegerNormalizationUsesExecutor(t *testing.T) {
@@ -25,8 +25,8 @@ func TestApplyPayloadConfigWithTrackedPathsForExecutorCodexIntegerNormalizationU
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := ApplyPayloadConfigWithTrackedPathsForExecutor(nil, tt.executor, "model", tt.protocol, "", "", input, nil, "", "", headers)
-			if typ := gjson.GetBytes(got, "tools.0.parameters.properties.yield_time_ms.type").String(); typ != tt.wantType {
+			got, _ := ApplyPayloadConfigWithTrackedPathsForExecutor(nil, tt.executor, "model", tt.protocol, "", "", input, nil, "", "", headers, nil)
+			if typ := ojson.GetBytes(got, "tools.0.parameters.properties.yield_time_ms.type").String(); typ != tt.wantType {
 				t.Fatalf("yield_time_ms.type = %q, want %q; payload=%s", typ, tt.wantType, got)
 			}
 		})

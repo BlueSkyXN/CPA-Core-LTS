@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"strings"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // PluginResponseState validates plugin events after the SDK's before hook.
@@ -65,22 +64,22 @@ func supportedPluginStop(reason string) bool {
 	}
 }
 
-func validatePluginContent(block gjson.Result, searches map[string]*pluginServerTool, chat bool) error {
+func validatePluginContent(block ojson.Result, searches map[string]*pluginServerTool, chat bool) error {
 	blockType := block.Get("type").String()
 	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result") {
 		return PluginResponseError()
 	}
 	switch block.Get("type").String() {
 	case "text":
-		if block.Get("text").Type != gjson.String {
+		if block.Get("text").Type != ojson.String {
 			return PluginResponseError()
 		}
 	case "thinking":
-		if block.Get("thinking").Type != gjson.String {
+		if block.Get("thinking").Type != ojson.String {
 			return PluginResponseError()
 		}
 	case "redacted_thinking":
-		if block.Get("data").Type != gjson.String || block.Get("data").String() == "" {
+		if block.Get("data").Type != ojson.String || block.Get("data").String() == "" {
 			return PluginResponseError()
 		}
 	case "tool_use":
@@ -134,7 +133,7 @@ func validatePluginContent(block gjson.Result, searches map[string]*pluginServer
 			return PluginResponseError()
 		}
 		content := block.Get("content")
-		if content.Type != gjson.String {
+		if content.Type != ojson.String {
 			return PluginResponseError()
 		}
 		if tool.name == BigModelWebReaderToolName {
@@ -151,7 +150,7 @@ func validatePluginContent(block gjson.Result, searches map[string]*pluginServer
 	return nil
 }
 
-func ValidatePluginMessage(message gjson.Result, chat bool) error {
+func ValidatePluginMessage(message ojson.Result, chat bool) error {
 	if message.Get("type").String() != "message" || message.Get("id").String() == "" || message.Get("role").String() != "assistant" || !message.Get("content").IsArray() || !supportedPluginStop(message.Get("stop_reason").String()) {
 		return PluginResponseError()
 	}
@@ -173,7 +172,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		s.Err = PluginResponseError()
 		return false
 	}
-	root := gjson.ParseBytes(payload)
+	root := util.ParseGJSONBytesNoCopy(payload)
 	kind := root.Get("type").String()
 	fail := func() bool { s.Err = PluginResponseError(); return false }
 	switch kind {
@@ -191,7 +190,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 	case "content_block_start":
 		index := root.Get("index")
 		idx := int(index.Int())
-		if !s.Started || index.Type != gjson.Number || index.Float() != float64(idx) || idx < 0 || s.blocks[idx] != nil {
+		if !s.Started || index.Type != ojson.Number || index.Float() != float64(idx) || idx < 0 || s.blocks[idx] != nil {
 			return fail()
 		}
 		for _, previous := range s.blocks {
@@ -210,7 +209,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		s.blocks[idx] = block
 	case "content_block_delta":
 		index := root.Get("index")
-		if index.Type != gjson.Number || index.Float() != float64(index.Int()) || index.Int() < 0 {
+		if index.Type != ojson.Number || index.Float() != float64(index.Int()) || index.Int() < 0 {
 			return fail()
 		}
 		block := s.blocks[int(index.Int())]
@@ -220,7 +219,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		delta := root.Get("delta")
 		switch delta.Get("type").String() {
 		case "text_delta":
-			if block.kind != "text" || delta.Get("text").Type != gjson.String {
+			if block.kind != "text" || delta.Get("text").Type != ojson.String {
 				return fail()
 			}
 		case "citations_delta":
@@ -232,11 +231,11 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 			if delta.Get("type").String() == "signature_delta" {
 				field = "signature"
 			}
-			if block.kind != "thinking" || delta.Get(field).Type != gjson.String {
+			if block.kind != "thinking" || delta.Get(field).Type != ojson.String {
 				return fail()
 			}
 		case "input_json_delta":
-			if (block.kind != "tool_use" && block.kind != "server_tool_use") || delta.Get("partial_json").Type != gjson.String {
+			if (block.kind != "tool_use" && block.kind != "server_tool_use") || delta.Get("partial_json").Type != ojson.String {
 				return fail()
 			}
 			if !block.deltas {
@@ -252,7 +251,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		}
 	case "content_block_stop":
 		index := root.Get("index")
-		if index.Type != gjson.Number || index.Float() != float64(index.Int()) || index.Int() < 0 {
+		if index.Type != ojson.Number || index.Float() != float64(index.Int()) || index.Int() < 0 {
 			return fail()
 		}
 		block := s.blocks[int(index.Int())]
@@ -264,7 +263,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 		if !s.Started {
 			return fail()
 		}
-		if reason := root.Get("delta.stop_reason"); reason.Exists() && reason.Type != gjson.Null {
+		if reason := root.Get("delta.stop_reason"); reason.Exists() && reason.Type != ojson.Null {
 			s.stop = reason.String()
 		}
 	case "message_stop":
@@ -279,7 +278,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 			// only client tool_use (and server blocks that accumulated input)
 			// must end with a JSON object body.
 			requiresObjectArgs := block.kind == "tool_use" || block.args.Len() > 0
-			if (block.kind == "tool_use" || block.kind == "server_tool_use") && s.stop != "max_tokens" && requiresObjectArgs && (!json.Valid([]byte(block.args.String())) || !gjson.Parse(block.args.String()).IsObject()) {
+			if (block.kind == "tool_use" || block.kind == "server_tool_use") && s.stop != "max_tokens" && requiresObjectArgs && (!json.Valid([]byte(block.args.String())) || !ojson.Parse(block.args.String()).IsObject()) {
 				return fail()
 			}
 		}
@@ -298,7 +297,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 }
 
 func (s *PluginResponseState) ContentSeed(line []byte) []byte {
-	root := gjson.ParseBytes(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))))
+	root := util.ParseGJSONBytesNoCopy(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))))
 	index := root.Get("index").Int()
 	var deltaType, field, value string
 	switch root.Get("type").String() {
@@ -321,8 +320,8 @@ func (s *PluginResponseState) ContentSeed(line []byte) []byte {
 	}
 	// 有些兼容端点在 start 中携带初值，旧逐行转换器只累计 delta，不能丢弃初值。
 	delta := []byte(`{"type":"content_block_delta","index":0,"delta":{}}`)
-	delta, _ = sjson.SetBytes(delta, "index", index)
-	delta, _ = sjson.SetBytes(delta, "delta.type", deltaType)
-	delta, _ = sjson.SetBytes(delta, "delta."+field, value)
+	delta, _ = ojson.SetBytes(delta, "index", index)
+	delta, _ = ojson.SetBytes(delta, "delta.type", deltaType)
+	delta, _ = ojson.SetBytes(delta, "delta."+field, value)
 	return append([]byte("data: "), delta...)
 }

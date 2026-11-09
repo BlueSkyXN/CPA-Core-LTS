@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"net/http"
 	"strings"
 	"testing"
@@ -17,13 +19,12 @@ import (
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
-	"github.com/tidwall/gjson"
 )
 
 // Codex 的 WebSearchCall serde 模型只保留这些字段；results 不进入后续请求。
 func codexSearchItemRoundTrip(t *testing.T, raw []byte) json.RawMessage {
 	t.Helper()
-	if gjson.GetBytes(raw, "type").String() != "web_search_call" {
+	if ojson.GetBytes(raw, "type").String() != "web_search_call" {
 		return raw
 	}
 	var item struct {
@@ -45,7 +46,7 @@ func codexSearchItemRoundTrip(t *testing.T, raw []byte) json.RawMessage {
 }
 
 func TestZcodeContextCountMatchesCodexReplay(t *testing.T) {
-	reader := strings.Replace(zcodeSearchMessage, gjson.Parse(zcodeSearchMessage).Get("content").Raw,
+	reader := strings.Replace(zcodeSearchMessage, ojson.Parse(zcodeSearchMessage).Get("content").Raw,
 		`[{"type":"server_tool_use","id":"srvtoolu_reader","name":"webReader","input":{"url":"https://example.com/"}},{"type":"tool_result","tool_use_id":"srvtoolu_reader","content":"[{\"url\":\"https://example.com/\",\"content\":\"fixture-content\"}]"},{"type":"text","text":"delivered answer"}]`, 1)
 	for _, stream := range []bool{false, true} {
 		for _, message := range []string{zcodeSearchMessage, reader} {
@@ -70,7 +71,7 @@ func TestZcodeContextCountMatchesCodexReplay(t *testing.T) {
 							return []byte(message)
 						}
 						nextPayload = append([]byte(nil), req.Payload...)
-						return []byte(strings.Replace(message, gjson.Parse(message).Get("content").Raw, `[{"type":"text","text":"next answer"}]`, 1))
+						return []byte(strings.Replace(message, ojson.Parse(message).Get("content").Raw, `[{"type":"text","text":"next answer"}]`, 1))
 					}
 					executor := &fakeExecutor{
 						execute: func(_ context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
@@ -103,7 +104,7 @@ func TestZcodeContextCountMatchesCodexReplay(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							for _, item := range gjson.GetBytes(result.Payload, "output").Array() {
+							for _, item := range ojson.GetBytes(result.Payload, "output").Array() {
 								items = append(items, codexSearchItemRoundTrip(t, []byte(item.Raw)))
 							}
 						} else {
@@ -117,8 +118,8 @@ func TestZcodeContextCountMatchesCodexReplay(t *testing.T) {
 								}
 								for _, line := range strings.Split(string(chunk.Payload), "\n") {
 									data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-									if gjson.Get(data, "type").String() == "response.output_item.done" {
-										items = append(items, codexSearchItemRoundTrip(t, []byte(gjson.Get(data, "item").Raw)))
+									if ojson.Get(data, "type").String() == "response.output_item.done" {
+										items = append(items, codexSearchItemRoundTrip(t, []byte(ojson.Get(data, "item").Raw)))
 									}
 								}
 							}
@@ -141,8 +142,8 @@ func TestZcodeContextCountMatchesCodexReplay(t *testing.T) {
 						t.Fatalf("next request contains result=%t", got)
 					}
 					if !tc.differentScope {
-						counted := gjson.GetBytes(countPayload, "messages").Array()
-						next := gjson.GetBytes(nextPayload, "messages").Array()
+						counted := ojson.GetBytes(countPayload, "messages").Array()
+						next := ojson.GetBytes(nextPayload, "messages").Array()
 						if len(next) != len(counted)+1 {
 							t.Fatal("unexpected next-turn boundary")
 						}
@@ -171,7 +172,7 @@ func TestZcodeSearchReplayIsolationAndExplicitResults(t *testing.T) {
 	info := &registry.ModelInfo{NativeCapabilities: &registry.NativeCapabilities{WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
 	ctx := context.Background()
 	scope := a.zcodeSearchReplayScope(ctx, cfg, auth, req, opts, info)
-	item := gjson.Parse(`{"type":"web_search_call","id":"ws_test","results":[{"content":"private-result"}]}`)
+	item := ojson.Parse(`{"type":"web_search_call","id":"ws_test","results":[{"content":"private-result"}]}`)
 	scope.recordItem(ctx, item)
 	input := []byte(`{"input":[{"type":"web_search_call","id":"ws_test","action":{"type":"search","query":"q"}}]}`)
 	if !strings.Contains(string(scope.restoreItems(ctx, input, "input")), "private-result") {
@@ -212,7 +213,7 @@ func TestZcodeContextCountFollowsReplayEviction(t *testing.T) {
 	t.Cleanup(cache.ClearClaudeWebSearchResultCache)
 	r := zcodeSearchReplay{scope: "synthetic-eviction", limit: 1}
 	output := []byte(`[{"type":"web_search_call","id":"ws_1","results":[{"content":"first-result"}]},{"type":"web_search_call","id":"ws_2","results":[{"content":"second-result"}]}]`)
-	for _, item := range gjson.ParseBytes(output).Array() {
+	for _, item := range util.ParseGJSONBytesNoCopy(output).Array() {
 		r.recordItem(context.Background(), item)
 	}
 	countOutput := r.countOutput(context.Background(), output)
@@ -276,8 +277,8 @@ func TestZcodeContextSignedReasoningFallsBack(t *testing.T) {
 							}
 							for _, line := range strings.Split(string(chunk.Payload), "\n") {
 								data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-								if gjson.Get(data, "type").String() == "response.completed" {
-									response = []byte(gjson.Get(data, "response").Raw)
+								if ojson.Get(data, "type").String() == "response.completed" {
+									response = []byte(ojson.Get(data, "response").Raw)
 								}
 							}
 						}
@@ -301,8 +302,8 @@ func TestZcodeContextSignedReasoningFallsBack(t *testing.T) {
 							wantStatus = "corrected"
 						}
 					}
-					if calls != wantCalls || gjson.GetBytes(response, "usage.total_tokens").Int() != wantTotal {
-						t.Fatalf("calls=%d,total=%s", calls, gjson.GetBytes(response, "usage.total_tokens").Raw)
+					if calls != wantCalls || ojson.GetBytes(response, "usage.total_tokens").Int() != wantTotal {
+						t.Fatalf("calls=%d,total=%s", calls, ojson.GetBytes(response, "usage.total_tokens").Raw)
 					}
 					if hook.LastEntry() == nil || hook.LastEntry().Data["status"] != wantStatus {
 						t.Fatalf("unexpected outcome: %+v", hook.LastEntry())
@@ -321,18 +322,18 @@ func TestZcodeContextDetectsHistoricalReplayEviction(t *testing.T) {
 	t.Cleanup(cache.ClearClaudeWebSearchResultCache)
 	r := zcodeSearchReplay{scope: "synthetic-history-eviction", limit: 1}
 	ctx := context.Background()
-	r.recordItem(ctx, gjson.Parse(`{"type":"web_search_call","id":"ws_1","results":[{"content":"first-result"}]}`))
+	r.recordItem(ctx, ojson.Parse(`{"type":"web_search_call","id":"ws_1","results":[{"content":"first-result"}]}`))
 	r.restoreRequest(ctx, []byte(`{"input":[{"type":"web_search_call","id":"ws_1"}]}`))
 	if !r.historyUnchanged(ctx) {
 		t.Fatal("unchanged history rejected")
 	}
-	r.recordItem(ctx, gjson.Parse(`{"type":"web_search_call","id":"ws_2","results":[{"content":"second-result"}]}`))
+	r.recordItem(ctx, ojson.Parse(`{"type":"web_search_call","id":"ws_2","results":[{"content":"second-result"}]}`))
 	if r.historyUnchanged(ctx) {
 		t.Fatal("evicted input history still treated as replayable")
 	}
 	// 同一 ID 后来出现结果时，旧的空历史也不能继续作为计数基线。
 	r.restoreRequest(ctx, []byte(`{"input":[{"type":"web_search_call","id":"ws_1"}]}`))
-	r.recordItem(ctx, gjson.Parse(`{"type":"web_search_call","id":"ws_1","results":[{"content":"new-result"}]}`))
+	r.recordItem(ctx, ojson.Parse(`{"type":"web_search_call","id":"ws_1","results":[{"content":"new-result"}]}`))
 	if r.historyUnchanged(ctx) {
 		t.Fatal("changed history result was ignored")
 	}

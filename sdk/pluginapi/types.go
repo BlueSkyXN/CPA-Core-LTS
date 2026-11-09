@@ -95,6 +95,10 @@ type Capabilities struct {
 	AuthProvider AuthProvider
 	// AuthImportOnly retains parsing/refresh but disables interactive login; false preserves legacy behavior.
 	AuthImportOnly bool
+	// AuthProviders lets a plugin register multiple provider auth entries (for example,
+	// multi-portal vendors sharing the same plugin). When non-empty, each entry is exposed
+	// under its own identifier alongside AuthProvider.
+	AuthProviders []AuthProvider
 	// FrontendAuthProvider authenticates frontend requests before proxy handling.
 	FrontendAuthProvider FrontendAuthProvider
 	// FrontendAuthProviderExclusive makes this frontend auth provider the only active request auth provider when selected.
@@ -357,6 +361,30 @@ type AuthProvider interface {
 	RefreshAuth(context.Context, AuthRefreshRequest) (AuthRefreshResponse, error)
 }
 
+// MultiAuthProvider is an optional extension implemented by an AuthProvider
+// that handles multiple provider identifiers (for example, multi-portal vendors).
+type MultiAuthProvider interface {
+	AuthProvider
+	Identifiers() []string
+}
+
+// AuthProviderEntry describes user-facing display metadata for one OAuth login entry.
+type AuthProviderEntry struct {
+	// Identifier is the provider key used for login and callback routing.
+	Identifier string `json:"identifier"`
+	// Name is the user-facing display label for this entry; falls back to Metadata.Name when empty.
+	Name string `json:"name,omitempty"`
+	// Logo is the display asset reference for this entry; falls back to Metadata.Logo when empty.
+	Logo string `json:"logo,omitempty"`
+}
+
+// AuthProviderEntries is an optional extension implemented by an AuthProvider
+// that publishes per-entry display metadata (name and logo).
+type AuthProviderEntries interface {
+	AuthProvider
+	AuthEntries() []AuthProviderEntry
+}
+
 // AuthLoginStartRequest asks a plugin to start a provider login flow.
 type AuthLoginStartRequest struct {
 	// Provider is the provider key for the login flow.
@@ -460,6 +488,16 @@ type ModelRegistrar interface {
 type ModelRegistrationRequest struct {
 	// Plugin is the metadata of the plugin being registered.
 	Plugin Metadata
+	// MultiProviderModels reports whether the host supports ModelRegistrationResponse.Registrations.
+	MultiProviderModels bool `json:"multi_provider_models,omitempty"`
+}
+
+// ProviderModels pairs a provider key with the models registered for it.
+type ProviderModels struct {
+	// Provider is the provider key associated with the returned models.
+	Provider string `json:"provider,omitempty"`
+	// Models is the complete set of plugin-provided models for Provider.
+	Models []ModelInfo `json:"models,omitempty"`
 }
 
 // ModelRegistrationResponse returns provider and model metadata to register.
@@ -468,6 +506,12 @@ type ModelRegistrationResponse struct {
 	Provider string
 	// Models is the complete set of plugin-provided models.
 	Models []ModelInfo
+	// Registrations registers model sets for multiple providers in one call.
+	// When non-empty, each entry is registered under its own Provider for catalog
+	// and per-auth model discovery (plugins that also declare an Executor still
+	// bind that executor to the first registered provider); when empty, Provider
+	// and Models behave as a single registration.
+	Registrations []ProviderModels `json:"registrations,omitempty"`
 }
 
 // ModelProvider contributes provider-native static and per-auth model metadata.
@@ -483,6 +527,8 @@ type StaticModelRequest struct {
 	Plugin Metadata
 	// Host contains relevant host configuration.
 	Host HostConfigSummary
+	// MultiProviderModels reports whether the host supports ModelResponse.Registrations.
+	MultiProviderModels bool `json:"multi_provider_models,omitempty"`
 }
 
 // AuthModelRequest carries auth context for provider model discovery.
@@ -511,6 +557,9 @@ type ModelResponse struct {
 	Provider string
 	// Models is the complete set of discovered provider models.
 	Models []ModelInfo
+	// Registrations registers static model sets for multiple providers in one call.
+	// Used by StaticModels when non-empty; ignored by ModelsForAuth.
+	Registrations []ProviderModels `json:"registrations,omitempty"`
 	// AuthUpdate contains updated auth data from model discovery when needed.
 	AuthUpdate AuthData
 }

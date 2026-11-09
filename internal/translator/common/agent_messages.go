@@ -1,9 +1,8 @@
 package common
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"strings"
-
-	"github.com/tidwall/gjson"
 )
 
 // UnconvertedAgentMessageError prevents an unsupported delegated task from
@@ -20,7 +19,7 @@ func (*UnconvertedAgentMessageError) IsRequestScoped() bool { return true }
 // RejectUnconvertedAgentMessages runs after any permitted client adaptation.
 // Native Codex routes must not call it: they retain their original history.
 func RejectUnconvertedAgentMessages(payload []byte) error {
-	for _, item := range gjson.GetBytes(payload, "input").Array() {
+	for _, item := range ojson.GetBytes(payload, "input").Array() {
 		if strings.TrimSpace(item.Get("type").String()) == "agent_message" {
 			return &UnconvertedAgentMessageError{}
 		}

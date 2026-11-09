@@ -61,73 +61,79 @@ type pluginLoadResult struct {
 }
 
 type Host struct {
-	applyMu                chan struct{}
-	executorCommitMu       sync.Mutex
-	mu                     sync.Mutex
-	loader                 pluginLoader
-	loaded                 map[string]*loadedPlugin
-	retired                map[string][]*loadedPlugin
-	loading                map[string]*pluginLoadRequest
-	fused                  map[string]string
-	pluginFileVersions     map[string]string
-	activePluginVersions   map[string]string
-	activePluginPaths      map[string]string
-	cleanupFilesPending    bool
-	runtimeConfig          *config.Config
-	authManager            *coreauth.Manager
-	modelExecutor          modelExecutor
-	modelClientIDs         map[string]struct{} // Reserved for future use; catalog-only plugins do not populate it.
-	executorModelClientIDs map[string]struct{}
-	modelProviders         map[string]string
-	modelRegistrations     map[string]pluginModelRegistration
-	providerModels         map[string][]*registryModelInfo
-	executorProviders      map[string]struct{}
-	accessProviderKeys     map[string]struct{}
-	commandLineFlags       map[string]commandLineFlagRecord
-	commandLineHits        map[string]struct{}
-	managementRoutes       map[string]managementRouteRecord
-	resourceRoutes         map[string]resourceRouteRecord
+	applyMu                  chan struct{}
+	executorCommitMu         sync.Mutex
+	mu                       sync.Mutex
+	loader                   pluginLoader
+	loaded                   map[string]*loadedPlugin
+	retired                  map[string][]*loadedPlugin
+	loading                  map[string]*pluginLoadRequest
+	fused                    map[string]string
+	pluginFileVersions       map[string]string
+	activePluginVersions     map[string]string
+	activePluginPaths        map[string]string
+	cleanupFilesPending      bool
+	runtimeConfig            *config.Config
+	authManager              *coreauth.Manager
+	modelExecutor            modelExecutor
+	modelClientIDs           map[string]struct{} // Reserved for future use; catalog-only plugins do not populate it.
+	executorModelClientIDs   map[string]struct{}
+	modelProviders           map[string]string
+	modelProviderSets        map[string][]string
+	authCredentialProviders  map[string]map[string]string
+	modelRegistrations       map[string]pluginModelRegistration
+	pluginModelRegistrations map[string][]pluginModelRegistration
+	providerModels           map[string][]*registryModelInfo
+	executorProviders        map[string]struct{}
+	accessProviderKeys       map[string]struct{}
+	commandLineFlags         map[string]commandLineFlagRecord
+	commandLineHits          map[string]struct{}
+	managementRoutes         map[string]managementRouteRecord
+	resourceRoutes           map[string]resourceRouteRecord
 	// declaredSensitive 按插件 ID 保存注册时自声明的凭据端点；并集用于请求日志脱敏。
 	declaredSensitive map[string][]pluginapi.SensitiveEndpoint
 	streams           *streamBridge
 	httpStreams       *hostHTTPStreamBridge
+	httpOperations    *hostHTTPOperationBridge
 	modelStreams      *modelStreamBridge
 	callbackContexts  *callbackContextRegistry
 	snapshot          atomic.Value
-	httpOperations    *hostHTTPOperationBridge
-	// loadCleanupDoneHook is used by tests after late load cleanup drops its token.
+	// loadCleanupDoneHook, set by tests, runs after a late load cleanup dropped its load token.
 	loadCleanupDoneHook func()
 }
 
 func New() *Host {
 	h := &Host{
-		applyMu:                make(chan struct{}, 1),
-		loader:                 defaultPluginLoader(),
-		loaded:                 make(map[string]*loadedPlugin),
-		retired:                make(map[string][]*loadedPlugin),
-		loading:                make(map[string]*pluginLoadRequest),
-		fused:                  make(map[string]string),
-		pluginFileVersions:     make(map[string]string),
-		activePluginVersions:   make(map[string]string),
-		activePluginPaths:      make(map[string]string),
-		cleanupFilesPending:    true,
-		modelClientIDs:         make(map[string]struct{}),
-		executorModelClientIDs: make(map[string]struct{}),
-		modelProviders:         make(map[string]string),
-		modelRegistrations:     make(map[string]pluginModelRegistration),
-		providerModels:         make(map[string][]*registryModelInfo),
-		executorProviders:      make(map[string]struct{}),
-		accessProviderKeys:     make(map[string]struct{}),
-		commandLineFlags:       make(map[string]commandLineFlagRecord),
-		commandLineHits:        make(map[string]struct{}),
-		managementRoutes:       make(map[string]managementRouteRecord),
-		resourceRoutes:         make(map[string]resourceRouteRecord),
-		declaredSensitive:      make(map[string][]pluginapi.SensitiveEndpoint),
-		streams:                newStreamBridge(),
-		httpStreams:            newHostHTTPStreamBridge(),
-		httpOperations:         newHostHTTPOperationBridge(),
-		modelStreams:           newModelStreamBridge(),
-		callbackContexts:       newCallbackContextRegistry(),
+		applyMu:                  make(chan struct{}, 1),
+		loader:                   defaultPluginLoader(),
+		loaded:                   make(map[string]*loadedPlugin),
+		retired:                  make(map[string][]*loadedPlugin),
+		loading:                  make(map[string]*pluginLoadRequest),
+		fused:                    make(map[string]string),
+		pluginFileVersions:       make(map[string]string),
+		activePluginVersions:     make(map[string]string),
+		activePluginPaths:        make(map[string]string),
+		cleanupFilesPending:      true,
+		modelClientIDs:           make(map[string]struct{}),
+		executorModelClientIDs:   make(map[string]struct{}),
+		modelProviders:           make(map[string]string),
+		modelProviderSets:        make(map[string][]string),
+		authCredentialProviders:  make(map[string]map[string]string),
+		modelRegistrations:       make(map[string]pluginModelRegistration),
+		pluginModelRegistrations: make(map[string][]pluginModelRegistration),
+		providerModels:           make(map[string][]*registryModelInfo),
+		executorProviders:        make(map[string]struct{}),
+		accessProviderKeys:       make(map[string]struct{}),
+		commandLineFlags:         make(map[string]commandLineFlagRecord),
+		commandLineHits:          make(map[string]struct{}),
+		managementRoutes:         make(map[string]managementRouteRecord),
+		resourceRoutes:           make(map[string]resourceRouteRecord),
+		declaredSensitive:        make(map[string][]pluginapi.SensitiveEndpoint),
+		streams:                  newStreamBridge(),
+		httpStreams:              newHostHTTPStreamBridge(),
+		httpOperations:           newHostHTTPOperationBridge(),
+		modelStreams:             newModelStreamBridge(),
+		callbackContexts:         newCallbackContextRegistry(),
 	}
 	h.snapshot.Store(emptySnapshot())
 	return h
@@ -847,7 +853,10 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	h.modelClientIDs = make(map[string]struct{})
 	h.executorModelClientIDs = make(map[string]struct{})
 	h.modelProviders = make(map[string]string)
+	h.modelProviderSets = make(map[string][]string)
+	h.authCredentialProviders = make(map[string]map[string]string)
 	h.modelRegistrations = make(map[string]pluginModelRegistration)
+	h.pluginModelRegistrations = make(map[string][]pluginModelRegistration)
 	h.providerModels = make(map[string][]*registryModelInfo)
 	h.executorProviders = make(map[string]struct{})
 	h.commandLineFlags = make(map[string]commandLineFlagRecord)
@@ -866,6 +875,9 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	for _, target := range targets {
 		h.httpOperations.detachInstance(target.id, target.callbackInstance)
 	}
+	if h.modelStreams != nil {
+		h.modelStreams.closeAll()
+	}
 	h.refreshThinkingProviders(nil)
 	h.RegisterFrontendAuthProviders()
 	for id, request := range loading {
@@ -874,6 +886,15 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	for _, target := range targets {
 		shutdownPluginClient(ctx, target.client)
 		log.WithFields(pluginLogFields(target.id, target.name, target.version, target.path)).Info("pluginhost: plugin unloaded")
+	}
+	if h.httpOperations != nil {
+		h.httpOperations.cancelAll()
+	}
+	if h.httpStreams != nil {
+		h.httpStreams.closeAll()
+	}
+	if h.modelStreams != nil {
+		h.modelStreams.closeAll()
 	}
 }
 
@@ -1009,12 +1030,42 @@ func (h *Host) removePluginRuntimeStateLocked(id string) {
 			delete(h.commandLineHits, name)
 		}
 	}
-	if registration, ok := h.modelRegistrations[id]; ok {
-		delete(h.providerModels, registration.provider)
+	affectedProviders := make(map[string]struct{})
+	if registration, ok := h.modelRegistrations[id]; ok && registration.provider != "" {
+		affectedProviders[registration.provider] = struct{}{}
+	}
+	for _, registration := range h.pluginModelRegistrations[id] {
+		if registration.provider != "" {
+			affectedProviders[registration.provider] = struct{}{}
+		}
+	}
+	if provider := normalizeProviderID(h.modelProviders[id]); provider != "" {
+		affectedProviders[provider] = struct{}{}
+	}
+	for _, provider := range h.modelProviderSets[id] {
+		if normalized := normalizeProviderID(provider); normalized != "" {
+			affectedProviders[normalized] = struct{}{}
+		}
 	}
 	delete(h.modelProviders, id)
+	delete(h.modelProviderSets, id)
+	delete(h.authCredentialProviders, id)
 	delete(h.modelRegistrations, id)
 	delete(h.declaredSensitive, id)
+	delete(h.pluginModelRegistrations, id)
+	for provider := range affectedProviders {
+		delete(h.providerModels, provider)
+	}
+	if len(affectedProviders) > 0 {
+		for _, registration := range h.snapshotModelRegistrationsLocked() {
+			if registration.hasExecutor {
+				continue
+			}
+			if _, ok := affectedProviders[registration.provider]; ok {
+				appendModelsForProvider(h.providerModels, registration.provider, registration.models)
+			}
+		}
+	}
 }
 
 func (h *Host) rebuildActivePluginMapsLocked(records []capabilityRecord) {
@@ -1278,7 +1329,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 	caps := plugin.Capabilities
 	return caps.ModelRegistrar != nil ||
 		caps.ModelProvider != nil ||
-		caps.AuthProvider != nil ||
+		hasAuthProviderCap(caps) ||
 		caps.FrontendAuthProvider != nil ||
 		caps.Scheduler != nil ||
 		caps.ModelRouter != nil ||
