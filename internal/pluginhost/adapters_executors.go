@@ -31,6 +31,13 @@ import (
 
 const pluginExecutionLifecycleTimeout = 5 * time.Second
 
+// pluginStreamUsageTailWindow bounds how long a failed translated stream may
+// keep reading the upstream solely to capture a provider usage tail frame
+// (include_usage sends usage after the finish_reason chunk). The window is a
+// hang safety net, not a latency budget: the client already received the
+// failure terminal. Tests shorten it via t.Cleanup.
+var pluginStreamUsageTailWindow = 5 * time.Second
+
 type executorManager interface {
 	Executor(provider string) (coreauth.ProviderExecutor, bool)
 	RegisterExecutor(coreauth.ProviderExecutor)
@@ -1422,37 +1429,40 @@ func (a *executorAdapter) translateExecutorResponse(ctx context.Context, prepare
 }
 
 func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
-	return a.translateExecutorStreamChunksWithUsage(ctx, prepared, in, nil)
+	return a.translateExecutorStreamChunksWithUsage(ctx, prepared, in, nil, nil)
 }
 
-func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk, reporter *helps.UsageReporter) <-chan pluginapi.ExecutorStreamChunk {
-	// Same-format streams still go through stream translation when a registered
-	// same-format translator exists: it normalizes SSE framing (for example
-	// stripping the "data:" prefix and dropping "[DONE]" for chat-completions),
-	// matching what the built-in executors produce. Returning the channel
-	// unchanged for those formats let framed plugin chunks reach handlers that
-	// add their own "data:" prefix, emitting a doubled "data: data:" prefix.
-	// That case first passes through an SSE deframer so input may be split or
-	// coalesced at arbitrary byte boundaries; see deframeExecutorSSEChunks.
-	//
-	// Other same-format streams must not enter TranslateStream unconditionally:
-	// its plugin hooks (response before/after normalizers and, without a native
-	// translator, the plugin response translator) run even when no native
-	// translator exists, so the payload would no longer be forwarded verbatim.
-	// When no such hook capability is installed, those streams keep the
-	// previous untouched behavior; when one is installed, or for every
-	// cross-format stream, translation runs as before.
+// executorStreamPassthrough 与 translateExecutorStreamChunksWithUsage 的直通
+// 分支共用同一判定；ExecuteStream 依据它的反例决定是否派生执行 ctx。
+func (a *executorAdapter) executorStreamPassthrough(prepared preparedExecutorCall) bool {
+	return prepared.requestedFormat == "" ||
+		(prepared.outputFormat == prepared.requestedFormat &&
+			prepared.requestedFormat != sdktranslator.FormatOpenAIResponse &&
+			!sdktranslator.HasStreamResponseTransformer(prepared.outputFormat, prepared.requestedFormat) &&
+			!a.host.hasResponseTranslationHooks())
+}
+
+func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk, reporter *helps.UsageReporter, cancelStream context.CancelFunc) <-chan pluginapi.ExecutorStreamChunk {
 	if prepared.requestedFormat == "" {
+		// 直通没有转换协程接管清理，ExecuteStream 不会为它派生执行 ctx。
 		return observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, in)
 	}
 	if in == nil {
+		// 空流没有协程，执行已结束，这里同步释放派生 ctx。
+		if cancelStream != nil {
+			cancelStream()
+		}
 		return observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, nil)
 	}
 	sameFormat := prepared.outputFormat == prepared.requestedFormat
 	// Responses always enters translation so its usage-details normalization
 	// in translateExecutorStreamPayload keeps running for same-format streams.
+	// Same-format streams also enter translation when a registered same-format
+	// transformer or response-translation hook exists (SSE framing normalization);
+	// otherwise the stream is returned verbatim. 直通分支同样观察 usage 并释放派生
+	// ctx（有界观察协程负责结算，见 observeFormalPluginStreamUsage），不泄漏取消。
 	if sameFormat && prepared.requestedFormat != sdktranslator.FormatOpenAIResponse && !sdktranslator.HasStreamResponseTransformer(prepared.outputFormat, prepared.requestedFormat) && !a.host.hasResponseTranslationHooks() {
-		return in
+		return observeFormalPluginStreamUsageWithCancel(ctx, reporter, prepared.outputFormat, in, cancelStream)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1466,7 +1476,17 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 		var param any
 		usage := formalPluginStreamUsage{reporter: reporter, format: prepared.outputFormat}
 		var streamErr error
-		defer func() { usage.publish(ctx, streamErr) }()
+		usageHandedOff := false
+		// 结算先于取消：终止派生 ctx 前必须先落定统计终态（对齐 Claude 转换路径）。
+		defer func() {
+			if usageHandedOff {
+				return
+			}
+			usage.publish(ctx, streamErr)
+			if cancelStream != nil {
+				cancelStream()
+			}
+		}()
 		var completionDelta, completionStop []byte
 		deferClaudeCompletion := prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatClaude
 		for {
@@ -1510,7 +1530,6 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 				frames := a.translateExecutorStreamPayload(ctx, prepared, chunk.Payload, &param)
 				if helps.ApplyPatchTranslationError(param) != nil {
 					streamErr = pluginResponseConversionError()
-					usage.publish(ctx, streamErr)
 				}
 				for _, frame := range frames {
 					// usage 尾帧之后仍可能报告失败；完成事件等待插件无错误关闭。
@@ -1531,6 +1550,12 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 				}
 				if streamErr != nil {
 					_ = sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr})
+					if reporter != nil {
+						// 转换失败后 upstream 常见的 include_usage 尾帧仍需计入统计；
+						// 有界收尾只观察不再交付，失败帧已交付、下游不受影响。
+						usageHandedOff = true
+						go finalizeExecutorStreamFailure(ctx, cancelStream, in, &usage, streamErr)
+					}
 					return
 				}
 			}
@@ -1610,6 +1635,33 @@ func sendExecutorPluginStreamChunk(ctx context.Context, out chan<- pluginapi.Exe
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// finalizeExecutorStreamFailure 在本地转换失败后有界地继续读取上游，只为捕获
+// 独立的 usage 尾帧；随后发布唯一一次失败结算，再取消派生执行 ctx——取消经
+// watch 协程触发插件 CancelExecution。收尾不跟随请求 ctx：客户端收到失败终止
+// 后取消请求是常态，不能反过来掐断仍在产出尾帧的上游；缓冲中的历史用量也不
+// 能作为收口依据，退出只由源关闭、上游错误或窗口超时驱动。
+func finalizeExecutorStreamFailure(ctx context.Context, cancelStream context.CancelFunc, in <-chan pluginapi.ExecutorStreamChunk, usage *formalPluginStreamUsage, streamErr error) {
+	defer func() {
+		if cancelStream != nil {
+			cancelStream()
+		}
+	}()
+	defer func() { usage.publish(ctx, streamErr) }()
+	timer := time.NewTimer(pluginStreamUsageTailWindow)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			return
+		case chunk, ok := <-in:
+			if !ok || chunk.Err != nil {
+				return
+			}
+			usage.observe(chunk.Payload)
+		}
 	}
 }
 
@@ -1757,12 +1809,39 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	}
 	streamCtx := ctx
 	var cancelStream context.CancelFunc
+	var stopCallerBridge func()
 	streamHandedOff := false
-	if isClaudePluginOpenAI(prepared) {
+	// Claude 转换路径沿用请求子 ctx；其余需要转换的流派生与请求取消解耦的
+	// 执行 ctx：错误终止交付后的有界 usage 收尾不能被客户端取消掐断，终态
+	// 取消由转换协程/收尾协程负责，并经 watch 协程触发插件 CancelExecution。
+	// 直通路径没有协程接管释放，不创建派生 ctx，保持请求 ctx 直接驱动。
+	if isClaudePluginOpenAI(prepared) || !a.executorStreamPassthrough(prepared) {
 		if streamCtx == nil {
 			streamCtx = context.Background()
 		}
-		streamCtx, cancelStream = context.WithCancel(streamCtx)
+		if isClaudePluginOpenAI(prepared) {
+			streamCtx, cancelStream = context.WithCancel(streamCtx)
+		} else {
+			streamCtx, cancelStream = context.WithCancel(context.WithoutCancel(streamCtx))
+			// 建流桥接：插件 ExecuteStream 返回前转换协程尚未接管，请求取消
+			// 必须显式转发到解耦的执行 ctx；桥接在插件调用返回后立即解除，
+			// 此后由跟随请求 ctx 的转换协程负责清理。
+			if ctx != nil && ctx.Done() != nil {
+				bridgeStop := make(chan struct{})
+				var bridgeOnce sync.Once
+				stopCallerBridge = func() {
+					bridgeOnce.Do(func() { close(bridgeStop) })
+				}
+				defer stopCallerBridge()
+				go func() {
+					select {
+					case <-ctx.Done():
+						cancelStream()
+					case <-bridgeStop:
+					}
+				}()
+			}
+		}
 		defer func() {
 			if !streamHandedOff {
 				cancelStream()
@@ -1790,6 +1869,10 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		}
 		return nil, errExecuteStream
 	}
+	// 插件调用已返回，建流桥接解除；后续请求取消由跟随请求 ctx 的转换协程处理。
+	if stopCallerBridge != nil {
+		stopCallerBridge()
+	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
 	if isClaudePluginOpenAI(prepared) {
 		parent := ctx
@@ -1802,15 +1885,24 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	}
 	if prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatOpenAIResponse {
 		// 转换和原始 usage 观察使用同一协程，避免上游先关闭时抢先发布成功。
-		pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, pluginResp.Chunks)
-		translated := a.translateExecutorStreamChunksWithUsage(ctx, prepared, pluginChunks, reporter)
+		pluginChunks := a.watchExecutorStreamCancellation(streamCtx, pluginReq, pluginResp.Chunks)
+		// 转换协程的 select/发送跟随请求 ctx（带 reporter 值）；插件与 watch
+		// 留在与请求取消解耦的执行 ctx 上，收尾期间不受客户端取消影响。
+		convCtx := ctx
+		if reporter != nil {
+			convCtx = helps.WithUsageReporter(ctx, reporter)
+		}
+		translated := a.translateExecutorStreamChunksWithUsage(convCtx, prepared, pluginChunks, reporter, cancelStream)
+		streamHandedOff = true
 		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(ctx, translated)}, nil
 	}
-	rawPluginChunks := observeFormalPluginStreamUsage(ctx, reporter, prepared.outputFormat, pluginResp.Chunks)
-	pluginChunks := a.watchExecutorStreamCancellation(ctx, pluginReq, rawPluginChunks)
+	rawPluginChunks := observeFormalPluginStreamUsage(streamCtx, reporter, prepared.outputFormat, pluginResp.Chunks)
+	pluginChunks := a.watchExecutorStreamCancellation(streamCtx, pluginReq, rawPluginChunks)
+	streamHandedOff = true
 	return &coreexecutor.StreamResult{
 		Headers: cloneHeader(pluginResp.Headers),
-		Chunks:  mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunks(ctx, prepared, pluginChunks)),
+		// 转换协程同样跟随请求 ctx：客户端取消要能终止转换与上游执行。
+		Chunks: mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunksWithUsage(ctx, prepared, pluginChunks, nil, cancelStream)),
 	}, nil
 }
 

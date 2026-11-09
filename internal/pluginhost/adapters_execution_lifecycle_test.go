@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -1041,5 +1042,319 @@ func TestRegisterExecutorsLifecycleReplacementDoesNotDeadlockOrCloseEquivalentAd
 		}
 	case <-time.After(time.Second):
 		t.Fatal("replaced adapter did not receive all-session close")
+	}
+}
+
+// 转换失败或上游 Err 提前终止流后，插件执行必须被取消：派生 ctx 取消、
+// CancelExecution 触发，且下游不必等上游关闭就能收到终止。
+func TestExecutorStreamEarlyTerminationCancelsUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		upstreamErr bool
+	}{
+		{name: "conversion_error", upstreamErr: false},
+		{name: "upstream_error", upstreamErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previousWindow := pluginStreamUsageTailWindow
+			pluginStreamUsageTailWindow = 200 * time.Millisecond
+			t.Cleanup(func() { pluginStreamUsageTailWindow = previousWindow })
+
+			host := NewForTest(nil)
+			pluginChunks := make(chan pluginapi.ExecutorStreamChunk)
+			var executeCtx context.Context
+			cancelRequests := make(chan pluginapi.CancelExecutionRequest, 4)
+			executor := &fakeExecutor{
+				identifier: "plugin-provider",
+				executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+					executeCtx = ctx
+					return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+				},
+			}
+			adapter := newCurrentExecutorAdapterForTest(
+				host,
+				"lifecycle-early-cancel",
+				executor,
+				[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+				[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+			)
+			adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+				cancelRequests <- req
+				return nil
+			})
+			auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+			req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+			opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{
+				coreexecutor.RequestIDMetadataKey:        "request-early-cancel",
+				coreexecutor.ExecutionSessionMetadataKey: "session-early-cancel",
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+			if errStream != nil {
+				t.Fatalf("ExecuteStream() error = %v", errStream)
+			}
+			select {
+			case pluginChunks <- func() pluginapi.ExecutorStreamChunk {
+				if tc.upstreamErr {
+					return pluginapi.ExecutorStreamChunk{Err: errors.New("fixture upstream error")}
+				}
+				return pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)}
+			}():
+			case <-time.After(time.Second):
+				t.Fatal("plugin chunk was not consumed by the adapter")
+			}
+			errCount := 0
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					errCount++
+				}
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("downstream termination waited for caller context: %v", ctx.Err())
+			}
+			if errCount != 1 {
+				t.Fatalf("terminal errors = %d, want 1", errCount)
+			}
+			var cancelReq pluginapi.CancelExecutionRequest
+			select {
+			case cancelReq = <-cancelRequests:
+			case <-time.After(2 * time.Second):
+				t.Fatal("plugin did not receive explicit cancellation after early termination")
+			}
+			if cancelReq.RequestID != "request-early-cancel" || cancelReq.ExecutionSessionID != "session-early-cancel" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
+				t.Fatalf("cancel request = %#v", cancelReq)
+			}
+			select {
+			case extra := <-cancelRequests:
+				t.Fatalf("duplicate cancellation = %#v", extra)
+			case <-time.After(300 * time.Millisecond):
+			}
+			deadline := time.Now().Add(time.Second)
+			for executeCtx == nil || executeCtx.Err() == nil {
+				if time.Now().After(deadline) {
+					t.Fatalf("plugin execution context not canceled: ctx=%v err=%v", executeCtx != nil, func() error {
+						if executeCtx == nil {
+							return nil
+						}
+						return executeCtx.Err()
+					}())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
+// 建流阶段（插件 ExecuteStream 阻塞期间）请求取消必须转发到解耦的执行 ctx，
+// 否则等待上游响应头的插件调用无法被终止。
+func TestExecutorStreamBootstrapCancelAbortsPluginCall(t *testing.T) {
+	host := NewForTest(nil)
+	started := make(chan struct{})
+	cancelRequests := make(chan pluginapi.CancelExecutionRequest, 4)
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			close(started)
+			<-ctx.Done()
+			return pluginapi.ExecutorStreamResponse{}, ctx.Err()
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"bootstrap-cancel",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+		cancelRequests <- req
+		return nil
+	})
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{
+		coreexecutor.RequestIDMetadataKey: "request-bootstrap-cancel",
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errResult := make(chan error, 1)
+	go func() {
+		_, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+		errResult <- errStream
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+	cancel()
+	select {
+	case errStream := <-errResult:
+		if errStream != context.Canceled {
+			t.Fatalf("ExecuteStream() error = %v, want context.Canceled", errStream)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ExecuteStream did not return after cancellation during plugin call")
+	}
+	select {
+	case cancelReq := <-cancelRequests:
+		if cancelReq.RequestID != "request-bootstrap-cancel" {
+			t.Fatalf("cancel request = %#v", cancelReq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive cancellation during bootstrap")
+	}
+}
+
+// 通用转换路径（如 Chat→Claude）的转换协程必须跟随请求 ctx：客户端取消后
+// 上游执行要被终止，而不是卡在无人接收的输出 channel 上。
+func TestExecutorGenericConversionCancelAbortsUpstream(t *testing.T) {
+	host := NewForTest(nil)
+	pluginChunks := make(chan pluginapi.ExecutorStreamChunk)
+	var executeCtx context.Context
+	cancelRequests := make(chan pluginapi.CancelExecutionRequest, 4)
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			executeCtx = ctx
+			return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"generic-cancel",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+		cancelRequests <- req
+		return nil
+	})
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatClaude, Metadata: map[string]any{
+		coreexecutor.RequestIDMetadataKey: "request-generic-cancel",
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	select {
+	case pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{"content":"hello"}}]}`)}:
+	case <-time.After(time.Second):
+		t.Fatal("plugin chunk was not consumed by the adapter")
+	}
+	cancel()
+	for range result.Chunks {
+	}
+	deadline := time.Now().Add(time.Second)
+	for executeCtx == nil || executeCtx.Err() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("generic conversion stream did not abort the upstream after client cancellation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case cancelReq := <-cancelRequests:
+		if cancelReq.RequestID != "request-generic-cancel" || cancelReq.Reason != pluginapi.ExecutionCancelReasonContextCanceled {
+			t.Fatalf("cancel request = %#v", cancelReq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive cancellation after client disconnect")
+	}
+}
+
+// 同协议直通路径没有转换协程接管清理，不得创建派生执行 ctx：
+// 插件必须直接运行在请求 ctx 上，客户端取消原生传播。
+// 注：OpenAI→OpenAI 自 upstream SSE 归一化后注册了同格式 stream transformer，
+// 不再是直通；真直通用 Claude→Claude 代表（无 transformer、无 hook）。
+func TestExecutorPassthroughStreamRunsUnderRequestContext(t *testing.T) {
+	host := NewForTest(nil)
+	var executeCtx context.Context
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			executeCtx = ctx
+			chunks := make(chan pluginapi.ExecutorStreamChunk, 1)
+			chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)}
+			close(chunks)
+			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"passthrough-request-ctx",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatClaude},
+		[]sdktranslator.Format{sdktranslator.FormatClaude},
+	)
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatClaude}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+	if executeCtx == nil {
+		t.Fatal("plugin was not executed")
+	}
+	if executeCtx.Done() != ctx.Done() {
+		t.Fatal("passthrough stream must run on the request context, not a derived execution context")
+	}
+}
+
+// Chat→Responses 正常完成同样必须释放派生执行 ctx（没有收尾协程，
+// 由转换协程终态 defer 负责）。
+func TestExecutorConvertedStreamReleasesExecutionContext(t *testing.T) {
+	host := NewForTest(nil)
+	var executeCtx context.Context
+	executor := &fakeExecutor{
+		identifier: "plugin-provider",
+		executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+			executeCtx = ctx
+			chunks := make(chan pluginapi.ExecutorStreamChunk, 1)
+			chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"id":"fixture","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)}
+			close(chunks)
+			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
+		},
+	}
+	adapter := newCurrentExecutorAdapterForTest(
+		host,
+		"converted-release-ctx",
+		executor,
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+	)
+	auth := &coreauth.Auth{ID: "auth-1", Index: "index-1", Provider: "plugin-provider"}
+	req := coreexecutor.Request{Model: "model-1", Format: sdktranslator.FormatOpenAI}
+	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAIResponse}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, errStream := adapter.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for executeCtx.Err() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("converted stream did not release the derived execution context after completion")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
