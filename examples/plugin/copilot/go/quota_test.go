@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -61,7 +64,7 @@ func TestQuotaFetchNormalizesSnapshots(t *testing.T) {
 	if !strings.Contains(buckets[0].Description, "298.5") || !strings.Contains(buckets[0].Description, "300") {
 		t.Fatalf("chat description = %q, want remaining/entitlement", buckets[0].Description)
 	}
-	// 剩余数值进 summary 指标行；重置日期也作为指标行透出。
+	// 剩余数值使用指标行；重置日期使用 bucket 的时间字段。
 	summaryKeys := make(map[string]pluginapi.QuotaMetric)
 	for _, metric := range response.Summary {
 		summaryKeys[metric.Key] = metric
@@ -72,8 +75,16 @@ func TestQuotaFetchNormalizesSnapshots(t *testing.T) {
 	if metric, ok := summaryKeys["premium_interactions_remaining"]; !ok || metric.Value != 249.75 {
 		t.Fatalf("premium metric = %#v", summaryKeys["premium_interactions_remaining"])
 	}
-	if _, ok := summaryKeys["quota_reset_date"]; !ok {
-		t.Fatalf("quota_reset_date metric missing: %#v", response.Summary)
+	if _, ok := summaryKeys["quota_reset_date"]; ok {
+		t.Fatalf("reset date must not be emitted as a numeric metric: %#v", response.Summary)
+	}
+	if _, ok := summaryKeys["completions_remaining"]; ok {
+		t.Fatalf("unlimited quota must not be shown as a zero remaining metric: %#v", response.Summary)
+	}
+	for _, bucket := range buckets {
+		if bucket.ResetTime != "2026-10-01" {
+			t.Fatalf("reset time = %q, want upstream date", bucket.ResetTime)
+		}
 	}
 	// upstream URL 是 github api，不是 copilot api。
 	host.mu.Lock()
@@ -81,6 +92,46 @@ func TestQuotaFetchNormalizesSnapshots(t *testing.T) {
 	host.mu.Unlock()
 	if requestCount != 1 || !strings.HasSuffix(host.requests[0].URL, "/copilot_internal/user") {
 		t.Fatalf("host calls = %d %#v, want single copilot_internal/user", requestCount, host.requests)
+	}
+}
+
+func TestQuotaResponsePreservesExplicitZeroAndFallback(t *testing.T) {
+	response := copilotQuotaResponseFromSummary(copilotSummary{
+		QuotaSnapshots: json.RawMessage(`{"chat":{"quota_remaining":0,"remaining":42,"percent_remaining":0},"premium_interactions":{"remaining":12,"percent_remaining":4},"z_extra":{"percent_remaining":30},"a_extra":{"percent_remaining":20}}`),
+	})
+	metrics := make(map[string]float64)
+	for _, metric := range response.Summary {
+		metrics[metric.Key] = metric.Value
+	}
+	if metrics["chat_remaining"] != 0 || metrics["premium_interactions_remaining"] != 12 {
+		t.Fatalf("remaining metrics = %#v", metrics)
+	}
+	buckets := response.Groups[0].Buckets
+	if len(buckets) != 4 || buckets[2].Window != "a_extra" || buckets[3].Window != "z_extra" {
+		t.Fatalf("unknown buckets must have stable order: %#v", buckets)
+	}
+}
+
+func TestQuotaFetchRejectsCachedSummaryFailure(t *testing.T) {
+	host := &copilotSummaryFakeHost{}
+	runtime := newPluginRuntime(host)
+	runtime.config = defaultPluginConfig()
+	authJSON := `{"type":"copilot","auth_mode":"github_token","github_token":"` + copilotTestToken + `"}`
+	auth, err := parseStoredAuth([]byte(authJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := copilotSummaryCacheKey(auth, runtime.config.GitHubAPIEndpoint, "copilot-index")
+	runtime.summaryCache[key] = copilotSummaryCacheEntry{
+		FetchedAt: time.Now(),
+		Summary:   copilotSummary{Account: copilotAccountSummary{Status: "auth_rejected"}},
+	}
+	_, err = runtime.fetchQuota(quotaFetchRequestRaw(t, authJSON, "quota-callback"))
+	if callErr, ok := err.(*pluginCallError); !ok || callErr.statusCode != 502 {
+		t.Fatalf("cached upstream failure returned %v", err)
+	}
+	if len(host.requests) != 0 {
+		t.Fatalf("cached result unexpectedly fetched upstream: %d requests", len(host.requests))
 	}
 }
 
@@ -171,5 +222,32 @@ func TestQuotaFetchRejectsForeignProviderAndInvalidAuth(t *testing.T) {
 	invalid := quotaFetchRequestRaw(t, `{"type":"codex"}`, "quota-callback")
 	if _, errFetch := runtime.fetchQuota(invalid); errFetch == nil {
 		t.Fatal("invalid auth must be rejected")
+	}
+}
+
+func TestQuotaCachePreservesManagementSummaryIdentity(t *testing.T) {
+	host := &copilotSummaryFakeHost{}
+	runtime := newPluginRuntime(host)
+	runtime.config = defaultPluginConfig()
+	raw := quotaFetchRequestRaw(t, `{"type":"copilot","auth_mode":"github_token","github_token":"`+copilotTestToken+`","label":"Copilot Test"}`, "quota-callback")
+	if _, err := runtime.fetchQuota(raw); err != nil {
+		t.Fatal(err)
+	}
+	response := runtime.handleSummary(rpcManagementRequest{
+		ManagementRequest: pluginapi.ManagementRequest{Query: url.Values{"auth_index": {"copilot-index"}}},
+		HostCallbackID:    "management-callback",
+	})
+	var summary copilotSummary
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("summary status = %d", response.StatusCode)
+	}
+	if err := json.Unmarshal(response.Body, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.AuthIndex != "copilot-index" || summary.Name != "copilot.json" || summary.Label != "Copilot Test" || !summary.Cached {
+		t.Fatalf("shared-cache identity missing: %#v", summary)
+	}
+	if len(host.requests) != 1 {
+		t.Fatalf("expected one shared upstream fetch, got %d", len(host.requests))
 	}
 }
