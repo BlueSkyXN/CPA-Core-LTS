@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"sync"
 	"time"
@@ -13,8 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	session "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -47,15 +46,15 @@ func codexAffinitySnapshotOf(body []byte) codexAffinitySnapshot {
 	if !root.IsObject() {
 		return out
 	}
-	if prev := root.Get("previous_response_id"); prev.Exists() && prev.Type != gjson.Null && prev.String() != "" {
+	if prev := root.Get("previous_response_id"); prev.Exists() && prev.Type != ojson.Null && prev.String() != "" {
 		return out
 	}
 	input := root.Get("input")
-	var items []gjson.Result
+	var items []ojson.Result
 	if input.IsArray() {
-		input.ForEach(func(_, v gjson.Result) bool { items = append(items, v); return len(items) <= codexAffinityMaxItems })
-	} else if input.Type == gjson.String {
-		items = []gjson.Result{input}
+		input.ForEach(func(_, v ojson.Result) bool { items = append(items, v); return len(items) <= codexAffinityMaxItems })
+	} else if input.Type == ojson.String {
+		items = []ojson.Result{input}
 	} else {
 		return out
 	}
@@ -68,7 +67,7 @@ func codexAffinitySnapshotOf(body []byte) codexAffinitySnapshot {
 	settings := map[string]string{}
 	seen := map[string]bool{}
 	valid := true
-	root.ForEach(func(k, v gjson.Result) bool {
+	root.ForEach(func(k, v ojson.Result) bool {
 		key := k.String()
 		if seen[key] {
 			valid = false
@@ -93,7 +92,7 @@ func codexAffinitySnapshotOf(body []byte) codexAffinitySnapshot {
 	encoded, _ := json.Marshal(settings)
 	out.settings = affinityBytesDigest(encoded)
 	chain := out.settings
-	user, anchor := input.Type == gjson.String, false
+	user, anchor := input.Type == ojson.String, false
 	for _, item := range items {
 		digest, ok := budget.digest(item, 0)
 		if !ok {
@@ -129,7 +128,7 @@ type affinityHashBudget struct{ nodes int }
 
 // 严格摘要只规范化 JSON 对象字段顺序，保留数组顺序和每个标量；
 // 重复键、不可验证的远端媒体、深度/节点超限均返回 unknown。
-func (b *affinityHashBudget) digest(v gjson.Result, depth int) (string, bool) {
+func (b *affinityHashBudget) digest(v ojson.Result, depth int) (string, bool) {
 	b.nodes++
 	if depth > 64 || b.nodes > codexAffinityMaxPrefixes {
 		return "", false
@@ -137,7 +136,7 @@ func (b *affinityHashBudget) digest(v gjson.Result, depth int) (string, bool) {
 	if v.IsObject() {
 		fields := map[string]string{}
 		ok := true
-		v.ForEach(func(k, child gjson.Result) bool {
+		v.ForEach(func(k, child ojson.Result) bool {
 			key := k.String()
 			if _, exists := fields[key]; exists {
 				ok = false
@@ -152,7 +151,7 @@ func (b *affinityHashBudget) digest(v gjson.Result, depth int) (string, bool) {
 				if child.IsObject() {
 					media = child.Get("url")
 				}
-				if media.Type != gjson.String || !strings.HasPrefix(media.String(), "data:") {
+				if media.Type != ojson.String || !strings.HasPrefix(media.String(), "data:") {
 					ok = false
 					return false
 				}
@@ -174,7 +173,7 @@ func (b *affinityHashBudget) digest(v gjson.Result, depth int) (string, bool) {
 	if v.IsArray() {
 		chain := affinityDigest("array")
 		ok := true
-		v.ForEach(func(_, child gjson.Result) bool {
+		v.ForEach(func(_, child ojson.Result) bool {
 			digest, valid := b.digest(child, depth+1)
 			if !valid {
 				ok = false
@@ -187,7 +186,7 @@ func (b *affinityHashBudget) digest(v gjson.Result, depth int) (string, bool) {
 	}
 	// gjson decodes JSON string escaping; control characters in prompt content
 	// remain meaningful. Large scalars are hashed without constructing JSON.
-	if v.Type == gjson.String {
+	if v.Type == ojson.String {
 		return affinityDigest("string", affinityStringDigest(v.Str)), true
 	}
 	return affinityDigest("scalar", v.Raw), true
@@ -459,7 +458,7 @@ func (d *codexAffinityDecision) close() {
 	})
 }
 func (d *codexAffinityDecision) complete(payload []byte) {
-	if d == nil || d.ctx.Err() != nil || gjson.GetBytes(payload, "type").String() != "response.completed" || !d.snapshot.known {
+	if d == nil || d.ctx.Err() != nil || ojson.GetBytes(payload, "type").String() != "response.completed" || !d.snapshot.known {
 		return
 	}
 	extended := d.snapshot.withOutput(payload)
@@ -518,12 +517,12 @@ func (s codexAffinitySnapshot) withOutput(payload []byte) codexAffinitySnapshot 
 	if len(payload)+s.scanned > codexAffinityMaxBytes || !json.Valid(payload) {
 		return codexAffinitySnapshot{}
 	}
-	raw := util.GetGJSONBytesNoCopy(payload, "response.output")
+	raw := ojson.GetBytes(payload, "response.output")
 	if !raw.IsArray() {
 		return codexAffinitySnapshot{}
 	}
-	var items []gjson.Result
-	raw.ForEach(func(_, v gjson.Result) bool {
+	var items []ojson.Result
+	raw.ForEach(func(_, v ojson.Result) bool {
 		items = append(items, v)
 		return len(items)+len(s.items) <= codexAffinityMaxItems
 	})
@@ -581,9 +580,9 @@ func (d *codexAffinityDecision) freezeFields(body []byte, pck string) ([]byte, s
 		return body, pck
 	}
 	if frozen == "" {
-		body, _ = sjson.DeleteBytes(body, "prompt_cache_key")
+		body, _ = ojson.DeleteBytes(body, "prompt_cache_key")
 	} else {
-		body, _ = sjson.SetBytes(body, "prompt_cache_key", frozen)
+		body, _ = ojson.SetBytes(body, "prompt_cache_key", frozen)
 	}
 	return body, frozen
 }

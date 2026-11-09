@@ -2,13 +2,14 @@ package helps
 
 import (
 	"bytes"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -232,7 +233,7 @@ func (t *responseTimingTracker) observeMessage(data []byte) {
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
 		trimmed = bytes.TrimSpace(trimmed[len("data:"):])
 	}
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) || !gjson.ValidBytes(trimmed) {
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) || !ojson.ValidBytes(trimmed) {
 		return
 	}
 	t.streamObserved = true
@@ -251,7 +252,7 @@ func (t *responseTimingTracker) isCompleteStandaloneLineLocked(line []byte) bool
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
 		trimmed = bytes.TrimSpace(trimmed[len("data:"):])
 	}
-	return bytes.Equal(trimmed, []byte("[DONE]")) || gjson.ValidBytes(trimmed)
+	return bytes.Equal(trimmed, []byte("[DONE]")) || ojson.ValidBytes(trimmed)
 }
 
 func (t *responseTimingTracker) processLineLocked(line []byte) {
@@ -287,7 +288,7 @@ func (t *responseTimingTracker) processLineLocked(line []byte) {
 			t.dropFrame = true
 			return
 		}
-		if gjson.ValidBytes(t.frameData) {
+		if ojson.ValidBytes(t.frameData) {
 			t.streamObserved = true
 			t.classifyLocked(t.frameData)
 			t.frameData = nil
@@ -297,7 +298,7 @@ func (t *responseTimingTracker) processLineLocked(line []byte) {
 
 	// WebSocket messages and non-SSE JSON responses arrive without a data:
 	// prefix. Ignore malformed fragments rather than retaining them.
-	if gjson.ValidBytes(trimmed) {
+	if ojson.ValidBytes(trimmed) {
 		t.classifyLocked(trimmed)
 	}
 }
@@ -308,7 +309,7 @@ func (t *responseTimingTracker) flushFrameLocked() {
 		t.frameData = nil
 		return
 	}
-	if len(t.frameData) > 0 && gjson.ValidBytes(t.frameData) {
+	if len(t.frameData) > 0 && ojson.ValidBytes(t.frameData) {
 		t.classifyLocked(t.frameData)
 	}
 	t.frameData = nil
@@ -343,12 +344,12 @@ func (t *responseTimingTracker) classifyLocked(payload []byte) {
 	}
 }
 
-func nonEmptyString(value gjson.Result) bool {
-	return value.Type == gjson.String && strings.TrimSpace(value.String()) != ""
+func nonEmptyString(value ojson.Result) bool {
+	return value.Type == ojson.String && strings.TrimSpace(value.String()) != ""
 }
 
-func anyNonEmptyText(value gjson.Result) bool {
-	if !value.Exists() || value.Type == gjson.Null {
+func anyNonEmptyText(value ojson.Result) bool {
+	if !value.Exists() || value.Type == ojson.Null {
 		return false
 	}
 	if nonEmptyString(value) {
@@ -356,7 +357,7 @@ func anyNonEmptyText(value gjson.Result) bool {
 	}
 	if value.IsArray() {
 		found := false
-		value.ForEach(func(_, item gjson.Result) bool {
+		value.ForEach(func(_, item ojson.Result) bool {
 			found = anyNonEmptyText(item)
 			return !found
 		})
@@ -373,10 +374,10 @@ func anyNonEmptyText(value gjson.Result) bool {
 }
 
 func classifySemanticTiming(format sdktranslator.Format, payload []byte) (reasoning, assistant bool) {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return false, false
 	}
-	root := gjson.ParseBytes(payload)
+	root := util.ParseGJSONBytesNoCopy(payload)
 	switch format {
 	case sdktranslator.FormatCodex, sdktranslator.FormatOpenAIResponse:
 		return classifyResponsesTiming(root)
@@ -393,7 +394,7 @@ func classifySemanticTiming(format sdktranslator.Format, payload []byte) (reason
 	}
 }
 
-func classifyResponsesTiming(root gjson.Result) (reasoning, assistant bool) {
+func classifyResponsesTiming(root ojson.Result) (reasoning, assistant bool) {
 	eventType := root.Get("type").String()
 	switch eventType {
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
@@ -413,7 +414,7 @@ func classifyResponsesTiming(root gjson.Result) (reasoning, assistant bool) {
 		}
 	}
 	if eventType == "response.completed" || eventType == "response.done" {
-		root.Get("response.output").ForEach(func(_, item gjson.Result) bool {
+		root.Get("response.output").ForEach(func(_, item ojson.Result) bool {
 			switch item.Get("type").String() {
 			case "reasoning":
 				reasoning = reasoning || anyNonEmptyText(item.Get("summary")) || anyNonEmptyText(item.Get("content"))
@@ -426,8 +427,8 @@ func classifyResponsesTiming(root gjson.Result) (reasoning, assistant bool) {
 	return reasoning, assistant
 }
 
-func classifyOpenAIChatTiming(root gjson.Result) (reasoning, assistant bool) {
-	root.Get("choices").ForEach(func(_, choice gjson.Result) bool {
+func classifyOpenAIChatTiming(root ojson.Result) (reasoning, assistant bool) {
+	root.Get("choices").ForEach(func(_, choice ojson.Result) bool {
 		delta := choice.Get("delta")
 		if !delta.Exists() {
 			delta = choice.Get("message")
@@ -439,7 +440,7 @@ func classifyOpenAIChatTiming(root gjson.Result) (reasoning, assistant bool) {
 	return reasoning, assistant
 }
 
-func classifyClaudeTiming(root gjson.Result) (reasoning, assistant bool) {
+func classifyClaudeTiming(root ojson.Result) (reasoning, assistant bool) {
 	switch root.Get("type").String() {
 	case "content_block_delta":
 		delta := root.Get("delta")
@@ -461,14 +462,14 @@ func classifyClaudeTiming(root gjson.Result) (reasoning, assistant bool) {
 	return reasoning, assistant
 }
 
-func classifyGeminiTiming(root gjson.Result) (reasoning, assistant bool) {
+func classifyGeminiTiming(root ojson.Result) (reasoning, assistant bool) {
 	for _, path := range []string{"candidates", "response.candidates"} {
-		root.Get(path).ForEach(func(_, candidate gjson.Result) bool {
-			candidate.Get("content.parts").ForEach(func(_, part gjson.Result) bool {
+		root.Get(path).ForEach(func(_, candidate ojson.Result) bool {
+			candidate.Get("content.parts").ForEach(func(_, part ojson.Result) bool {
 				if !anyNonEmptyText(part.Get("text")) {
 					return true
 				}
-				if part.Get("thought").Type == gjson.True {
+				if part.Get("thought").Type == ojson.True {
 					reasoning = true
 				} else {
 					assistant = true
@@ -481,7 +482,7 @@ func classifyGeminiTiming(root gjson.Result) (reasoning, assistant bool) {
 	return reasoning, assistant
 }
 
-func classifyInteractionsTiming(root gjson.Result) (reasoning, assistant bool) {
+func classifyInteractionsTiming(root ojson.Result) (reasoning, assistant bool) {
 	eventType := root.Get("event_type").String()
 	if eventType == "step.delta" {
 		delta := root.Get("delta")

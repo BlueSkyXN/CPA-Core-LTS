@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestIsCodexMultiAgentClient(t *testing.T) {
@@ -191,7 +191,7 @@ func TestRewriteCodexSpawnAgentDescriptionNormalizesModelList(t *testing.T) {
 	}
 
 	got := rewriteCodexSpawnAgentDescription(payload, models)
-	description := gjson.GetBytes(got, "input.0.tools.0.tools.1.description").String()
+	description := ojson.GetBytesNoCopy(got, "input.0.tools.0.tools.1.description").String()
 	wantAlpha := "- `model-alpha`: Alpha model. Reasoning efforts: low, medium (default), high. Service tiers: priority."
 	wantBeta := "- `model-beta`: Beta model. Reasoning efforts: low (default), high."
 	if !strings.Contains(description, wantAlpha) || !strings.Contains(description, wantBeta) {
@@ -208,10 +208,10 @@ func TestRewriteCodexSpawnAgentDescriptionNormalizesModelList(t *testing.T) {
 	if strings.Index(description, "`model-beta`") > strings.Index(description, codexSpawnAgentDescriptionMarker) {
 		t.Fatalf("model list was not inserted before spawn instructions: %q", description)
 	}
-	if gotDescription := gjson.GetBytes(got, "input.0.tools.0.tools.0.description").String(); gotDescription != "unchanged" {
+	if gotDescription := ojson.GetBytesNoCopy(got, "input.0.tools.0.tools.0.description").String(); gotDescription != "unchanged" {
 		t.Fatalf("non-spawn tool description = %q, want unchanged", gotDescription)
 	}
-	if encrypted := gjson.GetBytes(got, "input.0.tools.0.tools.1.parameters.properties.message.encrypted"); encrypted.Exists() {
+	if encrypted := ojson.GetBytesNoCopy(got, "input.0.tools.0.tools.1.parameters.properties.message.encrypted"); encrypted.Exists() {
 		t.Fatalf("spawn_agent message encrypted was not removed: %s", encrypted.Raw)
 	}
 }
@@ -227,7 +227,7 @@ func TestRewriteCodexSpawnAgentDescriptionTopLevelWithoutMarker(t *testing.T) {
 		defaultReasoningEffort: "medium",
 	}}
 	got := rewriteCodexSpawnAgentDescription(payload, models)
-	description := gjson.GetBytes(got, "tools.0.tools.0.description").String()
+	description := ojson.GetBytesNoCopy(got, "tools.0.tools.0.description").String()
 
 	wantSuffix := codexSpawnAgentModelsHeading + "\n- `model-a`: Model A. Reasoning efforts: medium (default)."
 	if !strings.HasPrefix(description, "Create a worker.\n\n") || !strings.HasSuffix(description, wantSuffix) {
@@ -278,7 +278,7 @@ func TestRewriteCodexMultiAgentV2MessageEncryptionNamespacesAndToolNames(t *test
 		"tools.0.tools.0", "tools.0.tools.1", "tools.0.tools.2",
 		"tools.1.tools.0", "tools.1.tools.1", "tools.2.tools.0",
 	} {
-		if marker := gjson.GetBytes(got, path+".parameters.properties.message.encrypted"); marker.Exists() {
+		if marker := ojson.GetBytes(got, path+".parameters.properties.message.encrypted"); marker.Exists() {
 			t.Fatalf("eligible marker at %s was preserved: %s", path, got)
 		}
 	}
@@ -287,7 +287,7 @@ func TestRewriteCodexMultiAgentV2MessageEncryptionNamespacesAndToolNames(t *test
 		"tools.4.tools.0", "tools.5.tools.0", "tools.6.tools.0",
 		"tools.7.tools.0", "tools.8",
 	} {
-		if marker := gjson.GetBytes(got, path+".parameters.properties.message.encrypted"); marker.Type != gjson.True {
+		if marker := ojson.GetBytes(got, path+".parameters.properties.message.encrypted"); marker.Type != ojson.True {
 			t.Fatalf("unrelated marker at %s changed: %s", path, got)
 		}
 	}
@@ -303,10 +303,10 @@ func TestRewriteCodexMultiAgentV2MessageEncryptionAdditionalToolsAndGates(t *tes
 	headers := http.Header{"User-Agent": []string{"codex-tui/0.145.0"}}
 	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexMultiAgentV2MessageEncryption(context.Background(), headers, payload, cfg)
-	if marker := gjson.GetBytes(got, "input.0.tools.0.tools.0.parameters.properties.message.encrypted"); marker.Exists() {
+	if marker := ojson.GetBytes(got, "input.0.tools.0.tools.0.parameters.properties.message.encrypted"); marker.Exists() {
 		t.Fatalf("additional_tools marker was preserved: %s", got)
 	}
-	if other := gjson.GetBytes(got, "input.0.tools.0.tools.0.parameters.properties.data.encrypted").String(); other != "keep" {
+	if other := ojson.GetBytes(got, "input.0.tools.0.tools.0.parameters.properties.data.encrypted").String(); other != "keep" {
 		t.Fatalf("unrelated encrypted field changed: %q", other)
 	}
 
@@ -343,7 +343,7 @@ func TestCodexSpawnAgentToolPathsIgnoreInvalidContainers(t *testing.T) {
 			{"type":"namespace","name":"spawn_agent","description":"namespace"}
 		]
 	}`)
-	if paths := codexSpawnAgentToolPaths(payload); len(paths) != 0 {
+	if paths := codexSpawnAgentToolPathsDoc(ojson.NewDoc(payload)); len(paths) != 0 {
 		t.Fatalf("invalid container paths = %v, want none", paths)
 	}
 }
@@ -382,12 +382,12 @@ func TestOptimizeCodexCollaborationNamespaceWithoutModels(t *testing.T) {
 	t.Parallel()
 
 	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}]}`)
-	toolPaths := codexSpawnAgentToolPaths(payload)
+	toolPaths := codexSpawnAgentToolPathsDoc(ojson.NewDoc(payload))
 	got, optimized := optimizeCodexCollaborationNamespace(payload, toolPaths)
 	if !optimized {
 		t.Fatal("collaboration namespace was not optimized")
 	}
-	if namespace := gjson.GetBytes(got, "tools.0.name").String(); namespace != codexOptimizedCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "tools.0.name").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("namespace = %q, want collaboration-optimize", namespace)
 	}
 }
@@ -397,11 +397,11 @@ func TestRewriteCodexSpawnAgentDescriptionIgnoresTopLevelSameNameTool(t *testing
 
 	payload := []byte(`{"tools":[{"type":"function","name":"spawn_agent","description":"unchanged","parameters":{"properties":{"message":{"encrypted":true}}}}]}`)
 	got := rewriteCodexSpawnAgentDescription(payload, nil)
-	if description := gjson.GetBytes(got, "tools.0.description").String(); description != "unchanged" {
+	if description := ojson.GetBytesNoCopy(got, "tools.0.description").String(); description != "unchanged" {
 		t.Fatalf("description = %q, want unchanged", description)
 	}
-	if encrypted := gjson.GetBytes(got, "tools.0.parameters.properties.message.encrypted"); encrypted.Type != gjson.True {
-		t.Fatalf("top-level same-name marker changed: %s", got)
+	if encrypted := ojson.GetBytesNoCopy(got, "tools.0.parameters.properties.message.encrypted"); encrypted.Exists() {
+		t.Fatalf("message encrypted was not removed: %s", encrypted.Raw)
 	}
 }
 
@@ -436,15 +436,15 @@ func TestRewriteCodexSpawnAgentDescriptionEnabledOptimizesTool(t *testing.T) {
 	if !optimized {
 		t.Fatal("collaboration namespace was not marked optimized")
 	}
-	if namespace := gjson.GetBytes(got, "tools.0.name").String(); namespace != codexOptimizedCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "tools.0.name").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("namespace = %q, want %q", namespace, codexOptimizedCollaborationNamespace)
 	}
-	description := gjson.GetBytes(got, "tools.0.tools.0.description").String()
+	description := ojson.GetBytesNoCopy(got, "tools.0.tools.0.description").String()
 	want := "- `" + modelID + "`: Test agent model. Reasoning efforts: low, medium (default), high."
 	if !strings.Contains(description, want) {
 		t.Fatalf("description does not contain dynamic model metadata: %q", description)
 	}
-	if encrypted := gjson.GetBytes(got, "tools.0.tools.0.parameters.properties.message.encrypted"); encrypted.Exists() {
+	if encrypted := ojson.GetBytesNoCopy(got, "tools.0.tools.0.parameters.properties.message.encrypted"); encrypted.Exists() {
 		t.Fatalf("spawn_agent message encrypted was not removed: %s", encrypted.Raw)
 	}
 }
@@ -468,14 +468,14 @@ func TestPrepareCodexMultiAgentV2ToolsOnlyPreparesToolDefinitions(t *testing.T) 
 	if !prepared {
 		t.Fatal("Codex CLI request was not marked prepared")
 	}
-	if messageType := gjson.GetBytes(got, "input.0.content.0.type").String(); messageType != "encrypted_content" {
+	if messageType := ojson.GetBytesNoCopy(got, "input.0.content.0.type").String(); messageType != "encrypted_content" {
 		t.Fatalf("agent_message content type = %q, want encrypted_content", messageType)
 	}
-	if namespace := gjson.GetBytes(got, "input.1.tools.0.name").String(); namespace != codexCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "input.1.tools.0.name").String(); namespace != codexCollaborationNamespace {
 		t.Fatalf("namespace = %q, want %q", namespace, codexCollaborationNamespace)
 	}
 	for _, path := range []string{"input.1.tools.0.tools.0", "input.1.tools.0.tools.1"} {
-		if encrypted := gjson.GetBytes(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
+		if encrypted := ojson.GetBytesNoCopy(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
 			t.Fatalf("%s message.encrypted was not removed: %s", path, encrypted.Raw)
 		}
 	}
@@ -497,10 +497,10 @@ func TestOptimizeCodexMultiAgentV2RequestSkipsPreparedToolRefresh(t *testing.T) 
 	if !optimized {
 		t.Fatal("collaboration namespace was not optimized")
 	}
-	if description := gjson.GetBytes(got, "tools.0.tools.0.description").String(); !strings.Contains(description, "old-model") {
+	if description := ojson.GetBytesNoCopy(got, "tools.0.tools.0.description").String(); !strings.Contains(description, "old-model") {
 		t.Fatalf("prepared spawn_agent description was refreshed: %q", description)
 	}
-	if encrypted := gjson.GetBytes(got, "tools.0.tools.0.parameters.properties.message.encrypted"); encrypted.Exists() {
+	if encrypted := ojson.GetBytesNoCopy(got, "tools.0.tools.0.parameters.properties.message.encrypted"); encrypted.Exists() {
 		t.Fatalf("message.encrypted was not removed: %s", encrypted.Raw)
 	}
 }
@@ -515,7 +515,7 @@ func TestOptimizeCodexMultiAgentV2RequestPreservesNativeAgentMessage(t *testing.
 	if namespaceOptimized {
 		t.Fatal("payload without spawn_agent unexpectedly optimized a namespace")
 	}
-	message := gjson.GetBytes(got, "input.0")
+	message := ojson.GetBytesNoCopy(got, "input.0")
 	if message.Get("type").String() != "agent_message" || message.Get("role").Exists() {
 		t.Fatalf("outer agent message changed: %s", got)
 	}
@@ -558,22 +558,22 @@ func TestRestoreCodexMultiAgentV2Response(t *testing.T) {
 		}
 	}`)
 	got := RestoreCodexMultiAgentV2Response(payload, true)
-	if namespace := gjson.GetBytes(got, "response.output.0.namespace").String(); namespace != codexCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "response.output.0.namespace").String(); namespace != codexCollaborationNamespace {
 		t.Fatalf("function namespace = %q, want collaboration", namespace)
 	}
-	if name := gjson.GetBytes(got, "response.output.1.name").String(); name != "collaboration__send_message" {
+	if name := ojson.GetBytesNoCopy(got, "response.output.1.name").String(); name != "collaboration__send_message" {
 		t.Fatalf("qualified function name = %q, want collaboration__send_message", name)
 	}
-	if name := gjson.GetBytes(got, "response.tools.0.name").String(); name != codexCollaborationNamespace {
+	if name := ojson.GetBytesNoCopy(got, "response.tools.0.name").String(); name != codexCollaborationNamespace {
 		t.Fatalf("namespace tool name = %q, want collaboration", name)
 	}
-	if namespace := gjson.GetBytes(got, "response.output.0.arguments.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "response.output.0.arguments.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("opaque arguments namespace was unexpectedly rewritten: %q", namespace)
 	}
-	if namespace := gjson.GetBytes(got, "response.output.2.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "response.output.2.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("ordinary namespace field was unexpectedly rewritten: %q", namespace)
 	}
-	if name := gjson.GetBytes(got, "response.output.2.name").String(); name != "collaboration-optimize__plain" {
+	if name := ojson.GetBytesNoCopy(got, "response.output.2.name").String(); name != "collaboration-optimize__plain" {
 		t.Fatalf("ordinary name field was unexpectedly rewritten: %q", name)
 	}
 	if unchanged := RestoreCodexMultiAgentV2Response(payload, false); string(unchanged) != string(payload) {
@@ -602,16 +602,16 @@ func TestRestoreCodexMultiAgentV2ResponseRestoresDottedFlatToolName(t *testing.T
 		}
 	}`)
 	got := RestoreCodexMultiAgentV2Response(payload, true)
-	if namespace := gjson.GetBytes(got, "response.output.0.namespace").String(); namespace != codexCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "response.output.0.namespace").String(); namespace != codexCollaborationNamespace {
 		t.Fatalf("output 0 namespace = %q, want %q", namespace, codexCollaborationNamespace)
 	}
-	if name := gjson.GetBytes(got, "response.output.0.name").String(); name != "spawn_agent" {
+	if name := ojson.GetBytesNoCopy(got, "response.output.0.name").String(); name != "spawn_agent" {
 		t.Fatalf("output 0 name = %q, want spawn_agent", name)
 	}
-	if namespace := gjson.GetBytes(got, "response.output.1.namespace").String(); namespace != codexCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "response.output.1.namespace").String(); namespace != codexCollaborationNamespace {
 		t.Fatalf("output 1 namespace = %q, want %q", namespace, codexCollaborationNamespace)
 	}
-	if name := gjson.GetBytes(got, "response.output.1.name").String(); name != "list_agents" {
+	if name := ojson.GetBytesNoCopy(got, "response.output.1.name").String(); name != "list_agents" {
 		t.Fatalf("output 1 name = %q, want list_agents", name)
 	}
 }
@@ -621,38 +621,47 @@ func TestRewriteCodexMultiAgentV2InputRewritesAgentMessage(t *testing.T) {
 
 	payload := []byte(`{"model":"gpt-5.4","input":[{
 		"type":"agent_message",
-		"id":"amsg_1",
+		"id":"amsg_019f92ae-84fd-76f0-aa66-5a722dee382e",
 		"author":"/root",
 		"recipient":"/root/arithmetic_problem",
 		"content":[
 			{"type":"input_text","text":"Message Type: NEW_TASK\nTask name: /root/arithmetic_problem\nSender: /root\nPayload:\n"},
 			{"type":"input_text","text":"请出一道四则运算题，并给出答案。全程使用简体中文，题目简洁。"}
 		],
-		"internal_chat_message_metadata_passthrough":{"turn_id":"turn_1"}
+		"internal_chat_message_metadata_passthrough":{"turn_id":"019f92ae-7eae-7371-957e-8f6f734edddc"}
 	}]}`)
 	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
 	cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 	got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg)
 
-	if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "message" {
+	if messageType := ojson.GetBytesNoCopy(got, "input.0.type").String(); messageType != "message" {
 		t.Fatalf("type = %q, want message; payload=%s", messageType, got)
 	}
-	if role := gjson.GetBytes(got, "input.0.role").String(); role != "assistant" {
-		t.Fatalf("role = %q, want assistant; payload=%s", role, got)
+	if role := ojson.GetBytesNoCopy(got, "input.0.role").String(); role != "user" {
+		t.Fatalf("role = %q, want user; payload=%s", role, got)
 	}
-	if partType := gjson.GetBytes(got, "input.0.content.0.type").String(); partType != "output_text" {
-		t.Fatalf("content[0].type = %q, want output_text; payload=%s", partType, got)
+	if partType := ojson.GetBytesNoCopy(got, "input.0.content.1.type").String(); partType != "input_text" {
+		t.Fatalf("content[1].type = %q, want input_text; payload=%s", partType, got)
 	}
-	if text := gjson.GetBytes(got, "input.0.content.0.text").String(); text != "Message Type: NEW_TASK\nTask name: /root/arithmetic_problem\nSender: /root\nPayload:\n\n请出一道四则运算题，并给出答案。全程使用简体中文，题目简洁。" {
-		t.Fatalf("content[0].text = %q; payload=%s", text, got)
+	if text := ojson.GetBytesNoCopy(got, "input.0.content.1.text").String(); text != "请出一道四则运算题，并给出答案。全程使用简体中文，题目简洁。" {
+		t.Fatalf("content[1].text = %q; payload=%s", text, got)
 	}
-	if parts := gjson.GetBytes(got, "input.0.content.#").Int(); parts != 1 {
-		t.Fatalf("content parts = %d, want 1; payload=%s", parts, got)
+	if encrypted := ojson.GetBytesNoCopy(got, "input.0.content.1.encrypted_content"); encrypted.Exists() {
+		t.Fatalf("content[1].encrypted_content was preserved: %s", got)
 	}
-	for _, field := range []string{"id", "author", "recipient", "internal_chat_message_metadata_passthrough"} {
-		if gjson.GetBytes(got, "input.0."+field).Exists() {
-			t.Fatalf("routing envelope field %s was preserved: %s", field, got)
-		}
+	if author := ojson.GetBytesNoCopy(got, "input.0.author").String(); author != "/root" {
+		t.Fatalf("author = %q, want /root", author)
+	}
+	if turnID := ojson.GetBytesNoCopy(got, "input.0.internal_chat_message_metadata_passthrough.turn_id").String(); turnID != "019f92ae-7eae-7371-957e-8f6f734edddc" {
+		t.Fatalf("turn_id = %q", turnID)
+	}
+
+	doc := ojson.NewDoc(payload)
+	if !RewriteCodexMultiAgentV2InputDoc(doc, context.Background(), headers, cfg) {
+		t.Fatal("expected RewriteCodexMultiAgentV2InputDoc to report changes")
+	}
+	if string(doc.Bytes()) != string(got) {
+		t.Fatalf("RewriteCodexMultiAgentV2InputDoc mismatch:\ngot:  %s\nwant: %s", string(doc.Bytes()), string(got))
 	}
 }
 
@@ -688,29 +697,34 @@ func TestRewriteCodexMultiAgentV2Input_StripsAuthorAndRecipient_Issue6136(t *tes
 		cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, true)
 
-		if gjson.GetBytes(got, "input.0").Raw != gjson.GetBytes(payload, "input.0").Raw {
+		if ojson.GetBytesNoCopy(got, "input.0").Raw != ojson.GetBytesNoCopy(payload, "input.0").Raw {
 			t.Fatal("opaque agent message changed under a non-Codex client")
 		}
-
-		// Item 1: regular message with non-standard fields -> cleaned
-		if messageType := gjson.GetBytes(got, "input.1.type").String(); messageType != "message" {
+		if messageType := ojson.GetBytesNoCopy(got, "input.1.type").String(); messageType != "message" {
 			t.Fatalf("input.1.type = %q, want message", messageType)
 		}
-		if role := gjson.GetBytes(got, "input.1.role").String(); role != "user" {
+		if role := ojson.GetBytesNoCopy(got, "input.1.role").String(); role != "user" {
 			t.Fatalf("input.1.role = %q, want user", role)
 		}
-		if author := gjson.GetBytes(got, "input.1.author"); author.Exists() {
+		// Item 1: regular message with non-standard fields -> cleaned
+		if messageType := ojson.GetBytesNoCopy(got, "input.1.type").String(); messageType != "message" {
+			t.Fatalf("input.1.type = %q, want message", messageType)
+		}
+		if role := ojson.GetBytesNoCopy(got, "input.1.role").String(); role != "user" {
+			t.Fatalf("input.1.role = %q, want user", role)
+		}
+		if author := ojson.GetBytesNoCopy(got, "input.1.author"); author.Exists() {
 			t.Fatalf("input.1.author was not stripped; got=%s", author.String())
 		}
-		if recipient := gjson.GetBytes(got, "input.1.recipient"); recipient.Exists() {
+		if recipient := ojson.GetBytesNoCopy(got, "input.1.recipient"); recipient.Exists() {
 			t.Fatalf("input.1.recipient was not stripped; got=%s", recipient.String())
 		}
-		if passthrough := gjson.GetBytes(got, "input.1.internal_chat_message_metadata_passthrough"); passthrough.Exists() {
+		if passthrough := ojson.GetBytesNoCopy(got, "input.1.internal_chat_message_metadata_passthrough"); passthrough.Exists() {
 			t.Fatalf("input.1.internal_chat_message_metadata_passthrough was not stripped; got=%s", passthrough.String())
 		}
 
 		// Item 2: clean message remains intact
-		if content := gjson.GetBytes(got, "input.2.content").String(); content != "clean assistant message" {
+		if content := ojson.GetBytesNoCopy(got, "input.2.content").String(); content != "clean assistant message" {
 			t.Fatalf("input.2.content = %q", content)
 		}
 	})
@@ -720,19 +734,19 @@ func TestRewriteCodexMultiAgentV2Input_StripsAuthorAndRecipient_Issue6136(t *tes
 		cfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
 		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, false)
 
-		if author := gjson.GetBytes(got, "input.0.author").String(); author != "/root" {
+		if author := ojson.GetBytesNoCopy(got, "input.0.author").String(); author != "/root" {
 			t.Fatalf("input.0.author = %q, want /root", author)
 		}
-		if recipient := gjson.GetBytes(got, "input.0.recipient").String(); recipient != "/root/worker" {
+		if recipient := ojson.GetBytesNoCopy(got, "input.0.recipient").String(); recipient != "/root/worker" {
 			t.Fatalf("input.0.recipient = %q, want /root/worker", recipient)
 		}
-		if passthrough := gjson.GetBytes(got, "input.0.internal_chat_message_metadata_passthrough.turn_id").String(); passthrough != "turn_1" {
+		if passthrough := ojson.GetBytesNoCopy(got, "input.0.internal_chat_message_metadata_passthrough.turn_id").String(); passthrough != "turn_1" {
 			t.Fatalf("input.0 passthrough = %q", passthrough)
 		}
-		if author := gjson.GetBytes(got, "input.1.author").String(); author != "/root/worker" {
+		if author := ojson.GetBytesNoCopy(got, "input.1.author").String(); author != "/root/worker" {
 			t.Fatalf("input.1.author = %q, want /root/worker", author)
 		}
-		if recipient := gjson.GetBytes(got, "input.1.recipient").String(); recipient != "/root" {
+		if recipient := ojson.GetBytesNoCopy(got, "input.1.recipient").String(); recipient != "/root" {
 			t.Fatalf("input.1.recipient = %q, want /root", recipient)
 		}
 	})
@@ -760,33 +774,41 @@ func TestRewriteCodexMultiAgentV2Input_CompatModeWithoutOptimize_Issue6233(t *te
 		got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, cfg, true)
 
 		// Item 0: must be converted to message with role user
-		messageType := gjson.GetBytes(got, "input.0.type").String()
+		messageType := ojson.GetBytesNoCopy(got, "input.0.type").String()
 		if messageType != "message" {
 			t.Fatalf("input.0.type = %q, want message (must not stay agent_message without author)", messageType)
 		}
-		role := gjson.GetBytes(got, "input.0.role").String()
+		role := ojson.GetBytesNoCopy(got, "input.0.role").String()
 		if role != "user" {
 			t.Fatalf("input.0.role = %q, want user", role)
 		}
 
-		// Proven plaintext is combined into portable input_text.
-		contentType := gjson.GetBytes(got, "input.0.content.0.type").String()
+		// LTS delegation contract (downstream-patches codex-multi-agent-plaintext-contract):
+		// portable delegated tasks collapse proven plaintext parts into one coherent
+		// user turn instead of forwarding the multi-part agent envelope.
+		if parts := ojson.GetBytesNoCopy(got, "input.0.content.#").Int(); parts != 1 {
+			t.Fatalf("input.0.content.# = %d, want 1 collapsed part; got=%s", parts, got)
+		}
+		contentType := ojson.GetBytesNoCopy(got, "input.0.content.0.type").String()
 		if contentType != "input_text" {
 			t.Fatalf("input.0.content.0.type = %q, want input_text", contentType)
 		}
-		contentText := gjson.GetBytes(got, "input.0.content.0.text").String()
-		if contentText != "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\ndone\ntest task payload" {
-			t.Fatalf("input.0.content.0.text = %q, want test task payload", contentText)
+		wantText := "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\ndone\ntest task payload"
+		if contentText := ojson.GetBytesNoCopy(got, "input.0.content.0.text").String(); contentText != wantText {
+			t.Fatalf("input.0.content.0.text = %q, want %q", contentText, wantText)
 		}
 
 		// Non-standard metadata must be stripped
-		if author := gjson.GetBytes(got, "input.0.author"); author.Exists() {
+		if id := ojson.GetBytesNoCopy(got, "input.0.id"); id.Exists() {
+			t.Fatalf("input.0.id was not stripped; got=%s", id.String())
+		}
+		if author := ojson.GetBytesNoCopy(got, "input.0.author"); author.Exists() {
 			t.Fatalf("input.0.author was not stripped; got=%s", author.String())
 		}
-		if recipient := gjson.GetBytes(got, "input.0.recipient"); recipient.Exists() {
+		if recipient := ojson.GetBytesNoCopy(got, "input.0.recipient"); recipient.Exists() {
 			t.Fatalf("input.0.recipient was not stripped; got=%s", recipient.String())
 		}
-		if passthrough := gjson.GetBytes(got, "input.0.internal_chat_message_metadata_passthrough"); passthrough.Exists() {
+		if passthrough := ojson.GetBytesNoCopy(got, "input.0.internal_chat_message_metadata_passthrough"); passthrough.Exists() {
 			t.Fatalf("input.0.internal_chat_message_metadata_passthrough was not stripped; got=%s", passthrough.String())
 		}
 	})
@@ -835,7 +857,7 @@ func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 			t.Parallel()
 			headers := http.Header{"User-Agent": []string{tt.userAgent}}
 			got := RewriteCodexMultiAgentV2Input(context.Background(), headers, payload, tt.cfg)
-			if rewritten := gjson.GetBytes(got, "input.0.type").String() == "message"; rewritten != tt.want {
+			if rewritten := ojson.GetBytesNoCopy(got, "input.0.type").String() == "message"; rewritten != tt.want {
 				t.Fatalf("rewritten = %v, want %v; payload=%s", rewritten, tt.want, got)
 			}
 		})
@@ -884,10 +906,10 @@ func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
 	for _, tt := range translations {
 		t.Run(tt.name, func(t *testing.T) {
 			got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, tt.to, tt.model, payload, false)
-			if value := gjson.GetBytes(got, tt.path).String(); value != tt.want {
+			if value := ojson.GetBytesNoCopy(got, tt.path).String(); value != tt.want {
 				t.Fatalf("%s = %q, want %q; output=%s", tt.path, value, tt.want, got)
 			}
-			if boundary := gjson.GetBytes(got, tt.boundaryPath).String(); boundary != tt.wantBoundary {
+			if boundary := ojson.GetBytes(got, tt.boundaryPath).String(); boundary != tt.wantBoundary {
 				t.Fatalf("%s = %q, want %q; output=%s", tt.boundaryPath, boundary, tt.wantBoundary, got)
 			}
 		})
@@ -896,34 +918,34 @@ func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
 	t.Run("opaque content stays fail closed", func(t *testing.T) {
 		opaque := []byte(`{"model":"chat-model","input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"gAAAAABopaque"}]}]}`)
 		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", opaque, false)
-		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
+		if count := ojson.GetBytes(got, "messages.#").Int(); count != 0 {
 			t.Fatalf("opaque agent_message was translated: %s", got)
 		}
 	})
 
 	t.Run("disabled optimization", func(t *testing.T) {
 		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", payload, false)
-		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
+		if count := ojson.GetBytesNoCopy(got, "messages.#").Int(); count != 0 {
 			t.Fatalf("disabled optimization translated agent_message; output=%s", got)
 		}
 	})
 	t.Run("unrelated client", func(t *testing.T) {
 		headers := http.Header{"User-Agent": []string{"curl/8.7.1"}}
 		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), headers, enabledCfg, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", payload, false)
-		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
+		if count := ojson.GetBytesNoCopy(got, "messages.#").Int(); count != 0 {
 			t.Fatalf("unrelated client agent_message was translated; output=%s", got)
 		}
 	})
 	t.Run("non-Responses source", func(t *testing.T) {
 		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAI, "test-model", payload, false)
-		if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "agent_message" {
+		if messageType := ojson.GetBytesNoCopy(got, "input.0.type").String(); messageType != "agent_message" {
 			t.Fatalf("non-Responses source changed agent_message; output=%s", got)
 		}
 	})
 	for _, target := range []sdktranslator.Format{sdktranslator.FormatCodex, sdktranslator.FormatOpenAIResponse} {
 		t.Run("excluded target "+target.String(), func(t *testing.T) {
 			got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, target, "test-model", payload, false)
-			if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "agent_message" {
+			if messageType := ojson.GetBytesNoCopy(got, "input.0.type").String(); messageType != "agent_message" {
 				t.Fatalf("target %s changed agent_message; output=%s", target, got)
 			}
 		})
@@ -1012,7 +1034,7 @@ func TestCodexMultiAgentMessageToolPathsRequireConfirmedNamespaces(t *testing.T)
 			]}
 		]}]
 	}`)
-	got := codexMultiAgentMessageToolPaths(payload)
+	got := codexCollaborationMessageToolPathsDoc(ojson.NewDoc(payload))
 	want := []string{
 		"tools.0.tools.0", "tools.0.tools.1", "tools.0.tools.2",
 		"tools.1.tools.0.tools.0",
@@ -1035,17 +1057,60 @@ func TestRewriteCodexMultiAgentMessageEncryptionDeletesOnlyBooleanTrue(t *testin
 		{"type":"function","name":"followup_task","parameters":{"properties":{"message":{"encrypted":1}}}}
 	]}]}`)
 	got := rewriteCodexMultiAgentMessageEncryption(payload)
-	if marker := gjson.GetBytes(got, "tools.0.tools.0.parameters.properties.message.encrypted"); marker.Exists() {
+	if marker := ojson.GetBytes(got, "tools.0.tools.0.parameters.properties.message.encrypted"); marker.Exists() {
 		t.Fatalf("boolean true marker was preserved: %s", got)
 	}
-	for index, wantRaw := range []string{"false", `"true"`, "null", "1"} {
-		path := fmt.Sprintf("tools.0.tools.%d.parameters.properties.message.encrypted", index+1)
-		if marker := gjson.GetBytes(got, path); marker.Raw != wantRaw {
-			t.Fatalf("%s = %q, want %q; payload=%s", path, marker.Raw, wantRaw, got)
+}
+
+func TestRemoveCodexCollaborationMessageEncryptionAllTools(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{
+		"tools":[
+			{"type":"namespace","name":"collaboration","tools":[
+				{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+				{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}},
+				{"type":"function","name":"followup_task","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}
+			]}
+		]
+	}`)
+	paths := codexCollaborationMessageToolPathsDoc(ojson.NewDoc(payload))
+	got := removeCodexCollaborationMessageEncryption(payload, paths)
+
+	for _, toolPath := range []string{
+		"tools.0.tools.0",
+		"tools.0.tools.1",
+		"tools.0.tools.2",
+	} {
+		if encrypted := ojson.GetBytesNoCopy(got, toolPath+".parameters.properties.message.encrypted"); encrypted.Exists() {
+			t.Fatalf("%s.parameters.properties.message.encrypted was not removed: %s", toolPath, encrypted.Raw)
+		}
+		if msgType := ojson.GetBytesNoCopy(got, toolPath+".parameters.properties.message.type").String(); msgType != "string" {
+			t.Fatalf("%s.parameters.properties.message.type changed: %q", toolPath, msgType)
 		}
 	}
-	if encrypted := gjson.GetBytes(got, "tools.0.tools.0.parameters.properties.data.encrypted").String(); encrypted != "keep" {
-		t.Fatalf("unrelated encrypted field changed: %q", encrypted)
+}
+
+func TestRemoveCodexCollaborationMessageEncryptionPreservesUnrelatedEncryptedFields(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{
+		"tools":[
+			{"type":"function","name":"send_message","parameters":{"properties":{"message":{"type":"string","encrypted":true},"data":{"encrypted":"keep-me"}}}},
+			{"type":"function","name":"unrelated_tool","parameters":{"properties":{"message":{"encrypted":true}}}}
+		]
+	}`)
+	paths := codexCollaborationMessageToolPathsDoc(ojson.NewDoc(payload))
+	got := removeCodexCollaborationMessageEncryption(payload, paths)
+
+	if encrypted := ojson.GetBytesNoCopy(got, "tools.0.parameters.properties.message.encrypted"); encrypted.Exists() {
+		t.Fatalf("send_message message.encrypted was not removed: %s", encrypted.Raw)
+	}
+	if dataEncrypted := ojson.GetBytesNoCopy(got, "tools.0.parameters.properties.data.encrypted").String(); dataEncrypted != "keep-me" {
+		t.Fatalf("unrelated data.encrypted was changed: %q", dataEncrypted)
+	}
+	if unrelatedEncrypted := ojson.GetBytesNoCopy(got, "tools.1.parameters.properties.message.encrypted"); !unrelatedEncrypted.Exists() {
+		t.Fatalf("unrelated tool message.encrypted was removed: %s", got)
 	}
 }
 
@@ -1068,7 +1133,7 @@ func TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionWithoutSpawnAgent(t *t
 		t.Fatal("namespace was unexpectedly optimized without spawn_agent")
 	}
 	for _, path := range []string{"tools.0.tools.0", "tools.0.tools.1"} {
-		if encrypted := gjson.GetBytes(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
+		if encrypted := ojson.GetBytesNoCopy(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
 			t.Fatalf("%s.parameters.properties.message.encrypted was not removed: %s", path, encrypted.Raw)
 		}
 	}
@@ -1092,7 +1157,7 @@ func TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionInAdditionalTools(t *t
 	got, _ := OptimizeCodexMultiAgentV2Request(context.Background(), headers, payload, cfg)
 
 	for _, path := range []string{"input.0.tools.0.tools.0", "input.0.tools.0.tools.1"} {
-		if encrypted := gjson.GetBytes(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
+		if encrypted := ojson.GetBytesNoCopy(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
 			t.Fatalf("%s.parameters.properties.message.encrypted was not removed: %s", path, encrypted.Raw)
 		}
 	}
@@ -1118,11 +1183,11 @@ func TestOptimizeCodexMultiAgentV2RequestRemovesEncryptionFromAllThreeToolsWithS
 		t.Fatal("collaboration namespace was not optimized with spawn_agent present")
 	}
 	for _, path := range []string{"tools.0.tools.0", "tools.0.tools.1", "tools.0.tools.2"} {
-		if encrypted := gjson.GetBytes(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
+		if encrypted := ojson.GetBytesNoCopy(got, path+".parameters.properties.message.encrypted"); encrypted.Exists() {
 			t.Fatalf("%s.parameters.properties.message.encrypted was not removed: %s", path, encrypted.Raw)
 		}
 	}
-	if namespace := gjson.GetBytes(got, "tools.0.name").String(); namespace != codexOptimizedCollaborationNamespace {
+	if namespace := ojson.GetBytesNoCopy(got, "tools.0.name").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("namespace = %q, want %q", namespace, codexOptimizedCollaborationNamespace)
 	}
 }

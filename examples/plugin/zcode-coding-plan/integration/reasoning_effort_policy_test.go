@@ -3,14 +3,13 @@ package integration
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func TestReasoningEffortPolicyThreeProtocols(t *testing.T) {
@@ -46,10 +45,10 @@ func TestReasoningEffortPolicyThreeProtocols(t *testing.T) {
 						for _, requested := range inputs {
 							t.Run(fmt.Sprintf("%s/%s/%s/stream=%t", model, tc.route, requested, stream), func(t *testing.T) {
 								body := []byte(tc.body)
-								body, _ = sjson.SetBytes(body, "model", model)
-								body, _ = sjson.SetBytes(body, "stream", stream)
+								body, _ = ojson.SetBytes(body, "model", model)
+								body, _ = ojson.SetBytes(body, "stream", stream)
 								if requested != "" {
-									body, _ = sjson.SetBytes(body, tc.effortPath, requested)
+									body, _ = ojson.SetBytes(body, tc.effortPath, requested)
 								}
 								recorder := httptest.NewRecorder()
 								f.router.ServeHTTP(recorder, httptest.NewRequest("POST", tc.route, strings.NewReader(string(body))))
@@ -63,7 +62,7 @@ func TestReasoningEffortPolicyThreeProtocols(t *testing.T) {
 								f.transport.lock.Lock()
 								wire := f.transport.captured[len(f.transport.captured)-1]
 								f.transport.lock.Unlock()
-								if gjson.GetBytes(wire, "reasoning_effort").String() != want || gjson.GetBytes(wire, "output_config.effort").Exists() || gjson.GetBytes(wire, "reasoning.effort").Exists() {
+								if ojson.GetBytes(wire, "reasoning_effort").String() != want || ojson.GetBytes(wire, "output_config.effort").Exists() || ojson.GetBytes(wire, "reasoning.effort").Exists() {
 									t.Fatalf("unexpected provider effort, want %q: %s", want, wire)
 								}
 								select {

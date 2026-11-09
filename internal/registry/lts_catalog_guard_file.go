@@ -4,10 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // ltsGuardModelsTierKeys mirrors the codex tier JSON keys of staticModelsJSON
@@ -56,7 +54,7 @@ func mergeGuardFileCandidate(candidate, embeddedSource []byte, catalogName strin
 				// codex-free intentionally omits Daybreak Blue); nothing to merge.
 				continue
 			}
-			next, err := sjson.SetRawBytes(out, sectionKey+".-1", entryRaw)
+			next, err := ojson.SetRawBytes(out, sectionKey+".-1", entryRaw)
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: merge guard entry %s into %s: %w", catalogName, guardID, sectionKey, err)
 			}
@@ -68,7 +66,7 @@ func mergeGuardFileCandidate(candidate, embeddedSource []byte, catalogName strin
 }
 
 func fileSectionHasID(doc []byte, sectionKey, idField, id string) bool {
-	section := gjson.GetBytes(doc, sectionKey)
+	section := ojson.GetBytes(doc, sectionKey)
 	if !section.IsArray() {
 		return false
 	}
@@ -81,7 +79,7 @@ func fileSectionHasID(doc []byte, sectionKey, idField, id string) bool {
 }
 
 func embeddedFileSectionEntryRaw(doc []byte, sectionKey, idField, id string) []byte {
-	section := gjson.GetBytes(doc, sectionKey)
+	section := ojson.GetBytes(doc, sectionKey)
 	if !section.IsArray() {
 		return nil
 	}

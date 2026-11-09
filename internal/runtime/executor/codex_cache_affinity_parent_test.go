@@ -6,10 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func TestCodexCacheAffinityParentHeaders(t *testing.T) {
@@ -72,7 +71,10 @@ func TestCodexCacheAffinityParentHeaderAdoption(t *testing.T) {
 				childBody = []byte(strings.Replace(string(childBody), "unique task", "different task", 1))
 			}
 			if tt.explicit {
-				childBody, _ = sjson.SetBytes(childBody, "prompt_cache_key", "client-cache-key")
+				var errSet error
+				if childBody, errSet = ojson.SetBytes(childBody, "prompt_cache_key", "client-cache-key"); errSet != nil {
+					t.Fatalf("set explicit cache key: %v", errSet)
+				}
 			}
 			caller := "caller"
 			if tt.otherCaller {
@@ -94,10 +96,10 @@ func TestCodexCacheAffinityParentHeaderAdoption(t *testing.T) {
 				t.Fatalf("inherited parent cache group = %v, want %v", inherited, wantInherited)
 			}
 			if tt.explicit {
-				if childState.affinity != nil || gjson.GetBytes(body, "prompt_cache_key").String() != "client-cache-key" {
+				if childState.affinity != nil || ojson.GetBytes(body, "prompt_cache_key").String() != "client-cache-key" {
 					t.Fatal("explicit cache key entered inferred parent routing")
 				}
-			} else if gjson.GetBytes(body, "prompt_cache_key").Exists() {
+			} else if ojson.GetBytes(body, "prompt_cache_key").Exists() {
 				t.Fatal("parent inheritance synthesized a prompt cache key")
 			}
 			if wantInherited && (childState.affinity == nil || !childState.affinity.adopted) {

@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,7 +12,6 @@ import (
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestSubscriptionAdapterDelegationRequestContract(t *testing.T) {
@@ -41,7 +41,7 @@ func TestSubscriptionAdapterDelegationRequestContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			rolePath := "messages.0.role"
-			if gjson.GetBytes(prepared.req.Payload, rolePath).String() != "user" || !strings.Contains(string(prepared.req.Payload), "plaintext subscription task") {
+			if ojson.GetBytes(prepared.req.Payload, rolePath).String() != "user" || !strings.Contains(string(prepared.req.Payload), "plaintext subscription task") {
 				t.Fatalf("subscription task changed: %s", prepared.req.Payload)
 			}
 		})

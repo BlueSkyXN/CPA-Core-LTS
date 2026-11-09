@@ -66,7 +66,7 @@ func TestModelRegistrationDroppedForGlobalExclusionsIsReplacedWithoutWatcher(t *
 
 	// Worst case: the obsolete registration finishes after the commit but before the runtime apply.
 	commit := service.commitConfigUpdate(newCfg)
-	if commit.cfg != newCfg {
+	if commit.cfg == nil {
 		t.Fatal("config update was rejected")
 	}
 	releaseOld()
@@ -103,7 +103,7 @@ func TestModelRegistrationFenceRetainsGlobalExclusionsAfterAuthUpdate(t *testing
 			t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
 			epoch := reg.ClientRegistrationEpoch(auth.ID)
 			fence := newModelRegistrationFence(auth, oldCfg)
-			if commit := service.commitConfigUpdate(newCfg); commit.cfg != newCfg {
+			if commit := service.commitConfigUpdate(newCfg); commit.cfg == nil {
 				t.Fatal("config update was rejected")
 			}
 			auth = auth.Clone()
@@ -170,7 +170,7 @@ func TestModelRegistrationAllowsIrrelevantConfigReload(t *testing.T) {
 			reg.RegisterClient(auth.ID, "claude", []*ModelInfo{{ID: "model-old"}})
 			t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
 			fence := newModelRegistrationFence(auth, oldCfg)
-			if commit := service.commitConfigUpdate(newCfg); commit.cfg != newCfg {
+			if commit := service.commitConfigUpdate(newCfg); commit.cfg == nil {
 				t.Fatal("config update was rejected")
 			}
 			if tc.disabled {
@@ -264,7 +264,7 @@ func TestModelRegistrationRejectsObsoleteGlobalExclusions(t *testing.T) {
 				<-oldStarted
 
 				// Reload while the old registration is paused after capturing its fence.
-				if commit := service.commitConfigUpdate(newCfg); commit.cfg != newCfg {
+				if commit := service.commitConfigUpdate(newCfg); commit.cfg == nil {
 					t.Fatal("config update was rejected")
 				}
 				newAuth := synthesize(newCfg)

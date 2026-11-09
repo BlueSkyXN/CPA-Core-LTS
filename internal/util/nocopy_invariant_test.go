@@ -61,7 +61,7 @@ func forEachSourceFile(t *testing.T, root string, visit func(rel string, data []
 // TestNoInPlaceSJSONWrites protects the invariant that request payload buffers
 // stay immutable for their whole lifetime.
 //
-// GetGJSONBytesNoCopy and ParseGJSONBytesNoCopy hand out gjson.Result values
+// GetGJSONBytesNoCopy and ParseGJSONBytesNoCopy hand out ojson.Result values
 // whose Raw and Str alias the caller's []byte. Go strings must never change,
 // so any in-place mutation of that buffer turns already-derived results into
 // silently wrong data: re-parsing sees the new bytes, and strings that were
@@ -108,17 +108,20 @@ type reviewedInPlaceByteWrite struct {
 }
 
 var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
-	"internal/usage/query.go":                               {1, "copies immutable RequestDetail structs into a query-local fixed array; no payload bytes or no-copy GJSON backing buffers are overwritten"},
-	"internal/translator/common/apply_patch_responses.go":   {1, "shifts [][]byte item references in a private output slice; no byte of any JSON payload is rewritten"},
-	"internal/translator/common/vertex_partial_args.go":     {1, "shifts []string object keys to insert a key; no byte of any payload is rewritten"},
-	"internal/runtime/executor/claude_signing.go":           {2, "writes CCH digits into bytes.Clone(body); the caller's body is never touched"},
-	"internal/runtime/executor/claude_executor_cloaking.go": {1, "shifts []string headers to prepend a block; no byte of any payload is rewritten"},
-	"internal/runtime/executor/claude_executor_request.go":  {3, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
-	"internal/runtime/executor/helps/claude_mcp_alias.go":   {1, "copies an HMAC sum into a local fixed-size digest array"},
-	"internal/client/codex/live/tcp_proxy.go":               {1, "copies header and payload into a freshly allocated frame"},
-	"internal/home/client.go":                               {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
-	"internal/pluginstore/auth.go":                          {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},
-	"sdk/cliproxy/flowcontrol/engine.go":                    {1, "shifts []*waiter to remove a queue entry; elements are internal queue records, never payload buffers"},
+	"internal/usage/query.go":                                       {1, "copies immutable RequestDetail structs into a query-local fixed array; no payload bytes or no-copy GJSON backing buffers are overwritten"},
+	"internal/translator/common/apply_patch_responses.go":           {1, "shifts [][]byte item references in a private output slice; no byte of any JSON payload is rewritten"},
+	"internal/translator/common/vertex_partial_args.go":             {1, "shifts []string object keys to insert a key; no byte of any payload is rewritten"},
+	"internal/runtime/executor/claude_signing.go":                   {2, "writes CCH digits into bytes.Clone(body); the caller's body is never touched"},
+	"internal/runtime/executor/claude_executor_cloaking.go":         {4, "shifts []string headers to prepend a block, or copies streamed tokens into private scanner/quote scratch buffers; no byte of any payload is rewritten"},
+	"internal/runtime/executor/claude_executor_request.go":          {3, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
+	"internal/runtime/executor/xai_executor_request.go":             {5, "copies streamed tokens into private scanner/quote scratch buffers; no byte of any payload is rewritten"},
+	"internal/runtime/executor/helps/claude_credential_identity.go": {1, "copies key bytes into a local stack-allocated quote array for json.Unmarshal"},
+	"internal/runtime/executor/helps/claude_mcp_alias.go":           {1, "copies an HMAC sum into a local fixed-size digest array"},
+	"internal/client/codex/live/tcp_proxy.go":                       {1, "copies header and payload into a freshly allocated frame"},
+	"internal/kvstore/bolt_store.go":                                {1, "writes an envelope header into a freshly allocated make([]byte) buffer before copying the value"},
+	"internal/home/client.go":                                       {1, "zeroes a secret buffer after json.Unmarshal has copied every value out"},
+	"internal/pluginstore/auth.go":                                  {1, "zeroes a locally built credential buffer after base64 encoding copied it out"},
+	"sdk/cliproxy/flowcontrol/engine.go":                            {1, "shifts []*waiter to remove a queue entry; elements are internal queue records, never payload buffers"},
 }
 
 // TestInPlaceByteWritesAreReviewed keeps the set of in-place byte writes small

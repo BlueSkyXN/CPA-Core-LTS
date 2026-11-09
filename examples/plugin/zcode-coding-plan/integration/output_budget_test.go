@@ -2,12 +2,11 @@ package integration
 
 import (
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestOutputTokenBudget(t *testing.T) {
@@ -45,7 +44,7 @@ func TestOutputTokenBudget(t *testing.T) {
 						t.Fatal("upstream request missing")
 					}
 					wire := f.transport.captured[len(f.transport.captured)-1]
-					if got := gjson.GetBytes(wire, "max_tokens").Int(); got != tc.want {
+					if got := ojson.GetBytes(wire, "max_tokens").Int(); got != tc.want {
 						t.Fatalf("upstream max_tokens = %d, want %d", got, tc.want)
 					}
 				})

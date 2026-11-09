@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,7 +11,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func scopedPayloadModel() config.PayloadModelRule {
@@ -64,10 +64,10 @@ func TestPayloadExecutionScopeAllRuleKinds(t *testing.T) {
 						t.Fatal("unmatched rule changed payload or tracking")
 					}
 				} else if section == "filter" {
-					if gjson.GetBytes(out, "service_tier").Exists() || !touched["service_tier"] {
+					if ojson.GetBytes(out, "service_tier").Exists() || !touched["service_tier"] {
 						t.Fatal("matching filter was not applied")
 					}
-				} else if gjson.GetBytes(out, "service_tier").String() != "flex" || !touched["service_tier"] {
+				} else if ojson.GetBytes(out, "service_tier").String() != "flex" || !touched["service_tier"] {
 					t.Fatal("matching rule was not applied")
 				}
 			})
@@ -86,10 +86,10 @@ func TestPayloadFinalizerSelectedAuthOverridesUntrustedHints(t *testing.T) {
 		if kind == "apikey" {
 			want = "flex"
 		}
-		if got := gjson.GetBytes(out, "service_tier").String(); got != want {
+		if got := ojson.GetBytes(out, "service_tier").String(); got != want {
 			t.Fatalf("kind=%q tier=%q want=%q", kind, got, want)
 		}
-		if gjson.GetBytes(payload, "service_tier").String() != "priority" {
+		if ojson.GetBytes(payload, "service_tier").String() != "priority" {
 			t.Fatal("attempt leaked tier into original request")
 		}
 	}
@@ -105,14 +105,14 @@ func TestPayloadExecutionScopePreservesRuleOrderAndLegacy(t *testing.T) {
 	}}}
 	body := []byte(`{"model":"scope-model"}`)
 	out := ApplyPayloadConfigWithRequest(cfg, "scope-model", "codex", "responses", "", body, body, "alias", "/v1/responses", nil, "apikey")
-	if gjson.GetBytes(out, "audit").String() != "matched-after-override" {
+	if ojson.GetBytes(out, "audit").String() != "matched-after-override" {
 		t.Fatal("later rule did not see earlier override")
 	}
 	cfg.Payload.Override = cfg.Payload.Override[:1]
 	cfg.Payload.Override[0].Models[0].AuthKind = ""
 	cfg.Payload.Override[0].Models[0].RequestPaths = nil
 	out = ApplyPayloadConfigWithRequest(cfg, "scope-model", "codex", "responses", "", body, body, "alias", "", nil)
-	if gjson.GetBytes(out, "service_tier").String() != "flex" {
+	if ojson.GetBytes(out, "service_tier").String() != "flex" {
 		t.Fatal("legacy rule stopped matching")
 	}
 	for _, invalid := range []config.PayloadModelRule{

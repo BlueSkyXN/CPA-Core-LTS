@@ -2,9 +2,10 @@ package helps
 
 import (
 	"bytes"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"github.com/tidwall/gjson"
 )
 
 var responseAccessProgramsMarker = []byte(`"access_programs"`)
@@ -15,11 +16,11 @@ func extractResponseCyberProgram(payload []byte) string {
 	}
 	payload = bytes.TrimSpace(payload)
 	payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
-	if !gjson.ValidBytes(payload) {
+	if !ojson.ValidBytes(payload) {
 		return ""
 	}
-	root := gjson.ParseBytes(payload)
-	if !root.IsObject() || (root.Get("error").Exists() && root.Get("error").Type != gjson.Null) {
+	root := util.ParseGJSONBytesNoCopy(payload)
+	if !root.IsObject() || (root.Get("error").Exists() && root.Get("error").Type != ojson.Null) {
 		return ""
 	}
 	if event := root.Get("type").String(); event != "" {
@@ -38,11 +39,11 @@ func extractResponseCyberProgram(payload []byte) string {
 	}
 	// The Responses API explicitly reports null for standard safeguards;
 	// an absent field, including on legacy responses, is not that evidence.
-	if programs.Type == gjson.Null {
+	if programs.Type == ojson.Null {
 		return "standard"
 	}
 	cyber := programs.Get("cyber")
-	if !programs.IsObject() || cyber.Type != gjson.String || cyber.String() == "" {
+	if !programs.IsObject() || cyber.Type != ojson.String || cyber.String() == "" {
 		return "unknown"
 	}
 	program := usage.CanonicalResponseCyberProgram(cyber.String())

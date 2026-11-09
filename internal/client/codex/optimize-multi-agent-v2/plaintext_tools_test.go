@@ -3,11 +3,11 @@ package multiagentv2
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestPreparePlaintextToolsKeepsClientEligibility(t *testing.T) {
@@ -49,7 +49,7 @@ func TestPlaintextToolProvenanceRestoresOnlyConfirmedCalls(t *testing.T) {
 		{"type":"function_call","name":"collaboration__send_message","arguments":"{}"}
 	]}}`)
 	got := proof.Restore(response)
-	for index, item := range gjson.GetBytes(got, "response.output").Array() {
+	for index, item := range ojson.GetBytes(got, "response.output").Array() {
 		marker := item.Get("encrypted_function_args")
 		switch index {
 		case 0:
@@ -94,16 +94,16 @@ func TestPlaintextToolProvenanceTurnInheritance(t *testing.T) {
 	cached := CapturePlaintextToolProvenance(after, after)
 	response := []byte(`{"output":[{"type":"function_call","namespace":"collaboration","name":"send_message","arguments":"{}"},{"type":"function_call","namespace":"collaboration","name":"followup_task","arguments":"{}"}]}`)
 	inherited := cached.InheritTurn(first, []byte(`{"input":[]}`))
-	if gjson.GetBytes(inherited.Restore(response), "output.1.encrypted_function_args").Raw != "[]" {
+	if ojson.GetBytes(inherited.Restore(response), "output.1.encrypted_function_args").Raw != "[]" {
 		t.Fatal("omitted declarations lost the accepted prior tool contract")
 	}
 	override := []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"send_message","parameters":{"properties":{"message":{"encrypted":false}}}}]}]}]}`)
 	next := CapturePlaintextToolProvenance(override, override).InheritTurn(first, override)
 	got := next.Restore(response)
-	if gjson.GetBytes(got, "output.0.encrypted_function_args").Exists() || gjson.GetBytes(got, "output.1.encrypted_function_args").Raw != "[]" {
+	if ojson.GetBytes(got, "output.0.encrypted_function_args").Exists() || ojson.GetBytes(got, "output.1.encrypted_function_args").Raw != "[]" {
 		t.Fatalf("inline override did not revoke exactly its own identity: %s", got)
 	}
-	if gjson.GetBytes(first.Restore(response), "output.0.encrypted_function_args").Raw != "[]" {
+	if ojson.GetBytes(first.Restore(response), "output.0.encrypted_function_args").Raw != "[]" {
 		t.Fatal("the next turn mutated a prior request snapshot")
 	}
 	cleared := cached.InheritTurn(first, []byte(`{"tools":[]}`))

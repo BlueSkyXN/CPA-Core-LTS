@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	auth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // The server waits for all explicit creates before rejecting one. This makes
@@ -45,7 +45,7 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 						t.Error(e)
 						return ""
 					}
-					return gjson.GetBytes(p, "prompt_cache_key").String()
+					return ojson.GetBytes(p, "prompt_cache_key").String()
 				}
 				write := func(kind, id, key string) {
 					p := fmt.Sprintf(`{"type":%q,"response":{"id":%q,"prompt_cache_key":%q,"output":[{"type":"function_call","name":"send_message","namespace":"collaboration","call_id":"call-1","arguments":"{}"}],"error":{"type":"invalid_request_error","message":"rejected"}}}`, kind, id, key)
@@ -104,8 +104,8 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 					terminated = true
 					continue
 				}
-				kind := gjson.GetBytes(chunk.Payload, "type").String()
-				id := gjson.GetBytes(chunk.Payload, "response.id").String()
+				kind := ojson.GetBytes(chunk.Payload, "type").String()
+				id := ojson.GetBytes(chunk.Payload, "response.id").String()
 				if !sent && id == "first" && ((activeFailure && kind == "response.created") || (!activeFailure && kind == "response.completed")) {
 					sent = true
 					if !activeFailure {
@@ -122,16 +122,16 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 					if activeFailure {
 						want = "first-key"
 					}
-					if got := gjson.GetBytes(chunk.Payload, "response.prompt_cache_key").String(); got != want {
+					if got := ojson.GetBytes(chunk.Payload, "response.prompt_cache_key").String(); got != want {
 						t.Errorf("failure metadata = %q, want %q", got, want)
 					}
 				}
 				if kind == "response.completed" && id == "good" {
 					completed = true
-					if marker := gjson.GetBytes(chunk.Payload, "response.output.0.encrypted_function_args").Raw; marker != "[]" {
+					if marker := ojson.GetBytes(chunk.Payload, "response.output.0.encrypted_function_args").Raw; marker != "[]" {
 						t.Errorf("rejected create revoked the named parent's plaintext tools: marker=%q", marker)
 					}
-					if got := gjson.GetBytes(chunk.Payload, "response.prompt_cache_key").String(); got != "good-key" {
+					if got := ojson.GetBytes(chunk.Payload, "response.prompt_cache_key").String(); got != "good-key" {
 						t.Errorf("success consumed another create's metadata: %q", got)
 					}
 					cancel()
@@ -232,8 +232,8 @@ func TestCodexDuplexLaterInvalidSignatureClearsReplay(t *testing.T) {
 					if chunk.Err != nil {
 						t.Fatal(chunk.Err)
 					}
-					event := gjson.GetBytes(chunk.Payload, "type").String()
-					id := gjson.GetBytes(chunk.Payload, "response.id").String()
+					event := ojson.GetBytes(chunk.Payload, "type").String()
+					id := ojson.GetBytes(chunk.Payload, "response.id").String()
 					if event == "response.completed" && id == "first" {
 						input <- core.WebsocketInput{Payload: rejected}
 					}

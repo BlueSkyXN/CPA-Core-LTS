@@ -3,11 +3,11 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
 )
 
 const readerResultContent = `[{"url":"https://example.com/doc","content":"Full page\n第二行","title":"Reference","metadata":{"language":"zh"}}]`
@@ -29,14 +29,14 @@ func readerFixture(t *testing.T) ([]string, string) {
 	events := []string{`{"type":"message_start","message":{"type":"message","id":"reader","role":"assistant","content":[],"usage":{"input_tokens":11,"output_tokens":0}}}`}
 	for index, block := range blocks {
 		startBlock := block
-		if gjson.Get(block, "type").String() == "text" {
+		if ojson.Get(block, "type").String() == "text" {
 			startBlock = `{"type":"text","text":""}`
 		}
 		start, _ := json.Marshal(map[string]any{"type": "content_block_start", "index": index, "content_block": json.RawMessage(startBlock)})
 		stop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": index})
 		events = append(events, string(start))
 		if startBlock != block {
-			delta, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "text_delta", "text": gjson.Get(block, "text").String()}})
+			delta, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "text_delta", "text": ojson.Get(block, "text").String()}})
 			events = append(events, string(delta))
 		}
 		events = append(events, string(stop))
@@ -45,7 +45,7 @@ func readerFixture(t *testing.T) ([]string, string) {
 	return events, message
 }
 
-func assertReaderOutput(t *testing.T, output gjson.Result) gjson.Result {
+func assertReaderOutput(t *testing.T, output ojson.Result) ojson.Result {
 	t.Helper()
 	items := output.Array()
 	if len(items) != 4 {
@@ -68,7 +68,7 @@ func TestWebReaderResponsesStreamAndAggregate(t *testing.T) {
 	events, message := readerFixture(t)
 	state := &PluginResponseState{}
 	var param any = state
-	var completed gjson.Result
+	var completed ojson.Result
 	done := 0
 	for _, event := range events {
 		for _, frame := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "glm-5.3", nil, nil, []byte("data: "+event), &param) {
@@ -97,8 +97,8 @@ func TestWebReaderResponsesStreamAndAggregate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var p any = &PluginResponseState{}
 			out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "glm-5.3", nil, nil, []byte(tc.body), &p)
-			assertReaderOutput(t, gjson.GetBytes(out, "output"))
-			if gjson.GetBytes(out, "usage.total_tokens").Int() != 18 {
+			assertReaderOutput(t, ojson.GetBytes(out, "output"))
+			if ojson.GetBytes(out, "usage.total_tokens").Int() != 18 {
 				t.Fatal("aggregate usage lost")
 			}
 		})
@@ -109,7 +109,7 @@ func TestWebReaderResponsesHistoryAndContextCount(t *testing.T) {
 	_, message := readerFixture(t)
 	var param any = &PluginResponseState{}
 	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "glm-5.3", nil, nil, []byte(message), &param)
-	reader := assertReaderOutput(t, gjson.GetBytes(out, "output"))
+	reader := assertReaderOutput(t, ojson.GetBytes(out, "output"))
 	model := &registry.ModelInfo{ID: "glm-5.3", IsCompat: true, NativeCapabilities: &registry.NativeCapabilities{WebSearch: boolPtr(true), WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
 	request := responsesRequestFromItems(`{"type":"message","role":"user","content":"Read"}`, reader.Raw, `{"type":"message","role":"user","content":"Continue"}`)
 	replayed, err := ConvertOpenAIResponsesRequestToClaudeWithModelInfo("glm-5.3", request, false, model)
@@ -118,8 +118,8 @@ func TestWebReaderResponsesHistoryAndContextCount(t *testing.T) {
 	}
 	check := func(body []byte) {
 		t.Helper()
-		var use, result gjson.Result
-		for _, msg := range gjson.GetBytes(body, "messages").Array() {
+		var use, result ojson.Result
+		for _, msg := range ojson.GetBytes(body, "messages").Array() {
 			for _, block := range msg.Get("content").Array() {
 				switch block.Get("type").String() {
 				case "server_tool_use":
@@ -134,7 +134,7 @@ func TestWebReaderResponsesHistoryAndContextCount(t *testing.T) {
 		}
 	}
 	check(replayed)
-	countBody, err := AppendResponseOutputForTokenCount("glm-5.3", []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"Read"}]}`), []byte(gjson.GetBytes(out, "output").Raw), model)
+	countBody, err := AppendResponseOutputForTokenCount("glm-5.3", []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"Read"}]}`), []byte(ojson.GetBytes(out, "output").Raw), model)
 	if err != nil {
 		t.Fatal(err)
 	}

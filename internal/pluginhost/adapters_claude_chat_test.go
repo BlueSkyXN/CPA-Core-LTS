@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +11,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestAnthropicPluginChatStreamFrames(t *testing.T) {
@@ -47,9 +47,9 @@ func TestAnthropicPluginChatStreamFrames(t *testing.T) {
 						gotError = true
 						continue
 					}
-					thought += gjson.GetBytes(chunk.Payload, "choices.0.delta.reasoning_content").String()
-					text += gjson.GetBytes(chunk.Payload, "choices.0.delta.content").String()
-					if gjson.GetBytes(chunk.Payload, "choices.#").Int() == 0 && gjson.GetBytes(chunk.Payload, "usage.total_tokens").Int() == 10 {
+					thought += ojson.GetBytes(chunk.Payload, "choices.0.delta.reasoning_content").String()
+					text += ojson.GetBytes(chunk.Payload, "choices.0.delta.content").String()
+					if ojson.GetBytes(chunk.Payload, "choices.#").Int() == 0 && ojson.GetBytes(chunk.Payload, "usage.total_tokens").Int() == 10 {
 						trailing++
 					}
 				}
@@ -86,10 +86,10 @@ func TestAnthropicPluginChatContextWindowFinish(t *testing.T) {
 			streamErr = chunk.Err
 			continue
 		}
-		if reason := gjson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); reason != "" {
+		if reason := ojson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); reason != "" {
 			finish = reason
 		}
-		text += gjson.GetBytes(chunk.Payload, "choices.0.delta.content").String()
+		text += ojson.GetBytes(chunk.Payload, "choices.0.delta.content").String()
 	}
 	if streamErr != nil {
 		t.Fatalf("context-window stream rejected: %v", streamErr)

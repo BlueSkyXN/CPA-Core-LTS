@@ -1,12 +1,12 @@
 package executor
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestXAIResponsesDelegatedTaskKeepsUserRole(t *testing.T) {
@@ -16,7 +16,7 @@ func TestXAIResponsesDelegatedTaskKeepsUserRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message := gjson.GetBytes(prepared.body, "input.0")
+	message := ojson.GetBytes(prepared.body, "input.0")
 	if message.Get("type").String() != "message" || message.Get("role").String() != "user" || message.Get("content.0.type").String() != "input_text" {
 		t.Fatalf("delegated task must remain a user instruction: %s", message.Raw)
 	}

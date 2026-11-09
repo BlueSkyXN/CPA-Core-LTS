@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
@@ -170,6 +171,13 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
+func isOpenAIImageExecutionOptions(opts cliproxyexecutor.Options) bool {
+	return strings.EqualFold(strings.TrimSpace(opts.SourceFormat.String()), "openai-image")
+}
+
+// executeRequestUncontrolled is the LTS execution core driven by the Flow V3
+// Manager.Execute wrapper in flow_control.go; upstream's plain Execute entry
+// is replaced by that flow-aware wrapper.
 func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	var errPreflight error
 	opts, errPreflight = m.preflightCodexClientMetadata(providers, req, opts)
@@ -179,7 +187,7 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	ctx = m.withCodexRateLimitContinuityLifecycle(ctx)
@@ -290,7 +298,7 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
-	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
 	if m.HomeEnabled() {
@@ -367,8 +375,8 @@ func applyRequestAfterAuthInterceptorWithManager(m *Manager, ctx context.Context
 	})
 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
-		req.Payload = bytes.Clone(resp.Body)
-		opts.OriginalRequest = bytes.Clone(resp.Body)
+		req.Payload = resp.Body
+		opts.OriginalRequest = resp.Body
 	}
 	if path := strings.TrimSpace(resp.Path); path != "" && !resp.Terminate {
 		if errPath := cliproxyexecutor.ValidateRequestPathOverride(cliproxyexecutor.RequestPathFromMetadata(opts.Metadata), path); errPath != nil {
@@ -609,7 +617,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
 		execCtx = newUpstreamAttemptContext(execCtx)
 
-		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
 		if len(models) == 0 {
 			continue
 		}
@@ -769,6 +777,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
+			result.CompletedResponse = errExec == nil && !resp.Incomplete && isCompletedExecutionPayload(resp.Payload)
+			result.CredentialVersion = auth.CredentialVersion
+			result.RegistrationEpoch = auth.RegistrationEpoch
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -889,7 +900,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
 		execCtx = newUpstreamAttemptContext(execCtx)
 
-		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
 		if len(models) == 0 {
 			continue
 		}
@@ -1046,10 +1057,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
 				applyRequestScopedActionToResult(action, okAction, &result)
-				// Some Anthropic-compatible upstreams do not implement the
-				// count_tokens route and return a generic endpoint 404. Record
-				// the failure for hooks and metrics without suspending a model
-				// that remains usable through the messages endpoint.
+				// Some Anthropic-compatible upstreams and plugin executors do not
+				// implement count_tokens and return a generic endpoint 404 or an
+				// explicit 501 / unsupported-capability error. Record the failure
+				// for hooks and metrics without suspending a model that remains
+				// usable through the messages endpoint.
 				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
@@ -1296,7 +1308,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
 		// Home owns dispatched credential availability; only local selections need state filtering.
 		if selection == nil {
-			models = m.filterExecutionModels(auth, routeModel, models, pooled)
+			models = m.filterExecutionModelsForRequest(execCtx, auth, routeModel, models, pooled, pickOpts.Headers)
 		}
 		if selection != nil && aliasResult.ForceMapping && responseAlias != "" {
 			aliasResult.OriginalAlias = responseAlias
@@ -2437,4 +2449,224 @@ func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) 
 	}
 	ctx = logging.WithClientRequestMetadata(ctx, clientMeta)
 	return util.WithSessionID(ctx, clientMeta.SessionID)
+}
+
+// VerifyInference performs an operator-triggered, account-pinned inference verification
+// using an isolated session and minimal non-user prompt/token budget. It never falls back
+// to another credential and requires a completed response before marking InferenceVerified.
+func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth, error) {
+	if m == nil {
+		return nil, &Error{Code: "manager_unavailable", Message: "auth manager is not initialized", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, &Error{Code: "invalid_request", Message: "auth id is required", HTTPStatus: http.StatusBadRequest}
+	}
+	auth, ok := m.GetByID(id)
+	if !ok || auth == nil {
+		return nil, &Error{Code: "auth_not_found", Message: "credential not found", HTTPStatus: http.StatusNotFound}
+	}
+	if auth.Disabled || auth.Status == StatusDisabled {
+		return auth, &Error{Code: "auth_disabled", Message: "credential is disabled", HTTPStatus: http.StatusConflict}
+	}
+	if auth.RequiresSignIn {
+		return auth, &Error{Code: "sign_in_required", Message: "credential requires sign-in before inference verification", HTTPStatus: http.StatusConflict}
+	}
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	m.mu.RLock()
+	executor := m.executors[provider]
+	m.mu.RUnlock()
+	if executor == nil {
+		return auth, &Error{Code: "executor_not_found", Message: "executor not registered for provider", HTTPStatus: http.StatusBadRequest}
+	}
+	executor = executorForAuth(executor, auth)
+
+	routeModel := strings.TrimSpace(model)
+	if routeModel == "" {
+		if models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID); len(models) > 0 && models[0] != nil && strings.TrimSpace(models[0].ID) != "" {
+			routeModel = strings.TrimSpace(models[0].ID)
+		} else {
+			routeModel = "gpt-5"
+		}
+	}
+	verifyModel := routeModel
+	if candidates, _, _, _ := m.executionModelCandidatesWithAlias(auth, routeModel); len(candidates) > 0 && strings.TrimSpace(candidates[0]) != "" {
+		verifyModel = strings.TrimSpace(candidates[0])
+	}
+	stateModel := m.selectionModelKeyForAuth(auth, routeModel)
+	if stateModel == "" {
+		stateModel = canonicalModelKey(routeModel)
+	}
+
+	sessionID := fmt.Sprintf("verify-%s-%d", auth.ID, time.Now().UTC().UnixNano())
+	payload := []byte(fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}],"max_output_tokens":1,"store":false}`, verifyModel))
+	req := cliproxyexecutor.Request{
+		Model:   verifyModel,
+		Payload: payload,
+	}
+	opts := cliproxyexecutor.Options{
+		Stream:          true,
+		SourceFormat:    sdktranslator.FormatOpenAIResponse,
+		ResponseFormat:  sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: payload,
+		Headers:         http.Header{"X-Session-Id": {sessionID}},
+		Metadata:        map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID},
+	}
+
+	execCtx := newUpstreamAttemptContext(ctx)
+	execCtx = syncMetadataSessionToContext(execCtx, opts.Metadata)
+	executionSeq := m.nextExecutionSeq()
+	accessToken := authAccessTokenForRequest(execCtx, auth, opts.Headers)
+	credVersion := auth.CredentialVersion
+	regEpoch := auth.RegistrationEpoch
+
+	streamRes, errStream := executor.ExecuteStream(execCtx, auth, req, opts)
+	if errStream != nil {
+		rerr := resultErrorFromError(errStream)
+		if rerr != nil && rerr.HTTPStatus == http.StatusNotImplemented {
+			opts.Stream = false
+			resp, errExec := executor.Execute(execCtx, auth, req, opts)
+			rerrExec := resultErrorFromError(errExec)
+			if rerrExec != nil {
+				rerrExec.Message = sanitizeRenewalMessage(rerrExec.Message)
+			}
+			if errExec != nil {
+				m.MarkResult(execCtx, Result{
+					AuthID:            auth.ID,
+					Provider:          provider,
+					Model:             stateModel,
+					RouteModel:        routeModel,
+					Success:           false,
+					Error:             rerrExec,
+					RetryAfter:        retryAfterFromError(errExec),
+					CredentialScope:   isCredentialScopedError(errExec),
+					Options:           opts,
+					AccessToken:       accessToken,
+					CredentialVersion: credVersion,
+					RegistrationEpoch: regEpoch,
+					ExecutionSeq:      executionSeq,
+				})
+				updated, _ := m.GetByID(auth.ID)
+				return updated, errExec
+			}
+			if resp.Incomplete || !isCompletedExecutionPayload(resp.Payload) {
+				incompleteErr := &Error{Code: "incomplete_response", Message: "verification response did not complete", HTTPStatus: http.StatusBadGateway}
+				updated, _ := m.GetByID(auth.ID)
+				return updated, incompleteErr
+			}
+			m.MarkResult(execCtx, Result{
+				AuthID:            auth.ID,
+				Provider:          provider,
+				Model:             stateModel,
+				RouteModel:        routeModel,
+				Success:           true,
+				CompletedResponse: true,
+				Options:           opts,
+				AccessToken:       accessToken,
+				CredentialVersion: credVersion,
+				RegistrationEpoch: regEpoch,
+				ExecutionSeq:      executionSeq,
+			})
+			updated, okUpdated := m.GetByID(auth.ID)
+			if !okUpdated || updated == nil {
+				return nil, &Error{Code: "auth_not_found", Message: "credential was removed during verification", HTTPStatus: http.StatusConflict}
+			}
+			if updated.CredentialVersion != credVersion || updated.RegistrationEpoch != regEpoch || !updated.InferenceVerified {
+				return updated, &Error{Code: "credential_superseded", Message: "credential was replaced during verification; re-run verification for the new credential", HTTPStatus: http.StatusConflict}
+			}
+			return updated, nil
+		}
+		if rerr != nil {
+			rerr.Message = sanitizeRenewalMessage(rerr.Message)
+		}
+		m.MarkResult(execCtx, Result{
+			AuthID:            auth.ID,
+			Provider:          provider,
+			Model:             stateModel,
+			RouteModel:        routeModel,
+			Success:           false,
+			Error:             rerr,
+			RetryAfter:        retryAfterFromError(errStream),
+			CredentialScope:   isCredentialScopedError(errStream),
+			Options:           opts,
+			AccessToken:       accessToken,
+			CredentialVersion: credVersion,
+			RegistrationEpoch: regEpoch,
+			ExecutionSeq:      executionSeq,
+		})
+		updated, _ := m.GetByID(auth.ID)
+		return updated, errStream
+	}
+
+	var sawCompleted bool
+	var sawIncomplete bool
+	var chunkErr error
+	if streamRes != nil && streamRes.Chunks != nil {
+		for chunk := range streamRes.Chunks {
+			if chunk.Err != nil && chunkErr == nil {
+				chunkErr = chunk.Err
+			}
+			if chunk.Incomplete {
+				sawIncomplete = true
+			}
+			if len(chunk.Payload) > 0 {
+				comp, incomp := streamPayloadCompletionFlags(chunk.Payload)
+				if comp {
+					sawCompleted = true
+				}
+				if incomp {
+					sawIncomplete = true
+				}
+			}
+		}
+	}
+	if chunkErr != nil {
+		rerrChunk := resultErrorFromError(chunkErr)
+		if rerrChunk != nil {
+			rerrChunk.Message = sanitizeRenewalMessage(rerrChunk.Message)
+		}
+		m.MarkResult(execCtx, Result{
+			AuthID:            auth.ID,
+			Provider:          provider,
+			Model:             stateModel,
+			RouteModel:        routeModel,
+			Success:           false,
+			Error:             rerrChunk,
+			RetryAfter:        retryAfterFromError(chunkErr),
+			CredentialScope:   isCredentialScopedError(chunkErr),
+			Options:           opts,
+			AccessToken:       accessToken,
+			CredentialVersion: credVersion,
+			RegistrationEpoch: regEpoch,
+			ExecutionSeq:      executionSeq,
+		})
+		updated, _ := m.GetByID(auth.ID)
+		return updated, chunkErr
+	}
+	if !sawCompleted || sawIncomplete {
+		incompleteErr := &Error{Code: "incomplete_response", Message: "verification stream ended without a completed response", HTTPStatus: http.StatusBadGateway}
+		updated, _ := m.GetByID(auth.ID)
+		return updated, incompleteErr
+	}
+	m.MarkResult(execCtx, Result{
+		AuthID:            auth.ID,
+		Provider:          provider,
+		Model:             stateModel,
+		RouteModel:        routeModel,
+		Success:           true,
+		CompletedResponse: true,
+		Options:           opts,
+		AccessToken:       accessToken,
+		CredentialVersion: credVersion,
+		RegistrationEpoch: regEpoch,
+		ExecutionSeq:      executionSeq,
+	})
+	updated, okUpdated := m.GetByID(auth.ID)
+	if !okUpdated || updated == nil {
+		return nil, &Error{Code: "auth_not_found", Message: "credential was removed during verification", HTTPStatus: http.StatusConflict}
+	}
+	if updated.CredentialVersion != credVersion || updated.RegistrationEpoch != regEpoch || !updated.InferenceVerified {
+		return updated, &Error{Code: "credential_superseded", Message: "credential was replaced during verification; re-run verification for the new credential", HTTPStatus: http.StatusConflict}
+	}
+	return updated, nil
 }

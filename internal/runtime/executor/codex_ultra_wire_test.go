@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 type gpt56UltraCapturedRequest struct {
@@ -286,7 +286,7 @@ func newGPT56UltraHTTPServer(t *testing.T) (*httptest.Server, <-chan gpt56UltraC
 			_, _ = w.Write([]byte(`{"id":"resp_compact","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
 			return
 		}
-		model := gjson.GetBytes(body, "model").String()
+		model := ojson.GetBytes(body, "model").String()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":%q,\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", model)
 	}))
@@ -372,7 +372,7 @@ func waitForGPT56UltraWebsocketPayload(t *testing.T, captured <-chan []byte) []b
 
 func assertGPT56UltraWireEffort(t *testing.T, body []byte, want string) {
 	t.Helper()
-	if got := gjson.GetBytes(body, "reasoning.effort").String(); got != want {
+	if got := ojson.GetBytes(body, "reasoning.effort").String(); got != want {
 		t.Fatalf("reasoning.effort = %q, want %q; body=%s", got, want, body)
 	}
 }

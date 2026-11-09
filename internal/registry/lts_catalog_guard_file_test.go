@@ -2,15 +2,13 @@ package registry
 
 import (
 	"bytes"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func TestMergeLTSModelsCatalogFileRestoresMissingGuardTiers(t *testing.T) {
-	candidate, err := sjson.SetBytes(catalogWithoutBlue(t), "codex-pro.0.x_remote_marker", "keep-me")
+	candidate, err := ojson.SetBytes(catalogWithoutBlue(t), "codex-pro.0.x_remote_marker", "keep-me")
 	if err != nil {
 		t.Fatalf("mark remote entry: %v", err)
 	}
@@ -41,11 +39,11 @@ func TestMergeLTSModelsCatalogFilePartialTierKeepsRemoteEntry(t *testing.T) {
 	if len(remoteEntry) == 0 {
 		t.Fatal("embedded guard entry missing")
 	}
-	remoteEntry, err := sjson.SetBytes(remoteEntry, "description", "remote-authoritative")
+	remoteEntry, err := ojson.SetBytes(remoteEntry, "description", "remote-authoritative")
 	if err != nil {
 		t.Fatalf("customize remote entry: %v", err)
 	}
-	candidate, err = sjson.SetRawBytes(candidate, "codex-pro.-1", remoteEntry)
+	candidate, err = ojson.SetRawBytes(candidate, "codex-pro.-1", remoteEntry)
 	if err != nil {
 		t.Fatalf("append remote entry: %v", err)
 	}
@@ -58,7 +56,7 @@ func TestMergeLTSModelsCatalogFilePartialTierKeepsRemoteEntry(t *testing.T) {
 		t.Fatalf("merged entries = %v, want codex-team/codex-plus only", merged)
 	}
 	blue := 0
-	for _, entry := range gjson.GetBytes(out, "codex-pro").Array() {
+	for _, entry := range ojson.GetBytes(out, "codex-pro").Array() {
 		if entry.Get("id").String() == "gpt-daybreak-blue-latest" {
 			blue++
 			if entry.Get("description").String() != "remote-authoritative" {
@@ -95,7 +93,7 @@ func TestMergeLTSModelsCatalogFileRejectsInvalidJSON(t *testing.T) {
 }
 
 func TestMergeLTSCodexClientCatalogFileRestoresGuardSlug(t *testing.T) {
-	candidate, err := sjson.SetBytes(clientCatalogWithoutBlue(t), "models.0.x_remote_marker", "keep-me")
+	candidate, err := ojson.SetBytes(clientCatalogWithoutBlue(t), "models.0.x_remote_marker", "keep-me")
 	if err != nil {
 		t.Fatalf("mark remote entry: %v", err)
 	}
@@ -121,11 +119,11 @@ func TestMergeLTSCodexClientCatalogFileRemoteSlugWins(t *testing.T) {
 	if len(entry) == 0 {
 		t.Fatal("embedded guard entry missing")
 	}
-	entry, err := sjson.SetBytes(entry, "display_name", "Daybreak Blue (remote)")
+	entry, err := ojson.SetBytes(entry, "display_name", "Daybreak Blue (remote)")
 	if err != nil {
 		t.Fatalf("customize remote entry: %v", err)
 	}
-	candidate, err = sjson.SetRawBytes(candidate, "models.-1", entry)
+	candidate, err = ojson.SetRawBytes(candidate, "models.-1", entry)
 	if err != nil {
 		t.Fatalf("append remote entry: %v", err)
 	}
@@ -138,7 +136,7 @@ func TestMergeLTSCodexClientCatalogFileRemoteSlugWins(t *testing.T) {
 		t.Fatalf("merged entries = %v, want none", merged)
 	}
 	found := false
-	for _, model := range gjson.GetBytes(out, "models").Array() {
+	for _, model := range ojson.GetBytes(out, "models").Array() {
 		if model.Get("slug").String() == "gpt-daybreak-blue-latest" {
 			found = true
 			if model.Get("display_name").String() != "Daybreak Blue (remote)" {

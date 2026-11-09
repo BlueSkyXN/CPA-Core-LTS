@@ -1,9 +1,8 @@
 package openai
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"strings"
-
-	"github.com/tidwall/gjson"
 )
 
 // responsesWebsocketHasCompleteToolPairs is a final marker preflight. The
@@ -11,7 +10,7 @@ import (
 // must be stricter: an incomplete call/output pair cannot be safely recreated
 // after model-private reasoning and source execution state are discarded.
 func responsesWebsocketHasCompleteToolPairs(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
+	input := ojson.GetBytes(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -46,7 +45,7 @@ func responsesWebsocketHasCompleteToolPairs(payload []byte) bool {
 }
 
 func responsesWebsocketCanAttestContextReset(payload []byte) bool {
-	if strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
+	if strings.TrimSpace(ojson.GetBytes(payload, "previous_response_id").String()) != "" {
 		return false
 	}
 	return responsesWebsocketHasCompleteToolPairs(payload)

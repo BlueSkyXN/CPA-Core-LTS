@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestNativeMessagesSystemHistoryPassthrough(t *testing.T) {
@@ -72,7 +71,7 @@ func TestNativeMessagesSystemHistoryPassthrough(t *testing.T) {
 					if strings.Count(rec.Body.String(), "event: message_stop") != 1 {
 						t.Fatal("native stream terminal event lost or duplicated")
 					}
-				} else if gjson.GetBytes(rec.Body.Bytes(), "type").String() != "message" || gjson.GetBytes(rec.Body.Bytes(), "role").String() != "assistant" {
+				} else if ojson.GetBytes(rec.Body.Bytes(), "type").String() != "message" || ojson.GetBytes(rec.Body.Bytes(), "role").String() != "assistant" {
 					t.Fatal("native Messages response was translated")
 				}
 				f.checkUsage(t, false)

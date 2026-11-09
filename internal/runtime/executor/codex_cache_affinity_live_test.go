@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"os"
 	"strings"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/tidwall/gjson"
 )
 
 // Explicit build tag AND opt-in are required. This test spends upstream quota;
@@ -55,7 +55,7 @@ func TestCodexCacheAffinityLiveExperiment(t *testing.T) {
 			body := new(bytes.Buffer)
 			_, _ = body.ReadFrom(bodyReader)
 			bodyReader.Close()
-			h, k := req.Header.Get("Session-Id"), gjson.GetBytes(body.Bytes(), "prompt_cache_key").String()
+			h, k := req.Header.Get("Session-Id"), ojson.GetBytes(body.Bytes(), "prompt_cache_key").String()
 			if round > 0 {
 				if (group == "A" || group == "C") && h == previousH[group] {
 					cancel()
@@ -96,7 +96,7 @@ func TestCodexCacheAffinityLiveExperiment(t *testing.T) {
 						break
 					}
 					b = normalizeCodexWebsocketCompletion(b)
-					if gjson.GetBytes(b, "type").String() == "response.completed" {
+					if ojson.GetBytes(b, "type").String() == "response.completed" {
 						completed = b
 						break
 					}
@@ -119,7 +119,7 @@ func TestCodexCacheAffinityLiveExperiment(t *testing.T) {
 					line := scan.Bytes()
 					if bytes.HasPrefix(line, []byte("data:")) {
 						b := bytes.TrimSpace(line[5:])
-						if gjson.GetBytes(b, "type").String() == "response.completed" {
+						if ojson.GetBytes(b, "type").String() == "response.completed" {
 							completed = bytes.Clone(b)
 							break
 						}
@@ -131,8 +131,8 @@ func TestCodexCacheAffinityLiveExperiment(t *testing.T) {
 			if len(completed) == 0 {
 				t.Fatal("no completed response; inspect private gateway diagnostics")
 			}
-			usage := gjson.GetBytes(completed, "response.usage")
-			actualModel := gjson.GetBytes(completed, "response.model").String()
+			usage := ojson.GetBytes(completed, "response.usage")
+			actualModel := ojson.GetBytes(completed, "response.model").String()
 			record := map[string]any{"group": group, "round": round, "warmup": round < 2, "ws": ws, "requested_model": model, "reported_model": actualModel, "latency_ms": time.Since(start).Milliseconds(), "input_tokens": usage.Get("input_tokens").Int(), "cached_tokens": usage.Get("input_tokens_details.cached_tokens").Int(), "output_tokens": usage.Get("output_tokens").Int()}
 			b, _ := json.Marshal(record)
 			t.Log(string(b))

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 type modelFallbackReasonError interface {
@@ -258,7 +258,7 @@ func codexModelFallbackMetadataString(metadata map[string]any, key string) strin
 }
 
 func codexModelFallbackHasStatefulContinuity(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
-	if strings.TrimSpace(gjson.GetBytes(req.Payload, "previous_response_id").String()) != "" {
+	if strings.TrimSpace(ojson.GetBytes(req.Payload, "previous_response_id").String()) != "" {
 		return true
 	}
 	// Translators represent cross-provider thinking differently. Inspect only
@@ -278,10 +278,10 @@ func codexPayloadHasStatefulReasoning(payload []byte) bool {
 	if len(payload) == 0 {
 		return false
 	}
-	if strings.TrimSpace(gjson.GetBytes(payload, "reasoning.encrypted_content").String()) != "" {
+	if strings.TrimSpace(ojson.GetBytes(payload, "reasoning.encrypted_content").String()) != "" {
 		return true
 	}
-	input := gjson.GetBytes(payload, "input")
+	input := ojson.GetBytes(payload, "input")
 	if input.IsArray() {
 		for _, item := range input.Array() {
 			if strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "reasoning") {
@@ -289,7 +289,7 @@ func codexPayloadHasStatefulReasoning(payload []byte) bool {
 			}
 		}
 	}
-	messages := gjson.GetBytes(payload, "messages")
+	messages := ojson.GetBytes(payload, "messages")
 	if !messages.IsArray() {
 		return false
 	}

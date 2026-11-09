@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"io"
 	"net/http"
 	"strings"
@@ -15,7 +17,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	tr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const maxClaudePluginEventBytes = 50 * 1024 * 1024
@@ -96,7 +97,7 @@ func isClaudePluginOpenAI(prepared preparedExecutorCall) bool {
 
 func claudePluginUpstreamError(payload []byte) error {
 	status := http.StatusBadGateway
-	switch gjson.GetBytes(payload, "error.type").String() {
+	switch ojson.GetBytes(payload, "error.type").String() {
 	case "authentication_error":
 		status = http.StatusUnauthorized
 	case "permission_error":
@@ -170,7 +171,7 @@ func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cance
 				return claudePluginConversionError()
 			}
 			payload := compact.Bytes()
-			if event == "error" || gjson.GetBytes(payload, "type").String() == "error" {
+			if event == "error" || ojson.GetBytes(payload, "type").String() == "error" {
 				return claudePluginUpstreamError(payload)
 			}
 			line := append([]byte("data: "), payload...)
@@ -276,7 +277,7 @@ func claudePluginHasResponsesTerminal(frames [][]byte) bool {
 			if !json.Valid(payload) {
 				continue
 			}
-			event := gjson.ParseBytes(payload)
+			event := util.ParseGJSONBytesNoCopy(payload)
 			if (event.Get("type").String() == "response.completed" || event.Get("type").String() == "response.incomplete" || event.Get("type").String() == "response.failed") && validClaudePluginResponsesJSON([]byte(event.Get("response").Raw)) {
 				return true
 			}
@@ -289,7 +290,7 @@ func validClaudePluginResponsesJSON(body []byte) bool {
 	if !json.Valid(body) {
 		return false
 	}
-	root := gjson.ParseBytes(body)
+	root := util.ParseGJSONBytesNoCopy(body)
 	status := root.Get("status").String()
 	// `failed` is a valid terminal state: model_context_window_exceeded maps to
 	// response.failed with a context_length_exceeded error object.
@@ -300,7 +301,7 @@ func validClaudePluginChatJSON(body []byte) bool {
 	if !json.Valid(body) {
 		return false
 	}
-	root := gjson.ParseBytes(body)
+	root := util.ParseGJSONBytesNoCopy(body)
 	return root.Get("object").String() == "chat.completion" && strings.TrimSpace(root.Get("id").String()) != "" && root.Get("choices").IsArray() && root.Get("choices.0.message.role").String() == "assistant" && validChatFinish(root.Get("choices.0.finish_reason").String())
 }
 
@@ -317,7 +318,7 @@ func claudePluginHasChatFinish(frames [][]byte) bool {
 		if !json.Valid(frame) {
 			continue
 		}
-		root := gjson.ParseBytes(frame)
+		root := util.ParseGJSONBytesNoCopy(frame)
 		if root.Get("object").String() == "chat.completion.chunk" && root.Get("id").String() != "" && validChatFinish(root.Get("choices.0.finish_reason").String()) {
 			return true
 		}

@@ -75,6 +75,8 @@ func headerValueCaseInsensitive(headers http.Header, name string) string {
 
 // ClaudeCodePromptCache 按 upstream 的确定性规则派生模型和 session/agent 对应的 PCK。
 // 身份不依赖本地或 Home KV 映射的生命周期，首次并发请求也使用相同的 key。
+// （merge note: upstream moego 迁移同步改写过旧实现的 gjson 调用；确定性派生落地后
+// extractClaudeCodeSessionIDFromPayload 已无调用者，随旧实现一并移除。）
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
 	modelName = strings.TrimSpace(modelName)
 	executionScope, ok := ClaudeCodeExecutionScope(ctx, payload, headers)

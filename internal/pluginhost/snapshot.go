@@ -29,18 +29,20 @@ type Snapshot struct {
 
 // RegisteredPluginInfo describes a plugin that is active in the current runtime snapshot.
 type RegisteredPluginInfo struct {
-	ID                string
-	Priority          int
-	Metadata          pluginapi.Metadata
-	SupportsOAuth     bool
-	SupportsAuth      bool
-	AuthProvider      string
-	SupportsReadiness bool
-	ExecutorProvider  string
-	OAuthProvider     string
-	SupportsQuota     bool
-	QuotaProvider     string
-	Menus             []RegisteredPluginMenu
+	ID                   string
+	Priority             int
+	Metadata             pluginapi.Metadata
+	SupportsOAuth        bool
+	SupportsAuth         bool
+	AuthProvider         string
+	SupportsReadiness    bool
+	ExecutorProvider     string
+	OAuthProvider        string
+	OAuthProviders       []string
+	OAuthProviderEntries []pluginapi.AuthProviderEntry
+	SupportsQuota        bool
+	QuotaProvider        string
+	Menus                []RegisteredPluginMenu
 }
 
 // RegisteredPluginMenu describes a plugin-owned resource menu entry.
@@ -82,11 +84,15 @@ func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 	menusByPlugin := h.registeredPluginMenus()
 	out := make([]RegisteredPluginInfo, 0, len(records))
 	for _, record := range records {
-		authProvider := record.plugin.Capabilities.AuthProvider
+		hasOAuth := hasRecordAuthProvider(record)
 		oauthProvider := ""
-		if authProvider != nil && !h.isPluginFused(record.id) {
-			if identifier, okIdentifier := h.callAuthProviderIdentifier(record.id, authProvider); okIdentifier {
-				oauthProvider = identifier
+		var oauthProviders []string
+		var oauthProviderEntries []pluginapi.AuthProviderEntry
+		if hasOAuth && !h.isPluginFused(record.id) {
+			if identifiers, entries, okIdentifiers := h.callRecordAuthProviderMetadata(record); okIdentifiers && len(identifiers) > 0 {
+				oauthProvider = identifiers[0]
+				oauthProviders = identifiers
+				oauthProviderEntries = entries
 			}
 		}
 		quotaProvider := record.plugin.Capabilities.QuotaProvider
@@ -101,18 +107,20 @@ func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 			executorProvider, _ = h.executorProvider(record, executor)
 		}
 		out = append(out, RegisteredPluginInfo{
-			SupportsAuth:      authProvider != nil,
-			AuthProvider:      oauthProvider,
-			SupportsReadiness: record.plugin.Capabilities.ProviderReadiness != nil && executorProvider != "",
-			ExecutorProvider:  executorProvider,
-			ID:                record.id,
-			Priority:          record.priority,
-			Metadata:          clonePluginMetadata(record.meta),
-			SupportsOAuth:     authProvider != nil && !record.plugin.Capabilities.AuthImportOnly,
-			OAuthProvider:     oauthProvider,
-			SupportsQuota:     quotaProvider != nil,
-			QuotaProvider:     quotaIdentifier,
-			Menus:             menusByPlugin[record.id],
+			SupportsAuth:         hasOAuth,
+			AuthProvider:         oauthProvider,
+			SupportsReadiness:    record.plugin.Capabilities.ProviderReadiness != nil && executorProvider != "",
+			ExecutorProvider:     executorProvider,
+			ID:                   record.id,
+			Priority:             record.priority,
+			Metadata:             clonePluginMetadata(record.meta),
+			SupportsOAuth:        hasOAuth && !record.plugin.Capabilities.AuthImportOnly,
+			OAuthProvider:        oauthProvider,
+			OAuthProviders:       oauthProviders,
+			OAuthProviderEntries: oauthProviderEntries,
+			SupportsQuota:        quotaProvider != nil,
+			QuotaProvider:        quotaIdentifier,
+			Menus:                menusByPlugin[record.id],
 		})
 	}
 	return out

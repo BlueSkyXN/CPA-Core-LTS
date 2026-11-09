@@ -1,14 +1,15 @@
 package responses
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func TestContextCountPreservesDeliveredReplayWithoutSyntheticFuture(t *testing.T) {
@@ -24,10 +25,10 @@ func TestContextCountPreservesDeliveredReplayWithoutSyntheticFuture(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(got, "messages.#").Int() != 2 {
+	if ojson.GetBytes(got, "messages.#").Int() != 2 {
 		t.Fatalf("synthetic future message added: %s", got)
 	}
-	blocks := gjson.GetBytes(got, "messages.1.content").Array()
+	blocks := ojson.GetBytes(got, "messages.1.content").Array()
 	want := []string{"thinking", "server_tool_use", "web_search_tool_result", "thinking", "tool_use"}
 	if len(blocks) != len(want) {
 		t.Fatal(string(got))
@@ -41,13 +42,13 @@ func TestContextCountPreservesDeliveredReplayWithoutSyntheticFuture(t *testing.T
 		t.Fatal("replay text lost", string(got))
 	}
 	for _, key := range []string{"model", "system", "tools", "messages.0"} {
-		if gjson.GetBytes(native, key).Raw != gjson.GetBytes(got, key).Raw {
+		if ojson.GetBytes(native, key).Raw != ojson.GetBytes(got, key).Raw {
 			t.Fatal("input changed", key)
 		}
 	}
 	trailing := []byte(`[{"type":"reasoning","encrypted_content":"opaque","summary":[{"type":"summary_text","text":"trailing"}]}]`)
 	got, err = AppendResponseOutputForTokenCount("glm-fixture", native, trailing, info)
-	if err != nil || gjson.GetBytes(got, "messages.1.content.0.thinking").String() != "trailing" {
+	if err != nil || ojson.GetBytes(got, "messages.1.content.0.thinking").String() != "trailing" {
 		t.Fatal("trailing thinking dropped", err)
 	}
 }
@@ -62,16 +63,16 @@ func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testi
 	]`)
 	info := &registry.ModelInfo{ID: "glm-fixture", IsCompat: true, NativeCapabilities: &registry.NativeCapabilities{WebSearchReplay: registry.NativeWebSearchReplayBigModel}}
 	// Codex 的 WebSearchCall 不保留扩展 results；无缓存时下一轮只有搜索动作。
-	for i, item := range gjson.ParseBytes(output).Array() {
+	for i, item := range util.ParseGJSONBytesNoCopy(output).Array() {
 		if item.Get("type").String() == "web_search_call" {
 			var err error
-			output, err = sjson.DeleteBytes(output, fmt.Sprintf("%d.results", i))
+			output, err = ojson.DeleteBytes(output, fmt.Sprintf("%d.results", i))
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	native, err := convertOpenAIResponsesRequestToClaude(info.ID, request, false, true, info, false)
+	native, err := convertOpenAIResponsesRequestToClaude(context.Background(), info.ID, request, false, true, false, info, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,10 +81,10 @@ func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testi
 		t.Fatal(err)
 	}
 	items := make([]json.RawMessage, 0)
-	for _, item := range gjson.GetBytes(request, "input").Array() {
+	for _, item := range ojson.GetBytes(request, "input").Array() {
 		items = append(items, json.RawMessage(item.Raw))
 	}
-	for _, item := range gjson.ParseBytes(output).Array() {
+	for _, item := range util.ParseGJSONBytesNoCopy(output).Array() {
 		items = append(items, json.RawMessage(item.Raw))
 	}
 	items = append(items, json.RawMessage(`{"role":"user","content":"next question"}`))
@@ -91,16 +92,16 @@ func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextRequest, err := sjson.SetRawBytes(request, "input", input)
+	nextRequest, err := ojson.SetRawBytes(request, "input", input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextNative, err := convertOpenAIResponsesRequestToClaude(info.ID, nextRequest, false, true, info, false)
+	nextNative, err := convertOpenAIResponsesRequestToClaude(context.Background(), info.ID, nextRequest, false, true, false, info, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextMessages := gjson.GetBytes(nextNative, "messages").Array()
-	countMessages := gjson.GetBytes(countPayload, "messages").Array()
+	nextMessages := ojson.GetBytes(nextNative, "messages").Array()
+	countMessages := ojson.GetBytes(countPayload, "messages").Array()
 	if len(nextMessages) != len(countMessages)+1 || nextMessages[len(nextMessages)-1].Get("role").String() != "user" {
 		t.Fatal("unexpected next-turn boundary")
 	}
@@ -110,7 +111,7 @@ func TestContextCountMatchesCodexProjectedReplayWithHistoricalReasoning(t *testi
 		}
 	}
 	for _, key := range []string{"system", "tools"} {
-		if gjson.GetBytes(countPayload, key).Raw != gjson.GetBytes(nextNative, key).Raw {
+		if ojson.GetBytes(countPayload, key).Raw != ojson.GetBytes(nextNative, key).Raw {
 			t.Fatalf("counted %s differs from next-turn replay", key)
 		}
 	}

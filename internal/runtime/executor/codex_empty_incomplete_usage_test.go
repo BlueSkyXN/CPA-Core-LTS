@@ -141,6 +141,7 @@ func TestCodexEmptyIncompletePreservesFailureUsage(t *testing.T) {
 						TotalTokens:         tc.input,
 						TokenBreakdown:      coreusage.NewSubsetTokenBreakdown(tc.input, tc.cached, 0, 0, 0, tc.input),
 						ResponseServiceTier: "priority",
+						UpstreamServiceTier: "priority",
 					}
 					if record.Detail != want {
 						t.Errorf("failure detail=%+v, want %+v", record.Detail, want)

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -17,8 +18,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	execpkg "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // 回归断言实际出站行为和已结束逻辑请求的回收，旧提交应失败。
@@ -95,7 +94,7 @@ func TestCodexCacheAffinityWSReusedHandshake(t *testing.T) {
 								t.Fatal("mismatch discarded logical request freeze")
 							}
 							for _, r := range store.requests {
-								if r.group != gjson.GetBytes(w.body, "prompt_cache_key").String() || !r.fieldsFrozen || r.refs != 0 {
+								if r.group != ojson.GetBytes(w.body, "prompt_cache_key").String() || !r.fieldsFrozen || r.refs != 0 {
 									t.Fatal("freeze or cleanup changed")
 								}
 							}
@@ -148,10 +147,10 @@ func TestCodexCacheAffinityFinalInputSnapshot(t *testing.T) {
 				w := <-ch
 				body := w.body
 				if transport != "http" {
-					body, _ = sjson.DeleteBytes(body, "type")
+					body, _ = ojson.DeleteBytes(body, "type")
 				}
 				expected := helps.SanitizeCodexInputItemIDs(req.Payload)
-				if gjson.GetBytes(expected, "input").Raw != gjson.GetBytes(body, "input").Raw {
+				if ojson.GetBytes(expected, "input").Raw != ojson.GetBytes(body, "input").Raw {
 					t.Fatal("unexpected final normalized input")
 				}
 				final := codexAffinitySnapshotOf(body)
@@ -163,7 +162,7 @@ func TestCodexCacheAffinityFinalInputSnapshot(t *testing.T) {
 				}
 				for _, tr := range store.trajectories {
 					equal := tr.snapshot.settings == final.settings && reflect.DeepEqual(tr.snapshot.items, final.items)
-					t.Logf("final_id=%s final_known=%v index_equals_wire=%v", gjson.GetBytes(body, "input.0.id"), final.known, equal)
+					t.Logf("final_id=%s final_known=%v index_equals_wire=%v", ojson.GetBytes(body, "input.0.id"), final.known, equal)
 					if !equal {
 						t.Fatal("unexpected diagnostic result")
 					}
@@ -201,12 +200,12 @@ func TestCodexCacheAffinityTranslatedOutputAnchor(t *testing.T) {
 	first, _ := chatconv.ConvertOpenAIRequestToCodex("gpt-5.6-sol", original, false)
 	completed := []byte(`{"type":"response.completed","response":{"id":"synthetic","model":"gpt-5.6-sol","status":"completed","output":[{"id":"msg_synthetic","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"synthetic answer","annotations":[]}]}]}}`)
 	answer := chatconv.ConvertCodexResponseToOpenAINonStream(context.Background(), "gpt-5.6-sol", original, first, completed, nil)
-	message := gjson.GetBytes(answer, "choices.0.message")
+	message := ojson.GetBytes(answer, "choices.0.message")
 	if message.Get("content").String() != "synthetic answer" {
 		t.Fatal("response translation failed")
 	}
-	next, _ := sjson.SetRawBytes(original, "messages.-1", []byte(message.Raw))
-	next, _ = sjson.SetRawBytes(next, "messages.-1", []byte(`{"role":"user","content":"continue"}`))
+	next, _ := ojson.SetRawBytes(original, "messages.-1", []byte(message.Raw))
+	next, _ = ojson.SetRawBytes(next, "messages.-1", []byte(`{"role":"user","content":"continue"}`))
 	nextBody, _ := chatconv.ConvertOpenAIRequestToCodex("gpt-5.6-sol", next, false)
 	s := newCodexAffinityStore()
 	d := s.decide(context.Background(), "scope", "", "", "first", "fallback", "", false, codexAffinitySnapshotOf(first))
@@ -214,7 +213,7 @@ func TestCodexCacheAffinityTranslatedOutputAnchor(t *testing.T) {
 	d.close()
 	continuation := s.decide(context.Background(), "scope", "", "", "second", "fallback", "", false, codexAffinitySnapshotOf(nextBody))
 	defer continuation.close()
-	t.Logf("raw_output_has_id=%v translated_assistant_has_id=%v adopted=%v check=%s", gjson.GetBytes(completed, "response.output.0.id").Exists(), gjson.GetBytes(nextBody, "input.1.id").Exists(), continuation.adopted, continuation.check)
+	t.Logf("raw_output_has_id=%v translated_assistant_has_id=%v adopted=%v check=%s", ojson.GetBytes(completed, "response.output.0.id").Exists(), ojson.GetBytes(nextBody, "input.1.id").Exists(), continuation.adopted, continuation.check)
 	if continuation.adopted {
 		t.Fatal("expected conservative representation mismatch")
 	}

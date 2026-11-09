@@ -3,12 +3,12 @@ package integration
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestV3ManagementReadinessAndConfiguration(t *testing.T) {
@@ -22,15 +22,15 @@ func TestV3ManagementReadinessAndConfiguration(t *testing.T) {
 		return r
 	}
 	list := get("/v0/management/plugins")
-	if !gjson.GetBytes(list.Body.Bytes(), "plugins.0.supports_auth").Bool() || gjson.GetBytes(list.Body.Bytes(), "plugins.0.supports_oauth").Bool() || !gjson.GetBytes(list.Body.Bytes(), "plugins.0.supports_readiness").Bool() {
+	if !ojson.GetBytes(list.Body.Bytes(), "plugins.0.supports_auth").Bool() || ojson.GetBytes(list.Body.Bytes(), "plugins.0.supports_oauth").Bool() || !ojson.GetBytes(list.Body.Bytes(), "plugins.0.supports_readiness").Bool() {
 		t.Fatal("plugin management capabilities missing")
 	}
 	unknown := get("/v0/management/plugins/zcode-coding-plan/readiness")
-	if unknown.Code != 200 || gjson.GetBytes(unknown.Body.Bytes(), "Ready").Bool() {
+	if unknown.Code != 200 || ojson.GetBytes(unknown.Body.Bytes(), "Ready").Bool() {
 		t.Fatal("provider probe falsely reported account readiness")
 	}
 	ready := get("/v0/management/plugins/zcode-coding-plan/readiness?auth_index=v2-fixture-index")
-	if ready.Code != 200 || !gjson.GetBytes(ready.Body.Bytes(), "Ready").Bool() {
+	if ready.Code != 200 || !ojson.GetBytes(ready.Body.Bytes(), "Ready").Bool() {
 		t.Fatalf("readiness failed: %s", ready.Body.String())
 	}
 	if f.transport.handshakes != 0 || len(f.transport.captured) != 0 {
@@ -48,7 +48,7 @@ func TestV3ManagementReadinessAndConfiguration(t *testing.T) {
 	if res.Code != 200 {
 		t.Fatalf("execution after config: %s", res.Body.String())
 	}
-	actual := gjson.GetBytes(f.transport.captured[0], "system").Raw
+	actual := ojson.GetBytes(f.transport.captured[0], "system").Raw
 	if !strings.Contains(actual, "caller") {
 		t.Fatal("caller system prompt not preserved")
 	}

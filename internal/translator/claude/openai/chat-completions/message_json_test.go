@@ -3,11 +3,11 @@ package chat_completions
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
 
 	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
-	"github.com/tidwall/gjson"
 )
 
 func TestChatMessageJSONAndSeededStream(t *testing.T) {
@@ -24,7 +24,7 @@ func TestChatMessageJSONAndSeededStream(t *testing.T) {
 		state := &claudecommon.PluginResponseState{Chat: true}
 		var param any = state
 		out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "glm-fixture", nil, nil, []byte(body), &param)
-		if state.Err != nil || gjson.GetBytes(out, "choices.0.message.reasoning_content").String() != "公开思考" || gjson.GetBytes(out, "choices.0.message.content").String() != "answer" || gjson.GetBytes(out, "choices.0.message.tool_calls.0.function.arguments").String() != `{"q":"hello"}` || gjson.GetBytes(out, "usage.prompt_tokens").Int() != 10 || gjson.GetBytes(out, "usage.total_tokens").Int() != 17 {
+		if state.Err != nil || ojson.GetBytes(out, "choices.0.message.reasoning_content").String() != "公开思考" || ojson.GetBytes(out, "choices.0.message.content").String() != "answer" || ojson.GetBytes(out, "choices.0.message.tool_calls.0.function.arguments").String() != `{"q":"hello"}` || ojson.GetBytes(out, "usage.prompt_tokens").Int() != 10 || ojson.GetBytes(out, "usage.total_tokens").Int() != 17 {
 			t.Fatalf("invalid conversion: %s, %v", out, state.Err)
 		}
 		if strings.Contains(string(out), "hidden-only") || strings.Contains(string(out), "opaque-only") {
@@ -37,10 +37,10 @@ func TestChatMessageJSONAndSeededStream(t *testing.T) {
 	var usageCount int
 	for _, event := range events {
 		for _, frame := range ConvertClaudeResponseToOpenAI(context.Background(), "glm-fixture", nil, nil, []byte("data: "+event), &param) {
-			thought += gjson.GetBytes(frame, "choices.0.delta.reasoning_content").String()
-			text += gjson.GetBytes(frame, "choices.0.delta.content").String()
-			args += gjson.GetBytes(frame, "choices.0.delta.tool_calls.0.function.arguments").String()
-			if gjson.GetBytes(frame, "choices.#").Int() == 0 && gjson.GetBytes(frame, "usage.total_tokens").Int() == 17 {
+			thought += ojson.GetBytes(frame, "choices.0.delta.reasoning_content").String()
+			text += ojson.GetBytes(frame, "choices.0.delta.content").String()
+			args += ojson.GetBytes(frame, "choices.0.delta.tool_calls.0.function.arguments").String()
+			if ojson.GetBytes(frame, "choices.#").Int() == 0 && ojson.GetBytes(frame, "usage.total_tokens").Int() == 17 {
 				usageCount++
 			}
 		}
@@ -61,7 +61,7 @@ func TestChatMessageJSONRejectsMalformed(t *testing.T) {
 	for stop, finish := range map[string]string{"end_turn": "stop", "max_tokens": "length", "refusal": "content_filter", "sensitive": "content_filter"} {
 		var param any
 		out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "m", nil, nil, []byte(fmt.Sprintf(`{"type":"message","id":"m","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":%q}`, stop)), &param)
-		if gjson.GetBytes(out, "choices.0.finish_reason").String() != finish || gjson.GetBytes(out, "choices.0.message.reasoning_content").Exists() {
+		if ojson.GetBytes(out, "choices.0.finish_reason").String() != finish || ojson.GetBytes(out, "choices.0.message.reasoning_content").Exists() {
 			t.Fatalf("stop mapping failed: %s", out)
 		}
 	}
