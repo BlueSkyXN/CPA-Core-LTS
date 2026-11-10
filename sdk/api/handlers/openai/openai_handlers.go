@@ -174,7 +174,7 @@ func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
 		return
 	}
 
-	modelName := ojson.GetBytesNoCopy(rawJSON, "model").String()
+	modelName := strings.Clone(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, Embeddings, modelName, rawJSON, h.GetAlt(c))

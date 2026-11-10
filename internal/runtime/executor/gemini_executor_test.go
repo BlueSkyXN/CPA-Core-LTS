@@ -20,6 +20,40 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
+func TestGeminiFilterExplanationSurvivesScannerRefill(t *testing.T) {
+	const message = "This request was blocked by Gemini's filters. See https://policies.google.com/terms/generative-ai/use-policy"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"candidates":[{"content":{"parts":[{"text":"`+message+`"}]}}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, ":"+strings.Repeat("x", 16384)+"\n\n")
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	executor := NewGeminiExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "synthetic-test-key", "base_url": server.URL}}
+	stream, err := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "test-model",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"synthetic"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr == nil || streamErr.Error() != message {
+		t.Fatalf("filter explanation after scanner refill = %v, want %q", streamErr, message)
+	}
+	if status, ok := streamErr.(interface{ StatusCode() int }); !ok || status.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("filter error status = %v, want 400", streamErr)
+	}
+}
+
 func TestCapGeminiMaxOutputTokensUsesOutputTokenLimit(t *testing.T) {
 	body := []byte(`{"generationConfig":{"maxOutputTokens":500000,"temperature":0.2},"contents":[]}`)
 
