@@ -124,6 +124,12 @@ const (
 	SessionAffinityProviderMetadataKey = "session_affinity_provider"
 	// SessionAffinityModelMetadataKey carries the model used during session affinity selection.
 	SessionAffinityModelMetadataKey = "session_affinity_model"
+	// CodexReplaySelfHealMetadataKey marks an internal executor self-heal retry:
+	// the previous attempt hit an upstream signature rejection after this proxy
+	// injected its own reasoning replay items, so the retry rebuilds the request
+	// without that CPA-owned injection. It is request-scoped, never persisted,
+	// and must cause exactly one extra attempt on the same credential.
+	CodexReplaySelfHealMetadataKey = "codex_replay_self_heal"
 )
 
 const (
