@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -47,6 +48,7 @@ func transformExecution(req executorRequest, c *config, session string) (map[str
 	if err := validateToolHistory(body); err != nil {
 		return nil, err
 	}
+	foldGatewayVisionHistory(body)
 	return transform(encode(body), c, session)
 }
 
@@ -126,7 +128,87 @@ func validateToolHistory(body map[string]any) error {
 	return nil
 }
 
-// 此嵌套 module 仅依赖标准库，与 Core 校验相同的已观察供应商结果形状。
+// foldGatewayVisionHistory 把历史轮次中的网关识图调用对（mcp_tool_use +
+// mcp_tool_result）折叠为等价的 text 快照，再进入 transform 校验。
+// 折叠原因：imageSource 是网关 OSS 签名 URL（会过期），且配对块原样回放会
+// 重复触发服务端转写（每轮 ~1k input 膨胀 + 20s 延迟）。转写文本本身无损保留。
+// 非配对/畸形的 mcp 块不在此处理——transform 会对残留 mcp_tool_use 显式拒绝。
+func foldGatewayVisionHistory(body map[string]any) {
+	messages, _ := body["messages"].([]any)
+	// 先收集每个 mcp_tool_use 的配对结果文本。
+	results := map[string]string{}
+	for _, v := range messages {
+		message, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, _ := message["content"].([]any)
+		for _, w := range blocks {
+			block, ok := w.(map[string]any)
+			if !ok || block["type"] != "mcp_tool_result" {
+				continue
+			}
+			id, _ := block["tool_use_id"].(string)
+			if id == "" {
+				continue
+			}
+			if content, ok := block["content"].([]any); ok {
+				var parts []string
+				for _, x := range content {
+					part, ok := x.(map[string]any)
+					if ok && part["type"] == "text" {
+						if text, ok := part["text"].(string); ok {
+							parts = append(parts, text)
+						}
+					}
+				}
+				if len(parts) > 0 {
+					results[id] = strings.Join(parts, "\n\n")
+				}
+			}
+		}
+	}
+	if len(results) == 0 {
+		// 没有可折叠的结果对；可能存在孤立 mcp_tool_use（客户端历史被截断等），
+		// 交给 transform 拒绝，不在这里静默丢块。
+		return
+	}
+	for _, v := range messages {
+		message, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, _ := message["content"].([]any)
+		kept := make([]any, 0, len(blocks))
+		for _, w := range blocks {
+			block, ok := w.(map[string]any)
+			if !ok {
+				kept = append(kept, w)
+				continue
+			}
+			switch block["type"] {
+			case "mcp_tool_use":
+				// 调用块替换为占位 text；结果文本随 mcp_tool_result 块注入。
+				name, _ := block["name"].(string)
+				kept = append(kept, map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("[gateway vision: %s executed server-side; analysis retained below]", name),
+				})
+			case "mcp_tool_result":
+				id, _ := block["tool_use_id"].(string)
+				text := results[id]
+				if text == "" {
+					text = "[gateway vision analysis unavailable]"
+				}
+				kept = append(kept, map[string]any{"type": "text", "text": text})
+			default:
+				kept = append(kept, w)
+			}
+		}
+		message["content"] = kept
+	}
+}
+
 func validWebReaderHistoryResult(value any) bool {
 	content, ok := value.(string)
 	if !ok || !strings.HasPrefix(strings.TrimSpace(content), "[") {

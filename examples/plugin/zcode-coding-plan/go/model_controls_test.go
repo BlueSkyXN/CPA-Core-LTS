@@ -75,12 +75,6 @@ func TestFlashImageInputValidation(t *testing.T) {
 			cfg := defaultConfig()
 			cfg.applyExtraModels([]string{"glm-5.3-highspeed", "glm-5.3-flashx"})
 			result, err := transformExecution(executorRequest{Payload: encode(body)}, cfg, "session")
-			if model == "glm-5.3" || model == "glm-5.3-highspeed" {
-				if err == nil {
-					t.Fatal("text-only model accepted an image")
-				}
-				continue
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,11 +82,30 @@ func TestFlashImageInputValidation(t *testing.T) {
 			if string(encode(part)) != string(encode(map[string]any{"type": "image", "source": source})) {
 				t.Fatal("image payload changed")
 			}
+			// glm-5.3 模板必须代注网关识图声明（flash 原生视觉不需要）。
+			tools, _ := result["tools"].([]any)
+			if modelTemplateID(model) == "glm-5.3" {
+				injected := false
+				for _, v := range tools {
+					tool, ok := v.(map[string]any)
+					if ok && tool["type"] == "image_analysis" && tool["name"] == "image_analysis" {
+						injected = true
+					}
+				}
+				if !injected {
+					t.Fatal("glm-5.3 image request missing injected gateway vision declaration")
+				}
+			} else if len(tools) != 0 {
+				t.Fatal("flash must not receive a gateway vision declaration")
+			}
 		}
 	}
 	for _, source := range []any{nil, map[string]any{"type": "base64", "media_type": "image/png", "data": "!invalid"}, map[string]any{"type": "base64", "media_type": "image/svg+xml", "data": imageFixture}, map[string]any{"type": "url", "url": "file:///synthetic.png"}, map[string]any{"type": "url", "url": "https://user:pass@example.invalid/image.png"}} {
 		if err := validateImage(map[string]any{"source": source}, "glm-5.3-flash"); err == nil {
 			t.Fatal("invalid image source accepted")
+		}
+		if err := validateImage(map[string]any{"source": source}, "glm-5.3"); err == nil {
+			t.Fatal("invalid image source accepted for glm-5.3")
 		}
 	}
 }

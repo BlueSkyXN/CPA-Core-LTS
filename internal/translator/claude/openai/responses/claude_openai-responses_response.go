@@ -1171,6 +1171,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 					item.Results = bigmodelToolResultToResponses(cb.Get("content").String())
 				}
 			}
+		} else if typ == "mcp_tool_use" || typ == "mcp_tool_result" {
+			// GLM 网关识图（4_5v_mcp）流式路径同样静默折叠，见非流式分支注释。
+			log.Debugf("claude->responses: gateway vision %s folded at block %d", typ, idx)
 		} else if typ == "thinking" || typ == "redacted_thinking" {
 			// start reasoning item
 			st.ReasoningActive = true
@@ -1647,6 +1650,10 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 					item.results = bigmodelToolResultToResponses(cb.Get("content").String())
 				}
 			}
+		case "mcp_tool_use", "mcp_tool_result":
+			// GLM 网关识图（4_5v_mcp）在 Responses 出站静默折叠：转写文本已由
+			// 模型消化进最终回答，工具对不映射为客户端可见 item（事件化留二期）。
+			activeMessageItem = nil
 		case "thinking", "redacted_thinking":
 			activeMessageItem = nil
 			item := newOutputItem("reasoning", idx)

@@ -55,12 +55,14 @@ func builtinModelLimits(model string) (modelLimits, bool) {
 	return modelLimits{}, false
 }
 
-// builtinModelImageInput 报告内置模型是否接受图片输入；glm-5.3 仅文本。
+// builtinModelImageInput 报告内置模型是否接受图片输入。
+// glm-5.3 接受图片：网关在 tools 声明 image_analysis 且请求带 system/metadata 时
+// 以 4_5v_mcp 服务端转写代跑（2026-11-10 真凭据探测实证，见
+// local/2026-11-10-glm-server-side-vision-mcp-discovery.md）；插件对图片请求
+// 代注该声明后转发，glm-5.3 获得类原生读图，flash 保持原生直通。
 func builtinModelImageInput(model string) bool {
 	switch modelTemplateID(model) {
-	case "glm-5.3":
-		return false
-	case "glm-5.3-flash":
+	case "glm-5.3", "glm-5.3-flash":
 		return true
 	}
 	// 非内置 ID 的能力未验收，保守按纯文本处理。

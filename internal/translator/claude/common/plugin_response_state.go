@@ -25,6 +25,9 @@ type PluginResponseState struct {
 type pluginServerTool struct {
 	name  string
 	state int
+	// mcp 标记该配对属于网关 MCP 工具（mcp_tool_use/mcp_tool_result）而非
+	// server_tool_use，防止两类配对互相冒用。
+	mcp bool
 }
 
 // BigModelWebReaderToolName 是 Coding Plan 返回的服务端网页读取工具名。
@@ -66,7 +69,7 @@ func supportedPluginStop(reason string) bool {
 
 func validatePluginContent(block ojson.Result, searches map[string]*pluginServerTool, chat bool) error {
 	blockType := block.Get("type").String()
-	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result") {
+	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result" || blockType == "mcp_tool_use" || blockType == "mcp_tool_result") {
 		return PluginResponseError()
 	}
 	switch block.Get("type").String() {
@@ -108,6 +111,40 @@ func validatePluginContent(block ojson.Result, searches map[string]*pluginServer
 			return PluginResponseError()
 		}
 		searches[id] = &pluginServerTool{name: name, state: searchStateCalled}
+	case "mcp_tool_use":
+		// GLM Coding Plan 网关识图（2026-11-10 探测实证）：tools 声明
+		// image_analysis 时，网关把模型自主发起的图片分析劫持为服务端 MCP
+		// 调用（server_name=4_5v_mcp，name=analyze_image，input 含网关 OSS
+		// imageSource 与模型自拟 prompt）。与 server_tool_use 同为单请求内
+		// called→consumed 的配对状态机，复用 searches 表。
+		if block.Get("id").String() == "" || block.Get("name").String() == "" {
+			return PluginResponseError()
+		}
+		if input := block.Get("input"); input.Exists() && !input.IsObject() {
+			return PluginResponseError()
+		}
+		id := block.Get("id").String()
+		if _, exists := searches[id]; exists {
+			return PluginResponseError()
+		}
+		searches[id] = &pluginServerTool{name: block.Get("name").String(), state: searchStateCalled, mcp: true}
+	case "mcp_tool_result":
+		// 服务端代跑的转写结果：content 是文本块数组（自由 Markdown，无 repr
+		// 解析契约），只校验配对与类型。
+		tool := searches[block.Get("tool_use_id").String()]
+		if tool == nil || !tool.mcp || tool.state != searchStateCalled {
+			return PluginResponseError()
+		}
+		content := block.Get("content")
+		if !content.IsArray() || len(content.Array()) == 0 {
+			return PluginResponseError()
+		}
+		for _, item := range content.Array() {
+			if item.Get("type").String() != "text" || item.Get("text").Type != ojson.String {
+				return PluginResponseError()
+			}
+		}
+		tool.state = searchStateConsumed
 	case "web_search_tool_result":
 		id := block.Get("tool_use_id").String()
 		tool := searches[id]
@@ -235,7 +272,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 				return fail()
 			}
 		case "input_json_delta":
-			if (block.kind != "tool_use" && block.kind != "server_tool_use") || delta.Get("partial_json").Type != ojson.String {
+			if (block.kind != "tool_use" && block.kind != "server_tool_use" && block.kind != "mcp_tool_use") || delta.Get("partial_json").Type != ojson.String {
 				return fail()
 			}
 			if !block.deltas {
