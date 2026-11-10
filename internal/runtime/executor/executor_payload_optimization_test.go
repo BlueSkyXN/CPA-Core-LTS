@@ -522,7 +522,9 @@ func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testin
 		if allocated > 64*1024 {
 			t.Fatalf("split messages: cache control doc helpers allocated %d bytes (> 64 KiB)", allocated)
 		}
-		if elapsed > 20*time.Millisecond {
+		if raceDetectorEnabled {
+			t.Logf("split messages took %v with race instrumentation; the 20ms timing limit applies to non-race builds", elapsed)
+		} else if elapsed > 20*time.Millisecond {
 			t.Fatalf("split messages took %v (> 20ms); expected O(N) single-pass traversal", elapsed)
 		}
 	})
@@ -566,7 +568,9 @@ func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testin
 		if allocated > 64*1024 {
 			t.Fatalf("unsplit 1024 messages: allocated %d bytes (> 64 KiB)", allocated)
 		}
-		if elapsed > 20*time.Millisecond {
+		if raceDetectorEnabled {
+			t.Logf("unsplit 1024 messages took %v with race instrumentation; the 20ms timing limit applies to non-race builds", elapsed)
+		} else if elapsed > 20*time.Millisecond {
 			t.Fatalf("unsplit 1024 messages took %v (> 20ms); expected O(N) single-pass traversal", elapsed)
 		}
 	})
