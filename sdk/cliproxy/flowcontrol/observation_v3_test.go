@@ -83,7 +83,7 @@ func TestV3ObserversShareEncodedSummary(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b, err := e.cachedSummaryJSON()
+			b, err := e.cachedSummaryJSON(viewTotal)
 			if err != nil {
 				t.Error(err)
 			}
@@ -112,7 +112,7 @@ func TestV3ObserversShareEncodedSummary(t *testing.T) {
 	cfg := e.Policy()
 	cfg.Observation.Realtime = true
 	e.Update(cfg)
-	e.cachedSummaryJSON()
+	e.cachedSummaryJSON(viewTotal)
 	if e.summaryBuilds != 2 {
 		t.Fatal("policy change did not invalidate cache")
 	}

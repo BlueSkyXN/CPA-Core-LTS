@@ -11,6 +11,43 @@ import (
 const MaxSummaryGroups = 128
 const maxSummaryIdentityBytes = 1024
 
+type summaryView string
+
+const (
+	viewTotal    summaryView = "total"
+	viewModel    summaryView = "model"
+	viewAccount  summaryView = "account"
+	viewKey      summaryView = "key"
+	viewProvider summaryView = "provider"
+)
+
+func parseSummaryView(raw string) (summaryView, bool) {
+	if raw == "" {
+		return viewTotal, true
+	}
+	switch summaryView(raw) {
+	case viewTotal, viewModel, viewAccount, viewKey, viewProvider:
+		return summaryView(raw), true
+	default:
+		return "", false
+	}
+}
+
+func (v summaryView) index() int {
+	switch v {
+	case viewModel:
+		return 1
+	case viewAccount:
+		return 2
+	case viewKey:
+		return 3
+	case viewProvider:
+		return 4
+	default:
+		return 0
+	}
+}
+
 type SummaryGroupIdentity struct {
 	Stage    string `json:"stage"`
 	Key      string `json:"key,omitempty"`
@@ -35,6 +72,7 @@ type SummaryOmitted struct {
 // remain separate; a queued joint first admission contributes one waiting item
 // under its already selected attempt target, just like the details endpoint.
 type SummaryBreakdown struct {
+	View      string         `json:"view"`
 	Groups    []SummaryGroup `json:"groups"`
 	Omitted   SummaryOmitted `json:"omitted"`
 	Truncated bool           `json:"truncated"`
@@ -74,12 +112,20 @@ func summaryIdentityFits(d SummaryGroupIdentity) bool {
 		if len(field) > maxSummaryIdentityBytes {
 			return false
 		}
-		for _, r := range field {
+		for offset, r := range field {
 			switch {
 			case r < 0x20 || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029':
 				size += 6
 			case r == '"' || r == '\\':
 				size += 2
+			case r == utf8.RuneError:
+				_, width := utf8.DecodeRuneInString(field[offset:])
+				if width == 1 {
+					// encoding/json replaces each invalid UTF-8 byte with \ufffd.
+					size += 6
+				} else {
+					size += width
+				}
 			default:
 				size += utf8.RuneLen(r)
 			}
@@ -92,6 +138,7 @@ func summaryIdentityFits(d SummaryGroupIdentity) bool {
 }
 
 type breakdownCollector struct {
+	view    summaryView
 	groups  map[SummaryGroupIdentity]*SummaryGroup
 	heap    summaryGroups
 	omitted SummaryOmitted
@@ -107,11 +154,25 @@ func (c *breakdownCollector) omit(d SummaryGroupIdentity, active, waiting int) {
 }
 
 func (c *breakdownCollector) add(d Identity, active, waiting int) {
-	key := SummaryGroupIdentity{Stage: d.Stage, Key: d.Key, Model: d.Model}
-	if d.Stage == Attempt {
-		key.Provider, key.Account = d.Provider, d.Account
-		if key.Account == "" {
-			key.Account = d.Credential
+	key := SummaryGroupIdentity{Stage: d.Stage}
+	switch c.view {
+	case viewModel:
+		key.Model = d.Model
+		if d.Stage == Attempt {
+			key.Provider = d.Provider
+		}
+	case viewAccount:
+		if d.Stage == Attempt {
+			key.Account = d.Account
+			if key.Account == "" {
+				key.Account = d.Credential
+			}
+		}
+	case viewKey:
+		key.Key = d.Key
+	case viewProvider:
+		if d.Stage == Attempt {
+			key.Provider = d.Provider
 		}
 	}
 	if group := c.groups[key]; group != nil {
@@ -119,13 +180,13 @@ func (c *breakdownCollector) add(d Identity, active, waiting int) {
 		group.Waiting += waiting
 		return
 	}
-	if !summaryIdentityFits(key) {
-		c.omit(key, active, waiting)
-		return
-	}
 	if len(c.heap) == MaxSummaryGroups {
 		last := c.heap[0]
 		if !lessSummaryIdentity(key, last.SummaryGroupIdentity) {
+			c.omit(key, active, waiting)
+			return
+		}
+		if !summaryIdentityFits(key) {
 			c.omit(key, active, waiting)
 			return
 		}
@@ -138,6 +199,10 @@ func (c *breakdownCollector) add(d Identity, active, waiting int) {
 		heap.Fix(&c.heap, 0)
 		return
 	}
+	if !summaryIdentityFits(key) {
+		c.omit(key, active, waiting)
+		return
+	}
 	if c.groups == nil {
 		c.groups = make(map[SummaryGroupIdentity]*SummaryGroup)
 	}
@@ -147,7 +212,7 @@ func (c *breakdownCollector) add(d Identity, active, waiting int) {
 }
 
 func (c *breakdownCollector) finish() *SummaryBreakdown {
-	out := &SummaryBreakdown{Groups: make([]SummaryGroup, 0, len(c.heap)), Omitted: c.omitted,
+	out := &SummaryBreakdown{View: string(c.view), Groups: make([]SummaryGroup, 0, len(c.heap)), Omitted: c.omitted,
 		Truncated: c.omitted.Requests+c.omitted.Attempts+c.omitted.Waiting > 0}
 	for _, group := range c.heap {
 		out.Groups = append(out.Groups, *group)

@@ -31,11 +31,12 @@ type Summary struct {
 	Breakdown       *SummaryBreakdown `json:"breakdown,omitempty"`
 }
 
-func (e *Engine) summaryLocked(now time.Time, withGroups bool) Summary {
+func (e *Engine) summaryLocked(now time.Time, view summaryView) Summary {
 	s := Summary{Enabled: e.cfg.Enabled, Waiting: len(e.queue), QueuedBytes: e.queueBytes, Admitted: e.admitted, Rejected: e.rejected, Canceled: e.canceled, TimedOut: e.timedOut, Waited: e.waited, Blocked: map[string]int{}, BlockedMeaning: "last-admission-check", SampledAt: now, ProcessID: e.processID, PolicyRevision: e.policyRevision, Observation: e.cfg.Observation}
 	var groups *breakdownCollector
-	if withGroups {
-		groups = &breakdownCollector{}
+	if view != viewTotal {
+		groups = &breakdownCollector{view: view}
+		e.summaryGroupBuilds++
 	}
 	for _, a := range e.active {
 		if groups != nil {
@@ -73,7 +74,7 @@ func (e *Engine) Summary() Summary {
 		return Summary{Blocked: map[string]int{}}
 	}
 	e.mu.Lock()
-	s := e.summaryLocked(e.now(), true)
+	s := e.summaryLocked(e.now(), viewTotal)
 	e.mu.Unlock()
 	if s.Observation.Resources {
 		sample := e.sampleResources()
@@ -90,20 +91,32 @@ func (e *Engine) Policy() Config {
 	return e.cfg.Effective()
 }
 
-// cachedSummaryJSON has a separate lock: only one observer per interval performs
+type summaryCacheEntry struct {
+	payload  []byte
+	expires  time.Time
+	revision uint64
+}
+
+// cachedSummaryJSON has a separate lock: only one observer per view and interval performs
 // collection+encoding. Engine.Update never waits on this lock or on network I/O.
-func (e *Engine) cachedSummaryJSON() ([]byte, error) {
+func (e *Engine) cachedSummaryJSON(view summaryView) ([]byte, error) {
 	e.summaryMu.Lock()
 	defer e.summaryMu.Unlock()
 	e.mu.Lock()
 	rev := e.policyRevision
+	now := time.Now()
+	cache := &e.summaryCache[view.index()]
+	if cache.payload != nil && cache.revision == rev && now.Before(cache.expires) {
+		e.mu.Unlock()
+		return cache.payload, nil
+	}
+	s := e.summaryLocked(e.now(), view)
 	interval := time.Duration(e.cfg.Observation.IntervalMS) * time.Millisecond
 	e.mu.Unlock()
-	now := time.Now()
-	if e.summaryPayload != nil && e.summaryRevision == rev && now.Before(e.summaryExpires) {
-		return e.summaryPayload, nil
+	if s.Observation.Resources {
+		sample := e.sampleResources()
+		s.Resources = &sample
 	}
-	s := e.Summary()
 	payload, err := json.Marshal(struct {
 		Schema int     `json:"schema-version"`
 		State  Summary `json:"state"`
@@ -111,9 +124,9 @@ func (e *Engine) cachedSummaryJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	e.summaryPayload = payload
-	e.summaryRevision = s.PolicyRevision
-	e.summaryExpires = now.Add(interval)
+	cache.payload = payload
+	cache.revision = s.PolicyRevision
+	cache.expires = now.Add(interval)
 	e.summaryBuilds++
 	return payload, nil
 }

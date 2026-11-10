@@ -9,10 +9,15 @@ import (
 const MaxObservers = 16 // hard bound; the default configurable bound is four
 
 // ServeEvents is an authenticated management endpoint, not a model execution.
-// Subscribers share one encoded summary. No active subscriber means no sampler.
+// Subscribers of the same view share one encoded summary. No subscriber means no sampler.
 func (e *Engine) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	if e == nil {
 		http.Error(w, "flow control unavailable", 503)
+		return
+	}
+	view, valid := parseSummaryView(r.URL.Query().Get("view"))
+	if !valid {
+		http.Error(w, "invalid flow control view", http.StatusBadRequest)
 		return
 	}
 	e.mu.Lock()
@@ -55,7 +60,7 @@ func (e *Engine) ServeEvents(w http.ResponseWriter, r *http.Request) {
 			_ = ctl.Flush()
 			return
 		}
-		payload, err := e.cachedSummaryJSON()
+		payload, err := e.cachedSummaryJSON(view)
 		if err != nil {
 			return
 		}

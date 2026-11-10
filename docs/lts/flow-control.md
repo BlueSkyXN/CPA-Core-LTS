@@ -185,11 +185,13 @@ schema仍为3，新增字段兼容旧读者：`configuration-failure`含code/rul
 
 预览是“本阶段容量”，首次启动仍要联合满足另一阶段、账号选择与会话要求。未知账号不显示零，草稿无法对应运行计数则显示未知。结果不是预留容量或准确ETA。
 
-多个观察者共享一份限频JSON，不写监控历史。标签页隐藏暂停。详情先选记录再解释，不自动每秒查询；单页查询仍有锁内读取成本，不声称零开销。队列阻塞直方图是最近判断，不是实时全约束扫描。
+`flow-control.enabled` 控制流控执行；`observation.realtime` 只许可 SSE 订阅。无订阅时没有常驻采样任务；普通 status 和 `/summary` 始终只计算总量，不生成分组。详情先选记录再解释，不自动每秒查询；单页查询仍有锁内读取成本。队列阻塞直方图是最近判断，不是实时全约束扫描。
 
-支持 `features: [grouped-summary]` 时，状态和 SSE 摘要的 `state.breakdown` 提供观察分组。`groups` 按 `stage/key/model/provider/account` 联合身份聚合，每组含 `active`、`waiting`；不携带请求 ID、正文或规则成员。用户调用记录使用公开模型名，上游执行记录使用实际目标及单条 Auth 引用，仍占名额的 draining 记录计入 active。一个排队项只计一次；首次联合申请按已选定的上游目标归组，其 `waiting-requests` 总量分类保持原语义。
+支持 `features: [on-demand-grouped-summary]` 时，SSE `/flow-control/events?view=total|model|account|key|provider` 按需采样当前视图。缺省为 `total`，非法 view 返回 HTTP 400。`total` 不生成或返回 breakdown；其他视图返回 `state.breakdown={view,groups,omitted,truncated}`，每行含 `stage`、`active`、`waiting`。同一视图的观察者共享一份限频 JSON，不同视图独立缓存；最多五类缓存，均由当前订阅懒生成，策略更新后失效。标签页隐藏暂停，不写监控历史。
 
-每次采样最多保留 128 个联合身份，每个身份的 JSON 转义内容最多 1024 bytes。按身份字典序选取，保留组的计数完整；其余计入 `omitted.active-requests/active-attempts/waiting` 并设置 `truncated: true`，组与 omitted 的和等于原总量。Panel 对受省略影响的指标采样断线，避免把部分身份投影成完整的模型或凭据计数。此扩展沿用 schema3 和共享 SSE 缓存；旧 Panel 可忽略它，旧 Core 继续展示总量。跨语言对账夹具位于 Core `sdk/cliproxy/flowcontrol/testdata/grouped-summary.json` 与 Panel `src/lts/flowControl/fixtures/grouped-summary.json`。
+分组只使用所选维度：model 按 stage+model 聚合，上游 attempt 另含 provider，防止不同提供方的同名目标混合；account 按 stage+account（单条 Auth 引用）、key 按 stage+key、provider 按 stage+provider。其他身份字段不进入分组或响应。request 尚无上游账号/提供方，在 account/provider 视图归入空引用组；空身份字段可省略。不携带请求 ID、正文或规则成员。request 的 model 是公开模型名，attempt 的 model 是实际目标；仍占名额的 draining 记录计入 active。一个排队项只计一次；首次联合申请按已选定的上游目标归组，其 `waiting-requests` 总量分类保持原语义。
+
+每次采样最多保留 128 个当前视图身份，每个身份的 JSON 转义内容最多 1024 bytes。先按字典序判断保留资格，再检查编码大小，保留组计数完整；其余计入 `omitted.active-requests/active-attempts/waiting` 并设置 `truncated: true`，各 stage active 与对应 omitted 的和等于原总量，waiting 同理。其他维度的高基数不会消耗当前视图的组预算。Panel 对受省略影响的指标采样断线。此扩展沿用 schema3；旧 Panel 可忽略它，未声明该 capability 的 Core 继续展示总量。跨语言 model 视图对账夹具位于 Core `sdk/cliproxy/flowcontrol/testdata/grouped-summary.json` 与 Panel `src/lts/flowControl/fixtures/grouped-summary.json`。
 
 资源查询只读取Go堆对象、Go-managed内存、goroutines以及当前工作目录文件系统可用空间，分别缓存5秒/30秒。不是RSS、CPU、日志目录大小或“流控精确内存”；未知显示null。关闭资源后下一份汇总移除旧值。无观察者时没有常驻采样任务。
 
