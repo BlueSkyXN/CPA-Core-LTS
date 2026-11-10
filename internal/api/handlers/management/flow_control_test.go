@@ -46,6 +46,9 @@ func TestFlowControlStatusReferencesDoNotExposeTokens(t *testing.T) {
 	if result["legacy-policy"] != false {
 		t.Fatal("default policy must not be reported as legacy", result)
 	}
+	if !strings.Contains(body, `"on-demand-grouped-summary"`) || result["state"].(map[string]any)["breakdown"] != nil {
+		t.Fatal("status must advertise on-demand grouping without building a breakdown")
+	}
 	keys := result["keys"].([]any)
 	if keys[0].(map[string]any)["ref"] != coresession.CallerScope(cfg.APIKeys[0]) {
 		t.Fatal("reference differs from runtime caller scope")
@@ -143,6 +146,7 @@ func TestFlowV3ManagementReadOnlyPreviewAndLimits(t *testing.T) {
 	h := NewHandler(&config.Config{}, "", manager)
 	router := gin.New()
 	router.GET("/events", h.GetFlowControlEvents)
+	router.GET("/summary", h.GetFlowControlSummary)
 	router.GET("/details", h.GetFlowControlDetails)
 	router.POST("/preview", h.PreviewFlowControl)
 	router.POST("/migration", h.PreviewFlowControlMigration)
@@ -151,6 +155,8 @@ func TestFlowV3ManagementReadOnlyPreviewAndLimits(t *testing.T) {
 		status             int
 	}{
 		{"GET", "/events", "", 409},
+		{"GET", "/events?view=joint", "", 400},
+		{"GET", "/summary", "", 200},
 		{"GET", "/details?limit=201", "", 400}, {"GET", "/details?offset=broken", "", 400},
 		{"POST", "/preview", `{"targets":[{"stage":"attempt","model":"m1"}],"config":{"version":3,"enabled":true,"rules":[{"id":"s","stage":"attempt","scope":"custom","models":["m1","m2"],"max-concurrent":3}]}}`, 200},
 		{"POST", "/preview", `{"targets":[{"stage":"attempt","model":"m*"}]}`, 400},
@@ -163,6 +169,9 @@ func TestFlowV3ManagementReadOnlyPreviewAndLimits(t *testing.T) {
 		router.ServeHTTP(w, req)
 		if w.Code != tc.status {
 			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body.String())
+		}
+		if tc.path == "/summary" && strings.Contains(w.Body.String(), `"breakdown"`) {
+			t.Fatal("ordinary management summary must not build grouped observations")
 		}
 	}
 	if manager.FlowControlSummary().Admitted != 0 {

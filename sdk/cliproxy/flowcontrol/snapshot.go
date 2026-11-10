@@ -54,7 +54,7 @@ func (e *Engine) Details(q DetailsOptions) Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.now()
-	s := e.summaryLocked(now)
+	s := e.summaryLocked(now, viewTotal)
 	out := Snapshot{Enabled: s.Enabled, Requests: s.Requests, Attempts: s.Attempts, Waiting: s.Waiting, WaitingRequests: s.WaitingRequests, WaitingAttempts: s.WaitingAttempts, QueuedBytes: s.QueuedBytes, Admitted: s.Admitted, Rejected: s.Rejected, Canceled: s.Canceled, TimedOut: s.TimedOut, Waited: s.Waited, Blocked: s.Blocked, SampledAt: now, ProcessID: e.processID, Policy: e.cfg.Effective(), PolicyRevision: e.policyRevision, ActivityTotal: len(e.active) + len(e.queue), OldestWaitMS: s.OldestWaitMS, Activity: []Activity{}, Buckets: []BucketSnapshot{}, Offset: q.Offset}
 	selected := &seedHeap{}
 	capacity := q.Offset + q.Limit

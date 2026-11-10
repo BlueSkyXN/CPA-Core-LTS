@@ -112,9 +112,8 @@ type Engine struct {
 	policyRevision     uint64
 	observationChanged chan struct{}
 	summaryMu          sync.Mutex
-	summaryPayload     []byte
-	summaryExpires     time.Time
-	summaryRevision    uint64
+	summaryCache       [5]summaryCacheEntry
+	summaryGroupBuilds uint64
 	summaryBuilds      uint64
 	resourceMu         sync.Mutex
 	resources          ResourceSample

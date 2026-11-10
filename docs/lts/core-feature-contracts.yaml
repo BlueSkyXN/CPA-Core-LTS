@@ -733,6 +733,7 @@ features:
       - AcquireImmediately
       - single-process
       - joint-first-admission
+      - on-demand-grouped-summary
       - last-good-policy
       - resolved-model-options
       - configured-policy
