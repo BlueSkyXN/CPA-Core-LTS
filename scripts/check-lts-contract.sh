@@ -343,6 +343,8 @@ require_grep 'yaml:"flow-control' internal/config/config.go
 require_grep '"/flow-control"' internal/api/server_management.go
 require_grep 'local_flow_control' sdk/cliproxy/flowcontrol/engine.go
 require_grep 'joint-first-admission' internal/api/handlers/management/flow_control.go
+require_grep 'grouped-summary' internal/api/handlers/management/flow_control.go
+require_grep 'json:"breakdown,omitempty"' sdk/cliproxy/flowcontrol/summary.go
 require_grep 'last-good-policy' internal/api/handlers/management/flow_control.go
 require_grep 'resolved-model-options' internal/api/handlers/management/flow_control.go
 require_grep 'configuration-failure' internal/api/handlers/management/flow_control.go

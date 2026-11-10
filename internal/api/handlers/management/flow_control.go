@@ -104,7 +104,7 @@ func (h *Handler) GetFlowControl(c *gin.Context) {
 		"scopes":              []string{"global", "key", "model", "key-model", "provider", "account", "account-model", "key-account", "key-account-model", "custom"},
 		"configuration-error": configError, "configuration-failure": updateFailure, "configured-enabled": cfg.Enabled,
 		"configured-policy": cfg,
-		"queue":             applied.Queue, "state": state, "keys": keyRefs, "accounts": accountRefs, "policy": applied, "features": []string{"model-sets", "single-account", "joint-first-admission", "shared-summary", "paged-details", "draft-preview", "resolved-model-options", "last-good-policy"}, "models": models, "model-options": modelOptions, "model-options-truncated": modelOptionsTruncated,
+		"queue":             applied.Queue, "state": state, "keys": keyRefs, "accounts": accountRefs, "policy": applied, "features": []string{"model-sets", "single-account", "joint-first-admission", "shared-summary", "grouped-summary", "paged-details", "draft-preview", "resolved-model-options", "last-good-policy"}, "models": models, "model-options": modelOptions, "model-options-truncated": modelOptionsTruncated,
 		"events-supported": true, "events-enabled": applied.Observation.Realtime, "events-interval-ms": applied.Observation.IntervalMS, "explain-supported": true,
 		"legacy-policy": isLegacyFlowPolicy(applied) || isLegacyFlowPolicy(cfg),
 	})

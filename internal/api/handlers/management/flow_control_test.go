@@ -46,6 +46,9 @@ func TestFlowControlStatusReferencesDoNotExposeTokens(t *testing.T) {
 	if result["legacy-policy"] != false {
 		t.Fatal("default policy must not be reported as legacy", result)
 	}
+	if !strings.Contains(body, `"grouped-summary"`) || result["state"].(map[string]any)["breakdown"] == nil {
+		t.Fatal("grouped summary capability and status must be delivered together")
+	}
 	keys := result["keys"].([]any)
 	if keys[0].(map[string]any)["ref"] != coresession.CallerScope(cfg.APIKeys[0]) {
 		t.Fatal("reference differs from runtime caller scope")

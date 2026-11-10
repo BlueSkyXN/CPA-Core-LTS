@@ -28,11 +28,19 @@ type Summary struct {
 	PolicyRevision  uint64            `json:"policy-revision"`
 	Observation     ObservationConfig `json:"observation"`
 	Resources       *ResourceSample   `json:"resources,omitempty"`
+	Breakdown       *SummaryBreakdown `json:"breakdown,omitempty"`
 }
 
-func (e *Engine) summaryLocked(now time.Time) Summary {
+func (e *Engine) summaryLocked(now time.Time, withGroups bool) Summary {
 	s := Summary{Enabled: e.cfg.Enabled, Waiting: len(e.queue), QueuedBytes: e.queueBytes, Admitted: e.admitted, Rejected: e.rejected, Canceled: e.canceled, TimedOut: e.timedOut, Waited: e.waited, Blocked: map[string]int{}, BlockedMeaning: "last-admission-check", SampledAt: now, ProcessID: e.processID, PolicyRevision: e.policyRevision, Observation: e.cfg.Observation}
+	var groups *breakdownCollector
+	if withGroups {
+		groups = &breakdownCollector{}
+	}
 	for _, a := range e.active {
+		if groups != nil {
+			groups.add(a.identity, 1, 0)
+		}
 		if a.identity.Stage == Request {
 			s.Requests++
 		} else {
@@ -40,6 +48,9 @@ func (e *Engine) summaryLocked(now time.Time) Summary {
 		}
 	}
 	for _, w := range e.queue {
+		if groups != nil {
+			groups.add(w.identity, 0, 1)
+		}
 		if w.identity.Stage == Request || w.request != nil && w.request.operation != nil && w.request.operation.ticket == 0 {
 			s.WaitingRequests++
 		} else {
@@ -52,6 +63,9 @@ func (e *Engine) summaryLocked(now time.Time) Summary {
 			s.Blocked[w.blocked]++
 		}
 	}
+	if groups != nil {
+		s.Breakdown = groups.finish()
+	}
 	return s
 }
 func (e *Engine) Summary() Summary {
@@ -59,7 +73,7 @@ func (e *Engine) Summary() Summary {
 		return Summary{Blocked: map[string]int{}}
 	}
 	e.mu.Lock()
-	s := e.summaryLocked(e.now())
+	s := e.summaryLocked(e.now(), true)
 	e.mu.Unlock()
 	if s.Observation.Resources {
 		sample := e.sampleResources()
