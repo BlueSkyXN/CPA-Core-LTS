@@ -1190,6 +1190,45 @@ func TestUsageReporterResolvesEffectiveServiceTierFromFinalOutboundPayload(t *te
 	}
 }
 
+func TestUsageReporterOutboundServiceTierOwnsInput(t *testing.T) {
+	payload := []byte(`{"service_tier":"  priority  ","input":"synthetic request"}`)
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", nil)
+	reporter.SetOutboundServiceTier(payload)
+	firstRecord := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	for i := range payload {
+		payload[i] = 'X'
+	}
+	finalRecord := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	for _, record := range []usage.Record{firstRecord, finalRecord} {
+		if record.OutboundServiceTier != "priority" || record.EffectiveServiceTier != "priority" {
+			t.Fatalf("service tier changed after input reuse: outbound=%q effective=%q", record.OutboundServiceTier, record.EffectiveServiceTier)
+		}
+	}
+}
+
+func TestUsageReporterTranslatedReasoningOwnsInput(t *testing.T) {
+	for _, tc := range []struct{ format, body string }{
+		{"claude", `{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`},
+		{"gemini", `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`},
+		{"openai", `{"reasoning_effort":"high"}`},
+		{"codex", `{"reasoning":{"effort":"high"}}`},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			payload := []byte(tc.body)
+			reporter := NewUsageReporter(context.Background(), tc.format, "test-model", nil)
+			reporter.SetTranslatedRequestMetadata(payload, tc.format)
+			firstRecord := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+			for i := range payload {
+				payload[i] = 'X'
+			}
+			finalRecord := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+			if firstRecord.ReasoningEffort != "high" || finalRecord.ReasoningEffort != "high" {
+				t.Fatalf("reasoning effort changed after input reuse: first=%q final=%q", firstRecord.ReasoningEffort, finalRecord.ReasoningEffort)
+			}
+		})
+	}
+}
+
 func TestUsageReporterKeepsOutboundServiceTierAttemptLocal(t *testing.T) {
 	priorityReporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", &cliproxyauth.Auth{ID: "auth-priority", Index: "1"})
 	standardReporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6", &cliproxyauth.Auth{ID: "auth-standard", Index: "2"})
@@ -1735,6 +1774,58 @@ func TestCodexUpstreamResponseModel(t *testing.T) {
 		if got := CodexUpstreamResponseModel([]byte(tc.data)); got != tc.want {
 			t.Fatalf("%s: CodexUpstreamResponseModel = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestCodexUpstreamResponseModelOwnsInputBuffer(t *testing.T) {
+	for _, model := range []string{"gpt-5.3-codex-2026-0815", "  gpt-5.3-codex-2026-0815  "} {
+		t.Run(model, func(t *testing.T) {
+			payload := []byte(`{"type":"response.created","response":{"model":"` + model + `"}}`)
+			got := CodexUpstreamResponseModel(payload)
+			for i := range payload {
+				payload[i] = 'X'
+			}
+			if want := strings.TrimSpace(model); got != want {
+				t.Fatalf("model after input buffer overwrite = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestCodexUpstreamModelSurvivesScannerReuse(t *testing.T) {
+	const requested = "gpt-5.3-codex"
+	const served = "gpt-5.3-codex-2026-0815"
+	start := `data: {"type":"response.created","response":{"model":"` + served + `"}}`
+	delta := `data: {"type":"response.output_text.delta","delta":"` + strings.Repeat("A", 100) + `"}`
+	stream := start + "\n" + strings.Repeat(delta+"\n", 100) + `data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(stream))
+	scanner.Buffer(make([]byte, 256), 4096)
+	reporter := NewUsageReporter(context.Background(), "codex", requested, nil)
+	var firstRecord usage.Record
+	for scanner.Scan() {
+		payload := bytes.TrimPrefix(scanner.Bytes(), []byte("data: "))
+		reporter.SetUpstreamModel(CodexUpstreamResponseModel(payload))
+		reporter.ObserveResponseModel(payload)
+		if firstRecord.UpstreamModel == "" {
+			firstRecord = reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	finalRecord := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false, usage.Failure{})
+	for name, got := range map[string]string{
+		"first record":   firstRecord.UpstreamModel,
+		"final record":   finalRecord.UpstreamModel,
+		"expected model": reporter.UpstreamModel(),
+		"response model": reporter.ResponseModel(),
+	} {
+		if got != served {
+			t.Errorf("%s after scanner reuse = %q, want %q", name, got, served)
+		}
+	}
+	if finalRecord.Model != requested {
+		t.Fatalf("request model = %q, want %q", finalRecord.Model, requested)
 	}
 }
 

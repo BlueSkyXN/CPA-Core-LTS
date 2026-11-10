@@ -999,7 +999,7 @@ func explicitOutboundServiceTier(payload []byte) string {
 	if !tier.Exists() || tier.Type != ojson.String {
 		return ""
 	}
-	return strings.TrimSpace(tier.String())
+	return strings.Clone(strings.TrimSpace(tier.String()))
 }
 
 func failFromErrors(errs ...error) usage.Failure {
@@ -2012,7 +2012,8 @@ func CodexUpstreamResponseModel(data []byte) string {
 			return ""
 		}
 	}
-	return value
+	// The caller may retain the model after reusing the streaming input buffer.
+	return strings.Clone(value)
 }
 
 func applyResponsesCacheRetention(detail *usage.Detail, root, usageNode ojson.Result) {

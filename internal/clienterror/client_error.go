@@ -229,7 +229,7 @@ func GeminiFilterBlockMessage(payload []byte) (string, bool) {
 		}
 		text := strings.TrimSpace(part.Get("text").String())
 		if isGeminiFilterBlockText(text) {
-			return text, true
+			return strings.Clone(text), true
 		}
 	}
 	return "", false

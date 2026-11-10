@@ -26,6 +26,21 @@ func (e responseBodyError) Error() string        { return "upstream request fail
 func (e responseBodyError) StatusCode() int      { return e.status }
 func (e responseBodyError) ResponseBody() []byte { return []byte(e.body) }
 
+func TestGeminiFilterBlockMessageOwnsInput(t *testing.T) {
+	const message = GeminiFilterBlockMessagePrefix + " See " + GeminiFilterBlockPolicyURL
+	payload := []byte(`{"candidates":[{"content":{"parts":[{"text":"` + message + `"}]}}]}`)
+	got, blocked := GeminiFilterBlockMessage(payload)
+	if !blocked {
+		t.Fatal("expected content filter frame to be recognized")
+	}
+	for i := range payload {
+		payload[i] = 'X'
+	}
+	if got != message {
+		t.Fatalf("filter message changed after input reuse: %q", got)
+	}
+}
+
 func TestHTTPStatusFromError(t *testing.T) {
 	tests := []struct {
 		name string
