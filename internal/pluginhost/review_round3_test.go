@@ -12,8 +12,9 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-// 评审第三轮复现用例（拷贝自评审 overlay；translateClaudePluginStream 按
-// 新签名补第 7 参 nil——评审针对的是双发取消，与该参数默认值无关）。
+// 评审第三轮复现用例（拷贝自评审 overlay）。受控交接用例按新签名将共享
+// 取消闭包作为第 7 参传入 shared——与生产调用点传 cancelStreamToPlugin 的
+// 方式一致，用例验证的正是该生产行为。
 func TestReviewRound3ClaudeBridgeAndBootstrapShareCancellation(t *testing.T) {
 	host := NewForTest(nil)
 	adapter := newCurrentExecutorAdapterForTest(host, "review-claude", &fakeExecutor{identifier: "plugin-provider"}, []sdktranslator.Format{sdktranslator.FormatClaude}, []sdktranslator.Format{sdktranslator.FormatClaude})
