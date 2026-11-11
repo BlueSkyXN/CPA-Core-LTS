@@ -248,21 +248,23 @@ func TestCodexReplaySelfHealPublishesFirstAttemptFailureUsage(t *testing.T) {
 		t.Fatalf("upstream request count = %d, want 2", got)
 	}
 	coreusage.PublishRecord(ctx, coreusage.Record{Alias: alias, Model: "dispatch-barrier"})
-	failedSeen := false
-	successSeen := false
+	failedCount := 0
+	successCount := 0
+	total := 0
 	for drain := 0; drain < 8; drain++ {
 		record := capture.await(t)
 		if record.Model == "dispatch-barrier" {
 			break
 		}
+		total++
 		if record.Failed {
-			failedSeen = true
+			failedCount++
 		} else {
-			successSeen = true
+			successCount++
 		}
 	}
-	if !failedSeen || !successSeen {
-		t.Fatalf("usage records: failed=%v success=%v, want both (first attempt failure + retry success)", failedSeen, successSeen)
+	if failedCount != 1 || successCount != 1 || total != 2 {
+		t.Fatalf("usage records: failed=%d success=%d total=%d, want exactly 1 failed + 1 success (2 total)", failedCount, successCount, total)
 	}
 }
 
