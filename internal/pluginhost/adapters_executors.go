@@ -834,17 +834,40 @@ func (a *executorAdapter) CancelExecution(ctx context.Context, req pluginapi.Can
 	}
 }
 
+// pluginCancelOnce 返回本请求 CancelExecution 只发一次的发送闭包。同一执行
+// 可能挂多个取消观察者（bootstrap watch、流式 watch、SSE 桥 stop、建流桥接
+// 转发），它们各自持有 once 无法互相去重；统一收敛到该闭包后，重复取消在
+// 请求层被吸收（lts-contract flake：TestExecutorStreamEarlyTerminationCancelsUpstream
+// 报 duplicate cancellation，两个 watch 对同一 streamCtx 终止各发一次）。
+func (a *executorAdapter) pluginCancelOnce(ctx context.Context, req pluginapi.ExecutorRequest) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			a.cancelExecutionAsync(req, executionCancelReason(ctx))
+		})
+	}
+}
+
 func (a *executorAdapter) watchExecutionCancellation(ctx context.Context, req pluginapi.ExecutorRequest) func() {
+	return a.watchExecutionCancellationShared(ctx, req, nil)
+}
+
+// watchExecutionCancellationShared 允许同一执行的多处观察共享一个取消发送
+// 闭包（见 pluginCancelOnce）；shared 为 nil 时行为与独立调用完全一致。
+func (a *executorAdapter) watchExecutionCancellationShared(ctx context.Context, req pluginapi.ExecutorRequest, shared func()) func() {
 	if a == nil || a.canceller == nil || ctx == nil || ctx.Done() == nil || (strings.TrimSpace(req.RequestID) == "" && strings.TrimSpace(req.ExecutionSessionID) == "") {
 		return func() {}
 	}
 	stopped := make(chan struct{})
 	var stopOnce sync.Once
 	var cancelOnce sync.Once
-	sendCancel := func() {
-		cancelOnce.Do(func() {
-			a.cancelExecutionAsync(req, executionCancelReason(ctx))
-		})
+	sendCancel := shared
+	if sendCancel == nil {
+		sendCancel = func() {
+			cancelOnce.Do(func() {
+				a.cancelExecutionAsync(req, executionCancelReason(ctx))
+			})
+		}
 	}
 	go func() {
 		select {
@@ -1848,7 +1871,10 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 			}
 		}()
 	}
-	stopBootstrapCancellationWatch := a.watchExecutionCancellation(streamCtx, pluginReq)
+	// bootstrap watch 与后续流式 watch 共享同一请求级取消闭包：同一
+	// streamCtx 的终止只向插件发一次 CancelExecution。
+	cancelStreamToPlugin := a.pluginCancelOnce(streamCtx, pluginReq)
+	stopBootstrapCancellationWatch := a.watchExecutionCancellationShared(streamCtx, pluginReq, cancelStreamToPlugin)
 	defer stopBootstrapCancellationWatch()
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
 	if reporter != nil {
@@ -1885,7 +1911,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	}
 	if prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatOpenAIResponse {
 		// 转换和原始 usage 观察使用同一协程，避免上游先关闭时抢先发布成功。
-		pluginChunks := a.watchExecutorStreamCancellation(streamCtx, pluginReq, pluginResp.Chunks)
+		pluginChunks := a.watchExecutorStreamCancellationShared(streamCtx, pluginReq, pluginResp.Chunks, cancelStreamToPlugin)
 		// 转换协程的 select/发送跟随请求 ctx（带 reporter 值）；插件与 watch
 		// 留在与请求取消解耦的执行 ctx 上，收尾期间不受客户端取消影响。
 		convCtx := ctx
@@ -1897,7 +1923,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(ctx, translated)}, nil
 	}
 	rawPluginChunks := observeFormalPluginStreamUsage(streamCtx, reporter, prepared.outputFormat, pluginResp.Chunks)
-	pluginChunks := a.watchExecutorStreamCancellation(streamCtx, pluginReq, rawPluginChunks)
+	pluginChunks := a.watchExecutorStreamCancellationShared(streamCtx, pluginReq, rawPluginChunks, cancelStreamToPlugin)
 	streamHandedOff = true
 	return &coreexecutor.StreamResult{
 		Headers: cloneHeader(pluginResp.Headers),
@@ -1907,6 +1933,13 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 }
 
 func (a *executorAdapter) watchExecutorStreamCancellation(ctx context.Context, req pluginapi.ExecutorRequest, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
+	return a.watchExecutorStreamCancellationShared(ctx, req, in, nil)
+}
+
+// watchExecutorStreamCancellationShared 允许与 bootstrap watch 共享同一个
+// 请求级取消闭包（pluginCancelOnce）：两个 watch 对同一 streamCtx 终止各持
+// once 仍会双发；共享后重复取消在请求层被吸收。
+func (a *executorAdapter) watchExecutorStreamCancellationShared(ctx context.Context, req pluginapi.ExecutorRequest, in <-chan pluginapi.ExecutorStreamChunk, shared func()) <-chan pluginapi.ExecutorStreamChunk {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1915,23 +1948,27 @@ func (a *executorAdapter) watchExecutorStreamCancellation(ctx context.Context, r
 		close(out)
 		return out
 	}
+	sendCancel := shared
+	if sendCancel == nil {
+		sendCancel = a.pluginCancelOnce(ctx, req)
+	}
 	go func() {
 		defer close(out)
 		for {
 			select {
 			case <-ctx.Done():
-				a.cancelExecutionAsync(req, executionCancelReason(ctx))
+				sendCancel()
 				return
 			case chunk, ok := <-in:
 				if !ok {
 					if ctx.Err() != nil {
-						a.cancelExecutionAsync(req, executionCancelReason(ctx))
+						sendCancel()
 					}
 					return
 				}
 				select {
 				case <-ctx.Done():
-					a.cancelExecutionAsync(req, executionCancelReason(ctx))
+					sendCancel()
 					return
 				case out <- chunk:
 				}
