@@ -62,17 +62,27 @@ func ExtractResponsesCallID(node ojson.Result) string {
 // 3. FIFO queue fallback for remaining outputs that omit a call ID (skipping pending calls reserved by future explicit outputs).
 // Outputs that already carry an explicit call ID that does not match any pending call
 // are never rewritten or stolen.
-// normalizeResponsesToolCallOutputsWithClusters runs the pairing walk and
-// additionally reports, per output cluster, whether the cluster's missing-ID
-// assignments were deterministic or guesses. A cluster is a guess when it has
-// more than one pairing-candidate output, or its reachable unclaimed pending
-// calls outnumber its candidates — the same locality rules as before, but now
-// evaluated against the pending set the walk actually carries at that position
-// (review round 2, findings II1/II2): a preceding no-ID output that failed to
-// pair (e.g. a page_context output whose name matches no pending call) must
-// leave its pending calls visible to later clusters instead of being assumed
-// to have consumed one, and a later ambiguous cluster must not retroactively
-// discard pairings already established by earlier deterministic clusters.
+// matchBasis 记录一条配对的依据：显式 ID 引用、簇内唯一名称匹配、或 FIFO
+// 兜底（唯一名称不成立时的顺序猜测）。
+type matchBasis int
+
+const (
+	matchExplicit matchBasis = iota
+	matchUniqueName
+	matchFIFO
+)
+
+// normalizeResponsesToolCallOutputsWithClusters 运行三趟配对并按「依据」决定
+// 每条匹配是否落定（评审三轮收敛的模型）：
+//   - 显式 ID 与簇内唯一名称匹配是确定依据，无条件落 call_id；
+//   - FIFO 兜底是猜测依据，仅当其所在簇无歧义（缺失 ID 候选不多于可归属
+//     pending 可消除的数量）时落定，否则保持原样交孤儿改写；
+//   - pending 是配对游程自身的 carry：未匹配输出不清零，纯显式簇正常消费
+//     对应调用（III1），歧义簇只冻结 FIFO 兜底、不影响显式/名称匹配的消费
+//     （III2）。
+//
+// clusterGuesses 改为簇序记录「该簇 FIFO 兜底是否被抑制」，仅在有候选的簇
+// 追加，读取方按簇索引取值。
 func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojson.Result, []bool) {
 	normalized := make([]ojson.Result, len(items))
 	copy(normalized, items)
@@ -92,9 +102,7 @@ func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojso
 
 	var pendingCallIDs []string
 	pendingCallNames := make(map[string]string)
-	// clusterGuesses[len(candidates seen so far)-1] 记录每个簇是否为猜测配对。
 	var clusterGuesses []bool
-	clusterCount := 0
 
 	i := 0
 	for i < len(normalized) {
@@ -118,69 +126,83 @@ func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojso
 			}
 			outputs := normalized[start:i]
 
-			// 本簇的缺失 ID 配对候选数（排除显式 ID 与委托输出）。
-			candidates := 0
-			for _, out := range outputs {
-				if ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
-					candidates++
-				}
+			if len(pendingCallIDs) == 0 {
+				continue
 			}
-			// 猜测判定：候选多于一个，或可归属的 pending 调用多于候选可消除的
-			// 数量。pending 在扣除「被后续显式输出保留」后仍多于候选时，归属
-			// 无法唯一确定（评审 II1：page_context 未配对不得清零 pending；
-			// 既有 reverse-order 用例：call_a 被显式保留后 call_b 唯一可归属，
-			// 是确定配对而非猜测）。
-			if candidates > 0 {
-				unreserved := 0
-				for _, pendingID := range pendingCallIDs {
-					if explicitOutputCounts[pendingID] == 0 {
-						unreserved++
-					}
-				}
-				clusterGuesses = append(clusterGuesses, candidates > 1 || unreserved > candidates)
-				clusterCount++
+			used := make([]bool, len(outputs))
+			basis := make([]matchBasis, len(pendingCallIDs))
+			matchedForPending := make([]int, len(pendingCallIDs))
+			for idx := range matchedForPending {
+				matchedForPending[idx] = -1
 			}
 
-			if len(pendingCallIDs) > 0 {
-				used := make([]bool, len(outputs))
-				matchedForPending := make([]int, len(pendingCallIDs))
-				for idx := range matchedForPending {
-					matchedForPending[idx] = -1
-				}
-
-				// Pass 1: exact explicit call ID match
-				for pendingIdx, pendingID := range pendingCallIDs {
-					for outIdx, out := range outputs {
-						if !used[outIdx] && ExtractResponsesCallID(out) == pendingID {
-							used[outIdx] = true
-							matchedForPending[pendingIdx] = outIdx
-							explicitOutputCounts[pendingID]--
-							break
-						}
+			// Pass 1: exact explicit call ID match — 确定依据。
+			for pendingIdx, pendingID := range pendingCallIDs {
+				for outIdx, out := range outputs {
+					if !used[outIdx] && ExtractResponsesCallID(out) == pendingID {
+						used[outIdx] = true
+						matchedForPending[pendingIdx] = outIdx
+						basis[pendingIdx] = matchExplicit
+						explicitOutputCounts[pendingID]--
+						break
 					}
 				}
+			}
 
-				// Pass 2: match by function name for outputs with no explicit call ID (skipping pending IDs reserved by future explicit outputs)
-				for pendingIdx, pendingID := range pendingCallIDs {
-					if matchedForPending[pendingIdx] >= 0 || explicitOutputCounts[pendingID] > 0 {
-						continue
-					}
-					expectedName := pendingCallNames[pendingID]
-					if expectedName != "" {
-						for outIdx, out := range outputs {
-							if !used[outIdx] && ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
-								outName := strings.TrimSpace(out.Get("name").String())
-								if outName != "" && outName == expectedName {
-									used[outIdx] = true
-									matchedForPending[pendingIdx] = outIdx
-									break
-								}
+			// Pass 2: match by function name — 同名候选唯一时为确定依据。
+			for pendingIdx, pendingID := range pendingCallIDs {
+				if matchedForPending[pendingIdx] >= 0 || explicitOutputCounts[pendingID] > 0 {
+					continue
+				}
+				expectedName := pendingCallNames[pendingID]
+				if expectedName == "" {
+					continue
+				}
+				// 统计本簇内同名无 ID 候选数：唯一才可确定，多于一个则退给 FIFO。
+				sameNameIdx := -1
+				sameNameCount := 0
+				for outIdx, out := range outputs {
+					if !used[outIdx] && ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
+						if strings.TrimSpace(out.Get("name").String()) == expectedName {
+							sameNameCount++
+							if sameNameIdx < 0 {
+								sameNameIdx = outIdx
 							}
 						}
 					}
 				}
+				if sameNameCount == 1 {
+					used[sameNameIdx] = true
+					matchedForPending[pendingIdx] = sameNameIdx
+					basis[pendingIdx] = matchUniqueName
+				}
+			}
 
-				// Pass 3: FIFO fallback for outputs with no explicit call ID (skipping pending IDs reserved by future explicit outputs)
+			// FIFO 兜底之前的歧义判定：缺失 ID 候选多于「尚可认领的 pending」
+			// 时，顺序归属是猜测（III1/III2 语义收敛于此）。尚可认领 = 已被
+			// Pass 1/2 匹配消费的 pending 不再参与计数（既有 reverse-order
+			// 用例：call_a 被显式输出认领后，唯一候选对唯一剩余 pending
+			// call_b 是消除法确定的归属，不是猜测）；未被匹配且仍被后续显式
+			// 输出保留的 pending 同样不计入。
+			candidates := 0
+			for outIdx, out := range outputs {
+				if !used[outIdx] && ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
+					candidates++
+				}
+			}
+			claimable := 0
+			for pendingIdx, pendingID := range pendingCallIDs {
+				if matchedForPending[pendingIdx] < 0 && explicitOutputCounts[pendingID] == 0 {
+					claimable++
+				}
+			}
+			fifoSuppressed := candidates > 1 || claimable > candidates
+			if candidates > 0 {
+				clusterGuesses = append(clusterGuesses, fifoSuppressed)
+			}
+
+			// Pass 3: FIFO fallback — 仅在未被抑制时落定。
+			if !fifoSuppressed {
 				for pendingIdx := range pendingCallIDs {
 					pendingID := pendingCallIDs[pendingIdx]
 					if matchedForPending[pendingIdx] >= 0 || explicitOutputCounts[pendingID] > 0 {
@@ -193,48 +215,36 @@ func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojso
 							if outName == "" || expectedName == "" || outName == expectedName {
 								used[outIdx] = true
 								matchedForPending[pendingIdx] = outIdx
+								basis[pendingIdx] = matchFIFO
 								break
 							}
 						}
 					}
 				}
-
-				// Apply matched call_ids to outputs. A guessed cluster keeps its
-				// original items: the sanitizer's caller-facing contract is that
-				// guessed assignments never leave this function (II1/II2).
-				guessed := clusterCount > 0 && clusterGuesses[clusterCount-1]
-				var remainingPending []string
-				for pendingIdx, pendingID := range pendingCallIDs {
-					outIdx := matchedForPending[pendingIdx]
-					if outIdx < 0 {
-						remainingPending = append(remainingPending, pendingID)
-						continue
-					}
-					if guessed {
-						continue // 猜测簇：不落 call_id，pending 也随 remaining 语义保留判断
-					}
-					matchedOut := outputs[outIdx]
-					if matchedOut.Get("call_id").String() != pendingID {
-						raw := []byte(matchedOut.Raw)
-						raw, _ = ojson.SetBytes(raw, "call_id", pendingID)
-						normalized[start+outIdx] = util.ParseGJSONBytesNoCopy(raw)
-					}
-				}
-				if guessed {
-					// 猜测簇的消费不落定：matched 的调用仍标记为已用，避免
-					// 后续簇重复拿到（与既有 Pass 1/2/3 的 used 语义一致），
-					// 但 pending 集合不收缩——歧义簇的归属本就未确定。
-					for pendingIdx := range pendingCallIDs {
-						if matchedForPending[pendingIdx] >= 0 {
-							remainingPending = append(remainingPending, pendingCallIDs[pendingIdx])
-						}
-					}
-				}
-				pendingCallIDs = remainingPending
-			} else if candidates > 0 {
-				// 无 pending 调用时的孤立候选簇：维持既有「不配对」行为，
-				// 记为猜测（sanitize 阶段按孤儿转 user message）。
 			}
+
+			// 落定 call_id 并收缩 pending：确定依据（显式/唯一名称）总是消费；
+			// FIFO 落定仅靠未被抑制时的匹配消费。抑制簇中被 FIFO 候匹配的
+			// pending 保持可见（未跑 Pass 3，matchedForPending 对应保持 -1）。
+			var remainingPending []string
+			for pendingIdx, pendingID := range pendingCallIDs {
+				outIdx := matchedForPending[pendingIdx]
+				if outIdx < 0 {
+					remainingPending = append(remainingPending, pendingID)
+					continue
+				}
+				if basis[pendingIdx] == matchFIFO && fifoSuppressed {
+					remainingPending = append(remainingPending, pendingID)
+					continue
+				}
+				matchedOut := outputs[outIdx]
+				if matchedOut.Get("call_id").String() != pendingID {
+					raw := []byte(matchedOut.Raw)
+					raw, _ = ojson.SetBytes(raw, "call_id", pendingID)
+					normalized[start+outIdx] = util.ParseGJSONBytesNoCopy(raw)
+				}
+			}
+			pendingCallIDs = remainingPending
 
 		default:
 			i++
