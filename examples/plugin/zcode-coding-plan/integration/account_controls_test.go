@@ -67,22 +67,24 @@ func TestResponsesThinkingAndImageControls(t *testing.T) {
 				}
 			}
 		}
-		before := len(f.transport.captured)
 		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":[{"role":"user","content":[{"type":"input_text","text":"describe"},{"type":"input_image","image_url":"data:image/png;base64,%s"}]}]}`, model, flashImageFixture))
-		if model == "glm-5.3" {
-			if res.Code != 400 || len(f.transport.captured) != before {
-				t.Fatal("text-only model accepted an image")
-			}
-			f.checkUsage(t, true)
-			continue
-		}
 		if res.Code != 200 {
-			t.Fatalf("Flash image HTTP=%d: %s", res.Code, res.Body.String())
+			t.Fatalf("%s image HTTP=%d: %s", model, res.Code, res.Body.String())
 		}
 		f.checkUsage(t, false)
 		body := f.transport.captured[len(f.transport.captured)-1]
 		if ojson.GetBytes(body, "messages.0.content.1.type").String() != "image" || ojson.GetBytes(body, "messages.0.content.1.source.data").String() != flashImageFixture {
 			t.Fatal("image was dropped or changed during translation")
+		}
+		// glm-5.3 走网关识图：图片请求必须带注入的 image_analysis 声明；flash 不注入。
+		declared := false
+		for _, tool := range ojson.GetBytes(body, "tools").Array() {
+			if tool.Get("type").String() == "image_analysis" && tool.Get("name").String() == "image_analysis" {
+				declared = true
+			}
+		}
+		if (model == "glm-5.3") != declared {
+			t.Fatalf("%s gateway vision declaration mismatch (declared=%t)", model, declared)
 		}
 	}
 }
@@ -116,20 +118,23 @@ func TestMessagesThinkingAndToolImages(t *testing.T) {
 				history = `[{"role":"assistant","content":[{"type":"tool_use","id":"call-image","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-image","content":[` + image + `]}]}]`
 				imagePath = "messages.1.content.0.content.0.source.data"
 			}
-			before := len(f.transport.captured)
 			rec := httptest.NewRecorder()
 			f.router.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":%q,"messages":%s,"max_tokens":100}`, model, history))))
-			if model == "glm-5.3" {
-				if rec.Code != 400 || len(f.transport.captured) != before {
-					t.Fatal("text-only native Messages accepted an image")
-				}
-				f.checkUsage(t, true)
-				continue
-			}
 			if rec.Code != 200 || ojson.GetBytes(f.transport.captured[len(f.transport.captured)-1], imagePath).String() != flashImageFixture {
 				t.Fatalf("native Messages image nested=%v HTTP=%d", nested, rec.Code)
 			}
 			f.checkUsage(t, false)
+			// glm-5.3 网关识图：native Messages 图片请求同样注入声明；flash 不注入。
+			last := f.transport.captured[len(f.transport.captured)-1]
+			declared := false
+			for _, tool := range ojson.GetBytes(last, "tools").Array() {
+				if tool.Get("type").String() == "image_analysis" && tool.Get("name").String() == "image_analysis" {
+					declared = true
+				}
+			}
+			if (model == "glm-5.3") != declared {
+				t.Fatalf("native Messages %s gateway vision declaration mismatch (declared=%t, nested=%v)", model, declared, nested)
+			}
 		}
 	}
 }
