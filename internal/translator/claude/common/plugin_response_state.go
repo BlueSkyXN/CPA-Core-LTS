@@ -69,7 +69,7 @@ func supportedPluginStop(reason string) bool {
 
 func validatePluginContent(block ojson.Result, searches map[string]*pluginServerTool, chat bool) error {
 	blockType := block.Get("type").String()
-	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result" || blockType == "mcp_tool_use" || blockType == "mcp_tool_result") {
+	if chat && (blockType == "server_tool_use" || blockType == "web_search_tool_result" || blockType == "tool_result") {
 		return PluginResponseError()
 	}
 	switch block.Get("type").String() {
@@ -117,6 +117,9 @@ func validatePluginContent(block ojson.Result, searches map[string]*pluginServer
 		// 调用（server_name=4_5v_mcp，name=analyze_image，input 含网关 OSS
 		// imageSource 与模型自拟 prompt）。与 server_tool_use 同为单请求内
 		// called→consumed 的配对状态机，复用 searches 表。
+		// chat 模式不整体拒绝：网关识图的触发与入站协议无关，Chat 客户端的
+		// glm-5.3 图片请求同样会收到合法配对；翻译层按 server 块既有边界
+		// 静默跳过（Chat 无服务端工具概念），最终回答照常输出。
 		if block.Get("id").String() == "" || block.Get("name").String() == "" {
 			return PluginResponseError()
 		}

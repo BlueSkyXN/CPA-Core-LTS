@@ -132,7 +132,8 @@ func validateToolHistory(body map[string]any) error {
 // mcp_tool_result）折叠为等价的 text 快照，再进入 transform 校验。
 // 折叠原因：imageSource 是网关 OSS 签名 URL（会过期），且配对块原样回放会
 // 重复触发服务端转写（每轮 ~1k input 膨胀 + 20s 延迟）。转写文本本身无损保留。
-// 非配对/畸形的 mcp 块不在此处理——transform 会对残留 mcp_tool_use 显式拒绝。
+// 仅折叠已验证的配对：孤立 mcp_tool_use（不同 ID 无配对结果）保留原块，
+// 由 transform 显式拒绝；字符串 content 的消息原样保留不重写。
 func foldGatewayVisionHistory(body map[string]any) {
 	messages, _ := body["messages"].([]any)
 	// 先收集每个 mcp_tool_use 的配对结果文本。
@@ -178,7 +179,12 @@ func foldGatewayVisionHistory(body map[string]any) {
 		if !ok {
 			continue
 		}
-		blocks, _ := message["content"].([]any)
+		blocks, ok := message["content"].([]any)
+		if !ok {
+			// 字符串 content 与其他非数组形态原样保留；只重写含目标块的消息。
+			continue
+		}
+		folded := false
 		kept := make([]any, 0, len(blocks))
 		for _, w := range blocks {
 			block, ok := w.(map[string]any)
@@ -188,24 +194,34 @@ func foldGatewayVisionHistory(body map[string]any) {
 			}
 			switch block["type"] {
 			case "mcp_tool_use":
-				// 调用块替换为占位 text；结果文本随 mcp_tool_result 块注入。
+				id, _ := block["id"].(string)
+				if _, paired := results[id]; !paired {
+					// 孤立调用（无配对结果）保留原块，transform 显式拒绝。
+					kept = append(kept, w)
+					continue
+				}
 				name, _ := block["name"].(string)
 				kept = append(kept, map[string]any{
 					"type": "text",
 					"text": fmt.Sprintf("[gateway vision: %s executed server-side; analysis retained below]", name),
 				})
+				folded = true
 			case "mcp_tool_result":
 				id, _ := block["tool_use_id"].(string)
 				text := results[id]
 				if text == "" {
-					text = "[gateway vision analysis unavailable]"
+					kept = append(kept, w)
+					continue
 				}
 				kept = append(kept, map[string]any{"type": "text", "text": text})
+				folded = true
 			default:
 				kept = append(kept, w)
 			}
 		}
-		message["content"] = kept
+		if folded {
+			message["content"] = kept
+		}
 	}
 }
 

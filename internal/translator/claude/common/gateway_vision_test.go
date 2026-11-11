@@ -38,9 +38,14 @@ func TestPluginGatewayVisionPairing(t *testing.T) {
 			if err := ValidatePluginMessage(ojson.Parse(message), false); (err == nil) != tc.valid {
 				t.Fatalf("valid=%t, err=%v", tc.valid, err)
 			}
-			// Chat 模式一律拒绝服务端块（与 server_tool_use 同边界）。
-			if err := ValidatePluginMessage(ojson.Parse(message), true); tc.valid && err == nil {
-				t.Fatal("chat mode must reject gateway vision blocks")
+			// Chat 模式对纯 mcp 对与 Messages 同边界（网关识图触发与入站协议无关）；
+			// 混入 server_tool_use 的用例仍按 server 块既有 chat 边界拒绝。
+			chatExpect := tc.valid
+			if tc.name == "mixed pairs" || tc.name == "mcp result must not satisfy server_tool_use" {
+				chatExpect = false
+			}
+			if err := ValidatePluginMessage(ojson.Parse(message), true); (err == nil) != chatExpect {
+				t.Fatalf("chat valid=%t, err=%v", chatExpect, err)
 			}
 		})
 	}
