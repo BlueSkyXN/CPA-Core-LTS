@@ -234,3 +234,118 @@ func TestNormalizeResponsesToolCallOutputs(t *testing.T) {
 		}
 	})
 }
+
+// 评审 I3 回归：逐轮可确定的配对不得被全局歧义计数撤销。
+// call A → 无 ID 结果 A → 下一轮 → call B → 无 ID 结果 B：每个簇各只有一个
+// 候选、各只有一个 pending 调用，历史全局有两个 missing 输出但无局部歧义。
+func TestNormalizeResponsesToolCallOutputsPerTurnPairsNotGloballyAmbiguous(t *testing.T) {
+	input := []byte(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q1"}]},
+		{"type":"function_call","call_id":"call_a","name":"lookup"},
+		{"type":"function_call_output","output":"result A"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q2"}]},
+		{"type":"function_call","call_id":"call_b","name":"lookup"},
+		{"type":"function_call_output","output":"result B"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a2"}]}
+	]`)
+	items := util.ParseGJSONBytesNoCopy(input).Array()
+	normalized, guesses := normalizeResponsesToolCallOutputsWithClusters(items)
+	if len(guesses) != 2 || guesses[0] || guesses[1] {
+		t.Fatalf("per-turn single-candidate pairs must be deterministic, guesses=%v", guesses)
+	}
+	if got := normalized[2].Get("call_id").String(); got != "call_a" {
+		t.Fatalf("first turn pair lost: call_id=%q, want call_a", got)
+	}
+	if got := normalized[6].Get("call_id").String(); got != "call_b" {
+		t.Fatalf("second turn pair lost: call_id=%q, want call_b", got)
+	}
+}
+
+// 真歧义簇：猜测配对不落 call_id（由 sanitize 阶段按孤儿处理）。
+func TestNormalizeResponsesToolCallOutputsGuessClustersKeepOriginals(t *testing.T) {
+	// 同簇两个无 ID 输出对两个 pending 调用。
+	ambiguous := util.ParseGJSONBytesNoCopy([]byte(`[
+		{"type":"function_call","call_id":"call_a","name":"tool_a"},
+		{"type":"function_call","call_id":"call_b","name":"tool_b"},
+		{"type":"function_call_output","output":"x"},
+		{"type":"function_call_output","output":"y"}
+	]`)).Array()
+	normalized, guesses := normalizeResponsesToolCallOutputsWithClusters(ambiguous)
+	if len(guesses) != 1 || !guesses[0] {
+		t.Fatalf("two candidates in one cluster must be a guess, guesses=%v", guesses)
+	}
+	if normalized[2].Get("call_id").String() != "" || normalized[3].Get("call_id").String() != "" {
+		t.Fatal("guessed cluster must not assign call_ids")
+	}
+
+	// 两个 pending 调用 + 单个无 ID 输出（归属二选一不可确定）。
+	twoPending := util.ParseGJSONBytesNoCopy([]byte(`[
+		{"type":"function_call","call_id":"call_a","name":"tool_a"},
+		{"type":"function_call","call_id":"call_b","name":"tool_b"},
+		{"type":"function_call_output","output":"only"}
+	]`)).Array()
+	_, guesses = normalizeResponsesToolCallOutputsWithClusters(twoPending)
+	if len(guesses) != 1 || !guesses[0] {
+		t.Fatal("single output against two pending calls must remain a guess")
+	}
+}
+
+// 评审第二轮 II1：未匹配的上下文输出不得清零 pending 集合。
+// 调用 A(tool_a) → 无 ID 的 page_context 输出（名字不匹配任何调用，配不上）→
+// 调用 B(tool_b) → 无 ID 无名结果：此时 B 前仍有 A、B 两个 pending，
+// 末簇单候选对多 pending = 歧义 → 不得把结果猜给 A。
+func TestNormalizeResponsesToolCallOutputsUnmatchedContextOutputKeepsPending(t *testing.T) {
+	items := util.ParseGJSONBytesNoCopy([]byte(`[
+		{"type":"function_call","call_id":"call_a","name":"tool_a"},
+		{"type":"function_call_output","name":"page_context","output":"ctx"},
+		{"type":"function_call","call_id":"call_b","name":"tool_b"},
+		{"type":"function_call_output","output":"result"}
+	]`)).Array()
+	normalized, guesses := normalizeResponsesToolCallOutputsWithClusters(items)
+	// 两个簇：page_context 簇（1 候选 1 pending，确定但名字不匹配→未配对），
+	// 末簇（1 候选，但 pending 仍含 A、B → 歧义）。
+	if len(guesses) != 2 || guesses[0] || !guesses[1] {
+		t.Fatalf("unmatched context output must leave pending visible; guesses=%v", guesses)
+	}
+	if normalized[1].Get("call_id").String() != "" {
+		t.Fatalf("page_context must not be paired, got call_id=%q", normalized[1].Get("call_id").String())
+	}
+	if normalized[3].Get("call_id").String() != "" {
+		t.Fatalf("final output must not be guessed to call_a, got call_id=%q", normalized[3].Get("call_id").String())
+	}
+}
+
+// 评审第二轮 II2：后续簇歧义只影响歧义簇本身，不得撤销前面已确定的配对。
+// 第一轮 A 与唯一输出可确定配对；第二轮 B/C 对 X/Y 歧义。
+// 验证最终 sanitize 结果（此前只测了歧义函数返回 true）。
+func TestSanitizeOrphanResponsesToolOutputsKeepsEarlierDeterministicPairs(t *testing.T) {
+	doc := ojson.NewDoc([]byte(`{"input":[
+		{"type":"function_call","call_id":"call_a","name":"lookup"},
+		{"type":"function_call_output","output":"result A"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]},
+		{"type":"function_call","call_id":"call_b","name":"tool_b"},
+		{"type":"function_call","call_id":"call_c","name":"tool_c"},
+		{"type":"function_call_output","output":"X"},
+		{"type":"function_call_output","output":"Y"}
+	]}`))
+	changed := SanitizeOrphanResponsesToolOutputsDoc(doc)
+	if !changed {
+		t.Fatal("ambiguous trailing cluster should still rewrite orphans")
+	}
+	normalized := doc.Get("input").Array()
+	if got := normalized[1].Get("call_id").String(); got != "call_a" {
+		t.Fatalf("first deterministic pair must survive later ambiguity: call_id=%q, want call_a", got)
+	}
+	if normalized[1].Get("type").String() != "function_call_output" {
+		t.Fatalf("first pair output degraded to %q", normalized[1].Get("type").String())
+	}
+	// 歧义簇的两个输出：不猜配对 → 由孤儿规则转 user message（strict Responses
+	// 可接受），不携带任何猜测的 call_id。
+	if normalized[5].Get("type").String() != "message" || normalized[6].Get("type").String() != "message" {
+		t.Fatalf("ambiguous outputs must degrade to user messages, got %q/%q", normalized[5].Get("type").String(), normalized[6].Get("type").String())
+	}
+	if normalized[5].Get("call_id").String() != "" || normalized[6].Get("call_id").String() != "" {
+		t.Fatal("ambiguous cluster must not receive guessed call_ids")
+	}
+}
