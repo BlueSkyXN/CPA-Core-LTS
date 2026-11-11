@@ -1200,10 +1200,14 @@ func TestConvertOpenAIResponsesRequestToCodexSanitizesOrphanToolOutputs(t *testi
 		t.Fatalf("input[6].namespace = %q, want %q", got, "codex_app")
 	}
 
-	if got := input[8].Get("type").String(); got != "message" {
-		t.Fatalf("input[8].type = %q, want %q", got, "message")
+	// input[8] 是 call_pair 之后唯一的无 ID 候选（单候选对单 pending，确定配对），
+	// 按评审 I3 语义保留 function_call_output 并落 call_id。此前的期望（转
+	// message）来自已被移除的「任一簇歧义→全量回退」旧语义：那次回退把本就
+	// 可确定的配对一并撤销。前面的歧义簇（input[1]/[2]）不影响这里。
+	if got := input[8].Get("type").String(); got != "function_call_output" {
+		t.Fatalf("input[8].type = %q, want function_call_output (deterministic pair)", got)
 	}
-	if input[8].Get("call_id").Exists() {
-		t.Fatalf("input[8] gained a guessed call_id: %s", input[8].Raw)
+	if got := input[8].Get("call_id").String(); got != "call_pair" {
+		t.Fatalf("input[8].call_id = %q, want call_pair", got)
 	}
 }

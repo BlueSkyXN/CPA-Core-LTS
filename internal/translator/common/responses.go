@@ -62,13 +62,23 @@ func ExtractResponsesCallID(node ojson.Result) string {
 // 3. FIFO queue fallback for remaining outputs that omit a call ID (skipping pending calls reserved by future explicit outputs).
 // Outputs that already carry an explicit call ID that does not match any pending call
 // are never rewritten or stolen.
-func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
-	if len(items) == 0 {
-		return items
-	}
-
+// normalizeResponsesToolCallOutputsWithClusters runs the pairing walk and
+// additionally reports, per output cluster, whether the cluster's missing-ID
+// assignments were deterministic or guesses. A cluster is a guess when it has
+// more than one pairing-candidate output, or its reachable unclaimed pending
+// calls outnumber its candidates — the same locality rules as before, but now
+// evaluated against the pending set the walk actually carries at that position
+// (review round 2, findings II1/II2): a preceding no-ID output that failed to
+// pair (e.g. a page_context output whose name matches no pending call) must
+// leave its pending calls visible to later clusters instead of being assumed
+// to have consumed one, and a later ambiguous cluster must not retroactively
+// discard pairings already established by earlier deterministic clusters.
+func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojson.Result, []bool) {
 	normalized := make([]ojson.Result, len(items))
 	copy(normalized, items)
+	if len(items) == 0 {
+		return normalized, nil
+	}
 
 	explicitOutputCounts := make(map[string]int)
 	for _, item := range items {
@@ -82,6 +92,9 @@ func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
 
 	var pendingCallIDs []string
 	pendingCallNames := make(map[string]string)
+	// clusterGuesses[len(candidates seen so far)-1] 记录每个簇是否为猜测配对。
+	var clusterGuesses []bool
+	clusterCount := 0
 
 	i := 0
 	for i < len(normalized) {
@@ -104,6 +117,29 @@ func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
 				i++
 			}
 			outputs := normalized[start:i]
+
+			// 本簇的缺失 ID 配对候选数（排除显式 ID 与委托输出）。
+			candidates := 0
+			for _, out := range outputs {
+				if ExtractResponsesCallID(out) == "" && !isCodexDelegationToolOutput(out) {
+					candidates++
+				}
+			}
+			// 猜测判定：候选多于一个，或可归属的 pending 调用多于候选可消除的
+			// 数量。pending 在扣除「被后续显式输出保留」后仍多于候选时，归属
+			// 无法唯一确定（评审 II1：page_context 未配对不得清零 pending；
+			// 既有 reverse-order 用例：call_a 被显式保留后 call_b 唯一可归属，
+			// 是确定配对而非猜测）。
+			if candidates > 0 {
+				unreserved := 0
+				for _, pendingID := range pendingCallIDs {
+					if explicitOutputCounts[pendingID] == 0 {
+						unreserved++
+					}
+				}
+				clusterGuesses = append(clusterGuesses, candidates > 1 || unreserved > candidates)
+				clusterCount++
+			}
 
 			if len(pendingCallIDs) > 0 {
 				used := make([]bool, len(outputs))
@@ -163,13 +199,19 @@ func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
 					}
 				}
 
-				// Apply matched call_ids to outputs
+				// Apply matched call_ids to outputs. A guessed cluster keeps its
+				// original items: the sanitizer's caller-facing contract is that
+				// guessed assignments never leave this function (II1/II2).
+				guessed := clusterCount > 0 && clusterGuesses[clusterCount-1]
 				var remainingPending []string
 				for pendingIdx, pendingID := range pendingCallIDs {
 					outIdx := matchedForPending[pendingIdx]
 					if outIdx < 0 {
 						remainingPending = append(remainingPending, pendingID)
 						continue
+					}
+					if guessed {
+						continue // 猜测簇：不落 call_id，pending 也随 remaining 语义保留判断
 					}
 					matchedOut := outputs[outIdx]
 					if matchedOut.Get("call_id").String() != pendingID {
@@ -178,14 +220,31 @@ func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
 						normalized[start+outIdx] = util.ParseGJSONBytesNoCopy(raw)
 					}
 				}
+				if guessed {
+					// 猜测簇的消费不落定：matched 的调用仍标记为已用，避免
+					// 后续簇重复拿到（与既有 Pass 1/2/3 的 used 语义一致），
+					// 但 pending 集合不收缩——歧义簇的归属本就未确定。
+					for pendingIdx := range pendingCallIDs {
+						if matchedForPending[pendingIdx] >= 0 {
+							remainingPending = append(remainingPending, pendingCallIDs[pendingIdx])
+						}
+					}
+				}
 				pendingCallIDs = remainingPending
+			} else if candidates > 0 {
+				// 无 pending 调用时的孤立候选簇：维持既有「不配对」行为，
+				// 记为猜测（sanitize 阶段按孤儿转 user message）。
 			}
 
 		default:
 			i++
 		}
 	}
+	return normalized, clusterGuesses
+}
 
+func NormalizeResponsesToolCallOutputs(items []ojson.Result) []ojson.Result {
+	normalized, _ := normalizeResponsesToolCallOutputsWithClusters(items)
 	return normalized
 }
 
@@ -216,10 +275,11 @@ func SanitizeOrphanResponsesToolOutputsInputDoc(inputResult ojson.Result, ensure
 		return false
 	}
 
+	// 猜测配对已在 normalizeResponsesToolCallOutputsWithClusters 内部按簇抑制：
+	// 确定簇的 call_id 落定，歧义簇保持原样进入下方孤儿改写。此前这里还有
+	// 一个整段历史的歧义回退（任何簇歧义就全量丢弃 normalizedItems），
+	// 会把前面已确定的配对一并撤销（评审第二轮 II2），已移除。
 	normalizedItems := NormalizeResponsesToolCallOutputs(inputItems)
-	if responsesToolOutputAssignmentAmbiguous(inputItems) {
-		normalizedItems = append(make([]ojson.Result, 0, len(inputItems)), inputItems...)
-	}
 
 	changed := false
 	pendingMissingCallIDOutputType := ""
@@ -299,68 +359,6 @@ func responsesToolOutputReferenceCallID(item ojson.Result) string {
 		}
 	}
 	return ""
-}
-
-// responsesToolOutputAssignmentAmbiguous reports whether any missing-ID output
-// cluster is locally ambiguous — more than one pairing-candidate output in the
-// same contiguous cluster, or more than one unclaimed pending call reachable
-// from that cluster's position. History-wide counting (review finding I3)
-// wrongly flagged conversations where separate turns each carried one
-// determinable pair (call A → output A → … → call B → output B): every cluster
-// had exactly one candidate, yet the global count of missing outputs exceeded
-// one and the normalization result was discarded wholesale, degrading both
-// outputs to user messages and letting Claude repair fabricate interrupted-tool
-// errors. Per-cluster counting preserves the deterministic pairings.
-func responsesToolOutputAssignmentAmbiguous(items []ojson.Result) bool {
-	explicitOutputs := make(map[string]int)
-	for _, item := range items {
-		switch strings.TrimSpace(item.Get("type").String()) {
-		case "function_call_output", "custom_tool_call_output":
-			if callID := ExtractResponsesCallID(item); callID != "" {
-				explicitOutputs[callID]++
-			}
-		}
-	}
-	claimed := func(callID string) bool { return explicitOutputs[callID] > 0 }
-
-	pendingUnclaimed := 0 // unclaimed calls seen since the last output cluster
-	for i := 0; i < len(items); {
-		item := items[i]
-		itemType := strings.TrimSpace(item.Get("type").String())
-		switch itemType {
-		case "function_call", "custom_tool_call":
-			if callID := ExtractResponsesCallID(item); callID != "" && !claimed(callID) {
-				pendingUnclaimed++
-			}
-			i++
-		case "function_call_output", "custom_tool_call_output":
-			if ExtractResponsesCallID(item) != "" || isCodexDelegationToolOutput(item) {
-				i++
-				continue
-			}
-			// Contiguous cluster of missing-ID pairing candidates.
-			clusterSize := 0
-			for i < len(items) {
-				candidate := items[i]
-				t := strings.TrimSpace(candidate.Get("type").String())
-				if t != "function_call_output" && t != "custom_tool_call_output" {
-					break
-				}
-				if ExtractResponsesCallID(candidate) != "" || isCodexDelegationToolOutput(candidate) {
-					break
-				}
-				clusterSize++
-				i++
-			}
-			if clusterSize > 1 || pendingUnclaimed > 1 {
-				return true
-			}
-			pendingUnclaimed = 0 // the cluster consumed the single pending call
-		default:
-			i++
-		}
-	}
-	return false
 }
 
 func isCodexDelegationToolOutput(item ojson.Result) bool {
