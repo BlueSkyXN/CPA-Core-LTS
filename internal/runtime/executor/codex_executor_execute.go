@@ -124,12 +124,26 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err != nil {
 		return resp, err
 	}
-	if !skipReplay {
+	// injectedReplay records whether this attempt inserted CPA-owned replay
+	// items into the upstream body — the injection helper's changed outcome, not
+	// mere cache presence: a present entry can be filtered out entirely. Only an
+	// actual injection may be retried without it on a signature rejection; the
+	// removed content is proxy-owned, never client ciphertext. A self-heal retry
+	// skips the injection itself but still resolves the scope so a successful
+	// response stores fresh replay content.
+	selfHealRetry := req.Metadata != nil && req.Metadata[cliproxyexecutor.CodexReplaySelfHealMetadataKey] == true
+	injectedReplay := false
+	if selfHealRetry {
+		replayScope = resolveCodexReasoningReplayScopeOnly(ctx, from, req, opts, body)
+	} else if !skipReplay {
 		var errReplay error
-		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		var replayResult applyCodexReasoningReplayCacheResult
+		body, replayResult, errReplay = applyCodexReasoningReplayCacheWithResult(ctx, from, req, opts, body)
 		if errReplay != nil {
 			return resp, errReplay
 		}
+		replayScope = replayResult.scope
+		injectedReplay = replayResult.injected
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, targetModel, baseURL)
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
@@ -189,9 +203,15 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)
 		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, b); errClearReplay != nil {
 			return resp, errClearReplay
+		}
+		if shouldSelfHealReplayRetry(replayScope, injectedReplay, httpResp.StatusCode, b) {
+			firstErr := newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, b, e.modelLevelCooling())
+			resp, err = e.retryOnceWithoutReplay(ctx, reporter, firstErr, auth, req, opts)
+			return resp, err
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
@@ -224,6 +244,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(eventData, e.modelLevelCooling()); ok {
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
+			}
+			if shouldSelfHealReplayRetry(replayScope, injectedReplay, streamErr.StatusCode(), terminalBody) {
+				resp, err = e.retryOnceWithoutReplay(ctx, reporter, streamErr, auth, req, opts)
+				return resp, err
 			}
 			err = streamErr
 			return resp, err

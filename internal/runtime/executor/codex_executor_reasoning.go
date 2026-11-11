@@ -45,6 +45,38 @@ func applyCodexReasoningReplayCacheRequired(ctx context.Context, from sdktransla
 	return doc.Bytes(), scope, nil
 }
 
+// applyCodexReasoningReplayCacheResult reports whether the upstream body was
+// actually modified by the injection. A present cache entry may still be
+// filtered out entirely (client already carries the items, duplicate or
+// mismatched turns), so only changed proves this attempt injected CPA-owned
+// content.
+type applyCodexReasoningReplayCacheResult struct {
+	scope    codexReasoningReplayScope
+	injected bool
+}
+
+// applyCodexReasoningReplayCacheWithResult is applyCodexReasoningReplayCacheRequired
+// with the injection outcome surfaced for self-heal gating.
+func applyCodexReasoningReplayCacheWithResult(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) ([]byte, applyCodexReasoningReplayCacheResult, error) {
+	doc := ojson.NewDoc(body)
+	scope, changed, errReplay := applyCodexReasoningReplayCacheRequiredDoc(ctx, from, req, opts, doc)
+	if errReplay != nil {
+		return body, applyCodexReasoningReplayCacheResult{scope: scope}, errReplay
+	}
+	if !changed {
+		return body, applyCodexReasoningReplayCacheResult{scope: scope}, nil
+	}
+	return doc.Bytes(), applyCodexReasoningReplayCacheResult{scope: scope, injected: true}, nil
+}
+
+// resolveCodexReasoningReplayScopeOnly computes the replay scope (model/session
+// fingerprint) without reading or injecting cached items. Self-heal retries use
+// it so a successful response still stores fresh replay content under the same
+// scope even though the poisoned injection is skipped.
+func resolveCodexReasoningReplayScopeOnly(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) codexReasoningReplayScope {
+	return codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
+}
+
 func applyCodexReasoningReplayCacheRequiredDoc(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, doc *ojson.Doc) (codexReasoningReplayScope, bool, error) {
 	scope := codexReasoningReplayScopeFromRequestDoc(ctx, from, req, opts, doc)
 	if !scope.valid() {
