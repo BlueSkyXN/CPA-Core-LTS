@@ -301,40 +301,66 @@ func responsesToolOutputReferenceCallID(item ojson.Result) string {
 	return ""
 }
 
+// responsesToolOutputAssignmentAmbiguous reports whether any missing-ID output
+// cluster is locally ambiguous — more than one pairing-candidate output in the
+// same contiguous cluster, or more than one unclaimed pending call reachable
+// from that cluster's position. History-wide counting (review finding I3)
+// wrongly flagged conversations where separate turns each carried one
+// determinable pair (call A → output A → … → call B → output B): every cluster
+// had exactly one candidate, yet the global count of missing outputs exceeded
+// one and the normalization result was discarded wholesale, degrading both
+// outputs to user messages and letting Claude repair fabricate interrupted-tool
+// errors. Per-cluster counting preserves the deterministic pairings.
 func responsesToolOutputAssignmentAmbiguous(items []ojson.Result) bool {
-	missingPairableOutputs := 0
 	explicitOutputs := make(map[string]int)
 	for _, item := range items {
 		switch strings.TrimSpace(item.Get("type").String()) {
 		case "function_call_output", "custom_tool_call_output":
 			if callID := ExtractResponsesCallID(item); callID != "" {
 				explicitOutputs[callID]++
+			}
+		}
+	}
+	claimed := func(callID string) bool { return explicitOutputs[callID] > 0 }
+
+	pendingUnclaimed := 0 // unclaimed calls seen since the last output cluster
+	for i := 0; i < len(items); {
+		item := items[i]
+		itemType := strings.TrimSpace(item.Get("type").String())
+		switch itemType {
+		case "function_call", "custom_tool_call":
+			if callID := ExtractResponsesCallID(item); callID != "" && !claimed(callID) {
+				pendingUnclaimed++
+			}
+			i++
+		case "function_call_output", "custom_tool_call_output":
+			if ExtractResponsesCallID(item) != "" || isCodexDelegationToolOutput(item) {
+				i++
 				continue
 			}
-			if responsesToolOutputPairingCandidate(item) {
-				missingPairableOutputs++
+			// Contiguous cluster of missing-ID pairing candidates.
+			clusterSize := 0
+			for i < len(items) {
+				candidate := items[i]
+				t := strings.TrimSpace(candidate.Get("type").String())
+				if t != "function_call_output" && t != "custom_tool_call_output" {
+					break
+				}
+				if ExtractResponsesCallID(candidate) != "" || isCodexDelegationToolOutput(candidate) {
+					break
+				}
+				clusterSize++
+				i++
 			}
+			if clusterSize > 1 || pendingUnclaimed > 1 {
+				return true
+			}
+			pendingUnclaimed = 0 // the cluster consumed the single pending call
+		default:
+			i++
 		}
 	}
-	if missingPairableOutputs == 0 {
-		return false
-	}
-
-	unclaimedCalls := 0
-	for _, item := range items {
-		switch strings.TrimSpace(item.Get("type").String()) {
-		case "function_call", "custom_tool_call":
-			callID := ExtractResponsesCallID(item)
-			if callID != "" && explicitOutputs[callID] == 0 {
-				unclaimedCalls++
-			}
-		}
-	}
-	return missingPairableOutputs > 1 || unclaimedCalls > 1
-}
-
-func responsesToolOutputPairingCandidate(item ojson.Result) bool {
-	return ExtractResponsesCallID(item) == "" && !isCodexDelegationToolOutput(item)
+	return false
 }
 
 func isCodexDelegationToolOutput(item ojson.Result) bool {

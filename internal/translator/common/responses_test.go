@@ -234,3 +234,67 @@ func TestNormalizeResponsesToolCallOutputs(t *testing.T) {
 		}
 	})
 }
+
+// 评审 I3 回归：逐轮可确定的配对不得被全局歧义计数撤销。
+// call A → 无 ID 结果 A → 下一轮 → call B → 无 ID 结果 B：每个簇各只有一个
+// 候选、各只有一个 pending 调用，历史全局有两个 missing 输出但无局部歧义。
+func TestNormalizeResponsesToolCallOutputsPerTurnPairsNotGloballyAmbiguous(t *testing.T) {
+	input := []byte(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q1"}]},
+		{"type":"function_call","call_id":"call_a","name":"lookup"},
+		{"type":"function_call_output","output":"result A"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q2"}]},
+		{"type":"function_call","call_id":"call_b","name":"lookup"},
+		{"type":"function_call_output","output":"result B"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a2"}]}
+	]`)
+	items := util.ParseGJSONBytesNoCopy(input).Array()
+	if responsesToolOutputAssignmentAmbiguous(items) {
+		t.Fatal("per-turn single-candidate pairs must not be flagged ambiguous")
+	}
+	normalized := NormalizeResponsesToolCallOutputs(items)
+	if got := normalized[2].Get("call_id").String(); got != "call_a" {
+		t.Fatalf("first turn pair lost: call_id=%q, want call_a", got)
+	}
+	if got := normalized[6].Get("call_id").String(); got != "call_b" {
+		t.Fatalf("second turn pair lost: call_id=%q, want call_b", got)
+	}
+}
+
+// 真歧义仍须拦截：同一簇两个无 ID 输出对两个 pending 调用（不可确定归属）。
+func TestResponsesToolOutputAssignmentAmbiguousLocalCluster(t *testing.T) {
+	ambiguous := util.ParseGJSONBytesNoCopy([]byte(`[
+		{"type":"function_call","call_id":"call_a","name":"tool_a"},
+		{"type":"function_call","call_id":"call_b","name":"tool_b"},
+		{"type":"function_call_output","output":"x"},
+		{"type":"function_call_output","output":"y"}
+	]`)).Array()
+	if !responsesToolOutputAssignmentAmbiguous(ambiguous) {
+		t.Fatal("two candidates in one cluster must remain ambiguous")
+	}
+
+	// 两个 pending 调用 + 单个无 ID 输出（归属二选一不可确定）。
+	twoPending := util.ParseGJSONBytesNoCopy([]byte(`[
+		{"type":"function_call","call_id":"call_a","name":"tool_a"},
+		{"type":"function_call","call_id":"call_b","name":"tool_b"},
+		{"type":"function_call_output","output":"only"}
+	]`)).Array()
+	if !responsesToolOutputAssignmentAmbiguous(twoPending) {
+		t.Fatal("single output against two pending calls must remain ambiguous")
+	}
+
+	// 跨轮两对 + 末尾一个额外孤立输出（全局 3 个 missing，前两对仍应保留，
+	// 末尾孤块按孤儿规则转 user message，不影响前面已确定的配对）。
+	mixed := util.ParseGJSONBytesNoCopy([]byte(`[
+		{"type":"function_call","call_id":"call_a","name":"lookup"},
+		{"type":"function_call_output","output":"result A"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]},
+		{"type":"function_call","call_id":"call_b","name":"lookup"},
+		{"type":"function_call_output","output":"result B"},
+		{"type":"function_call_output","output":"stray"}
+	]`)).Array()
+	if !responsesToolOutputAssignmentAmbiguous(mixed) {
+		t.Fatal("trailing two-output cluster (B + stray) is locally ambiguous")
+	}
+}
