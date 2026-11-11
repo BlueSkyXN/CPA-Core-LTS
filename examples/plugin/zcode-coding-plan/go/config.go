@@ -55,16 +55,21 @@ func builtinModelLimits(model string) (modelLimits, bool) {
 	return modelLimits{}, false
 }
 
-// builtinModelImageInput 报告内置模型是否接受图片输入；glm-5.3 仅文本。
+// builtinModelImageInput 报告内置模板是否原生接受图片输入（flash）。
+// glm-5.3 的读图依赖网关服务端识图（见 gateway_vision 开关与 2026-11-10 探测
+// 文档），能力归 effectiveModelImageInput 按 config 判定。
 func builtinModelImageInput(model string) bool {
-	switch modelTemplateID(model) {
-	case "glm-5.3":
-		return false
-	case "glm-5.3-flash":
-		return true
+	return modelTemplateID(model) == "glm-5.3-flash"
+}
+
+// effectiveModelImageInput 是图片能力的唯一判定点：flash 原生直通恒开；
+// glm-5.3 走网关识图，受 gateway_vision 开关控制——关闭时模型列表不带
+// image 模态、validateImage 拒图、transform 不代注声明，三处同判。
+func effectiveModelImageInput(c *config, model string) bool {
+	if modelTemplateID(model) == "glm-5.3" {
+		return c.GatewayVision
 	}
-	// 非内置 ID 的能力未验收，保守按纯文本处理。
-	return false
+	return builtinModelImageInput(model)
 }
 
 func upstreamEndpoint(upstream string) string {
@@ -85,6 +90,7 @@ type config struct {
 	MaxInflight                int                    `json:"max_inflight"`
 	AccountScope               string                 `json:"account_scope"`
 	HostLoggingDisabled        bool                   `json:"host_logging_disabled"`
+	GatewayVision              bool                   `json:"gateway_vision"`
 	APIKey, DeviceID, Endpoint string
 }
 
@@ -94,6 +100,9 @@ func defaultConfig() *config {
 	c := &config{}
 	c.Upstream = "bigmodel"
 	c.Endpoint = upstreamEndpoint(c.Upstream)
+	// 网关服务端识图默认开启：bigmodel 与 zai 均已实测同行为
+	// （2026-11-11 补测，见 local/2026-11-10 探测文档第 8 节）。
+	c.GatewayVision = true
 	c.MaxInflight = 10
 	c.AccountScope = "local-account"
 	c.Identity = defaultIdentity()

@@ -25,6 +25,9 @@ type PluginResponseState struct {
 type pluginServerTool struct {
 	name  string
 	state int
+	// mcp 标记该配对属于网关 MCP 工具（mcp_tool_use/mcp_tool_result）而非
+	// server_tool_use，防止两类配对互相冒用。
+	mcp bool
 }
 
 // BigModelWebReaderToolName 是 Coding Plan 返回的服务端网页读取工具名。
@@ -108,6 +111,43 @@ func validatePluginContent(block ojson.Result, searches map[string]*pluginServer
 			return PluginResponseError()
 		}
 		searches[id] = &pluginServerTool{name: name, state: searchStateCalled}
+	case "mcp_tool_use":
+		// GLM Coding Plan 网关识图（2026-11-10 探测实证）：tools 声明
+		// image_analysis 时，网关把模型自主发起的图片分析劫持为服务端 MCP
+		// 调用（server_name=4_5v_mcp，name=analyze_image，input 含网关 OSS
+		// imageSource 与模型自拟 prompt）。与 server_tool_use 同为单请求内
+		// called→consumed 的配对状态机，复用 searches 表。
+		// chat 模式不整体拒绝：网关识图的触发与入站协议无关，Chat 客户端的
+		// glm-5.3 图片请求同样会收到合法配对；翻译层按 server 块既有边界
+		// 静默跳过（Chat 无服务端工具概念），最终回答照常输出。
+		if block.Get("id").String() == "" || block.Get("name").String() == "" {
+			return PluginResponseError()
+		}
+		if input := block.Get("input"); input.Exists() && !input.IsObject() {
+			return PluginResponseError()
+		}
+		id := block.Get("id").String()
+		if _, exists := searches[id]; exists {
+			return PluginResponseError()
+		}
+		searches[id] = &pluginServerTool{name: block.Get("name").String(), state: searchStateCalled, mcp: true}
+	case "mcp_tool_result":
+		// 服务端代跑的转写结果：content 是文本块数组（自由 Markdown，无 repr
+		// 解析契约），只校验配对与类型。
+		tool := searches[block.Get("tool_use_id").String()]
+		if tool == nil || !tool.mcp || tool.state != searchStateCalled {
+			return PluginResponseError()
+		}
+		content := block.Get("content")
+		if !content.IsArray() || len(content.Array()) == 0 {
+			return PluginResponseError()
+		}
+		for _, item := range content.Array() {
+			if item.Get("type").String() != "text" || item.Get("text").Type != ojson.String {
+				return PluginResponseError()
+			}
+		}
+		tool.state = searchStateConsumed
 	case "web_search_tool_result":
 		id := block.Get("tool_use_id").String()
 		tool := searches[id]
@@ -158,6 +198,18 @@ func ValidatePluginMessage(message ojson.Result, chat bool) error {
 	for _, block := range message.Get("content").Array() {
 		if err := validatePluginContent(block, searches, chat); err != nil {
 			return err
+		}
+	}
+	// 网关识图调用必须在消息内消费完毕（评审 II3）：孤立 mcp_tool_use 在 Chat
+	// 出站会被静默折叠成空成功——合法配对同样折叠但内容已被模型消化，孤立
+	// 调用则是上游契约破坏，fail-loud 而非空响应。终态 stop_reason 为
+	// tool_use 的消息是流式跨消息分块（下一消息补结果），照 server_tool_use
+	// 既有边界放行。
+	if message.Get("stop_reason").String() != "tool_use" {
+		for _, tool := range searches {
+			if tool.mcp && tool.state == searchStateCalled {
+				return PluginResponseError()
+			}
 		}
 	}
 	return nil
@@ -235,7 +287,7 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 				return fail()
 			}
 		case "input_json_delta":
-			if (block.kind != "tool_use" && block.kind != "server_tool_use") || delta.Get("partial_json").Type != ojson.String {
+			if (block.kind != "tool_use" && block.kind != "server_tool_use" && block.kind != "mcp_tool_use") || delta.Get("partial_json").Type != ojson.String {
 				return fail()
 			}
 			if !block.deltas {
@@ -280,6 +332,16 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 			requiresObjectArgs := block.kind == "tool_use" || block.args.Len() > 0
 			if (block.kind == "tool_use" || block.kind == "server_tool_use") && s.stop != "max_tokens" && requiresObjectArgs && (!json.Valid([]byte(block.args.String())) || !ojson.Parse(block.args.String()).IsObject()) {
 				return fail()
+			}
+		}
+		// 网关识图调用必须在流终态前消费（评审 II3）：未消费的 mcp_tool_use 在
+		// Chat 出站会静默折叠成空成功。与 ValidatePluginMessage 相同的
+		// stop_reason!=tool_use 跨消息分块豁免。
+		if s.stop != "tool_use" {
+			for _, tool := range s.searches {
+				if tool.mcp && tool.state == searchStateCalled {
+					return fail()
+				}
 			}
 		}
 		s.Terminal = true

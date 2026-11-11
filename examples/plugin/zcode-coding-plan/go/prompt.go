@@ -121,6 +121,10 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 				if name != "web_search" && name != "web_search_prime" && name != "webReader" {
 					return nil, problem(400, "unsupported_content", "Unsupported server tool in Coding Plan history")
 				}
+			case "mcp_tool_use":
+				// 历史里的网关识图调用：其 imageSource 是已过期的网关 OSS 签名 URL，
+				// 不能原样回放；折叠为 text 快照（foldGatewayVisionHistory）。
+				return nil, problem(400, "unsupported_content", "Gateway vision history must be folded to text before sending; expired gateway image URLs cannot be replayed")
 			case "web_search_tool_result":
 			case "web_fetch_tool_result":
 				return nil, problem(400, "unsupported_content", "web_fetch history is not supported by Coding Plan")
@@ -128,7 +132,7 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 				if m["role"] != "user" {
 					return nil, problem(400, "unsupported_content", "Images require a user message")
 				}
-				if err := validateImage(block, model); err != nil {
+				if err := validateImage(block, c, model); err != nil {
 					return nil, err
 				}
 			case "tool_result":
@@ -139,7 +143,7 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 							return nil, problem(400, "unsupported_content", "Invalid tool result content")
 						}
 						if part["type"] == "image" {
-							if err := validateImage(part, model); err != nil {
+							if err := validateImage(part, c, model); err != nil {
 								return nil, err
 							}
 						}
@@ -178,7 +182,80 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 	}{c.DeviceID, "", session}
 	metadata["user_id"] = string(encode(wire))
 	b["metadata"] = metadata
+	if err := injectGatewayVisionDeclaration(b, c, model); err != nil {
+		return nil, err
+	}
 	return b, nil
+}
+
+// 网关服务端识图契约（2026-11-10 真凭据探测，2026-11-11 补测双上游）：
+// 声明 tools[type=image_analysis, name=image_analysis] 且请求带 system 或
+// metadata 任一 → 网关挂载 4_5v_mcp，把模型自主发起的图片分析劫持为
+// mcp_tool_use(analyze_image) 服务端代跑并以 mcp_tool_result 回填。bigmodel
+// 与 zai 实测同行为；行为漂移时经 gateway_vision 开关降级，不发版。
+const (
+	gatewayVisionToolType = "image_analysis"
+	gatewayVisionToolName = "image_analysis"
+)
+
+// injectGatewayVisionDeclaration 对 glm-5.3 的图片请求代注网关识图声明。
+// 触发后的转写由上游网关完成，插件不 fetch 图片、不本地转写、不增加模型调用。
+func injectGatewayVisionDeclaration(b map[string]any, c *config, model string) error {
+	if !c.GatewayVision || modelTemplateID(model) != "glm-5.3" {
+		return nil
+	}
+	images := countImageBlocks(b)
+	if images == 0 {
+		return nil
+	}
+	tools, _ := b["tools"].([]any)
+	for _, v := range tools {
+		tool, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tool["type"] == gatewayVisionToolType {
+			return nil // 客户端已声明（或上一轮已注入），不重复。
+		}
+	}
+	b["tools"] = append(tools, map[string]any{"type": gatewayVisionToolType, "name": gatewayVisionToolName})
+	return nil
+}
+
+// countImageBlocks 统计消息与 tool_result 内容中的图片块数量。
+func countImageBlocks(b map[string]any) int {
+	count := 0
+	messages, _ := b["messages"].([]any)
+	for _, v := range messages {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, ok := m["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, w := range blocks {
+			block, ok := w.(map[string]any)
+			if !ok {
+				continue
+			}
+			if block["type"] == "image" {
+				count++
+			}
+			if block["type"] == "tool_result" {
+				if content, ok := block["content"].([]any); ok {
+					for _, x := range content {
+						part, ok := x.(map[string]any)
+						if ok && part["type"] == "image" {
+							count++
+						}
+					}
+				}
+			}
+		}
+	}
+	return count
 }
 func validateTools(body map[string]any) error {
 	value, exists := body["tools"]
@@ -207,6 +284,14 @@ func validateTools(body map[string]any) error {
 				// server_tool_use plus bare tool_result blocks. They carry no
 				// client name/input_schema contract, so skip those checks.
 				continue
+			case gatewayVisionToolType:
+				// 网关服务端识图（2026-11-10 探测实证）：上游要求声明带 name、无
+				// input_schema；模型自主发起的图片分析会被网关劫持为 mcp_tool_use
+				// 并由 4_5v_mcp 服务端代跑。插件对图片请求会代注同款声明。
+				if _, ok := tool["name"].(string); !ok || strings.TrimSpace(tool["name"].(string)) == "" {
+					return problem(400, "invalid_request", fmt.Sprintf("tools[%d].name must be a non-empty string for image_analysis", i))
+				}
+				continue
 			default:
 				return problem(400, "unsupported_tools", fmt.Sprintf("tools[%d]: Provider-native tools are not supported by Coding Plan; use client-executed function or MCP tools with name and input_schema", i))
 			}
@@ -222,8 +307,8 @@ func validateTools(body map[string]any) error {
 	return nil
 }
 
-func validateImage(block map[string]any, model string) error {
-	if !builtinModelImageInput(model) {
+func validateImage(block map[string]any, c *config, model string) error {
+	if !effectiveModelImageInput(c, model) {
 		return problem(400, "unsupported_content", "This model does not support image input")
 	}
 	source, ok := block["source"].(map[string]any)

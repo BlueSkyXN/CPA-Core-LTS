@@ -507,7 +507,7 @@ func modelList(c *config) []any {
 	for _, m := range c.Models {
 		limits := limitsFor(c, m)
 		input := []string{"text"}
-		if builtinModelImageInput(m) {
+		if effectiveModelImageInput(c, m) {
 			input = append(input, "image")
 		}
 		parameters := []string{"max_tokens", "tools", "tool_choice", "temperature", "top_p"}

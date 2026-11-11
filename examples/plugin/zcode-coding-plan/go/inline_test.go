@@ -104,11 +104,10 @@ func TestInlineModelMetadata(t *testing.T) {
 			t.Fatal("thinking levels wrong for", id, thinking["Levels"])
 		}
 		input := m["SupportedInputModalities"].([]string)
-		if (id == "glm-5.3" || id == "glm-5.3-highspeed") && len(input) != 1 {
-			t.Fatal("glm-5.3 must be text-only")
-		}
-		if (id == "glm-5.3-flash" || id == "glm-5.3-flashx") && (len(input) != 2 || input[1] != "image") {
-			t.Fatal("glm-5.3-flash must accept images")
+		// 2026-11-10 网关识图：glm-5.3 经 tools 声明代注获得服务端转写读图，
+		// 全部内置 GLM 模板都接受图片输入。
+		if len(input) != 2 || input[1] != "image" {
+			t.Fatal("built-in GLM models must accept images", id)
 		}
 		native := m["NativeCapabilities"].(map[string]any)
 		if native["WebSearch"] != true || native["WebSearchReplay"] != "bigmodel" {
