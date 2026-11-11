@@ -194,3 +194,101 @@ func TestGatewayVisionHistoryFoldingRejectsOrphanWithValidPairPresent(t *testing
 		t.Fatal("orphan call alongside a valid pair must still be rejected", err)
 	}
 }
+
+// TestGatewayVisionSwitchDisablesCapability 钉死开关三处同判：关闭 gateway_vision 后
+// 模型列表不广告 image 模态、图片请求被拒、无声明注入；默认配置（on）行为不变。
+func TestGatewayVisionSwitchDisablesCapability(t *testing.T) {
+	on := defaultConfig()
+	if !on.GatewayVision {
+		t.Fatal("gateway_vision must default to true")
+	}
+	for _, m := range modelList(on) {
+		model := m.(map[string]any)
+		hasImage := false
+		for _, mod := range model["SupportedInputModalities"].([]string) {
+			if mod == "image" {
+				hasImage = true
+			}
+		}
+		if !hasImage {
+			t.Fatalf("%s must advertise image input with the switch on", model["ID"])
+		}
+	}
+
+	off := defaultConfig()
+	off.GatewayVision = false
+	for _, m := range modelList(off) {
+		model := m.(map[string]any)
+		hasImage := false
+		for _, mod := range model["SupportedInputModalities"].([]string) {
+			if mod == "image" {
+				hasImage = true
+			}
+		}
+		if model["ID"] == "glm-5.3" && hasImage {
+			t.Fatal("glm-5.3 must not advertise image input with gateway_vision off")
+		}
+		if model["ID"] == "glm-5.3-flash" && !hasImage {
+			t.Fatal("glm-5.3-flash native vision must survive gateway_vision off")
+		}
+	}
+
+	imageBlock := map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": imageFixture}}
+	body := map[string]any{"model": "glm-5.3", "max_tokens": 100, "messages": []any{
+		map[string]any{"role": "user", "content": []any{imageBlock, map[string]any{"type": "text", "text": "describe"}}},
+	}}
+	if err := validateImage(imageBlock, off, "glm-5.3"); err == nil {
+		t.Fatal("glm-5.3 image input must be rejected with gateway_vision off")
+	}
+	if err := injectGatewayVisionDeclaration(body, off, "glm-5.3"); err != nil {
+		t.Fatal(err)
+	}
+	if tools, ok := body["tools"].([]any); ok && len(tools) != 0 {
+		t.Fatal("no gateway vision declaration must be injected with the switch off")
+	}
+
+	// flash 原生识图不受开关影响。
+	if !effectiveModelImageInput(off, "glm-5.3-flash") {
+		t.Fatal("flash native vision must ignore the gateway_vision switch")
+	}
+	// 管理面覆盖：false → 关，true/缺省 → 开。
+	var cfg managementConfig
+	if err := decode([]byte(`{"gateway_vision":false}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := defaultConfig()
+	if err := cfg.apply(c); err != nil {
+		t.Fatal(err)
+	}
+	if c.GatewayVision {
+		t.Fatal("management gateway_vision=false must disable the switch")
+	}
+}
+
+// TestGatewayVisionFoldOrderIsCallOrder 钉死折叠快照的排列语义：mcp_tool_use 的
+// 折叠 text 在前、mcp_tool_result 的转写全文在后（继承原块位置 = 调用顺序），
+// 不受上游 result 到达顺序影响（2026-11-11 多图实测：result 按完成顺序回填）。
+func TestGatewayVisionFoldOrderIsCallOrder(t *testing.T) {
+	call := decodeBlock(t, gatewayVisionCall)
+	result := decodeBlock(t, gatewayVisionResult)
+	body := map[string]any{"model": "glm-5.3", "max_tokens": 100, "messages": []any{
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "hi"}}},
+		map[string]any{"role": "assistant", "content": []any{call, result}},
+		map[string]any{"role": "user", "content": "next"},
+	}}
+	foldGatewayVisionHistory(body)
+	blocks := body["messages"].([]any)[1].(map[string]any)["content"].([]any)
+	if len(blocks) != 2 {
+		t.Fatalf("expected folded pair of two text blocks, got %d", len(blocks))
+	}
+	first, second := blocks[0].(map[string]any), blocks[1].(map[string]any)
+	if first["type"] != "text" || second["type"] != "text" {
+		t.Fatalf("folded blocks must be text, got %v/%v", first["type"], second["type"])
+	}
+	if _, ok := first["text"].(string); !ok || first["text"] == second["text"] {
+		t.Fatal("first folded block must be the call snapshot marker")
+	}
+	if !strings.Contains(second["text"].(string), "Red square top-left") {
+		t.Fatal("second folded block must retain the analysis text")
+	}
+}

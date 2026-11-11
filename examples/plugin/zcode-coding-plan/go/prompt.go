@@ -132,7 +132,7 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 				if m["role"] != "user" {
 					return nil, problem(400, "unsupported_content", "Images require a user message")
 				}
-				if err := validateImage(block, model); err != nil {
+				if err := validateImage(block, c, model); err != nil {
 					return nil, err
 				}
 			case "tool_result":
@@ -143,7 +143,7 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 							return nil, problem(400, "unsupported_content", "Invalid tool result content")
 						}
 						if part["type"] == "image" {
-							if err := validateImage(part, model); err != nil {
+							if err := validateImage(part, c, model); err != nil {
 								return nil, err
 							}
 						}
@@ -182,17 +182,17 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 	}{c.DeviceID, "", session}
 	metadata["user_id"] = string(encode(wire))
 	b["metadata"] = metadata
-	if err := injectGatewayVisionDeclaration(b, model); err != nil {
+	if err := injectGatewayVisionDeclaration(b, c, model); err != nil {
 		return nil, err
 	}
 	return b, nil
 }
 
-// 网关服务端识图契约（2026-11-10 真凭据探测，bigmodel anthropic 端点）：
+// 网关服务端识图契约（2026-11-10 真凭据探测，2026-11-11 补测双上游）：
 // 声明 tools[type=image_analysis, name=image_analysis] 且请求带 system 或
 // metadata 任一 → 网关挂载 4_5v_mcp，把模型自主发起的图片分析劫持为
-// mcp_tool_use(analyze_image) 服务端代跑并以 mcp_tool_result 回填。zai 上游
-// 假设同行为（未实测，翻车时收紧本函数的 upstream 条件即可降级）。
+// mcp_tool_use(analyze_image) 服务端代跑并以 mcp_tool_result 回填。bigmodel
+// 与 zai 实测同行为；行为漂移时经 gateway_vision 开关降级，不发版。
 const (
 	gatewayVisionToolType = "image_analysis"
 	gatewayVisionToolName = "image_analysis"
@@ -200,8 +200,8 @@ const (
 
 // injectGatewayVisionDeclaration 对 glm-5.3 的图片请求代注网关识图声明。
 // 触发后的转写由上游网关完成，插件不 fetch 图片、不本地转写、不增加模型调用。
-func injectGatewayVisionDeclaration(b map[string]any, model string) error {
-	if modelTemplateID(model) != "glm-5.3" {
+func injectGatewayVisionDeclaration(b map[string]any, c *config, model string) error {
+	if !c.GatewayVision || modelTemplateID(model) != "glm-5.3" {
 		return nil
 	}
 	images := countImageBlocks(b)
@@ -307,8 +307,8 @@ func validateTools(body map[string]any) error {
 	return nil
 }
 
-func validateImage(block map[string]any, model string) error {
-	if !builtinModelImageInput(model) {
+func validateImage(block map[string]any, c *config, model string) error {
+	if !effectiveModelImageInput(c, model) {
 		return problem(400, "unsupported_content", "This model does not support image input")
 	}
 	source, ok := block["source"].(map[string]any)

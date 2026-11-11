@@ -101,10 +101,10 @@ func TestFlashImageInputValidation(t *testing.T) {
 		}
 	}
 	for _, source := range []any{nil, map[string]any{"type": "base64", "media_type": "image/png", "data": "!invalid"}, map[string]any{"type": "base64", "media_type": "image/svg+xml", "data": imageFixture}, map[string]any{"type": "url", "url": "file:///synthetic.png"}, map[string]any{"type": "url", "url": "https://user:pass@example.invalid/image.png"}} {
-		if err := validateImage(map[string]any{"source": source}, "glm-5.3-flash"); err == nil {
+		if err := validateImage(map[string]any{"source": source}, defaultConfig(), "glm-5.3-flash"); err == nil {
 			t.Fatal("invalid image source accepted")
 		}
-		if err := validateImage(map[string]any{"source": source}, "glm-5.3"); err == nil {
+		if err := validateImage(map[string]any{"source": source}, defaultConfig(), "glm-5.3"); err == nil {
 			t.Fatal("invalid image source accepted for glm-5.3")
 		}
 	}

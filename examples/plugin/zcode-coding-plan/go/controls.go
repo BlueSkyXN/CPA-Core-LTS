@@ -130,8 +130,10 @@ func validateToolHistory(body map[string]any) error {
 
 // foldGatewayVisionHistory 把历史轮次中的网关识图调用对（mcp_tool_use +
 // mcp_tool_result）折叠为等价的 text 快照，再进入 transform 校验。
-// 折叠原因：imageSource 是网关 OSS 签名 URL（会过期），且配对块原样回放会
-// 重复触发服务端转写（每轮 ~1k input 膨胀 + 20s 延迟）。转写文本本身无损保留。
+// 折叠原因：imageSource 是网关 OSS 签名 URL（会过期），且上游不保证接受
+// 原样回放的配对块。转写文本本身无损保留。（2026-11-11 回放实测：history
+// 里的旧图与折叠 text 快照均被正常消化，旧图不会重复触发转写——网关只对
+// 当前 user turn 的图发起 analyze_image。）
 // 仅折叠已验证的配对：孤立 mcp_tool_use（不同 ID 无配对结果）保留原块，
 // 由 transform 显式拒绝；字符串 content 的消息原样保留不重写。
 func foldGatewayVisionHistory(body map[string]any) {
