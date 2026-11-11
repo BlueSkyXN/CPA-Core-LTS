@@ -200,6 +200,18 @@ func ValidatePluginMessage(message ojson.Result, chat bool) error {
 			return err
 		}
 	}
+	// 网关识图调用必须在消息内消费完毕（评审 II3）：孤立 mcp_tool_use 在 Chat
+	// 出站会被静默折叠成空成功——合法配对同样折叠但内容已被模型消化，孤立
+	// 调用则是上游契约破坏，fail-loud 而非空响应。终态 stop_reason 为
+	// tool_use 的消息是流式跨消息分块（下一消息补结果），照 server_tool_use
+	// 既有边界放行。
+	if message.Get("stop_reason").String() != "tool_use" {
+		for _, tool := range searches {
+			if tool.mcp && tool.state == searchStateCalled {
+				return PluginResponseError()
+			}
+		}
+	}
 	return nil
 }
 
@@ -320,6 +332,16 @@ func (s *PluginResponseState) Accept(line []byte) bool {
 			requiresObjectArgs := block.kind == "tool_use" || block.args.Len() > 0
 			if (block.kind == "tool_use" || block.kind == "server_tool_use") && s.stop != "max_tokens" && requiresObjectArgs && (!json.Valid([]byte(block.args.String())) || !ojson.Parse(block.args.String()).IsObject()) {
 				return fail()
+			}
+		}
+		// 网关识图调用必须在流终态前消费（评审 II3）：未消费的 mcp_tool_use 在
+		// Chat 出站会静默折叠成空成功。与 ValidatePluginMessage 相同的
+		// stop_reason!=tool_use 跨消息分块豁免。
+		if s.stop != "tool_use" {
+			for _, tool := range s.searches {
+				if tool.mcp && tool.state == searchStateCalled {
+					return fail()
+				}
 			}
 		}
 		s.Terminal = true
