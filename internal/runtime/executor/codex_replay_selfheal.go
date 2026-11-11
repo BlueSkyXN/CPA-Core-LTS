@@ -25,21 +25,31 @@ func shouldSelfHealReplayRetry(scope codexReasoningReplayScope, injectedReplay b
 }
 
 // retryOnceWithoutReplay marks the request as a self-heal retry and re-runs the
-// executor once on the same credential. clearCodexReasoningReplayOnInvalidSignature
-// has already removed the poisoned cache entry, and the marker forces skipReplay
-// so the rebuilt body carries only the client's original history. The marker is
+// executor once on the same credential. Before re-entry it publishes the first
+// attempt's failure on the caller's reporter: the recursive call builds its own
+// reporter, and each UsageReporter publishes at most one record, so the
+// rejected attempt and the retry surface as two independent usage records.
+// clearCodexReasoningReplayOnInvalidSignature has already removed the poisoned
+// cache entry, and the marker skips the injection while keeping the replay
+// scope so a successful retry still stores fresh replay content. The marker is
 // also the recursion guard: a retry that fails again keeps its error instead of
 // starting another retry.
-func (e *CodexExecutor) retryOnceWithoutReplay(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *CodexExecutor) retryOnceWithoutReplay(ctx context.Context, reporter *helps.UsageReporter, firstErr error, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	reporter.PublishFailure(ctx, firstErr)
 	helps.LogWithRequestID(ctx).Debugf("codex executor: signature rejection with CPA replay injection; retrying once without replay")
-	return e.Execute(ctx, auth, markCodexReplaySelfHeal(req), opts)
+	resp, err := e.Execute(ctx, auth, markCodexReplaySelfHeal(req), opts)
+	// The deferred TrackFailure of the outer frame saw err change to the retry's
+	// result; nil on success means the first failure was already published above,
+	// so hand back the final result untouched.
+	return resp, err
 }
 
 // retryStreamOnceWithoutReplay is the ExecuteStream counterpart. It is reached
 // only from failure points before any chunk reached the client: the non-2xx
 // status handling and the bootstrap terminal scan, both of which run before the
 // delivery goroutine starts.
-func (e *CodexExecutor) retryStreamOnceWithoutReplay(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+func (e *CodexExecutor) retryStreamOnceWithoutReplay(ctx context.Context, reporter *helps.UsageReporter, firstErr error, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	reporter.PublishFailure(ctx, firstErr)
 	helps.LogWithRequestID(ctx).Debugf("codex executor: stream signature rejection with CPA replay injection; retrying once without replay")
 	return e.ExecuteStream(ctx, auth, markCodexReplaySelfHeal(req), opts)
 }

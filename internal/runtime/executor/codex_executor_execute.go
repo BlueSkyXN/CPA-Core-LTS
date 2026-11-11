@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
-	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -126,26 +125,25 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	// injectedReplay records whether this attempt inserted CPA-owned replay
-	// items into the upstream body. Only then may a later signature rejection
-	// be retried once without the injection: the removed content is proxy-owned,
-	// never client ciphertext. A self-heal retry forces skipReplay so the
-	// rebuilt request carries the client's original history only.
+	// items into the upstream body — the injection helper's changed outcome, not
+	// mere cache presence: a present entry can be filtered out entirely. Only an
+	// actual injection may be retried without it on a signature rejection; the
+	// removed content is proxy-owned, never client ciphertext. A self-heal retry
+	// skips the injection itself but still resolves the scope so a successful
+	// response stores fresh replay content.
 	selfHealRetry := req.Metadata != nil && req.Metadata[cliproxyexecutor.CodexReplaySelfHealMetadataKey] == true
-	if selfHealRetry {
-		skipReplay = true
-	}
 	injectedReplay := false
-	if !skipReplay {
+	if selfHealRetry {
+		replayScope = resolveCodexReasoningReplayScopeOnly(ctx, from, req, opts, body)
+	} else if !skipReplay {
 		var errReplay error
-		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		var replayResult applyCodexReasoningReplayCacheResult
+		body, replayResult, errReplay = applyCodexReasoningReplayCacheWithResult(ctx, from, req, opts, body)
 		if errReplay != nil {
 			return resp, errReplay
 		}
-		if replayScope.valid() {
-			// The cache read is authoritative: an injection that round-trips to
-			// identical bytes still counts, while a missing entry does not.
-			_, injectedReplay = internalcache.GetCodexReasoningReplayItem(replayScope.modelName, replayScope.sessionKey)
-		}
+		replayScope = replayResult.scope
+		injectedReplay = replayResult.injected
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, targetModel, baseURL)
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
@@ -211,7 +209,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			return resp, errClearReplay
 		}
 		if shouldSelfHealReplayRetry(replayScope, injectedReplay, httpResp.StatusCode, b) {
-			return e.retryOnceWithoutReplay(ctx, auth, req, opts)
+			firstErr := newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, b, e.modelLevelCooling())
+			resp, err = e.retryOnceWithoutReplay(ctx, reporter, firstErr, auth, req, opts)
+			return resp, err
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
@@ -246,7 +246,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 				return resp, errClearReplay
 			}
 			if shouldSelfHealReplayRetry(replayScope, injectedReplay, streamErr.StatusCode(), terminalBody) {
-				return e.retryOnceWithoutReplay(ctx, auth, req, opts)
+				resp, err = e.retryOnceWithoutReplay(ctx, reporter, streamErr, auth, req, opts)
+				return resp, err
 			}
 			err = streamErr
 			return resp, err

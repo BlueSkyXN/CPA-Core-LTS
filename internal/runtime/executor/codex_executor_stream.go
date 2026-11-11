@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
-	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -138,23 +137,23 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
-	// injectedReplay mirrors the non-stream path: only an attempt that inserted
-	// CPA-owned replay items may self-heal a signature rejection. A self-heal
-	// retry forces skipReplay so the rebuilt body keeps client history only.
+	// injectedReplay mirrors the non-stream path: the injection helper's changed
+	// outcome, not cache presence, gates the self-heal. A self-heal retry skips
+	// the injection itself but still resolves the scope so a successful response
+	// stores fresh replay content.
 	selfHealRetry := req.Metadata != nil && req.Metadata[cliproxyexecutor.CodexReplaySelfHealMetadataKey] == true
-	if selfHealRetry {
-		skipReplay = true
-	}
 	injectedReplay := false
-	if !skipReplay {
+	if selfHealRetry {
+		replayScope = resolveCodexReasoningReplayScopeOnly(ctx, from, req, opts, body)
+	} else if !skipReplay {
 		var errReplay error
-		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		var replayResult applyCodexReasoningReplayCacheResult
+		body, replayResult, errReplay = applyCodexReasoningReplayCacheWithResult(ctx, from, req, opts, body)
 		if errReplay != nil {
 			return nil, errReplay
 		}
-		if replayScope.valid() {
-			_, injectedReplay = internalcache.GetCodexReasoningReplayItem(replayScope.modelName, replayScope.sessionKey)
-		}
+		replayScope = replayResult.scope
+		injectedReplay = replayResult.injected
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex executor", body, isCompat, targetModel, baseURL)
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
@@ -239,7 +238,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			return nil, errClearReplay
 		}
 		if shouldSelfHealReplayRetry(replayScope, injectedReplay, httpResp.StatusCode, data) {
-			return e.retryStreamOnceWithoutReplay(ctx, auth, req, opts)
+			firstErr := newCodexStatusErrWithHeadersAndCooling(httpResp.StatusCode, httpResp.Header, data, e.modelLevelCooling())
+			return e.retryStreamOnceWithoutReplay(ctx, reporter, firstErr, auth, req, opts)
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
@@ -335,10 +335,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					// Bootstrap holds only handshake frames and has delivered
 					// nothing to the client, so a signature rejection of a
 					// CPA-injected replay can still be retried before the
-					// stream is released.
+					// stream is released. The poisoned entry must be cleared
+					// first; a delete failure surfaces instead of retrying
+					// with a known-poisoned cache left behind.
 					if shouldSelfHealReplayRetry(replayScope, injectedReplay, streamErr.StatusCode(), terminalBody) {
 						closeResponseBody()
-						return e.retryStreamOnceWithoutReplay(ctx, auth, req, opts)
+						if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
+							helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
+							reporter.PublishFailure(ctx, errClearReplay)
+							return nil, errClearReplay
+						}
+						return e.retryStreamOnceWithoutReplay(ctx, reporter, streamErr, auth, req, opts)
 					}
 					// Only overload/capacity rejections are converted into a request-level
 					// failover above. Other terminal failures keep their ordinary in-stream
