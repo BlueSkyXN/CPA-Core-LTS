@@ -112,7 +112,10 @@ func claudePluginUpstreamError(payload []byte) error {
 	return &coreauth.Error{Code: "upstream_error", Message: "Anthropic plugin upstream reported an error", HTTPStatus: status}
 }
 
-func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cancel context.CancelFunc, req pluginapi.ExecutorRequest, prepared preparedExecutorCall, reporter *helps.UsageReporter, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
+// sharedCancelToPlugin 是请求级 send-once 取消闭包（pluginCancelOnce），与
+// bootstrap/流式 watcher 共享；nil 时退回直接发送（评审 III3：交接窗口内
+// bridge 与 bootstrap watcher 各发一次 CancelExecution）。
+func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cancel context.CancelFunc, req pluginapi.ExecutorRequest, prepared preparedExecutorCall, reporter *helps.UsageReporter, in <-chan pluginapi.ExecutorStreamChunk, sharedCancelToPlugin func()) <-chan pluginapi.ExecutorStreamChunk {
 	out := make(chan pluginapi.ExecutorStreamChunk)
 	go func() {
 		defer close(out)
@@ -120,11 +123,17 @@ func (a *executorAdapter) translateClaudePluginStream(ctx context.Context, cance
 		var outcome error
 		upstreamClosed := false
 		var stopOnce sync.Once
+		sendCancel := sharedCancelToPlugin
+		if sendCancel == nil {
+			sendCancel = func() {
+				a.cancelExecutionAsync(req, pluginapi.ExecutionCancelReasonContextCanceled)
+			}
+		}
 		stop := func() {
 			stopOnce.Do(func() {
 				cancel()
 				if !upstreamClosed {
-					a.cancelExecutionAsync(req, pluginapi.ExecutionCancelReasonContextCanceled)
+					sendCancel()
 				}
 			})
 		}

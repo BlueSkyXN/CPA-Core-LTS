@@ -1905,7 +1905,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		if parent == nil {
 			parent = context.Background()
 		}
-		chunks := a.translateClaudePluginStream(parent, cancelStream, pluginReq, prepared, reporter, pluginResp.Chunks)
+		chunks := a.translateClaudePluginStream(parent, cancelStream, pluginReq, prepared, reporter, pluginResp.Chunks, cancelStreamToPlugin)
 		streamHandedOff = true
 		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(parent, chunks)}, nil
 	}
