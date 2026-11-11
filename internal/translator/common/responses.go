@@ -149,7 +149,11 @@ func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojso
 				}
 			}
 
-			// Pass 2: match by function name — 同名候选唯一时为确定依据。
+			// Pass 2: match by function name — 双侧唯一才是确定依据（评审
+			// IV1）：尚未匹配、未被显式结果保留的同名 pending 调用恰好一个，
+			// 且本簇内同名无 ID 候选恰好一个。只查结果端会把顺序猜测标成
+			// matchUniqueName——两个同名 read_file 调用面对一个具名结果时，
+			// 调换 pending 顺序会改变归属。
 			for pendingIdx, pendingID := range pendingCallIDs {
 				if matchedForPending[pendingIdx] >= 0 || explicitOutputCounts[pendingID] > 0 {
 					continue
@@ -158,7 +162,20 @@ func normalizeResponsesToolCallOutputsWithClusters(items []ojson.Result) ([]ojso
 				if expectedName == "" {
 					continue
 				}
-				// 统计本簇内同名无 ID 候选数：唯一才可确定，多于一个则退给 FIFO。
+				// 调用端唯一性：其他同名 pending 且同样可认领的调用必须不存在。
+				sameNameClaimablePeers := 0
+				for peerIdx, peerID := range pendingCallIDs {
+					if peerIdx == pendingIdx || matchedForPending[peerIdx] >= 0 || explicitOutputCounts[peerID] > 0 {
+						continue
+					}
+					if strings.TrimSpace(peerID) != "" && pendingCallNames[peerID] == expectedName {
+						sameNameClaimablePeers++
+					}
+				}
+				if sameNameClaimablePeers > 0 {
+					continue
+				}
+				// 结果端唯一性：本簇内同名无 ID 候选恰好一个。
 				sameNameIdx := -1
 				sameNameCount := 0
 				for outIdx, out := range outputs {

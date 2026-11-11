@@ -442,11 +442,15 @@ func TestResponsesSanitizesOrphanToolOutputsThroughHTTPAndCompact(t *testing.T) 
 		if got := input[6].Get("type").String(); got != "function_call_output" {
 			t.Fatalf("%s input[6].type = %q, want function_call_output", path, got)
 		}
-		if got := input[8].Get("type").String(); got != "message" {
-			t.Fatalf("%s input[8].type = %q, want message", path, got)
+		// input[8] 是 call_pair 之后的唯一候选（单候选对单 pending，确定配对），
+		// 按评审 I3 语义保留 function_call_output 并落 call_id；与 Codex
+		// translator 同名用例保持一致（此前期望转 message 来自已移除的全量
+		// 回退旧语义）。
+		if got := input[8].Get("type").String(); got != "function_call_output" {
+			t.Fatalf("%s input[8].type = %q, want function_call_output (deterministic pair)", path, got)
 		}
-		if input[8].Get("call_id").Exists() {
-			t.Fatalf("%s input[8] gained a guessed call_id: %s", path, input[8].Raw)
+		if got := input[8].Get("call_id").String(); got != "call_pair" {
+			t.Fatalf("%s input[8].call_id = %q, want call_pair", path, got)
 		}
 	}
 }
