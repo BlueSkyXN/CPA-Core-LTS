@@ -10,6 +10,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -48,12 +49,15 @@ func (f PayloadFinalizer) FinalizeDoc(doc *ojson.Doc) {
 }
 
 // NewPayloadFinalizer snapshots matching context before built-in request mutations.
-func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, selectedAuthKind ...string) PayloadFinalizer {
+func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root string, original []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, auths ...*cliproxyauth.Auth) PayloadFinalizer {
 	requestedModel := PayloadRequestedModel(opts, req.Model)
 	requestPath := PayloadRequestPath(opts)
-	authKind := payloadAuthKind(selectedAuthKind)
 	headers := opts.Headers.Clone()
 	source := append([]byte(nil), original...)
+	var auth *cliproxyauth.Auth
+	if len(auths) > 0 {
+		auth = auths[0]
+	}
 	var formatCallback func(string)
 	if opts.Metadata != nil {
 		formatCallback, _ = opts.Metadata[cliproxyexecutor.FinalizedResponseFormatCallbackMetadataKey].(func(string))
@@ -72,11 +76,11 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 			key := &body[:1][0]
 			if v, ok := payloadDocProbes.LoadAndDelete(key); ok {
 				if doc, okDoc := v.(*ojson.Doc); okDoc && doc != nil {
-					// LTS parity with the byte path below: keep the auth-kind
-					// rule scoping and re-assert the reasoning-effort policy
-					// after generic payload rules (ledger reasoning-effort-policy).
+					// LTS: re-assert the reasoning-effort policy after generic
+					// payload rules (ledger reasoning-effort-policy). The engine
+					// derives auth-kind scoping from the selected auth.
 					before := doc.Bytes()
-					ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(cfg, executor, authKind, model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers)
+					applyPayloadConfigWithTrackedPathsForExecutorAndAuthDoc(cfg, executor, "", model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers, auth)
 					out := doc.Bytes()
 					if protected := ProtectConfiguredEffort(cfg, before, out, protocol, executor, req, opts); !bytes.Equal(protected, out) {
 						*doc = *ojson.NewDoc(protected)
@@ -86,8 +90,15 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 				return nil
 			}
 		}
-		out := ApplyPayloadConfigWithRequestForExecutor(cfg, executor, model, protocol, opts.SourceFormat.String(), root, body, source, requestedModel, requestPath, headers, authKind)
-		out = ProtectConfiguredEffort(cfg, body, out, protocol, executor, req, opts)
+		doc := ojson.NewDoc(body)
+		_, mutated := applyPayloadConfigWithTrackedPathsForExecutorAndAuthDoc(cfg, executor, "", model, protocol, opts.SourceFormat.String(), root, doc, source, requestedModel, requestPath, headers, auth)
+		out := body
+		if mutated {
+			out = doc.Bytes()
+		}
+		if protected := ProtectConfiguredEffort(cfg, body, out, protocol, executor, req, opts); !bytes.Equal(protected, out) {
+			out = protected
+		}
 		reportFormat(strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(out, buildPayloadPath(root, "response_format")).String())))
 		return out
 	})

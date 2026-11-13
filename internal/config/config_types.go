@@ -574,9 +574,13 @@ type RoutingConfig struct {
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
-	// Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
-	// followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
-	// execution or derived session identity, and the existing message-content hash fallback.
+	// Explicit Claude Code, Codex, OpenCode, pi, and generic (X-Session-ID) session headers
+	// are preferred, followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
+	// execution session identity, Merkle LCP prefix/compaction matching, derived session
+	// identity, and the existing message-content hash fallback.
+	// LCP compaction matching requires at least 2 shared trailing turns; clients whose
+	// compaction replaces all earlier turns with a summary should send X-Session-ID (or
+	// another explicit session ID), or affinity starts a new binding at every compaction.
 	// Automatic failover is always enabled when bound auth becomes unavailable.
 	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
 
@@ -975,6 +979,7 @@ type CodexModel struct {
 	// Use this for third-party Responses-compatible endpoints that do not accept
 	// native agent_message items or empty-signature thinking blocks. Default false
 	// keeps the native behavior unchanged.
+	// When enabled, compaction_trigger items also use local summary compaction.
 	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
 
 	// SupportConfigurationUpdate enables configuration_update for this API-key model.
