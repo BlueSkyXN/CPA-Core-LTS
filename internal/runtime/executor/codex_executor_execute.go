@@ -73,6 +73,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(body)
+	normalizeCodexOutputBudgetDoc(doc)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
@@ -91,25 +92,16 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
 	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
 	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
-	upstreamModel := baseModel
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, helps.IsNativeCodexRequest(req.Payload, opts))
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 			ensureImageGenerationToolDoc(doc, baseModel, auth, opts.Headers)
 			if !codexAuthUsesAPIKey(auth) {
 				normalizeCodexImageGenerationToolsDoc(doc)
-				var errHostedModel error
-				upstreamModel, errHostedModel = applyCodexHostedImageGenerationModelDoc(e.cfg, doc, baseModel, req.Model)
-				if errHostedModel != nil {
-					return resp, errHostedModel
-				}
 			}
 		}
 	} else {
 		applyCodexSIWCRequestBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
-	}
-	if upstreamModel != baseModel {
-		reporter.SetUpstreamModel(upstreamModel)
 	}
 	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
 	helps.NormalizeCodexToolSchemasDoc(doc)
@@ -159,6 +151,13 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
 	body = upstreamBody
+	upstreamModel := strings.TrimSpace(ojson.GetBytesNoCopy(upstreamBody, "model").String())
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(doc.Get("model").String())
+	}
+	if upstreamModel != "" && upstreamModel != baseModel {
+		reporter.SetUpstreamModel(upstreamModel)
+	}
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
@@ -168,6 +167,13 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		alignCodexContentEncoding(request)
 	}
 	prepareHeaders(httpReq)
+	// Validate the final wire payload: payload rules applied in cacheHelper may
+	// strip or filter the hosted image tool before this point.
+	if bytes.Contains(upstreamBody, []byte(`"image_generation"`)) {
+		if errValidate := helps.ValidateCodexHostedImageGenerationDoc(ojson.NewDoc(upstreamBody), httpReq.Header, e.cfg, !useSIWC && !codexAuthUsesAPIKey(auth)); errValidate != nil {
+			return resp, errValidate
+		}
+	}
 	identityState.verifyAffinityHeader(httpReq.Header)
 	defer identityState.affinity.close()
 	httpReq, _ = prepareCodexOutboundHTTPRequest(e.cfg, auth, url, httpReq, upstreamBody, true)

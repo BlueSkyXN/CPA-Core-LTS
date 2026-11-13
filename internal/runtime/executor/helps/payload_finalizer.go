@@ -58,6 +58,15 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 	if opts.Metadata != nil {
 		formatCallback, _ = opts.Metadata[cliproxyexecutor.FinalizedResponseFormatCallbackMetadataKey].(func(string))
 	}
+	// The finalizer may legitimately run on both the pre-wire doc and the wire
+	// bytes (LTS staged finalize); the observability callback still reports one
+	// finalized payload per request.
+	var formatCallbackOnce sync.Once
+	reportFormat := func(value string) {
+		if formatCallback != nil {
+			formatCallbackOnce.Do(func() { formatCallback(value) })
+		}
+	}
 	fn := PayloadFinalizer(func(body []byte) []byte {
 		if len(body) == 0 && cap(body) == 1 {
 			key := &body[:1][0]
@@ -72,18 +81,14 @@ func NewPayloadFinalizer(cfg *config.Config, executor, model, protocol, root str
 					if protected := ProtectConfiguredEffort(cfg, before, out, protocol, executor, req, opts); !bytes.Equal(protected, out) {
 						*doc = *ojson.NewDoc(protected)
 					}
-					if formatCallback != nil {
-						formatCallback(strings.Clone(strings.TrimSpace(doc.Get(buildPayloadPath(root, "response_format")).String())))
-					}
+					reportFormat(strings.Clone(strings.TrimSpace(doc.Get(buildPayloadPath(root, "response_format")).String())))
 				}
 				return nil
 			}
 		}
 		out := ApplyPayloadConfigWithRequestForExecutor(cfg, executor, model, protocol, opts.SourceFormat.String(), root, body, source, requestedModel, requestPath, headers, authKind)
 		out = ProtectConfiguredEffort(cfg, body, out, protocol, executor, req, opts)
-		if formatCallback != nil {
-			formatCallback(strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(out, buildPayloadPath(root, "response_format")).String())))
-		}
+		reportFormat(strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(out, buildPayloadPath(root, "response_format")).String())))
 		return out
 	})
 	builtinFinalizerCodePtr.Store(payloadFinalizerKeyPtr(fn))

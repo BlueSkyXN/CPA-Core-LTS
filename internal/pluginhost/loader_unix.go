@@ -156,7 +156,18 @@ var (
 	hostCallbackEntries   sync.Map
 	probedPluginShadows   sync.Map
 	pluginProbeExecutable = os.Executable
+	unixDlopen            = defaultUnixDlopen
 )
+
+func defaultUnixDlopen(path string) unsafe.Pointer {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	var keepMapped C.int
+	if keepGoPluginMapped(path) {
+		keepMapped = 1
+	}
+	return C.cliproxy_dlopen(cPath, keepMapped)
+}
 
 func init() {
 	if probePath := os.Getenv(pluginDlopenProbeEnv); probePath != "" {
@@ -183,25 +194,19 @@ func defaultPluginLoader() pluginLoader {
 }
 
 func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
-	loadPath, errShadow := shadowCopyPlugin(file)
+	loadPath, releaseGuard, errShadow := acquireShadowPluginLoad(file)
 	if errShadow != nil {
 		return nil, errShadow
 	}
-	if errProbe := probePluginLibrary(file.Path, loadPath); errProbe != nil {
-		removeShadowPlugin(loadPath)
-		return nil, errProbe
+	handle, loadPath, errOpen := openUnixShadowPluginWithFallback(file, loadPath, releaseGuard)
+	if errOpen != nil {
+		return nil, errOpen
 	}
-	cPath := C.CString(loadPath)
-	defer C.free(unsafe.Pointer(cPath))
-
+	// LTS: keep the darwin Go-runtime pinning flag so keepResident below
+	// matches the keep_mapped flag actually passed to dlopen.
 	var keepMapped C.int
-	if keepGoPluginMapped(file.Path) {
+	if keepGoPluginMapped(loadPath) {
 		keepMapped = 1
-	}
-	handle := C.cliproxy_dlopen(cPath, keepMapped)
-	if handle == nil {
-		removeShadowPlugin(loadPath)
-		return nil, fmt.Errorf("dlopen %s: %s", file.Path, dlerrorString())
 	}
 	// From here on the image must never be unloaded: dlopen may already
 	// have started the plugin runtime, and a Go c-shared runtime cannot be
@@ -373,6 +378,50 @@ func (c *dynamicLibraryClient) close() {
 	}
 }
 
+func openUnixShadowPluginWithFallback(file pluginFile, loadPath string, releaseGuard func()) (unsafe.Pointer, string, error) {
+	errProbe := probePluginLibrary(file.Path, loadPath)
+	if errProbe != nil {
+		releaseGuard()
+		if _, cached := probedPluginShadows.Load(filepath.Base(loadPath)); cached {
+			return nil, "", errProbe
+		}
+		if fallbackHandle, fallbackPath, okFallback := tryOpenUnixFallbackShadowPlugin(file, loadPath); okFallback {
+			return fallbackHandle, fallbackPath, nil
+		}
+		return nil, "", errProbe
+	}
+	handle := unixDlopen(loadPath)
+	firstErr := dlerrorString()
+	releaseGuard()
+	if handle != nil {
+		return handle, loadPath, nil
+	}
+	probedPluginShadows.Delete(filepath.Base(loadPath))
+
+	if fallbackHandle, fallbackPath, okFallback := tryOpenUnixFallbackShadowPlugin(file, loadPath); okFallback {
+		return fallbackHandle, fallbackPath, nil
+	}
+	return nil, "", fmt.Errorf("dlopen %s: %s", file.Path, firstErr)
+}
+
+func tryOpenUnixFallbackShadowPlugin(file pluginFile, failedLoadPath string) (unsafe.Pointer, string, bool) {
+	fallbackPath, releaseFallbackGuard, errFallback := acquireShadowPluginFallbackLoad(file, failedLoadPath)
+	if errFallback != nil {
+		return nil, "", false
+	}
+	if errFallbackProbe := probePluginLibrary(file.Path, fallbackPath); errFallbackProbe != nil {
+		releaseFallbackGuard()
+		return nil, "", false
+	}
+	fallbackHandle := unixDlopen(fallbackPath)
+	releaseFallbackGuard()
+	if fallbackHandle != nil {
+		return fallbackHandle, fallbackPath, true
+	}
+	probedPluginShadows.Delete(filepath.Base(fallbackPath))
+	return nil, "", false
+}
+
 func dlerrorString() string {
 	errText := C.cliproxy_dlerror()
 	if errText == nil {
@@ -467,7 +516,11 @@ func probePluginLibrary(sourcePath, loadPath string) error {
 		execPath = os.Args[0]
 	}
 
-	statusFile, errStatus := os.CreateTemp(filepath.Dir(loadPath), ".cliproxy-probe-*.status")
+	statusDir, errStatusDir := shadowPluginDir()
+	if errStatusDir != nil {
+		statusDir = os.TempDir()
+	}
+	statusFile, errStatus := os.CreateTemp(statusDir, ".cliproxy-probe-*.status")
 	if errStatus != nil {
 		return fmt.Errorf("dlopen %s: create preflight probe status file: %w", sourcePath, errStatus)
 	}
