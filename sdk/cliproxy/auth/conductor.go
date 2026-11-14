@@ -206,6 +206,7 @@ type resultPolicyHolder struct {
 type Manager struct {
 	flowControl               *flowcontrol.Engine
 	flowControlError          atomic.Pointer[FlowControlUpdateFailure]
+	inFlightTracker           *inFlightTracker
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
@@ -312,19 +313,20 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
+		inFlightTracker:          newInFlightTracker(),
 		store:                    store,
+		authLoadGate:             semaphore.NewWeighted(math.MaxInt64),
 		executors:                make(map[string]ProviderExecutor),
 		selector:                 selector,
 		hook:                     hook,
 		auths:                    make(map[string]*Auth),
+		authEpochs:               make(map[string]uint64),
 		homeRuntimeAuths:         make(map[string]map[string]*Auth),
 		homeRuntimeAuthOwners:    make(map[string]map[string]*HomeDispatchSelection),
 		homeSessionSelections:    make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
-		authEpochs:               make(map[string]uint64),
 		providerOffsets:          make(map[string]int),
 		modelPoolOffsets:         make(map[string]int),
 		codexRateLimitContinuity: newCodexRateLimitContinuityStore(),
-		authLoadGate:             semaphore.NewWeighted(math.MaxInt64),
 	}
 	manager.flowControl, _ = flowcontrol.New(flowcontrol.Config{})
 	// atomic.Value requires non-nil initial value.
