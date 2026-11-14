@@ -604,22 +604,25 @@ func redactedHeaders(headers http.Header) http.Header {
 }
 
 type fakeHost struct {
-	mu                 sync.Mutex
-	openResponse       hostHTTPStreamResponse
-	openRequests       []hostHTTPRequest
-	httpRequests       []hostHTTPRequest
-	catalogResponse    hostHTTPResponse
-	billingResponse    hostHTTPResponse
-	reads              []hostHTTPStreamReadResponse
-	readIndex          int
-	emitted            [][]byte
-	pluginCloses       []pluginStreamCloseRequest
-	httpCloses         int
-	blockReads         bool
-	upstreamClosed     chan struct{}
-	upstreamClosedOnce sync.Once
-	pluginClosed       chan struct{}
-	pluginClosedOnce   sync.Once
+	mu                      sync.Mutex
+	openResponse            hostHTTPStreamResponse
+	openRequests            []hostHTTPRequest
+	httpRequests            []hostHTTPRequest
+	catalogResponse         hostHTTPResponse
+	billingResponse         hostHTTPResponse
+	enterpriseUsageResponse hostHTTPResponse
+	accountResponse         hostHTTPResponse
+	paymentResponse         hostHTTPResponse
+	reads                   []hostHTTPStreamReadResponse
+	readIndex               int
+	emitted                 [][]byte
+	pluginCloses            []pluginStreamCloseRequest
+	httpCloses              int
+	blockReads              bool
+	upstreamClosed          chan struct{}
+	upstreamClosedOnce      sync.Once
+	pluginClosed            chan struct{}
+	pluginClosedOnce        sync.Once
 }
 
 func newFakeHost() *fakeHost {
@@ -639,6 +642,23 @@ func newFakeHost() *fakeHost {
 			Headers:    http.Header{"Content-Type": {"application/json"}},
 			Body:       []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[],"TotalCount":0,"TotalDosage":0}}}}`),
 		},
+		// 默认企业形态：无企业身份（字段缺失），quota 走个人资源包路径，
+		// 保持既有 Summary 断言语义。
+		enterpriseUsageResponse: hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"code":0,"data":{"cycleStartTime":"2026-11-01 00:00:00"}}`),
+		},
+		accountResponse: hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"code":0,"data":{"accounts":[{"uid":"fixture-uid","nickname":"fixture","type":"personal","lastLogin":true}]}}`),
+		},
+		paymentResponse: hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"code":0,"data":{"paymentType":"free"}}`),
+		},
 		upstreamClosed: make(chan struct{}),
 		pluginClosed:   make(chan struct{}),
 	}
@@ -654,7 +674,13 @@ func (h *fakeHost) Call(method string, payload any) (json.RawMessage, error) {
 		h.mu.Lock()
 		h.httpRequests = append(h.httpRequests, req)
 		response := h.catalogResponse
-		if strings.Contains(req.URL, "/v2/billing/") {
+		if strings.Contains(req.URL, "/get-enterprise-user-usage") {
+			response = h.enterpriseUsageResponse
+		} else if strings.Contains(req.URL, "/get-payment-type") {
+			response = h.paymentResponse
+		} else if strings.Contains(req.URL, "/v2/accounts") {
+			response = h.accountResponse
+		} else if strings.Contains(req.URL, "/v2/billing/") {
 			response = h.billingResponse
 		}
 		h.mu.Unlock()
