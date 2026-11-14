@@ -73,6 +73,18 @@ func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	}
 }
 
+// SetHTTPClientForTesting installs a caller-provided HTTP client. It exists so
+// tests can point refresh traffic at local mock servers without mutating the
+// process-global http.DefaultTransport, which races with other executors being
+// constructed concurrently (they clone DefaultTransport at construction time).
+// Non-test callers must not use it.
+func (o *CodexAuth) SetHTTPClientForTesting(client *http.Client) {
+	if client == nil {
+		return
+	}
+	o.httpClient = client
+}
+
 // GenerateAuthURL creates the OAuth authorization URL with PKCE (Proof Key for Code Exchange).
 // It constructs the URL with the necessary parameters, including the client ID,
 // response type, redirect URI, scopes, and PKCE challenge.
