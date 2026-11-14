@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -9,10 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,27 +60,34 @@ func startCodexMockOAuthServers(t *testing.T, idToken string) (proxyURL string, 
 
 	mockProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
-			if errDial != nil {
-				http.Error(w, errDial.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
-				_ = destConn.Close()
 				http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 				return
 			}
-			clientConn, _, errHijack := hijacker.Hijack()
+			clientConn, clientBuf, errHijack := hijacker.Hijack()
 			if errHijack != nil {
-				_ = destConn.Close()
 				return
+			}
+			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
+			if errDial != nil {
+				_, _ = clientConn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+				_ = clientConn.Close()
+				return
+			}
+			if _, errWrite := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); errWrite != nil {
+				_ = destConn.Close()
+				_ = clientConn.Close()
+				return
+			}
+			var clientReader io.Reader = clientConn
+			if clientBuf != nil && clientBuf.Reader != nil {
+				clientReader = clientBuf.Reader
 			}
 			go func() {
 				defer func() { _ = destConn.Close() }()
 				defer func() { _ = clientConn.Close() }()
-				_, _ = io.Copy(destConn, clientConn)
+				_, _ = io.Copy(destConn, clientReader)
 			}()
 			go func() {
 				defer func() { _ = destConn.Close() }()
@@ -91,28 +99,20 @@ func startCodexMockOAuthServers(t *testing.T, idToken string) (proxyURL string, 
 		http.Error(w, "proxy only supports CONNECT", http.StatusBadRequest)
 	}))
 
-	// Route refresh traffic through an explicit test client instead of
-	// swapping http.DefaultTransport: the global swap raced with concurrently
-	// constructed executors (which clone DefaultTransport) and with other
-	// tests' fixtures, surfacing as intermittent refresh transport failures.
-	// The transport keeps the CONNECT proxy (mockProxy) plus insecure TLS for
-	// the self-signed mock auth server, matching what SetProxy produced.
-	proxyRef, errProxyParse := url.Parse(mockProxy.URL)
-	if errProxyParse != nil {
-		t.Fatalf("parse mock proxy URL: %v", errProxyParse)
-	}
-	mockTransport := &http.Transport{
-		Proxy:           http.ProxyURL(proxyRef),
+	// Allow self-signed cert for the mock TLS server in HTTP transport.
+	// (Upstream 23e31fe28 shape: the transport stays the process default plus
+	// InsecureSkipVerify; the CONNECT proxy below hijacks BEFORE writing the
+	// 200 and forwards the hijacked reader's buffered bytes so TLS ClientHello
+	// records are never truncated. No global hook: a package-level client hook
+	// let later fixtures overwrite earlier fixtures' clients and cross-wire
+	// their proxies.)
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	origHook := codexRefreshTestHTTPClient
-	codexRefreshTestHTTPClient = func() *http.Client {
-		return &http.Client{Transport: mockTransport}
 	}
 
 	teardown = func() {
-		codexRefreshTestHTTPClient = origHook
-		mockTransport.CloseIdleConnections()
+		http.DefaultTransport = origTransport
 		mockProxy.Close()
 		mockAuthServer.Close()
 	}
@@ -125,7 +125,7 @@ func TestCodexExecutorRefresh_MissingPlanTypeDefaultsToFree(t *testing.T) {
 	proxyURL, teardown := startCodexMockOAuthServers(t, idTokenWithoutPlan)
 	defer teardown()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthDir: t.TempDir()}
 	executor := NewCodexExecutor(cfg)
 
 	storage := &codexauth.CodexTokenStorage{
@@ -201,7 +201,7 @@ func TestCodexExecutorRefresh_ExtractsPlanTypeWhenPresent(t *testing.T) {
 	proxyURL, teardown := startCodexMockOAuthServers(t, idTokenWithPlan)
 	defer teardown()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthDir: t.TempDir()}
 	executor := NewCodexExecutor(cfg)
 
 	storage := &codexauth.CodexTokenStorage{
@@ -294,7 +294,7 @@ func TestCodexExecutorRefresh_EmptyAttributesSnapshotIsolation(t *testing.T) {
 		ProxyURL:   proxyURL,
 		Attributes: emptyAttrs,
 		Metadata: map[string]any{
-			"refresh_token": "valid-refresh-token",
+			"refresh_token": "valid-refresh-token-empty-attrs",
 		},
 	}
 
@@ -308,6 +308,9 @@ func TestCodexExecutorRefresh_EmptyAttributesSnapshotIsolation(t *testing.T) {
 
 	if got := refreshed.Attributes["plan_type"]; got != "free" {
 		t.Errorf("refreshed.Attributes[plan_type] = %q, want free", got)
+	}
+	if got := refreshed.Metadata["account_id"]; got != "acc-codex-empty-attrs" {
+		t.Errorf("refreshed.Metadata[account_id] = %v, want acc-codex-empty-attrs", got)
 	}
 	// Verify original empty map was not modified
 	if _, exists := emptyAttrs["plan_type"]; exists {
@@ -355,26 +358,34 @@ func startDualCodexAndSIWCMockOAuthServer(t *testing.T, idToken string, failSIWC
 
 	mockProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
-			if errDial != nil {
-				http.Error(w, errDial.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
-				_ = destConn.Close()
+				http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 				return
 			}
-			clientConn, _, errHijack := hijacker.Hijack()
+			clientConn, clientBuf, errHijack := hijacker.Hijack()
 			if errHijack != nil {
-				_ = destConn.Close()
 				return
+			}
+			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
+			if errDial != nil {
+				_, _ = clientConn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+				_ = clientConn.Close()
+				return
+			}
+			if _, errWrite := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); errWrite != nil {
+				_ = destConn.Close()
+				_ = clientConn.Close()
+				return
+			}
+			var clientReader io.Reader = clientConn
+			if clientBuf != nil && clientBuf.Reader != nil {
+				clientReader = clientBuf.Reader
 			}
 			go func() {
 				defer func() { _ = destConn.Close() }()
 				defer func() { _ = clientConn.Close() }()
-				_, _ = io.Copy(destConn, clientConn)
+				_, _ = io.Copy(destConn, clientReader)
 			}()
 			go func() {
 				defer func() { _ = destConn.Close() }()
@@ -386,23 +397,15 @@ func startDualCodexAndSIWCMockOAuthServer(t *testing.T, idToken string, failSIWC
 		http.Error(w, "proxy only supports CONNECT", http.StatusBadRequest)
 	}))
 
-	// Same explicit test client as startCodexMockOAuthServers (CONNECT proxy
-	// + insecure TLS); see the DefaultTransport race note there.
-	proxyRef, errProxyParse := url.Parse(mockProxy.URL)
-	if errProxyParse != nil {
-		t.Fatalf("parse mock proxy URL: %v", errProxyParse)
-	}
-	mockTransport := &http.Transport{
-		Proxy:           http.ProxyURL(proxyRef),
+	// Allow self-signed cert for the mock TLS server in HTTP transport
+	// (same 23e31fe28 shape as startCodexMockOAuthServers; no global hook —
+	// the hook let a later fixture overwrite an earlier fixture's client).
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	origHook := codexRefreshTestHTTPClient
-	codexRefreshTestHTTPClient = func() *http.Client {
-		return &http.Client{Transport: mockTransport}
-	}
 	teardown = func() {
-		codexRefreshTestHTTPClient = origHook
-		mockTransport.CloseIdleConnections()
+		http.DefaultTransport = origTransport
 		mockProxy.Close()
 		mockAuthServer.Close()
 	}
@@ -1723,4 +1726,174 @@ func TestCodexExecutorForceRefreshRejectedRefreshTokenWithoutDiskRotation_Issue7
 	if errRefresh == nil {
 		t.Fatal("expected forced Refresh on unchanged rejected refresh_token without disk rotation to return an error, got nil")
 	}
+}
+
+// startCodexMockOAuthServers isolation contract (upstream 23e31fe28 shape):
+//   - Each fixture must pass a per-test AuthDir (or a distinct refresh-token
+//     literal): an empty Config falls back to the process-wide memory journal,
+//     whose receipt reuse across fixtures is intentional product behavior
+//     (refresh idempotency for callers without an auth dir), not a leak.
+//   - No package-level HTTP client hook: a later fixture overwrote earlier
+//     fixtures' clients and cross-wired their CONNECT proxies.
+//   - The CONNECT handler hijacks BEFORE writing the 200 and forwards the
+//     hijacked bufio reader so buffered TLS ClientHello bytes are not lost.
+func TestCodexMockOAuthFixtureIsolationContract(t *testing.T) {
+	// Sequential fixtures with the SAME token literal but per-fixture AuthDir
+	// must each see their own mock's account.
+	for _, account := range []string{"iso-contract-a", "iso-contract-b"} {
+		func() {
+			proxyURL, teardown := startCodexMockOAuthServers(t, makeTestCodexRefreshJWT("free", account))
+			defer teardown()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			auth := &cliproxyauth.Auth{
+				ID: "codex-fixture-isolation-contract", Provider: "codex", ProxyURL: proxyURL,
+				Metadata: map[string]any{"refresh_token": "fixture-isolation-shared-token"},
+			}
+			refreshed, errRefresh := NewCodexExecutor(&config.Config{AuthDir: t.TempDir()}).Refresh(ctx, auth)
+			if errRefresh != nil {
+				t.Fatalf("refresh via fixture for %s failed: %v", account, errRefresh)
+			}
+			if refreshed.Metadata["account_id"] != account {
+				t.Fatalf("sequential fixture returned account %v, want %s", refreshed.Metadata["account_id"], account)
+			}
+		}()
+	}
+
+	// Two simultaneously-live fixtures: a refresh configured for A's proxy must
+	// never be served by B's mock (no cross-fixture client).
+	proxyA, doneA := startCodexMockOAuthServers(t, makeTestCodexRefreshJWT("team", "iso-contract-proxy-a"))
+	defer doneA()
+	_, doneB := startCodexMockOAuthServers(t, makeTestCodexRefreshJWT("free", "iso-contract-proxy-b"))
+	defer doneB()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	auth := &cliproxyauth.Auth{
+		ID: "codex-fixture-isolation-contract-dual", Provider: "codex", ProxyURL: proxyA,
+		Metadata: map[string]any{"refresh_token": "fixture-isolation-scoped-token"},
+	}
+	refreshed, errRefresh := NewCodexExecutor(&config.Config{AuthDir: t.TempDir()}).Refresh(ctx, auth)
+	if errRefresh != nil {
+		t.Fatalf("refresh via proxy A failed: %v", errRefresh)
+	}
+	if refreshed.Metadata["account_id"] != "iso-contract-proxy-a" {
+		t.Fatalf("refresh configured for proxy A returned account %v from another fixture", refreshed.Metadata["account_id"])
+	}
+}
+
+type bufferedConnectClientHelloConn struct {
+	net.Conn
+	mu           sync.Mutex
+	connectBuf   []byte
+	realRespRead bool
+	synthResp    bytes.Reader
+}
+
+func (c *bufferedConnectClientHelloConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	if !c.realRespRead && (len(c.connectBuf) == 0 && strings.HasPrefix(string(p), "CONNECT ") || len(c.connectBuf) > 0 && !bytes.HasSuffix(c.connectBuf, []byte("\r\n\r\n"))) {
+		c.connectBuf = append(c.connectBuf, p...)
+		if bytes.HasSuffix(c.connectBuf, []byte("\r\n\r\n")) {
+			c.synthResp.Reset([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		}
+		c.mu.Unlock()
+		return len(p), nil
+	}
+	if len(c.connectBuf) > 0 && !c.realRespRead && len(p) > 0 {
+		c.realRespRead = true
+		combined := append(append([]byte(nil), c.connectBuf...), p[0])
+		c.mu.Unlock()
+		if _, errWriteFirst := c.Conn.Write(combined); errWriteFirst != nil {
+			return 0, errWriteFirst
+		}
+		var window [4]byte
+		for {
+			copy(window[:3], window[1:4])
+			if _, errRead := io.ReadFull(c.Conn, window[3:4]); errRead != nil {
+				return 1, errRead
+			}
+			if string(window[:]) == "\r\n\r\n" {
+				break
+			}
+		}
+		if len(p) == 1 {
+			return 1, nil
+		}
+		n, errWriteRest := c.Conn.Write(p[1:])
+		return n + 1, errWriteRest
+	}
+	c.mu.Unlock()
+	return c.Conn.Write(p)
+}
+
+func (c *bufferedConnectClientHelloConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	if c.synthResp.Len() > 0 {
+		n, errRead := c.synthResp.Read(p)
+		c.mu.Unlock()
+		return n, errRead
+	}
+	c.mu.Unlock()
+	return c.Conn.Read(p)
+}
+
+func TestCodexMockOAuthProxyPreservesBufferedClientHello(t *testing.T) {
+	idToken := makeTestCodexRefreshJWT("plus", "acc-buffered-hello")
+	installBufferedDial := func(t *testing.T) {
+		t.Helper()
+		baseTransport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok || baseTransport == nil {
+			t.Fatal("expected *http.Transport as DefaultTransport")
+		}
+		baseTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			rawConn, errDial := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if errDial != nil {
+				return nil, errDial
+			}
+			return &bufferedConnectClientHelloConn{Conn: rawConn}, nil
+		}
+	}
+
+	t.Run("single", func(t *testing.T) {
+		proxyURL, teardown := startCodexMockOAuthServers(t, idToken)
+		defer teardown()
+		installBufferedDial(t)
+
+		executor := NewCodexExecutor(&config.Config{AuthDir: t.TempDir()})
+		auth := &cliproxyauth.Auth{
+			ID:       "codex-buffered-hello-single",
+			Provider: "codex",
+			ProxyURL: proxyURL,
+			Metadata: map[string]any{
+				"type":          "codex",
+				"access_token":  "old-access",
+				"refresh_token": "valid-refresh-buffered-hello-single",
+			},
+		}
+		if _, errRefresh := executor.Refresh(context.Background(), auth); errRefresh != nil {
+			t.Fatalf("executor.Refresh error = %v", errRefresh)
+		}
+	})
+
+	t.Run("dual", func(t *testing.T) {
+		failSIWC := false
+		proxyURL, _, _, teardown := startDualCodexAndSIWCMockOAuthServer(t, idToken, &failSIWC)
+		defer teardown()
+		installBufferedDial(t)
+
+		executor := NewCodexExecutor(&config.Config{AuthDir: t.TempDir()})
+		auth := &cliproxyauth.Auth{
+			ID:       "codex-buffered-hello-dual",
+			Provider: "codex",
+			ProxyURL: proxyURL,
+			Metadata: map[string]any{
+				"type":          "codex",
+				"access_token":  "old-access",
+				"refresh_token": "valid-refresh-buffered-hello-dual",
+			},
+		}
+		if _, errRefresh := executor.Refresh(context.Background(), auth); errRefresh != nil {
+			t.Fatalf("executor.Refresh error = %v", errRefresh)
+		}
+	})
 }
