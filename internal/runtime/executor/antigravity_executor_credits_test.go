@@ -483,6 +483,13 @@ func TestAntigravityAuthHasCreditsRequiredHomeBalanceUsesKV(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)
 	const authID = "home-balance-auth"
+	// antigravityCreditsBalanceAvailable stores a Known hint on first run, and
+	// GetAntigravityCreditsHintRequired short-circuits on it before reaching the
+	// fake KV client, so the hint must be reset around (not only before) the run.
+	cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{})
+	t.Cleanup(func() {
+		cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{})
+	})
 	client := newFakeAntigravityKVClient()
 	client.values[antigravityCreditsBalanceKey(authID)] = mustAntigravityJSON(t, antigravityCreditsBalance{
 		CreditAmount:    10,

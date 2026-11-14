@@ -872,6 +872,9 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	if codexRefreshMissingAccessForRequest(ctx, auth, clientHeaders...) {
+		return true, blockReasonOther, time.Time{}
+	}
 	if hasUnauthorizedAuthFailure(auth) {
 		return true, blockReasonOther, time.Time{}
 	}
@@ -881,6 +884,7 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true, blockReasonCooldown, auth.Quota.NextRecoverAt
 	}
+	unavailable := codexRefreshUnavailableForRequest(ctx, auth, now, clientHeaders...)
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			matched := false
@@ -913,17 +917,17 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 			}
 			return false, blockReasonNone, time.Time{}
 		}
-		return availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
+		return availabilityBlock(unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
 	}
 	quotaExceeded := auth.Quota.Exceeded
 	// When model is empty and the credential has individual model states, auth.Quota.Exceeded
 	// is an aggregate of single-model quota cooldowns (reason "quota"). As long as the credential
 	// itself is not unavailable (not all models failed) and not under a credential-wide quota,
 	// do not treat individual model cooldowns as blocking the entire credential.
-	if len(auth.ModelStates) > 0 && auth.Quota.Reason != "credential_quota" && !auth.Unavailable {
+	if len(auth.ModelStates) > 0 && auth.Quota.Reason != "credential_quota" && !unavailable {
 		quotaExceeded = false
 	}
-	return availabilityBlock(auth.Unavailable, quotaExceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
+	return availabilityBlock(unavailable, quotaExceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
 }
 
 func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextRecoverAt, now time.Time) (bool, blockReason, time.Time) {
@@ -959,6 +963,7 @@ type SessionAffinitySelector struct {
 	matcher           *cliproxysession.MerklePrefixMatcher
 	subagentAffinity  bool
 	rebindOnQuotaOnly bool
+	rebindOnNever     bool
 }
 
 const (
@@ -967,12 +972,17 @@ const (
 	// SessionAffinityRebindOnQuota preserves the existing session binding across transient failures
 	// and only rebinds on quota, auth, model-support, or permanent unavailability.
 	SessionAffinityRebindOnQuota = "quota"
+	// SessionAffinityRebindOnNever preserves the existing session binding across all failures
+	// and refuses to fail over a bound session to another credential.
+	SessionAffinityRebindOnNever = "never"
 )
 
 func normalizeSessionAffinityRebindOn(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case SessionAffinityRebindOnQuota:
 		return SessionAffinityRebindOnQuota
+	case SessionAffinityRebindOnNever:
+		return SessionAffinityRebindOnNever
 	default:
 		return SessionAffinityRebindOnAny
 	}
@@ -1024,6 +1034,9 @@ func isAuthBlockedByQuotaOrAuthForModelForRequest(ctx context.Context, auth *Aut
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true
 	}
+	if codexRefreshMissingAccessForRequest(ctx, auth, clientHeaders...) {
+		return true
+	}
 	if hasUnauthorizedAuthFailure(auth) {
 		return true
 	}
@@ -1049,10 +1062,11 @@ func isAuthBlockedByQuotaOrAuthForModelForRequest(ctx context.Context, auth *Aut
 		return false
 	}
 	quota := auth.Quota
-	if len(auth.ModelStates) > 0 && auth.Quota.Reason != "credential_quota" && !auth.Unavailable {
+	unavailable := codexRefreshUnavailableForRequest(ctx, auth, now, clientHeaders...)
+	if len(auth.ModelStates) > 0 && auth.Quota.Reason != "credential_quota" && !unavailable {
 		quota.Exceeded = false
 	}
-	return isStateBlockedByQuotaOrAuth(auth.Unavailable, quota, auth.NextRetryAfter, auth.LastError, now)
+	return isStateBlockedByQuotaOrAuth(unavailable, quota, auth.NextRetryAfter, auth.LastError, now)
 }
 
 func isStateBlockedByQuotaOrAuth(unavailable bool, quota QuotaState, nextRetryAfter time.Time, lastErr *Error, now time.Time) bool {
@@ -1070,7 +1084,7 @@ func isStateBlockedByQuotaOrAuth(unavailable bool, quota QuotaState, nextRetryAf
 }
 
 func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx context.Context, candidates []*Auth, model, authID string, now time.Time) bool {
-	if s == nil || !s.rebindOnQuotaOnly || authID == "" {
+	if s == nil || (!s.rebindOnQuotaOnly && !s.rebindOnNever) || authID == "" {
 		return false
 	}
 	if ctx != nil {
@@ -1104,6 +1118,23 @@ type sessionAffinitySelectionMarker struct {
 	lcpMinPrefixLength   int
 }
 
+func (s *SessionAffinitySelector) unavailableBoundAuthError(ctx context.Context, candidates []*Auth, model, authID string, now time.Time) *Error {
+	if s.shouldPreserveBindingWhenUnavailable(ctx, candidates, model, authID, now) {
+		return &Error{
+			Code:       "session_auth_retry",
+			Message:    "bound session credential is transiently unavailable",
+			Retryable:  true,
+			HTTPStatus: http.StatusServiceUnavailable,
+		}
+	}
+	return &Error{
+		Code:       "session_auth_unavailable",
+		Message:    "bound session credential is unavailable",
+		Retryable:  false,
+		HTTPStatus: http.StatusTooManyRequests,
+	}
+}
+
 // SessionAffinityConfig configures the session affinity selector.
 type SessionAffinityConfig struct {
 	Fallback         Selector
@@ -1132,13 +1163,14 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	if cfg.SubagentAffinity != nil {
 		subagentAffinity = *cfg.SubagentAffinity
 	}
-	rebindOnQuotaOnly := normalizeSessionAffinityRebindOn(cfg.RebindOn) == SessionAffinityRebindOnQuota
+	rebindMode := normalizeSessionAffinityRebindOn(cfg.RebindOn)
 	return &SessionAffinitySelector{
 		fallback:          cfg.Fallback,
 		cache:             NewSessionCache(cfg.TTL),
 		matcher:           cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
 		subagentAffinity:  subagentAffinity,
-		rebindOnQuotaOnly: rebindOnQuotaOnly,
+		rebindOnQuotaOnly: rebindMode == SessionAffinityRebindOnQuota,
+		rebindOnNever:     rebindMode == SessionAffinityRebindOnNever,
 	}
 }
 
@@ -1233,7 +1265,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 	// A single availability pass serves both lookups: the bound credential is validated against
 	// every priority tier, while the fallback selector keeps seeing only the highest tier.
 	available, err := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
-	if err != nil {
+	if err != nil && !s.rebindOnNever {
 		return nil, err
 	}
 	fallbackAuths := highestPriorityAuths(available)
@@ -1286,6 +1318,15 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 				entry.Infof("session-affinity: cache hit | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 				return auth, nil
 			}
+		}
+		if s.rebindOnNever {
+			bind(cachedAuthID, false)
+			errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, cachedAuthID, now)
+			entry.Infof("session-affinity: cache hit but bound auth unavailable, refusing failover | session=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, errBound.Code, provider, model)
+			return nil, errBound
+		}
+		if err != nil {
+			return nil, err
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
 		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
@@ -1343,6 +1384,12 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 					}
 				}
 			}
+			if !isSubagent && !isFork && s.rebindOnNever {
+				bind(cachedAuthID, false)
+				errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, cachedAuthID, now)
+				entry.Infof("session-affinity: fallback cache hit but bound auth unavailable, refusing failover | session=%s fallback=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, errBound.Code, provider, model)
+				return nil, errBound
+			}
 			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
 				auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 				if err != nil {
@@ -1358,6 +1405,9 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 		}
 	}
 
+	if err != nil {
+		return nil, err
+	}
 	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 	if err != nil {
 		return nil, err
@@ -1480,7 +1530,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 	now := time.Now()
 	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
-	if errAvailable != nil {
+	if errAvailable != nil && !s.rebindOnNever {
 		return nil, true, errAvailable
 	}
 
@@ -1526,11 +1576,42 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 			}
 			return auth, true, nil
 		}
+		if !match.IsFork && s.rebindOnNever {
+			if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, match.AuthID); bindRes.SessionID != "" {
+				opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
+				opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
+				if bindRes.ParentSessionID != "" {
+					opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = bindRes.ParentSessionID
+				} else if opts.Metadata != nil {
+					delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+				}
+				if bindRes.AccessNumber > 0 && opts.Metadata != nil {
+					opts.Metadata[cliproxyexecutor.LCPAccessGenerationMetadataKey] = bindRes.AccessNumber
+				}
+				if bindRes.IsCompaction {
+					if opts.Metadata != nil {
+						opts.Metadata[cliproxyexecutor.IsCompactionMetadataKey] = true
+						delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+						opts.Metadata[cliproxyexecutor.NodeKindMetadataKey] = "compaction"
+					}
+				} else if opts.Metadata != nil {
+					delete(opts.Metadata, cliproxyexecutor.IsForkMetadataKey)
+					delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
+					delete(opts.Metadata, cliproxyexecutor.NodeKindMetadataKey)
+				}
+			}
+			errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, match.AuthID, now)
+			entry.Infof("session-affinity: LCP cache hit but bound auth unavailable, refusing failover | session=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(match.SessionID), match.AuthID, errBound.Code, provider, model)
+			return nil, true, errBound
+		}
 		if !match.IsFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, match.AuthID, now) {
 			preservedAuthID = match.AuthID
 		}
 	}
 
+	if errAvailable != nil {
+		return nil, true, errAvailable
+	}
 	fallbackAuths := highestPriorityAuths(available)
 	auth, errPick := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
 	if errPick != nil {
@@ -1693,6 +1774,14 @@ func selectorLogEntry(ctx context.Context) *log.Entry {
 		return log.WithField("request_id", reqID)
 	}
 	return log.NewEntry(log.StandardLogger())
+}
+
+// truncateSessionID shortens session ID for logging (first 8 chars + "...")
+func truncateSessionID(id string) string {
+	if len(id) <= 20 {
+		return id
+	}
+	return id[:8] + "..."
 }
 
 // sessionLogIdentity returns a stable, non-reversible routing identifier for logs.
@@ -1874,9 +1963,9 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 		// selected credential is unhealthy, so preserve both explicit and LCP bindings.
 		return
 	}
-	if !res.Success && s.rebindOnQuotaOnly && !shouldRebindSessionAffinityOnError(res.Error) {
-		// Under session-affinity-rebind-on: quota, transient failures fail over for
-		// the current request without unbinding the session from its bound credential.
+	if !res.Success && (s.rebindOnNever || (s.rebindOnQuotaOnly && !shouldRebindSessionAffinityOnError(res.Error))) {
+		// Under session-affinity-rebind-on: never (or quota on transient failures),
+		// keep the session bound to its original credential.
 		return
 	}
 
@@ -1954,6 +2043,75 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	if fallbackKey != "" {
 		s.cache.CompareAndDelete(fallbackKey, res.AuthID)
 	}
+}
+
+func (s *SessionAffinitySelector) boundAuthForRequest(providers []string, model string, opts cliproxyexecutor.Options) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	modelKey := canonicalModelKey(model)
+	candidateProviders := make([]string, 0, len(providers)+1)
+	candidateProviders = append(candidateProviders, "mixed")
+	for _, p := range providers {
+		p = strings.TrimSpace(p)
+		if p != "" && p != "mixed" {
+			candidateProviders = append(candidateProviders, p)
+		}
+	}
+
+	explicitID, explicitFallbackID := extractExplicitSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if explicitID == "" && s.matcher != nil {
+		turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
+		if len(turns) > 0 {
+			fingerprints, minPrefixLength, tailFingerprints, envDigest := s.matcher.PrepareExt(turns)
+			if len(fingerprints) > 0 && minPrefixLength > 0 && minPrefixLength <= len(fingerprints) {
+				for _, candProvider := range candidateProviders {
+					if namespace := lcpAffinityNamespace(candProvider, model, opts.Metadata); namespace != "" {
+						if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok && !match.IsFork && match.AuthID != "" {
+							return match.AuthID, true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if s.cache == nil {
+		return "", false
+	}
+	primaryID, fallbackID := explicitID, explicitFallbackID
+	if primaryID == "" {
+		primaryID, fallbackID = extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	}
+	if primaryID != "" {
+		primaryID = cliproxysession.BoundSessionIdentity(primaryID)
+	}
+	if fallbackID != "" {
+		fallbackID = cliproxysession.BoundSessionIdentity(fallbackID)
+	}
+	isFork := false
+	if opts.Metadata != nil {
+		if forkFlag, ok := opts.Metadata[cliproxyexecutor.IsForkMetadataKey].(bool); ok && forkFlag {
+			isFork = true
+		}
+	}
+	isSubagent := !isFork && isSubagentSession(primaryID, fallbackID)
+
+	if primaryID != "" {
+		for _, candProvider := range candidateProviders {
+			if authID, ok := s.cache.Get(candProvider + "::" + primaryID + "::" + modelKey); ok && authID != "" {
+				return authID, true
+			}
+		}
+	}
+	if fallbackID != "" && fallbackID != primaryID && !isSubagent && !isFork {
+		for _, candProvider := range candidateProviders {
+			if authID, ok := s.cache.Get(candProvider + "::" + fallbackID + "::" + modelKey); ok && authID != "" {
+				return authID, true
+			}
+		}
+	}
+	return "", false
 }
 
 // isGuardianRequest deliberately matches the header, not the configurable review model.

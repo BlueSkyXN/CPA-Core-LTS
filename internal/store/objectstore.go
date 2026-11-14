@@ -74,6 +74,8 @@ type ObjectTokenStore struct {
 	beforeAuthReadHook   func()
 	beforeAuthDeleteHook func()
 	putObjectFn          func(ctx context.Context, key string, data []byte, contentType string) error
+	refreshProbeMu       sync.Mutex
+	refreshProbeReady    bool
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.
