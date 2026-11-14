@@ -143,11 +143,13 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 	if m == nil || auth == nil || retryAfter == nil {
 		return
 	}
-	action, okAction := matchRequestScopedErrorAction(auth, err, m.runtimeConfigSnapshot())
+	action, okAction := matchRequestScopedErrorAction(auth, err, m.requestScopedErrorConfig(ctx))
 	result := resultForAuthWithOptions(auth, provider, resultModel, false, resultErrorFromError(err), opts)
 	result.RouteModel = routeModel
 	result.RetryAfter = retryAfter
 	result.ExecutionSeq = executionSeq
+	result.CredentialVersion = auth.CredentialVersion
+	result.RegistrationEpoch = auth.RegistrationEpoch
 	result.ModelFallbackReason = modelFallbackReasonFromError(err)
 	result.AccessToken = authAccessTokenForRequest(ctx, auth, opts.Headers)
 	result.CredentialScope = isCredentialScopedError(err)
@@ -181,12 +183,14 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 					result.AccessToken = accessToken
 					result.RouteModel = routeModel
 					result.ExecutionSeq = executionSeq
+					result.CredentialVersion = auth.CredentialVersion
+					result.RegistrationEpoch = auth.RegistrationEpoch
 					result.RetryAfter = retryAfterFromError(chunk.Err)
 					result.ModelFallbackReason = modelFallbackReasonFromError(chunk.Err)
 					if isCredentialScopedError(chunk.Err) {
 						result.CredentialScope = true
 					}
-					action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
+					action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.requestScopedErrorConfig(ctx))
 					applyRequestScopedActionToResult(action, okAction, &result)
 					m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 				}
@@ -440,7 +444,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	didRefreshOnUnauthorized := false
 	selectedPublished := false
 	for idx, execModel := range execModels {
-		ctx = newUpstreamAttemptContext(ctx)
+		ctx = m.newUpstreamAttemptContext(ctx)
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
 		execReq.Model = execModel
@@ -509,7 +513,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
 					didRefreshOnUnauthorized = true
-					ctx = newUpstreamAttemptContext(ctx)
+					ctx = m.newUpstreamAttemptContext(ctx)
 					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(ctx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
@@ -560,11 +564,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if errStream != nil {
 			rerr := resultErrorFromError(errStream)
-			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
+			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(ctx))
 			result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)
 			result.AccessToken = authAccessTokenForRequest(ctx, auth, execOpts.Headers)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
+			result.CredentialVersion = auth.CredentialVersion
+			result.RegistrationEpoch = auth.RegistrationEpoch
 			result.RetryAfter = retryAfterFromError(errStream)
 			result.ModelFallbackReason = modelFallbackReasonFromError(errStream)
 			if isCredentialScopedError(errStream) {
@@ -619,7 +625,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					auth = refreshed
 					ctx = contextWithAuthGeneration(ctx, auth)
 					didRefreshOnUnauthorized = true
-					ctx = newUpstreamAttemptContext(ctx)
+					ctx = m.newUpstreamAttemptContext(ctx)
 					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(ctx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
@@ -675,7 +681,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				discardStreamChunks(streamResult.Chunks)
 				return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 			}
-			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.runtimeConfigSnapshot())
+			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.requestScopedErrorConfig(ctx))
 			if okAction {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := resultForAuthWithOptions(auth, provider, resultModel, false, rerr, execOpts)

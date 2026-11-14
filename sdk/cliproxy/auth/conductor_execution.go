@@ -26,6 +26,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func (m *Manager) newUpstreamAttemptContext(ctx context.Context) context.Context {
+	ctx = logging.WithFreshResponseHeadersHolder(ctx)
+	if RequestScopedErrorConfigFromContext(ctx) == nil {
+		ctx = WithRequestScopedErrorConfig(ctx, m.runtimeConfigSnapshot())
+	}
+	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
+}
+
 func newUpstreamAttemptContext(ctx context.Context) context.Context {
 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
 	ctx = logging.WithFreshUpstreamRequestSizeHolder(ctx)
@@ -657,7 +665,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
-		execCtx = newUpstreamAttemptContext(execCtx)
+		execCtx = m.newUpstreamAttemptContext(execCtx)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
 		if len(models) == 0 {
@@ -687,7 +695,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		didRefreshOnUnauthorized := false
 		selectedPublished := false
 		for _, upstreamModel := range models {
-			execCtx = newUpstreamAttemptContext(execCtx)
+			execCtx = m.newUpstreamAttemptContext(execCtx)
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
@@ -771,7 +779,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
-					execCtx = newUpstreamAttemptContext(execCtx)
+					execCtx = m.newUpstreamAttemptContext(execCtx)
 					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
@@ -831,7 +839,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isCredentialScopedError(errExec) {
 					result.CredentialScope = true
 				}
-				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
+				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
 				applyRequestScopedActionToResult(action, okAction, &result)
 				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
@@ -865,7 +873,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			return resp, nil
 		}
 		if authErr != nil {
-			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
+			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.requestScopedErrorConfig(execCtx))
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return cliproxyexecutor.Response{}, wrapRequestStopError(authErr)
@@ -940,7 +948,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
-		execCtx = newUpstreamAttemptContext(execCtx)
+		execCtx = m.newUpstreamAttemptContext(execCtx)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
 		if len(models) == 0 {
@@ -971,7 +979,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		didRefreshOnUnauthorized := false
 		selectedPublished := false
 		for _, upstreamModel := range models {
-			execCtx = newUpstreamAttemptContext(execCtx)
+			execCtx = m.newUpstreamAttemptContext(execCtx)
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
 			execReq.Model = upstreamModel
@@ -1047,7 +1055,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
-					execCtx = newUpstreamAttemptContext(execCtx)
+					execCtx = m.newUpstreamAttemptContext(execCtx)
 					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
@@ -1097,7 +1105,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
 				}
-				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
+				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
 				applyRequestScopedActionToResult(action, okAction, &result)
 				// Some Anthropic-compatible upstreams and plugin executors do not
 				// implement count_tokens and return a generic endpoint 404 or an
@@ -1139,7 +1147,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			return resp, nil
 		}
 		if authErr != nil {
-			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
+			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.requestScopedErrorConfig(execCtx))
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return cliproxyexecutor.Response{}, wrapRequestStopError(authErr)
@@ -1346,7 +1354,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
-		execCtx = newUpstreamAttemptContext(execCtx)
+		if selection != nil {
+			execCtx = coreusage.WithHomeSelection(execCtx, coreusage.HomeSelection{
+				Reused: selection.Retained(), Model: routeModel, CredentialPolicy: credentialPolicyFromContext(ctx),
+			})
+		}
+		execCtx = m.newUpstreamAttemptContext(execCtx)
 		models, pooled, aliasResult, routing := m.executionModelCandidatesWithAlias(auth, routeModel)
 		// Home owns dispatched credential availability; only local selections need state filtering.
 		if selection == nil {
@@ -1478,15 +1491,16 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRetryWithoutPenaltyError(errStream) {
 				return nil, errStream
 			}
-			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
-			if isRequestScopedStop(action, okAction) || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
+			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(execCtx))
+			stoppedByRule := isRequestStopError(errStream) || isRequestScopedStop(action, okAction)
+			if stoppedByRule || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
 				// Only redispatch needs a release acknowledgement. Preserve the final
 				// response even when Home cannot acknowledge the released admission.
 				if selection != nil {
 					releaseAttempt()
 					selection.End("request_stopped")
 				}
-				if isRequestScopedStop(action, okAction) {
+				if stoppedByRule {
 					return nil, wrapRequestStopError(errStream)
 				}
 				return nil, errStream
@@ -2565,7 +2579,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 		Metadata:        map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID},
 	}
 
-	execCtx := newUpstreamAttemptContext(ctx)
+	execCtx := m.newUpstreamAttemptContext(ctx)
 	execCtx = syncMetadataSessionToContext(execCtx, opts.Metadata)
 	executionSeq := m.nextExecutionSeq()
 	accessToken := authAccessTokenForRequest(execCtx, auth, opts.Headers)

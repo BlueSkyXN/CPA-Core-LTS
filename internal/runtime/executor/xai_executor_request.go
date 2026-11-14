@@ -127,7 +127,7 @@ func (e *XAIExecutor) prepareResponsesRequestToDoc(ctx context.Context, req clip
 		return nil, err
 	}
 
-	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, selectedAuthKind...)
+	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, nil)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", stream)
 	_ = doc.Delete("previous_response_id")

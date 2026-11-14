@@ -277,7 +277,7 @@ func TestCodexExecutorRefresh_EmptyAttributesSnapshotIsolation(t *testing.T) {
 	proxyURL, teardown := startCodexMockOAuthServers(t, idTokenWithoutPlan)
 	defer teardown()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthDir: t.TempDir()}
 	executor := NewCodexExecutor(cfg)
 
 	emptyAttrs := map[string]string{}

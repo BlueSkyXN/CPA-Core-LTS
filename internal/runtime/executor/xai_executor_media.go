@@ -37,7 +37,7 @@ func (e *XAIExecutor) executeImages(ctx context.Context, auth *cliproxyauth.Auth
 	originalPayload := normalizeXAIImageRefs(originalPayloadSource)
 	doc := ojson.NewDoc(req.Payload)
 	normalizeXAIImageRefsDoc(doc)
-	helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", originalPayload, req, opts, auth.AuthKind())), doc)
+	helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", originalPayload, req, opts, auth)), doc)
 	payload := doc.Bytes()
 	reporter.SetTranslatedRequestMetadata(payload, "openai")
 	url := strings.TrimSuffix(baseURL, "/") + endpointPath
@@ -94,7 +94,7 @@ func (e *XAIExecutor) executeVideos(ctx context.Context, auth *cliproxyauth.Auth
 
 	doc := ojson.NewDoc(req.Payload)
 	normalizeXAIImageRefsDoc(doc)
-	helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", req.Payload, req, opts, auth.AuthKind())), doc)
+	helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, "openai", "", req.Payload, req, opts, auth)), doc)
 	payload := doc.Bytes()
 	method := http.MethodPost
 	endpointPath := xaiVideosGenerationsPath

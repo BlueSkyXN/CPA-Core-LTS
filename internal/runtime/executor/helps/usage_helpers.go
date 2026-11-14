@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -33,8 +34,8 @@ import (
 type UsageReporter struct {
 	requestID             string
 	traceID               string
-	sessionID             string
-	parentSessionID       string
+	selectionID           string
+	homeSelection         *usage.HomeSelection
 	provider              string
 	baseURL               string
 	executorType          string
@@ -47,13 +48,19 @@ type UsageReporter struct {
 	authIndex             string
 	authMu                sync.RWMutex
 	accessTokenHash       string
+	requestScopedRules    []internalconfig.RequestScopedErrorRule
 	authType              string
 	apiKey                string
+	accessProvider        string
+	isNativeKey           bool
+	sessionID             string
+	parentSessionID       string
 	source                string
 	usageProvenance       string
 	reasoning             string
 	serviceTier           string
 	outboundTier          string
+	effectiveServiceTier  string
 	generate              bool
 	stream                bool
 	requestedAt           time.Time
@@ -63,8 +70,6 @@ type UsageReporter struct {
 	timingEnabled         bool
 	// The effective-token fields preserve upstream's protocol-aware timing
 	// state. Canonical v3 usage records are populated only from timing above.
-	accessProvider      string
-	isNativeKey         bool
 	ttftMu              sync.RWMutex
 	ttft                time.Duration
 	firstPacketDuration time.Duration
@@ -79,7 +84,6 @@ type UsageReporter struct {
 	clientRequestEncoding string
 	sizeMu                sync.Mutex
 	upstreamAttempt       *upstreamSizeAttempt
-	selectionID           string
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
@@ -146,6 +150,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		requestID:       uuid.NewString(),
 		traceID:         traceID,
 		selectionID:     usage.SelectionIDFromContext(ctx),
+		homeSelection:   usage.HomeSelectionFromContext(ctx),
 		provider:        provider,
 		baseURL:         usage.SafeBaseURL(baseURL),
 		model:           model,
@@ -168,6 +173,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
+		reporter.requestScopedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, cliproxyauth.RequestScopedErrorConfigFromContext(ctx))
 	}
 	return reporter
 }
@@ -245,9 +251,25 @@ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
 	if r == nil {
 		return
 	}
+	var updatedRules []internalconfig.RequestScopedErrorRule
+	if auth != nil {
+		updatedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, nil)
+	}
 	r.authMu.Lock()
 	r.accessTokenHash = authAccessTokenSHA256(auth)
+	if len(updatedRules) > 0 {
+		r.requestScopedRules = updatedRules
+	}
 	r.authMu.Unlock()
+}
+
+func (r *UsageReporter) requestScopedErrorRules() []internalconfig.RequestScopedErrorRule {
+	if r == nil {
+		return nil
+	}
+	r.authMu.RLock()
+	defer r.authMu.RUnlock()
+	return r.requestScopedRules
 }
 
 func (r *UsageReporter) accessTokenFingerprint() string {
@@ -755,15 +777,22 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	// The parent stream does not measure the side model's output window.
 	record.OutputTiming = &usage.OutputTiming{Version: 1}
 	record.RequestID = uuid.NewString()
+	if record.HomeSelection != nil {
+		// Split billing details do not represent another scheduled request.
+		// Mark them separately without changing the primary usage metadata.
+		selection := *record.HomeSelection
+		selection.Additional = true
+		record.HomeSelection = &selection
+	}
 	return record, true
 }
 
 func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
-	r.publishWithOutcome(ctx, usage.Detail{}, true, failFromErrors(errs...))
+	r.publishWithOutcome(ctx, usage.Detail{}, true, r.failFromErrors(ctx, errs...))
 }
 
 func (r *UsageReporter) PublishFailureWithDetail(ctx context.Context, detail usage.Detail, errs ...error) {
-	r.publishWithOutcome(ctx, detail, true, failFromErrors(errs...))
+	r.publishWithOutcome(ctx, detail, true, r.failFromErrors(ctx, errs...))
 }
 
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
@@ -974,6 +1003,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		),
 		ResponseCyberProgram: detail.ResponseCyberProgram,
 		SelectionID:          r.selectionID,
+		HomeSelection:        r.homeSelection,
 		ResponseModel:        responseModel,
 		Generate:             usage.GenerateFlag(r.generate),
 		Stream:               r.stream,
@@ -1002,7 +1032,15 @@ func explicitOutboundServiceTier(payload []byte) string {
 	return strings.Clone(strings.TrimSpace(tier.String()))
 }
 
+func (r *UsageReporter) failFromErrors(_ context.Context, errs ...error) usage.Failure {
+	return failFromErrorsWithRules(r.requestScopedErrorRules(), errs...)
+}
+
 func failFromErrors(errs ...error) usage.Failure {
+	return failFromErrorsWithRules(nil, errs...)
+}
+
+func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs ...error) usage.Failure {
 	for _, err := range errs {
 		if err == nil {
 			continue
@@ -1029,6 +1067,12 @@ func failFromErrors(errs ...error) usage.Failure {
 		}
 		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
 			fail.Code = usage.FailureStreamTruncatedCode
+		} else if action, okAction := cliproxyauth.MatchRequestScopedErrorRules(rules, err); okAction {
+			if action == cliproxyauth.RequestScopedActionStop || action == cliproxyauth.RequestScopedActionContinue {
+				fail.Code = usage.FailureRequestScopedCode
+			} else if action == cliproxyauth.RequestScopedActionStopAndCooldown || action == cliproxyauth.RequestScopedActionContinueAndCooldown {
+				fail.Code = usage.FailureForceCooldownCode
+			}
 		} else if requestErr, ok := errors.AsType[cliproxyexecutor.RequestScopedError](err); ok && requestErr != nil && requestErr.IsRequestScoped() {
 			fail.Code = usage.FailureRequestScopedCode
 		}
