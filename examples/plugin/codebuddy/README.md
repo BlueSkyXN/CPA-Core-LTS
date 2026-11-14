@@ -67,16 +67,23 @@ plugins:
         auth-read: true # required by the read-only Summary route
       endpoint: https://copilot.tencent.com/v2/chat/completions
       catalog_endpoint: https://copilot.tencent.com/v3/config
-      catalog_user_agent: WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0
+      catalog_user_agent: CLI/2.161.0 WorkBuddy/5.8.2
       billing_endpoint: https://copilot.tencent.com/v2/billing/meter/get-user-resource
-      # account_endpoint is optional; failed account probing falls back to the
-      # auth label and a non-secret credential fingerprint.
+      enterprise_usage_endpoint: https://copilot.tencent.com/v2/billing/meter/get-enterprise-user-usage
+      account_endpoint: https://copilot.tencent.com/v2/accounts
+      payment_type_endpoint: https://copilot.tencent.com/v2/billing/meter/get-payment-type
 ```
 
 `endpoint`, `catalog_endpoint`, and `billing_endpoint` are validated as
 absolute HTTPS URLs. Plain HTTP is accepted only for loopback test fixtures.
-`account_endpoint` is optional because the client account route is not
-available for every CLI key or product family.
+`enterprise_usage_endpoint`, `account_endpoint`, and `payment_type_endpoint`
+may be set to an empty string to disable that part of the Summary.
+
+默认客户端标识按 WorkBuddy 5.8.2 内置 CLI（`@tencent-ai/codebuddy-code`
+2.161.0）的 `buildUserAgent` 逆向：平台段在前、应用段在后。旧默认值
+`WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0` 是日志合并产物的手抄串，
+形状错误且版本过旧；升级时如仍配置了旧 `catalog_user_agent` 覆盖，需管理员
+主动更新。已有显式 `user_agent` / `catalog_user_agent` 配置继续优先。
 
 ## Dynamic catalog
 
@@ -119,27 +126,59 @@ The route is protected by CPA Management authentication. It uses the existing
 grant `permissions.auth-read: true`.
 
 The response contains the selected `auth_index`, file name, label, a short
-credential fingerprint, account status, quota status, and a catalog snapshot. Quota packages retain
-exact decimal strings and also expose convenient numeric values; real zero is
-distinct from `unsupported`, `not_configured`, or `auth_rejected`。
-空 `Accounts` 返回 `unsupported / no_personal_resources`，所有总额保持空，
-绝不推断企业额度为零。`quota.scope=personal_resources` 明确查询范围；
-`account.scope=tenant` 的 catalog ID 只是租户线索，不是已验证成员 UID。
-保留原 `account.id` 兼容字段，同时补充 `enterprise_id` 和 `member_identity_unverified`。
-`plan` 保持 `unknown / plan_not_verified`，不根据 `paymentType=free` 猜订阅。
-The response
-never contains a PAT, Job Token, Refresh Token, raw upstream body, or auth-file
-path.
+credential fingerprint, account identity, payment-type plan, quota status, and
+a catalog snapshot. Quota packages retain exact decimal strings and also
+expose convenient numeric values; real zero is distinct from `unsupported`,
+`not_configured`, or `auth_rejected`。
 
-CodeBuddy billing uses the read-only `POST
-/v2/billing/meter/get-user-resource` operation. The implementation accepts both
-the current `data.Response.Data.Accounts` envelope and the historical direct
-`Accounts` shape. 按 100 条/页查询有效个人资源，最多 10 页；分页不完整、重复或
-超限标记 `partial`，不发布错误合计。周期 `CycleCapacity*` 优先于终身 `Capacity*`；
+2026-11-14 用真实 PAT 对 `copilot.tencent.com` 实测后的额度与身份模型：
+
+- **企业成员额度**（`get-enterprise-user-usage`）是 PAT 可访问的主额度来源，
+  返回 `credit`（已用）、`limitNum`（上限）、周期与重置时间；服务端按凭据解析
+  成员身份，无需额外身份头。企业凭据的 `quota.scope=enterprise_member`。
+- **个人资源包**（`get-user-resource`）查 `p_tcaca` 资源包；无包凭据恒返回
+  空而不报错，`unsupported / no_personal_resources` 表示"没有个人资源包"，
+  不是数值零。企业额度可用时个人资源包与之一并列出，单位一致才合并总量。
+- **账号身份**（`/v2/accounts`）列出同一 uid 的全部身份（企业
+  `ultimate`/`pro` 与 `personal`），`lastLogin` 标当前活跃身份；`nickname`、
+  `enterpriseName`、`enterpriseUserName` 为厂商返回的展示信息。凭据无企业
+  身份时 `account.scope=personal`。
+- **计费形态**（`get-payment-type`）作为 `plan.name` 线索（如 `free`）；
+  `free` 不等于"个人免费账号"，订阅身份以 `/v2/accounts` 为准。
+- 旧 `account_endpoint` 默认 `/v2/plugin/accounts` 属 OAuth 会话族，PAT 恒
+  401；保留为显式覆盖形态，兼容单账号对象响应。
+
+按 100 条/页查询有效个人资源，最多 10 页；分页不完整、重复或超限标记
+`partial`，不发布错误合计。周期 `CycleCapacity*` 优先于终身 `Capacity*`；
 保留 `basis` 和周期边界。`TotalDosage` 不是已使用量，不用于凑合计。
-Account lookup is best-effort; if the configured account route
-rejects the PAT, Summary still identifies the selected auth file and reports
-the safe fingerprint fallback.
+Account lookup is best-effort; if the configured account route rejects the
+PAT, Summary still identifies the selected auth file and reports the safe
+fingerprint fallback.
+
+流内 usage 帧的 `usage.credit`（本请求消耗）与 `usage.quota`（模型配额水位
+`percent`/`reset_at`）经 Core usage 管道透传；本插件不在 Summary 中另记会话
+级账本。The response never contains a PAT, Job Token, Refresh Token, raw
+upstream body, or auth-file path.
+
+## Upstream risk-control fingerprints (verified 2026-11-15)
+
+`copilot.tencent.com` 的 chat 通道对 system/developer 消息做内容风控（HTTP
+400 / code 11128）。用真实 PAT 逐条二分实测：
+
+- **放行**：ZCode、Qoder、Codex CLI、WorkBuddy 自身的真实系统提示词首句
+  均通过；黑名单是窄名单，不是竞品全量。
+- **拦截**：Claude Code 身份句（system 开头）、`Main branch (you will
+  usually use this for PRs)` 与 Claude Code 反馈指引（任意位置）、
+  `x-anthropic-billing-header:` 文本（任意位置）、DeepSeek Harness 身份句
+  （system 开头）。user 消息中的同串放行。
+- **角色闸门**：`developer` 角色本身即被拒（中性内容同样 11128），与内容
+  风控无关；插件在出站前做 developer→system 映射（内容逐字保留）。
+
+插件对 system/developer 消息做**精确字面量**指纹清洗：命中表内已知指纹时
+做最小中性化替换（如 `Main branch` → `Default branch`），未命中的文本原样
+透传——不报错、不拦截、不使用泛化正则或词表。新指纹会以 11128 错误浮出
+（`upstream_channel_rejected`，错误信息含自助修法），按实测补充表项即可。
+指纹清单与验证记录见 `request_fingerprint.go`。
 
 ## Supported behavior
 

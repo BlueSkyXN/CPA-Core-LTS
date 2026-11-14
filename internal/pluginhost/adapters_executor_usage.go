@@ -30,6 +30,10 @@ func (a *executorAdapter) formalUsageReporter(ctx context.Context, auth *coreaut
 	reporter.SetTranslatedReasoningEffort(prepared.req.Payload, prepared.inputFormat.String())
 	reporter.SetOutboundServiceTier(prepared.req.Payload)
 	reporter.SetUsageProvenance(coreusage.UsageProvenanceUnavailable)
+	// 插件执行器的响应是上游流式 payload 的逐 chunk 转发；启用语义 timing
+	// 让 TTFT/TTFA/output_timing 由帧分类产生，而不是只剩首包兜底。非流式
+	// 执行路径（Execute）不走 StartResponseTiming，不受影响。
+	reporter.EnableSemanticTiming(prepared.outputFormat.String())
 	return reporter
 }
 

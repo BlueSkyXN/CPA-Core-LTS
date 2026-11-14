@@ -19,7 +19,7 @@ Qoder 目录有两种使用方式：
 
 Management 的 `GET /v0/management/auth-files/models?name=...` 只读取当前 registry。若凭证暂无已注册模型，Panel 会调用 `POST /v0/management/auth-files/models/refresh?name=...` 重新发现单个凭证的目录；Core 沿原注册路径更新 registry 和 scheduler。重新发现可能触发 PAT 换票和目录 HTTP 请求，但不执行推理。成功返回 `status=ready|empty` 和 `models`；凭证不存在返回 404、已禁用返回 409、目录失败返回 502 与安全错误码、超时返回 504，不回传插件原始错误或上游响应体。旧 Core 没有此 POST 时，Panel 仍按原有空列表处理。
 
-CodeBuddy 0.2.2 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0`；此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
+CodeBuddy 按 `/v3/config` 的 `cli` / `craft` 场景获取精确模型名单。默认客户端标识是 `CLI/2.161.0 WorkBuddy/5.8.2`，形状按 WorkBuddy 5.8.2 内置 CLI 的 `buildUserAgent` 逆向（平台段在前）；旧默认 `WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0` 为日志合并产物手抄串，已修正。此标识只用于 HTTP 请求，不安装 CLI。已有显式配置优先，升级时若仍配置了旧 `catalog_user_agent`，需要管理员主动更新或移除该覆盖项。
 
 新的模型元数据包含可选 reasoning levels、能否关闭 thinking、默认 context tier 和原始 credits 提示；不拼接其他场景名单，不把显示名当可执行 ID，不根据 `credits` 估算真实扣费。Summary 的 `catalog` 包含来源、场景、数量、获取时间、过期状态、模型能力和提示。Core `ModelInfo` 与 ABI 不变。
 
@@ -100,9 +100,19 @@ schema 语义在 LTS 与 upstream 存在一处分叉，第三方作者必须区�
 
 COSY 签名参考 Sliverkiss/cpa-plugin 的 MIT QoderWork 实现，归属和许可证见 `examples/plugin/qoder/THIRD_PARTY_NOTICES.md`，并随 Qoder 插件归档和镜像分发。推理请求字段另与 [qoder2api-hub 的公开实现](https://github.com/shuishuipingan/qoder2api-hub/tree/81eee37f0b4f3d7a6382c3ff402937cba565bfd1) 对照，并通过当前 Qoder CN PAT 独立实测；没有引入第三方网关、其 baseprompt 模板或新厂商 SDK。
 
+2026-11-15 补充实测：chat 通道对 system/developer 消息存在内容风控（11128）。
+Claude Code 与 DeepSeek Harness 的身份句（system 开头）、Claude Code 的分支
+提示 / 反馈指引 / 计费归因文本（任意位置）会被拦；ZCode / Qoder / Codex /
+WorkBuddy 自身提示词实测放行；developer 角色本身被拒。插件层以 developer→system
+角色映射（协议兼容，内容逐字保留）+ 精确字面量指纹清洗（命中才动，未命中原样
+放行）应对；清单与验证记录见 `examples/plugin/codebuddy/go/request_fingerprint.go`。
+
 ## CodeBuddy 企业 / 个人账号边界与下一阶段
 
-当前 Key 模式可用于目录和推理，但企业额度查询需要另行验证可用的认证方式。不能将
+2026-11-14 已用真实 PAT 验证：`get-enterprise-user-usage`、`/v2/accounts`、
+`get-payment-type` 均可由 Key 凭据访问（服务端按凭据解析成员身份）；仅
+`/v2/plugin/account(s)` OAuth 会话族恒 401。企业额度（credit/limitNum/周期）为
+Key 形态的主额度来源，`get-user-resource` 仅查个人资源包、无包时恒空。不能将
 `get-payment-type` 返回的 `free` 直接解释成“个人免费账号”，也不能把个人资源
 `Accounts:null/[]` 解释成企业余额为零。当前 Summary 明确输出：
 

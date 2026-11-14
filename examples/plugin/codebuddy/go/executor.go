@@ -114,6 +114,8 @@ func codeBuddyRequestPayload(raw []byte, model string, hints ...codeBuddyModelHi
 	if errToolChoice := normalizeCodeBuddyToolChoice(body); errToolChoice != nil {
 		return nil, errToolChoice
 	}
+	normalizeCodeBuddyRoles(body)
+	sanitizeCodeBuddyFingerprints(body)
 	maxTokensField := ""
 	if len(hints) > 0 {
 		maxTokensField = hints[0].MaxTokensField

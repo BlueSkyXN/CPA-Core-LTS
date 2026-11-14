@@ -35,14 +35,29 @@ type summaryCredential struct {
 }
 
 type summaryAccount struct {
-	Status       string `json:"status"`
-	Code         string `json:"code,omitempty"`
-	ID           string `json:"id,omitempty"`
-	Name         string `json:"name,omitempty"`
-	Email        string `json:"email,omitempty"`
-	Source       string `json:"source,omitempty"`
-	Scope        string `json:"scope,omitempty"`
-	EnterpriseID string `json:"enterprise_id,omitempty"`
+	Status          string                   `json:"status"`
+	Code            string                   `json:"code,omitempty"`
+	ID              string                   `json:"id,omitempty"`
+	Name            string                   `json:"name,omitempty"`
+	Email           string                   `json:"email,omitempty"`
+	Source          string                   `json:"source,omitempty"`
+	Scope           string                   `json:"scope,omitempty"`
+	EnterpriseID    string                   `json:"enterprise_id,omitempty"`
+	EnterpriseName  string                   `json:"enterprise_name,omitempty"`
+	EnterpriseUser  string                   `json:"enterprise_user,omitempty"`
+	AccountType     string                   `json:"account_type,omitempty"`
+	EnterpriseUsers []summaryAccountIdentity `json:"enterprise_identities,omitempty"`
+}
+
+// summaryAccountIdentity 是 /v2/accounts 返回的同一 uid 下并列身份之一；
+// type=ultimate/pro 等为企业档，type=personal 为个人档，lastLogin 标当前活跃身份。
+type summaryAccountIdentity struct {
+	Type           string `json:"type"`
+	Name           string `json:"name,omitempty"`
+	EnterpriseID   string `json:"enterprise_id,omitempty"`
+	EnterpriseName string `json:"enterprise_name,omitempty"`
+	EnterpriseUser string `json:"enterprise_user,omitempty"`
+	LastLogin      bool   `json:"last_login,omitempty"`
 }
 
 type summaryCatalog struct {
@@ -59,6 +74,7 @@ type summaryPlan struct {
 	Status     string `json:"status"`
 	Code       string `json:"code,omitempty"`
 	Name       string `json:"name,omitempty"`
+	Source     string `json:"source,omitempty"`
 	CycleStart string `json:"cycle_start,omitempty"`
 	CycleEnd   string `json:"cycle_end,omitempty"`
 }
@@ -158,6 +174,11 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			result.Account = account
 		}
 	}
+	if cfg.PaymentTypeEndpoint != "" {
+		if plan := r.fetchPaymentType(auth, req.HostCallbackID); plan.Status != "unknown" {
+			result.Plan = plan
+		}
+	}
 
 	r.mu.Lock()
 	if r.summaryCache == nil {
@@ -207,6 +228,9 @@ func callHostAuthGetRuntime(caller hostCaller, authIndex string) (pluginapi.Host
 	return response, nil
 }
 
+// fetchCodeBuddyAccount 读取 /v2/accounts：2026-11-14 实测 PAT 可访问，
+// 返回同一 uid 的全部身份（企业 ultimate/pro + personal），lastLogin 标活跃身份。
+// 旧默认 /v2/plugin/accounts 属 OAuth 会话族，PAT 恒 401，仅保留为显式覆盖。
 func (r *pluginRuntime) fetchCodeBuddyAccount(auth codeBuddyAuth, callbackID string) summaryAccount {
 	cfg := r.loadedConfig()
 	if strings.TrimSpace(cfg.AccountEndpoint) == "" || strings.TrimSpace(callbackID) == "" {
@@ -246,26 +270,116 @@ func parseCodeBuddyAccount(raw []byte) summaryAccount {
 	if !ok {
 		return summaryAccount{Status: "upstream_error", Code: "account_response_invalid"}
 	}
-	account := mapValue(rootMap, "account")
-	if account == nil {
-		account = mapValue(rootMap, "data")
+	if code := stringOrNumber(rootMap, "code"); code != "" && code != "0" {
+		return summaryAccount{Status: "unsupported", Code: "account_rejected"}
 	}
-	if account == nil {
-		account = rootMap
+	data := mapValue(rootMap, "data")
+	if data == nil {
+		data = rootMap
 	}
-	result := summaryAccount{
-		ID:           stringValue(account, "id", "user_id", "uid", "account_id"),
-		EnterpriseID: stringValue(account, "enterpriseId"),
-		Scope:        "member",
-		Name:         stringValue(account, "name", "username", "nickname", "account_name"),
-		Email:        stringValue(account, "email", "email_address"),
-		Source:       "account_endpoint",
+	accounts := arrayValue(data, "accounts")
+	if len(accounts) == 0 {
+		// 兼容单账号对象形态（显式覆盖旧端点时）。
+		if single := mapValue(data, "account"); single != nil {
+			accounts = []any{map[string]any(single)}
+		} else if data != nil && mapHasKey(data, "uid") {
+			accounts = []any{map[string]any(data)}
+		}
 	}
-	if result.ID == "" && result.Name == "" && result.Email == "" {
+	if len(accounts) == 0 {
 		return summaryAccount{Status: "unsupported", Code: "account_fields_missing"}
 	}
-	result.Status = "available"
+	result := summaryAccount{Status: "available", Source: "account_endpoint"}
+	for _, rawAccount := range accounts {
+		item, okItem := rawAccount.(map[string]any)
+		if !okItem {
+			continue
+		}
+		identity := summaryAccountIdentity{
+			Type:           stringValue(item, "type"),
+			Name:           stringValue(item, "nickname"),
+			EnterpriseID:   stringValue(item, "enterpriseId"),
+			EnterpriseName: stringValue(item, "enterpriseName"),
+			EnterpriseUser: stringValue(item, "enterpriseUserName"),
+			LastLogin:      boolValue(item, "lastLogin"),
+		}
+		if result.ID == "" {
+			result.ID = stringValue(item, "uid", "id", "user_id")
+		}
+		if identity.Name != "" && result.Name == "" {
+			result.Name = identity.Name
+		}
+		result.EnterpriseUsers = append(result.EnterpriseUsers, identity)
+		// lastLogin 的身份是当前活跃身份；优先展示企业身份。
+		if identity.EnterpriseID != "" && (identity.LastLogin || result.Scope == "") {
+			result.Scope = "enterprise_member"
+			result.EnterpriseID = identity.EnterpriseID
+			result.EnterpriseName = identity.EnterpriseName
+			result.EnterpriseUser = identity.EnterpriseUser
+			result.AccountType = identity.Type
+		}
+	}
+	if result.Scope == "" && len(result.EnterpriseUsers) > 0 {
+		result.Scope = "personal"
+		result.AccountType = result.EnterpriseUsers[0].Type
+	}
+	if result.ID == "" && result.Name == "" {
+		return summaryAccount{Status: "unsupported", Code: "account_fields_missing"}
+	}
 	return result
+}
+
+// fetchPaymentType 读取 get-payment-type；free 不等于"个人免费账号"，
+// 只作为计费形态线索展示，plan 身份仍以 /v2/accounts 为准。
+func (r *pluginRuntime) fetchPaymentType(auth codeBuddyAuth, callbackID string) *summaryPlan {
+	cfg := r.loadedConfig()
+	if strings.TrimSpace(cfg.PaymentTypeEndpoint) == "" || strings.TrimSpace(callbackID) == "" {
+		return &summaryPlan{Status: "unknown", Code: "plan_not_verified"}
+	}
+	headers := make(http.Header)
+	headers.Set("Accept", "application/json")
+	headers.Set("Content-Type", "application/json")
+	headers.Set("X-API-Key", auth.APIKey)
+	headers.Set("X-Product", "SaaS")
+	headers.Set("User-Agent", cfg.CatalogUserAgent)
+	response, errRequest := doHostHTTP(r.caller, hostHTTPRequest{
+		HostCallbackID: callbackID,
+		Method:         http.MethodPost,
+		URL:            cfg.PaymentTypeEndpoint,
+		Headers:        headers,
+		Body:           []byte("{}"),
+	})
+	if errRequest != nil {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_request_failed"}
+	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_auth_rejected"}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || len(response.Body) == 0 || len(response.Body) > 16*1024 {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_http_error"}
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(response.Body)))
+	decoder.UseNumber()
+	var root any
+	if errDecode := decoder.Decode(&root); errDecode != nil {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_invalid"}
+	}
+	rootMap, ok := root.(map[string]any)
+	if !ok {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_invalid"}
+	}
+	if code := stringOrNumber(rootMap, "code"); code != "" && code != "0" {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_rejected"}
+	}
+	data := mapValue(rootMap, "data")
+	if data == nil {
+		data = rootMap
+	}
+	paymentType := stringValue(data, "paymentType", "payment_type")
+	if paymentType == "" {
+		return &summaryPlan{Status: "unknown", Code: "payment_type_missing"}
+	}
+	return &summaryPlan{Status: "available", Name: paymentType, Source: "get-payment-type"}
 }
 
 func codeBuddyCredentialKind(auth codeBuddyAuth) string {
@@ -275,6 +389,17 @@ func codeBuddyCredentialKind(auth codeBuddyAuth) string {
 	return "pat"
 }
 
+func boolValue(value map[string]any, key string) bool {
+	for candidate, raw := range value {
+		if strings.EqualFold(candidate, key) {
+			if typed, ok := raw.(bool); ok {
+				return typed
+			}
+		}
+	}
+	return false
+}
+
 func codeBuddyCredentialFingerprint(auth codeBuddyAuth) string {
 	sum := sha256.Sum256([]byte(auth.APIKey))
 	return hex.EncodeToString(sum[:8])
@@ -282,7 +407,7 @@ func codeBuddyCredentialFingerprint(auth codeBuddyAuth) string {
 
 func codeBuddySummaryCacheKey(auth codeBuddyAuth, cfg pluginConfig, authIndex string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		codeBuddyCredentialFingerprint(auth), strings.TrimSpace(authIndex), cfg.CatalogEndpoint, cfg.CatalogUserAgent, cfg.BillingEndpoint, cfg.AccountEndpoint,
+		codeBuddyCredentialFingerprint(auth), strings.TrimSpace(authIndex), cfg.CatalogEndpoint, cfg.CatalogUserAgent, cfg.BillingEndpoint, cfg.EnterpriseUsageEndpoint, cfg.AccountEndpoint, cfg.PaymentTypeEndpoint,
 	}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }

@@ -41,10 +41,53 @@ type codeBuddyQuotaPackage struct {
 }
 
 func (r *pluginRuntime) codeBuddyQuotaSummary(auth codeBuddyAuth, callbackID string) (result codeBuddyQuota) {
-	defer func() { result.Scope = "personal_resources"; result.Source = "get-user-resource" }()
+	// 额度视图按 2026-11-14 的 PAT 实测组合：企业成员额度（get-enterprise-user-usage）
+	// 是有企业身份凭据的主额度；个人资源包（get-user-resource）单独无资源包时恒空，
+	// 不是数值零。两个来源独立探测，企业额度优先展示，个人资源包有则并列。
+	enterprise := r.fetchEnterpriseUsage(auth, callbackID)
+	personal := r.fetchPersonalResources(auth, callbackID)
+	if enterprise.Status == "available" {
+		enterprise.Packages = append(personal.Packages, enterprise.Packages...)
+		if personal.Status == "available" && personal.TotalExact != "" {
+			// 个人资源包与企业周期额度单位一致（credits）时合并总量；否则只并列展示。
+			if mergedTotal, ok := sumExactDecimals([]string{enterprise.TotalExact, personal.TotalExact}); ok {
+				if mergedUsed, okUsed := sumExactDecimals([]string{enterprise.UsedExact, personal.UsedExact}); okUsed {
+					if mergedRemaining, okRemaining := sumExactDecimals([]string{enterprise.RemainingExact, personal.RemainingExact}); okRemaining {
+						enterprise.TotalExact, enterprise.UsedExact, enterprise.RemainingExact = mergedTotal, mergedUsed, mergedRemaining
+						enterprise.Total = approximatePointer(mergedTotal)
+						enterprise.Used = approximatePointer(mergedUsed)
+						enterprise.Remaining = approximatePointer(mergedRemaining)
+					}
+				}
+			}
+		}
+		return enterprise
+	}
+	if personal.Status == "available" {
+		return personal
+	}
+	// 两个来源都不可用时报告主导原因：鉴权拒绝 > 无企业身份 > 无个人资源包。
+	if enterprise.Status == "auth_rejected" || personal.Status == "auth_rejected" {
+		return codeBuddyQuota{Status: "auth_rejected", Code: "billing_auth_rejected"}
+	}
+	if enterprise.Code == "no_enterprise_usage" {
+		if personal.Status == "not_configured" {
+			return codeBuddyQuota{Status: "not_configured", Code: "billing_endpoint_missing"}
+		}
+		return personal
+	}
+	if enterprise.Status == "upstream_error" || enterprise.Status == "rate_limited" {
+		return enterprise
+	}
+	return personal
+}
+
+// fetchEnterpriseUsage 查询企业成员周期额度。凭据无企业身份或个人 key 时
+// 厂商返回错误/空数据，此时降级为 no_enterprise_usage，不冒充数值结果。
+func (r *pluginRuntime) fetchEnterpriseUsage(auth codeBuddyAuth, callbackID string) codeBuddyQuota {
 	cfg := r.loadedConfig()
-	if strings.TrimSpace(cfg.BillingEndpoint) == "" {
-		return codeBuddyQuota{Status: "not_configured", Code: "billing_endpoint_missing"}
+	if strings.TrimSpace(cfg.EnterpriseUsageEndpoint) == "" {
+		return codeBuddyQuota{Status: "not_configured", Code: "enterprise_usage_endpoint_missing"}
 	}
 	if strings.TrimSpace(callbackID) == "" {
 		return codeBuddyQuota{Status: "upstream_error", Code: "host_callback_missing"}
@@ -55,6 +98,101 @@ func (r *pluginRuntime) codeBuddyQuotaSummary(auth codeBuddyAuth, callbackID str
 	headers.Set("X-API-Key", auth.APIKey)
 	headers.Set("X-Product", "SaaS")
 	headers.Set("User-Agent", cfg.CatalogUserAgent)
+	response, errRequest := doHostHTTP(r.caller, hostHTTPRequest{
+		HostCallbackID: callbackID,
+		Method:         http.MethodPost,
+		URL:            cfg.EnterpriseUsageEndpoint,
+		Headers:        headers,
+		Body:           []byte("{}"),
+	})
+	if errRequest != nil {
+		return codeBuddyQuota{Status: "upstream_error", Code: "enterprise_usage_request_failed"}
+	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return codeBuddyQuota{Status: "auth_rejected", Code: "billing_auth_rejected"}
+	}
+	if response.StatusCode == http.StatusTooManyRequests {
+		return codeBuddyQuota{Status: "rate_limited", Code: "billing_rate_limited"}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return codeBuddyQuota{Status: "upstream_error", Code: "enterprise_usage_http_error"}
+	}
+	if len(response.Body) == 0 || len(response.Body) > 64*1024 {
+		return codeBuddyQuota{Status: "upstream_error", Code: "enterprise_usage_response_invalid"}
+	}
+	data, errParse := decodeCodeBuddyEnterpriseUsage(response.Body)
+	if errParse != nil {
+		return codeBuddyQuota{Status: "partial", Code: "enterprise_usage_response_invalid"}
+	}
+	credit := exactValue(data, "credit", "Credit")
+	limit := exactValue(data, "limitNum", "limit_num")
+	if credit == "" || limit == "" {
+		return codeBuddyQuota{Status: "partial", Code: "no_enterprise_usage"}
+	}
+	remaining, _ := subtractExactDecimals(limit, credit)
+	pkg := codeBuddyQuotaPackage{
+		Basis:          "cycle",
+		Name:           "enterprise",
+		Unit:           "credits",
+		Total:          approximatePointer(limit),
+		TotalExact:     limit,
+		Used:           approximatePointer(credit),
+		UsedExact:      credit,
+		Remaining:      approximatePointer(remaining),
+		RemainingExact: remaining,
+		CycleStart:     stringValue(data, "cycleStartTime", "cycle_start_time"),
+		CycleEnd:       stringValue(data, "cycleEndTime", "cycle_end_time"),
+	}
+	return codeBuddyQuota{
+		Status: "available",
+		Scope:  "enterprise_member",
+		Source: "get-enterprise-user-usage",
+		Unit:   "credits",
+		Total:  pkg.Total, TotalExact: pkg.TotalExact,
+		Used: pkg.Used, UsedExact: pkg.UsedExact,
+		Remaining: pkg.Remaining, RemainingExact: pkg.RemainingExact,
+		Packages: []codeBuddyQuotaPackage{pkg},
+	}
+}
+
+func decodeCodeBuddyEnterpriseUsage(raw []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var root any
+	if errDecode := decoder.Decode(&root); errDecode != nil {
+		return nil, errDecode
+	}
+	rootMap, ok := root.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("enterprise usage response is not an object")
+	}
+	if code := stringOrNumber(rootMap, "code"); code != "" && code != "0" {
+		return nil, fmt.Errorf("enterprise usage response rejected the request")
+	}
+	data := mapValue(rootMap, "data")
+	if data == nil {
+		return nil, fmt.Errorf("enterprise usage response has no data")
+	}
+	return data, nil
+}
+
+// fetchPersonalResources 保留原 get-user-resource 分页查询；个人无资源包时为空，
+// 返回 unsupported/no_personal_resources，语义是"没有个人资源包"，不是余额为零。
+func (r *pluginRuntime) fetchPersonalResources(auth codeBuddyAuth, callbackID string) (result codeBuddyQuota) {
+	defer func() { result.Scope = "personal_resources"; result.Source = "get-user-resource" }()
+	cfg := r.loadedConfig()
+	if strings.TrimSpace(cfg.BillingEndpoint) == "" {
+		return codeBuddyQuota{Status: "not_configured", Code: "billing_endpoint_missing"}
+	}
+	if strings.TrimSpace(callbackID) == "" {
+		return codeBuddyQuota{Status: "upstream_error", Code: "host_callback_missing"}
+	}
+	personalHeaders := make(http.Header)
+	personalHeaders.Set("Accept", "application/json")
+	personalHeaders.Set("Content-Type", "application/json")
+	personalHeaders.Set("X-API-Key", auth.APIKey)
+	personalHeaders.Set("X-Product", "SaaS")
+	personalHeaders.Set("User-Agent", cfg.CatalogUserAgent)
 	// 同一个凭据分页面查询个人资源；不把 TotalDosage 当成已使用量。
 	var all []any
 	now := time.Now().In(time.FixedZone("CST", 8*60*60))
@@ -69,7 +207,7 @@ func (r *pluginRuntime) codeBuddyQuotaSummary(auth codeBuddyAuth, callbackID str
 			HostCallbackID: callbackID,
 			Method:         http.MethodPost,
 			URL:            cfg.BillingEndpoint,
-			Headers:        headers,
+			Headers:        personalHeaders,
 			Body:           body,
 		})
 		if errRequest != nil {

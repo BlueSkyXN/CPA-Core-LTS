@@ -252,8 +252,11 @@ func TestWorkBuddyMaxTokensCapabilities(t *testing.T) {
 	if body["max_completion_tokens"] != float64(17) || body["max_tokens"] != nil || body["reasoning_effort"] != "high" {
 		t.Fatal("catalog capability or original reasoning lost")
 	}
+	// 2026-11-14 实测 copilot.tencent.com 对 developer 角色恒回 11128（中性内容
+	// 同样被拒，system 同文本放行）；developer→system 是已验证的协议兼容映射，
+	// 内容与顺序逐字保留。此处锁定映射后的形状，防止未来引入更多改写。
 	message := body["messages"].([]any)[0].(map[string]any)
-	if message["role"] != "developer" || message["content"] != "keep original instructions" {
-		t.Fatal("unverified role or prompt rewriting was introduced")
+	if message["role"] != "system" || message["content"] != "keep original instructions" {
+		t.Fatalf("developer→system mapping broke content: %v", message)
 	}
 }
