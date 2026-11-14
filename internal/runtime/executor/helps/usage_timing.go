@@ -297,8 +297,12 @@ func (t *responseTimingTracker) processLineLocked(line []byte) {
 	}
 
 	// WebSocket messages and non-SSE JSON responses arrive without a data:
-	// prefix. Ignore malformed fragments rather than retaining them.
+	// prefix. Ignore malformed fragments rather than retaining them. Complete
+	// JSON frames are stream payloads too: plugin executors commonly deframe
+	// upstream SSE before emitting bare JSON chunks, and those frames must set
+	// streamObserved so the output window (duration_ms) is measurable.
 	if ojson.ValidBytes(trimmed) {
+		t.streamObserved = true
 		t.classifyLocked(trimmed)
 	}
 }
