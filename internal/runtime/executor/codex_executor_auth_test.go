@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,14 +91,28 @@ func startCodexMockOAuthServers(t *testing.T, idToken string) (proxyURL string, 
 		http.Error(w, "proxy only supports CONNECT", http.StatusBadRequest)
 	}))
 
-	// Allow self-signed cert for the mock TLS server in HTTP transport
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = &http.Transport{
+	// Route refresh traffic through an explicit test client instead of
+	// swapping http.DefaultTransport: the global swap raced with concurrently
+	// constructed executors (which clone DefaultTransport) and with other
+	// tests' fixtures, surfacing as intermittent refresh transport failures.
+	// The transport keeps the CONNECT proxy (mockProxy) plus insecure TLS for
+	// the self-signed mock auth server, matching what SetProxy produced.
+	proxyRef, errProxyParse := url.Parse(mockProxy.URL)
+	if errProxyParse != nil {
+		t.Fatalf("parse mock proxy URL: %v", errProxyParse)
+	}
+	mockTransport := &http.Transport{
+		Proxy:           http.ProxyURL(proxyRef),
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	origHook := codexRefreshTestHTTPClient
+	codexRefreshTestHTTPClient = func() *http.Client {
+		return &http.Client{Transport: mockTransport}
 	}
 
 	teardown = func() {
-		http.DefaultTransport = origTransport
+		codexRefreshTestHTTPClient = origHook
+		mockTransport.CloseIdleConnections()
 		mockProxy.Close()
 		mockAuthServer.Close()
 	}
@@ -371,12 +386,23 @@ func startDualCodexAndSIWCMockOAuthServer(t *testing.T, idToken string, failSIWC
 		http.Error(w, "proxy only supports CONNECT", http.StatusBadRequest)
 	}))
 
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = &http.Transport{
+	// Same explicit test client as startCodexMockOAuthServers (CONNECT proxy
+	// + insecure TLS); see the DefaultTransport race note there.
+	proxyRef, errProxyParse := url.Parse(mockProxy.URL)
+	if errProxyParse != nil {
+		t.Fatalf("parse mock proxy URL: %v", errProxyParse)
+	}
+	mockTransport := &http.Transport{
+		Proxy:           http.ProxyURL(proxyRef),
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
+	origHook := codexRefreshTestHTTPClient
+	codexRefreshTestHTTPClient = func() *http.Client {
+		return &http.Client{Transport: mockTransport}
+	}
 	teardown = func() {
-		http.DefaultTransport = origTransport
+		codexRefreshTestHTTPClient = origHook
+		mockTransport.CloseIdleConnections()
 		mockProxy.Close()
 		mockAuthServer.Close()
 	}
