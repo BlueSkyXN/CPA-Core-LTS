@@ -26,6 +26,8 @@ var (
 type ConvertAnthropicResponseToOpenAIParams struct {
 	CreatedAt         int64
 	ResponseID        string
+	Model             string
+	Fallbacks         translatorcommon.ClaudeFallbackChain
 	FinishReason      string
 	Usage             claudeUsageTokens
 	TrailingUsageSent bool
@@ -105,6 +107,13 @@ func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalT
 	return promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens
 }
 
+func effectiveChatResponseModel(servedModel, requestedModel string) string {
+	if servedModel != "" {
+		return servedModel
+	}
+	return requestedModel
+}
+
 // ConvertClaudeResponseToOpenAI converts Claude Code streaming response format to OpenAI Chat Completions format.
 // This function processes various Claude Code event types and transforms them into OpenAI-compatible JSON responses.
 // It handles text content, tool calls, reasoning content, and usage metadata, outputting responses that match
@@ -155,46 +164,87 @@ func ConvertClaudeResponseToOpenAI(ctx context.Context, modelName string, origin
 	// Base OpenAI streaming response template
 	templateDoc := ojson.NewDoc([]byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{},"finish_reason":null}]}`))
 
-	// Set model
-	if modelName != "" {
-		_ = templateDoc.Set("model", modelName)
+	p := (*param).(*ConvertAnthropicResponseToOpenAIParams)
+
+	// Set model (prefer authoritative upstream serving model when known)
+	if chunkModel := effectiveChatResponseModel(p.Model, modelName); chunkModel != "" {
+		_ = templateDoc.Set("model", chunkModel)
 	}
 
 	// Set response ID and creation time
-	if (*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID != "" {
-		_ = templateDoc.Set("id", (*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID)
+	if p.ResponseID != "" {
+		_ = templateDoc.Set("id", p.ResponseID)
 	}
-	if (*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt > 0 {
-		_ = templateDoc.Set("created", (*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt)
+	if p.CreatedAt > 0 {
+		_ = templateDoc.Set("created", p.CreatedAt)
 	}
 
 	switch eventType {
 	case "message_start":
 		// Initialize response with message metadata when a new message begins
 		if message := root.Get("message"); message.Exists() {
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID = strings.Clone(message.Get("id").String())
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt = time.Now().Unix()
+			p.ResponseID = strings.Clone(message.Get("id").String())
+			p.CreatedAt = time.Now().Unix()
+			p.Fallbacks.Reset()
+			upstreamModel := strings.TrimSpace(message.Get("model").String())
+			if upstreamModel != "" {
+				p.Model = strings.Clone(upstreamModel)
+			}
 
-			_ = templateDoc.Set("id", (*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID)
-			_ = templateDoc.Set("model", modelName)
-			_ = templateDoc.Set("created", (*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt)
+			_ = templateDoc.Set("id", p.ResponseID)
+			if chunkModel := effectiveChatResponseModel(p.Model, modelName); chunkModel != "" {
+				_ = templateDoc.Set("model", chunkModel)
+			}
+			_ = templateDoc.Set("created", p.CreatedAt)
 
 			// Set initial role to assistant for the response
 			_ = templateDoc.Set("choices.0.delta.role", "assistant")
+			if fromModel, toModel, ok := translatorcommon.ClaudePreTokenFallbackModels(originalRequestRawJSON, requestRawJSON, modelName, upstreamModel); ok {
+				if fbBytes := p.Fallbacks.RecordPreToken(fromModel, toModel, "", nil); len(fbBytes) > 0 {
+					_ = templateDoc.SetRawBytes("choices.0.delta.fallback", fbBytes)
+				}
+			}
 
 			// Initialize tool calls accumulator for tracking tool call progress
-			if (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator == nil {
-				(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
+			if p.ToolCallsAccumulator == nil {
+				p.ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
 			}
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).NextToolCallIndex = 0
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.Merge(message.Get("usage"))
+			p.NextToolCallIndex = 0
+			p.Usage.Merge(message.Get("usage"))
 		}
 		return [][]byte{templateDoc.Bytes()}
 
 	case "content_block_start":
-		// Start of a content block (text, tool use, or reasoning)
+		// Start of a content block (text, tool use, fallback boundary, or reasoning)
 		if contentBlock := root.Get("content_block"); contentBlock.Exists() {
 			blockType := contentBlock.Get("type").String()
+
+			if blockType == "fallback" {
+				toModel := strings.TrimSpace(contentBlock.Get("to.model").String())
+				fromModel := strings.TrimSpace(contentBlock.Get("from.model").String())
+				if toModel != "" {
+					p.Model = strings.Clone(toModel)
+					_ = templateDoc.Set("model", p.Model)
+				}
+				fbBytes := p.Fallbacks.RecordBlock(
+					contentBlock,
+					effectiveChatResponseModel(fromModel, modelName),
+					effectiveChatResponseModel(toModel, p.Model),
+					"",
+					nil,
+				)
+				if len(fbBytes) > 0 {
+					_ = templateDoc.SetRawBytes("choices.0.delta.fallback", fbBytes)
+					if allBytes := p.Fallbacks.ArrayBytes(); len(allBytes) > 0 {
+						_ = templateDoc.SetRawBytes("choices.0.delta.fallbacks", allBytes)
+					}
+					return [][]byte{templateDoc.Bytes()}
+				}
+				if toModel != "" {
+					return [][]byte{templateDoc.Bytes()}
+				}
+				return [][]byte{}
+			}
 
 			if blockType == "tool_use" {
 				// Start of tool call - initialize accumulator to track arguments
@@ -295,29 +345,38 @@ func ConvertClaudeResponseToOpenAI(ctx context.Context, modelName string, origin
 
 		// Handle usage information for token counts
 		if usage := root.Get("usage"); usage.Exists() {
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.Merge(usage)
-			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.OpenAIUsage()
+			if iterModel, newHops := p.Fallbacks.RecordIterations(usage.Get("iterations"), modelName, "", nil); iterModel != "" {
+				p.Model = iterModel
+				_ = templateDoc.Set("model", p.Model)
+				if len(newHops) > 0 {
+					_ = templateDoc.SetRawBytes("choices.0.delta.fallback", p.Fallbacks.Latest())
+					if allBytes := p.Fallbacks.ArrayBytes(); len(allBytes) > 0 {
+						_ = templateDoc.SetRawBytes("choices.0.delta.fallbacks", allBytes)
+					}
+				}
+			}
+			p.Usage.Merge(usage)
+			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := p.Usage.OpenAIUsage()
 			_ = templateDoc.Set("usage.prompt_tokens", promptTokens)
 			_ = templateDoc.Set("usage.completion_tokens", completionTokens)
 			_ = templateDoc.Set("usage.total_tokens", totalTokens)
 			_ = templateDoc.Set("usage.prompt_tokens_details.cached_tokens", cachedTokens)
 			_ = templateDoc.Set("usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
 			_ = templateDoc.Set("usage.prompt_tokens_details.cache_write_tokens", cachedCreationTokens)
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.applyReasoningTokensDoc(templateDoc)
+			p.Usage.applyReasoningTokensDoc(templateDoc)
 		}
 		return [][]byte{templateDoc.Bytes()}
 
 	case "message_stop":
 		// Final message event - emit standard OpenAI trailing usage chunk with empty choices array if usage was tracked.
-		p := (*param).(*ConvertAnthropicResponseToOpenAIParams)
 		if p.Usage.HasUsage && !p.TrailingUsageSent {
 			p.TrailingUsageSent = true
 			usageDoc := ojson.NewDoc([]byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[]}`))
 			if p.ResponseID != "" {
 				_ = usageDoc.Set("id", p.ResponseID)
 			}
-			if modelName != "" {
-				_ = usageDoc.Set("model", modelName)
+			if chunkModel := effectiveChatResponseModel(p.Model, modelName); chunkModel != "" {
+				_ = usageDoc.Set("model", chunkModel)
 			}
 			if p.CreatedAt > 0 {
 				_ = usageDoc.Set("created", p.CreatedAt)
@@ -396,14 +455,20 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 		}
 		return nil
 	}
-	var chunks [][]byte
+	// LTS: validate plugin message payloads before any normalization so
+	// malformed plugin responses stay request-scoped conversion failures.
 	var message ojson.Result
 	if ojson.ValidBytes(rawJSON) {
 		message = ojson.ParseBytes(rawJSON)
 		if claudecommon.ValidatePluginMessage(util.ParseGJSONBytesNoCopy(rawJSON), true) != nil {
 			return invalid()
 		}
-	} else {
+	}
+	// Upstream: aggregate a Claude messages JSON into SSE so the fallback-aware
+	// event loop handles every content block uniformly.
+	rawJSON, _ = translatorcommon.ClaudeMessagesJSONToSSE(rawJSON)
+	var chunks [][]byte
+	if !ojson.ValidBytes(rawJSON) {
 		for _, line := range bytes.Split(rawJSON, []byte("\n")) {
 			if !bytes.HasPrefix(line, dataTag) {
 				continue
@@ -421,6 +486,8 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 		if len(chunks) == 0 || (checked != nil && (checked.Err != nil || !checked.Terminal)) {
 			return invalid()
 		}
+		// The normalized SSE stream owns the content; skip the direct-message branch.
+		message = ojson.Result{}
 	}
 
 	// Base OpenAI non-streaming response template
@@ -432,6 +499,8 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 	var stopReason string
 	var contentParts []string
 	var reasoningParts []string
+	var fallbacks translatorcommon.ClaudeFallbackChain
+	currentContentLen := 0
 	usageTokens := claudeUsageTokens{}
 	toolCallsAccumulator := make(map[int]*ToolCallAccumulator)
 
@@ -472,12 +541,36 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 			// Extract initial message metadata including ID, model, and input token count
 			if message := root.Get("message"); message.Exists() {
 				messageID = message.Get("id").String()
-				model = message.Get("model").String()
+				if m := strings.TrimSpace(message.Get("model").String()); m != "" {
+					model = m
+				}
+				if fromModel, toModel, ok := translatorcommon.ClaudePreTokenFallbackModels(originalRequestRawJSON, requestRawJSON, modelName, model); ok {
+					offset := 0
+					fallbacks.RecordPreToken(fromModel, toModel, "content_offset", &offset)
+				}
 				createdAt = time.Now().Unix()
 				usageTokens.Merge(message.Get("usage"))
 			}
 
 		case "content_block_start":
+			// LTS: keep unified block handling; upstream fallback blocks record
+			// cross-model hops before normal block processing.
+			if contentBlock := root.Get("content_block"); contentBlock.Exists() && contentBlock.Get("type").String() == "fallback" {
+				toModel := strings.TrimSpace(contentBlock.Get("to.model").String())
+				fromModel := strings.TrimSpace(contentBlock.Get("from.model").String())
+				if toModel != "" {
+					model = toModel
+				}
+				offset := currentContentLen
+				fallbacks.RecordBlock(
+					contentBlock,
+					effectiveChatResponseModel(fromModel, modelName),
+					effectiveChatResponseModel(toModel, model),
+					"content_offset",
+					&offset,
+				)
+				break
+			}
 			addBlock(int(root.Get("index").Int()), root.Get("content_block"))
 
 		case "content_block_delta":
@@ -488,7 +581,9 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 				case "text_delta":
 					// Accumulate text content
 					if text := delta.Get("text"); text.Exists() {
-						contentParts = append(contentParts, text.String())
+						textStr := text.String()
+						contentParts = append(contentParts, textStr)
+						currentContentLen += len(textStr)
 					}
 				case "thinking_delta":
 					// Accumulate reasoning/thinking content
@@ -527,6 +622,10 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 				}
 			}
 			if usage := root.Get("usage"); usage.Exists() {
+				offset := 0
+				if iterModel, _ := fallbacks.RecordIterations(usage.Get("iterations"), modelName, "content_offset", &offset); iterModel != "" {
+					model = iterModel
+				}
 				usageTokens.Merge(usage)
 			}
 		}
@@ -546,11 +645,15 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 	// Set basic response fields including message ID, creation time, and model
 	_ = outDoc.Set("id", messageID)
 	_ = outDoc.Set("created", createdAt)
-	_ = outDoc.Set("model", model)
+	_ = outDoc.Set("model", effectiveChatResponseModel(model, modelName))
 
 	// Set message content by combining all text parts
 	messageContent := strings.Join(contentParts, "")
 	_ = outDoc.Set("choices.0.message.content", messageContent)
+	if latestFB := fallbacks.Latest(); len(latestFB) > 0 {
+		_ = outDoc.SetRawBytes("choices.0.message.fallback", latestFB)
+		_ = outDoc.SetRawBytes("choices.0.message.fallbacks", fallbacks.ArrayBytes())
+	}
 
 	// Add reasoning content if available (following OpenAI reasoning format)
 	if len(reasoningParts) > 0 {

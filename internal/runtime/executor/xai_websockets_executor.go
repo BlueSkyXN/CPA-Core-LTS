@@ -583,15 +583,11 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		upstreamHeaders = respHS.Header.Clone()
 	}
 	if errDial != nil {
-		bodyErr := websocketHandshakeBody(respHS)
-		if respHS != nil {
-			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
-		}
+		bodyErr := recordWebsocketDialFailure(ctx, e.cfg, wsReqLog, respHS, errDial)
 		if respHS != nil && respHS.StatusCode > 0 {
 			unlockStreamSession()
 			return nil, xaiStatusErr(respHS.StatusCode, bodyErr)
 		}
-		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
 		unlockStreamSession()
 		return nil, errDial
 	}
@@ -634,9 +630,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			reporter.BeginResponseTiming()
 			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
 			if errDialRetry != nil || connRetry == nil {
-				bodyErrRetry := websocketHandshakeBody(respHSRetry)
-				closeHTTPResponseBody(respHSRetry, "xai websockets executor: close handshake response body error")
-				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
+				bodyErrRetry := recordWebsocketDialRetryFailure(ctx, e.cfg, wsReqLog, respHSRetry, errDialRetry)
 				sess.clearActive(conn, readCh)
 				sess.reqMu.Unlock()
 				if respHSRetry != nil && respHSRetry.StatusCode > 0 {

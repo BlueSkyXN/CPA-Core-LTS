@@ -319,9 +319,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				}
 				return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 			}
+			helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 			e.invalidateUpstreamConn(sess, connection, "send_error", errSend)
 			if !shouldRetryCodexWebsocketSend(errSend) {
-				helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 				return resp, errSend
 			}
 

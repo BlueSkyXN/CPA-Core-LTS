@@ -70,8 +70,8 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	if cfg.Port != 8317 || len(cfg.APIKeys) != 3 || len(cfg.GeminiKey) != 3 || len(cfg.CodexKey) != 1 || len(cfg.ClaudeKey) != 2 || len(cfg.VertexCompatAPIKey) != 1 || len(cfg.XAIKey) != 1 || len(cfg.MetaKey) != 1 || len(cfg.InteractionsKey) != 1 || len(cfg.OpenAICompatibility) != 1 {
 		t.Fatal("v8 example fields did not reach runtime config")
 	}
-	if !cfg.QuotaExceeded.AntigravityCredits || !cfg.QuotaExceeded.SwitchProject || !cfg.QuotaExceeded.SwitchPreviewModel {
-		t.Fatal("LTS quota defaults must remain enabled")
+	if !cfg.QuotaExceeded.AntigravityCredits || cfg.QuotaExceeded.SwitchProject || cfg.QuotaExceeded.SwitchPreviewModel {
+		t.Fatal("legacy-only quota examples must remain commented")
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err = os.WriteFile(path, data, 0600); err != nil {
@@ -104,7 +104,29 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	}
 }
 
-func TestV8PresencePrecedenceWithoutStartupCleanup(t *testing.T) {
+func TestV8ShutdownTimeoutParse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"v8 nested", "server:\n  shutdown-timeout: 15\n", 15},
+		{"legacy top-level", "shutdown-timeout: 7\n", 7},
+		{"absent defaults to zero", "server:\n  port: 8317\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ShutdownTimeoutSeconds != tc.want {
+				t.Fatalf("ShutdownTimeoutSeconds = %d, want %d", cfg.ShutdownTimeoutSeconds, tc.want)
+			}
+		})
+	}
+}
+
+func TestV8PresencePrecedenceAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw string
 		retry     int
@@ -130,10 +152,20 @@ func TestV8PresencePrecedenceWithoutStartupCleanup(t *testing.T) {
 				t.Fatalf("unexpected effective config: retry=%d cooling=%v keys=%d", cfg.RequestRetry, cfg.DisableCooling, len(cfg.APIKeys))
 			}
 			saved, _ := os.ReadFile(path)
-			if string(saved) != tc.raw {
-				t.Fatal("config load changed document layout")
+			if tc.unchanged && string(saved) != tc.raw {
+				t.Fatal("legacy config was rewritten")
 			}
-
+			if !tc.unchanged {
+				var doc yaml.Node
+				_ = yaml.Unmarshal(saved, &doc)
+				// LTS divergence: cleanup migrates values into the v8 paths but
+				// deliberately keeps the legacy spellings in place (documented
+				// LTS policy: old spellings stay readable compat residue, the
+				// canonical path wins by presence). Upstream deletes them here.
+				if yamlPath(doc.Content[0], "request-retry") == nil {
+					t.Fatal("LTS cleanup unexpectedly removed the legacy request-retry spelling")
+				}
+			}
 		})
 	}
 }
@@ -957,5 +989,39 @@ func TestV8ExampleDocumentsSessionAffinityCompactionGuidance(t *testing.T) {
 		if !strings.Contains(comment, required) {
 			t.Fatalf("routing.session-affinity comment in config.example.yaml is missing %q; got:\n%s", required, comment)
 		}
+	}
+}
+
+func TestV8PresencePrecedenceWithoutStartupCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		retry     int
+		cooling   bool
+		keys      int
+		unchanged bool
+	}{
+		{"legacy", "request-retry: 4\ndisable-cooling: true\napi-keys: [old]\n", 4, true, 1, true},
+		{"mixed explicit zero", "request-retry: 4\ndisable-cooling: true\napi-keys: [old]\nrouting:\n  retry: {request-retry: 0}\n  cooldown: {disable-cooling: false}\naccess: {api-keys: []}\n", 0, false, 0, false},
+		{"version does not force migration", "config-version: 8\nrequest-retry: 4\ndisable-cooling: true\napi-keys: [old]\n", 4, true, 1, true},
+		{"partial new block", "request-retry: 4\ndisable-cooling: true\napi-keys: [old]\nrouting: {retry: {max-retry-credentials: 2}}\n", 4, true, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.RequestRetry != tc.retry || cfg.DisableCooling != tc.cooling || len(cfg.APIKeys) != tc.keys {
+				t.Fatalf("unexpected effective config: retry=%d cooling=%v keys=%d", cfg.RequestRetry, cfg.DisableCooling, len(cfg.APIKeys))
+			}
+			saved, _ := os.ReadFile(path)
+			if string(saved) != tc.raw {
+				t.Fatal("config load changed document layout")
+			}
+
+		})
 	}
 }

@@ -151,8 +151,35 @@ func unwrapUpstreamExecutionAttempt(err error) error {
 }
 
 func unwrapExecutionBoundaryError(err error) error {
-	err = unwrapRequestStopError(err)
-	return unwrapUpstreamExecutionAttempt(err)
+	for err != nil {
+		switch wrapped := err.(type) {
+		case requestStopError:
+			err = wrapped.error
+		case schedulerRejectError:
+			err = wrapped.error
+		case *roundEndedBySchedulerRejectError:
+			if wrapped == nil || wrapped.cause == nil {
+				return err
+			}
+			err = wrapped.cause
+		case *upstreamExecutionAttemptError:
+			if wrapped == nil || wrapped.cause == nil {
+				return err
+			}
+			err = wrapped.cause
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+func roundPickFailureError(lastErr, upstreamErr, errPick error) error {
+	preferred := preferredExecutionAttemptError(lastErr, upstreamErr)
+	if isSchedulerRejectError(errPick) {
+		return markRoundEndedBySchedulerReject(preferred)
+	}
+	return preferred
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
@@ -181,7 +208,7 @@ func (m *Manager) normalizeSessionAffinityNeverTerminalError(err error, provider
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	if isRequestTerminatedError(err) || isRequestStopError(err) || isRequestInvalidError(err) || isSessionAffinityRetryError(err) {
+	if isRequestTerminatedError(err) || isRequestStopError(err) || isSchedulerRejectError(err) || isRequestInvalidError(err) || isSessionAffinityRetryError(err) {
 		return err
 	}
 	var authErr *Error
@@ -294,6 +321,12 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
+		}
+		if isSchedulerRejectError(errExec) {
+			if lastErr == nil && preferredUpstreamErr == nil {
+				return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
+			}
+			break
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
@@ -632,7 +665,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
-				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
+				return cliproxyexecutor.Response{}, roundPickFailureError(lastErr, upstreamErr, errPick)
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
@@ -929,7 +962,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
-				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
+				return cliproxyexecutor.Response{}, roundPickFailureError(lastErr, upstreamErr, errPick)
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
@@ -1239,7 +1272,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				if homeMode {
 					return nil, markHomeRetryRoundExhausted(preferredErr, roundTiming.RetryAfter(), isHomeNextRoundImmediatelyAvailable(errPick))
 				}
-				return nil, preferredErr
+				return nil, roundPickFailureError(lastErr, upstreamErr, errPick)
 			}
 			return nil, errPick
 		}

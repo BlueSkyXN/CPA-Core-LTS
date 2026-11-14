@@ -236,16 +236,18 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 		targetKey = canonicalModelKey(targetModel)
 	}
 
+	// LTS state lookup: exact route key first, then the canonical key, and only
+	// the canonical target may fall back to suffix-family state. A previously
+	// selected suffix can outlive a registry refresh that now advertises only
+	// the canonical Codex model; that cooldown is preserved for the canonical
+	// route without spreading to separately registered suffix routes, which are
+	// handled by the exact lookups above.
 	routeStateKey := modelStateKey(auth.Provider, targetModel)
 	state := auth.ModelStates[routeStateKey]
 	if state == nil {
 		state = auth.ModelStates[targetKey]
 	}
 	if state == nil && strings.EqualFold(strings.TrimSpace(targetModel), targetKey) {
-		// A previously selected suffix can outlive a registry refresh that now
-		// advertises only the canonical Codex model. Preserve that active cooldown
-		// for the canonical route without spreading it to separately registered
-		// suffix routes, which are handled by the exact lookup above.
 		targetLookup := canonicalModelLookupKey(targetKey)
 		for stateKey, candidate := range auth.ModelStates {
 			if candidate == nil || targetLookup == "" || canonicalModelLookupKey(stateKey) != targetLookup {
@@ -260,46 +262,107 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 			}
 		}
 	}
-	isSuspended := auth.Disabled || auth.Status == StatusDisabled
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
-		isSuspended = true
-	}
-	isQuotaExceeded := false
-	var suspendReason string
-	if state != nil {
-		if state.Status == StatusDisabled {
+	authDisabled := auth.Disabled || auth.Status == StatusDisabled
+	stateDisabled := state != nil && state.Status == StatusDisabled
+	terminalUnauthorized := hasUnauthorizedAuthFailure(auth)
+	openEnded := authDisabled || stateDisabled || terminalUnauthorized
+	isSuspended := openEnded
+
+	var credQuotaUntil time.Time
+	credQuotaSuspended := false
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
+		if auth.Quota.NextRecoverAt.IsZero() {
 			isSuspended = true
-			suspendReason = "disabled"
-		} else if isModelStateActiveCooldown(state, now) {
-			// Codex's transient rate-limit signal and Cloudflare challenges use the
-			// manager/scheduler cooldown without removing the route from the global
-			// registry. Confirmed quota and other active failures are projected.
-			if !isCodexTransientRateLimitResultError(auth.Provider, state.LastError) && !isCloudflareChallengeResultError(state.LastError) {
-				isSuspended = true
-				reason, _, _ := registrySuspensionForModelState(state)
-				isQuotaExceeded = state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now))
-				suspendReason = reason
-				if suspendReason == "" {
-					suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
-				}
+			credQuotaSuspended = true
+			openEnded = true
+		} else if auth.Quota.NextRecoverAt.After(now) {
+			isSuspended = true
+			credQuotaSuspended = true
+			credQuotaUntil = auth.Quota.NextRecoverAt
+		}
+	}
+
+	isQuotaExceeded := false
+	stateSuspended := false
+	var stateUntil time.Time
+	if state != nil {
+		if stateDisabled {
+			stateSuspended = true
+		} else if isModelStateActiveCooldown(state, now) && (isCodexTransientRateLimitResultError(auth.Provider, state.LastError) || isCloudflareChallengeResultError(state.LastError)) {
+			// LTS: Codex transient rate-limit signals and Cloudflare challenges use
+			// the manager/scheduler cooldown without removing the route from the
+			// global registry; confirmed quota and other active failures project.
+		} else if blocked, _, retryAfter := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now); blocked {
+			isSuspended = true
+			stateSuspended = true
+			if retryAfter.IsZero() {
+				openEnded = true
+			} else {
+				stateUntil = retryAfter
+			}
+		}
+		// LTS: Codex transient rate-limit signals and Cloudflare challenges cool
+		// the model without marking the registry route quota-exhausted, so the
+		// quota projection keeps their clients counted toward availability.
+		if !isModelStateActiveCooldown(state, now) || (!isCodexTransientRateLimitResultError(auth.Provider, state.LastError) && !isCloudflareChallengeResultError(state.LastError)) {
+			if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
+				isQuotaExceeded = true
 			}
 		}
 	}
-	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
+
+	var authFallbackUntil time.Time
+	if len(auth.ModelStates) == 0 {
 		// With no per-model states, scheduling falls back to the credential-wide
 		// cooldown (isAuthBlockedForModel); the projection must agree with it.
 		// When states exist, unmatched models stay schedulable by design, so the
 		// credential-wide fields must not suspend them here either.
-		isSuspended = true
+		if blocked, _, retryAfter := availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now); blocked {
+			isSuspended = true
+			if retryAfter.IsZero() {
+				openEnded = true
+			} else {
+				authFallbackUntil = retryAfter
+			}
+		}
 	}
-	if isSuspended && suspendReason == "" {
-		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+
+	var suspendReason string
+	var suspendUntil time.Time
+	if isSuspended {
+		switch {
+		case authDisabled || stateDisabled:
+			suspendReason = "disabled"
+		case terminalUnauthorized:
+			suspendReason = cooldownReason(auth.StatusMessage, QuotaState{}, auth.LastError)
+			if suspendReason == "" {
+				suspendReason = "unauthorized"
+			}
+		case stateSuspended:
+			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+			suspendUntil = stateUntil
+			if credQuotaSuspended && (strings.EqualFold(suspendReason, "quota") || strings.EqualFold(suspendReason, "credential_quota")) && credQuotaUntil.After(suspendUntil) {
+				suspendUntil = credQuotaUntil
+			}
+		default:
+			suspendUntil = authFallbackUntil
+			if credQuotaUntil.After(suspendUntil) {
+				suspendUntil = credQuotaUntil
+			}
+		}
+		if suspendReason == "" {
+			suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		}
+	}
+	if openEnded || !isSuspended {
+		suspendUntil = time.Time{}
 	}
 
 	return registry.ClientModelProjection{
 		ModelID:       targetModel,
 		Suspended:     isSuspended,
 		SuspendReason: suspendReason,
+		SuspendUntil:  suspendUntil,
 		QuotaExceeded: isQuotaExceeded,
 	}
 }

@@ -143,6 +143,12 @@ type ClaudeConfig struct {
 	// translation elsewhere, and per-credential search advertising in the Codex
 	// catalog. Default false keeps the translation that predates tool_search support.
 	ToolSearch bool `yaml:"tool-search" json:"tool-search"`
+	// ServerSideFallback opts cloaked Claude requests into Anthropic server-side
+	// refusal fallback injection (claude-opus-5-5 -> claude-opus-4-8 and
+	// claude-fable-5-1 -> claude-opus-5) when the request body does not already
+	// specify fallbacks. Default false leaves cross-model fallbacks omitted unless
+	// explicitly configured by the caller or payload rules.
+	ServerSideFallback bool `yaml:"server-side-fallback" json:"server-side-fallback"`
 	// SessionDatePinDays retains the cloaked currentDate pin per session for
 	// this many days in in-memory mode (server.kv-store.disabled: true without
 	// Home), independently of continuity expiry and credential switches. A nil
@@ -227,6 +233,9 @@ type XAIConfig struct {
 type DevinConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system prompts and messages.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements in system prompts.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
 }
 
 // ProxyConnectionPoolConfig configures upstream connection reuse for one api-key
@@ -258,8 +267,11 @@ type ProxyConnectionPoolConfig struct {
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
-	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
+	// SensitiveWords is a list of words to obfuscate with invisible combining grapheme joiners in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements in system instructions.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
 
 	// ConnectionPool configures upstream HTTP connection pooling behavior for Antigravity.
 	ConnectionPool AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
@@ -753,6 +765,9 @@ type CloakConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters.
 	// This can help bypass certain content filters.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
 
 	// CacheUserID controls whether Claude user_id values are cached per API key.
 	// When false, a fresh random user_id is generated for every request.
