@@ -756,9 +756,10 @@ func (a *Auth) EnsureIndex() string {
 	if a == nil {
 		return ""
 	}
+	// The steady-state path must stay read-only: request goroutines call this
+	// (executor usage reporters) while the conductor may Clone the same shared
+	// Auth concurrently, and rewriting the same value races with the struct copy.
 	if existingIndex := strings.TrimSpace(a.Index); existingIndex != "" {
-		a.Index = existingIndex
-		a.indexAssigned = true
 		return existingIndex
 	}
 
