@@ -338,11 +338,6 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	svc := codexauth.NewCodexAuthWithProxyURL(cfg, auth.ProxyURL)
-	if client := codexRefreshTestHTTPClient(); client != nil {
-		// Test-only injection: keeps mock-server wiring off the process-global
-		// http.DefaultTransport (see SetHTTPClientForTesting).
-		svc.SetHTTPClientForTesting(client)
-	}
 	if diskPath != "" && (cfg == nil || cfg.AuthDir == "") {
 		svc.SetRefreshJournal(&codexauth.FileRefreshJournal{Dir: filepath.Dir(diskPath)})
 	}
