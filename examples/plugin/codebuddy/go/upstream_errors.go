@@ -33,8 +33,11 @@ func codeBuddyUpstreamError(status, businessCode int) error {
 	case businessCode == 11115:
 		code, status, message = "upstream_context_too_long", http.StatusBadRequest, "CodeBuddy context exceeds the model limit"
 	case businessCode == 11128:
-		// 渠道风控：上游内容审核精确匹配友商客户端系统提示词指纹或校验会话请求头时拒绝。
-		code, status, message = "upstream_channel_rejected", http.StatusBadRequest, "CodeBuddy channel validation rejected the request; client prompt fingerprints or session headers may have triggered upstream risk control"
+		// 渠道风控：上游内容审核精确匹配友商客户端系统提示词指纹（Claude Code /
+		// DeepSeek Harness 身份句，须位于 system 开头）或拒绝 developer 角色时触发。
+		// 实测在 system 提示词开头加一个字符即可绕过身份句匹配；developer 角色已由
+		// normalizeCodeBuddyRoles 映射为 system，此处报错针对表外新指纹。
+		code, status, message = "upstream_channel_rejected", http.StatusBadRequest, "CodeBuddy channel validation rejected the request; a client prompt fingerprint likely triggered upstream risk control. Adjusting the first line of the system prompt usually resolves it"
 	case businessCode == 10105:
 		code, status, message = "upstream_active_session_limit", http.StatusTooManyRequests, "CodeBuddy active session limit exceeded"
 	case businessCode == 11140 || businessCode == 11142:

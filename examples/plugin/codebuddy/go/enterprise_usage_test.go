@@ -171,3 +171,79 @@ func TestSummaryCacheKeyCoversNewEndpoints(t *testing.T) {
 }
 
 var _ = pluginabi.MethodHostHTTPDo
+
+func TestNormalizeCodeBuddyRolesMapsDeveloperToSystem(t *testing.T) {
+	body := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "developer", "content": "You are a helpful assistant."},
+			map[string]any{"role": "user", "content": "hi"},
+			map[string]any{"role": "developer", "content": "second"},
+		},
+	}
+	normalizeCodeBuddyRoles(body)
+	messages := body["messages"].([]any)
+	if messages[0].(map[string]any)["role"] != "system" || messages[0].(map[string]any)["content"] != "You are a helpful assistant." {
+		t.Fatalf("developer not mapped verbatim: %v", messages[0])
+	}
+	if messages[1].(map[string]any)["role"] != "user" {
+		t.Fatalf("user message mutated: %v", messages[1])
+	}
+	if messages[2].(map[string]any)["role"] != "system" || messages[2].(map[string]any)["content"] != "second" {
+		t.Fatalf("second developer not mapped: %v", messages[2])
+	}
+}
+
+func TestNormalizeCodeBuddyRolesNoopWithoutDeveloper(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "system", "content": "keep"},
+		map[string]any{"role": "user", "content": "hi"},
+	}
+	body := map[string]any{"messages": messages}
+	normalizeCodeBuddyRoles(body)
+	if body["messages"].([]any)[0].(map[string]any)["content"] != "keep" {
+		t.Fatal("messages were rewritten without developer roles")
+	}
+	if _, ok := body["messages"].([]any); !ok {
+		t.Fatal("messages type changed")
+	}
+}
+
+func TestSanitizeCodeBuddyFingerprintsReplacesVerifiedLiterals(t *testing.T) {
+	body := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": "You are Claude Code, Anthropic's official CLI for Claude.\n\nMain branch (you will usually use this for PRs)"},
+		map[string]any{"role": "user", "content": "You are Claude Code, Anthropic's official CLI for Claude. Main branch (you will usually use this for PRs)"},
+	}}
+	sanitizeCodeBuddyFingerprints(body)
+	messages := body["messages"].([]any)
+	system := messages[0].(map[string]any)["content"].(string)
+	if strings.Contains(system, "You are Claude Code") || strings.Contains(system, "Main branch (") {
+		t.Fatalf("system fingerprints survived: %q", system)
+	}
+	if !strings.Contains(system, "Default branch (you will usually use this for PRs)") {
+		t.Fatalf("minimal rewrite lost meaning: %q", system)
+	}
+	user := messages[1].(map[string]any)["content"].(string)
+	if !strings.Contains(user, "You are Claude Code") || !strings.Contains(user, "Main branch (") {
+		t.Fatal("user-role content was rewritten; only system/developer may be sanitized")
+	}
+}
+
+func TestSanitizeCodeBuddyFingerprintsNoopOnCleanBody(t *testing.T) {
+	messages := []any{map[string]any{"role": "system", "content": "You are ZCode, keep everything."}}
+	body := map[string]any{"messages": messages}
+	sanitizeCodeBuddyFingerprints(body)
+	if body["messages"].([]any)[0].(map[string]any)["content"] != "You are ZCode, keep everything." {
+		t.Fatal("clean system prompt was rewritten")
+	}
+}
+
+func TestSanitizeCodeBuddyFingerprintsBillingHeaderAnywhere(t *testing.T) {
+	body := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": "attribution: x-anthropic-billing-header: cc_version=2.1.280; cch=abc"},
+	}}
+	sanitizeCodeBuddyFingerprints(body)
+	content := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if strings.Contains(content, "x-anthropic-billing-header") {
+		t.Fatalf("billing header fingerprint survived: %q", content)
+	}
+}

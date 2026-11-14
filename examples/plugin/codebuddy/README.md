@@ -160,6 +160,26 @@ fingerprint fallback.
 级账本。The response never contains a PAT, Job Token, Refresh Token, raw
 upstream body, or auth-file path.
 
+## Upstream risk-control fingerprints (verified 2026-11-15)
+
+`copilot.tencent.com` 的 chat 通道对 system/developer 消息做内容风控（HTTP
+400 / code 11128）。用真实 PAT 逐条二分实测：
+
+- **放行**：ZCode、Qoder、Codex CLI、WorkBuddy 自身的真实系统提示词首句
+  均通过；黑名单是窄名单，不是竞品全量。
+- **拦截**：Claude Code 身份句（system 开头）、`Main branch (you will
+  usually use this for PRs)` 与 Claude Code 反馈指引（任意位置）、
+  `x-anthropic-billing-header:` 文本（任意位置）、DeepSeek Harness 身份句
+  （system 开头）。user 消息中的同串放行。
+- **角色闸门**：`developer` 角色本身即被拒（中性内容同样 11128），与内容
+  风控无关；插件在出站前做 developer→system 映射（内容逐字保留）。
+
+插件对 system/developer 消息做**精确字面量**指纹清洗：命中表内已知指纹时
+做最小中性化替换（如 `Main branch` → `Default branch`），未命中的文本原样
+透传——不报错、不拦截、不使用泛化正则或词表。新指纹会以 11128 错误浮出
+（`upstream_channel_rejected`，错误信息含自助修法），按实测补充表项即可。
+指纹清单与验证记录见 `request_fingerprint.go`。
+
 ## Supported behavior
 
 - Input/output boundary: OpenAI Chat Completions.

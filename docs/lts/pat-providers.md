@@ -100,6 +100,13 @@ schema 语义在 LTS 与 upstream 存在一处分叉，第三方作者必须区�
 
 COSY 签名参考 Sliverkiss/cpa-plugin 的 MIT QoderWork 实现，归属和许可证见 `examples/plugin/qoder/THIRD_PARTY_NOTICES.md`，并随 Qoder 插件归档和镜像分发。推理请求字段另与 [qoder2api-hub 的公开实现](https://github.com/shuishuipingan/qoder2api-hub/tree/81eee37f0b4f3d7a6382c3ff402937cba565bfd1) 对照，并通过当前 Qoder CN PAT 独立实测；没有引入第三方网关、其 baseprompt 模板或新厂商 SDK。
 
+2026-11-15 补充实测：chat 通道对 system/developer 消息存在内容风控（11128）。
+Claude Code 与 DeepSeek Harness 的身份句（system 开头）、Claude Code 的分支
+提示 / 反馈指引 / 计费归因文本（任意位置）会被拦；ZCode / Qoder / Codex /
+WorkBuddy 自身提示词实测放行；developer 角色本身被拒。插件层以 developer→system
+角色映射（协议兼容，内容逐字保留）+ 精确字面量指纹清洗（命中才动，未命中原样
+放行）应对；清单与验证记录见 `examples/plugin/codebuddy/go/request_fingerprint.go`。
+
 ## CodeBuddy 企业 / 个人账号边界与下一阶段
 
 2026-11-14 已用真实 PAT 验证：`get-enterprise-user-usage`、`/v2/accounts`、
