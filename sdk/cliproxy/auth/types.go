@@ -151,7 +151,10 @@ type Auth struct {
 	// stamped at or below it were dispatched before the cooldown existed and
 	// must not clear it. Runtime only: zero after restart so restored
 	// cooldowns can still be cleared by any success.
-	cooldownRecordedSeq uint64 `json:"-"`
+	cooldownRecordedSeq uint64    `json:"-"`
+	forceCooldownUntil  time.Time `json:"-"`
+	credQuotaForceUntil time.Time `json:"-"`
+	forceCooldownSeeded bool      `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
@@ -359,6 +362,10 @@ type QuotaState struct {
 	// Cooldown transitions must use applyCooldownFields so they cannot replace
 	// this snapshot.
 	Signals map[string]string `json:"signals,omitempty"`
+	// cooldownSignals retains rejected quota headers captured when the active
+	// cooldown was recorded so out-of-order completions cannot overwrite them.
+	cooldownSignals   map[string]string
+	cooldownEvaluated bool
 }
 
 // Clone returns an independent copy of the quota state.
@@ -368,6 +375,12 @@ func (q QuotaState) Clone() QuotaState {
 		copyQuota.Signals = make(map[string]string, len(q.Signals))
 		for key, value := range q.Signals {
 			copyQuota.Signals[key] = value
+		}
+	}
+	if len(q.cooldownSignals) > 0 {
+		copyQuota.cooldownSignals = make(map[string]string, len(q.cooldownSignals))
+		for key, value := range q.cooldownSignals {
+			copyQuota.cooldownSignals[key] = value
 		}
 	}
 	return copyQuota
@@ -398,7 +411,9 @@ type ModelState struct {
 	// stamped at or below it were dispatched before the cooldown existed and
 	// must not clear it. Runtime only: zero after restart so restored
 	// cooldowns can still be cleared by any success.
-	cooldownRecordedSeq uint64 `json:"-"`
+	cooldownRecordedSeq uint64    `json:"-"`
+	forceCooldownUntil  time.Time `json:"-"`
+	forceCooldownSeeded bool      `json:"-"`
 	// credentialQuotaShadow holds this model's independent (own-failure)
 	// cooldown layer while the outer fields present the auth-level
 	// credential quota propagated over it, so quota restoration can drop
@@ -741,9 +756,10 @@ func (a *Auth) EnsureIndex() string {
 	if a == nil {
 		return ""
 	}
+	// The steady-state path must stay read-only: request goroutines call this
+	// (executor usage reporters) while the conductor may Clone the same shared
+	// Auth concurrently, and rewriting the same value races with the struct copy.
 	if existingIndex := strings.TrimSpace(a.Index); existingIndex != "" {
-		a.Index = existingIndex
-		a.indexAssigned = true
 		return existingIndex
 	}
 

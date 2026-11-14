@@ -72,10 +72,11 @@ plugins:
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16
 
-# Quota exceeded behavior
-quota-exceeded:
-    switch-project: true # Whether to automatically switch to another project when a quota is exceeded
-    switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
+# Quota exceeded behavior (legacy keys stay commented; set them explicitly to enable)
+# quota-exceeded:
+#     switch-project: true # Whether to automatically switch to another project when a quota is exceeded
+#     switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
+# antigravity-credits moved to the Claude provider example below.
 # Routing strategy for selecting credentials when multiple match.
 routing:
     strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first
@@ -243,6 +244,13 @@ upstream:
         # When true, scope quota cooldowns to the requested model rather than cooling down
         # the entire credential across all sibling models. Default is false.
         model-level-cooling: false
+        # When true, inject Anthropic server-side refusal fallbacks on cloaked Claude requests
+        # when the request body does not already specify fallbacks (claude-opus-5-5 -> claude-opus-4-8,
+        # claude-fable-5-1 -> claude-opus-5). Default false never opts requests into cross-model
+        # fallback unless the caller or requests.payload rules explicitly provide fallbacks.
+        # When fallback occurs, translated OpenAI Chat Completions and Responses payloads report
+        # the actual serving model and attach structured fallback metadata.
+        server-side-fallback: false
         # When true, globally disable Claude request cloaking (the Claude Code CLI disguise and
         # system prompt replacement), so the original system prompt is passed through to Claude as-is.
         # Individual credentials can still override this: a claude-api-key entry via its "cloak.mode",
@@ -526,6 +534,13 @@ models:
     codex-catalog: ""
     devin-catalog: ""
 server:
+    # Graceful shutdown drain budget, in seconds. When the process receives SIGINT/SIGTERM,
+    # in-flight HTTP requests are allowed to finish for up to this many seconds before
+    # remaining connections are forcibly closed. Shutdown never hangs longer than this budget.
+    # Default 0 keeps the legacy behavior: close immediately without draining.
+    # Note: hijacked connections (WebSocket sessions) are not drained; they are
+    # released by their own connection managers after the drain window.
+    shutdown-timeout: 0
     # Server host/interface to bind to. Default is empty ("") to bind all interfaces (IPv4 + IPv6).
     # Use "127.0.0.1" or "localhost" to restrict access to local machine only.
     host: ""
@@ -1290,7 +1305,7 @@ config-version: 8
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
 #           scope: "any" # optional: any (default), requested (client model), or upstream (resolved model)
-#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity, meta
 #           from-protocol: "responses" # restricts the rule to the source protocol, options: openai, responses, gemini, claude
 #           auth-kind: "apikey" # optional: selected upstream credential kind, apikey or oauth
 #           request-paths: # optional non-empty list of exact CPA business paths, not upstream URLs
@@ -1308,10 +1323,15 @@ config-version: 8
 #             - "metadata.disable_payload"
 #       params: # JSON path (gjson/sjson syntax) -> value
 #         "generationConfig.thinkingConfig.thinkingBudget": 32768
+#     - models:
+#         - name: "muse-*"
+#           protocol: "meta"
+#       params:
+#         prompt_cache_retention: "24h" # opt into Meta's 24h prompt cache when the client omits prompt_cache_retention
 #   default-raw: # Default raw rules set parameters using raw JSON when missing (must be valid JSON).
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
-#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity, meta
 #       params: # JSON path (gjson/sjson syntax) -> raw JSON value (strings are used as-is, must be valid JSON)
 #         "generationConfig.responseJsonSchema": "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"
 #   override: # Override rules always set parameters, overwriting any existing values.
@@ -1325,7 +1345,7 @@ config-version: 8
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
 #           scope: "requested" # use requested to distinguish aliases such as gpt-5.5-fast from upstream gpt-5.5
-#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity, meta
 #       params: # JSON path (gjson/sjson syntax) -> value
 #         "reasoning.effort": "high"
 #     - models:
@@ -1348,13 +1368,13 @@ config-version: 8
 #           cyber: daybreak_blue
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
-#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity, meta
 #       params: # JSON path (gjson/sjson syntax) -> raw JSON value (strings are used as-is, must be valid JSON)
 #         "response_format": "{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"answer\",\"schema\":{\"type\":\"object\"}}}"
 #   filter: # Filter rules remove specified parameters from the payload.
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
-#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity, meta
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
