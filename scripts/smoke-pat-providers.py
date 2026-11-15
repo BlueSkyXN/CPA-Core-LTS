@@ -174,6 +174,23 @@ plugins:
                 else:
                     payload = {"type": provider, "auth_mode": "pat", "pat": "pt-fixture-not-a-real-credential", "label": "Fixture"}
                 request(base, f"/auth-files?name={provider}-fixture.json", "POST", payload)
+            def wait_auth_files(base):
+                # Watcher pickup of persisted auth files is asynchronous on a fresh
+                # boot; readiness probes with auth_index must wait until the manager
+                # holds them (plugin registration alone does not imply auth load).
+                last = "no response"
+                for _ in range(40):
+                    try:
+                        files = request(base, "/auth-files")["files"]
+                        last = ",".join(sorted(f["name"] for f in files))
+                        names = {f["name"] for f in files if f.get("auth_index")}
+                        if {"codebuddy-fixture.json", "copilot-fixture.json", "qoder-fixture.json", "zcode-coding-plan-fixture.json"} <= names:
+                            return
+                    except (OSError, urllib.error.URLError, KeyError) as error:
+                        last = type(error).__name__ + ":" + str(getattr(error, "code", ""))
+                    time.sleep(0.5)
+                raise RuntimeError("persisted fixture auth files did not load: " + last)
+
             def check_files(base):
                 files = request(base, "/auth-files")["files"]
                 for provider in ("codebuddy", "copilot", "qoder", "zcode-coding-plan"):
@@ -189,6 +206,7 @@ plugins:
             docker("rm", "-f", name)
             base = start()
             wait_plugins(base)
+            wait_auth_files(base)
             check_files(base)
             print("PASS: four native plugins, inline single-file Coding Plan account, readiness and recreation persistence (egress blocked, no inference)")
         except Exception:
