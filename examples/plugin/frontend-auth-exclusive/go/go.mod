@@ -4,6 +4,6 @@ go 1.26.10
 
 require github.com/router-for-me/CLIProxyAPI/v8 v8.0.0
 
-replace github.com/router-for-me/CLIProxyAPI/v8 => ../../../..
+require github.com/MoeForge/moego v0.1.0-alpha.3 // indirect
 
-replace github.com/MoeForge/moego v0.1.0-alpha.1 => github.com/router-for-me/moego v0.1.2
+replace github.com/router-for-me/CLIProxyAPI/v8 => ../../../..
