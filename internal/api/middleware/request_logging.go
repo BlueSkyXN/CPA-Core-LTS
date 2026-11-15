@@ -51,7 +51,8 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 
 		loggerEnabled := logger.IsEnabled()
-		captureBody := shouldCaptureRequestBody(loggerEnabled, c.Request)
+		hasMatchedRoute := c.FullPath() != ""
+		captureBody := hasMatchedRoute && shouldCaptureRequestBody(loggerEnabled, c.Request)
 
 		// Capture request information
 		requestInfo, err := captureRequestInfo(c, false)
@@ -74,7 +75,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			wrapper.logOnErrorOnly = true
 		}
 		c.Writer = wrapper
-		attachRequestLogSources(c, logger, loggerEnabled)
+		attachRequestLogSources(c, logger, loggerEnabled && hasMatchedRoute)
 		capture := attachDeferredRequestBodyCapture(c.Request, requestInfo, false)
 		if capture != nil {
 			defer capture.Cleanup()

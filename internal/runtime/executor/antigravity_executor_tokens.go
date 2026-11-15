@@ -66,7 +66,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	e.obfuscateSensitiveWordsDoc(doc)
 	helps.PrepareAntigravityClaudeStructuredOutputDoc(baseModel, doc)
 	sanitizeAntigravityGeminiRequestSignaturesDoc(baseModel, doc)
-	if _, _, errReplay := prepareAntigravityGeminiReasoningReplayPayloadDoc(ctx, baseModel, req, opts, doc); errReplay != nil {
+	if _, errReplay := prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc(ctx, baseModel, req, opts, doc); errReplay != nil {
 		return cliproxyexecutor.Response{}, errReplay
 	}
 	ensureAntigravityGeminiLeadingUserContentDoc(baseModel, doc)
@@ -96,7 +96,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		requestURL.WriteString(url.QueryEscape(opts.Alt))
 	}
 
-	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "request", originalTranslatedForPayload, req, opts, auth.AuthKind()))
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "request", originalTranslatedForPayload, req, opts, auth))
 	helps.FinalizePayloadDoc(ctx, doc)
 	payload = doc.Bytes()
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))

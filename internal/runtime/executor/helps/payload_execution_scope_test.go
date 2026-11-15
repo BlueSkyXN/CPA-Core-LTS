@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/MoeForge/moego/ojson"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"net/http"
 	"strings"
 	"testing"
@@ -81,7 +82,8 @@ func TestPayloadFinalizerSelectedAuthOverridesUntrustedHints(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "scope-model", Payload: payload, Metadata: map[string]any{"auth_kind": "apikey"}}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses", "auth_kind": "apikey"}, Headers: http.Header{"Auth-Kind": {"apikey"}}}
 	for _, kind := range []string{"apikey", "oauth", "", "apikey", "oauth"} {
-		out := NewPayloadFinalizer(cfg, "codex", "scope-model", "codex", "", payload, req, opts, kind)(payload)
+		kindAuth := &cliproxyauth.Auth{Attributes: map[string]string{"auth_kind": kind}}
+		out := NewPayloadFinalizer(cfg, "codex", "scope-model", "codex", "", payload, req, opts, kindAuth)(payload)
 		want := "priority"
 		if kind == "apikey" {
 			want = "flex"

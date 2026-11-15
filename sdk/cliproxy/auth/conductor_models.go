@@ -246,8 +246,9 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 		// advertises only the canonical Codex model. Preserve that active cooldown
 		// for the canonical route without spreading it to separately registered
 		// suffix routes, which are handled by the exact lookup above.
+		targetLookup := canonicalModelLookupKey(targetKey)
 		for stateKey, candidate := range auth.ModelStates {
-			if candidate == nil || canonicalModelKey(stateKey) != targetKey {
+			if candidate == nil || targetLookup == "" || canonicalModelLookupKey(stateKey) != targetLookup {
 				continue
 			}
 			if isModelStateActiveCooldown(candidate, now) {
@@ -314,7 +315,7 @@ func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel s
 	}
 	stateModel := executionResultModel(routeModel, upstreamModel, pooled)
 	selectionModel := m.selectionModelForAuth(auth, routeModel)
-	if canonicalModelKey(selectionModel) == canonicalModelKey(upstreamModel) && strings.TrimSpace(selectionModel) != "" {
+	if sameCanonicalModelKey(selectionModel, upstreamModel) && strings.TrimSpace(selectionModel) != "" {
 		return strings.TrimSpace(upstreamModel)
 	}
 	return stateModel

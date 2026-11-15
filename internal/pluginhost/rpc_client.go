@@ -57,6 +57,7 @@ type rpcError struct {
 	statusCode        int
 	failureReason     string
 	retryAfterSeconds int
+	credentialScoped  bool
 }
 
 func (e rpcError) Error() string {
@@ -77,6 +78,22 @@ func (e rpcError) PluginCode() string {
 
 func (e rpcError) FailureReason() string {
 	return e.failureReason
+}
+
+func (e rpcError) IsCredentialScoped() bool {
+	return e.credentialScoped || strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeCredentialQuota)
+}
+
+func (e rpcError) IsRequestScoped() bool {
+	return !e.IsCredentialScoped() && strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeRequestScoped)
+}
+
+func (e rpcError) IsTransientRateLimit() bool {
+	return !e.IsCredentialScoped() && strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeTransientRateLimit)
+}
+
+func (e rpcError) IsStreamTruncated() bool {
+	return !e.IsCredentialScoped() && strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeStreamTruncated)
 }
 
 func (e rpcError) RetryAfter() *time.Duration {
@@ -536,6 +553,7 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 				statusCode:        envelope.Error.HTTPStatus,
 				failureReason:     envelope.Error.FailureReason,
 				retryAfterSeconds: envelope.Error.RetryAfterSeconds,
+				credentialScoped:  envelope.Error.CredentialScoped,
 			}
 		}
 		return zero, fmt.Errorf("plugin call failed")

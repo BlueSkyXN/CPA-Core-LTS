@@ -32,7 +32,7 @@ func ApplyMediaPayloadConfig(cfg *config.Config, executor, model, protocol strin
 		return nil, "", errOriginal
 	}
 	doc := ojson.NewDoc(view)
-	NewPayloadFinalizer(cfg, executor, model, protocol, "", originalView, req, opts, selectedAuthKind...).FinalizeDoc(doc)
+	NewPayloadFinalizer(cfg, executor, model, protocol, "", originalView, req, opts, nil).FinalizeDoc(doc)
 	out := doc.Bytes()
 	if !multipartBody || bytes.Equal(out, view) {
 		return outOrBody(out, body, multipartBody), contentType, nil

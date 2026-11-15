@@ -30,7 +30,6 @@ type responsesWebsocketForwardOptions struct {
 	duplexStream             func() bool
 	toolCacheTurn            *responsesWebsocketToolCacheTurn
 	suppressError            func(*interfaces.ErrorMessage) bool
-	keepAliveInterval        *time.Duration
 	localInterrupt           *responsesLocalInterrupt
 	// websocketOwned reports whether this turn runs on an upstream
 	// websocket. While true, no interrupt may claim the local HTTP path.
@@ -68,20 +67,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
 	}
 
-	var keepAliveTicker *time.Ticker
-	var keepAliveC <-chan time.Time
-	keepAliveInterval := time.Duration(0)
-	if h != nil {
-		keepAliveInterval = handlers.StreamingKeepAliveInterval(h.CurrentConfig())
-	}
-	if opts.keepAliveInterval != nil {
-		keepAliveInterval = *opts.keepAliveInterval
-	}
-	if keepAliveInterval > 0 {
-		keepAliveTicker = time.NewTicker(keepAliveInterval)
-		defer keepAliveTicker.Stop()
-		keepAliveC = keepAliveTicker.C
-	}
 	if opts.localInterrupt != nil {
 		websocketOwned := opts.websocketOwned != nil && opts.websocketOwned()
 		opts.localInterrupt.begin(websocketOwned)
@@ -157,13 +142,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 			return completeResponsesWebsocketLocalInterrupt(writer, wsTimelineLog, cancel, interruptPayload, outputItemsByIndex, outputItemsFallback, pendingToolCallIDs)
 		case <-c.Request.Context().Done():
-			cancel(c.Request.Context().Err())
-			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, c.Request.Context().Err()
-		case <-keepAliveC:
-			if errPing := writer.writePing(); errPing != nil {
-				cancel(errPing)
-				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, errPing
-			}
+			cause := context.Cause(c.Request.Context())
+			cancel(cause)
+			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, cause
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -213,9 +194,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				}
 				cancel(nil)
 				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, nil
-			}
-			if keepAliveTicker != nil && keepAliveInterval > 0 {
-				keepAliveTicker.Reset(keepAliveInterval)
 			}
 
 			// A queued local interrupt belongs to an in-flight HTTP turn:
@@ -376,11 +354,10 @@ func completeResponsesWebsocketLocalInterrupt(
 		cancel(errSet)
 		return output, responseID, sortedStringSet(pendingToolCallIDs), nil, errSet
 	}
+	cancel(context.Canceled)
 	if errWrite := writeResponsesWebsocketPayload(writer, wsTimelineLog, incompleteDoc.Bytes(), time.Now()); errWrite != nil {
-		cancel(errWrite)
 		return output, responseID, sortedStringSet(pendingToolCallIDs), nil, errWrite
 	}
-	cancel(context.Canceled)
 	return output, responseID, sortedStringSet(pendingToolCallIDs), nil, nil
 }
 

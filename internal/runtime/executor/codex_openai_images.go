@@ -117,7 +117,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
-	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", preserveCodexImageClientMetadata(prepared.Body, req.Payload), req, payloadOpts, auth.AuthKind()))
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", preserveCodexImageClientMetadata(prepared.Body, req.Payload), req, payloadOpts, auth))
 	var identityState codexIdentityConfuseState
 	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, doc.Bytes(), opts.Headers)
 	if errCache != nil {
@@ -234,7 +234,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
-	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", preserveCodexImageClientMetadata(prepared.Body, req.Payload), req, payloadOpts, auth.AuthKind()))
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), mainModel, "codex", "", preserveCodexImageClientMetadata(prepared.Body, req.Payload), req, payloadOpts, auth))
 	var identityState codexIdentityConfuseState
 	httpReq, body, identityState, errCache := e.cacheHelper(ctx, sdktranslator.FromString(codexOpenAIImageSourceFormat), url, auth, req, req.Payload, doc.Bytes(), opts.Headers)
 	if errCache != nil {

@@ -202,6 +202,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		AccessProvider:        accessProvider,
 		RequestID:             requestID,
 		ExecutionID:           executionID,
+		HomeSelection:         record.HomeSelection,
 		TraceID:               traceID,
 		SessionID:             sessionID,
 		ParentSessionID:       parentSessionID,
@@ -258,6 +259,7 @@ type queuedUsageDetail struct {
 	EffectiveServiceTier  string                      `json:"effective_service_tier,omitempty"`
 	ResponseCyberProgram  string                      `json:"response_cyber_program,omitempty"`
 	UpstreamServiceTier   string                      `json:"upstream_service_tier,omitempty"`
+	HomeSelection         *coreusage.HomeSelection    `json:"home_selection,omitempty"`
 	SessionID             string                      `json:"session_id,omitempty"`
 	ParentSessionID       string                      `json:"parent_session_id,omitempty"`
 	NodeKind              string                      `json:"node_kind,omitempty"`

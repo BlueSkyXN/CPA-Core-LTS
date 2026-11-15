@@ -113,6 +113,7 @@ func main() {
 	var claudeLogin bool
 	var noBrowser bool
 	var oauthCallbackPort int
+	var loginProxyURL string
 	var antigravityLogin bool
 	var kimiLogin bool
 	var kimiAILogin bool
@@ -143,6 +144,7 @@ func main() {
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
+	flag.StringVar(&loginProxyURL, "login-proxy", "", "Proxy URL used for the OAuth login flow and saved as the new credential's proxy_url (http, https, socks5, socks5h)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi (.com) using OAuth")
 	flag.BoolVar(&kimiAILogin, "kimi-ai-login", false, "Login to Kimi.ai using OAuth")
@@ -660,6 +662,7 @@ func main() {
 	options := &cmd.LoginOptions{
 		NoBrowser:    noBrowser,
 		CallbackPort: oauthCallbackPort,
+		ProxyURL:     loginProxyURL,
 	}
 
 	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin

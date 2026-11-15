@@ -186,7 +186,13 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		helps.AppendAPIResponseChunk(ctx, e.cfg, wsResp.Body)
 	}
 	if wsResp.Status < 200 || wsResp.Status >= 300 {
+		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, wsResp.Status, wsResp.Body); errClear != nil {
+			logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+		}
 		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
+	}
+	if body.action != "countTokens" {
+		cacheAntigravityReasoningReplayFromResponse(ctx, body.replayScope, body.replayRequestPayload, wsResp.Body)
 	}
 	reporter.ObserveResponseModel(wsResp.Body)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -286,21 +292,24 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			reporter.StartResponseTiming()
 			metadataLogged = true
 		}
-		var body bytes.Buffer
+		var errBody bytes.Buffer
 		if len(firstEvent.Payload) > 0 {
 			reporter.MarkFirstResponseByte()
 			reporter.ObserveTimingPayload(upstreamFormat.String(), firstEvent.Payload)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, firstEvent.Payload)
-			body.Write(firstEvent.Payload)
+			errBody.Write(firstEvent.Payload)
 		}
 		if firstEvent.Type == wsrelay.MessageTypeStreamEnd {
-			return nil, statusErr{code: firstEvent.Status, msg: body.String()}
+			if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
+				logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+			}
+			return nil, statusErr{code: firstEvent.Status, msg: errBody.String()}
 		}
 		for event := range wsStream {
 			if event.Err != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, event.Err)
-				if body.Len() == 0 {
-					body.WriteString(event.Err.Error())
+				if errBody.Len() == 0 {
+					errBody.WriteString(event.Err.Error())
 				}
 				break
 			}
@@ -313,14 +322,18 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				reporter.MarkFirstResponseByte()
 				reporter.ObserveTimingPayload(upstreamFormat.String(), event.Payload)
 				helps.AppendAPIResponseChunk(ctx, e.cfg, event.Payload)
-				body.Write(event.Payload)
+				errBody.Write(event.Payload)
 			}
 			if event.Type == wsrelay.MessageTypeStreamEnd {
 				break
 			}
 		}
-		return nil, statusErr{code: firstEvent.Status, msg: body.String()}
+		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
+			logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+		}
+		return nil, statusErr{code: firstEvent.Status, msg: errBody.String()}
 	}
+	replayAccumulator := newAntigravityReasoningReplayAccumulator(body.replayScope, body.replayRequestPayload)
 	out := make(chan cliproxyexecutor.StreamChunk, 1)
 	go func(first wsrelay.StreamEvent) {
 		defer close(out)
@@ -340,12 +353,22 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
 		}()
 		var param any
+		var replayCommitted bool
+		commitReplay := func() {
+			if !replayCommitted && replayAccumulator != nil && replayAccumulator.terminal && streamErr == nil && helps.ApplyPatchTranslationError(param) == nil {
+				replayAccumulator.Commit(ctx)
+				replayCommitted = true
+			}
+		}
 		helps.InitializeApplyPatchStream(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, &param)
 		metadataLogged := false
 		var relayFrames helps.RelaySSEBuffer
 		processRelayFrames := func(payloads [][]byte) bool {
 			for _, payload := range payloads {
 				for _, frame := range splitRelayFrames(payload) {
+					if replayAccumulator != nil {
+						replayAccumulator.ObserveSSELine(frame)
+					}
 					reporter.ObserveResponseModel(frame)
 					streamUsage.ObserveGeminiStream(frame)
 					filtered := helps.FilterSSEUsageMetadata(frame)
@@ -354,6 +377,9 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 						return statusErr{code: http.StatusBadGateway, msg: msg}
 					})
+					if replayAccumulator != nil && replayAccumulator.terminal && !replayCommitted && antigravityStreamChunksHaveTerminalCommitEvent(lines) {
+						commitReplay()
+					}
 					for i := range lines {
 						select {
 						case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
@@ -386,6 +412,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 				return statusErr{code: http.StatusBadGateway, msg: msg}
 			})
+			commitReplay()
 			for _, line := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(line)}:
@@ -441,6 +468,9 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					helps.AppendAPIResponseChunk(ctx, e.cfg, event.Payload)
 				}
 				if event.Status < http.StatusOK || event.Status >= http.StatusMultipleChoices {
+					if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, event.Status, event.Payload); errClear != nil {
+						logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+					}
 					errResponse := statusErr{code: event.Status, msg: string(event.Payload)}
 					helps.RecordAPIResponseError(ctx, e.cfg, errResponse)
 					reporter.PublishFailure(ctx, errResponse)
@@ -450,6 +480,12 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					}
 					return false
 				}
+				if replayAccumulator != nil {
+					replayAccumulator.observeResponsePayload(event.Payload)
+					if !replayAccumulator.terminal && (ojson.GetBytesNoCopy(event.Payload, "response.candidates.0").Exists() || ojson.GetBytesNoCopy(event.Payload, "candidates.0").Exists()) {
+						replayAccumulator.terminal = true
+					}
+				}
 				reporter.ObserveResponseModel(event.Payload)
 				streamUsage.Observe(helps.ParseGeminiUsage(event.Payload), true)
 				lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, event.Payload, &param, claudeInputTokens)
@@ -457,6 +493,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 					return statusErr{code: http.StatusBadGateway, msg: msg}
 				})
+				commitReplay()
 				for i := range lines {
 					select {
 					case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
@@ -567,9 +604,11 @@ func (e *AIStudioExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth)
 }
 
 type translatedPayload struct {
-	payload  []byte
-	action   string
-	toFormat sdktranslator.Format
+	payload              []byte
+	action               string
+	toFormat             sdktranslator.Format
+	replayScope          antigravityReasoningReplayScope
+	replayRequestPayload []byte
 }
 
 func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool, selectedAuthKind ...string) ([]byte, translatedPayload, error) {
@@ -618,6 +657,19 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 	}
 	normalizeAIStudioThinkingLevelDoc(doc)
 	internalsignature.SanitizeNonVertexGeminiRequestThoughtSignaturesDoc(doc, "contents")
+	replayScope := antigravityReasoningReplayScope{}
+	var replayRequestPayload []byte
+	if antigravityUsesReasoningReplayCache(baseModel) {
+		var changedReplay bool
+		var errReplay error
+		replayScope, replayRequestPayload, changedReplay, errReplay = prepareGeminiTopLevelReasoningReplayPayloadDoc(ctx, baseModel, req, opts, doc)
+		if errReplay != nil {
+			return nil, translatedPayload{}, errReplay
+		}
+		if changedReplay {
+			internalsignature.SanitizeNonVertexGeminiRequestThoughtSignaturesDoc(doc, "contents")
+		}
+	}
 	if action == "countTokens" {
 		_ = doc.Delete("generationConfig")
 		_ = doc.Delete("tools")
@@ -627,7 +679,13 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers, selectedAuthKind...)
 	payload = doc.Bytes()
 	payload = helps.ProtectConfiguredEffort(e.cfg, policyPayload, payload, to.String(), e.Identifier(), req, opts)
-	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
+	return payload, translatedPayload{
+		payload:              payload,
+		action:               action,
+		toFormat:             to,
+		replayScope:          replayScope,
+		replayRequestPayload: replayRequestPayload,
+	}, nil
 }
 
 // normalizeAIStudioThinkingLevel normalizes thinking levels to Google's canonical uppercase enum values.
