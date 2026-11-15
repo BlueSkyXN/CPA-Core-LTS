@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/MoeForge/moego v0.1.0-alpha.1 // indirect
+	github.com/MoeForge/moego v0.1.0-alpha.3 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
@@ -55,4 +55,3 @@ require (
 replace github.com/router-for-me/CLIProxyAPI/v8 => ../../../..
 
 // Keep the root module's Moego fork replacement when tests compile root packages.
-replace github.com/MoeForge/moego v0.1.0-alpha.1 => github.com/router-for-me/moego v0.1.2

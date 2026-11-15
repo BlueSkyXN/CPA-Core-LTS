@@ -53,3 +53,58 @@
 ## 未吸收区间（下轮候选）
 
 `1aaf56bc6..905e70c48` 中本批未吸收的 11 个提交：905e70c48（RE2 sensitive-patterns-replace）、f2efe2c41（antigravity 零输出 fail）、3b480776f（SIWC bind 代理）、5a351d957（TOS_VIOLATION 下线）、4da9f6852（429 终结冷却重置）、100f2de1a（model-directory 拦截器身份）、7904efd79（插件优先级暴露）、51b98e746（management secret 哈希缓存）、cf07c78ab（gemini/antigravity 零输出 fail）、5b63e29ac（OAuth 插件模型绑定）、7fd90c7aa（/muse-code 端点）。Panel 侧 defer 与 adapt-port 候选清单见 PR #150 描述与会话记录。
+
+## 2026-11-15 续作：同步到 v8.0.72 与返工收口
+
+本批次把 Core 从候选覆盖点 `7cfa267b2` 推进到启动刷新后冻结的 upstream 终点
+`e96d4c481`（= tag `v8.0.72`，无 tag 后提交），并在新栈顶 `#363` 上完成评审返工。
+
+| 层 | 内容 | 本地 head |
+|---|---|---|
+| Stage 4 | `git merge --no-ff --log 50cfd5f75` | `0c431beb8` |
+| Stage 5（冻结终点） | `git merge --no-ff --log e96d4c481` | `98c75db80` |
+| 融合修复 | 双循环冷却/lifecycle 对齐 LTS 结构 | `8041afde8` |
+| 插件模块 moego 对齐 | 删 fork replace、升 v0.1.0-alpha.3 | `479b4fdf5` |
+| fixture smoke 门 | PAT 就绪探测有界重试 | `f4f01ba7e` |
+| 插件 RetryAfter 豁免收窄 | 仅豁免「插件码 + 已声明正值 RetryAfter」 | `a7f8ba34c` |
+| wstunnel 夹具 | 路由前等待目标可见 | `66ee70ab0` |
+
+Stage 4/5 冲突全部按「LTS 结构 + upstream 机制」融合：TOS_VIOLATION 终止态、
+`credentialRetryAfter`、pool cooldown 注记、RefreshToken 归属、`declaredSensitive`、
+Flow V3 wrapper 与 model-fallback 循环均保留 LTS 形态。
+
+### 本轮返工项（评审后）
+
+1. **插件 RetryAfter 豁免范围过宽。** 原谓词只看错误链上是否有非空 `PluginCode()`，
+   于是插件 429 **未声明** RetryAfter 时也被跳过 pool 冷却包装，客户端拿到的是立即重试
+   而不是真实恢复时间。现改为同时要求 `PluginCode()` 非空**且** `RetryAfter()` 为正值：
+   已声明的 hint 仍优先于本地 backoff（14e577174），未声明的回落常规 pool 注记。
+   回归 `TestPluginDeclaredRetryAfterIsNotRewrappedByPoolCooldown` /
+   `TestPluginUndeclaredRetryAfterStillGetsPoolRecovery`，后者对旧谓词必失败。
+2. **wstunnel 10s 读超时根因。** `TestHubBudget_ExhaustedTenantDoesNotStarveAnotherTenant`
+   在拨号后只读一帧控制帧并丢弃。`dialRole` 在握手完成即返回，而 `commitPeer`
+   之后才把 peer 发布进 `realm.peers`；客户端先提交时读到的是空 `server_list`，
+   此时路由 c→s 会被 hub 以 `target_not_found` 丢弃，接收端于是读满 10s 守卫。
+   用一次性探针确定性复现（只拨客户端 → `code=target_not_found` 且零投递），
+   改用上游 `7cfa267b2` 已有的 `waitServersVisible` 等待目标可见。本机原 flake
+   无法复现（200+ 次全绿），故定性依据是机制复现而非重跑通过。
+
+### 验证（本轮）
+
+- `go test ./...` 全量 113 包绿；`sdk/cliproxy/auth` + `internal/pluginhost` 定向绿；
+  `internal/wstunnel` 全包绿（`-count=2`）；`scripts/check-lts-contract.sh` 绿；
+  `go build ./...` 绿。
+- CI #363：build（amd64/arm64）、docker-image-smoke、credential-permissions-windows、
+  plugin-lifecycle-macos、provider-connectors、full-test-observation、lts-contract、
+  ensure-no-translator-changes、guard-agents-md-changes 全绿；`publish` 按预期 skip。
+
+### 行为裁决（2026-11-15，三项已接受）
+
+| 事项 | 裁决 | 依据与代价 |
+|---|---|---|
+| quota-exceeded 示例注释化 | **接受**（保持注释，复制后为 `false`） | 这两个键有 config / Management API / TUI 的读写消费者，但**不驱动请求路由、项目切换、预览模型切换**（`sdk/`、`internal/runtime/`、`internal/translator/` 无读取点）；upstream 模板亦标为 `Compatibility-only`。保留未注释 `true` 容易让人以为对应功能仍在生效。实际变化仅是兼容字段默认值与界面展示。 |
+| Devin typed transient-transport | **接受只轮换、不冷却** | executor 已明确分类为出流前传输失败，一次抖动就冷却该凭据的该模型代价过高；LTS 冷却面收窄只针对未 typed 的裸消息，含糊失败仍有冷却保护。代价：持续失败的凭据可能被再次选中，增加重试耗时。LTS 可自定冷却策略，接受是因为分类边界合理。 |
+| Muse credential-scoped lifecycle drop | **接受当前限定范围** | 无模型上下文的凭据级中断若冷却整个凭据，会波及该凭据全部模型；先轮换更合适。范围继续限定为凭据级 lifecycle 502，模型级 EOF 冷却契约保留。 |
+
+仍为**可选事项**（不阻断合并）：plugin RetryAfter 豁免是否上报 upstream。本地实现已收窄为
+「插件码非空且声明正值 RetryAfter」，upstream `50cfd5f75` 自身的同类回归已实证。

@@ -309,7 +309,12 @@ func TestHubBudget_ExhaustedTenantDoesNotStarveAnotherTenant(t *testing.T) {
 	t.Cleanup(hub.Close)
 	serverB := dialRole(t, srv.URL, "b", RoleServer, "s", "Server")
 	clientB := dialRole(t, srv.URL, "b", RoleClient, "c", "Client")
-	_ = readTextJSONFrame(t, clientB)
+	// Drain the topology stream until "s" is actually visible instead of reading
+	// a single frame. dialRole returns when the handshake completes, while
+	// commitPeer publishes the peer afterwards; a client that commits first gets
+	// an empty server_list, and routing c->s in that window is dropped as
+	// target-not-found, which surfaces as the receiver's 10s read timeout.
+	waitServersVisible(t, clientB, "s")
 
 	// Paused writers make exact exhaustion independent of TCP buffer sizes.
 	tenantA := newRealm()

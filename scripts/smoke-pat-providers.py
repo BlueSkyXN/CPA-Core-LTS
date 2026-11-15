@@ -174,13 +174,29 @@ plugins:
                 else:
                     payload = {"type": provider, "auth_mode": "pat", "pat": "pt-fixture-not-a-real-credential", "label": "Fixture"}
                 request(base, f"/auth-files?name={provider}-fixture.json", "POST", payload)
+            def readiness_with_retry(base, query):
+                # Manager pickup of persisted auth files is asynchronous on a fresh
+                # boot: the /auth-files listing can enumerate the files before the
+                # auth manager holds them, and an auth-scoped readiness probe then
+                # fails (502). Retry the probe itself until the manager catches up.
+                last = "no response"
+                for _ in range(40):
+                    try:
+                        return request(base, "/plugins/zcode-coding-plan/readiness?" + query)
+                    except urllib.error.HTTPError as error:
+                        last = f"HTTP {error.code}"
+                        if error.code != 502:
+                            raise
+                    time.sleep(0.5)
+                raise RuntimeError("coding-plan readiness did not stabilize: " + last)
+
             def check_files(base):
                 files = request(base, "/auth-files")["files"]
                 for provider in ("codebuddy", "copilot", "qoder", "zcode-coding-plan"):
                     assert any(f["name"] == f"{provider}-fixture.json" and f.get("auth_index") for f in files)
                 account = next(f for f in files if f["name"] == "zcode-coding-plan-fixture.json")
                 query = urllib.parse.urlencode({"auth_index": account["auth_index"]})
-                check_coding_plan_status(request(base, "/plugins/zcode-coding-plan/readiness?" + query), selected=True)
+                check_coding_plan_status(readiness_with_retry(base, query), selected=True)
                 inline = inline_coding_plan_payload()
                 stored = request(base, "/auth-files/download?name=zcode-coding-plan-fixture.json")
                 assert stored["type"] == "zcode-coding-plan" and stored["api_key"] == inline["api_key"]
