@@ -98,13 +98,13 @@ Flow V3 wrapper 与 model-fallback 循环均保留 LTS 形态。
   plugin-lifecycle-macos、provider-connectors、full-test-observation、lts-contract、
   ensure-no-translator-changes、guard-agents-md-changes 全绿；`publish` 按预期 skip。
 
-### 行为说明（四项，均为「已实现 + 待裁决/已定性」而非默认通过）
+### 行为裁决（2026-11-15，三项已接受）
 
-1. **quota-exceeded 示例注释化**（待裁决）：示例复制后两开关有效值 `true→false`，
-   测试断言已同步。需要决定的是示例政策（默认开 vs 可见开关），不是实现。
-2. **Devin typed transient-transport 冷却面**（待裁决）：LTS 分类冷却面收窄，
-   已 typed 的 transient transport 恢复上游轮换契约。影响面为 Devin 凭据冷却粒度。
-3. **plugin RetryAfter 豁免**（本轮已修正实现）：LTS 对 upstream `4da9f6852` 的有意分叉，
-   现在只在插件确实声明 hint 时生效；是否上报 upstream 由维护者决定。
-4. **Muse credential-scoped lifecycle drop**（待裁决）：credential-scoped 且无模型上下文的
-   lifecycle 502 走凭据轮换，LTS 网关路径的模型级 EOF 契约原样保留。
+| 事项 | 裁决 | 依据与代价 |
+|---|---|---|
+| quota-exceeded 示例注释化 | **接受**（保持注释，复制后为 `false`） | 这两个键有 config / Management API / TUI 的读写消费者，但**不驱动请求路由、项目切换、预览模型切换**（`sdk/`、`internal/runtime/`、`internal/translator/` 无读取点）；upstream 模板亦标为 `Compatibility-only`。保留未注释 `true` 容易让人以为对应功能仍在生效。实际变化仅是兼容字段默认值与界面展示。 |
+| Devin typed transient-transport | **接受只轮换、不冷却** | executor 已明确分类为出流前传输失败，一次抖动就冷却该凭据的该模型代价过高；LTS 冷却面收窄只针对未 typed 的裸消息，含糊失败仍有冷却保护。代价：持续失败的凭据可能被再次选中，增加重试耗时。LTS 可自定冷却策略，接受是因为分类边界合理。 |
+| Muse credential-scoped lifecycle drop | **接受当前限定范围** | 无模型上下文的凭据级中断若冷却整个凭据，会波及该凭据全部模型；先轮换更合适。范围继续限定为凭据级 lifecycle 502，模型级 EOF 冷却契约保留。 |
+
+仍为**可选事项**（不阻断合并）：plugin RetryAfter 豁免是否上报 upstream。本地实现已收窄为
+「插件码非空且声明正值 RetryAfter」，upstream `50cfd5f75` 自身的同类回归已实证。
