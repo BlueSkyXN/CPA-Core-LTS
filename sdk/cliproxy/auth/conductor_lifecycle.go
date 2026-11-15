@@ -645,22 +645,10 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 			}
 		}
 	} else {
+		// Provider change (this branch) starts fresh runtime state; only the
+		// rejected-token/renewal bookkeeping carries over (upstream shape).
 		applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
 		applyPreservedRenewalState(existing, auth, mode, now)
-		// Refresh updates must retain their outcome rather than the pending job marker.
-		if mode != updateModeRefresh {
-			if !credChanged {
-				auth.LastRefreshedAt = existing.LastRefreshedAt
-				auth.NextRefreshAfter = existing.NextRefreshAfter
-				auth.RefreshFailures = existing.RefreshFailures
-			} else if authHasUnchangedRejectedRefreshToken(auth) {
-				if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(now) {
-					auth.NextRefreshAfter = exp
-				} else {
-					auth.NextRefreshAfter = time.Time{}
-				}
-			}
-		}
 	}
 	auth.UpdatedAt = now
 	cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged

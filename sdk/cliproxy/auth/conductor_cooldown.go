@@ -2132,7 +2132,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
 					disableCooling = false
 				}
-				if auth.Disabled || auth.Status == StatusDisabled {
+				// Credential-scoped relay results (muse-code, upstream 7fd90c7aa)
+				// report transport drops as classified lifecycle 502s without a
+				// model context; they rotate instead of arming the LTS classified
+				// EOF auth cooldown.
+				credentialScopedLifecycleDrop := result.CredentialScope && result.Error != nil &&
+					result.Error.Code == connectionLifecycleErrorCode &&
+					result.Error.HTTPStatus == http.StatusBadGateway && isConnectionLifecycleMessage(result.Error.Message)
+				if credentialScopedLifecycleDrop {
+					// rotation-only: no auth cooldown for this drop
+				} else if auth.Disabled || auth.Status == StatusDisabled {
 					// A disabled credential (operator action or terminal TOS) is
 					// terminal until explicitly re-enabled; a late auth-level failure
 					// must not overwrite its disabled state or arm a new cooldown.
@@ -3212,7 +3221,10 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	// LTS transient cooldown (classified transport EOF) only applies to errors
 	// that were classified from a bare lifecycle message. Errors an executor
 	// already typed as transient transport (e.g. Devin pre-output stream
-	// failures) keep the upstream rotation contract and never cool.
+	// failures) keep the upstream rotation contract and never cool. Typed
+	// io.EOF / io.ErrUnexpectedEOF carriers are genuine transport drops
+	// (muse-code relay bodies, upstream 7fd90c7aa) and stay rotation-only:
+	// the LTS 502 elevation must not re-classify them as cooldown-worthy.
 	if err != nil && err.Code == connectionLifecycleErrorCode && err.HTTPStatus == http.StatusBadGateway && isConnectionLifecycleMessage(err.Message) {
 		return false
 	}
