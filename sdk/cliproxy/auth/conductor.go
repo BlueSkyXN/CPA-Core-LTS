@@ -59,9 +59,9 @@ type ScopedExecutionSessionCloser interface {
 	CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string)
 }
 
-// AuthExecutionSessionCloser allows executors to release only the sessions
+// AuthIndexExecutionSessionCloser allows executors to release only the sessions
 // owned by one credential while preserving other credentials for the provider.
-type AuthExecutionSessionCloser interface {
+type AuthIndexExecutionSessionCloser interface {
 	CloseExecutionSessionsForAuth(authID, authIndex string)
 }
 
@@ -85,9 +85,17 @@ type ExecutionSessionSharer interface {
 	SharesExecutionSessionsWith(other ProviderExecutor) bool
 }
 
-// authExecutionSessionIDCloser allows executors to release execution sessions
+// ExecutorUnwrapper exposes the underlying executor for wrappers so reuse and
+// session-lifecycle decisions can consult the service-owned executor even when
+// a wrapper hides its concrete type. Wrappers should return their immediate
+// inner executor; the manager follows the chain.
+type ExecutorUnwrapper interface {
+	Unwrap() ProviderExecutor
+}
+
+// AuthExecutionSessionCloser allows executors to release execution sessions
 // associated with a removed credential without tearing down other credentials' sessions.
-type authExecutionSessionIDCloser interface {
+type AuthExecutionSessionCloser interface {
 	CloseAuthExecutionSessions(authID string)
 }
 
@@ -215,6 +223,7 @@ type Manager struct {
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
+	executorRevisions         map[string]uint64
 	selector                  Selector
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
@@ -321,6 +330,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		store:                    store,
 		authLoadGate:             semaphore.NewWeighted(math.MaxInt64),
 		executors:                make(map[string]ProviderExecutor),
+		executorRevisions:        make(map[string]uint64),
 		selector:                 selector,
 		hook:                     hook,
 		auths:                    make(map[string]*Auth),
