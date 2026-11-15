@@ -76,6 +76,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(body)
+	normalizeCodexOutputBudgetDoc(doc)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
@@ -90,23 +91,14 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	_ = doc.Delete("prompt_cache_retention")
 	_ = doc.Delete("safety_identifier")
 	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
-	upstreamModel := baseModel
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, nativeRequest)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 			ensureImageGenerationToolDoc(doc, baseModel, auth, opts.Headers)
 			if !codexAuthUsesAPIKey(auth) {
 				normalizeCodexImageGenerationToolsDoc(doc)
-				var errHostedModel error
-				upstreamModel, errHostedModel = applyCodexHostedImageGenerationModelDoc(e.cfg, doc, baseModel, req.Model)
-				if errHostedModel != nil {
-					return resp, errHostedModel
-				}
 			}
 		}
-	}
-	if upstreamModel != baseModel {
-		reporter.SetUpstreamModel(upstreamModel)
 	}
 	normalizeCodexWebsocketParallelToolCallsDoc(doc, opts.Headers)
 	helps.NormalizeCodexToolSchemasDoc(doc)
@@ -175,6 +167,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		upstreamBody = helps.SanitizeCodexInputItemIDs(upstreamBody)
 		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, opts.Headers, base, &identityState)
 	}
+	upstreamModel := strings.TrimSpace(ojson.GetBytesNoCopy(upstreamBody, "model").String())
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(doc.Get("model").String())
+	}
+	if upstreamModel != "" && upstreamModel != baseModel {
+		reporter.SetUpstreamModel(upstreamModel)
+	}
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	reporter.SetOutboundServiceTier(upstreamBody)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
@@ -183,6 +182,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	applyCodexOutboundMetadataHeaders(wsHeaders, &identityState)
 	identityState.verifyAffinityHeader(wsHeaders)
 	defer identityState.affinity.close()
+	// Validate the final wire payload: payload rules applied during the wire
+	// finalize may strip or filter the hosted image tool before this point.
+	if bytes.Contains(upstreamBody, []byte(`"image_generation"`)) {
+		if errValidate := helps.ValidateCodexHostedImageGenerationDoc(ojson.NewDoc(upstreamBody), wsHeaders, e.cfg, !useSIWC && !codexAuthUsesAPIKey(auth)); errValidate != nil {
+			return resp, errValidate
+		}
+	}
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {

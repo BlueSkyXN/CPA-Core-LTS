@@ -812,7 +812,7 @@ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, ro
 
 func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Context, selector Selector, affinityCandidates []*Auth, routeModel string, now time.Time, clientHeaders ...http.Header) map[string]struct{} {
 	affinity, ok := selector.(*SessionAffinitySelector)
-	if !ok || affinity == nil || !affinity.rebindOnQuotaOnly || len(affinityCandidates) == 0 {
+	if !ok || affinity == nil || (!affinity.rebindOnQuotaOnly && !affinity.rebindOnNever) || len(affinityCandidates) == 0 {
 		return nil
 	}
 	if _, weighted := affinity.fallback.(*WeightedRoundRobinSelector); weighted {
@@ -1679,6 +1679,21 @@ func (m *Manager) shouldRetryAfterErrorWithAttemptedRetryPolicy(ctx context.Cont
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	if affinity, ok := m.Selector().(*SessionAffinitySelector); ok && affinity != nil && affinity.rebindOnNever {
+		var authErr *Error
+		if errors.As(err, &authErr) && authErr != nil && authErr.Code == "session_auth_unavailable" {
+			return 0, false, nil
+		}
+		if boundAuthID, okBound := affinity.boundAuthForRequest(providers, model, opts); okBound {
+			if pinnedAuthID != "" && pinnedAuthID != boundAuthID {
+				return 0, false, nil
+			}
+			if shouldRebindSessionAffinityOnError(resultErrorFromError(err)) {
+				return 0, false, nil
+			}
+			pinnedAuthID = boundAuthID
+		}
+	}
 	if !isRequestRetryRoundError(err) || !m.retryAllowedForRequest(ctx, attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {
 		return 0, false, nil
 	}
@@ -2075,7 +2090,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	targetKey := canonicalSchedulingProvider(provider)
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnQuotaOnly
+	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
 	var affinityCandidates []*Auth
 	if trackTransientAffinity {
 		affinityCandidates = make([]*Auth, 0, len(m.auths))
@@ -2109,16 +2124,24 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 		candidates = append(candidates, candidate)
 	}
-	if len(candidates) == 0 {
+	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
+	if len(candidates) == 0 && !canInspectUnavailableAffinity {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	now := time.Now()
-	available, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
-	if errAvailable != nil {
-		m.mu.RUnlock()
-		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
-		return nil, nil, errAvailable
+	var (
+		available     []*Auth
+		selectorAuths []*Auth
+		errAvailable  error
+	)
+	if len(candidates) > 0 {
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
+		if errAvailable != nil && !canInspectUnavailableAffinity {
+			m.mu.RUnlock()
+			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
+			return nil, nil, errAvailable
+		}
 	}
 	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
 	m.mu.RUnlock()
@@ -2133,6 +2156,13 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		selected, errPick = pickForExecution(selectorCtx, selector, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
+			if isAuthNotFoundError(errPick) {
+				if errAvailable != nil {
+					errPick = errAvailable
+				} else if len(candidates) == 0 {
+					errPick = &Error{Code: "auth_not_found", Message: "no auth available"}
+				}
+			}
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
 			}
@@ -2503,7 +2533,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	registryRef := registry.GetGlobalRegistry()
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnQuotaOnly
+	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
 	var affinityCandidates []*Auth
 	if trackTransientAffinity {
 		affinityCandidates = make([]*Auth, 0, len(m.auths))
@@ -2539,7 +2569,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		candidates = append(candidates, candidate)
 	}
-	if len(candidates) == 0 {
+	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
+	if len(candidates) == 0 && !canInspectUnavailableAffinity {
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -2552,10 +2583,20 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
 		return nil, nil, "", errAvailable
 	}
-	available, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
-	if errAvailable != nil {
-		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
-		return nil, nil, "", errAvailable
+	var (
+		available     []*Auth
+		selectorAuths []*Auth
+	)
+	if len(candidates) > 0 {
+		var errSelector error
+		available, selectorAuths, errSelector = m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
+		if errSelector != nil && !canInspectUnavailableAffinity {
+			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errSelector)
+			return nil, nil, "", errSelector
+		}
+		if errSelector != nil {
+			errAvailable = errSelector
+		}
 	}
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
@@ -2568,6 +2609,13 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		selected, errPick = pickForExecution(selectorCtx, selector, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
+			if isAuthNotFoundError(errPick) {
+				if errAvailable != nil {
+					errPick = errAvailable
+				} else if len(candidates) == 0 {
+					errPick = &Error{Code: "auth_not_found", Message: "no auth available"}
+				}
+			}
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
 			}
@@ -2684,6 +2732,14 @@ func (m *Manager) pickNextMixedUnthrottled(ctx context.Context, providers []stri
 		m.mu.Unlock()
 	}
 	return authCopy, executor, providerKey, nil
+}
+
+func isAuthNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *Error
+	return errors.As(err, &authErr) && authErr != nil && authErr.Code == "auth_not_found"
 }
 
 func isAuthUnavailableError(err error) bool {
