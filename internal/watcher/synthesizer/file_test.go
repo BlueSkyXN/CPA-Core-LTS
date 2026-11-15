@@ -562,6 +562,9 @@ func TestSynthesizeAuthFilePluginParserErrorDoesNotFallback(t *testing.T) {
 		AuthDir:     t.TempDir(),
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
+		// Management upload/snapshot entry points always synthesize strictly;
+		// a plugin parser error must stay loud there instead of falling back.
+		StrictFileParsing: true,
 		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
 			return nil, true, errors.New("plugin parse failed")
 		}),
