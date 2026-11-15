@@ -119,8 +119,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.UpdatedAt = now
 	cooldownStateChanged := normalizeModelStates(auth)
-	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
+	seedInitialForceCooldownDeadlines(auth)
+	if auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
+	} else if m.cooldownDisabledForAuth(auth) {
+		cooldownStateChanged = clearDisabledCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
 	m.mu.Lock()
@@ -499,6 +502,9 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.Quota.ObservedAt = observation.ObservedAt
 				auth.Quota.Signals = observation.Signals
 				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+				auth.forceCooldownUntil = existing.forceCooldownUntil
+				auth.credQuotaForceUntil = existing.credQuotaForceUntil
+				auth.forceCooldownSeeded = existing.forceCooldownSeeded
 			}
 			applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
 			applyPreservedRenewalState(existing, auth, mode, now)
@@ -592,6 +598,25 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.Quota.ObservedAt = observation.ObservedAt
 				auth.Quota.Signals = observation.Signals
 				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+				auth.forceCooldownUntil = existing.forceCooldownUntil
+				auth.credQuotaForceUntil = existing.credQuotaForceUntil
+				auth.forceCooldownSeeded = existing.forceCooldownSeeded
+				if auth.Status == StatusActive {
+					auth.Status = existing.Status
+				}
+			} else if !credChanged && mode == updateModeReplace && existing.forceCooldownUntil.After(now) && !auth.NextRetryAfter.After(now) {
+				auth.Unavailable = existing.Unavailable
+				auth.NextRetryAfter = existing.NextRetryAfter
+				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+				auth.forceCooldownUntil = existing.forceCooldownUntil
+				auth.credQuotaForceUntil = existing.credQuotaForceUntil
+				auth.forceCooldownSeeded = existing.forceCooldownSeeded
+				if auth.LastError == nil && existing.LastError != nil {
+					auth.LastError = cloneError(existing.LastError)
+				}
+				if auth.StatusMessage == "" {
+					auth.StatusMessage = existing.StatusMessage
+				}
 				if auth.Status == StatusActive {
 					auth.Status = existing.Status
 				}
@@ -620,8 +645,13 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 	if !sameProvider {
 		cooldownStateChanged = true
 	}
-	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
+	seedInitialForceCooldownDeadlines(auth)
+	if auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
+	} else if m.cooldownDisabledForAuth(auth) {
+		// Upstream: disable-cooling keeps active ErrorCodeForceCooldown deadlines
+		// across updates; only the ordinary cooldown fields are cleared here.
+		cooldownStateChanged = clearDisabledCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	if existing.Metadata != nil {
 		if persistedHints, hasHints := existing.Metadata["antigravity_capability_hints"]; hasHints {
@@ -710,7 +740,6 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 	_ = schedulerSnapshot
 	return auth.Clone(), true, cooldownStateChanged, nil
 }
-
 func equalErrorPtr(a, b *Error) bool {
 	if a == nil && b == nil {
 		return true
@@ -782,6 +811,7 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 	m.authEpochs[id]++
 	tombstoneEpoch := m.authEpochs[id]
 	m.mu.Unlock()
+	m.forgetWeightedAuthUpTo(id, tombstoneEpoch, ^uint64(0))
 	releaseMutation()
 
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -823,6 +853,23 @@ func (m *Manager) invalidateSessionAffinity(authID string) {
 	}
 }
 
+func (m *Manager) forgetWeightedAuthUpTo(authID string, maxEpoch, maxGen uint64) {
+	if m == nil || authID == "" {
+		return
+	}
+	sel := m.Selector()
+	if epochForgetter, ok := sel.(interface {
+		ForgetAuthUpTo(string, uint64, uint64)
+	}); ok && epochForgetter != nil {
+		epochForgetter.ForgetAuthUpTo(authID, maxEpoch, maxGen)
+		return
+	}
+	if forgetter, ok := sel.(interface{ ForgetAuth(string) }); ok && forgetter != nil {
+		forgetter.ForgetAuth(authID)
+	}
+}
+
+// Load resets manager state from the backing store.
 func (m *Manager) Load(ctx context.Context) error {
 	// Exclude complete Save/publication transactions, including new registrations
 	// not yet present in auths. Never wait for this barrier while holding m.mu.
@@ -868,6 +915,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		auth.EnsureIndex()
 		auth.generation = m.nextAuthGenerationLocked()
 		_ = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false)
+		seedInitialForceCooldownDeadlines(auth)
 		if len(auth.ModelStates) > 0 {
 			updateAggregatedAvailability(auth, now)
 		}
@@ -915,6 +963,9 @@ func (m *Manager) Load(ctx context.Context) error {
 		for _, rt := range removedTombstones {
 			m.scheduler.RecordRemovalTombstone(rt.id, rt.epoch)
 		}
+	}
+	for _, rt := range removedTombstones {
+		m.forgetWeightedAuthUpTo(rt.id, rt.epoch, ^uint64(0))
 	}
 	m.structuralEpoch.Add(1)
 	m.syncScheduler()

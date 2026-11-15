@@ -36,6 +36,12 @@ docs/*
 !docs/lts/*.yaml
 !docs/lts/*.yml
 !docs/management-api-v8.md
+<<<<<<< HEAD
+=======
+!docs/websocket-tunnel.md
+!docs/websocket-tunnel_CN.md
+AGENTS.md
+>>>>>>> 1aaf56bc6
 CLAUDE.md
 GEMINI.md
 

@@ -131,6 +131,18 @@ func validatePluginContent(block ojson.Result, searches map[string]*pluginServer
 			return PluginResponseError()
 		}
 		searches[id] = &pluginServerTool{name: block.Get("name").String(), state: searchStateCalled, mcp: true}
+	case "fallback":
+		// Upstream server-side fallback hop: from/to are model references and
+		// the trigger object describes why the serving model changed.
+		if block.Get("to.model").Type != ojson.String || block.Get("to.model").String() == "" {
+			return PluginResponseError()
+		}
+		if from := block.Get("from.model"); from.Exists() && from.Type != ojson.String {
+			return PluginResponseError()
+		}
+		if trigger := block.Get("trigger"); trigger.Exists() && !trigger.IsObject() {
+			return PluginResponseError()
+		}
 	case "mcp_tool_result":
 		// 服务端代跑的转写结果：content 是文本块数组（自由 Markdown，无 repr
 		// 解析契约），只校验配对与类型。

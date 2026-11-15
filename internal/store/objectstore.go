@@ -76,6 +76,7 @@ type ObjectTokenStore struct {
 	putObjectFn          func(ctx context.Context, key string, data []byte, contentType string) error
 	refreshProbeMu       sync.Mutex
 	refreshProbeReady    bool
+	refreshClaims        sync.Map
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.

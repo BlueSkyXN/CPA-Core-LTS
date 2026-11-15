@@ -1053,3 +1053,74 @@ api-keys:
 		}
 	}
 }
+
+func TestConfigV8_SensitiveWordsReplace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: {port: 8317}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config/*path", h.ConfigV8)
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
+	router.PATCH("/v8/management/config/*path", h.ConfigV8)
+	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+
+	for _, endpoint := range []string{
+		"/v8/management/config/oauth/providers/antigravity/sensitive-words-replace",
+		"/v8/management/config/oauth/providers/devin/sensitive-words-replace",
+	} {
+		// LTS: every v8 config write requires exactly one strong If-Match from
+		// the same read (config_revision_required otherwise).
+		getRev := httptest.NewRecorder()
+		router.ServeHTTP(getRev, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		etag := getRev.Header().Get("ETag")
+		if etag == "" {
+			t.Fatalf("GET %s: missing ETag", endpoint)
+		}
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, endpoint, strings.NewReader(`{"You are Codex, an agent based on GPT-5.":"You are a helpful coding assistant."}`))
+		req.Header.Set("If-Match", etag)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("PUT %s: status=%d body=%s", endpoint, w.Code, w.Body.String())
+		}
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), "You are a helpful coding assistant.") {
+			t.Fatalf("GET %s: status=%d body=%s", endpoint, getRec.Code, getRec.Body.String())
+		}
+		delRev := httptest.NewRecorder()
+		router.ServeHTTP(delRev, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		delReq := httptest.NewRequest(http.MethodDelete, endpoint, nil)
+		if delETag := delRev.Header().Get("ETag"); delETag != "" {
+			delReq.Header.Set("If-Match", delETag)
+		}
+		delRec := httptest.NewRecorder()
+		router.ServeHTTP(delRec, delReq)
+		if delRec.Code != http.StatusOK {
+			t.Fatalf("DELETE %s: status=%d body=%s", endpoint, delRec.Code, delRec.Body.String())
+		}
+	}
+
+	claudeRev := httptest.NewRecorder()
+	router.ServeHTTP(claudeRev, httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/claude", nil))
+	claudePut := httptest.NewRecorder()
+	claudeReq := httptest.NewRequest(
+		http.MethodPut,
+		"/v8/management/config/api-keys/claude",
+		strings.NewReader(`[{"name":"claude-1","keys":[{"api-key":"sk-ant-1","cloak":{"sensitive-words-replace":{"Claude Code":"Claude"}}}] }]`),
+	)
+	if claudeETag := claudeRev.Header().Get("ETag"); claudeETag != "" {
+		claudeReq.Header.Set("If-Match", claudeETag)
+	}
+	router.ServeHTTP(claudePut, claudeReq)
+	if claudePut.Code != http.StatusOK {
+		t.Fatalf("PUT api-keys/claude: status=%d body=%s", claudePut.Code, claudePut.Body.String())
+	}
+}

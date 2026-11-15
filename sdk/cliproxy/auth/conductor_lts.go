@@ -333,6 +333,10 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
+	if errThread != nil {
+		return cliproxyexecutor.Response{}, errThread
+	}
 	if m.HomeEnabled() && !m.hasLegacyHomeRuntimeAuthForRequest(ctx, opts) {
 		return m.executeHome(ctx, normalized, req, opts, false)
 	}
@@ -341,6 +345,9 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 
 	var lastErr error
 	var preferredUpstreamErr error
+	// Upstream: a scheduler plugin may reject an entire retry round; keep
+	// earlier rounds' errors and skip post-processing fallbacks in that case.
+	var terminalRoundRejectedByScheduler bool
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	budget := codexModelFallbackBudget(opts, false)
 	retryWithoutPenaltyCounts := budget.retryCounts
@@ -359,9 +366,20 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 			}
 			return resp, nil
 		}
+		if isSchedulerRejectError(errExec) {
+			if lastErr == nil && preferredUpstreamErr == nil {
+				return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
+			}
+			terminalRoundRejectedByScheduler = true
+			break
+		}
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, errExec
 		}
+		// Upstream: executeMixedOnce marks errors whose retry round ended in a
+		// scheduler reject, so post-loop fallbacks must stay skipped even when
+		// the returned error itself is the round's upstream failure.
+		terminalRoundRejectedByScheduler = hasRoundEndedBySchedulerReject(errExec)
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
 		}
@@ -464,7 +482,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !terminalRoundRejectedByScheduler && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -481,11 +499,18 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
+	if errThread != nil {
+		return nil, errThread
+	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
 	var preferredUpstreamErr error
+	// Upstream: a scheduler plugin may reject an entire retry round; keep
+	// earlier rounds' errors and skip post-processing fallbacks in that case.
+	var terminalRoundRejectedByScheduler bool
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	budget := codexModelFallbackBudget(opts, true)
 	retryWithoutPenaltyCounts := budget.retryCounts
@@ -507,6 +532,14 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 			}
 			return result, nil
 		}
+		if isSchedulerRejectError(errStream) {
+			if lastErr == nil && preferredUpstreamErr == nil {
+				return nil, unwrapExecutionBoundaryError(errStream)
+			}
+			terminalRoundRejectedByScheduler = true
+			break
+		}
+		terminalRoundRejectedByScheduler = hasRoundEndedBySchedulerReject(errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
 		}
@@ -630,7 +663,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !terminalRoundRejectedByScheduler && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {

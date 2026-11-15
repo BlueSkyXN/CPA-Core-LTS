@@ -215,10 +215,20 @@ func codexWebsocketHandshakeFailure(ctx context.Context, cfg *config.Config, req
 	body := websocketHandshakeBody(resp)
 	if resp != nil && resp.StatusCode > 0 {
 		helps.RecordAPIWebsocketUpgradeRejection(ctx, cfg, websocketUpgradeRequestLog(requestLog), resp.StatusCode, resp.Header.Clone(), body)
+		// Upstream records the stage-scoped dial error alongside the upgrade
+		// rejection (recordWebsocketDialFailure / recordWebsocketDialRetryFailure),
+		// so a rejected reconnect still leaves an "Error: dial_retry:" line.
+		helps.RecordAPIWebsocketError(ctx, cfg, stage, dialErr)
 		return resp.StatusCode, newCodexWebsocketHandshakeStatusErr(resp.StatusCode, body, resp.Header, cfg != nil && cfg.Codex.ModelLevelCooling)
 	}
 	if dialErr == nil {
 		dialErr = fmt.Errorf("codex websockets executor: websocket %s failed without a connection or handshake response", stage)
+	}
+	if stage == "dial_retry" && cfg != nil && !cfg.CommercialMode && !cfg.RequestLog {
+		// Upstream keeps a transport-level reconnect failure auditable by
+		// recording the pending upgrade request first, which opens the paired
+		// response attempt ("=== API RESPONSE 2 ===") before the error lands.
+		helps.RecordAPIRequest(ctx, cfg, websocketUpgradeRequestLog(requestLog))
 	}
 	helps.RecordAPIWebsocketError(ctx, cfg, stage, dialErr)
 	return 0, dialErr
