@@ -3390,15 +3390,27 @@ func observeSelectionCooldownDeadline(dst *time.Time, err error, now time.Time) 
 }
 
 // isPluginDeclaredRetryAfterError reports whether the error chain carries a
-// plugin executor rpc error. Those errors expose the plugin's own code
-// namespace via PluginCode(); their RetryAfter is a declared provider
-// contract rather than an advisory upstream hint.
+// plugin executor rpc error that declared its own positive RetryAfter.
+//
+// Only the declared pair is exempt from pool-cooldown wrapping: a plugin's
+// RetryAfterSeconds is the provider contract on the wire (14e577174), so the
+// wrapper must not replace it with a locally backoff-extended deadline.
+// A plugin 429 without a declared hint has no such contract to protect, so it
+// keeps the normal pool treatment and advertises the real pool recovery.
 func isPluginDeclaredRetryAfterError(err error) bool {
-	type pluginCoded interface {
+	type pluginDeclaredRetryAfter interface {
 		PluginCode() string
+		RetryAfter() *time.Duration
 	}
-	var coded pluginCoded
-	return errors.As(err, &coded) && coded != nil && strings.TrimSpace(coded.PluginCode()) != ""
+	var declared pluginDeclaredRetryAfter
+	if !errors.As(err, &declared) || declared == nil {
+		return false
+	}
+	if strings.TrimSpace(declared.PluginCode()) == "" {
+		return false
+	}
+	retryAfter := declared.RetryAfter()
+	return retryAfter != nil && *retryAfter > 0
 }
 
 func (m *Manager) annotatePoolCooldownTerminalError(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, lastErr error, selectionCooldownDeadline time.Time) error {
