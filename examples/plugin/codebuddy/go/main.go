@@ -265,8 +265,10 @@ func pluginRegistration() registration {
 				{Name: "user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "Non-secret User-Agent sent to CodeBuddy."},
 				{Name: "catalog_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "CodeBuddy model catalog endpoint used for selected-PAT discovery."},
 				{Name: "catalog_user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "Client User-Agent required by the CodeBuddy catalog service."},
-				{Name: "billing_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CodeBuddy billing meter endpoint."},
-				{Name: "account_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CodeBuddy account endpoint; failure falls back to the auth label and fingerprint."},
+				{Name: "billing_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Personal resource-package billing meter endpoint; empty packages mean no personal resources."},
+				{Name: "enterprise_usage_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Enterprise member usage endpoint reporting credit, limitNum, and cycle; primary quota source for enterprise identities."},
+				{Name: "account_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Account identity endpoint listing the credential's enterprise and personal identities."},
+				{Name: "payment_type_endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Payment-type endpoint used as a billing-mode hint for the plan summary."},
 			},
 		},
 		Capabilities: registrationCapabilities{

@@ -19,8 +19,11 @@ func TestOutputTimingMetricsAndTrendUseSameSamples(t *testing.T) {
 	}{
 		{"legacy", nil, 9900, 1},
 		{"measured", &coreusage.OutputTiming{Version: 1, Streamed: true, DurationMS: &measured}, 20, 1},
-		{"buffered", &coreusage.OutputTiming{Version: 1}, 0, 0},
-		{"single-read", &coreusage.OutputTiming{Version: 1, Streamed: true}, 0, 0},
+		// buffered / single-read: v1 output_timing without duration_ms falls
+		// back to the TTFB estimate so plugin-path streams keep an OutputTPS
+		// denominator (PRO deepseek-v4.1-flash all-empty TPS regression).
+		{"buffered", &coreusage.OutputTiming{Version: 1}, 9900, 1},
+		{"single-read", &coreusage.OutputTiming{Version: 1, Streamed: true}, 9900, 1},
 		{"sub-ms", &coreusage.OutputTiming{Version: 1, Streamed: true, DurationMS: &zero}, 0, 0},
 		{"invalid", &coreusage.OutputTiming{Version: 1, Streamed: true, DurationMS: &invalid}, 0, 0},
 	} {
@@ -62,5 +65,38 @@ func TestOutputTimingSnapshotAndMergeOwnMeasurements(t *testing.T) {
 		if got := s.Snapshot().APIs["timing-test"].Models["model"].Details[0]; *got.OutputTiming.DurationMS != 100 {
 			t.Fatal("snapshot or import aliases mutable timing")
 		}
+	}
+}
+
+// TestOutputDurationFallbackForMissingDurationMS locks the plugin-path shape:
+// a v1 output_timing block without duration_ms must fall back to the TTFB
+// estimate instead of dropping the OutputTPS denominator (PRO deepseek-v4.1-flash
+// records showed all-empty output TPS because of this gap).
+func TestOutputDurationFallbackForMissingDurationMS(t *testing.T) {
+	d := RequestDetail{
+		LatencyMs:           2416,
+		TTFBMs:              2224,
+		OutputTiming:        &coreusage.OutputTiming{Version: 1, Streamed: false},
+		TimingVersion:       1,
+		timingFieldsPresent: timingTTFBPresent,
+	}
+	duration, ok := outputDurationMS(d)
+	if !ok || duration != 192 {
+		t.Fatalf("fallback duration = %v ok=%v, want 192 true", duration, ok)
+	}
+	// A measured window still wins over the estimate. Measured windows only
+	// exist on streamed responses (OutputTiming.Valid requires Streamed).
+	measured := int64(150)
+	d.OutputTiming.Streamed = true
+	d.OutputTiming.DurationMS = &measured
+	duration, ok = outputDurationMS(d)
+	if !ok || duration != 150 {
+		t.Fatalf("measured duration = %v ok=%v, want 150 true", duration, ok)
+	}
+	// Invalid TTFB still rejects the fallback.
+	d.OutputTiming.DurationMS = nil
+	d.TTFBMs = 3000
+	if _, ok := outputDurationMS(d); ok {
+		t.Fatal("fallback accepted with TTFB beyond latency")
 	}
 }

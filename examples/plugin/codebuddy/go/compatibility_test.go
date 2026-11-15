@@ -204,11 +204,13 @@ func TestSummarySeparatesTenantPlanAndPersonalQuota(t *testing.T) {
 	if err := json.Unmarshal(response.Body, &summary); err != nil {
 		t.Fatal(err)
 	}
-	if summary.Account.Scope != "tenant" || summary.Account.EnterpriseID != "tenant-fixture" || summary.Account.Status != "partial" {
-		t.Fatal("tenant was presented as verified member")
+	// /v2/accounts 现在提供真实身份（fixture 默认 personal），catalog 的
+	// enterpriseId 只保留为 tenant 线索，不再覆盖账号身份。
+	if summary.Account.Status != "available" || summary.Account.Scope != "personal" || summary.Account.ID != "fixture-uid" {
+		t.Fatalf("account identity = %+v", summary.Account)
 	}
-	if summary.Plan == nil || summary.Plan.Status != "unknown" {
-		t.Fatal("unverified plan was inferred")
+	if summary.Plan == nil || summary.Plan.Status != "available" || summary.Plan.Name != "free" {
+		t.Fatal("payment-type plan missing")
 	}
 	if summary.Quota.Scope != "personal_resources" || summary.Quota.Remaining != nil || summary.Quota.Code != "no_personal_resources" {
 		t.Fatal("empty personal resources became enterprise zero")
@@ -249,23 +251,33 @@ func TestQuotaCyclePrecisionAndUnknownFields(t *testing.T) {
 
 type paginatedQuotaHost struct {
 	*fakeHost
-	pages    int
-	repeated bool
+	pages      int
+	repeated   bool
+	enterprise int
 }
 
 func (h *paginatedQuotaHost) Call(method string, payload any) (json.RawMessage, error) {
-	if method == pluginabi.MethodHostHTTPDo && strings.Contains(payload.(hostHTTPRequest).URL, "/billing/") {
-		h.pages++
-		var body map[string]any
-		_ = json.Unmarshal(payload.(hostHTTPRequest).Body, &body)
-		if body["PageNumber"] != float64(h.pages) || body["PageSize"] != float64(100) || body["ProductCode"] != "p_tcaca" {
-			return nil, fmt.Errorf("invalid pagination request")
+	if method == pluginabi.MethodHostHTTPDo {
+		requestURL := payload.(hostHTTPRequest).URL
+		// 企业额度接口返回无企业身份的空形态，迫使 quota 走个人资源包主路径，
+		// 保持本测试原有的分页语义。
+		if strings.Contains(requestURL, "/get-enterprise-user-usage") {
+			h.enterprise++
+			return marshalFakeResult(hostHTTPResponse{StatusCode: 200, Body: []byte(`{"code":0,"data":{"cycleStartTime":"2026-11-01 00:00:00"}}`)})
 		}
-		n := h.pages
-		if h.repeated {
-			n = 1
+		if strings.Contains(requestURL, "/billing/") {
+			h.pages++
+			var body map[string]any
+			_ = json.Unmarshal(payload.(hostHTTPRequest).Body, &body)
+			if body["PageNumber"] != float64(h.pages) || body["PageSize"] != float64(100) || body["ProductCode"] != "p_tcaca" {
+				return nil, fmt.Errorf("invalid pagination request")
+			}
+			n := h.pages
+			if h.repeated {
+				n = 1
+			}
+			return marshalFakeResult(hostHTTPResponse{StatusCode: 200, Body: []byte(fmt.Sprintf(`{"code":0,"data":{"Response":{"Data":{"TotalCount":2,"TotalDosage":99999,"Accounts":[{"PackageName":"page-%d","CapacitySizePrecise":"2.5","CapacityUsedPrecise":"0.25"}]}}}}`, n))})
 		}
-		return marshalFakeResult(hostHTTPResponse{StatusCode: 200, Body: []byte(fmt.Sprintf(`{"code":0,"data":{"Response":{"Data":{"TotalCount":2,"TotalDosage":99999,"Accounts":[{"PackageName":"page-%d","CapacitySizePrecise":"2.5","CapacityUsedPrecise":"0.25"}]}}}}`, n))})
 	}
 	return h.fakeHost.Call(method, payload)
 }

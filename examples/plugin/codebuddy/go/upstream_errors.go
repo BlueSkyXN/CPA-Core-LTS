@@ -32,6 +32,20 @@ func codeBuddyUpstreamError(status, businessCode int) error {
 		code, status, message = "upstream_account_not_activated", http.StatusForbidden, "CodeBuddy account is not activated"
 	case businessCode == 11115:
 		code, status, message = "upstream_context_too_long", http.StatusBadRequest, "CodeBuddy context exceeds the model limit"
+	case businessCode == 11128:
+		// 渠道风控：上游内容审核精确匹配友商客户端系统提示词指纹（Claude Code /
+		// DeepSeek Harness 身份句，须位于 system 开头）或拒绝 developer 角色时触发。
+		// 实测在 system 提示词开头加一个字符即可绕过身份句匹配；developer 角色已由
+		// normalizeCodeBuddyRoles 映射为 system，此处报错针对表外新指纹。
+		code, status, message = "upstream_channel_rejected", http.StatusBadRequest, "CodeBuddy channel validation rejected the request; a client prompt fingerprint likely triggered upstream risk control. Adjusting the first line of the system prompt usually resolves it"
+	case businessCode == 10105:
+		code, status, message = "upstream_active_session_limit", http.StatusTooManyRequests, "CodeBuddy active session limit exceeded"
+	case businessCode == 11140 || businessCode == 11142:
+		code, status, message = "upstream_auth_forbidden", http.StatusForbidden, "CodeBuddy credential is not permitted for this action"
+	case businessCode == 11141:
+		code, status, message = "upstream_model_error", http.StatusBadGateway, "CodeBuddy model behavior error"
+	case businessCode == 15001:
+		code, status, message = "upstream_web_search_quota", http.StatusPaymentRequired, "CodeBuddy web search quota exhausted"
 	}
 	if businessCode != 0 {
 		message = fmt.Sprintf("%s (code %d)", message, businessCode)

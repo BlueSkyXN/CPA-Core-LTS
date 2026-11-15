@@ -30,3 +30,48 @@ func normalizeCodeBuddyMaxTokens(body map[string]any, model, field string) {
 	body[field] = body[other]
 	delete(body, other)
 }
+
+// normalizeCodeBuddyRoles maps the OpenAI "developer" role onto "system".
+// The domestic copilot.tencent.com chat gateway rejects any request that
+// carries a developer message with 400/11128 regardless of content (verified
+// 2026-11-14 with a neutral prompt; the same text passes as system). Content,
+// ordering, and tool-call history are preserved verbatim; messages without a
+// developer role are returned untouched.
+func normalizeCodeBuddyRoles(body map[string]any) {
+	rawMessages, exists := body["messages"]
+	if !exists {
+		return
+	}
+	messages, ok := rawMessages.([]any)
+	if !ok || len(messages) == 0 {
+		return
+	}
+	hasDeveloper := false
+	for _, item := range messages {
+		if message, ok := item.(map[string]any); ok {
+			if role, _ := message["role"].(string); role == "developer" {
+				hasDeveloper = true
+				break
+			}
+		}
+	}
+	if !hasDeveloper {
+		return
+	}
+	updated := make([]any, 0, len(messages))
+	for _, item := range messages {
+		if message, ok := item.(map[string]any); ok {
+			if role, _ := message["role"].(string); role == "developer" {
+				copied := make(map[string]any, len(message))
+				for key, value := range message {
+					copied[key] = value
+				}
+				copied["role"] = "system"
+				updated = append(updated, copied)
+				continue
+			}
+		}
+		updated = append(updated, item)
+	}
+	body["messages"] = updated
+}

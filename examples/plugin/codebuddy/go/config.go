@@ -13,27 +13,39 @@ const (
 	defaultCodeBuddyEndpoint = "https://copilot.tencent.com/v2/chat/completions"
 	defaultCatalogEndpoint   = "https://copilot.tencent.com/v3/config"
 	defaultBillingEndpoint   = "https://copilot.tencent.com/v2/billing/meter/get-user-resource"
-	// 厂商按完整客户端标识返回不同场景；这只是 HTTP 协议标识，无需安装 CLI。
-	defaultCatalogUserAgent = "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0"
+	// 企业成员额度（credit/limitNum/周期）。2026-11-14 用真实 PAT 验证 key 可访问；
+	// 服务端按凭据解析成员身份，无需额外身份头。
+	defaultEnterpriseUsageEndpoint = "https://copilot.tencent.com/v2/billing/meter/get-enterprise-user-usage"
+	defaultAccountEndpoint         = "https://copilot.tencent.com/v2/accounts"
+	defaultPaymentTypeEndpoint     = "https://copilot.tencent.com/v2/billing/meter/get-payment-type"
+	// UA 形状按 WorkBuddy 5.8.2 内置 CLI 的 buildUserAgent 逆向：平台段在前、应用段在后
+	// （CLI/2.161.0 来自内嵌 @tencent-ai/codebuddy-code，5.8.2 为 genieVersion）。
+	// 仅 HTTP 标识，无需安装 CLI；旧默认值 WorkBuddy/5.3.14 双写为日志合并产物，形状错误。
+	defaultCatalogUserAgent = "CLI/2.161.0 WorkBuddy/5.8.2"
 	defaultUserAgent        = defaultCatalogUserAgent
 )
 
 type pluginConfig struct {
-	Endpoint         string `yaml:"endpoint"`
-	CatalogEndpoint  string `yaml:"catalog_endpoint"`
-	BillingEndpoint  string `yaml:"billing_endpoint"`
-	AccountEndpoint  string `yaml:"account_endpoint"`
-	UserAgent        string `yaml:"user_agent"`
-	CatalogUserAgent string `yaml:"catalog_user_agent"`
+	Endpoint                string `yaml:"endpoint"`
+	CatalogEndpoint         string `yaml:"catalog_endpoint"`
+	BillingEndpoint         string `yaml:"billing_endpoint"`
+	EnterpriseUsageEndpoint string `yaml:"enterprise_usage_endpoint"`
+	AccountEndpoint         string `yaml:"account_endpoint"`
+	PaymentTypeEndpoint     string `yaml:"payment_type_endpoint"`
+	UserAgent               string `yaml:"user_agent"`
+	CatalogUserAgent        string `yaml:"catalog_user_agent"`
 }
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
-		Endpoint:         defaultCodeBuddyEndpoint,
-		CatalogEndpoint:  defaultCatalogEndpoint,
-		BillingEndpoint:  defaultBillingEndpoint,
-		CatalogUserAgent: defaultCatalogUserAgent,
-		UserAgent:        defaultUserAgent,
+		Endpoint:                defaultCodeBuddyEndpoint,
+		CatalogEndpoint:         defaultCatalogEndpoint,
+		BillingEndpoint:         defaultBillingEndpoint,
+		EnterpriseUsageEndpoint: defaultEnterpriseUsageEndpoint,
+		AccountEndpoint:         defaultAccountEndpoint,
+		PaymentTypeEndpoint:     defaultPaymentTypeEndpoint,
+		CatalogUserAgent:        defaultCatalogUserAgent,
+		UserAgent:               defaultUserAgent,
 	}
 }
 
@@ -47,7 +59,9 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
 	cfg.CatalogEndpoint = strings.TrimSpace(cfg.CatalogEndpoint)
 	cfg.BillingEndpoint = strings.TrimSpace(cfg.BillingEndpoint)
+	cfg.EnterpriseUsageEndpoint = strings.TrimSpace(cfg.EnterpriseUsageEndpoint)
 	cfg.AccountEndpoint = strings.TrimSpace(cfg.AccountEndpoint)
+	cfg.PaymentTypeEndpoint = strings.TrimSpace(cfg.PaymentTypeEndpoint)
 	cfg.UserAgent = strings.TrimSpace(cfg.UserAgent)
 	cfg.CatalogUserAgent = strings.TrimSpace(cfg.CatalogUserAgent)
 	if cfg.UserAgent == "" {
@@ -71,8 +85,18 @@ func decodePluginConfig(raw []byte) (pluginConfig, error) {
 	if errValidate := validateEndpointPath(cfg.BillingEndpoint, "billing_endpoint", "/v2/billing/meter/get-user-resource"); errValidate != nil {
 		return pluginConfig{}, errValidate
 	}
+	if cfg.EnterpriseUsageEndpoint != "" {
+		if errValidate := validateEndpointPath(cfg.EnterpriseUsageEndpoint, "enterprise_usage_endpoint", "/v2/billing/meter/get-enterprise-user-usage"); errValidate != nil {
+			return pluginConfig{}, errValidate
+		}
+	}
 	if cfg.AccountEndpoint != "" {
-		if errValidate := validateEndpointPath(cfg.AccountEndpoint, "account_endpoint", "/v2/plugin/accounts"); errValidate != nil {
+		if errValidate := validateEndpointPath(cfg.AccountEndpoint, "account_endpoint", "/v2/accounts"); errValidate != nil {
+			return pluginConfig{}, errValidate
+		}
+	}
+	if cfg.PaymentTypeEndpoint != "" {
+		if errValidate := validateEndpointPath(cfg.PaymentTypeEndpoint, "payment_type_endpoint", "/v2/billing/meter/get-payment-type"); errValidate != nil {
 			return pluginConfig{}, errValidate
 		}
 	}
