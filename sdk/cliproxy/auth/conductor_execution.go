@@ -313,6 +313,7 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 
 	var lastErr error
 	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	retryWithoutPenaltyCounts := make(map[string]int)
 	retryWithoutPenaltyUsage := cliproxyexecutor.NewUsageAccumulator(coreusage.Detail{})
@@ -334,6 +335,7 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 			}
 			break
 		}
+		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
 		}
@@ -371,6 +373,7 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
+		lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -428,7 +431,9 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	}
 	var bootstrapErr *streamBootstrapError
 	if errors.As(err, &bootstrapErr) && bootstrapErr != nil {
-		return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
+		// Keep the full chain (pool-cooldown annotation included) so the
+		// client-visible Retry-After reflects the earliest pool recovery.
+		return streamErrorResult(bootstrapErr.Headers(), err), nil
 	}
 	return nil, unwrapExecutionBoundaryError(err)
 }
@@ -734,6 +739,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
 			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
+			result.RefreshToken = authRefreshToken(auth)
 			result.RouteModel = routeModel
 			m.MarkResult(execCtx, result)
 			lastErr = errPrepare
@@ -875,6 +881,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
 			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
+			result.RefreshToken = authRefreshToken(auth)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
 			result.CompletedResponse = errExec == nil && !resp.Incomplete && isCompletedExecutionPayload(resp.Payload)
@@ -1020,6 +1027,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
 			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
+			result.RefreshToken = authRefreshToken(auth)
 			result.RouteModel = routeModel
 			result.SkipQuotaObservation = true
 			m.MarkResult(execCtx, result)
@@ -1150,6 +1158,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			result := resultForAuthWithOptions(auth, provider, resultModel, errExec == nil, nil, execOpts)
 			result.AccessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
+			result.RefreshToken = authRefreshToken(auth)
 			result.SkipQuotaObservation = true
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
@@ -1466,6 +1475,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			result := resultForAuthWithOptions(auth, provider, stateModel, false, resultErrorFromError(errPrepare), pickOpts)
 			result.AccessToken = authAccessTokenForRequest(execCtx, auth, pickOpts.Headers)
+			result.RefreshToken = authRefreshToken(auth)
 			result.RouteModel = routeModel
 			if selection != nil {
 				m.reportHomeResult(execCtx, result, auth)
@@ -2664,6 +2674,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 					CredentialScope:   isCredentialScopedError(errExec),
 					Options:           opts,
 					AccessToken:       accessToken,
+					RefreshToken:      authRefreshToken(auth),
 					CredentialVersion: credVersion,
 					RegistrationEpoch: regEpoch,
 					ExecutionSeq:      executionSeq,
@@ -2685,6 +2696,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 				CompletedResponse: true,
 				Options:           opts,
 				AccessToken:       accessToken,
+				RefreshToken:      authRefreshToken(auth),
 				CredentialVersion: credVersion,
 				RegistrationEpoch: regEpoch,
 				ExecutionSeq:      executionSeq,
@@ -2712,6 +2724,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 			CredentialScope:   isCredentialScopedError(errStream),
 			Options:           opts,
 			AccessToken:       accessToken,
+			RefreshToken:      authRefreshToken(auth),
 			CredentialVersion: credVersion,
 			RegistrationEpoch: regEpoch,
 			ExecutionSeq:      executionSeq,
@@ -2758,6 +2771,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 			CredentialScope:   isCredentialScopedError(chunkErr),
 			Options:           opts,
 			AccessToken:       accessToken,
+			RefreshToken:      authRefreshToken(auth),
 			CredentialVersion: credVersion,
 			RegistrationEpoch: regEpoch,
 			ExecutionSeq:      executionSeq,
@@ -2779,6 +2793,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 		CompletedResponse: true,
 		Options:           opts,
 		AccessToken:       accessToken,
+		RefreshToken:      authRefreshToken(auth),
 		CredentialVersion: credVersion,
 		RegistrationEpoch: regEpoch,
 		ExecutionSeq:      executionSeq,

@@ -345,6 +345,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 
 	var lastErr error
 	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	// Upstream: a scheduler plugin may reject an entire retry round; keep
 	// earlier rounds' errors and skip post-processing fallbacks in that case.
 	var terminalRoundRejectedByScheduler bool
@@ -489,6 +490,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				return resp, nil
 			}
 		}
+		lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -508,6 +510,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 
 	var lastErr error
 	var preferredUpstreamErr error
+	var selectionCooldownDeadline time.Time
 	// Upstream: a scheduler plugin may reject an entire retry round; keep
 	// earlier rounds' errors and skip post-processing fallbacks in that case.
 	var terminalRoundRejectedByScheduler bool
@@ -540,6 +543,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 			break
 		}
 		terminalRoundRejectedByScheduler = hasRoundEndedBySchedulerReject(errStream)
+		if !m.HomeEnabled() {
+			observeSelectionCooldownDeadline(&selectionCooldownDeadline, errStream, time.Now())
+		}
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
 		}
@@ -669,6 +675,9 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 			} else if ok {
 				return result, nil
 			}
+		}
+		if !m.HomeEnabled() {
+			lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		}
 		return nil, lastErr
 	}

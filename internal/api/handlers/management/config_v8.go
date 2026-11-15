@@ -223,7 +223,20 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	}
 	// Runtime-only ownership state is never sourced from an uploaded YAML document.
 	next.Home = h.cfg.Home
+	// Secret rotation invalidates cached management credentials (upstream 51b98e746).
+	// LTS keeps its explicit no-ETag response; the disk-read ETag logic stays out.
+	prevSecretHash := ""
+	if h.cfg != nil {
+		prevSecretHash = h.cfg.RemoteManagement.SecretKey
+	}
 	h.cfg = next
+	nextSecretHash := ""
+	if next != nil {
+		nextSecretHash = next.RemoteManagement.SecretKey
+	}
+	if prevSecretHash != nextSecretHash {
+		h.authCache.invalidate()
+	}
 	snapshot := h.reloadSnapshotConfigLocked()
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 	c.Header("ETag", "")

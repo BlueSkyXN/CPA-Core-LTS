@@ -506,6 +506,7 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.credQuotaForceUntil = existing.credQuotaForceUntil
 				auth.forceCooldownSeeded = existing.forceCooldownSeeded
 			}
+			auth.credentialRetryAfter = existing.credentialRetryAfter
 			applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
 			applyPreservedRenewalState(existing, auth, mode, now)
 			if (credChanged || mode == updateModeRefresh) && (auth.RejectedAccessToken == "" || authAccessToken(auth) != auth.RejectedAccessToken) {
@@ -531,6 +532,8 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 					auth.Unavailable = false
 					auth.NextRetryAfter = time.Time{}
 					auth.cooldownRecordedSeq = 0
+					auth.forceCooldownUntil = time.Time{}
+					auth.credentialRetryAfter = time.Time{}
 					auth.LastError = nil
 					auth.NextRetryAfter = time.Time{}
 					auth.StatusMessage = ""
@@ -583,44 +586,6 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.NextRetryAfter = time.Time{}
 				cooldownStateChanged = true
 			}
-			// A refresh that confirms quota restoration (issue #6690) releases the
-			// credential-wide cooldown early; otherwise the active credential
-			// quota below is preserved exactly as before.
-			devinQuotaRestored := mode == updateModeRefresh && applyDevinQuotaRestoration(auth, existing, now)
-			if devinQuotaRestored {
-				cooldownStateChanged = true
-			} else if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
-				auth.Unavailable = existing.Unavailable
-				auth.NextRetryAfter = existing.NextRetryAfter
-				// Preserve cooldown fields; keep the newest observation snapshot.
-				observation := mergeQuotaObservation(auth.Quota, existing.Quota)
-				auth.Quota = existing.Quota
-				auth.Quota.ObservedAt = observation.ObservedAt
-				auth.Quota.Signals = observation.Signals
-				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
-				auth.forceCooldownUntil = existing.forceCooldownUntil
-				auth.credQuotaForceUntil = existing.credQuotaForceUntil
-				auth.forceCooldownSeeded = existing.forceCooldownSeeded
-				if auth.Status == StatusActive {
-					auth.Status = existing.Status
-				}
-			} else if !credChanged && mode == updateModeReplace && existing.forceCooldownUntil.After(now) && !auth.NextRetryAfter.After(now) {
-				auth.Unavailable = existing.Unavailable
-				auth.NextRetryAfter = existing.NextRetryAfter
-				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
-				auth.forceCooldownUntil = existing.forceCooldownUntil
-				auth.credQuotaForceUntil = existing.credQuotaForceUntil
-				auth.forceCooldownSeeded = existing.forceCooldownSeeded
-				if auth.LastError == nil && existing.LastError != nil {
-					auth.LastError = cloneError(existing.LastError)
-				}
-				if auth.StatusMessage == "" {
-					auth.StatusMessage = existing.StatusMessage
-				}
-				if auth.Status == StatusActive {
-					auth.Status = existing.Status
-				}
-			}
 		} else {
 			applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
 			applyPreservedRenewalState(existing, auth, mode, now)
@@ -636,6 +601,63 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 					} else {
 						auth.NextRefreshAfter = time.Time{}
 					}
+				}
+			}
+		}
+		// A refresh that confirms quota restoration (issue #6690) releases the
+		// credential-wide cooldown early; otherwise the active credential
+		// quota below is preserved exactly as before.
+		devinQuotaRestored := mode == updateModeRefresh && applyDevinQuotaRestoration(auth, existing, now)
+		if devinQuotaRestored {
+			cooldownStateChanged = true
+		} else if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
+			auth.Unavailable = existing.Unavailable
+			auth.NextRetryAfter = existing.NextRetryAfter
+			// Preserve cooldown fields; keep the newest observation snapshot.
+			observation := mergeQuotaObservation(auth.Quota, existing.Quota)
+			auth.Quota = existing.Quota
+			auth.Quota.ObservedAt = observation.ObservedAt
+			auth.Quota.Signals = observation.Signals
+			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.credQuotaForceUntil = existing.credQuotaForceUntil
+			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.forceCooldownSeeded = existing.forceCooldownSeeded
+			if auth.Status == StatusActive {
+				auth.Status = existing.Status
+			}
+		} else if !credChanged && mode == updateModeReplace && existing.forceCooldownUntil.After(now) && !auth.NextRetryAfter.After(now) {
+			auth.Unavailable = existing.Unavailable
+			auth.NextRetryAfter = existing.NextRetryAfter
+			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.credQuotaForceUntil = existing.credQuotaForceUntil
+			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.forceCooldownSeeded = existing.forceCooldownSeeded
+			if auth.LastError == nil && existing.LastError != nil {
+				auth.LastError = cloneError(existing.LastError)
+			}
+			if auth.StatusMessage == "" {
+				auth.StatusMessage = existing.StatusMessage
+			}
+			if auth.Status == StatusActive {
+				auth.Status = existing.Status
+			}
+		}
+	} else {
+		applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
+		applyPreservedRenewalState(existing, auth, mode, now)
+		// Refresh updates must retain their outcome rather than the pending job marker.
+		if mode != updateModeRefresh {
+			if !credChanged {
+				auth.LastRefreshedAt = existing.LastRefreshedAt
+				auth.NextRefreshAfter = existing.NextRefreshAfter
+				auth.RefreshFailures = existing.RefreshFailures
+			} else if authHasUnchangedRejectedRefreshToken(auth) {
+				if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(now) {
+					auth.NextRefreshAfter = exp
+				} else {
+					auth.NextRefreshAfter = time.Time{}
 				}
 			}
 		}

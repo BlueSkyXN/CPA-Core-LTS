@@ -1537,6 +1537,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			executionSeq := m.nextExecutionSeq()
 			resp, errExec := executeWithFlowSlot(admittedCtx, c.executor, c.auth, execReq, creditsOpts)
 			result := resultForAuthWithOptions(c.auth, c.provider, resultModel, errExec == nil, nil, creditsOpts)
+			result.RefreshToken = authRefreshToken(c.auth)
 			result.RouteModel = routeModel
 			result.ExecutionSeq = executionSeq
 			if errExec != nil {

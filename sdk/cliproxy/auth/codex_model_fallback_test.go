@@ -746,14 +746,32 @@ func TestManagerExecuteCodexModelFallbackSelectsCredentialForTargetModel(t *test
 	}
 }
 
+// fallbackErrorCause unwraps boundary and pool-cooldown annotations (upstream
+// 4da9f6852 wraps terminal fully-blocked 429s) so fallback-routing assertions
+// compare the original executor error, not its transport wrapper.
+func fallbackErrorCause(err error) error {
+	for err != nil {
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			break
+		}
+		inner := u.Unwrap()
+		if inner == nil {
+			break
+		}
+		err = inner
+	}
+	return err
+}
+
 func TestManagerExecuteCodexModelFallbackIgnoresUnclassified429(t *testing.T) {
 	transient := &codexFallbackTestError{message: "rate limited"}
 	executor := &codexModelFallbackTestExecutor{executeErrs: map[string]error{"gpt-source": transient}}
 	manager, _ := newCodexModelFallbackTestManager(t, executor, internalconfig.CodexModelFallbackReasoningContinuitySameModelOnly)
 
 	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
-	if err != transient {
-		t.Fatalf("Execute() error = %v, want original transient error", err)
+	if cause := fallbackErrorCause(err); cause != transient {
+		t.Fatalf("Execute() error = %v (cause type %T), want original transient error", err, cause)
 	}
 	calls, _ := executor.snapshot()
 	if len(calls) != 1 || calls[0] != "gpt-source" {
@@ -770,7 +788,7 @@ func TestManagerExecuteCodexModelFallbackBlockedReturnsOriginalAndDoesNotCooldow
 	manager, authID := newCodexModelFallbackTestManager(t, executor, internalconfig.CodexModelFallbackReasoningContinuitySameModelOnly)
 
 	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
-	if err != initial {
+	if cause := fallbackErrorCause(err); cause != initial {
 		t.Fatalf("Execute() error = %v, want original usage-limit error", err)
 	}
 	auth, ok := manager.GetByID(authID)
@@ -791,7 +809,7 @@ func TestManagerExecuteCodexModelFallbackSameModelOnlyBlocksPreviousResponseBefo
 		Model:   "gpt-source",
 		Payload: []byte(`{"previous_response_id":"resp-source","input":[{"type":"message","role":"user","content":"continue"}]}`),
 	}, cliproxyexecutor.Options{})
-	if err != initial {
+	if cause := fallbackErrorCause(err); cause != initial {
 		t.Fatalf("Execute() error = %v, want original source error", err)
 	}
 	calls, _ := executor.snapshot()
@@ -814,7 +832,7 @@ func TestManagerExecuteCodexModelFallbackBlocksCachedClaudeReplayBeforeTargetSel
 		Model:   "gpt-source",
 		Payload: []byte(`{"metadata":{"user_id":"user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account_123e4567-e89b-12d3-a456-426614174001_session_` + sessionID + `"},"messages":[{"role":"user","content":[{"type":"text","text":"continue"}]}]}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
-	if err != initial {
+	if cause := fallbackErrorCause(err); cause != initial {
 		t.Fatalf("Execute() error = %v, want source error", err)
 	}
 	calls, _ := executor.snapshot()
@@ -837,7 +855,7 @@ func TestManagerExecuteCodexModelFallbackReplayPreflightUsesAgentScopedExecutorK
 		Model:   "gpt-source",
 		Payload: []byte(`{"prompt_cache_key":"higher-priority-key-without-replay","metadata":{"user_id":"{\"session_id\":\"` + sessionID + `\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"continue"}]}]}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
-	if err != initial {
+	if cause := fallbackErrorCause(err); cause != initial {
 		t.Fatalf("Execute() error = %v, want source error", err)
 	}
 	calls, _ := executor.snapshot()
@@ -881,7 +899,7 @@ func TestManagerExecuteCodexModelFallbackReplayPreflightUsesSharedHeaderResolver
 				Model:   "gpt-source",
 				Payload: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"continue"}]}]}`),
 			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Headers: tc.optsHeader})
-			if err != initial {
+			if cause := fallbackErrorCause(err); cause != initial {
 				t.Fatalf("Execute() error = %v, want source error", err)
 			}
 			calls, _ := executor.snapshot()
@@ -1098,7 +1116,7 @@ func TestManagerExecuteCodexModelFallbackAllZeroDispatchReturnsSourceError(t *te
 		Mappings: []internalconfig.CodexModelFallbackMapping{{From: "gpt-source", To: []string{"gpt-missing-a", "gpt-missing-b"}}},
 	}}})
 	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
-	if err != initial {
+	if cause := fallbackErrorCause(err); cause != initial {
 		t.Fatalf("Execute() error = %v, want source error after all zero-dispatch targets", err)
 	}
 	calls, _ := executor.snapshot()
@@ -1120,7 +1138,7 @@ func TestManagerExecuteCodexModelFallbackContextResetDoesNotCloseSourceForZeroDi
 		cliproxyexecutor.ExecutionSessionMetadataKey:                     "must-not-close",
 		cliproxyexecutor.CodexModelFallbackContextResetReplayMetadataKey: true,
 	}})
-	if err != initial {
+	if cause := fallbackErrorCause(err); cause != initial {
 		t.Fatalf("Execute() error = %v, want source error", err)
 	}
 	if closed := executor.closedSnapshot(); len(closed) != 0 {
@@ -1430,7 +1448,7 @@ func TestManagerExecuteCodexModelFallbackContinuesPastRealTargetCooldown(t *test
 
 			resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-source"}, cliproxyexecutor.Options{})
 			if allCooldown {
-				if err != initial {
+				if cause := fallbackErrorCause(err); cause != initial {
 					t.Fatalf("Execute() error = %v, want original source error", err)
 				}
 			} else {
@@ -1494,8 +1512,12 @@ func TestManagerExecuteStreamCodexModelFallbackPreservesUnclassifiedBootstrapErr
 	for chunk := range result.Chunks {
 		chunks = append(chunks, chunk)
 	}
-	if len(chunks) != 1 || chunks[0].Err != initial {
-		t.Fatalf("stream chunks = %#v, want original bootstrap error", chunks)
+	// Upstream 4da9f6852: a terminal fully-blocked 429 may carry a
+	// poolCooldownTerminalError annotation; the unclassified contract here is
+	// about fallback routing, so compare the unwrapped cause.
+	cause := fallbackErrorCause(chunks[0].Err)
+	if len(chunks) != 1 || cause != initial {
+		t.Fatalf("stream chunks = %#v (cause %T), want original bootstrap error", chunks, cause)
 	}
 	calls, _ := executor.snapshot()
 	if len(calls) != 1 || calls[0] != "gpt-source" {
