@@ -17,6 +17,7 @@ const (
 	geminiResponsesCarrierStandalone = "standalone"
 	geminiResponsesCarrierText       = "text"
 	geminiResponsesCarrierFunction   = "function"
+	geminiResponsesCarrierImage      = "image"
 	geminiResponsesCarrierAny        = "any"
 
 	geminiResponsesCarrierDirectionField = "_cpa_reasoning_direction"
@@ -80,6 +81,10 @@ func geminiResponsesCarrierSemanticTarget(item ojson.Result) string {
 	switch item.Get("type").String() {
 	case "function_call", "custom_tool_call":
 		return geminiResponsesCarrierFunction
+	case "image_generation_call":
+		// A replayed model image item is a valid carrier binding target so an
+		// image part's own signature can stay with the image part.
+		return geminiResponsesCarrierImage
 	case "reasoning":
 		if strings.TrimSpace(item.Get("summary.0.text").String()) != "" {
 			return geminiResponsesCarrierText

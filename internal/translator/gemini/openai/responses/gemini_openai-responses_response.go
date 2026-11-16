@@ -998,6 +998,26 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				}
 			}
 			st.StreamPartIndex = currentPartIndex
+			// An image part keeps its own thought signature: emit it as a
+			// carrier bound to the image item below (next,any) before the
+			// generic text/reasoning signature logic can absorb or drop it.
+			if signature != "" && !isThought && !functionCall.Exists() && !text.Exists() {
+				imageInline := part.Get("inlineData")
+				if !imageInline.Exists() {
+					imageInline = part.Get("inline_data")
+				}
+				if imageInline.Exists() {
+					imageData := imageInline.Get("data").String()
+					imageMime := imageInline.Get("mimeType").String()
+					if imageMime == "" {
+						imageMime = imageInline.Get("mime_type").String()
+					}
+					if _, isImg := imageOutputFormat(imageMime); isImg && imageData != "" {
+						emitDetachedReasoning(signature, geminiResponsesCarrierNext, geminiResponsesCarrierAny)
+						signature = ""
+					}
+				}
+			}
 			isStreamingFuncContinuation := functionCall.Exists() && st.ActiveStreamingFunc != nil && st.ActiveStreamingFunc.CanContinueWith(functionCall)
 			if functionCall.Exists() && !isStreamingFuncContinuation && st.PendingReasoningSignature != "" {
 				if signature == "" {
@@ -2254,41 +2274,17 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 					}
 					return true
 				}
-				if signature != "" {
-					if reasoningText.Len() > 0 {
-						switch {
-						case reasoningEncrypted == "":
-							reasoningEncrypted = signature
-							reasoningDirection = geminiResponsesCarrierStandalone
-							reasoningTargetKind = geminiResponsesCarrierText
-						case reasoningEncrypted != signature:
-							flushReasoningOutput()
-							detachedIndex := len(detachedReasoningOutputs)
-							detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierPrevious, targetKind: geminiResponsesCarrierText})
-							outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
-						}
-					} else if currentMessageText.Len() > 0 {
-						if len(currentMessageSignatures) == 0 {
-							currentMessageSignatures = append(currentMessageSignatures, signature)
-						} else if currentMessageSignatures[len(currentMessageSignatures)-1] != signature {
-							flushMessageOutput()
-							currentMsgRuneOffset = 0
-							detachedIndex := len(detachedReasoningOutputs)
-							detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierPrevious, targetKind: geminiResponsesCarrierText})
-							outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
-						}
-					} else if len(functionOutputs) > 0 {
-						detachedIndex := len(detachedReasoningOutputs)
-						detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierPrevious, targetKind: geminiResponsesCarrierFunction})
-						outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
-					} else {
-						detachedIndex := len(detachedReasoningOutputs)
-						detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierNext, targetKind: geminiResponsesCarrierAny})
-						outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
-					}
-				}
 				flushReasoningOutput()
 				flushMessageOutput()
+				if signature != "" {
+					// An image part's thought signature must stay with the image
+					// part on replay: after flushing any preceding text, emit it
+					// as a carrier bound to the image item that follows
+					// (next,any) instead of folding it into the message text.
+					detachedIndex := len(detachedReasoningOutputs)
+					detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierNext, targetKind: geminiResponsesCarrierAny})
+					outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+				}
 				itemDoc := ojson.NewDocString(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
 				_ = itemDoc.Set("id", fmt.Sprintf("ig_%s_%d", strings.TrimPrefix(id, "resp_"), len(imageOutputs)))
 				_ = itemDoc.Set("output_format", outFormat)
