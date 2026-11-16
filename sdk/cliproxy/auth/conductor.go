@@ -59,10 +59,19 @@ type ScopedExecutionSessionCloser interface {
 	CloseExecutionSessionScoped(sessionID, callerScope, workspaceIdentity string)
 }
 
-// AuthIndexExecutionSessionCloser allows executors to release only the sessions
+// AuthExecutionSessionCloser allows executors to release only the sessions
 // owned by one credential while preserving other credentials for the provider.
-type AuthIndexExecutionSessionCloser interface {
+// This is the original public SDK contract; keep the name and the two-argument
+// method so existing embedders keep compiling.
+type AuthExecutionSessionCloser interface {
 	CloseExecutionSessionsForAuth(authID, authIndex string)
+}
+
+// AuthExecutionSessionIDCloser allows executors to release execution sessions
+// associated with a removed credential without tearing down other credentials'
+// sessions, keyed by credential ID only.
+type AuthExecutionSessionIDCloser interface {
+	CloseAuthExecutionSessions(authID string)
 }
 
 // ExecutionSessionReplacementCompatible lets an executor declare that replacing
@@ -91,12 +100,6 @@ type ExecutionSessionSharer interface {
 // inner executor; the manager follows the chain.
 type ExecutorUnwrapper interface {
 	Unwrap() ProviderExecutor
-}
-
-// AuthExecutionSessionCloser allows executors to release execution sessions
-// associated with a removed credential without tearing down other credentials' sessions.
-type AuthExecutionSessionCloser interface {
-	CloseAuthExecutionSessions(authID string)
 }
 
 // Result captures execution outcome used to adjust auth state.

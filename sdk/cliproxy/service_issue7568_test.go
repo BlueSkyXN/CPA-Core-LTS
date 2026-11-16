@@ -67,8 +67,14 @@ func (w *issue7568Wrapper) SharesExecutionSessionsWith(other coreauth.ProviderEx
 	return false
 }
 
-func (w *issue7568Wrapper) CloseAuthExecutionSessions(authID string) {
+func (w *issue7568Wrapper) CloseExecutionSessionsForAuth(authID, authIndex string) {
 	if closer, ok := w.inner.(coreauth.AuthExecutionSessionCloser); ok && closer != nil {
+		closer.CloseExecutionSessionsForAuth(authID, authIndex)
+	}
+}
+
+func (w *issue7568Wrapper) CloseAuthExecutionSessions(authID string) {
+	if closer, ok := w.inner.(coreauth.AuthExecutionSessionIDCloser); ok && closer != nil {
 		closer.CloseAuthExecutionSessions(authID)
 	}
 }
