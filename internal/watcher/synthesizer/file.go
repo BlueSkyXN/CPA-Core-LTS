@@ -127,7 +127,10 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			FileName: defaultFileName,
 			RawJSON:  data,
 		}, ctx.AuthDir)
-		if errParse != nil && ctx.StrictFileParsing {
+		// A plugin parser error must stop generic synthesis in every mode; the
+		// watcher snapshot and file-event contexts do not enable strict parsing,
+		// and silently falling back would mint an unrelated file credential.
+		if errParse != nil {
 			return nil, false, fmt.Errorf("parse plugin auth file: %w", errParse)
 		}
 		if errParse == nil && handled {
