@@ -927,9 +927,9 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 
 	if provider != "" {
 		if exec, ok := m.Executor(provider); ok && exec != nil {
-			if closer, okCloser := exec.(AuthIndexExecutionSessionCloser); okCloser {
+			if closer, okCloser := exec.(AuthExecutionSessionCloser); okCloser {
 				closer.CloseExecutionSessionsForAuth(existing.ID, existing.Index)
-			} else if authCloser, okAuthCloser := exec.(AuthExecutionSessionCloser); okAuthCloser && authCloser != nil {
+			} else if authCloser, okAuthCloser := exec.(AuthExecutionSessionIDCloser); okAuthCloser && authCloser != nil {
 				authCloser.CloseAuthExecutionSessions(id)
 			} else if closer, okCloser := exec.(ExecutionSessionCloser); okCloser {
 				closer.CloseExecutionSession(CloseAllExecutionSessionsID)
