@@ -146,9 +146,11 @@ Flow V3 wrapper 与 model-fallback 循环均保留 LTS 形态。
 - `05a353cf1` SDK executor builder hook：`Builder.WithExecutorWrapper` 在
   统一 `registerExecutor` gate 应用；`ownedExecutor`+revision 跟踪服务自有
   executor；`ExecutorUnwrapper` 链式解包 + 环/非可比安全。LTS 融合要点：
-  - LTS 双参数会话接口更名 `AuthIndexExecutionSessionCloser`
-    （`CloseExecutionSessionsForAuth` 语义不变），`AuthExecutionSessionCloser`
-    名字让给 upstream 单参数导出接口（`CloseAuthExecutionSessions`）；
+  - 公开双参数 `AuthExecutionSessionCloser`
+    （`CloseExecutionSessionsForAuth`）契约保持不变；upstream 新增的 ID 级
+    单参数能力落在独立接口 `AuthExecutionSessionIDCloser`
+    （`CloseAuthExecutionSessions`），移除关闭链先试双参数、回退 ID 级、
+    再 provider 级（stage 2 曾把旧名让给单参数接口，已恢复）；
   - codex rebind 保留 LTS previous 交接（`NewCodexAutoExecutor(cfg, previous)`），
     previous 经 `ownedExecutor` 解析、经 `registerExecutor` gate 注册；
   - LTS Flow V3 包装在 conductor Execute 层，不受注册层 builder hook 影响。
