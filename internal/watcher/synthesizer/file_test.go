@@ -557,21 +557,56 @@ func TestFileSynthesizer_Synthesize_SkipsInvalidFiles(t *testing.T) {
 }
 
 func TestSynthesizeAuthFilePluginParserErrorDoesNotFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		strict bool
+	}{
+		// The watcher snapshot and file-event entry points synthesize without
+		// StrictFileParsing; a plugin parser error must not fall back to a
+		// generic credential there either.
+		{name: "default watcher context", strict: false},
+		// Management upload/snapshot entry points always synthesize strictly;
+		// a plugin parser error must stay loud there instead of falling back.
+		{name: "strict parsing", strict: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &SynthesisContext{
+				Config:            &config.Config{},
+				AuthDir:           t.TempDir(),
+				Now:               time.Now(),
+				IDGenerator:       NewStableIDGenerator(),
+				StrictFileParsing: tc.strict,
+				PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+					return nil, true, errors.New("plugin parse failed")
+				}),
+			}
+			auths, errSynthesize := SynthesizeAuthFile(ctx, filepath.Join(ctx.AuthDir, "plugin.json"), []byte(`{"type":"plugin-provider"}`))
+			if errSynthesize == nil {
+				t.Fatal("SynthesizeAuthFile() error = nil, want plugin parser error")
+			}
+			if len(auths) != 0 {
+				t.Fatalf("SynthesizeAuthFile() = %#v, want no generic fallback", auths)
+			}
+		})
+	}
+}
+
+func TestSynthesizeAuthFilePluginNotHandledFallsBackToBuiltin(t *testing.T) {
 	ctx := &SynthesisContext{
 		Config:      &config.Config{},
 		AuthDir:     t.TempDir(),
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
 		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-			return nil, true, errors.New("plugin parse failed")
+			return nil, false, nil
 		}),
 	}
-	auths, errSynthesize := SynthesizeAuthFile(ctx, filepath.Join(ctx.AuthDir, "plugin.json"), []byte(`{"type":"plugin-provider"}`))
-	if errSynthesize == nil {
-		t.Fatal("SynthesizeAuthFile() error = nil, want plugin parser error")
+	auths, errSynthesize := SynthesizeAuthFile(ctx, filepath.Join(ctx.AuthDir, "acct.json"), []byte(`{"type":"codex","email":"a@b.c"}`))
+	if errSynthesize != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v, want builtin fallback", errSynthesize)
 	}
-	if len(auths) != 0 {
-		t.Fatalf("SynthesizeAuthFile() = %#v, want no generic fallback", auths)
+	if len(auths) != 1 || auths[0].Provider != "codex" {
+		t.Fatalf("SynthesizeAuthFile() = %#v, want builtin codex credential from unhandled file", auths)
 	}
 }
 
