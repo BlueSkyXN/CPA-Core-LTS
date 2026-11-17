@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -374,6 +375,8 @@ func TestCodexDuplexAppendInheritsContextAndInstructions(t *testing.T) {
 	}
 	opts := core.Options{SourceFormat: sdktranslator.FromString("codex"), Metadata: map[string]any{core.ExecutionSessionMetadataKey: "append-test"}}
 
+	diagnosticStore := diagnostics.NewStore()
+	ctx = diagnosticStore.Begin(ctx, "duplex-request", "caller", "session", req.Model, "codex", req.Payload)
 	result, err := exec.ExecuteStream(ctx, auth, req, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -401,6 +404,15 @@ func TestCodexDuplexAppendInheritsContextAndInstructions(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not finish")
 	}
+	trace, ok := diagnosticStore.Get(diagnostics.FromContext(ctx).ID())
+	if !ok || len(trace.Attempts) != 2 {
+		t.Fatalf("duplex attempts=%+v", trace.Attempts)
+	}
+	first, second := trace.Attempts[0], trace.Attempts[1]
+	if first.ResponseID != "resp-1" || second.ResponseID != "resp-2" || first.ExecutionID == second.ExecutionID || second.Input == nil {
+		t.Fatalf("duplex response association=%+v", trace.Attempts)
+	}
+
 }
 
 func TestCodexDuplexStandaloneCreateDoesNotInheritParentID(t *testing.T) {

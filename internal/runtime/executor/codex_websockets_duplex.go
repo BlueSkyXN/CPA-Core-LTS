@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -616,7 +617,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				consumedPayload = nil
 				return true
 			}
-			prepared, errPrepare := e.prepareCodexWebsocketStream(streamCtx, auth, nextReq, nextOpts)
+			nextReporter := helps.NewExecutorUsageReporter(followupCtx, e, req.Model, auth)
+			nextReporter.SetDiagnosticsInput(nextReq.Payload)
+			nextDiagnosticsCtx := nextReporter.DiagnosticsContext(streamCtx)
+			diagnostics.Record(nextDiagnosticsCtx, diagnostics.Event{Layer: "account", Method: "websocket_connection", Result: "reused", AuthIndex: auth.Index})
+			prepared, errPrepare := e.prepareCodexWebsocketStream(nextDiagnosticsCtx, auth, nextReq, nextOpts)
 			if errPrepare != nil {
 				fail(errPrepare)
 				return false
@@ -629,7 +634,6 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 			payload = frameCodexWebsocketRequestBody(prepared.upstreamBody)
-			nextReporter := helps.NewExecutorUsageReporter(followupCtx, e, req.Model, auth)
 			nextReporter.SetTranslatedReasoningEffort(prepared.upstreamBody, prepared.to.String())
 			nextReporter.EnableSemanticTiming(prepared.to.String())
 			nextReporter.StartResponseTiming()
@@ -655,7 +659,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
 				URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
 			})
+			sessionHeader, _ := sess.affinityHeader(connection)
+			nextReporter.ObserveWebsocketDiagnosticsRequest(payload, initial.wsURL, sessionHeader)
 			if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
+				nextReporter.ObserveWebsocketSendFailure()
 				fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
 				return false
 			}
@@ -1014,6 +1021,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						reporter = helps.NewExecutorUsageReporter(followupCtx, e, req.Model, auth)
 						reporter.SetTranslatedReasoningEffort(current.clientBody, current.to.String())
 						reporter.ObserveUpstreamWebsocketTransport()
+						diagnostics.Record(reporter.DiagnosticsContext(followupCtx), diagnostics.Event{Layer: "transport", Method: "websocket_successor", Result: "no_client_dispatch"})
 					}
 				}
 				outputItems = make(map[int64][]byte)
@@ -1077,6 +1085,29 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				var status interface{ StatusCode() int }
 				if errors.As(credentialErr, &status) && (status.StatusCode() == http.StatusUnauthorized || status.StatusCode() == http.StatusForbidden || status.StatusCode() == http.StatusTooManyRequests) {
+					// 连接级拒绝会提前返回。只读确定诊断归属，不消费 pending，
+					// 不把空闲连接或不明确的错误写进已完成的请求。
+					failedID := ojson.GetBytesNoCopy(payload, "response.id").String()
+					if failedID == "" {
+						failedID = ojson.GetBytesNoCopy(payload, "response_id").String()
+					}
+					metadataMu.Lock()
+					currentFailure := failedID != "" && failedID == responseID
+					ambiguous := failedID == "" && ((len(pending) > 0 && responseActive) || len(unacknowledgedSteers) > 0)
+					var diagnosticReporter *helps.UsageReporter
+					if !ambiguous {
+						if len(pending) > 0 && !currentFailure {
+							diagnosticReporter = pendingReporters[pending[0]]
+						} else if responseActive && (failedID == "" || currentFailure) {
+							diagnosticReporter = reporter
+						}
+					}
+					metadataMu.Unlock()
+					if diagnosticReporter != nil {
+						diagnosticReporter.ObserveWebsocketDiagnostics(payload)
+					} else {
+						diagnostics.Record(diagnostics.WithExecution(followupCtx, ""), diagnostics.Event{Layer: "transport", Method: "websocket_connection", Result: "upstream_error", Reason: "credential_rejected"})
+					}
 					// Account health is independent of which queued request failed.
 					// The conductor records the original classification without replaying
 					// this already-started stream on another credential.
@@ -1130,6 +1161,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					return
 				}
 			}
+			// 先完成 response ID / pending create 归属判定，再保存原始上游证据。
+			eventReporter.ObserveWebsocketDiagnostics(payload)
 			payload = applyCodexIdentityConfuseResponsePayload(payload, eventPrepared.identityState)
 			restoreMultiAgent := !eventPrepared.multiAgentV2Conflict && (eventPrepared.optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgent)

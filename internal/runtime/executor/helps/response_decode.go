@@ -13,6 +13,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -47,7 +48,20 @@ func (p *peekableBody) Close() error {
 
 // DecodeResponseBody decodes declared encodings in reverse order, or sniffs gzip/zstd without a header.
 // Closing the returned body also closes all decoders and the original body, including on setup errors.
-func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, error) {
+func DecodeResponseBody(body io.ReadCloser, header http.Header) (decoded io.ReadCloser, err error) {
+	// 诊断观察解压后实际被消费的数据，仍归属原传输尝试；不额外预读流。
+	if observer, ok := body.(interface {
+		DecodedDiagnostics() *diagnostics.AttemptRef
+	}); ok {
+		attempt := observer.DecodedDiagnostics()
+		defer func() {
+			if err != nil {
+				attempt.End("decode_error")
+			} else {
+				decoded = attempt.WrapResponse(decoded, header.Get("Content-Type"), "")
+			}
+		}()
+	}
 	contentEncoding := strings.Join(header.Values("Content-Encoding"), ",")
 	if body == nil {
 		return nil, fmt.Errorf("response body is nil")

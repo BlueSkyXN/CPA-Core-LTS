@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"net/http"
 	"strings"
 
@@ -257,6 +258,15 @@ func (e *CodexExecutor) adaptOAuthCache(ctx context.Context, auth *authpkg.Auth,
 		}
 		decision := e.affinityStore().decide(ctx, scope, identity, parentIdentity, requestID, key, seed, reliable, snap)
 		decision.generation = e.affinityGeneration
+		result := "retained"
+		if decision.adopted {
+			result = "adopted"
+		}
+		reason := decision.check
+		if reason == "mismatch" && decision.examined == 0 {
+			reason = "no_candidate"
+		}
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "oauth_group", Method: "strict_prefix", Result: result, Reason: reason, ObjectHash: diagnostics.Hash(decision.group), IdentityHash: identity, ScopeHash: scope, Examined: &decision.examined, PrefixLength: decision.matchedPrefix, PrefixUnit: "strict_input_items"})
 		key = decision.group
 		state.affinity = decision
 		if decision.adopted {
@@ -279,6 +289,7 @@ func (e *CodexExecutor) adaptOAuthCache(ctx context.Context, auth *authpkg.Auth,
 		}
 	}
 	body, state.cachePCK = state.affinity.freezeFields(body, pck)
+	diagnostics.Record(ctx, diagnostics.Event{Layer: "cache_key", Method: string(state.cacheSource), Result: "selected", ObjectHash: diagnostics.Hash(key)})
 	setCodexSessionHeaderCasePreserved(headers, "Session-Id", key)
 	return body, headers
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -143,7 +144,11 @@ func TestCodexEmptyIncompletePreservesFailureUsage(t *testing.T) {
 						ResponseServiceTier: "priority",
 						UpstreamServiceTier: "priority",
 					}
-					if record.Detail != want {
+					want.CacheObservation = &coreusage.CacheObservation{Version: 1, Read: coreusage.CacheTokenObservation{State: "absent"}, Write: coreusage.CacheTokenObservation{State: "absent"}}
+					if tc.name != "input-only" {
+						want.CacheObservation.Read = coreusage.CacheTokenObservation{State: "present", Value: coreusage.Int64Ptr(tc.cached), Source: "input_tokens_details.cached_tokens"}
+					}
+					if !reflect.DeepEqual(record.Detail, want) {
 						t.Errorf("failure detail=%+v, want %+v", record.Detail, want)
 					}
 					if record.ResponseServiceTier != "priority" || record.EffectiveServiceTier != "priority" {

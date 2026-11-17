@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -82,10 +83,33 @@ func (r *UsageReporter) beginUpstreamHTTPAttempt(req *http.Request) *upstreamSiz
 // ObserveUpstreamWebsocketRequest starts byte accounting for a provider
 // attempt sent as one websocket message. Outbound websocket messages are
 // written uncompressed, so payload and wire sizes match.
-func (r *UsageReporter) ObserveUpstreamWebsocketRequest(payloadBytes int) {
+func (r *UsageReporter) ObserveUpstreamWebsocketRequest(payloadBytes int, payload ...[]byte) {
 	if r == nil {
 		return
 	}
+	var body []byte
+	if len(payload) > 0 {
+		body = payload[0]
+	}
+	r.observeWebsocketRequest(payloadBytes, body, "unknown", nil)
+}
+
+func (r *UsageReporter) ObserveUpstreamWebsocketRequestTo(body []byte, endpoint, sessionID string) {
+	if r == nil {
+		return
+	}
+	headers := make(http.Header)
+	if sessionID != "" {
+		headers.Set("Session-Id", sessionID)
+	}
+	r.observeWebsocketRequest(len(body), body, diagnostics.EndpointKind(endpoint), headers)
+}
+
+func (r *UsageReporter) observeWebsocketRequest(payloadBytes int, body []byte, endpoint string, headers http.Header) {
+	diagnosticAttempt := r.diagnosticExecution.Begin("websocket", endpoint, body, headers)
+	r.sizeMu.Lock()
+	r.diagnosticWebsocketAttempt = diagnosticAttempt
+	r.sizeMu.Unlock()
 	attempt := &upstreamSizeAttempt{transport: usage.UpstreamTransportWebsocket}
 	if payloadBytes > 0 {
 		attempt.requestBytes = int64(payloadBytes)

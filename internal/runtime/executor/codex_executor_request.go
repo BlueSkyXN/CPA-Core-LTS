@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"io"
 	"math"
 	"net/http"
@@ -52,20 +53,28 @@ func translateCodexRequestPairWithUpdateIntentContext(ctx context.Context, from,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	translate := func(raw []byte) ([]byte, bool, error) {
+	translate := func(raw []byte, observe bool) ([]byte, bool, error) {
+		if to == sdktranslator.FormatCodex && ojson.ValidBytes(raw) {
+			if err := util.ValidateCodexResponsesControls(raw); err != nil {
+				return nil, false, err
+			}
+		}
 		if isCompat && from == sdktranslator.FormatClaude && to == sdktranslator.FormatCodex {
 			body, err := helps.TranslateRequestReturningError(ctx, nil, nil, from, to, model, raw, stream, true)
 			return body, false, err
 		}
 		translated := sdktranslator.TranslateRequestEnvelope(ctx, from, to, sdktranslator.RequestEnvelope{Format: from, Model: model, Stream: stream, Body: raw})
+		if observe && translated.Err == nil {
+			diagnostics.ObserveTransform(diagnostics.FromContext(ctx), "request_translation:"+from.String()+"->"+to.String(), raw, translated.Body)
+		}
 		return translated.Body, translated.ConfigurationUpdatesChanged, translated.Err
 	}
 	if bytes.Equal(originalPayload, payload) {
-		body, changed, err := translate(payload)
+		body, changed, err := translate(payload, true)
 		return body, body, changed, err
 	}
-	originalTranslated, _, _ := translate(originalPayload)
-	body, changed, err := translate(payload)
+	originalTranslated, _, _ := translate(originalPayload, false)
+	body, changed, err := translate(payload, true)
 	return originalTranslated, body, changed, err
 }
 
@@ -162,6 +171,19 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	var headers http.Header
 	if len(headerSets) > 0 {
 		headers = headerSets[0]
+	}
+	if nativeOpenAIResponses(auth, url) {
+		// 原厂 API key 保留显式缓存意图；不能从会话 metadata 自动补 PCK，
+		// 也不能套用订阅后端的身份改写或删字段规则。
+		body := helps.FinalizePayload(ctx, rawJSON)
+		diagnostics.ObserveTransform(diagnostics.FromContext(ctx), "payload_rules", rawJSON, body)
+		observeNativeCacheIntent(ctx, body)
+		wire := e.configuredWireBody(ctx, auth, url, body, headers)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(wire))
+		if err == nil && len(wire) < len(body) {
+			request.Header.Set("Content-Encoding", "zstd")
+		}
+		return request, body, codexIdentityConfuseState{}, err
 	}
 	if strings.HasSuffix(url, "/responses") && (codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, req)) {
 		headers = codexAffinityHeaders(ctx, headers)

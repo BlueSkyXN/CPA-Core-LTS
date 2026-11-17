@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexmetadata"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 )
 
 func prepareCodexOutboundMetadata(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, userPayload, rawJSON []byte, incomingHeaders http.Header) ([]byte, codexIdentityConfuseState, error) {
@@ -24,12 +25,14 @@ func prepareCodexOutboundMetadata(ctx context.Context, cfg *config.Config, auth 
 	if err != nil {
 		return nil, codexIdentityConfuseState{}, codexmetadata.InvalidRequestError()
 	}
+	diagnostics.ObserveTransform(diagnostics.FromContext(ctx), "codex_client_metadata", rawJSON, normalizedBody)
 	state := codexIdentityConfuseState{clientMetadata: metadataState}
 	if metadataState.CanonicalPresent {
 		return normalizedBody, state, nil
 	}
 
 	legacyBody, legacyState := applyCodexIdentityConfuseBody(cfg, auth, userPayload, normalizedBody)
+	diagnostics.ObserveTransform(diagnostics.FromContext(ctx), "codex_identity", normalizedBody, legacyBody)
 	legacyState.clientMetadata = metadataState
 	return legacyBody, legacyState, nil
 }

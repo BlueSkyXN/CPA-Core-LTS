@@ -202,6 +202,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		AccessProvider:        accessProvider,
 		RequestID:             requestID,
 		ExecutionID:           executionID,
+		DiagnosticsID:         record.DiagnosticsID,
+		DiagnosticsInstanceID: record.DiagnosticsInstanceID,
 		HomeSelection:         record.HomeSelection,
 		TraceID:               traceID,
 		SessionID:             sessionID,
@@ -221,6 +223,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Speed:                 strings.TrimSpace(usageDetail.Speed),
 		InferenceGeo:          strings.TrimSpace(usageDetail.InferenceGeo),
 		CacheDetails:          usageDetail.CacheDetails.Clone(),
+		CacheObservation:      usageDetail.CacheObservation.Clone(),
 		WebSearchRequests:     coreusage.CloneInt64Ptr(usageDetail.WebSearchRequests),
 		ImageCount:            coreusage.CloneInt64Ptr(usageDetail.ImageCount),
 		RequestedImageDetails: usageDetail.RequestedImageDetails.Clone(),
@@ -267,10 +270,13 @@ type queuedUsageDetail struct {
 	IsCompaction          bool                        `json:"is_compaction,omitempty"`
 	ResponseModel         string                      `json:"response_model,omitempty"`
 	ExecutionID           string                      `json:"execution_id,omitempty"`
+	DiagnosticsID         string                      `json:"diagnostics_id,omitempty"`
+	DiagnosticsInstanceID string                      `json:"diagnostics_instance_id,omitempty"`
 	TraceID               string                      `json:"trace_id,omitempty"`
 	Speed                 string                      `json:"speed,omitempty"`
 	InferenceGeo          string                      `json:"inference_geo,omitempty"`
 	CacheDetails          *coreusage.CacheDetails     `json:"cache_details,omitempty"`
+	CacheObservation      *coreusage.CacheObservation `json:"cache_observation,omitempty"`
 	WebSearchRequests     *int64                      `json:"web_search_requests,omitempty"`
 	ImageCount            *int64                      `json:"image_count,omitempty"`
 	RequestedImageDetails *coreusage.ImageDetails     `json:"requested_image_details,omitempty"`

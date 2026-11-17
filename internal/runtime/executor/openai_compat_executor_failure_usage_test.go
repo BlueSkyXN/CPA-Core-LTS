@@ -222,6 +222,9 @@ func TestOpenAICompatStreamFailurePreservesObservedUsage(t *testing.T) {
 					want.TokenBreakdown = coreusage.NewSubsetTokenBreakdown(3, 2, 0, 4, 1, 7)
 					want.ResponseServiceTier, want.UpstreamServiceTier = "priority", "priority"
 				}
+				if withUsage {
+					want.CacheObservation = &coreusage.CacheObservation{Version: 1, Read: coreusage.CacheTokenObservation{State: "present", Value: coreusage.Int64Ptr(2), Source: "prompt_tokens_details.cached_tokens"}, Write: coreusage.CacheTokenObservation{State: "absent"}}
+				}
 				if !reflect.DeepEqual(record.Detail, want) || record.ResponseServiceTier != want.ResponseServiceTier || record.EffectiveServiceTier != want.ResponseServiceTier {
 					t.Errorf("failure usage=%+v tier=%q, want %+v", record.Detail, record.ResponseServiceTier, want)
 				}

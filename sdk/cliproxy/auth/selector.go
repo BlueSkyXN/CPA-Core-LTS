@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"hash/fnv"
 	"maps"
 	"math"
@@ -1576,6 +1577,8 @@ func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx conte
 const sessionAffinitySelectionMetadataKey = "__cliproxy_session_affinity_selection"
 
 type sessionAffinitySelectionMarker struct {
+	diagnostics          *diagnostics.Ref
+	diagnosticAuthIndex  string
 	bindingProvider      string
 	primaryID            string
 	selector             *SessionAffinitySelector
@@ -1703,6 +1706,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 			return auth, errLCP
 		}
 	} else if opts.Metadata != nil {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "not_run", Reason: "explicit_identity"})
 		delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
 		delete(opts.Metadata, cliproxyexecutor.LCPAccessGenerationMetadataKey)
 		delete(opts.Metadata, cliproxyexecutor.IsCompactionMetadataKey)
@@ -1723,6 +1727,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 	}
 	if primaryID != "" {
 		primaryID = cliproxysession.BoundSessionIdentity(primaryID)
+		diagnostics.FromContext(ctx).SetSession(primaryID)
 		if fallbackID != "" {
 			fallbackID = cliproxysession.BoundSessionIdentity(fallbackID)
 		}
@@ -1785,7 +1790,9 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 		}
 		if deferBinding {
 			opts.Metadata[sessionAffinitySelectionMetadataKey] = &sessionAffinitySelectionMarker{
-				selector: s, authID: authID, aliases: append([]string(nil), keys...),
+				diagnostics:         diagnostics.FromContext(ctx),
+				diagnosticAuthIndex: cacheDiagnosticAuthIndex(auths, authID),
+				selector:            s, authID: authID, aliases: append([]string(nil), keys...),
 				bindingProvider: bindingProvider, primaryID: primaryID,
 			}
 			return
@@ -1797,6 +1804,7 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
 				bind(auth.ID, true)
+				diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "session_binding", Result: "reused", AuthIndex: sessionAffinityAuthLogID(auth)})
 				entry.Infof("session-affinity: cache hit | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 				return s.pickWithAffinityReservation(ctx, provider, model, opts, available, auth, &reservation)
 			}
@@ -1901,6 +1909,11 @@ func (s *SessionAffinitySelector) pick(ctx context.Context, provider, model stri
 	if isFork && fallbackID != "" {
 		entry.Infof("session-affinity: fork bound to new auth | session=%s parent=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionLogIdentity(fallbackID), sessionAffinityAuthLogID(auth), provider, model)
 	} else {
+		result := "created"
+		if deferBinding {
+			result = "staged"
+		}
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "session_binding", Result: result, AuthIndex: sessionAffinityAuthLogID(auth)})
 		entry.Infof("session-affinity: cache miss, new binding | session=%s auth_index=%s provider=%s model=%s", sessionLogIdentity(primaryID), sessionAffinityAuthLogID(auth), provider, model)
 	}
 	return auth, nil
@@ -1924,12 +1937,15 @@ func (s *SessionAffinitySelector) CommitPreDispatchSelection(authID string, opts
 	if s.cache != nil && len(marker.aliases) > 0 {
 		if marker.primaryID != "" {
 			s.cache.setSessionAliases(boundAuthID, marker.bindingProvider, marker.primaryID, marker.aliases...)
+			marker.diagnostics.Record(diagnostics.Event{Layer: "account", Method: "session_binding", Result: "committed", AuthIndex: marker.diagnosticAuthIndex})
 		} else {
 			s.cache.SetAliases(boundAuthID, marker.aliases...)
 		}
 	}
 	if s.matcher != nil && marker.lcpNamespace != "" && len(marker.lcpFingerprints) > 0 && marker.lcpMinPrefixLength > 0 {
 		if bindRes := s.matcher.BindFingerprintsWithContext(marker.lcpNamespace, marker.lcpFingerprints, marker.lcpTailFingerprints, marker.lcpEnvironmentDigest, marker.lcpMinPrefixLength, boundAuthID); bindRes.SessionID != "" {
+			marker.diagnostics.SetSession(bindRes.SessionID)
+			marker.diagnostics.Record(diagnostics.Event{Layer: "account", Method: "lcp_binding", Result: "committed", ObjectHash: diagnostics.Hash(bindRes.SessionID), AuthIndex: marker.diagnosticAuthIndex})
 			opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
 			if bindRes.ParentSessionID != "" {
@@ -1985,18 +2001,22 @@ func pickForExecution(ctx context.Context, selector Selector, provider, model st
 
 func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, entry *log.Entry, deferBinding bool, reservation **weightedReservation) (*Auth, bool, error) {
 	if s == nil || s.matcher == nil {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "not_run", Reason: "matcher_unavailable"})
 		return nil, false, nil
 	}
 	namespace := lcpAffinityNamespace(provider, model, opts.Metadata)
 	if namespace == "" {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "not_run", Reason: "missing_namespace"})
 		return nil, false, nil
 	}
 	turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
 	if len(turns) == 0 {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "not_run", Reason: "no_turns"})
 		return nil, false, nil
 	}
 	fingerprints, minPrefixLength, tailFingerprints, envDigest := s.matcher.PrepareExt(turns)
 	if len(fingerprints) == 0 || minPrefixLength <= 0 || minPrefixLength > len(fingerprints) {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "not_run", Reason: "invalid_prefix"})
 		return nil, false, nil
 	}
 	if opts.Metadata != nil {
@@ -2017,7 +2037,14 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 
 	var preservedAuthID string
-	if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok {
+	match, matched := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength)
+	if matched {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "candidate_found", ObjectHash: diagnostics.Hash(match.SessionID), PrefixLength: match.PrefixLength, PrefixUnit: "canonical_turns"})
+		diagnostics.FromContext(ctx).SetSession(match.SessionID)
+	} else {
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp", Result: "no_candidate"})
+	}
+	if matched {
 		for _, auth := range available {
 			if auth == nil || auth.ID != match.AuthID {
 				continue
@@ -2109,6 +2136,8 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 	if deferBinding {
 		opts.Metadata[sessionAffinitySelectionMetadataKey] = &sessionAffinitySelectionMarker{
+			diagnostics:          diagnostics.FromContext(ctx),
+			diagnosticAuthIndex:  cacheDiagnosticAuthIndex(auths, bindAuthID),
 			selector:             s,
 			authID:               auth.ID,
 			boundAuthID:          bindAuthID,
@@ -2122,6 +2151,8 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		return auth, true, nil
 	}
 	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
+		diagnostics.FromContext(ctx).SetSession(bindRes.SessionID)
+		diagnostics.Record(ctx, diagnostics.Event{Layer: "account", Method: "lcp_binding", Result: "committed", ObjectHash: diagnostics.Hash(bindRes.SessionID), AuthIndex: cacheDiagnosticAuthIndex(auths, bindAuthID)})
 		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
 		if bindRes.ParentSessionID != "" {
@@ -2990,4 +3021,13 @@ func extractResponsesAPIContent(content ojson.Result) string {
 // Deprecated: Use ExtractSessionID instead.
 func extractSessionID(payload []byte) string {
 	return ExtractSessionID(nil, payload, nil)
+}
+
+func cacheDiagnosticAuthIndex(auths []*Auth, id string) string {
+	for _, candidate := range auths {
+		if candidate != nil && candidate.ID == id {
+			return sessionAffinityAuthLogID(candidate)
+		}
+	}
+	return ""
 }

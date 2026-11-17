@@ -12,6 +12,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 )
 
 type oaiToResponsesStateReasoning struct {
@@ -27,6 +28,7 @@ type oaiToResponsesStateMessage struct {
 }
 type oaiToResponsesState struct {
 	translatorcommon.ApplyPatchErrorState
+	Diagnostics     *diagnostics.Ref
 	ApplyPatchCalls map[string]*translatorcommon.ApplyPatchCallState
 	// RequestEcho holds the request fields echoed into the completed
 	// response, extracted once at stream init so the request body itself
@@ -72,12 +74,16 @@ type oaiToResponsesState struct {
 	CustomToolNames map[string]struct{}
 	FinishReason    string
 	// usage aggregation
-	PromptTokens     int64
-	CachedTokens     int64
-	CompletionTokens int64
-	TotalTokens      int64
-	ReasoningTokens  int64
-	UsageSeen        bool
+	PromptTokens       int64
+	CachedTokens       int64
+	CacheReadProvided  bool
+	CacheWriteTokens   int64
+	CacheWriteProvided bool
+	CacheWriteDetails  map[string]int64
+	CompletionTokens   int64
+	TotalTokens        int64
+	ReasoningTokens    int64
+	UsageSeen          bool
 }
 
 // responseIDCounter provides a process-wide unique counter for synthesized response identifiers.
@@ -447,7 +453,17 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 	}
 	if st.UsageSeen {
 		_ = completedDoc.Set("response.usage.input_tokens", st.PromptTokens)
+		// 保留 Responses 既有整数兼容字段，同时记录默认值来自本转换步骤。
 		_ = completedDoc.Set("response.usage.input_tokens_details.cached_tokens", st.CachedTokens)
+		if !st.CacheReadProvided {
+			st.Diagnostics.Record(diagnostics.Event{Layer: "response_transform", Method: "chat_to_responses", Result: "compatibility_default", Changes: []string{"usage.input_tokens_details.cached_tokens"}})
+		}
+		if st.CacheWriteProvided {
+			_ = completedDoc.Set("response.usage.input_tokens_details.cache_write_tokens", st.CacheWriteTokens)
+		}
+		if len(st.CacheWriteDetails) > 0 {
+			_ = completedDoc.Set("response.usage.input_tokens_details.cache_write_tokens_details", st.CacheWriteDetails)
+		}
 		_ = completedDoc.Set("response.usage.output_tokens", st.CompletionTokens)
 		if st.ReasoningTokens > 0 {
 			_ = completedDoc.Set("response.usage.output_tokens_details.reasoning_tokens", st.ReasoningTokens)
@@ -466,6 +482,7 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &oaiToResponsesState{
+			Diagnostics:     diagnostics.FromContext(ctx),
 			FuncArgsBuf:     make(map[string]*strings.Builder),
 			FuncNames:       make(map[string]string),
 			FuncCallIDs:     make(map[string]string),
@@ -664,6 +681,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		st.CustomToolNames = st.ToolIndex.custom
 		st.PromptTokens = 0
 		st.CachedTokens = 0
+		st.CacheReadProvided = false
+		st.CacheWriteProvided = false
+		st.CacheWriteDetails = nil
 		st.CompletionTokens = 0
 		st.TotalTokens = 0
 		st.ReasoningTokens = 0
@@ -701,9 +721,16 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			st.PromptTokens = v.Int()
 			st.UsageSeen = true
 		}
-		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
+		if v := chatCacheField(usage, "cached_tokens"); v.Type == ojson.Number {
 			st.CachedTokens = v.Int()
+			st.CacheReadProvided = true
 			st.UsageSeen = true
+		}
+		if v := chatCacheField(usage, "cache_write_tokens"); v.Type == ojson.Number {
+			st.CacheWriteTokens, st.CacheWriteProvided, st.UsageSeen = v.Int(), true, true
+		}
+		if details := chatCacheWriteDetails(usage); len(details) > 0 {
+			st.CacheWriteDetails = details
 		}
 		if v := usage.Get("completion_tokens"); v.Exists() {
 			st.CompletionTokens = v.Int()
@@ -1393,8 +1420,14 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 		// Map common tokens
 		if usage.Get("prompt_tokens").Exists() || usage.Get("completion_tokens").Exists() || usage.Get("total_tokens").Exists() {
 			_ = respDoc.Set("usage.input_tokens", usage.Get("prompt_tokens").Int())
-			if d := usage.Get("prompt_tokens_details.cached_tokens"); d.Exists() {
+			if d := chatCacheField(usage, "cached_tokens"); d.Type == ojson.Number {
 				_ = respDoc.Set("usage.input_tokens_details.cached_tokens", d.Int())
+			}
+			if d := chatCacheField(usage, "cache_write_tokens"); d.Type == ojson.Number {
+				_ = respDoc.Set("usage.input_tokens_details.cache_write_tokens", d.Int())
+			}
+			if details := chatCacheWriteDetails(usage); len(details) > 0 {
+				_ = respDoc.Set("usage.input_tokens_details.cache_write_tokens_details", details)
 			}
 			_ = respDoc.Set("usage.output_tokens", usage.Get("completion_tokens").Int())
 			// Chat Completions upstreams report reasoning under completion_tokens_details;

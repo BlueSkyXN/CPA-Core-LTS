@@ -133,6 +133,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	ctx = reporter.DiagnosticsContext(ctx)
 	var replayScope codexReasoningReplayScope
 	defer func() {
 		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
@@ -148,6 +149,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+	nativeAPI := nativeOpenAIResponses(auth, baseURL)
 	to := sdktranslator.FromString("codex")
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -157,13 +159,15 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	abnormalRetry := newCodexAbnormalReasoningRetryPolicy(e.cfg, auth, requestedModel, req.Model, baseModel)
-	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, false, isCompat)
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, codexRequestTarget(from, nativeAPI), targetModel, originalPayload, req.Payload, false, isCompat)
 	if err != nil {
 		return resp, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(body)
-	normalizeCodexOutputBudgetDoc(doc)
+	if !nativeAPI {
+		normalizeCodexOutputBudgetDoc(doc)
+	}
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
@@ -173,35 +177,37 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, auth))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
-	_ = doc.Delete("previous_response_id")
-	_ = doc.Delete("generate")
-	_ = doc.Delete("prompt_cache_retention")
-	_ = doc.Delete("safety_identifier")
-	_ = doc.Delete("stream_options")
 	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
-	instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
-	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
-	isCompactionSummary := codexCompactionSummaryFromContext(ctx)
-	if !isCompactionSummary {
-		ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
-	}
-	if !useSIWC {
-		normalizeCodexInstructionsDoc(doc, helps.IsNativeCodexRequest(req.Payload, opts))
-		if !isCompactionSummary && (e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff) {
-			checkModel := req.Model
-			if strings.TrimSpace(checkModel) == "" {
-				checkModel = baseModel
-			}
-			ensureImageGenerationToolDoc(doc, checkModel, auth, opts.Headers)
-			if !codexAuthUsesAPIKey(auth) {
-				normalizeCodexImageGenerationToolsDoc(doc)
-			}
+	if !nativeAPI {
+		_ = doc.Delete("previous_response_id")
+		_ = doc.Delete("generate")
+		_ = doc.Delete("prompt_cache_retention")
+		_ = doc.Delete("safety_identifier")
+		_ = doc.Delete("stream_options")
+		instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
+		hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
+		isCompactionSummary := codexCompactionSummaryFromContext(ctx)
+		if !isCompactionSummary {
+			ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 		}
-	} else {
-		applyCodexSIWCRequestBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		if !useSIWC {
+			normalizeCodexInstructionsDoc(doc, helps.IsNativeCodexRequest(req.Payload, opts))
+			if !isCompactionSummary && (e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff) {
+				checkModel := req.Model
+				if strings.TrimSpace(checkModel) == "" {
+					checkModel = baseModel
+				}
+				ensureImageGenerationToolDoc(doc, checkModel, auth, opts.Headers)
+				if !codexAuthUsesAPIKey(auth) {
+					normalizeCodexImageGenerationToolsDoc(doc)
+				}
+			}
+		} else {
+			applyCodexSIWCRequestBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		}
+		normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
+		helps.NormalizeCodexToolSchemasDoc(doc)
 	}
-	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
-	helps.NormalizeCodexToolSchemasDoc(doc)
 	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
 	if err != nil {
 		return resp, err
@@ -566,6 +572,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	ctx = reporter.DiagnosticsContext(ctx)
 	defer func() {
 		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
 			reporter.TrackFailure(ctx, &err)

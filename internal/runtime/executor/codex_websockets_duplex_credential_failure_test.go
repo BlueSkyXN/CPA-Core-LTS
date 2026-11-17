@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	auth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -75,6 +76,8 @@ func TestCodexDuplexLaterCredentialFailure(t *testing.T) {
 					defer cancel()
 					input := make(chan core.WebsocketInput, 1)
 					ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+					diagnosticStore := diagnostics.NewStore()
+					ctx = diagnosticStore.Begin(ctx, "request", "caller", "session", "later-credential-model", "codex", []byte(`{}`))
 					cfg := &config.Config{}
 					cfg.Codex.ResponseSteering = true
 					cfg.CodexResponseSteering = true
@@ -128,6 +131,33 @@ func TestCodexDuplexLaterCredentialFailure(t *testing.T) {
 					}
 					if !payloadSeen || !terminalSeen {
 						t.Errorf("failure payload=%t terminal=%t", payloadSeen, terminalSeen)
+					}
+					trace, _ := diagnosticStore.Get(diagnostics.FromContext(ctx).ID())
+					wantAttempts := 1
+					wantOutcome := "completed"
+					if queued {
+						wantAttempts = 2
+						wantOutcome = "started"
+						if kind == "response.failed" {
+							wantOutcome = "upstream_error"
+						}
+					}
+					if len(trace.Attempts) != wantAttempts || trace.Attempts[0].Outcome != wantOutcome || trace.Attempts[0].ResponseID != "started" {
+						t.Fatalf("credential failure changed the wrong attempt: %+v", trace.Attempts)
+					}
+					if queued && trace.Attempts[1].Outcome != "started" {
+						t.Error("credential failure was assigned to the queued create without evidence")
+					}
+					if wantOutcome != "upstream_error" {
+						connectionError := false
+						for _, event := range trace.Events {
+							if event.Method == "websocket_connection" && event.Reason == "credential_rejected" && event.ExecutionID == "" {
+								connectionError = true
+							}
+						}
+						if !connectionError {
+							t.Error("unassigned credential failure lost its connection evidence")
+						}
 					}
 					current, _ := manager.GetByID(bad.ID)
 					state := current.ModelStates[model]

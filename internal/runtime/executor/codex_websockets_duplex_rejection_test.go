@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -76,6 +77,8 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 			defer cancel()
 			input := make(chan core.WebsocketInput, 2)
 			ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+			diagnosticStore := diagnostics.NewStore()
+			ctx = diagnosticStore.Begin(ctx, "request", "caller", "session", "gpt-6-astra", "codex", []byte(`{}`))
 			cfg := &config.Config{}
 			cfg.Client.Codex.OptimizeMultiAgentV2 = true
 			cfg.Codex.ResponseSteering = true
@@ -136,6 +139,30 @@ func TestCodexDuplexRejectedCreateMetadata(t *testing.T) {
 					}
 					cancel()
 				}
+			}
+			trace, _ := diagnosticStore.Get(diagnostics.FromContext(ctx).ID())
+			if len(trace.Attempts) < 2 {
+				t.Fatalf("missing diagnostic attempts: %+v", trace.Attempts)
+			}
+			first := trace.Attempts[0]
+			wantFirst := "completed"
+			if activeFailure {
+				wantFirst = "upstream_error"
+			}
+			if ambiguous {
+				wantFirst = "started"
+			}
+			if first.Outcome != wantFirst || first.ResponseID != "first" {
+				t.Errorf("first attempt mixed with followup: outcome=%s ID=%s", first.Outcome, first.ResponseID)
+			}
+			if !activeFailure && (trace.Attempts[1].Outcome != "upstream_error" || trace.Attempts[1].ResponseID != "rejected") {
+				t.Errorf("rejected create lost its result: %+v", trace.Attempts[1])
+			}
+			if ambiguous && trace.Attempts[1].Outcome != "started" {
+				t.Error("ambiguous failure acquired a guessed owner")
+			}
+			if !ambiguous && trace.Attempts[len(trace.Attempts)-1].ResponseID != "good" {
+				t.Error("successful followup lost its response")
 			}
 			if ambiguous {
 				if !failed || !terminated || completed {

@@ -108,8 +108,12 @@ type modelStats struct {
 
 // RequestDetail stores request-level metadata and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time `json:"timestamp"`
-	LatencyMs int64     `json:"latency_ms"`
+	CacheObservation      *coreusage.CacheObservation `json:"cache_observation,omitempty"`
+	RequestID             string                      `json:"request_id,omitempty"`
+	DiagnosticsID         string                      `json:"diagnostics_id,omitempty"`
+	DiagnosticsInstanceID string                      `json:"diagnostics_instance_id,omitempty"`
+	Timestamp             time.Time                   `json:"timestamp"`
+	LatencyMs             int64                       `json:"latency_ms"`
 	// TimingVersion identifies the semantic timing contract used by the
 	// optional timing fields below. Zero is retained for migrated legacy rows.
 	TimingVersion uint32 `json:"timing_version,omitempty"`
@@ -469,7 +473,7 @@ func (snapshot StatisticsSnapshot) ValidateCanonicalV3TokenStats() error {
 	for _, api := range snapshot.APIs {
 		for _, model := range api.Models {
 			for _, detail := range model.Details {
-				if !validTokenBreakdownDetail(detail) {
+				if !validTokenBreakdownDetail(detail) || !detail.CacheObservation.Valid() {
 					return ErrInvalidCanonicalTokenStats
 				}
 			}
@@ -655,26 +659,30 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		responseCyberProgram = record.Detail.ResponseCyberProgram
 	}
 	requestDetail := RequestDetail{
-		Timestamp:            timestamp,
-		LatencyMs:            normaliseLatency(record.Latency),
-		Source:               record.Source,
-		UsageProvenance:      coreusage.CanonicalUsageProvenance(record.UsageProvenance),
-		AuthIndex:            record.AuthIndex,
-		Alias:                strings.TrimSpace(record.Alias),
-		UpstreamModel:        strings.TrimSpace(record.UpstreamModel),
-		ReasoningEffort:      strings.TrimSpace(record.ReasoningEffort),
-		ServiceTier:          requestServiceTier,
-		RequestServiceTier:   requestServiceTier,
-		OutboundServiceTier:  outboundServiceTier,
-		ResponseServiceTier:  responseServiceTier,
-		EffectiveServiceTier: effectiveServiceTier,
-		ResponseCyberProgram: coreusage.CanonicalResponseCyberProgram(responseCyberProgram),
-		Tokens:               detail,
-		Failed:               failed,
-		Generate:             coreusage.GenerateEnabled(record.Generate),
-		FailureReason:        failureReason,
-		FailureStatus:        failureStatus,
-		TraceID:              record.TraceID,
+		CacheObservation:      record.Detail.CacheObservation.Clone(),
+		RequestID:             record.RequestID,
+		DiagnosticsID:         record.DiagnosticsID,
+		DiagnosticsInstanceID: record.DiagnosticsInstanceID,
+		Timestamp:             timestamp,
+		LatencyMs:             normaliseLatency(record.Latency),
+		Source:                record.Source,
+		UsageProvenance:       coreusage.CanonicalUsageProvenance(record.UsageProvenance),
+		AuthIndex:             record.AuthIndex,
+		Alias:                 strings.TrimSpace(record.Alias),
+		UpstreamModel:         strings.TrimSpace(record.UpstreamModel),
+		ReasoningEffort:       strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:           requestServiceTier,
+		RequestServiceTier:    requestServiceTier,
+		OutboundServiceTier:   outboundServiceTier,
+		ResponseServiceTier:   responseServiceTier,
+		EffectiveServiceTier:  effectiveServiceTier,
+		ResponseCyberProgram:  coreusage.CanonicalResponseCyberProgram(responseCyberProgram),
+		Tokens:                detail,
+		Failed:                failed,
+		Generate:              coreusage.GenerateEnabled(record.Generate),
+		FailureReason:         failureReason,
+		FailureStatus:         failureStatus,
+		TraceID:               record.TraceID,
 	}
 	requestDetail.setRequestSize(record.Size.Canonical())
 	requestDetail = normaliseRequestSizeFields(requestDetail)
@@ -1425,6 +1433,7 @@ func sumNonNegativeTokenCounts(tokens ...int64) (int64, bool) {
 }
 
 func cloneRequestDetail(detail RequestDetail) RequestDetail {
+	detail.CacheObservation = detail.CacheObservation.Clone()
 	detail.Tokens = cloneTokenStats(detail.Tokens)
 	detail.OutputTiming = detail.OutputTiming.Clone()
 	if detail.TokenBreakdown != nil {

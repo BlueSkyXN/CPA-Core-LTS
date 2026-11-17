@@ -33,6 +33,9 @@ func (s *Server) registerManagementRoutes() {
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), logging.SkipSuccessfulGetAccessLog())
 	{
 		mgmt.GET("/usage", usageCompression(), s.mgmt.GetUsageStatistics)
+		mgmt.GET("/cache-diagnostics/capabilities", s.mgmt.GetCacheDiagnosticsCapabilities)
+		mgmt.GET("/cache-diagnostics/requests/:id", s.mgmt.GetCacheDiagnostics)
+		mgmt.POST("/cache-diagnostics/session", s.mgmt.QueryCacheSession)
 		mgmt.GET("/usage/export", usageCompression(), s.mgmt.ExportUsageStatistics)
 		mgmt.POST("/usage/import", usageCompression(), s.mgmt.ImportUsageStatistics)
 		mgmt.GET("/usage/query/capabilities", usageCompression(), s.mgmt.GetUsageQueryCapabilities)

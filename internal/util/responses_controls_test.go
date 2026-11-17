@@ -34,7 +34,7 @@ func TestResponsesControlsValidation(t *testing.T) {
 		{"non-string effort", `{"input":[{"type":"configuration_update","reasoning":{"effort":3}}]}`, "requires a non-empty", false},
 		{"adjacent", `{"input":[{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"configuration_update","reasoning":{"effort":"max"}}]}`, "adjacent", false},
 		{"auto truncation", `{"truncation":"auto","input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}`, "automatic truncation", false},
-		{"auto compaction", `{"context_management":[{"type":"compaction"}],"input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}`, "automatic compaction", false},
+		{"auto compaction", `{"context_management":[{"type":"compaction"}],"input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}`, "", false},
 		{"manual compaction", `{"input":[{"type":"compaction_trigger"},{"type":"configuration_update","reasoning":{"effort":"high"}},{"type":"message","role":"user","content":"continue"}]}`, "", false},
 		{"compact endpoint", `{"input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}`, "standalone", true},
 		{"ordinary compact", `{"input":[{"type":"message","role":"user","content":"compact"}]}`, "", true},
@@ -84,5 +84,15 @@ func TestResponsesControlsRejectLossyChatFallback(t *testing.T) {
 		if err := RequireChatRepresentableResponses([]byte(body)); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestResponsesAutomaticCompactionCapabilityIsBackendSpecific(t *testing.T) {
+	body := []byte(`{"context_management":[{"type":"compaction"}],"input":[{"type":"configuration_update","reasoning":{"effort":"high"}}]}`)
+	if err := ValidateResponsesControls(body, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCodexResponsesControls(body); err == nil {
+		t.Fatal("Codex conversion would silently remove automatic compaction")
 	}
 }
