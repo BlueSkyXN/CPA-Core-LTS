@@ -54,7 +54,7 @@ func decodeGeminiResponsesCarrier(rawSignature string) (signatureValue, directio
 		return "", "", "", true, false
 	}
 	switch targetKind {
-	case geminiResponsesCarrierText, geminiResponsesCarrierFunction, geminiResponsesCarrierAny:
+	case geminiResponsesCarrierText, geminiResponsesCarrierFunction, geminiResponsesCarrierImage, geminiResponsesCarrierAny:
 	default:
 		return "", "", "", true, false
 	}

@@ -841,6 +841,7 @@ func reorderOpenAIResponsesDetachedReasoning(items []ojson.Result) []ojson.Resul
 			if direction != "" {
 				alreadyPairedText := false
 				alreadyPairedFunction := false
+				alreadyPairedImage := false
 				if len(reordered) > 1 {
 					prior := reordered[len(reordered)-2]
 					priorDirection := geminiResponsesCarrierDirection(prior)
@@ -848,10 +849,15 @@ func reorderOpenAIResponsesDetachedReasoning(items []ojson.Result) []ojson.Resul
 					priorBindsFollowing := isOpenAIResponsesDetachedCarrier(prior) && (priorDirection == geminiResponsesCarrierNext || priorDirection == geminiResponsesCarrierPrevious)
 					alreadyPairedText = priorBindsFollowing && (priorTarget == geminiResponsesCarrierText || priorTarget == geminiResponsesCarrierAny)
 					alreadyPairedFunction = priorBindsFollowing && (priorTarget == geminiResponsesCarrierFunction || priorTarget == geminiResponsesCarrierAny)
+					alreadyPairedImage = priorBindsFollowing && (priorTarget == geminiResponsesCarrierImage || priorTarget == geminiResponsesCarrierAny)
 				}
 				bindPreviousMessage := direction == geminiResponsesCarrierPrevious && (targetKind == geminiResponsesCarrierText || targetKind == geminiResponsesCarrierAny) && isAssistantMessage && !alreadyPairedText
 				bindPreviousFunction := direction == geminiResponsesCarrierPrevious && (targetKind == geminiResponsesCarrierFunction || targetKind == geminiResponsesCarrierAny) && (previousType == "function_call" || previousType == "custom_tool_call") && strings.TrimSpace(previous.Get("_cpa_reasoning_signature").String()) == "" && !alreadyPairedFunction
-				if bindPreviousMessage || bindPreviousFunction {
+				// A signature arriving late on an image frame already emitted
+				// trails the image item; move it ahead of the image so replay
+				// restores it onto the image part itself.
+				bindPreviousImage := direction == geminiResponsesCarrierPrevious && targetKind == geminiResponsesCarrierImage && previousType == "image_generation_call" && !alreadyPairedImage
+				if bindPreviousMessage || bindPreviousFunction || bindPreviousImage {
 					movedItemJSON, _ := ojson.SetBytes([]byte(item.Raw), geminiResponsesCarrierDirectionField, geminiResponsesCarrierNext)
 					reordered[len(reordered)-1] = util.ParseGJSONBytesNoCopy(movedItemJSON)
 					reordered = append(reordered, previous)
