@@ -196,7 +196,10 @@ func (r *Ref) update(fn func(*Trace)) bool {
 	retained := true
 	if len(b) > MaxTraceBytes {
 		retained = false
-		_ = json.Unmarshal(previous, &e.value)
+		// 恢复到零值再替换，清除被拒绝更新新增的可选字段、指针和 map 项。
+		var restored Trace
+		_ = json.Unmarshal(previous, &restored)
+		e.value = restored
 		e.value.Truncated = true
 		b, _ = json.Marshal(e.value)
 	}

@@ -113,3 +113,67 @@ func TestByteLimitDoesNotReturnDanglingAttempt(t *testing.T) {
 		t.Fatal("raw prompt stored")
 	}
 }
+
+func TestTraceByteRollbackClearsNewOptionalFields(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	ref := FromContext(store.Begin(t.Context(), "request", "caller", "", "model", "responses", []byte(`{}`)))
+	other := FromContext(store.Begin(t.Context(), "other", "caller", "", "model", "responses", []byte(`{}`)))
+	attempt := (&Execution{Ref: ref, ID: "execution"}).Begin("http", "custom", []byte(`{}`), nil)
+	changes := make([]string, 32)
+	for i := range changes {
+		changes[i] = strings.Repeat("x", 192)
+	}
+	for i := 0; i < 10; i++ {
+		ref.Record(Event{Layer: "filler", Changes: changes})
+	}
+	trace, _ := store.Get(ref.ID())
+	tail := Event{Sequence: len(trace.Events) + 1, At: now, Layer: "filler", Changes: []string{}}
+	candidate := trace
+	candidate.Events = append(append([]Event(nil), trace.Events...), tail)
+	raw, _ := json.Marshal(candidate)
+	budget := MaxTraceBytes - 32 - len(raw)
+	for budget > 4 && len(tail.Changes) < 32 {
+		overhead := 2
+		if len(tail.Changes) > 0 {
+			overhead++
+		}
+		n := min(budget-overhead, 192)
+		tail.Changes = append(tail.Changes, strings.Repeat("x", n))
+		budget -= n + overhead
+	}
+	ref.Record(tail)
+	before, _ := store.Get(ref.ID())
+	raw, _ = json.Marshal(before)
+	if before.Truncated || MaxTraceBytes-len(raw) > 64 || len(raw) > MaxTraceBytes {
+		t.Fatalf("fixture is not just below byte limit: bytes=%d truncated=%t", len(raw), before.Truncated)
+	}
+	now = now.Add(time.Second)
+	attempt.Observe([]byte(`{"object":"response","id":"resp_optional_` + strings.Repeat("a", 100) + `","model":"served-model","status":"completed","usage":{"input_tokens_details":{"cached_tokens":0}},"prompt_cache_diagnostics":{"type":"cache_miss"}}`))
+	after, _ := store.Get(ref.ID())
+	raw, _ = json.Marshal(after)
+	if len(raw) > MaxTraceBytes {
+		t.Errorf("rollback exceeds byte limit: bytes=%d limit=%d", len(raw), MaxTraceBytes)
+	}
+	before.Truncated = true
+	want, _ := json.Marshal(before)
+	if !bytes.Equal(raw, want) {
+		t.Error("rejected update retained new fields or changed previous evidence/timestamp")
+	}
+	otherTrace, _ := store.Get(other.ID())
+	otherRaw, _ := json.Marshal(otherTrace)
+	if got := store.Overview(); got.Bytes != len(raw)+len(otherRaw) || got.Stored != 2 {
+		t.Fatalf("rollback corrupted store accounting: %+v", got)
+	}
+	// 回退后仍可接受能放得下的更新，并维持截断标记与正确字节计数。
+	attempt.End("done")
+	after, _ = store.Get(ref.ID())
+	raw, _ = json.Marshal(after)
+	if !after.Truncated || after.Attempts[0].Outcome != "done" || !after.UpdatedAt.Equal(now) || after.Attempts[0].ResponseID != "" || after.Attempts[0].CacheObservation != nil || after.Attempts[0].Diagnostic != nil {
+		t.Fatalf("valid update after rollback lost consistency: %+v", after.Attempts[0])
+	}
+	if len(raw) > MaxTraceBytes || store.Overview().Bytes != len(raw)+len(otherRaw) {
+		t.Fatal("store byte count drifted after a valid update")
+	}
+}

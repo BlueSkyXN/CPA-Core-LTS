@@ -1119,6 +1119,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 			}
 			eventPrepared, eventReporter := current, reporter
+			diagnosticOwned := true
 			if !isInitialResponse && (eventType == "response.failed" || eventType == "error") {
 				failedID := ojson.GetBytesNoCopy(payload, "response.id").String()
 				if failedID == "" {
@@ -1130,6 +1131,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				// create, including its reasoning replay scope.
 				currentFailure := failedID != "" && failedID == responseID
 				ambiguous := failedID == "" && ((len(pending) > 0 && responseActive) || len(unacknowledgedSteers) > 0)
+				// 在终止状态变更前确认归属；空闲连接上的错误不属于上一条请求。
+				diagnosticOwned = !ambiguous && ((len(pending) > 0 && !currentFailure) || (responseActive && (failedID == "" || currentFailure)))
 				if len(pending) > 0 && !currentFailure && !ambiguous {
 					eventPrepared, pending = pending[0], pending[1:]
 					eventReporter = pendingReporters[eventPrepared]
@@ -1150,6 +1153,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				metadataMu.Unlock()
 				wakeWriter()
 				if ambiguous {
+					diagnostics.Record(diagnostics.WithExecution(followupCtx, ""), diagnostics.Event{Layer: "transport", Method: "websocket_connection", Result: "upstream_error", Reason: "unassigned_error"})
 					// Without a response ID, assigning this failure could corrupt
 					// either request. Preserve the event and fail the socket without
 					// guessing a scope, replaying input, or cooling the credential.
@@ -1162,7 +1166,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 			}
 			// 先完成 response ID / pending create 归属判定，再保存原始上游证据。
-			eventReporter.ObserveWebsocketDiagnostics(payload)
+			if diagnosticOwned {
+				eventReporter.ObserveWebsocketDiagnostics(payload)
+			} else {
+				diagnostics.Record(diagnostics.WithExecution(followupCtx, ""), diagnostics.Event{Layer: "transport", Method: "websocket_connection", Result: "upstream_error", Reason: "unassigned_error"})
+			}
 			payload = applyCodexIdentityConfuseResponsePayload(payload, eventPrepared.identityState)
 			restoreMultiAgent := !eventPrepared.multiAgentV2Conflict && (eventPrepared.optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgent)
