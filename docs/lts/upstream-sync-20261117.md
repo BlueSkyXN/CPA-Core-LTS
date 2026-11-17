@@ -1,6 +1,6 @@
 # 2026-11-17 upstream 分层同步审查
 
-本批 Core 冻结范围：`43806c865da7d47f9252316e95e315ad9f885b84..7df56074b252384d878ec4fca840552c6fb5236e`。按 first-parent 分为三个同步层；本节记录已经形成的第一层。
+本批 Core 冻结范围：`43806c865da7d47f9252316e95e315ad9f885b84..7df56074b252384d878ec4fca840552c6fb5236e`。按 first-parent 分为三个同步层，逐层记录冲突与验证结果。
 
 ## Stage 1：JSON/正则库与提交前 WebSocket failover
 
@@ -123,3 +123,29 @@ WebSocket 主流程采用上游的尝试循环，同时在每次尝试中恢复 
 - 已通过：claude-web-search-router、codex-service-tier、realtime-openai-go 三个独立模块的 `go test ./...`。
 - 全仓 `go test ./...` 和跨平台检查交由本层 PR CI 回读；此记录生成时尚未运行完成。
 - 本层不部署 HF Space，不执行真实账号登录或真实模型请求。
+
+
+## Stage 2：payload.replace 与请求/流式错误边界
+
+- 直接下层：Stage 1 `8f153189922e6117843dc5e1252aacc968a9f4c3`。
+- upstream 范围：`508f8708d0239f7369b7a094e0effa1011c36bfd..4ed882f14d1e672ae5015c1a1814d06e3e72651f`。
+- 合入方式：merge commit，保留上游祖先；处理 12 个文本冲突。
+
+新增 `requests.payload.replace`，按有序规则替换指定 user 消息文字，支持空 replacement 删除。执行顺序为 override → replace → filter。保留 LTS 的 model scope、auth kind 和 request path 条件；图片、工具和 thinking 不作为替换对象。
+
+### Protected delta review
+
+- config 示例仅补入 replace；现有 LTS 默认、兼容项和注释保留。YAML empty string 与替换顺序按上游 parser 处理。
+- Claude finalizer 传入选中 auth；剥离缓存选项后才执行用户规则，最终请求再应用 LTS effort policy，避免后续 Doc 序列化覆盖结果。
+- 新 policy/bio 错误与 LTS access-program 错误取并集；Codex 状态保留 model fallback reason、rate-limit class 和 credential scope。对原 JSON object 更新分类字段，保留嵌套 body.error。
+- SSE legacy error chunk 保留顶层 code/message；新的 response.failed 事件采用上游结构。failure usage、replay cache 清理与日志路径保留。
+- Claude refresh_token_expired 进入 terminal sign-in 路径；Codex permanent refresh backoff 和 Claude generic invalid_grant 重试策略保留。
+- xAI transport retry 测试经 LTS deferred logging 的快照接口断言两次发送使用同一 final frame；不更换生产日志容器。
+- 本层不退休 Stage 1 列出的 84 个有效 ledger 项；涉及的 reasoning-effort-policy、payload execution scope、stream error compatibility、permanent refresh failure 等继续保留原有回归。
+
+### 验证
+
+- `go test -json ./...`：113 个有测试的包全部通过。
+- payload 各规则种类（含 replace）的 auth/path 条件、wrapped WS error、xAI retry、Claude/Codex refresh 定向测试通过。
+- `scripts/check-lts-contract.sh`（含 registry）、server build、`git diff --check` 通过。
+- Stage 1 PR #371 的 9 项云检查已全绿；Stage 2 云检查由本层 PR 创建后回读。

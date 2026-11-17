@@ -174,7 +174,6 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Cloaking and ensureCacheControl may push the total over 4 when the client
 	// already sends multiple cache_control blocks.
 	enforceCacheControlLimitDoc(doc, 4)
-	stripPromptCacheOptionsDoc(doc)
 
 	// Native selects the 1h cache pool only for OAuth credentials and pairs it with
 	// extended-cache-ttl-2025-04-11, which claudeCodeCLIBetas emits on exactly the
@@ -248,6 +247,8 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		finalizeClaudeCompactionSummaryBodyDoc(doc)
 	}
 	applyClaudePreservedThinkingBindingDoc(doc)
+	// Keep built-in cleanup before the final user payload rules.
+	stripPromptCacheOptionsDoc(doc)
 	// User rules match the fully prepared business body and are applied only once.
 	policyPayload := doc.Bytes()
 	touchedPayloadPaths := helps.ApplyPayloadConfigWithAuthTrackedPathsForExecutorDoc(
@@ -255,14 +256,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers,
 		"diagnostics", "betas",
 	)
-	bodyForUpstream := doc.Bytes()
-	bodyForUpstream = helps.ProtectConfiguredEffort(e.cfg, policyPayload, bodyForUpstream, to.String(), e.Identifier(), req, opts)
 	if touchedPayloadPaths["diagnostics"] {
 		diagnosticsState = claudeDiagnosticsRequestState{}
 	}
 	extraBetas, _ = extractAndRemoveBetasDoc(doc)
-	stripPromptCacheOptionsDoc(doc)
-	bodyForUpstream = doc.Bytes()
+	bodyForUpstream := helps.ProtectConfiguredEffort(e.cfg, policyPayload, doc.Bytes(), to.String(), e.Identifier(), req, opts)
 	body = bodyForUpstream
 	bodyForTranslation := bodyForUpstream
 	if cchSigning {
