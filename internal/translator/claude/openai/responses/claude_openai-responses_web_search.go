@@ -2,10 +2,10 @@ package responses
 
 import (
 	"context"
-	"regexp"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	claudecommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/common"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
