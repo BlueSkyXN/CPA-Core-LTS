@@ -175,6 +175,7 @@ WebSocket 主流程采用上游的尝试循环，同时在每次尝试中恢复 
 
 - 全仓 113 个有测试的包通过；auth、OpenAI handler、pluginhost 的 race 全包通过。
 - 新增 LTS continuity 集成回归：流式/非流式终止后不进入模型回退、排除凭据不进入候选、provider 更换清除新增冷却分类；最终改动后相关 continuity race 测试通过。
+- 对冲结果与普通请求共用 quota continuity 判定，覆盖 speed/quality 的恢复、重试/等待预算耗尽、取消、临时容量错误、禁用能力、usage 和流式共享预算。28 个组合用例通过；用旧实现运行相同回归时，16 个对冲边界用例失败。返工后 auth 全包 race、SDK API/executor 包测试、contract 和 server build 通过。
 - 11 个独立插件示例模块 `go test ./...` 通过。
 - LTS contract/registry、server build、diff check 通过；最终 SHA 的跨平台与全量检查继续由 PR CI 回读。
 - Stage 2 云观察位暴露 ManyToManyFullDuplexMultiplexing 在首份列表到齐前启动断言；采用现有 waitServersVisible 等待完整拓扑，再读取快照断言数量。生产 wstunnel 未变，定向 race 50 次及全包通过。

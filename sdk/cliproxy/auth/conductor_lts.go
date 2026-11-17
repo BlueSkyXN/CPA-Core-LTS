@@ -428,27 +428,17 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
 		continuitySession.priorAttemptSeen = true
 		lastErr = errExec
-		if upstreamAttempted && m.isCodexAttemptFailure(errExec, roundAttempted) {
-			eligibility := authSelectionEligibilityForRequest(ctx, opts)
-			pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-			if _, okContinuity := m.canRunCodexContinuity(ctx, normalized); okContinuity &&
-				isPositiveQuotaRejectionError(errExec) {
-				if !m.retryAllowedForRequest(ctx, attempt, normalized, retryModel, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {
-					continuitySession.terminated = true
-					break
-				}
-				outcome, errContinuity := m.runCodexContinuityGate(ctx, continuitySession, "pre_output_429", normalized, retryModel, opts, attempt+1, true, defaultRequestRetry)
-				if errContinuity != nil {
-					return cliproxyexecutor.Response{}, errContinuity
-				}
-				if outcome == continuityOutcomeReady {
-					continuitySession.immediateReadyRetries = 0
-					attempt++
-					retryRound++
-					continue
-				}
-				break
+		if handled, outcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, errExec, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+			if errContinuity != nil {
+				return cliproxyexecutor.Response{}, errContinuity
 			}
+			if outcome == continuityOutcomeReady {
+				continuitySession.immediateReadyRetries = 0
+				attempt++
+				retryRound++
+				continue
+			}
+			break
 		}
 		if continuitySession.terminated || continuitySession.budgetExhausted {
 			break
@@ -481,7 +471,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				if hasUpstreamExecutionAttempt(outcome.err) {
 					preferredUpstreamErr = outcome.err
 				}
-				if isRequestStopError(outcome.err) {
+				if isRequestTerminatedError(outcome.err) || isRequestStopError(outcome.err) {
 					return cliproxyexecutor.Response{}, outcome.err
 				}
 				lastErr = outcome.err
@@ -489,6 +479,18 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 					if detail, ok := retryWithoutPenaltyUsageDetail(outcome.err); ok {
 						retryWithoutPenaltyUsage.Add(detail)
 					}
+				}
+				if handled, quotaOutcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, outcome.err, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+					if errContinuity != nil {
+						return cliproxyexecutor.Response{}, errContinuity
+					}
+					if quotaOutcome == continuityOutcomeReady {
+						continuitySession.immediateReadyRetries = 0
+						attempt++
+						retryRound++
+						continue
+					}
+					break
 				}
 				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
 					break
@@ -715,28 +717,18 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		}
 		continuitySession.priorAttemptSeen = true
 		lastErr = errStream
-		if upstreamAttempted && m.isCodexAttemptFailure(errStream, roundAttempted) {
-			eligibility := authSelectionEligibilityForRequest(ctx, opts)
-			pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-			if _, okContinuity := m.canRunCodexContinuity(ctx, normalized); okContinuity &&
-				isPositiveQuotaRejectionError(errStream) {
-				if !m.retryAllowedForRequest(ctx, attempt, normalized, retryModel, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {
-					continuitySession.terminated = true
-					break
-				}
-				outcome, errContinuity := m.runCodexContinuityGate(ctx, continuitySession, "pre_output_429", normalized, retryModel, opts, attempt+1, true, defaultRequestRetry)
-				if errContinuity != nil {
-					return nil, errContinuity
-				}
-				if outcome == continuityOutcomeReady {
-					continuitySession.immediateReadyRetries = 0
-					attempt++
-					continuitySession.codexAttemptsUsed++
-					retryRound++
-					continue
-				}
-				break
+		if handled, outcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, errStream, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+			if errContinuity != nil {
+				return nil, errContinuity
 			}
+			if outcome == continuityOutcomeReady {
+				continuitySession.immediateReadyRetries = 0
+				attempt++
+				continuitySession.codexAttemptsUsed++
+				retryRound++
+				continue
+			}
+			break
 		}
 		if continuitySession.terminated || continuitySession.budgetExhausted {
 			break
@@ -769,7 +761,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				if hasUpstreamExecutionAttempt(outcome.err) {
 					preferredUpstreamErr = outcome.err
 				}
-				if isRequestStopError(outcome.err) {
+				if isRequestTerminatedError(outcome.err) || isRequestStopError(outcome.err) {
 					return nil, outcome.err
 				}
 				lastErr = outcome.err
@@ -777,6 +769,19 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 					if detail, ok := retryWithoutPenaltyUsageDetail(outcome.err); ok {
 						retryWithoutPenaltyUsage.Add(detail)
 					}
+				}
+				if handled, quotaOutcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, outcome.err, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+					if errContinuity != nil {
+						return nil, errContinuity
+					}
+					if quotaOutcome == continuityOutcomeReady {
+						continuitySession.immediateReadyRetries = 0
+						attempt++
+						continuitySession.codexAttemptsUsed = attempt
+						retryRound++
+						continue
+					}
+					break
 				}
 				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
 					break

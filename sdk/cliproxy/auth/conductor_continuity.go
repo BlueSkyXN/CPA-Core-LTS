@@ -395,6 +395,24 @@ func (m *Manager) isCodexAttemptFailure(err error, attempted map[string]struct{}
 	return codexCount > 0 && nonCodexCount == 0
 }
 
+// Ordinary and hedged attempts share the same quota, provider and retry boundary.
+func (m *Manager) runCodexPostAttemptContinuity(ctx context.Context, session *continuitySession, attemptErr error, attempted map[string]struct{}, providers []string, model string, opts cliproxyexecutor.Options, attempt, defaultRequestRetry int) (bool, continuityOutcome, error) {
+	if !hasUpstreamExecutionAttempt(attemptErr) || !m.isCodexAttemptFailure(attemptErr, attempted) || !isPositiveQuotaRejectionError(attemptErr) {
+		return false, continuityOutcomeDisabled, nil
+	}
+	if _, enabled := m.canRunCodexContinuity(ctx, providers); !enabled {
+		return false, continuityOutcomeDisabled, nil
+	}
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	if !m.retryAllowedForRequest(ctx, attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {
+		session.terminated = true
+		return true, continuityOutcomeDisabled, nil
+	}
+	outcome, err := m.runCodexContinuityGate(ctx, session, "pre_output_429", providers, model, opts, attempt+1, true, defaultRequestRetry)
+	return true, outcome, err
+}
+
 func isPreAdmissionContinuityError(err error) bool {
 	if err == nil || IsTerminalAuthError(err) || isRequestInvalidError(err) || isRequestStopError(err) || isRequestTerminatedError(err) {
 		return false
