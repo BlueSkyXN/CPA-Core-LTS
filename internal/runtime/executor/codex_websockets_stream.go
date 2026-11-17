@@ -546,7 +546,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					// status the upstream refused to put on the wire.
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
 					if overloadFailover {
-						return nil, newCodexBootstrapOverloadErr(terminalBody)
+						if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
+							return nil, streamErr
+						}
+						return nil, newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
 					}
 					return nil, streamErr
 				}
@@ -942,6 +945,10 @@ type codexWebsocketPrepared struct {
 	plaintextTools       multiagentv2.PlaintextToolProvenance
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
+
+	// Immutable pre-payload JSON value for duplex inheritance; never rebuild from clientBody.
+	// An empty Go string means absent, not an explicitly empty JSON string.
+	unconfiguredInstructions string
 }
 
 func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*codexWebsocketPrepared, error) {
@@ -1000,6 +1007,8 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts, auth))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
+	// Do not let a built-in empty default become caller-provided on the next turn.
+	hadUnconfiguredInstructions := doc.Get("instructions").Exists()
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
@@ -1063,6 +1072,12 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		}
 	}
 	helps.SanitizeCodexInputItemIDsDoc(doc)
+	// Retain explicit clearing intent before SIWC removes empty instructions.
+	// The outbound body still follows SIWC cleanup; only inheritance keeps the value.
+	var unconfiguredInstructions string
+	if hadUnconfiguredInstructions {
+		unconfiguredInstructions = strings.Clone(doc.Get("instructions").Raw)
+	}
 	if useSIWC {
 		applyCodexSIWCWebsocketBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
@@ -1117,5 +1132,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		plaintextTools:       plaintextTools,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,
+
+		unconfiguredInstructions: unconfiguredInstructions,
 	}, nil
 }

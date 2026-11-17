@@ -1511,6 +1511,10 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			}
 			terminalRefresh := isTerminalRefreshError(current, err)
 			sanitizedRefreshErr := sanitizeRenewalError(current, err)
+			// Claude 明确声明 refresh token 过期时停止刷新；Codex 的既有退避策略保留。
+			if terminalRefresh && strings.EqualFold(strings.TrimSpace(current.Provider), "claude") && sanitizedRefreshErr.Code == "refresh_token_expired" {
+				invalidGrant = false
+			}
 			wasTerminalUnauthorized := hasUnauthorizedAuthFailure(current)
 			if wasTerminalUnauthorized {
 				current.Generation++
