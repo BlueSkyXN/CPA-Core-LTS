@@ -61,8 +61,17 @@ type ScopedExecutionSessionCloser interface {
 
 // AuthExecutionSessionCloser allows executors to release only the sessions
 // owned by one credential while preserving other credentials for the provider.
+// This is the original public SDK contract; keep the name and the two-argument
+// method so existing embedders keep compiling.
 type AuthExecutionSessionCloser interface {
 	CloseExecutionSessionsForAuth(authID, authIndex string)
+}
+
+// AuthExecutionSessionIDCloser allows executors to release execution sessions
+// associated with a removed credential without tearing down other credentials'
+// sessions, keyed by credential ID only.
+type AuthExecutionSessionIDCloser interface {
+	CloseAuthExecutionSessions(authID string)
 }
 
 // ExecutionSessionReplacementCompatible lets an executor declare that replacing
@@ -85,10 +94,12 @@ type ExecutionSessionSharer interface {
 	SharesExecutionSessionsWith(other ProviderExecutor) bool
 }
 
-// authExecutionSessionIDCloser allows executors to release execution sessions
-// associated with a removed credential without tearing down other credentials' sessions.
-type authExecutionSessionIDCloser interface {
-	CloseAuthExecutionSessions(authID string)
+// ExecutorUnwrapper exposes the underlying executor for wrappers so reuse and
+// session-lifecycle decisions can consult the service-owned executor even when
+// a wrapper hides its concrete type. Wrappers should return their immediate
+// inner executor; the manager follows the chain.
+type ExecutorUnwrapper interface {
+	Unwrap() ProviderExecutor
 }
 
 // Result captures execution outcome used to adjust auth state.
@@ -215,6 +226,7 @@ type Manager struct {
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
+	executorRevisions         map[string]uint64
 	selector                  Selector
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
@@ -321,6 +333,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		store:                    store,
 		authLoadGate:             semaphore.NewWeighted(math.MaxInt64),
 		executors:                make(map[string]ProviderExecutor),
+		executorRevisions:        make(map[string]uint64),
 		selector:                 selector,
 		hook:                     hook,
 		auths:                    make(map[string]*Auth),
