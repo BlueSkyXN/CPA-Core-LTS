@@ -245,15 +245,22 @@ func TestHubExchange_ManyToManyFullDuplexMultiplexing(t *testing.T) {
 
 	const numPeers = 3
 	servers := make([]*websocket.Conn, numPeers)
+	serverIDs := make([]string, numPeers)
 	serverWriteMu := make([]sync.Mutex, numPeers)
 	for s := 0; s < numPeers; s++ {
-		servers[s] = dialRole(t, srv.URL, "key-mesh", RoleServer, fmt.Sprintf("srv-%d", s), fmt.Sprintf("Server %d", s))
+		serverIDs[s] = fmt.Sprintf("srv-%d", s)
+		servers[s] = dialRole(t, srv.URL, "key-mesh", RoleServer, serverIDs[s], fmt.Sprintf("Server %d", s))
 	}
 
 	clients := make([]*websocket.Conn, numPeers)
 	clientWriteMu := make([]sync.Mutex, numPeers)
 	for c := 0; c < numPeers; c++ {
 		clients[c] = dialRole(t, srv.URL, "key-mesh", RoleClient, fmt.Sprintf("cli-%d", c), fmt.Sprintf("Client %d", c))
+		// A completed handshake does not imply commitPeer has published all servers.
+		waitServersVisible(t, clients[c], serverIDs...)
+		if err := clients[c].WriteMessage(websocket.TextMessage, []byte(`{"type":"list_servers"}`)); err != nil {
+			t.Fatal(err)
+		}
 		initList := readTextJSONFrame(t, clients[c])
 		if initList.Get("servers.#").Int() != numPeers {
 			t.Fatalf("client %d saw %d servers, want %d", c, initList.Get("servers.#").Int(), numPeers)
