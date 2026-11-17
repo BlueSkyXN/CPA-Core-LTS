@@ -149,3 +149,32 @@ WebSocket 主流程采用上游的尝试循环，同时在每次尝试中恢复 
 - payload 各规则种类（含 replace）的 auth/path 条件、wrapped WS error、xAI retry、Claude/Codex refresh 定向测试通过。
 - `scripts/check-lts-contract.sh`（含 registry）、server build、`git diff --check` 通过。
 - Stage 1 PR #371 的 9 项云检查已全绿；Stage 2 云检查由本层 PR 创建后回读。
+
+
+## Stage 3：有界 plugin continuity、Claude Thread 与刷新退避
+
+- 直接下层：Stage 2；初始 merge parent 为 `57c776424fa7c4f7c6996c06186c2226b4898701`，后续承接该层的 WebSocket 夹具修复。
+- upstream 范围：`4ed882f14d1e672ae5015c1a1814d06e3e72651f..7df56074b252384d878ec4fca840552c6fb5236e`。
+- 6 个冲突文件，保留 merge ancestry。
+- moego 跟随上游升级到 alpha.4；11 个引用根模块的独立插件示例同步模块图，去除过时 replacement。
+
+### Protected delta review
+
+新增可选 SchedulerContinuity 能力及 `scheduler.continuity` ABI 方法，不修改既有方法签名或 schema version。仅在已启用该能力的 Codex scheduler 上工作；Home 与强制 upstream WebSocket 不进入此等待路径。插件返回 ready/wait/disabled；host 将轮询间隔限制在 10ms–5s，默认 500ms，等待预算默认 30s、最多 120s，同一请求可缩短但不可延长预算。候选使用脱敏属性，不携带凭据文档。
+
+- LTS 的真实执行循环位于 `conductor_lts.go`。continuity 门移植到该循环，保留 Flow admission、异常推理 retry/hedge、usage accumulator、模型回退和 Home 分支；不以 upstream Execute 全体覆盖 LTS wrapper。
+- 同一请求绑定一个 continuity session；预算终止同时阻止外层模型回退和 stream bootstrap 重新派发。SSE/WS 仅在真实 continuity 等待期间发送新增 keepalive；首次输出后的重试边界保持。
+- RequestID 和 TraceID 各自保留；WebSocket turn 使用独立 session，并保留 LTS plaintext tool provenance、reset gate、上下文 cause、历史回滚。
+- continuity 候选同时遵守 LTS ExcludeAuthIDs 与 Home 排除集合。provider 更换时清除新增 quota/non-quota 冷却分类，防止继承上个 provider 的等待资格。
+- Claude Thread owner 与 replay error 采用上游语义；重复 Home cooldown 的流式返回亦按 pinned thread 处理。
+- bootstrap 二次选择无凭据时，保留前一次真实 429，避免改写成泛化 503。
+- plugin 自行声明正值 RetryAfter 时仍保留原 header；内部模型 cooldown 接受上游 10s 下限。相应回归同时验证 header=7s 和内部 cooldown 下限，不把二者混成一个值。
+- LTS modelFallbackReason、credentialRetryAfter、generation fence、统计归属与默认 Panel release source 保留；此前 ledger 项不退休。
+
+### 验证
+
+- 全仓 113 个有测试的包通过；auth、OpenAI handler、pluginhost 的 race 全包通过。
+- 新增 LTS continuity 集成回归：流式/非流式终止后不进入模型回退、排除凭据不进入候选、provider 更换清除新增冷却分类；最终改动后相关 continuity race 测试通过。
+- 11 个独立插件示例模块 `go test ./...` 通过。
+- LTS contract/registry、server build、diff check 通过；最终 SHA 的跨平台与全量检查继续由 PR CI 回读。
+- Stage 2 云观察位暴露 ManyToManyFullDuplexMultiplexing 在首份列表到齐前启动断言；采用现有 waitServersVisible 等待完整拓扑，再读取快照断言数量。生产 wstunnel 未变，定向 race 50 次及全包通过。

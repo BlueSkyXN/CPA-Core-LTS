@@ -594,6 +594,8 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 				auth.Quota.Signals = observation.Signals
 				auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 				auth.forceCooldownUntil = existing.forceCooldownUntil
+				auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
+				auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
 				auth.credQuotaForceUntil = existing.credQuotaForceUntil
 				auth.forceCooldownSeeded = existing.forceCooldownSeeded
 			}
@@ -624,7 +626,9 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 					auth.NextRetryAfter = time.Time{}
 					auth.cooldownRecordedSeq = 0
 					auth.forceCooldownUntil = time.Time{}
+					auth.quotaForceCooldownUntil = time.Time{}
 					auth.credentialRetryAfter = time.Time{}
+					auth.nonQuotaCooldownUntil = time.Time{}
 					auth.LastError = nil
 					auth.NextRetryAfter = time.Time{}
 					auth.StatusMessage = ""
@@ -711,8 +715,12 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 			auth.Quota.Signals = observation.Signals
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
 			auth.credQuotaForceUntil = existing.credQuotaForceUntil
 			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
 			auth.forceCooldownSeeded = existing.forceCooldownSeeded
 			if auth.Status == StatusActive {
 				auth.Status = existing.Status
@@ -722,8 +730,12 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 			auth.NextRetryAfter = existing.NextRetryAfter
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
 			auth.credQuotaForceUntil = existing.credQuotaForceUntil
 			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
 			auth.forceCooldownSeeded = existing.forceCooldownSeeded
 			if auth.LastError == nil && existing.LastError != nil {
 				auth.LastError = cloneError(existing.LastError)

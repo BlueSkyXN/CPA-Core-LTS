@@ -33,6 +33,7 @@ type rpcCapabilities struct {
 	FrontendAuthOmitBody              bool                         `json:"frontend_auth_omit_body,omitempty"`
 	Scheduler                         bool                         `json:"scheduler"`
 	SchedulerAcrossPriorities         bool                         `json:"scheduler_across_priorities,omitempty"`
+	SchedulerContinuity               bool                         `json:"scheduler_continuity,omitempty"`
 	ModelRouter                       bool                         `json:"model_router"`
 	Executor                          bool                         `json:"executor"`
 	ExecutionCanceller                bool                         `json:"execution_canceller"`
@@ -245,6 +246,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		FrontendAuthOmitBody:              frontendAuthProviderWantsOmitBody(caps),
 		Scheduler:                         caps.Scheduler != nil,
 		SchedulerAcrossPriorities:         schedulerWantsAcrossPriorities(caps),
+		SchedulerContinuity:               caps.SchedulerContinuity != nil,
 		ModelRouter:                       caps.ModelRouter != nil,
 		Executor:                          caps.Executor != nil,
 		ExecutionCanceller:                caps.ExecutionCanceller != nil,

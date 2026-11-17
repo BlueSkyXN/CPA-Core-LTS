@@ -102,8 +102,30 @@ func admitExecutorExecution(ctx context.Context, executor ProviderExecutor, auth
 	return ctx, nil
 }
 
+type upstreamAttemptProviderContextKey struct{}
+
+func withUpstreamAttemptProvider(ctx context.Context, provider string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, upstreamAttemptProviderContextKey{}, provider)
+}
+
+func upstreamAttemptProviderFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	provider, _ := ctx.Value(upstreamAttemptProviderContextKey{}).(string)
+	return strings.TrimSpace(provider)
+}
+
 type upstreamExecutionAttemptError struct {
-	cause error
+	cause    error
+	provider string
 }
 
 func (e *upstreamExecutionAttemptError) Error() string {
@@ -120,21 +142,51 @@ func (e *upstreamExecutionAttemptError) Unwrap() error {
 	return e.cause
 }
 
+func (e *upstreamExecutionAttemptError) Headers() http.Header {
+	if e == nil || e.cause == nil {
+		return nil
+	}
+	var he interface{ Headers() http.Header }
+	if errors.As(e.cause, &he) && he != nil {
+		return he.Headers()
+	}
+	return nil
+}
+
 func markUpstreamExecutionAttempt(err error) error {
+	return markUpstreamExecutionAttemptWithProvider(err, "")
+}
+
+func markUpstreamExecutionAttemptWithProvider(err error, provider string) error {
 	if err == nil {
 		return nil
 	}
-	if hasUpstreamExecutionAttempt(err) {
+	provider = strings.TrimSpace(provider)
+	if existingProvider := upstreamAttemptProviderFromError(err); existingProvider != "" || hasUpstreamExecutionAttempt(err) {
+		if provider != "" && existingProvider == "" {
+			var marked *upstreamExecutionAttemptError
+			if errors.As(err, &marked) && marked != nil {
+				marked.provider = provider
+			}
+		}
 		return err
 	}
-	return &upstreamExecutionAttemptError{cause: err}
+	return &upstreamExecutionAttemptError{cause: err, provider: provider}
 }
 
 func markUpstreamExecutionAttemptFromContext(ctx context.Context, err error) error {
 	if err == nil || !cliproxyexecutor.UpstreamAttempted(ctx) {
 		return err
 	}
-	return markUpstreamExecutionAttempt(err)
+	return markUpstreamExecutionAttemptWithProvider(err, upstreamAttemptProviderFromContext(ctx))
+}
+
+func upstreamAttemptProviderFromError(err error) string {
+	var marked *upstreamExecutionAttemptError
+	if errors.As(err, &marked) && marked != nil {
+		return strings.TrimSpace(marked.provider)
+	}
+	return ""
 }
 
 func hasUpstreamExecutionAttempt(err error) bool {
@@ -261,6 +313,7 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	ctx = WithRequestContinuitySession(ctx)
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
@@ -277,7 +330,7 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 	if err == nil {
 		return resp, nil
 	}
-	if isRequestStopError(err) {
+	if isRequestStopError(err) || IsContinuityTerminatedError(err) {
 		return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(err)
 	}
 	resp, err = m.executeCodexModelFallback(ctx, providers, req, opts, err)
@@ -293,6 +346,7 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 	if errPreflight != nil {
 		return cliproxyexecutor.Response{}, errPreflight
 	}
+	ctx = WithRequestContinuitySession(ctx)
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
@@ -394,6 +448,7 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	if errPreflight != nil {
 		return nil, errPreflight
 	}
+	ctx = WithRequestContinuitySession(ctx)
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
@@ -415,7 +470,7 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	if err == nil {
 		return result, nil
 	}
-	if isRequestStopError(err) {
+	if isRequestStopError(err) || IsContinuityTerminatedError(err) {
 		return nil, unwrapExecutionBoundaryError(err)
 	}
 	result, err = m.executeStreamCodexModelFallback(ctx, providers, req, opts, err)
@@ -806,7 +861,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execCtx = admittedCtx
 			m.commitPreDispatchSelection(auth, execOpts)
-			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+			execCtx = withUpstreamAttemptProvider(syncMetadataSessionToContext(execCtx, execOpts.Metadata), provider)
 			if !selectedPublished {
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				selectedPublished = true
@@ -835,7 +890,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					auth = refreshed
 					execCtx = contextWithAuthGeneration(execCtx, auth)
 					didRefreshOnUnauthorized = true
-					execCtx = m.newUpstreamAttemptContext(execCtx)
+					execCtx = withUpstreamAttemptProvider(m.newUpstreamAttemptContext(execCtx), provider)
 					admittedRetryCtx, errRetryAdmission := m.admitFlowExecution(execCtx, executor, auth, execReq, execOpts)
 					if errRetryAdmission != nil {
 						m.releasePreDispatchSelection(auth, provider, resultModel, execOpts)
