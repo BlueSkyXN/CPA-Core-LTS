@@ -1559,6 +1559,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		hasAuthProviderCap(caps) ||
 		caps.FrontendAuthProvider != nil ||
 		caps.Scheduler != nil ||
+		caps.SchedulerContinuity != nil ||
 		caps.ModelRouter != nil ||
 		caps.Executor != nil ||
 		caps.RequestTranslator != nil ||

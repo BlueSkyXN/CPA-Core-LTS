@@ -3,7 +3,7 @@ module github.com/router-for-me/CLIProxyAPI/v8/examples/plugin/copilot/go
 go 1.26.10
 
 require (
-	github.com/MoeForge/moego v0.1.0-alpha.3
+	github.com/MoeForge/moego v0.1.0-alpha.4
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -54,5 +54,3 @@ require (
 )
 
 replace github.com/router-for-me/CLIProxyAPI/v8 => ../../../..
-
-// Keep the root module's Moego fork replacement when tests compile root packages.

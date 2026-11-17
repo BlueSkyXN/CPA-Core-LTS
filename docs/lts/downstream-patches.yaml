@@ -48,8 +48,11 @@ patches:
   - id: codex-model-fallback
     reason: Codex usage-limit and model-capacity failures need an opt-in ordered model fallback after same-model credentials are exhausted, including a confirmed-usage-cooldown-only global target list when source mappings cannot deliver, while cross-model retries must not replay model-private reasoning signatures or replay a stream after client-visible delivery.
     introduced_in: 0bd5a46fd34dff4711fe5618afe66c93f316897b
-    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds passive quota-signal observation, 7bc16ee3 preserves round-robin successor fairness, fcea738f retains typed WebSocket handshake status, and 12b88f3a adds shared auth/registry epochs and state projection. LTS absorbs those shared improvements, but they do not add typed ordered cross-model fallback, target-model auth reselection, reasoning-continuity reset gates, failure rollback, or post-delivery replay safety, so the patch remains required.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds passive quota-signal observation, 7bc16ee3 preserves round-robin successor fairness, fcea738f retains typed WebSocket handshake status, and 12b88f3a adds shared auth/registry epochs and state projection. LTS absorbs those shared improvements, but they do not add typed ordered cross-model fallback, target-model auth reselection, reasoning-continuity reset gates, failure rollback, or post-delivery replay safety, so the patch remains required. Baseline 7df56074b252384d878ec4fca840552c6fb5236e adds bounded plugin continuity; LTS shares its request-wide termination state with model fallback and retains explicit credential exclusions.
     files:
+      - sdk/cliproxy/auth/conductor_lts.go
+      - sdk/cliproxy/auth/conductor_continuity.go
+      - sdk/cliproxy/auth/conductor_continuity_lts_test.go
       - config.example.yaml
       - docs/lts/codex-429-resilience.md
       - docs/lts/core-feature-contracts.yaml
@@ -88,6 +91,8 @@ patches:
       - sdk/api/handlers/openai/openai_responses_websocket.go
       - sdk/api/handlers/openai/openai_responses_websocket_test.go
     regression_tests:
+      - TestCodexContinuityTerminationDoesNotOpenLTSModelFallback
+      - TestCodexContinuityCandidatesRespectLTSExcludedAuthIDs
       - TestLoadConfigOptionalCodexModelFallback
       - TestCodexModelFallbackEffectiveDefaultsAndNormalizesMappings
       - TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback
@@ -1084,8 +1089,9 @@ patches:
   - id: provider-runtime-state-isolation
     reason: Runtime state belongs to one concrete auth provider generation and must not leak across same-ID provider replacement. Codex transient rate limits must remain distinct from quota exhaustion, non-buffering streams must not fail after delivering visible deltas merely because optional completion reconstruction exceeds its cap, and thinking-suffix cooldown reconciliation must restore only the intended concrete registry IDs without racing a newer success.
     introduced_in: e97ccfb8b41e0874745d807d6c1434bcf572840f
-    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds ObservedAt and Signals, 7bc16ee3 preserves round-robin successor fairness, and 12b88f3a adds public registration epochs plus atomic registry projection. LTS absorbs the epoch/projection machinery but retains a different provider-generation boundary, generation-aware reconciliation, non-buffering post-delivery protection, and exceptions that keep Codex transient rate limits and Cloudflare challenges out of global quota suspension. The patch remains required.
+    affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); ca601db0 adds ObservedAt and Signals, 7bc16ee3 preserves round-robin successor fairness, and 12b88f3a adds public registration epochs plus atomic registry projection. LTS absorbs the epoch/projection machinery but retains a different provider-generation boundary, generation-aware reconciliation, non-buffering post-delivery protection, and exceptions that keep Codex transient rate limits and Cloudflare challenges out of global quota suspension. The patch remains required. Baseline 7df56074b252384d878ec4fca840552c6fb5236e adds separate quota/non-quota continuity cooldown kinds; provider replacement must clear both new fields as well.
     files:
+      - sdk/cliproxy/auth/conductor_continuity_lts_test.go
       - docs/lts/downstream-patches.yaml
       - internal/runtime/executor/codex_abnormal_reasoning_retry_test.go
       - internal/runtime/executor/codex_executor_retry_test.go
@@ -1103,6 +1109,7 @@ patches:
       - sdk/cliproxy/service_auth.go
       - sdk/cliproxy/service_stale_state_test.go
     regression_tests:
+      - TestProviderTransitionClearsContinuityCooldownKinds
       - TestCodexExecutorAbnormalReasoningRetry_NonBufferingStreamOverReconstructionCapDoesNotFailAfterDelta
       - TestNewCodexStatusErrTreatsUsageLimitAsRetryableRateLimit
       - TestNewCodexStatusErrDoesNotClassifyTransientRateLimitForModelFallback

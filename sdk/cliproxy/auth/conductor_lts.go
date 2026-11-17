@@ -333,12 +333,16 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
+	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
 		return cliproxyexecutor.Response{}, errThread
 	}
 	if m.HomeEnabled() && !m.hasLegacyHomeRuntimeAuthForRequest(ctx, opts) {
-		return m.executeHome(ctx, normalized, req, opts, false)
+		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
+		if pinnedThread && errHome != nil && !isRequestStopError(errHome) {
+			return resp, claudeThreadReplayError(unwrapExecutionBoundaryError(errHome))
+		}
+		return resp, errHome
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
@@ -350,6 +354,14 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	// earlier rounds' errors and skip post-processing fallbacks in that case.
 	var terminalRoundRejectedByScheduler bool
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	continuitySession := ensureContinuitySession(ctx, &opts)
+	if continuitySession.terminated {
+		termErr := continuitySession.terminalErr
+		if termErr == nil {
+			termErr = &Error{Code: "continuity_terminated", Message: "continuity terminated"}
+		}
+		return cliproxyexecutor.Response{}, markContinuityTerminatedError(termErr)
+	}
 	budget := codexModelFallbackBudget(opts, false)
 	retryWithoutPenaltyCounts := budget.retryCounts
 	retryWithoutPenaltyUsage := budget.usage
@@ -357,15 +369,44 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 	retryWithoutPenaltyFallback := newRetryWithoutPenaltyFallbackCandidate(false)
 	retryRound := 0
 	for attempt := 0; ; {
+		if m.continuityDeadlineExceeded(continuitySession) {
+			continuitySession.budgetExhausted = true
+			continuitySession.terminated = true
+			break
+		}
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		roundAttempted := make(map[string]struct{})
 		attemptOpts = withAttemptedAuthTracker(attemptOpts, roundAttempted)
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials, retryRound, defaultRequestRetry)
+		if len(roundAttempted) > 0 {
+			continuitySession.priorAttemptSeen = true
+		}
 		if errExec == nil {
+			continuitySession.priorAttemptSeen = true
 			if fallbackResp, ok := retryWithoutPenaltyMaybeSelectFallbackResponse(resp, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return fallbackResp, nil
 			}
 			return resp, nil
+		}
+		upstreamAttempted := hasUpstreamExecutionAttempt(errExec)
+		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+			return cliproxyexecutor.Response{}, errExec
+		}
+		if !continuitySession.priorAttemptSeen && lastErr == nil && preferredUpstreamErr == nil && !upstreamAttempted && isPreAdmissionContinuityError(errExec) {
+			outcome, errContinuity := m.runCodexContinuityGate(ctx, continuitySession, "pre_admission", normalized, retryModel, opts, attempt, false, defaultRequestRetry)
+			if errContinuity != nil {
+				return cliproxyexecutor.Response{}, errContinuity
+			}
+			if outcome == continuityOutcomeReady {
+				if continuitySession.waitedLastGate {
+					continuitySession.immediateReadyRetries = 0
+					continue
+				}
+				continuitySession.immediateReadyRetries++
+				if continuitySession.immediateReadyRetries <= 1 {
+					continue
+				}
+			}
 		}
 		if isSchedulerRejectError(errExec) {
 			if lastErr == nil && preferredUpstreamErr == nil {
@@ -384,7 +425,24 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
 		}
+		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
+		continuitySession.priorAttemptSeen = true
 		lastErr = errExec
+		if handled, outcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, errExec, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+			if errContinuity != nil {
+				return cliproxyexecutor.Response{}, errContinuity
+			}
+			if outcome == continuityOutcomeReady {
+				continuitySession.immediateReadyRetries = 0
+				attempt++
+				retryRound++
+				continue
+			}
+			break
+		}
+		if continuitySession.terminated || continuitySession.budgetExhausted {
+			break
+		}
 		if detail, ok := retryWithoutPenaltyUsageDetail(errExec); ok {
 			retryWithoutPenaltyUsage.Add(detail)
 		}
@@ -413,7 +471,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				if hasUpstreamExecutionAttempt(outcome.err) {
 					preferredUpstreamErr = outcome.err
 				}
-				if isRequestStopError(outcome.err) {
+				if isRequestTerminatedError(outcome.err) || isRequestStopError(outcome.err) {
 					return cliproxyexecutor.Response{}, outcome.err
 				}
 				lastErr = outcome.err
@@ -421,6 +479,18 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 					if detail, ok := retryWithoutPenaltyUsageDetail(outcome.err); ok {
 						retryWithoutPenaltyUsage.Add(detail)
 					}
+				}
+				if handled, quotaOutcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, outcome.err, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+					if errContinuity != nil {
+						return cliproxyexecutor.Response{}, errContinuity
+					}
+					if quotaOutcome == continuityOutcomeReady {
+						continuitySession.immediateReadyRetries = 0
+						attempt++
+						retryRound++
+						continue
+					}
+					break
 				}
 				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
 					break
@@ -439,8 +509,12 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 				if !shouldRetry {
 					break
 				}
-				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+				exceeded, errWait := m.waitForContinuityBoundedCooldown(ctx, continuitySession, wait, maxWait)
+				if errWait != nil {
 					return cliproxyexecutor.Response{}, errWait
+				}
+				if exceeded {
+					break
 				}
 				if !isRetryWithoutPenaltyError(outcome.err) {
 					retryRound = policyRound + 1
@@ -466,13 +540,24 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		if !shouldRetry {
 			break
 		}
-		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+		exceeded, errWait := m.waitForContinuityBoundedCooldown(ctx, continuitySession, wait, maxWait)
+		if errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
+		}
+		if exceeded {
+			break
 		}
 		if !isRetryWithoutPenaltyError(errExec) {
 			retryRound = policyRound + 1
 		}
 		attempt++
+	}
+	if lastErr == nil && continuitySession.terminated {
+		termErr := continuitySession.terminalErr
+		if termErr == nil {
+			termErr = &Error{Code: "continuity_terminated", Message: "continuity terminated"}
+		}
+		return cliproxyexecutor.Response{}, markContinuityTerminatedError(termErr)
 	}
 	if lastErr != nil {
 		if ctx != nil {
@@ -483,7 +568,7 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
-		if !terminalRoundRejectedByScheduler && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !terminalRoundRejectedByScheduler && !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -491,9 +576,20 @@ func (m *Manager) executeWithoutModelFallback(ctx context.Context, providers []s
 			}
 		}
 		lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
+		if pinnedThread {
+			lastErr = claudeThreadReplayError(lastErr)
+		}
+		if continuitySession.terminated {
+			continuitySession.terminalErr = lastErr
+			lastErr = markContinuityTerminatedError(lastErr)
+		}
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	errFinal := error(&Error{Code: "auth_not_found", Message: "no auth available"})
+	if pinnedThread {
+		errFinal = claudeThreadReplayError(errFinal)
+	}
+	return cliproxyexecutor.Response{}, errFinal
 }
 
 func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
@@ -501,7 +597,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	opts, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
+	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
 		return nil, errThread
 	}
@@ -515,6 +611,14 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	// earlier rounds' errors and skip post-processing fallbacks in that case.
 	var terminalRoundRejectedByScheduler bool
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	continuitySession := ensureContinuitySession(ctx, &opts)
+	if continuitySession.terminated {
+		termErr := continuitySession.terminalErr
+		if termErr == nil {
+			termErr = &Error{Code: "continuity_terminated", Message: "continuity terminated"}
+		}
+		return nil, markContinuityTerminatedError(termErr)
+	}
 	budget := codexModelFallbackBudget(opts, true)
 	retryWithoutPenaltyCounts := budget.retryCounts
 	retryWithoutPenaltyUsage := budget.usage
@@ -524,16 +628,53 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 	homeRetryLimit := -1
 	retryRoundPending := false
 	retryRoundWaited := false
-	for attempt := 0; ; {
+	_, shareStreamAttempts := m.canRunCodexContinuity(ctx, normalized)
+	attempt := 0
+	if shareStreamAttempts {
+		attempt = continuitySession.codexAttemptsUsed
+		retryRound = attempt
+	}
+	for {
+		if m.continuityDeadlineExceeded(continuitySession) {
+			continuitySession.budgetExhausted = true
+			continuitySession.terminated = true
+			break
+		}
 		attemptOpts := withRetryWithoutPenaltyUsageMetadata(opts, retryWithoutPenaltyUsage)
 		roundAttempted := make(map[string]struct{})
 		attemptOpts = withAttemptedAuthTracker(attemptOpts, roundAttempted)
+		continuitySession.setLastStreamContext(normalized, req.Model, opts)
+		continuitySession.setLastStreamProvider("")
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, attemptOpts, maxRetryCredentials, &homeRetryLimit, retryRound, defaultRequestRetry)
+		if len(roundAttempted) > 0 {
+			continuitySession.priorAttemptSeen = true
+		}
 		if errStream == nil {
+			continuitySession.priorAttemptSeen = true
 			if fallbackResult, ok := retryWithoutPenaltyMaybeSelectFallbackStreamResult(result, retryWithoutPenaltyFallback, retryWithoutPenaltyUsage); ok {
 				return fallbackResult, nil
 			}
 			return result, nil
+		}
+		upstreamAttempted := hasUpstreamExecutionAttempt(errStream)
+		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
+			return nil, errStream
+		}
+		if !continuitySession.priorAttemptSeen && lastErr == nil && preferredUpstreamErr == nil && !upstreamAttempted && isPreAdmissionContinuityError(errStream) {
+			outcome, errContinuity := m.runCodexContinuityGate(ctx, continuitySession, "pre_admission", normalized, retryModel, opts, attempt, false, defaultRequestRetry)
+			if errContinuity != nil {
+				return nil, errContinuity
+			}
+			if outcome == continuityOutcomeReady {
+				if continuitySession.waitedLastGate {
+					continuitySession.immediateReadyRetries = 0
+					continue
+				}
+				continuitySession.immediateReadyRetries++
+				if continuitySession.immediateReadyRetries <= 1 {
+					continue
+				}
+			}
 		}
 		if isSchedulerRejectError(errStream) {
 			if lastErr == nil && preferredUpstreamErr == nil {
@@ -552,10 +693,18 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(retryRound-1, homeRetryLimit) {
 				if retryRoundWaited {
-					return nil, errStream
+					errOut := unwrapExecutionBoundaryError(errStream)
+					if pinnedThread && !isRequestStopError(errStream) {
+						errOut = claudeThreadReplayError(errOut)
+					}
+					return nil, errOut
 				}
-				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+				exceeded, errWait := m.waitForContinuityBoundedCooldown(ctx, continuitySession, wait, maxWait)
+				if errWait != nil {
 					return nil, errWait
+				}
+				if exceeded {
+					break
 				}
 				retryRoundWaited = true
 				continue
@@ -566,7 +715,24 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
 			return nil, errStream
 		}
+		continuitySession.priorAttemptSeen = true
 		lastErr = errStream
+		if handled, outcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, errStream, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+			if errContinuity != nil {
+				return nil, errContinuity
+			}
+			if outcome == continuityOutcomeReady {
+				continuitySession.immediateReadyRetries = 0
+				attempt++
+				continuitySession.codexAttemptsUsed++
+				retryRound++
+				continue
+			}
+			break
+		}
+		if continuitySession.terminated || continuitySession.budgetExhausted {
+			break
+		}
 		if detail, ok := retryWithoutPenaltyUsageDetail(errStream); ok {
 			retryWithoutPenaltyUsage.Add(detail)
 		}
@@ -595,7 +761,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				if hasUpstreamExecutionAttempt(outcome.err) {
 					preferredUpstreamErr = outcome.err
 				}
-				if isRequestStopError(outcome.err) {
+				if isRequestTerminatedError(outcome.err) || isRequestStopError(outcome.err) {
 					return nil, outcome.err
 				}
 				lastErr = outcome.err
@@ -603,6 +769,19 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 					if detail, ok := retryWithoutPenaltyUsageDetail(outcome.err); ok {
 						retryWithoutPenaltyUsage.Add(detail)
 					}
+				}
+				if handled, quotaOutcome, errContinuity := m.runCodexPostAttemptContinuity(ctx, continuitySession, outcome.err, roundAttempted, normalized, retryModel, opts, attempt, defaultRequestRetry); handled {
+					if errContinuity != nil {
+						return nil, errContinuity
+					}
+					if quotaOutcome == continuityOutcomeReady {
+						continuitySession.immediateReadyRetries = 0
+						attempt++
+						continuitySession.codexAttemptsUsed = attempt
+						retryRound++
+						continue
+					}
+					break
 				}
 				if codexModelFallbackTargetWave(opts) && !isRetryWithoutPenaltyError(outcome.err) {
 					break
@@ -621,8 +800,12 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 				if !shouldRetry {
 					break
 				}
-				if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+				exceeded, errWait := m.waitForContinuityBoundedCooldown(ctx, continuitySession, wait, maxWait)
+				if errWait != nil {
 					return nil, errWait
+				}
+				if exceeded {
+					break
 				}
 				if !isRetryWithoutPenaltyError(outcome.err) {
 					retryRound = policyRound + 1
@@ -648,8 +831,12 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		if !shouldRetry {
 			break
 		}
-		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
+		exceeded, errWait := m.waitForContinuityBoundedCooldown(ctx, continuitySession, wait, maxWait)
+		if errWait != nil {
 			return nil, errWait
+		}
+		if exceeded {
+			break
 		}
 		if !isRetryWithoutPenaltyError(errStream) {
 			retryRound = policyRound + 1
@@ -657,6 +844,16 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 			retryRoundWaited = false
 		}
 		attempt++
+		if shareStreamAttempts && m.isCodexAttemptFailure(errStream, roundAttempted) {
+			continuitySession.codexAttemptsUsed++
+		}
+	}
+	if lastErr == nil && continuitySession.terminated {
+		termErr := continuitySession.terminalErr
+		if termErr == nil {
+			termErr = &Error{Code: "continuity_terminated", Message: "continuity terminated"}
+		}
+		return nil, markContinuityTerminatedError(termErr)
 	}
 	if lastErr != nil {
 		if ctx != nil {
@@ -669,7 +866,7 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
-		if !terminalRoundRejectedByScheduler && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !terminalRoundRejectedByScheduler && !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
@@ -679,9 +876,20 @@ func (m *Manager) executeStreamWithoutModelFallback(ctx context.Context, provide
 		if !m.HomeEnabled() {
 			lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		}
+		if pinnedThread {
+			lastErr = claudeThreadReplayError(lastErr)
+		}
+		if continuitySession.terminated {
+			continuitySession.terminalErr = lastErr
+			lastErr = markContinuityTerminatedError(lastErr)
+		}
 		return nil, lastErr
 	}
-	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	errFinal := error(&Error{Code: "auth_not_found", Message: "no auth available"})
+	if pinnedThread {
+		errFinal = claudeThreadReplayError(errFinal)
+	}
+	return nil, errFinal
 }
 
 func excludedAuthIDsFromMetadata(meta map[string]any) map[string]struct{} {

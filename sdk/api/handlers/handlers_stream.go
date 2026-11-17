@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -421,7 +422,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		close(errChan)
 		return nil, nil, errChan
 	}
-	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	ctx = coreauth.WithRequestContinuitySession(enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata))
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
@@ -590,6 +591,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	bootstrapEligible := func(err error) bool {
+		if coreauth.IsContinuityTerminatedError(err) {
+			return false
+		}
 		// 首包被拦截器丢弃后仍可能收到本地转换错误，不能按 502 再次生成。
 		var requestError coreexecutor.RequestScopedError
 		if errors.As(err, &requestError) && requestError.IsRequestScoped() {
@@ -621,11 +625,21 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			bootstrapErr = executionErrorMessage(bootstrapStreamErr)
 			break
 		}
+		if h.AuthManager != nil {
+			proceed, gateErr := h.AuthManager.EvaluatePreOutputStreamQuotaGate(ctx, providers, normalizedModel, opts, bootstrapStreamErr)
+			if !proceed {
+				if gateErr == nil {
+					gateErr = bootstrapStreamErr
+				}
+				bootstrapErr = executionErrorMessage(gateErr)
+				break
+			}
+		}
 		bootstrapRetries++
 		retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 		if retryErr != nil {
 			originalBootstrapErr := executionErrorMessage(bootstrapStreamErr)
-			if isAuthSelectionUnavailable(retryErr) && originalBootstrapErr.StatusCode >= http.StatusInternalServerError {
+			if isAuthSelectionUnavailable(retryErr) && (originalBootstrapErr.StatusCode >= http.StatusInternalServerError || originalBootstrapErr.StatusCode == http.StatusTooManyRequests) {
 				bootstrapErr = originalBootstrapErr
 			} else {
 				bootstrapErr = executionErrorMessage(enrichAuthSelectionError(retryErr, providers, normalizedModel))
