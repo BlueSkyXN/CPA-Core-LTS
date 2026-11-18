@@ -1500,7 +1500,10 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		isDisabled := false
 		shouldUnschedule := false
 		m.mu.Lock()
-		if current := m.auths[id]; current != nil && current.generation == expectedGeneration && current.Generation == auth.Generation {
+		// Request results advance Generation without replacing the credential. Keep
+		// their state while applying this grant's failure/backoff; lifecycle and
+		// credential checks below still reject outcomes from obsolete credentials.
+		if current := m.auths[id]; current != nil && current.generation == expectedGeneration {
 			if base != nil && (current.RegistrationEpoch != base.RegistrationEpoch || current.CredentialVersion != base.CredentialVersion || secretGrantChanged(base, current)) {
 				m.mu.Unlock()
 				return nil, err

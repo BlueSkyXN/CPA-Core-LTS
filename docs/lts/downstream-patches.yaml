@@ -1133,7 +1133,7 @@ patches:
     retire_when: Upstream separates Codex transient rate limits from usage quota at executor and auth-state boundaries, preserves active confirmed quota against older transient results, keeps non-buffering delivered streams independent from reconstruction memory caps, restores exact/canonical thinking-family cooldowns without stale races, clears all provider-owned runtime and persisted cooldown state on same-ID provider replacement, and every listed regression passes after removing the downstream implementation.
 
   - id: auth-provider-generation-fence
-    reason: Auth IDs are stable across watcher refreshes and can be reused after provider replacement or remove-and-register. An execution, stream, token count, request-auth preparation, or credential refresh that started on the previous lifecycle could therefore write quota, health, token, runtime, scheduler, registry, or persisted cooldown state into the replacement auth. LTS assigns a process-local, non-persisted generation to each auth lifecycle, carries it through every managed request path, and accepts writebacks only when both generation and provider still match.
+    reason: Auth IDs are stable across watcher refreshes and can be reused after provider replacement or remove-and-register. An execution, stream, token count, request-auth preparation, or credential refresh that started on the previous lifecycle could therefore write quota, health, token, runtime, scheduler, registry, or persisted cooldown state into the replacement auth. LTS assigns a process-local, non-persisted generation to each auth lifecycle, carries it through every managed request path, and accepts writebacks only when both generation and provider still match. Refresh failures use lifecycle and credential identity rather than the general mutation Generation, so concurrent inference results cannot discard refresh backoff or terminal rejection, including Claude refresh-token expiry.
     introduced_in: 7db4a30d3c7b489503873df855146ad911bec117
     affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 12b88f3a adds public RegistrationEpoch and Generation values for scheduler/registry snapshot ordering. Those values do not replace the downstream process-local, non-persisted lifecycle generation carried through execute, stream, count, request-auth preparation, refresh, fallback, and Home paths, nor do they reject every stale provider writeback before hooks and persistence. LTS composes both scopes and keeps the patch required.
     files:
@@ -1148,6 +1148,8 @@ patches:
       - sdk/cliproxy/auth/conductor_lifecycle.go
       - sdk/cliproxy/auth/conductor_lts.go
       - sdk/cliproxy/auth/conductor_refresh.go
+      - sdk/cliproxy/auth/conductor_refresh_backoff_regression_test.go
+      - sdk/cliproxy/auth/conductor_refresh_claude_concurrent_test.go
       - sdk/cliproxy/auth/conductor_stream.go
       - sdk/cliproxy/auth/types.go
     regression_tests:
@@ -1161,6 +1163,8 @@ patches:
       - TestManager_SelectAuthForRequestGenerationRejectsSameProviderReplacement
       - TestManager_ProviderTransitionRejectsStaleRefreshSuccessGeneration
       - TestManager_ProviderTransitionRejectsStaleRefreshFailureGeneration
+      - TestRefreshFailureSurvivesConcurrentRequestResult
+      - TestClaudeExpiredRefreshSurvivesConcurrentRequestResult
       - TestManager_RestoreCooldownRecordProviderCompatibility
     upstream_issue_or_pr: not-filed
     state: required
