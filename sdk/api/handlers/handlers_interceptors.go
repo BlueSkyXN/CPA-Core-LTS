@@ -803,7 +803,7 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 
 	if h != nil && h.AuthManager.ResourceAllowlistsEnabled() {
 		var err error
-		body, err = h.filterResourceModelList(c.Request.Context(), body)
+		body, err = h.filterResourceModelList(c.Request.Context(), sourceFormat, body)
 		c.Header("Cache-Control", "private, no-store")
 		c.Writer.Header().Del("Content-Length")
 		if err != nil {

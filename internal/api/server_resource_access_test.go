@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
@@ -187,6 +190,58 @@ func TestNativeResourceAccessHTTP(t *testing.T) {
 	allowedStream := serveResourceRequest(server, http.MethodPost, "/v1/responses", "Authorization", "Bearer "+resourceOwner, `{"model":"resource-upstream-private","input":"fixture","stream":true}`)
 	if allowedStream.Code != 200 || executor.calls.Load() != 1 || !strings.Contains(allowedStream.Body.String(), "response.completed") {
 		t.Fatalf("allowed stream status=%d upstream attempts=%d: %s", allowedStream.Code, executor.calls.Load(), allowedStream.Body)
+	}
+}
+
+func TestNativeResourceAccessClaudeModelCatalog(t *testing.T) {
+	server, cfg, _ := newResourceAccessServer(t)
+	shared := claudemodels.EnsureClaudeModelIDPrefix("resource-shared")
+	type catalog struct {
+		Data    []struct{ ID string } `json:"data"`
+		FirstID string                `json:"first_id"`
+		LastID  string                `json:"last_id"`
+	}
+	list := func(key string) catalog {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		request.Header.Set("X-Api-Key", key)
+		request.Header.Set("Anthropic-Version", "2023-06-01")
+		reply := httptest.NewRecorder()
+		server.engine.ServeHTTP(reply, request)
+		var result catalog
+		if reply.Code != http.StatusOK || json.Unmarshal(reply.Body.Bytes(), &result) != nil || result.Data == nil {
+			t.Fatalf("invalid Claude model catalog: %d %s", reply.Code, reply.Body)
+		}
+		if n := len(result.Data); n > 0 {
+			if result.FirstID != result.Data[0].ID || result.LastID != result.Data[n-1].ID {
+				t.Fatalf("cursor IDs do not match visible rows: %+v", result)
+			}
+		} else if result.FirstID != "" || result.LastID != "" {
+			t.Fatalf("empty catalog has cursor IDs: %+v", result)
+		}
+		return result
+	}
+	if guest := list(resourceGuest); len(guest.Data) != 1 || guest.FirstID != shared {
+		t.Fatalf("guest catalog = %+v, want only %s", guest, shared)
+	}
+	if owner := list(resourceOwner); len(owner.Data) < 2 {
+		t.Fatalf("owner catalog lost registered models: %+v", owner)
+	}
+
+	updated := *cfg
+	policy := *cfg.ResourceAllowlists
+	policy.Models = maps.Clone(policy.Models)
+	policy.Models[shared] = []string{coresession.CallerScope(resourceOwner)}
+	updated.ResourceAllowlists = &policy
+	server.handlers.AuthManager.SetConfig(&updated)
+	if guest := list(resourceGuest); len(guest.Data) != 0 {
+		t.Fatalf("guest catalog after updating the display-name rule = %+v", guest)
+	}
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		reply := serveResourceRequest(server, http.MethodPost, path, "X-Api-Key", resourceGuest, fmt.Sprintf(`{"model":%q,"messages":[]}`, shared))
+		if reply.Code != http.StatusForbidden {
+			t.Errorf("%s returned %d after the display-name rule changed", path, reply.Code)
+		}
 	}
 }
 

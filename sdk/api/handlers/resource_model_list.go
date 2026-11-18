@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -34,12 +35,13 @@ func (h *BaseAPIHandler) resolveAuthorizedAutoModel(ctx context.Context) string 
 
 // filterResourceModelList runs after response interceptors so renamed and
 // injected catalog entries are checked against the caller's registered routes.
-func (h *BaseAPIHandler) filterResourceModelList(ctx context.Context, body []byte) ([]byte, error) {
+func (h *BaseAPIHandler) filterResourceModelList(ctx context.Context, sourceFormat string, body []byte) ([]byte, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, err
 	}
 	lists := make(map[string][]json.RawMessage, 2)
+	routingIDs := make(map[string]string)
 	var ids []string
 	for _, field := range []string{"data", "models"} {
 		if raw, exists := envelope[field]; exists {
@@ -49,7 +51,16 @@ func (h *BaseAPIHandler) filterResourceModelList(ctx context.Context, body []byt
 			}
 			lists[field] = rows
 			for _, row := range rows {
-				ids = append(ids, resourceCatalogModelID(row))
+				id := resourceCatalogModelID(row)
+				routeID := id
+				if sourceFormat == "claude" {
+					routeID = claudemodels.ResolveClaudeModelIDPrefix(id)
+					if routeID != id && h.AuthManager.CheckResourceModelAccess(ctx, id) != nil {
+						continue
+					}
+				}
+				routingIDs[id] = routeID
+				ids = append(ids, routeID)
 			}
 		}
 	}
@@ -63,9 +74,18 @@ func (h *BaseAPIHandler) filterResourceModelList(ctx context.Context, body []byt
 	for field, rows := range lists {
 		filtered := make([]json.RawMessage, 0, len(rows))
 		for _, row := range rows {
-			if visible(resourceCatalogModelID(row)) {
+			if routeID, ok := routingIDs[resourceCatalogModelID(row)]; ok && visible(routeID) {
 				filtered = append(filtered, row)
 			}
+		}
+		if sourceFormat == "claude" && field == "data" {
+			var firstID, lastID string
+			if len(filtered) > 0 {
+				firstID = resourceCatalogModelID(filtered[0])
+				lastID = resourceCatalogModelID(filtered[len(filtered)-1])
+			}
+			envelope["first_id"], _ = json.Marshal(firstID)
+			envelope["last_id"], _ = json.Marshal(lastID)
 		}
 		encoded, err := json.Marshal(filtered)
 		if err != nil {
