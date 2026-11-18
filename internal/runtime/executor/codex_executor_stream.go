@@ -54,6 +54,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	ctx = reporter.DiagnosticsContext(ctx)
 	var replayScope codexReasoningReplayScope
 	defer func() {
 		if !isRetryWithoutPenaltyError(err) && !isCodexModelFallbackBlockedError(err) {
@@ -71,6 +72,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	preserveNativeOutput := helps.IsNativeCodexRequest(req.Payload, opts)
 	isGrokClient := grokbuild.IsGrokClientContext(ctx, opts.Headers)
+	nativeAPI := nativeOpenAIResponses(auth, baseURL)
 	to := sdktranslator.FromString("codex")
 	reporter.EnableSemanticTiming(to.String())
 	originalPayloadSource := req.Payload
@@ -79,13 +81,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	originalPayload := originalPayloadSource
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
-	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, true, isCompat)
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, codexRequestTarget(from, nativeAPI), targetModel, originalPayload, req.Payload, true, isCompat)
 	if err != nil {
 		return nil, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(body)
-	normalizeCodexOutputBudgetDoc(doc)
+	if !nativeAPI {
+		normalizeCodexOutputBudgetDoc(doc)
+	}
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
@@ -95,42 +99,44 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslated, req, opts, auth))
-	_ = doc.Delete("previous_response_id")
-	_ = doc.Delete("generate")
-	_ = doc.Delete("prompt_cache_retention")
-	_ = doc.Delete("safety_identifier")
-	reasoningSummaryDelivery := doc.Get("stream_options.reasoning_summary_delivery")
-	hasReasoningSummaryDelivery := reasoningSummaryDelivery.Exists()
-	var reasoningSummaryDeliveryVal any
-	if hasReasoningSummaryDelivery {
-		reasoningSummaryDeliveryVal = reasoningSummaryDelivery.Value()
-	}
-	_ = doc.Delete("stream_options")
-	if hasReasoningSummaryDelivery {
-		_ = doc.Set("stream_options.reasoning_summary_delivery", reasoningSummaryDeliveryVal)
-	}
-	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
-	instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
-	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
-	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
-	if !useSIWC {
-		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)
-		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-			checkModel := req.Model
-			if strings.TrimSpace(checkModel) == "" {
-				checkModel = baseModel
-			}
-			ensureImageGenerationToolDoc(doc, checkModel, auth, opts.Headers)
-			if !codexAuthUsesAPIKey(auth) {
-				normalizeCodexImageGenerationToolsDoc(doc)
-			}
+	if !nativeAPI {
+		_ = doc.Delete("previous_response_id")
+		_ = doc.Delete("generate")
+		_ = doc.Delete("prompt_cache_retention")
+		_ = doc.Delete("safety_identifier")
+		reasoningSummaryDelivery := doc.Get("stream_options.reasoning_summary_delivery")
+		hasReasoningSummaryDelivery := reasoningSummaryDelivery.Exists()
+		var reasoningSummaryDeliveryVal any
+		if hasReasoningSummaryDelivery {
+			reasoningSummaryDeliveryVal = reasoningSummaryDelivery.Value()
 		}
-	} else {
-		applyCodexSIWCRequestBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		_ = doc.Delete("stream_options")
+		if hasReasoningSummaryDelivery {
+			_ = doc.Set("stream_options.reasoning_summary_delivery", reasoningSummaryDeliveryVal)
+		}
+		helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+		instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
+		hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
+		ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
+		if !useSIWC {
+			normalizeCodexInstructionsDoc(doc, preserveNativeOutput)
+			if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+				checkModel := req.Model
+				if strings.TrimSpace(checkModel) == "" {
+					checkModel = baseModel
+				}
+				ensureImageGenerationToolDoc(doc, checkModel, auth, opts.Headers)
+				if !codexAuthUsesAPIKey(auth) {
+					normalizeCodexImageGenerationToolsDoc(doc)
+				}
+			}
+		} else {
+			applyCodexSIWCRequestBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		}
+		normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
+		helps.NormalizeCodexToolSchemasDoc(doc)
 	}
-	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
-	helps.NormalizeCodexToolSchemasDoc(doc)
 	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
 	if err != nil {
 		return nil, err

@@ -1269,6 +1269,13 @@ patches:
     introduced_in: 5c894b6c49ab317004900ff0f54e8a066c8728b2
     affected_upstream_range: reviewed through 5208aec703b5ce7e3445f6e9d91cc13b3e78003a; this is a selective local correction, not a full upstream merge.
     files:
+      - internal/runtime/executor/native_openai_responses.go
+      - internal/runtime/executor/native_openai_responses_test.go
+      - internal/runtime/executor/codex_executor_request.go
+      - internal/runtime/executor/codex_executor_execute.go
+      - internal/runtime/executor/codex_executor_stream.go
+      - internal/runtime/executor/codex_websockets_execute.go
+      - internal/runtime/executor/codex_websockets_stream.go
       - internal/util/responses_controls.go
       - internal/util/responses_controls_test.go
       - internal/thinking/apply.go
@@ -1281,6 +1288,10 @@ patches:
       - sdk/api/handlers/openai/openai_responses_controls_test.go
       - internal/translator/codex/openai/responses/codex_responses_controls_test.go
     regression_tests:
+      - TestNativeResponsesAPIKeyWire
+      - TestNativeResponsesWebsocketWire
+      - TestNativeResponsesExplicitPCKWithIdentityConfuse
+      - TestResponsesAutomaticCompactionCapabilityIsBackendSpecific
       - TestCodexAstraControlsSurviveNativeTranslation
       - TestUsageReasoningEffortHonorsCompactionAndInvalidControlBoundaries
       - TestResponsesControlsRejectLossyChatFallback

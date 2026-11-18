@@ -350,6 +350,13 @@ require_grep 'resolved-model-options' internal/api/handlers/management/flow_cont
 require_grep 'configuration-failure' internal/api/handlers/management/flow_control.go
 require_grep 'legacy-policy' internal/api/handlers/management/flow_control.go
 
+# Bounded cache evidence remains additive to full usage and management auth.
+require_path sdk/cliproxy/diagnostics
+require_path docs/lts/cache-diagnostics.md
+require_grep 'json:"cache_observation,omitempty"' internal/usage/logger_plugin.go internal/redisqueue/plugin.go
+require_grep 'json:"diagnostics_instance_id,omitempty"' internal/usage/logger_plugin.go
+require_grep '"/cache-diagnostics/session"' internal/api/server_management.go
+
 go test ./scripts/ltsregistry -count=1
 
 validator_args=(--root .)

@@ -107,6 +107,9 @@ func TestOpenAICompatRepeatedStreamFailuresPreserveObservedUsage(t *testing.T) {
 					if withUsage {
 						want = coreusage.Detail{InputTokens: 3, OutputTokens: 4, ReasoningTokens: 1, CachedTokens: 2, CacheReadTokens: 2, TotalTokens: 7, TokenBreakdown: coreusage.NewSubsetTokenBreakdown(3, 2, 0, 4, 1, 7), ResponseServiceTier: "priority", UpstreamServiceTier: "priority"}
 					}
+					if withUsage {
+						want.CacheObservation = &coreusage.CacheObservation{Version: 1, Read: coreusage.CacheTokenObservation{State: "present", Value: coreusage.Int64Ptr(2), Source: "prompt_tokens_details.cached_tokens"}, Write: coreusage.CacheTokenObservation{State: "absent"}}
+					}
 					if !reflect.DeepEqual(record.Detail, want) || record.ResponseServiceTier != want.ResponseServiceTier || record.EffectiveServiceTier != want.ResponseServiceTier {
 						t.Errorf("usage=%+v, want %+v", record.Detail, want)
 					}

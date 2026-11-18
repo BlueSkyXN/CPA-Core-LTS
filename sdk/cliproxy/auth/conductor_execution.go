@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -317,6 +318,7 @@ func (m *Manager) executeRequestUncontrolled(ctx context.Context, providers []st
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = m.withCacheDiagnostics(ctx, req, opts)
 	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
@@ -350,6 +352,7 @@ func (m *Manager) executeCountRequestUncontrolled(ctx context.Context, providers
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = m.withCacheDiagnostics(ctx, req, opts)
 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
@@ -452,6 +455,7 @@ func (m *Manager) executeStreamRequestUncontrolled(ctx context.Context, provider
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	ctx = m.withCacheDiagnostics(ctx, req, opts)
 	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = withPreDispatchSelection(ctx)
@@ -718,6 +722,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
+		decisionCtx := diagnostics.BeginSelection(ctx)
 		opts.Metadata = cloneRequestMetadata(opts.Metadata)
 		pickOpts := opts
 		if homeMode {
@@ -735,8 +740,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				errPick = &Error{Code: "home_unavailable", Message: "home runtime auth unavailable", HTTPStatus: http.StatusServiceUnavailable}
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+			auth, executor, provider, errPick = m.pickNextMixed(decisionCtx, providers, routeModel, pickOpts, tried)
 		}
+		recordCacheSelection(decisionCtx, auth, pickOpts, errPick)
 		if errPick == nil {
 			updateInFlightScopeProvider(ctx, provider)
 		}
@@ -746,7 +752,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
-		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, auth, provider, routeModel, opts)
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(decisionCtx, auth, provider, routeModel, opts)
 		if !allowed {
 			if tried == nil {
 				tried = make(map[string]struct{})
@@ -1032,13 +1038,15 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
+		decisionCtx := diagnostics.BeginSelection(ctx)
 		opts.Metadata = cloneRequestMetadata(opts.Metadata)
 		pickOpts := opts
 		if homeMode {
 			pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
 			pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixed(decisionCtx, providers, routeModel, pickOpts, tried)
+		recordCacheSelection(decisionCtx, auth, pickOpts, errPick)
 		if errPick == nil {
 			updateInFlightScopeProvider(ctx, provider)
 		}
@@ -1056,7 +1064,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 
 		tried[auth.ID] = struct{}{}
-		execCtx := contextWithAuthGeneration(ctx, auth)
+		execCtx := contextWithAuthGeneration(decisionCtx, auth)
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -1326,6 +1334,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
+		decisionCtx := diagnostics.BeginSelection(ctx)
 		opts.Metadata = cloneRequestMetadata(opts.Metadata)
 		pickOpts := opts
 		if homeMode {
@@ -1340,18 +1349,19 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		var provider string
 		var errPick error
 		if homeMode {
-			selection, errPick = m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
+			selection, errPick = m.pickHomeDispatchSelection(decisionCtx, routeModel, pickOpts)
 			if selection != nil {
 				auth = selection.CloneAuthForRoute(routeModel)
 				executor = selection.Executor
 				provider = selection.Provider
 			}
 		} else {
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+			auth, executor, provider, errPick = m.pickNextMixed(decisionCtx, providers, routeModel, pickOpts, tried)
 			if errPick == nil {
 				updateInFlightScopeProvider(ctx, provider)
 			}
 		}
+		recordCacheSelection(decisionCtx, auth, pickOpts, errPick)
 		if errPick != nil {
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
@@ -1418,7 +1428,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 		}
 
-		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(ctx, auth, provider, routeModel, opts)
+		attemptCtx, allowed := m.beginCodexRateLimitContinuityAttempt(decisionCtx, auth, provider, routeModel, opts)
 		if !allowed {
 			if selection != nil {
 				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "continuity_observation_pending"); errEnd != nil {

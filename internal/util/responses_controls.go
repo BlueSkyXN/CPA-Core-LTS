@@ -83,9 +83,8 @@ func InspectResponsesControls(body []byte) (ResponsesControls, error) {
 	return controls, nil
 }
 
-// ValidateResponsesControls rejects combinations that would otherwise lose
-// meaning when Codex strips unsupported automatic-compaction settings.
-// Normal requests without configuration updates retain existing behavior.
+// ValidateResponsesControls validates the public Responses contract before
+// routing. Backend-specific restrictions belong to the selected translator.
 func ValidateResponsesControls(body []byte, compact bool) error {
 	controls, err := InspectResponsesControls(body)
 	if err != nil || !controls.HasConfigurationUpdate {
@@ -106,9 +105,27 @@ func ValidateResponsesControls(body []byte, compact bool) error {
 	if options.Truncation == "auto" {
 		return fmt.Errorf("configuration_update cannot be combined with automatic truncation")
 	}
+	return nil
+}
+
+// 公开 Responses 支持配置更新与自动压缩；Codex 转换会删除 context_management，
+// 因而只在该出口拒绝组合，避免入口误拦原厂 API key 请求。
+func ValidateCodexResponsesControls(body []byte) error {
+	controls, err := InspectResponsesControls(body)
+	if err != nil || !controls.HasConfigurationUpdate {
+		return err
+	}
+	var options struct {
+		ContextManagement []struct {
+			Type string `json:"type"`
+		} `json:"context_management"`
+	}
+	if err := json.Unmarshal(body, &options); err != nil {
+		return err
+	}
 	for _, item := range options.ContextManagement {
 		if item.Type == "compaction" {
-			return fmt.Errorf("configuration_update cannot be combined with automatic compaction; use explicit compaction_trigger items")
+			return fmt.Errorf("Codex backend cannot combine configuration_update with automatic compaction; use explicit compaction_trigger items")
 		}
 	}
 	return nil

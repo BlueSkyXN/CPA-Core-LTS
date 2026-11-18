@@ -35,6 +35,10 @@ func (m *Manager) hasPluginScheduler() bool {
 	m.mu.RLock()
 	scheduler := m.pluginScheduler
 	m.mu.RUnlock()
+	return isPluginSchedulerActive(scheduler)
+}
+
+func isPluginSchedulerActive(scheduler PluginScheduler) bool {
 	if scheduler == nil {
 		return false
 	}

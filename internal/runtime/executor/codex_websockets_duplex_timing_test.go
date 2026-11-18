@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -60,6 +61,8 @@ func TestCodexDuplexRejectedFollowupPreservesDispatchTiming(t *testing.T) {
 			defer cancel()
 			input := make(chan core.WebsocketInput, 1)
 			ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+			store := diagnostics.NewStore()
+			ctx = store.Begin(ctx, "request", "caller", "session", "gpt-6-astra", "codex", []byte(`{"model":"gpt-6-astra","input":[]}`))
 			e := NewCodexWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{ResponseSteering: true}})
 			e.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
 			sink := newTimingUsageSink()
@@ -91,6 +94,22 @@ func TestCodexDuplexRejectedFollowupPreservesDispatchTiming(t *testing.T) {
 			}
 			if completed != rejections+2 {
 				t.Fatalf("terminal events = %d, want %d", completed, rejections+2)
+			}
+			trace, _ := store.Get(diagnostics.FromContext(ctx).ID())
+			if len(trace.Attempts) != rejections+2 {
+				t.Fatalf("diagnostic attempts=%d", len(trace.Attempts))
+			}
+			for i, attempt := range trace.Attempts {
+				want := "completed"
+				if i > 0 && i <= rejections {
+					want = "upstream_error"
+				}
+				if attempt.Outcome != want {
+					t.Errorf("attempt %d outcome=%s, want %s", i+1, attempt.Outcome, want)
+				}
+				if want == "completed" && attempt.ResponseID != "accepted" {
+					t.Errorf("completed response ID overwritten: %s", attempt.ResponseID)
+				}
 			}
 			for attempt := 0; attempt < rejections+2; attempt++ {
 				record := waitTimingUsageRecord(t, sink, id)

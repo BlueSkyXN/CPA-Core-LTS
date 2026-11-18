@@ -144,6 +144,17 @@ retained_capabilities:
     conflict_policy: retain_official_availability_fix_without_freezing_future_model_instructions
 
 lts_owned_features:
+  - id: cache-request-diagnostics
+    registry_feature: cache-request-diagnostics
+    maintenance_policy: bounded-read-only-evidence
+    markers:
+      - diagnostics_instance_id
+      - cache_observation
+      - /cache-diagnostics/session
+    validation:
+      - go test ./sdk/cliproxy/diagnostics ./sdk/cliproxy/auth ./internal/runtime/executor/... ./internal/usage
+    conflict_policy: retain_presence_attempt_links_instance_scope_and_nonmutating_queries
+
   - id: reasoning-effort-policy
     registry_feature: reasoning-effort-policy
     maintenance_policy: opt-in-semantic-request-policy

@@ -52,6 +52,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	ctx = reporter.DiagnosticsContext(ctx)
 	var replayScope codexReasoningReplayScope
 	defer func() {
 		if !isCodexModelFallbackBlockedError(err) {
@@ -68,6 +69,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	nativeRequest := helps.IsNativeCodexRequest(req.Payload, opts)
+	nativeAPI := nativeOpenAIResponses(auth, baseURL)
 	to := sdktranslator.FromString("codex")
 	reporter.EnableSemanticTiming(to.String())
 	originalPayloadSource := req.Payload
@@ -76,13 +78,15 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	originalPayload := originalPayloadSource
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
-	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, false, isCompat)
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, codexRequestTarget(from, nativeAPI), targetModel, originalPayload, req.Payload, false, isCompat)
 	if err != nil {
 		return resp, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(body)
-	normalizeCodexOutputBudgetDoc(doc)
+	if !nativeAPI {
+		normalizeCodexOutputBudgetDoc(doc)
+	}
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
 	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
@@ -94,24 +98,26 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts, auth))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
-	_ = doc.Delete("prompt_cache_retention")
-	_ = doc.Delete("safety_identifier")
-	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
-	if !useSIWC {
-		normalizeCodexInstructionsDoc(doc, nativeRequest)
-		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-			checkModel := req.Model
-			if strings.TrimSpace(checkModel) == "" {
-				checkModel = baseModel
-			}
-			ensureImageGenerationToolDoc(doc, checkModel, auth, opts.Headers)
-			if !codexAuthUsesAPIKey(auth) {
-				normalizeCodexImageGenerationToolsDoc(doc)
+	if !nativeAPI {
+		_ = doc.Delete("prompt_cache_retention")
+		_ = doc.Delete("safety_identifier")
+		ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
+		if !useSIWC {
+			normalizeCodexInstructionsDoc(doc, nativeRequest)
+			if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+				checkModel := req.Model
+				if strings.TrimSpace(checkModel) == "" {
+					checkModel = baseModel
+				}
+				ensureImageGenerationToolDoc(doc, checkModel, auth, opts.Headers)
+				if !codexAuthUsesAPIKey(auth) {
+					normalizeCodexImageGenerationToolsDoc(doc)
+				}
 			}
 		}
+		normalizeCodexWebsocketParallelToolCallsDoc(doc, opts.Headers)
+		helps.NormalizeCodexToolSchemasDoc(doc)
 	}
-	normalizeCodexWebsocketParallelToolCallsDoc(doc, opts.Headers)
-	helps.NormalizeCodexToolSchemasDoc(doc)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflictDoc(doc)
 	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
 	if err != nil {
@@ -150,6 +156,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		*doc = *ojson.NewDoc(body)
 		wsHeaders = make(http.Header)
+	} else if nativeAPI {
+		wsHeaders = make(http.Header)
 	} else {
 		wsHeaders, _, errPromptCache = applyCodexPromptCacheHeadersWithContextDoc(ctx, from, req, doc, opts.Headers)
 		if errPromptCache != nil {
@@ -169,9 +177,15 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	replayScope = codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
 	clientBody := body
 	var identityState codexIdentityConfuseState
-	upstreamBody, identityState, err := prepareCodexOutboundMetadata(ctx, e.cfg, auth, originalPayloadSource, body, opts.Headers)
-	if err != nil {
-		return resp, err
+	upstreamBody := body
+	if nativeAPI {
+		observeNativeCacheIntent(ctx, body)
+	}
+	if !nativeAPI {
+		upstreamBody, identityState, err = prepareCodexOutboundMetadata(ctx, e.cfg, auth, originalPayloadSource, body, opts.Headers)
+		if err != nil {
+			return resp, err
+		}
 	}
 	if affinityActive {
 		upstreamBody = helps.SanitizeCodexInputItemIDs(upstreamBody)
@@ -307,8 +321,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
-	reporter.ObserveUpstreamWebsocketRequest(len(wsReqBody))
+	reporter.ObserveUpstreamWebsocketRequestTo(wsReqBody, wsURL, actualSessionHeader)
 	if errSend := writeCodexWebsocketMessage(sess, connection.conn, wsReqBody); errSend != nil {
+		reporter.ObserveWebsocketSendFailure()
 		errSend = mapCodexWebsocketWriteError(sess, connection.conn, errSend)
 		if sess != nil && !isEphemeralSession {
 			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
@@ -360,10 +375,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				requestSignal = retrySignal
 				restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(connection))
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
-				reporter.ObserveUpstreamWebsocketRequest(len(wsReqBodyRetry))
+				reporter.ObserveUpstreamWebsocketRequestTo(wsReqBodyRetry, wsURL, actualSessionHeader)
 				if errSendRetry := writeCodexWebsocketMessage(sess, connection.conn, wsReqBodyRetry); errSendRetry == nil {
 					wsReqBody = wsReqBodyRetry
 				} else {
+					reporter.ObserveWebsocketSendFailure()
 					errSendRetry = mapCodexWebsocketWriteError(sess, connection.conn, errSendRetry)
 					e.invalidateUpstreamConn(sess, connection, "send_error", errSendRetry)
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
@@ -426,6 +442,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		reporter.MarkFirstResponseByte()
 		reporter.ObserveUpstreamResponseBytes(len(payload))
+		reporter.ObserveWebsocketDiagnostics(payload)
+		reporter.ObserveResponseModel(payload)
 		reporter.ObserveTimingMessage(to.String(), payload)
 		observeCodexTokenEvent(reporter, payload)
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)

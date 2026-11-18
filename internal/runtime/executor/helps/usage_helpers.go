@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -32,42 +33,44 @@ import (
 )
 
 type UsageReporter struct {
-	requestID             string
-	traceID               string
-	selectionID           string
-	homeSelection         *usage.HomeSelection
-	provider              string
-	baseURL               string
-	executorType          string
-	model                 string
-	alias                 string
-	upstreamModelMu       sync.RWMutex
-	upstreamModel         string
-	expectedUpstreamModel string
-	authID                string
-	authIndex             string
-	authMu                sync.RWMutex
-	accessTokenHash       string
-	requestScopedRules    []internalconfig.RequestScopedErrorRule
-	authType              string
-	apiKey                string
-	accessProvider        string
-	isNativeKey           bool
-	sessionID             string
-	parentSessionID       string
-	source                string
-	usageProvenance       string
-	reasoning             string
-	serviceTier           string
-	outboundTier          string
-	effectiveServiceTier  string
-	generate              bool
-	stream                bool
-	requestedAt           time.Time
-	timingMu              sync.RWMutex
-	timing                *responseTimingTracker
-	timingFormat          sdktranslator.Format
-	timingEnabled         bool
+	diagnosticExecution        *diagnostics.Execution
+	diagnosticWebsocketAttempt *diagnostics.AttemptRef
+	requestID                  string
+	traceID                    string
+	selectionID                string
+	homeSelection              *usage.HomeSelection
+	provider                   string
+	baseURL                    string
+	executorType               string
+	model                      string
+	alias                      string
+	upstreamModelMu            sync.RWMutex
+	upstreamModel              string
+	expectedUpstreamModel      string
+	authID                     string
+	authIndex                  string
+	authMu                     sync.RWMutex
+	accessTokenHash            string
+	requestScopedRules         []internalconfig.RequestScopedErrorRule
+	authType                   string
+	apiKey                     string
+	accessProvider             string
+	isNativeKey                bool
+	sessionID                  string
+	parentSessionID            string
+	source                     string
+	usageProvenance            string
+	reasoning                  string
+	serviceTier                string
+	outboundTier               string
+	effectiveServiceTier       string
+	generate                   bool
+	stream                     bool
+	requestedAt                time.Time
+	timingMu                   sync.RWMutex
+	timing                     *responseTimingTracker
+	timingFormat               sdktranslator.Format
+	timingEnabled              bool
 	// The effective-token fields preserve upstream's protocol-aware timing
 	// state. Canonical v3 usage records are populated only from timing above.
 	ttftMu              sync.RWMutex
@@ -175,6 +178,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 		reporter.requestScopedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, cliproxyauth.RequestScopedErrorConfigFromContext(ctx))
 	}
+	reporter.diagnosticExecution = &diagnostics.Execution{Ref: diagnostics.FromContext(ctx), ID: reporter.requestID, Provider: provider, Model: model, AuthIndex: reporter.authIndex, AuthType: reporter.authType}
 	return reporter
 }
 
@@ -973,30 +977,32 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	}
 	detail.ResponseCyberProgram = usage.CanonicalResponseCyberProgram(detail.ResponseCyberProgram)
 	return usage.Record{
-		RequestID:           r.requestID,
-		TraceID:             r.traceID,
-		Provider:            r.provider,
-		BaseURL:             r.baseURL,
-		ExecutorType:        r.executorType,
-		Model:               model,
-		Alias:               r.alias,
-		UpstreamModel:       r.snapshotUpstreamModel(),
-		Source:              r.source,
-		UsageProvenance:     r.usageProvenance,
-		APIKey:              r.apiKey,
-		IsNativeKey:         r.isNativeKey,
-		AccessProvider:      r.accessProvider,
-		SessionID:           r.sessionID,
-		ParentSessionID:     r.parentSessionID,
-		AuthID:              r.authID,
-		AuthIndex:           r.authIndex,
-		AccessTokenSHA256:   r.accessTokenFingerprint(),
-		AuthType:            r.authType,
-		ReasoningEffort:     r.reasoning,
-		ServiceTier:         r.serviceTier,
-		RequestServiceTier:  r.serviceTier,
-		OutboundServiceTier: r.outboundTier,
-		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
+		RequestID:             r.requestID,
+		DiagnosticsID:         r.diagnosticsID(),
+		DiagnosticsInstanceID: r.diagnosticsInstanceID(),
+		TraceID:               r.traceID,
+		Provider:              r.provider,
+		BaseURL:               r.baseURL,
+		ExecutorType:          r.executorType,
+		Model:                 model,
+		Alias:                 r.alias,
+		UpstreamModel:         r.snapshotUpstreamModel(),
+		Source:                r.source,
+		UsageProvenance:       r.usageProvenance,
+		APIKey:                r.apiKey,
+		IsNativeKey:           r.isNativeKey,
+		AccessProvider:        r.accessProvider,
+		SessionID:             r.sessionID,
+		ParentSessionID:       r.parentSessionID,
+		AuthID:                r.authID,
+		AuthIndex:             r.authIndex,
+		AccessTokenSHA256:     r.accessTokenFingerprint(),
+		AuthType:              r.authType,
+		ReasoningEffort:       r.reasoning,
+		ServiceTier:           r.serviceTier,
+		RequestServiceTier:    r.serviceTier,
+		OutboundServiceTier:   r.outboundTier,
+		ResponseServiceTier:   strings.TrimSpace(detail.ResponseServiceTier),
 		EffectiveServiceTier: usage.ResolveEffectiveServiceTier(
 			detail.ResponseServiceTier,
 			r.outboundTier,
@@ -1150,9 +1156,15 @@ func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.BeginResponseTiming()
 	t.reporter.beginUpstreamHTTPAttempt(req)
+	attempt := t.reporter.diagnosticExecution.BeginHTTP(req)
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
+		attempt.Status(0, true)
 		return resp, errRoundTrip
+	}
+	if resp != nil {
+		attempt.Status(resp.StatusCode, false)
+		resp.Body = attempt.WrapResponse(resp.Body, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"))
 	}
 	t.reporter.observeResponse(resp, t.packetOnly, !t.decodedResponse)
 	return resp, nil
@@ -1163,6 +1175,15 @@ type usageTTFTReadCloser struct {
 	once    sync.Once
 	mark    func()
 	observe func([]byte)
+}
+
+func (r *usageTTFTReadCloser) DecodedDiagnostics() *diagnostics.AttemptRef {
+	if observer, ok := r.ReadCloser.(interface {
+		DecodedDiagnostics() *diagnostics.AttemptRef
+	}); ok {
+		return observer.DecodedDiagnostics()
+	}
+	return nil
 }
 
 func (r *usageTTFTReadCloser) Read(p []byte) (int, error) {
@@ -2226,6 +2247,11 @@ func parseOpenAIStyleUsageWithCache(root, usageNode ojson.Result) (usage.Detail,
 		populateOpenAIStyleStructuredFields(&detail, usageNode)
 	}
 	applyResponsesCacheRetention(&detail, root, usageNode)
+	// 无效 token 向量仍按既有契约整体拒绝；原始字段证据由传输诊断保存。
+	// 有效的全零向量包含 TokenBreakdown，仍可记录明确零值。
+	if !hasTokens || detail != (usage.Detail{}) {
+		detail.CacheObservation = observeOpenAICacheFields(usageNode)
+	}
 	return detail, hasTokens || hasStructuredUsageDetail(detail)
 }
 

@@ -18,6 +18,28 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: cache-request-diagnostics
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Explain actual selection and transport attempts while retaining cache field presence, without changing routing decisions.
+    core_files:
+      - sdk/cliproxy/diagnostics/
+      - sdk/cliproxy/auth/cache_diagnostics.go
+      - sdk/cliproxy/auth/cache_snapshot.go
+      - sdk/cliproxy/usage/cache_observation.go
+      - internal/api/handlers/management/cache_diagnostics.go
+      - docs/lts/cache-diagnostics.md
+    required_markers:
+      - diagnostics_instance_id
+      - cache_observation
+      - /cache-diagnostics/session
+    validation:
+      - go test ./sdk/cliproxy/diagnostics ./sdk/cliproxy/session ./sdk/cliproxy/auth
+      - go test ./internal/runtime/executor/... ./internal/usage ./internal/redisqueue ./internal/api/handlers/management
+      - scripts/check-lts-contract.sh
+
   - id: reasoning-effort-policy
     kind: lts-feature
     support: maintained

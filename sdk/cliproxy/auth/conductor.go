@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/flowcontrol"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -226,6 +227,7 @@ type resultPolicyHolder struct {
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
+	cacheDiagnostics          *diagnostics.Store
 	flowControl               *flowcontrol.Engine
 	flowControlError          atomic.Pointer[FlowControlUpdateFailure]
 	inFlightTracker           *inFlightTracker
@@ -338,6 +340,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
+		cacheDiagnostics:         diagnostics.NewStore(),
 		inFlightTracker:          newInFlightTracker(),
 		store:                    store,
 		authLoadGate:             semaphore.NewWeighted(math.MaxInt64),

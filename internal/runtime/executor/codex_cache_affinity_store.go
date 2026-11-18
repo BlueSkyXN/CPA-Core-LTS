@@ -241,6 +241,8 @@ type codexAffinityDecision struct {
 	frozen                                      *codexAffinityFrozen
 	coldFrozen                                  *codexAffinityFrozen
 	check                                       string
+	examined                                    int
+	matchedPrefix                               int
 }
 
 func (s *codexAffinityStore) resetGeneration() uint64 {
@@ -346,6 +348,7 @@ func (s *codexAffinityStore) decide(ctx context.Context, scope, identity, parent
 				return s.freeze(d, now)
 			}
 			checked[k] = struct{}{}
+			d.examined++
 			t := s.trajectories[k]
 			if snap.coarse != "" && t.snapshot.coarse != "" && snap.coarse != t.snapshot.coarse {
 				continue
@@ -359,6 +362,9 @@ func (s *codexAffinityStore) decide(ctx context.Context, scope, identity, parent
 				continue
 			}
 			d.check = "eligible"
+			if n > d.matchedPrefix {
+				d.matchedPrefix = n
+			}
 			if reliable && (established || parent == "" || t.identity != parent) {
 				continue
 			}
