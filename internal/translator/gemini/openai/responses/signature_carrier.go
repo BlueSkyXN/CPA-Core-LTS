@@ -1,9 +1,10 @@
 package responses
 
 import (
-	"encoding/json"
-	"github.com/MoeForge/moego/base64"
 	"strings"
+
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
 
 	"github.com/MoeForge/moego/ojson"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
@@ -17,6 +18,7 @@ const (
 	geminiResponsesCarrierStandalone = "standalone"
 	geminiResponsesCarrierText       = "text"
 	geminiResponsesCarrierFunction   = "function"
+	geminiResponsesCarrierImage      = "image"
 	geminiResponsesCarrierAny        = "any"
 
 	geminiResponsesCarrierDirectionField = "_cpa_reasoning_direction"
@@ -53,7 +55,7 @@ func decodeGeminiResponsesCarrier(rawSignature string) (signatureValue, directio
 		return "", "", "", true, false
 	}
 	switch targetKind {
-	case geminiResponsesCarrierText, geminiResponsesCarrierFunction, geminiResponsesCarrierAny:
+	case geminiResponsesCarrierText, geminiResponsesCarrierFunction, geminiResponsesCarrierImage, geminiResponsesCarrierAny:
 	default:
 		return "", "", "", true, false
 	}
@@ -80,6 +82,10 @@ func geminiResponsesCarrierSemanticTarget(item ojson.Result) string {
 	switch item.Get("type").String() {
 	case "function_call", "custom_tool_call":
 		return geminiResponsesCarrierFunction
+	case "image_generation_call":
+		// A replayed model image item is a valid carrier binding target so an
+		// image part's own signature can stay with the image part.
+		return geminiResponsesCarrierImage
 	case "reasoning":
 		if strings.TrimSpace(item.Get("summary.0.text").String()) != "" {
 			return geminiResponsesCarrierText

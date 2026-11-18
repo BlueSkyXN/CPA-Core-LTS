@@ -15,7 +15,7 @@ func synthesizeForModelPolicy(t *testing.T, raw []byte) []*coreauth.Auth {
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
 	}
-	auths, err := synthesizeFileAuths(ctx, "x.json", raw)
+	auths, _, err := synthesizeFileAuths(ctx, "x.json", raw)
 	if err != nil {
 		t.Fatalf("synthesizeFileAuths() error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestSynthesizeModelPolicyInvalidFailsFile(t *testing.T) {
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
 	}
-	_, err := synthesizeFileAuths(ctx, "x.json", []byte(`{
+	_, _, err := synthesizeFileAuths(ctx, "x.json", []byte(`{
 		"type": "codex",
 		"email": "a@b.c",
 		"model_policy": {"allowlist": {"enabled": "yes"}}

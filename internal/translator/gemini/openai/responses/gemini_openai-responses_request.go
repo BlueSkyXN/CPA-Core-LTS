@@ -1,11 +1,12 @@
 package responses
 
 import (
-	"encoding/json"
-	"github.com/MoeForge/moego/base64"
 	"net/url"
 	"path/filepath"
 	"strings"
+
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
@@ -423,6 +424,17 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 					pendingDeveloperParts = nil
 				}
 
+			case "image_generation_call":
+				// A model image output item replayed as input (#7569): restore
+				// it as a model-role inlineData part so the image, its format,
+				// and the model turn boundary survive the round trip. Adjacent
+				// model contents are coalesced afterwards, so text/call/image
+				// order within one model turn is preserved.
+				hasEncounteredConversation = true
+				if content := buildOpenAIResponsesImageModelContent(item, ""); len(content) > 0 {
+					contentItems = append(contentItems, content)
+				}
+
 			case "reasoning":
 				hasEncounteredConversation = true
 				thoughtText := item.Get("summary.0.text").String()
@@ -446,6 +458,7 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 					next := normalized[i+1]
 					canBindText := (carrierDirection == "" || carrierDirection == geminiResponsesCarrierNext) && (carrierTarget == "" || carrierTarget == geminiResponsesCarrierText || carrierTarget == geminiResponsesCarrierAny)
 					canBindFunction := (carrierDirection == "" || carrierDirection == geminiResponsesCarrierNext) && (carrierTarget == "" || carrierTarget == geminiResponsesCarrierFunction || carrierTarget == geminiResponsesCarrierAny)
+					canBindImage := (carrierDirection == "" || carrierDirection == geminiResponsesCarrierNext) && (carrierTarget == "" || carrierTarget == geminiResponsesCarrierImage || carrierTarget == geminiResponsesCarrierAny)
 					if visible, ok := openAIResponsesAssistantVisibleText(next); ok && canBindText {
 						visibleText = visible
 						i++
@@ -457,6 +470,14 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 						contentItems = append(contentItems, buildOpenAIResponsesReasoningFunctionCallModelContent(thoughtText, next, funcSig, forwardMap))
 						if callID := extractOpenAIResponsesCallID(next); callID != "" {
 							pendingFunctionCallIDs = append(pendingFunctionCallIDs, callID)
+						}
+						i++
+						continue
+					} else if next.Get("type").String() == "image_generation_call" && canBindImage && signature != "" {
+						// An image part's own signature carrier: restore the
+						// image with the signature on the image part itself.
+						if content := buildOpenAIResponsesImageModelContent(next, signature); len(content) > 0 {
+							contentItems = append(contentItems, content)
 						}
 						i++
 						continue
@@ -821,6 +842,7 @@ func reorderOpenAIResponsesDetachedReasoning(items []ojson.Result) []ojson.Resul
 			if direction != "" {
 				alreadyPairedText := false
 				alreadyPairedFunction := false
+				alreadyPairedImage := false
 				if len(reordered) > 1 {
 					prior := reordered[len(reordered)-2]
 					priorDirection := geminiResponsesCarrierDirection(prior)
@@ -828,10 +850,15 @@ func reorderOpenAIResponsesDetachedReasoning(items []ojson.Result) []ojson.Resul
 					priorBindsFollowing := isOpenAIResponsesDetachedCarrier(prior) && (priorDirection == geminiResponsesCarrierNext || priorDirection == geminiResponsesCarrierPrevious)
 					alreadyPairedText = priorBindsFollowing && (priorTarget == geminiResponsesCarrierText || priorTarget == geminiResponsesCarrierAny)
 					alreadyPairedFunction = priorBindsFollowing && (priorTarget == geminiResponsesCarrierFunction || priorTarget == geminiResponsesCarrierAny)
+					alreadyPairedImage = priorBindsFollowing && (priorTarget == geminiResponsesCarrierImage || priorTarget == geminiResponsesCarrierAny)
 				}
 				bindPreviousMessage := direction == geminiResponsesCarrierPrevious && (targetKind == geminiResponsesCarrierText || targetKind == geminiResponsesCarrierAny) && isAssistantMessage && !alreadyPairedText
 				bindPreviousFunction := direction == geminiResponsesCarrierPrevious && (targetKind == geminiResponsesCarrierFunction || targetKind == geminiResponsesCarrierAny) && (previousType == "function_call" || previousType == "custom_tool_call") && strings.TrimSpace(previous.Get("_cpa_reasoning_signature").String()) == "" && !alreadyPairedFunction
-				if bindPreviousMessage || bindPreviousFunction {
+				// A signature arriving late on an image frame already emitted
+				// trails the image item; move it ahead of the image so replay
+				// restores it onto the image part itself.
+				bindPreviousImage := direction == geminiResponsesCarrierPrevious && targetKind == geminiResponsesCarrierImage && previousType == "image_generation_call" && !alreadyPairedImage
+				if bindPreviousMessage || bindPreviousFunction || bindPreviousImage {
 					movedItemJSON, _ := ojson.SetBytes([]byte(item.Raw), geminiResponsesCarrierDirectionField, geminiResponsesCarrierNext)
 					reordered[len(reordered)-1] = util.ParseGJSONBytesNoCopy(movedItemJSON)
 					reordered = append(reordered, previous)
@@ -1864,6 +1891,21 @@ func buildOpenAIResponsesReasoningFunctionCallModelContent(thoughtText string, i
 	modelContent := []byte(`{"role":"model","parts":[]}`)
 	modelContent, _ = ojson.SetRawBytes(modelContent, "parts", translatorcommon.JoinRawArray(parts))
 	return modelContent
+}
+
+// buildOpenAIResponsesImageModelContent restores a replayed image_generation_call
+// output item as a model-role inlineData part (#7569). A non-empty signature is
+// attached to the image part itself, mirroring where Gemini carried it.
+func buildOpenAIResponsesImageModelContent(item ojson.Result, signature string) []byte {
+	data := item.Get("result").String()
+	if data == "" {
+		return nil
+	}
+	imagePart := geminiResponsesInlineDataPart(openAIResponsesImageMimeType(item.Get("output_format").String(), ""), data)
+	if signature != "" && signature != geminiResponsesThoughtSignature {
+		imagePart, _ = ojson.SetBytes(imagePart, "thoughtSignature", signature)
+	}
+	return geminiContent("model", [][]byte{imagePart})
 }
 
 func buildOpenAIResponsesReasoningModelContent(thoughtText, visibleText, signature string, useGeminiNativeReasoningLayout bool) []byte {

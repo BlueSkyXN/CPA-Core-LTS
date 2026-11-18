@@ -96,6 +96,34 @@ func TestNativeResponsesWebsocketPreparation(t *testing.T) {
 	}
 }
 
+func TestNativeResponsesWebsocketInstructionsSnapshot(t *testing.T) {
+	cfg := &config.Config{Payload: config.PayloadConfig{Override: []config.PayloadRule{{
+		Models: []config.PayloadModelRule{{Name: "*"}},
+		Params: map[string]any{"instructions": "configured"},
+	}}}}
+	e := NewCodexWebsocketsExecutor(cfg)
+	for _, tc := range []struct{ name, body, want string }{
+		{"absent", `{"input":[]}`, ""},
+		{"empty", `{"input":[],"instructions":""}`, `""`},
+		{"null", `{"input":[],"instructions":null}`, `null`},
+		{"explicit", `{"input":[],"instructions":"original"}`, `"original"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := exec.Request{Model: "gpt-6-luna", Payload: []byte(tc.body)}
+			prepared, err := e.prepareCodexWebsocketStream(t.Context(), nativeAPIAuth(), req, exec.Options{SourceFormat: translator.FormatOpenAIResponse})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ojson.GetBytes(prepared.upstreamBody, "instructions").String(); got != "configured" {
+				t.Fatalf("outbound instructions = %q, want configured", got)
+			}
+			if got := prepared.unconfiguredInstructions; got != tc.want {
+				t.Errorf("duplex instructions snapshot = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNativeResponsesEndpointBoundary(t *testing.T) {
 	a := nativeAPIAuth()
 	for _, endpoint := range []string{"https://api.openai.com.evil.invalid/v1", "http://api.openai.com/v1", "https://chatgpt.com/backend-api/codex", "https://api.openai.com:444/v1", "https://user@api.openai.com/v1", "https://api.openai.com/v1/responses-unknown"} {

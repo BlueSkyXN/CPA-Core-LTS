@@ -108,3 +108,67 @@ Flow V3 wrapper 与 model-fallback 循环均保留 LTS 形态。
 
 仍为**可选事项**（不阻断合并）：plugin RetryAfter 豁免是否上报 upstream。本地实现已收窄为
 「插件码非空且声明正值 RetryAfter」，upstream `50cfd5f75` 自身的同类回归已实证。
+
+## 2026-11-16 批次：同步到 v8.0.73
+
+本批次把 Core 从 `e96d4c481`（v8.0.72）推进到冻结终点 `43806c865`
+（= tag `v8.0.73`），区间 10 个 first-parent 提交，按依赖与风险分三层合入。
+
+| 层 | 官方终点 | 本地 merge head | 冲突文件数 |
+|---|---|---|---:|
+| Stage 1 | `6d8f872f8` | `6ed4eea75` | 5 |
+| Stage 2 | `05a353cf1` | `7f61bbc96` | 3 |
+| Stage 3 | `43806c865` | `3578bd1e2` | 2 |
+
+`git merge-base --is-ancestor 43806c865 HEAD` 通过；全程 merge commit，
+无 squash/rebase。
+
+### 上游主题与保护面
+
+- `a16da834a` Gemini 4 模型（Argon/Carbon/Hydrogen + `xhigh`）进入
+  `models.json`；随 registry 常规吸收。
+- `3d1a0e0d1` native thinkingLevel 保留与 registry provider 隔离。
+  `LookupModelInfo` 采用 upstream 的 channel 专属静态目录回退
+  （`LookupStaticModelInfoByChannel`），并在每条 codex 查找路径重放 LTS
+  `applyCodexCompatibility`（gpt-5.6-sol/terra、gpt-6-astra 的 `ultra`
+  thinking level 兼容）。
+- `95ebe39c1` v8 插件凭据上传/删除身份保留：`synthesizeFileAuths` 改为
+  三值签名（`handled` 上移给调用方）、`AuthDir` out-of-band 传递、插件
+  空 ID/FileName 相对 AuthDir 解析、多记录展开与 symlink 目的地保留。
+  LTS `model_policy` 校验按新签名重放；Management 入口（上传/快照）
+  继续走 `StrictFileParsing=true`，插件解析错误保持 fail-loud。
+- `6d8f872f8` examples moego alpha.3 与 LTS 上一批升级一致，sum 取并集。
+- `ed1c23f9a` Gemini/Vertex 429 `Retry-After`/`RetryInfo` 解析进入冷却
+  hint；与已接受的「插件声明正值 RetryAfter 豁免 pool 重包装」契约无冲突
+  （该提交只增加 hint 解析，不改 pool 注记判定）。
+- `6684f3b5d` thinking draft 图片（`thought=true` inlineData）不进
+  chat-completions `images[]`；流式空 delta 抑制。
+- `05a353cf1` SDK executor builder hook：`Builder.WithExecutorWrapper` 在
+  统一 `registerExecutor` gate 应用；`ownedExecutor`+revision 跟踪服务自有
+  executor；`ExecutorUnwrapper` 链式解包 + 环/非可比安全。LTS 融合要点：
+  - 公开双参数 `AuthExecutionSessionCloser`
+    （`CloseExecutionSessionsForAuth`）契约保持不变；upstream 新增的 ID 级
+    单参数能力落在独立接口 `AuthExecutionSessionIDCloser`
+    （`CloseAuthExecutionSessions`），移除关闭链先试双参数、回退 ID 级、
+    再 provider 级（stage 2 曾把旧名让给单参数接口，已恢复）；
+  - codex rebind 保留 LTS previous 交接（`NewCodexAutoExecutor(cfg, previous)`），
+    previous 经 `ownedExecutor` 解析、经 `registerExecutor` gate 注册；
+  - LTS Flow V3 包装在 conductor Execute 层，不受注册层 builder hook 影响。
+- `0f8c40e1f` Gemini inlineData 图片以 `image_generation_call` 形式进入
+  Responses 翻译器。
+- `7e82d0d1c` Gemini 零输出 502 跳过凭据冷却；与已接受的凭据级 lifecycle
+  502 只轮换裁决同向，模型级 EOF 冷却契约未触碰。`statusErr` 取 LTS
+  （`modelFallbackReason`/`codexRateLimitClass`）+ upstream
+  （`transientTransport`）字段并集。
+- `43806c865` Claude `json_schema` → `output_config.format` 映射，
+  Claude>=4.5 原生结构化输出、旧模型回落 instruction 注入；Chat/Responses
+  下游兼容由新测试覆盖。
+
+### 验证（本批次）
+
+- 每层全量 `go test ./...` 绿（L1/L2/L3 exit 0；L3 113 包 ok）；
+  `scripts/check-lts-contract.sh` 绿；server build 绿；
+  usage/management 契约测试绿；`git diff --check` 绿；
+  `sdk/cliproxy/auth` + `sdk/cliproxy` executor/注册/会话 race 绿。
+- 本层无新行为裁决；上游漂移以执行期间 upstream/main 实际新增为准记录
+  于下一批。

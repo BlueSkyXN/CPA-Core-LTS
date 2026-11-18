@@ -19,7 +19,7 @@ func scopedPayloadModel() config.PayloadModelRule {
 }
 
 func TestPayloadExecutionScopeAllRuleKinds(t *testing.T) {
-	for _, section := range []string{"default", "default-raw", "override", "override-raw", "filter"} {
+	for _, section := range []string{"default", "default-raw", "override", "override-raw", "filter", "replace"} {
 		for _, tc := range []struct {
 			name, authKind, path string
 			match                bool
@@ -55,20 +55,29 @@ func TestPayloadExecutionScopeAllRuleKinds(t *testing.T) {
 					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: rule.Models, Params: []string{"service_tier"}}}
 					payload = []byte(`{"model":"scope-model","service_tier":"priority"}`)
 				}
+				assertPath, expected := "service_tier", "flex"
+				if section == "replace" {
+					cfg.Payload.Replace = []config.PayloadReplaceRule{{
+						Models:       rule.Models,
+						Target:       config.PayloadReplaceTarget{Role: "user", All: true},
+						Replacements: []config.PayloadReplacement{{"synthetic": "replaced"}},
+					}}
+					assertPath, expected = "input", "replaced"
+				}
 				before := bytes.Clone(payload)
-				out, touched := ApplyPayloadConfigWithAuthTrackedPaths(cfg, tc.authKind, "scope-model", "codex", "responses", "", payload, payload, "client-alias", tc.path, http.Header{"X-Auth-Kind": {"apikey"}}, "service_tier")
+				out, touched := ApplyPayloadConfigWithAuthTrackedPaths(cfg, tc.authKind, "scope-model", "codex", "responses", "", payload, payload, "client-alias", tc.path, http.Header{"X-Auth-Kind": {"apikey"}}, assertPath)
 				if !bytes.Equal(payload, before) {
 					t.Fatal("mutated original request")
 				}
 				if !tc.match {
-					if !bytes.Equal(out, before) || &out[0] != &payload[0] || touched["service_tier"] {
+					if !bytes.Equal(out, before) || &out[0] != &payload[0] || touched[assertPath] {
 						t.Fatal("unmatched rule changed payload or tracking")
 					}
 				} else if section == "filter" {
-					if ojson.GetBytes(out, "service_tier").Exists() || !touched["service_tier"] {
+					if ojson.GetBytes(out, "service_tier").Exists() || !touched[assertPath] {
 						t.Fatal("matching filter was not applied")
 					}
-				} else if ojson.GetBytes(out, "service_tier").String() != "flex" || !touched["service_tier"] {
+				} else if ojson.GetBytes(out, assertPath).String() != expected || !touched[assertPath] {
 					t.Fatal("matching rule was not applied")
 				}
 			})

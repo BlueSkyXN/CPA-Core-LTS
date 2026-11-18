@@ -3,6 +3,7 @@ package responses
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -31,6 +32,12 @@ type geminiCompletedReasoningItem struct {
 	ID        string
 	Signature string
 	Text      string
+}
+
+type geminiCompletedImageItem struct {
+	ID           string
+	OutputFormat string
+	Result       string
 }
 
 type geminiFunctionCallEvidence struct {
@@ -102,6 +109,25 @@ func geminiResponsesTerminalState(finishReason string) (eventType, status string
 	}
 }
 
+// imageOutputFormat maps a Gemini inlineData mime type to a Responses
+// image_generation_call output_format. The second return reports whether
+// the mime type is a supported image type; non-image mime types (e.g.
+// audio, video, PDF) must not be reported as images.
+func imageOutputFormat(mimeType string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/jpeg", "image/jpg", "jpeg", "jpg":
+		return "jpeg", true
+	case "image/webp", "webp":
+		return "webp", true
+	case "image/gif", "gif":
+		return "gif", true
+	case "image/png", "png", "":
+		return "png", true
+	default:
+		return "", false
+	}
+}
+
 type geminiToResponsesState struct {
 	translatorcommon.ApplyPatchErrorState
 	Seq          int
@@ -133,8 +159,15 @@ type geminiToResponsesState struct {
 	DetachedReasoning         map[int]geminiDetachedReasoningItem
 	CompletedMessages         map[int]geminiCompletedMessageItem
 	CompletedReasoning        map[int]geminiCompletedReasoningItem
-	SeenReasoningSignatures   map[string]bool
-	LastSemanticKind          string
+	CompletedImages           map[int]geminiCompletedImageItem
+	LastImageHashByPart       map[int][32]byte
+	// ImageSignatureByPartHash records the signature already emitted for one
+	// image frame (part index + image bytes), so duplicate events of the same
+	// part are skipped while equal signature values on distinct images or
+	// parts are each preserved.
+	ImageSignatureByPartHash map[string]string
+	SeenReasoningSignatures  map[string]bool
+	LastSemanticKind         string
 
 	// function call aggregation (keyed by output_index)
 	NextIndex              int
@@ -353,24 +386,27 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	if *param == nil {
 		reqJSON := bytes.Clone(pickRequestJSON(originalRequestRawJSON, requestRawJSON))
 		*param = &geminiToResponsesState{
-			FuncArgsBuf:             make(map[int]*strings.Builder),
-			FuncInputBuf:            make(map[int]string),
-			FuncCustom:              make(map[int]bool),
-			FuncToolSearch:          make(map[int]bool),
-			FuncNames:               make(map[int]string),
-			FuncNamespaces:          make(map[int]string),
-			FuncCallIDs:             make(map[int]string),
-			FuncDone:                make(map[int]bool),
-			DetachedReasoning:       make(map[int]geminiDetachedReasoningItem),
-			CompletedMessages:       make(map[int]geminiCompletedMessageItem),
-			CompletedReasoning:      make(map[int]geminiCompletedReasoningItem),
-			SeenReasoningSignatures: make(map[string]bool),
-			SanitizedNameMap:        util.SanitizedToolNameMap(originalRequestRawJSON),
-			ToolIdentityMap:         util.ResponsesToolReverseIdentityMap(reqJSON),
-			RequestJSON:             reqJSON,
-			RequestResolved:         true,
-			ToolMapsResolved:        true,
-			EmittedAnnotationCount:  make(map[int]int),
+			FuncArgsBuf:              make(map[int]*strings.Builder),
+			FuncInputBuf:             make(map[int]string),
+			FuncCustom:               make(map[int]bool),
+			FuncToolSearch:           make(map[int]bool),
+			FuncNames:                make(map[int]string),
+			FuncNamespaces:           make(map[int]string),
+			FuncCallIDs:              make(map[int]string),
+			FuncDone:                 make(map[int]bool),
+			DetachedReasoning:        make(map[int]geminiDetachedReasoningItem),
+			CompletedMessages:        make(map[int]geminiCompletedMessageItem),
+			CompletedReasoning:       make(map[int]geminiCompletedReasoningItem),
+			CompletedImages:          make(map[int]geminiCompletedImageItem),
+			LastImageHashByPart:      make(map[int][32]byte),
+			ImageSignatureByPartHash: make(map[string]string),
+			SeenReasoningSignatures:  make(map[string]bool),
+			SanitizedNameMap:         util.SanitizedToolNameMap(originalRequestRawJSON),
+			ToolIdentityMap:          util.ResponsesToolReverseIdentityMap(reqJSON),
+			RequestJSON:              reqJSON,
+			RequestResolved:          true,
+			ToolMapsResolved:         true,
+			EmittedAnnotationCount:   make(map[int]int),
 		}
 	}
 	st := (*param).(*geminiToResponsesState)
@@ -411,6 +447,15 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 	if st.CompletedReasoning == nil {
 		st.CompletedReasoning = make(map[int]geminiCompletedReasoningItem)
+	}
+	if st.CompletedImages == nil {
+		st.CompletedImages = make(map[int]geminiCompletedImageItem)
+	}
+	if st.LastImageHashByPart == nil {
+		st.LastImageHashByPart = make(map[int][32]byte)
+	}
+	if st.ImageSignatureByPartHash == nil {
+		st.ImageSignatureByPartHash = make(map[string]string)
 	}
 	if st.SeenReasoningSignatures == nil {
 		st.SeenReasoningSignatures = make(map[string]bool)
@@ -772,9 +817,16 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 	emitDetachedReasoning := func(signature, direction, targetKind string) {
 		signature = strings.TrimSpace(signature)
-		if signature == "" || st.SeenReasoningSignatures[signature] {
+		// Image carriers are deduplicated by their owning image frame (part
+		// index + image bytes) at the emit site; the signature-value
+		// deduplication below must not swallow an equal signature that
+		// belongs to a different image part.
+		isImageCarrier := targetKind == geminiResponsesCarrierImage
+		if signature == "" || (!isImageCarrier && st.SeenReasoningSignatures[signature]) {
 			return
 		}
+		finalizeReasoning()
+		finalizeMessage()
 		finalizeReasoning()
 		finalizeMessage()
 		idx := st.NextIndex
@@ -801,7 +853,9 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		out = append(out, emitEvent("response.output_item.done", doneDoc.Bytes()))
 
 		st.DetachedReasoning[idx] = geminiDetachedReasoningItem{Index: idx, ID: itemID, Signature: carrierSignature}
-		st.SeenReasoningSignatures[signature] = true
+		if !isImageCarrier {
+			st.SeenReasoningSignatures[signature] = true
+		}
 	}
 	emitTrailingDetachedReasoning := func(signature string) {
 		switch st.LastSemanticKind {
@@ -894,7 +948,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		emitLateCitations()
 	}
 
-	// Handle parts (text/thought/functionCall)
+	// Handle parts (text/thought/functionCall/inlineData)
 	if parts := root.Get("candidates.0.content.parts"); parts.Exists() && parts.IsArray() {
 		parts.ForEach(func(partIdxInChunk, part ojson.Result) bool {
 			explicitPartIndex := -1
@@ -962,6 +1016,50 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				}
 			}
 			st.StreamPartIndex = currentPartIndex
+			// An image part keeps its own thought signature: emit it as a
+			// carrier bound to the image item below (next,image for a new
+			// frame, previous,image for a signature arriving late on a frame
+			// already emitted) before the generic text/reasoning signature
+			// logic can absorb or drop it. Deduplication is keyed by the image
+			// frame (part index + image bytes), not by signature value, so
+			// equal signatures on distinct images or parts are each preserved
+			// while duplicate events of the same part are skipped.
+			if signature != "" && !isThought && !functionCall.Exists() && !text.Exists() {
+				imageInline := part.Get("inlineData")
+				if !imageInline.Exists() {
+					imageInline = part.Get("inline_data")
+				}
+				if imageInline.Exists() {
+					imageData := imageInline.Get("data").String()
+					imageMime := imageInline.Get("mimeType").String()
+					if imageMime == "" {
+						imageMime = imageInline.Get("mime_type").String()
+					}
+					if _, isImg := imageOutputFormat(imageMime); isImg && imageData != "" {
+						imageHash := sha256.Sum256([]byte(imageData))
+						frameKey := fmt.Sprintf("%d:%x", currentPartIndex, imageHash)
+						// A signature repeating the already-emitted bytes of this
+						// part is a late arrival for that frame (previous,image);
+						// anything else is a new image frame (next,image).
+						direction := geminiResponsesCarrierNext
+						if last, seen := st.LastImageHashByPart[currentPartIndex]; seen && last == imageHash {
+							direction = geminiResponsesCarrierPrevious
+						}
+						if st.ImageSignatureByPartHash[frameKey] != signature {
+							if st.PendingReasoningSignature != "" {
+								// The signature queued for the preceding text must
+								// be emitted before this image item so replay can
+								// still bind it back to that text.
+								emitTrailingDetachedReasoning(st.PendingReasoningSignature)
+								st.PendingReasoningSignature = ""
+							}
+							emitDetachedReasoning(signature, direction, geminiResponsesCarrierImage)
+							st.ImageSignatureByPartHash[frameKey] = signature
+						}
+						signature = ""
+					}
+				}
+			}
 			isStreamingFuncContinuation := functionCall.Exists() && st.ActiveStreamingFunc != nil && st.ActiveStreamingFunc.CanContinueWith(functionCall)
 			if functionCall.Exists() && !isStreamingFuncContinuation && st.PendingReasoningSignature != "" {
 				if signature == "" {
@@ -1173,6 +1271,69 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				_ = msgDoc.Set("delta", t.String())
 				out = append(out, emitEvent("response.output_text.delta", msgDoc.Bytes()))
 				st.TextPartRunActive = true
+				return true
+			}
+
+			// Image part (gemini-3-pro-image / nano-banana etc.): surface as an
+			// image_generation_call output item (#7569). Thought images are
+			// excluded, mirroring the chat-completions path (#7566).
+			if inlineData := part.Get("inlineData"); inlineData.Exists() || part.Get("inline_data").Exists() {
+				inline := inlineData
+				if !inline.Exists() {
+					inline = part.Get("inline_data")
+				}
+				if isThought {
+					return true
+				}
+				data := inline.Get("data").String()
+				if data == "" {
+					return true
+				}
+				mimeType := inline.Get("mimeType").String()
+				if mimeType == "" {
+					mimeType = inline.Get("mime_type").String()
+				}
+				if mimeType == "" {
+					mimeType = "image/png"
+				}
+				outFormat, isImage := imageOutputFormat(mimeType)
+				if !isImage {
+					return true
+				}
+				hash := sha256.Sum256([]byte(data))
+				if last, ok := st.LastImageHashByPart[currentPartIndex]; ok && last == hash {
+					return true
+				}
+				if st.LastImageHashByPart == nil {
+					st.LastImageHashByPart = make(map[int][32]byte)
+				}
+				st.LastImageHashByPart[currentPartIndex] = hash
+				finalizeReasoning()
+				finalizeWebSearch()
+				if len(st.WebSearchBufferedDeltas) > 0 {
+					flushWebSearchBufferedText()
+				}
+				finalizeMessage()
+				idx := st.NextIndex
+				st.NextIndex++
+				itemID := fmt.Sprintf("ig_%s_%d", st.ResponseID, idx)
+				addedDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"in_progress","output_format":"png","result":""}}`)
+				_ = addedDoc.Set("sequence_number", nextSeq())
+				_ = addedDoc.Set("output_index", idx)
+				_ = addedDoc.Set("item.id", itemID)
+				_ = addedDoc.Set("item.output_format", outFormat)
+				out = append(out, emitEvent("response.output_item.added", addedDoc.Bytes()))
+				doneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}}`)
+				_ = doneDoc.Set("sequence_number", nextSeq())
+				_ = doneDoc.Set("output_index", idx)
+				_ = doneDoc.Set("item.id", itemID)
+				_ = doneDoc.Set("item.output_format", outFormat)
+				_ = doneDoc.Set("item.result", data)
+				out = append(out, emitEvent("response.output_item.done", doneDoc.Bytes()))
+				if st.CompletedImages == nil {
+					st.CompletedImages = make(map[int]geminiCompletedImageItem)
+				}
+				st.CompletedImages[idx] = geminiCompletedImageItem{ID: itemID, OutputFormat: outFormat, Result: strings.Clone(data)}
 				return true
 			}
 
@@ -1785,6 +1946,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				outputs = append(outputs, itemDoc.Bytes())
 				continue
 			}
+			if completedImage, ok := st.CompletedImages[idx]; ok {
+				itemDoc := ojson.NewDocString(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
+				_ = itemDoc.Set("id", completedImage.ID)
+				_ = itemDoc.Set("output_format", completedImage.OutputFormat)
+				_ = itemDoc.Set("result", completedImage.Result)
+				outputs = append(outputs, itemDoc.Bytes())
+				continue
+			}
 
 			if callID, ok := st.FuncCallIDs[idx]; ok && callID != "" {
 				if st.FuncToolSearch[idx] {
@@ -1966,9 +2135,13 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		text       string
 		signatures []string
 	}
+	type nonStreamImageOutput struct {
+		item []byte
+	}
 	var reasoningOutputs []nonStreamReasoningOutput
 	var functionOutputs []nonStreamFunctionOutput
 	var messageOutputs []nonStreamMessageOutput
+	var imageOutputs []nonStreamImageOutput
 	var outputOrder []nonStreamOutputOrder
 	reasoningOutputSignatures := make(map[string]bool)
 	flushReasoningOutput := func() {
@@ -2012,10 +2185,19 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	detachedOutputIndex := 0
 	seenDetachedOutputs := make(map[string]bool)
 	appendDetachedOutput := func(signature, direction, targetKind string) {
-		if signature == "" || seenDetachedOutputs[signature] {
+		if signature == "" {
 			return
 		}
-		seenDetachedOutputs[signature] = true
+		// Image carriers are owned by their image part; equal signature values
+		// on distinct images must each survive, so value-based deduplication
+		// only applies to text/function carriers.
+		isImageCarrier := targetKind == geminiResponsesCarrierImage
+		if !isImageCarrier {
+			if seenDetachedOutputs[signature] {
+				return
+			}
+			seenDetachedOutputs[signature] = true
+		}
 		placement := "before"
 		if direction == geminiResponsesCarrierPrevious {
 			placement = "after"
@@ -2083,6 +2265,84 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 				if messageSignature != "" && (len(currentMessageSignatures) == 0 || currentMessageSignatures[len(currentMessageSignatures)-1] != messageSignature) {
 					currentMessageSignatures = append(currentMessageSignatures, messageSignature)
 				}
+				return true
+			}
+			if inlineData := p.Get("inlineData"); inlineData.Exists() || p.Get("inline_data").Exists() {
+				inline := inlineData
+				if !inline.Exists() {
+					inline = p.Get("inline_data")
+				}
+				if p.Get("thought").Bool() {
+					return true
+				}
+				data := inline.Get("data").String()
+				if data == "" {
+					return true
+				}
+				mimeType := inline.Get("mimeType").String()
+				if mimeType == "" {
+					mimeType = inline.Get("mime_type").String()
+				}
+				if mimeType == "" {
+					mimeType = "image/png"
+				}
+				outFormat, isImage := imageOutputFormat(mimeType)
+				if !isImage {
+					if signature != "" {
+						// Preserve the thought signature on the image part; it still
+						// detaches via the shared tail logic after this branch.
+						if reasoningText.Len() > 0 {
+							switch {
+							case reasoningEncrypted == "":
+								reasoningEncrypted = signature
+								reasoningDirection = geminiResponsesCarrierStandalone
+								reasoningTargetKind = geminiResponsesCarrierText
+							case reasoningEncrypted != signature:
+								flushReasoningOutput()
+								detachedIndex := len(detachedReasoningOutputs)
+								detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierPrevious, targetKind: geminiResponsesCarrierText})
+								outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+							}
+						} else if currentMessageText.Len() > 0 {
+							if len(currentMessageSignatures) == 0 {
+								currentMessageSignatures = append(currentMessageSignatures, signature)
+							} else if currentMessageSignatures[len(currentMessageSignatures)-1] != signature {
+								flushMessageOutput()
+								currentMsgRuneOffset = 0
+								detachedIndex := len(detachedReasoningOutputs)
+								detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierPrevious, targetKind: geminiResponsesCarrierText})
+								outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+							}
+						} else if len(functionOutputs) > 0 {
+							detachedIndex := len(detachedReasoningOutputs)
+							detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierPrevious, targetKind: geminiResponsesCarrierFunction})
+							outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+						} else {
+							detachedIndex := len(detachedReasoningOutputs)
+							detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierNext, targetKind: geminiResponsesCarrierAny})
+							outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+						}
+					}
+					return true
+				}
+				flushReasoningOutput()
+				flushMessageOutput()
+				if signature != "" {
+					// An image part's thought signature must stay with the image
+					// part on replay: after flushing any preceding text, emit it
+					// as a carrier bound to the image item that follows
+					// (next,image) instead of folding it into the message text.
+					detachedIndex := len(detachedReasoningOutputs)
+					detachedReasoningOutputs = append(detachedReasoningOutputs, nonStreamDetachedOutput{signature: signature, direction: geminiResponsesCarrierNext, targetKind: geminiResponsesCarrierImage})
+					outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "detached", index: detachedIndex})
+				}
+				itemDoc := ojson.NewDocString(`{"id":"","type":"image_generation_call","status":"completed","output_format":"png","result":""}`)
+				_ = itemDoc.Set("id", fmt.Sprintf("ig_%s_%d", strings.TrimPrefix(id, "resp_"), len(imageOutputs)))
+				_ = itemDoc.Set("output_format", outFormat)
+				_ = itemDoc.Set("result", data)
+				imageIndex := len(imageOutputs)
+				imageOutputs = append(imageOutputs, nonStreamImageOutput{item: itemDoc.Bytes()})
+				outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "image", index: imageIndex})
 				return true
 			}
 			if fc := p.Get("functionCall"); fc.Exists() {
@@ -2322,6 +2582,11 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			functionOutput := functionOutputs[outputItem.index]
 			appendDetachedOutput(functionOutput.signature, geminiResponsesCarrierNext, geminiResponsesCarrierFunction)
 			appendOutput(functionOutput.item)
+		case "image":
+			if outputItem.index < 0 || outputItem.index >= len(imageOutputs) {
+				continue
+			}
+			appendOutput(imageOutputs[outputItem.index].item)
 		}
 	}
 

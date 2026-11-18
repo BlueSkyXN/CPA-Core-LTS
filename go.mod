@@ -8,7 +8,7 @@ ignore (
 )
 
 require (
-	github.com/MoeForge/moego v0.1.0-alpha.3
+	github.com/MoeForge/moego v0.1.0-alpha.4
 	github.com/andybalholm/brotli v1.0.6
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/bubbles v1.0.0

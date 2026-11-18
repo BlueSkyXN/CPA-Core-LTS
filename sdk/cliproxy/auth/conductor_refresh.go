@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -1500,7 +1500,10 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		isDisabled := false
 		shouldUnschedule := false
 		m.mu.Lock()
-		if current := m.auths[id]; current != nil && current.generation == expectedGeneration && current.Generation == auth.Generation {
+		// Request results advance Generation without replacing the credential. Keep
+		// their state while applying this grant's failure/backoff; lifecycle and
+		// credential checks below still reject outcomes from obsolete credentials.
+		if current := m.auths[id]; current != nil && current.generation == expectedGeneration {
 			if base != nil && (current.RegistrationEpoch != base.RegistrationEpoch || current.CredentialVersion != base.CredentialVersion || secretGrantChanged(base, current)) {
 				m.mu.Unlock()
 				return nil, err
@@ -1511,6 +1514,10 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			}
 			terminalRefresh := isTerminalRefreshError(current, err)
 			sanitizedRefreshErr := sanitizeRenewalError(current, err)
+			// Claude 明确声明 refresh token 过期时停止刷新；Codex 的既有退避策略保留。
+			if terminalRefresh && strings.EqualFold(strings.TrimSpace(current.Provider), "claude") && sanitizedRefreshErr.Code == "refresh_token_expired" {
+				invalidGrant = false
+			}
 			wasTerminalUnauthorized := hasUnauthorizedAuthFailure(current)
 			if wasTerminalUnauthorized {
 				current.Generation++

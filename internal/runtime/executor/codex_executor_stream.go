@@ -350,7 +350,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 								reporter.PublishFailure(ctx, errClearReplay)
 								return nil, errClearReplay
 							}
-							overloadErr := newCodexBootstrapOverloadErr(terminalBody)
+							overloadErr := newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
+							if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
+								overloadErr = streamErr
+							}
 							helps.RecordAPIResponseError(ctx, e.cfg, overloadErr)
 							reporter.PublishFailure(ctx, overloadErr)
 							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered frames, failing over", bufferedFrames)
