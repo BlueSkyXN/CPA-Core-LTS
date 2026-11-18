@@ -40,7 +40,7 @@ func (m *Manager) SnapshotCacheSession(provider, model, sessionHash string, diag
 	}
 	m.mu.RLock()
 	selector, ok := m.selector.(*SessionAffinitySelector)
-	plugin := m.pluginScheduler != nil
+	scheduler := m.pluginScheduler
 	indices := make(map[string]string, len(m.auths))
 	for id, a := range m.auths {
 		if a != nil {
@@ -48,7 +48,7 @@ func (m *Manager) SnapshotCacheSession(provider, model, sessionHash string, diag
 		}
 	}
 	m.mu.RUnlock()
-	if !ok || plugin || selector == nil {
+	if !ok || selector == nil || isPluginSchedulerActive(scheduler) {
 		return out
 	}
 	out.Status = "unbound"

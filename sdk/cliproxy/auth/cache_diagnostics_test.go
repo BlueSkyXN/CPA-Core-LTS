@@ -61,6 +61,29 @@ func TestCacheDiagnosticsExplicitIdentitySkipsLCPAndSnapshotIsReadOnly(t *testin
 	}
 }
 
+func TestCacheDiagnosticsSnapshotUsesActivePluginScheduler(t *testing.T) {
+	selector := NewSessionAffinitySelector(nil)
+	defer selector.Stop()
+	m := NewManager(nil, selector, nil)
+	for _, tc := range []struct {
+		name      string
+		scheduler PluginScheduler
+		want      string
+	}{
+		{"no_host", nil, "unbound"},
+		{"idle_host", &inactivePluginScheduler{}, "unbound"},
+		{"active_scheduler", &fakePluginScheduler{}, "unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m.SetPluginScheduler(tc.scheduler)
+			snapshot := m.SnapshotCacheSession("codex", "model", diagnostics.Hash("session"))
+			if snapshot.Status != tc.want {
+				t.Errorf("snapshot status = %q, want %q", snapshot.Status, tc.want)
+			}
+		})
+	}
+}
+
 func TestCacheDiagnosticsLCPNoCandidate(t *testing.T) {
 	s := NewSessionAffinitySelector(nil)
 	defer s.Stop()
