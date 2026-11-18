@@ -41,6 +41,7 @@ const (
 	wsTurnStateHeader                     = "x-codex-turn-state"
 	wsTimelineBodyKey                     = "WEBSOCKET_TIMELINE_OVERRIDE"
 	wsCloseReasonMaxBytes                 = 123
+	wsTerminalWriteTimeout                = time.Second
 	wsHTTPReplayRequiredCloseReason       = "upstream requires HTTP replay"
 	responsesWebsocketInboundQueueSize    = 16
 	responsesWebsocketUpstreamModeUnknown = ""
@@ -255,7 +256,7 @@ func (w *responsesWebsocketWriter) closeForUpstreamError(err error) (bool, error
 	}
 	defer w.writeMu.Unlock()
 
-	errWrite := w.conn.WriteControl(websocket.CloseMessage, payload, time.Time{})
+	errWrite := w.conn.WriteControl(websocket.CloseMessage, payload, time.Now().Add(wsTerminalWriteTimeout))
 	errClose := w.conn.Close()
 	if errWrite != nil {
 		return true, errWrite
@@ -391,6 +392,8 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 	}
 	defer w.writeMu.Unlock()
 
+	// A peer that has stopped reading must not hold session cleanup indefinitely.
+	_ = w.conn.SetWriteDeadline(time.Now().Add(wsTerminalWriteTimeout))
 	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
 	errClose := w.conn.Close()
 	if errWrite != nil {
@@ -704,8 +707,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		close(wsDone)
 		cancelSocket(nil)
-		_, _ = writer.closeWithoutError()
-		if errClose := conn.Close(); errClose != nil && !isWebsocketConnectionClosedError(errClose) {
+		// A disconnect subscriber may already own the final write and socket close.
+		if _, errClose := writer.closeWithoutError(); errClose != nil && !isWebsocketConnectionClosedError(errClose) {
 			log.Warnf("responses websocket: close connection error: %v", errClose)
 		}
 		disconnectWg.Wait()

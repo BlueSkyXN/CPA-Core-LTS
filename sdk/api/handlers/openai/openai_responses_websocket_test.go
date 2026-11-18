@@ -3475,6 +3475,70 @@ func TestResponsesWebsocketExposesTerminalOAuthError(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketTeardownFinishesClaimedTerminalWrite(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		read bool
+	}{{"client receives terminal frame", true}, {"client stops reading", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				serverConn, clientConn := net.Pipe()
+				defer serverConn.Close()
+				defer clientConn.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				exec := &websocketUpstreamDisconnectExecutor{subscribed: make(chan string, 1)}
+				manager := coreauth.NewManager(nil, nil, nil)
+				manager.RegisterExecutor(exec)
+				h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&internalconfig.SDKConfig{}, manager))
+				router := gin.New()
+				router.GET("/v1/responses", h.ResponsesWebsocket)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					req, err := http.ReadRequest(bufio.NewReader(serverConn))
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					router.ServeHTTP(newHijackableWebsocketResponseWriter(serverConn), req.WithContext(ctx))
+				}()
+				dialer := websocket.Dialer{NetDialContext: func(context.Context, string, string) (net.Conn, error) {
+					return clientConn, nil
+				}}
+				conn, _, err := dialer.Dial("ws://fixture.invalid/v1/responses", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				exec.TriggerDisconnect(<-exec.subscribed, websocketPinnedFailoverStatusError{
+					status: http.StatusTooManyRequests,
+					msg:    `{"error":{"type":"usage_limit_reached","message":"quota reached"}}`,
+				})
+				// The pipe has no buffer. Leave the terminal writer waiting for our read
+				// while the request handler runs its cleanup.
+				synctest.Wait()
+				cancel()
+				synctest.Wait()
+				if !test.read {
+					time.Sleep(2 * wsTerminalWriteTimeout)
+					select {
+					case <-done:
+					case <-time.After(time.Second):
+						t.Fatal("handler did not finish after the terminal write deadline")
+					}
+					return
+				}
+				_, frame, err := conn.ReadMessage()
+				if err != nil || ojson.GetBytes(frame, "status").Int() != http.StatusTooManyRequests {
+					t.Fatalf("terminal frame = %s, err = %v", frame, err)
+				}
+				<-done
+			})
+		})
+	}
+}
+
 func TestResponsesWebsocketTerminalErrorWrittenOnceAcrossForwardAndDisconnect(t *testing.T) {
 	serverErrCh := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

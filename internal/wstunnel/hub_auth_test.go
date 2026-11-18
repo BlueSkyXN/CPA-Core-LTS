@@ -242,8 +242,12 @@ func TestHubAuth_MethodAndCredentials(t *testing.T) {
 			t.Fatalf("Dial client without type error = %v", errCli)
 		}
 		registerCleanupConn(t, cliCheck)
+		waitServersVisible(t, cliCheck, "hdr-srv-1", "hdr-srv-2")
+		if errWrite := cliCheck.WriteMessage(websocket.TextMessage, []byte(`{"type":"list_servers","request_id":"header-types"}`)); errWrite != nil {
+			t.Fatal(errWrite)
+		}
 		listFrame := readTextJSONFrame(t, cliCheck)
-		if listFrame.Get("servers.#").Int() != 2 ||
+		if listFrame.Get("request_id").String() != "header-types" || listFrame.Get("servers.#").Int() != 2 ||
 			listFrame.Get("servers.0.uuid").String() != "hdr-srv-1" ||
 			listFrame.Get("servers.0.type").String() != "Header-Type-01" ||
 			listFrame.Get("servers.1.uuid").String() != "hdr-srv-2" ||
