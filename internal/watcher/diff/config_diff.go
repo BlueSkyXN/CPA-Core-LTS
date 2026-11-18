@@ -270,6 +270,10 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	}
 
 	// API keys (redacted) and counts
+	if (oldCfg.ResourceAllowlists.Enabled() || newCfg.ResourceAllowlists.Enabled()) &&
+		!reflect.DeepEqual(oldCfg.ResourceAllowlists, newCfg.ResourceAllowlists) {
+		changes = append(changes, "access.resource-allowlists: updated")
+	}
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {
 		changes = append(changes, fmt.Sprintf("api-keys count: %d -> %d", len(oldCfg.APIKeys), len(newCfg.APIKeys)))
 	} else if !reflect.DeepEqual(trimStrings(oldCfg.APIKeys), trimStrings(newCfg.APIKeys)) {

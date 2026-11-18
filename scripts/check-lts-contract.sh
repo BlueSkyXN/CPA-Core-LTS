@@ -336,6 +336,12 @@ require_grep "response_service_tier" internal/api/handlers/management/usage_cont
 require_grep "effective_service_tier" internal/api/handlers/management/usage_contract_test.go
 require_grep '"generate"' internal/api/handlers/management/usage_contract_test.go
 
+# Resource authorization configuration and its local rejection code.
+require_grep 'access[.]resource-allowlists' internal/config/config_v8.go
+require_grep 'yaml:"upstream-api-keys' internal/config/resource_allowlists.go
+require_grep 'yaml:"credential-id' internal/config/config_types.go
+require_grep 'resource_access_denied' sdk/cliproxy/auth/resource_access.go
+
 # Optional local admission surface; behavior is exercised by Flow tests.
 require_path sdk/cliproxy/flowcontrol
 require_path docs/lts/flow-control.md

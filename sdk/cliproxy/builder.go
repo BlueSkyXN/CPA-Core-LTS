@@ -261,6 +261,9 @@ func (b *Builder) Build() (*Service, error) {
 	if errValidate := b.cfg.ValidatePayloadExecutionScopes(); errValidate != nil {
 		return nil, fmt.Errorf("cliproxy: %w", errValidate)
 	}
+	if errValidate := b.cfg.ValidateResourceAllowlists(); errValidate != nil {
+		return nil, fmt.Errorf("cliproxy: %w", errValidate)
+	}
 	b.cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {
 		return nil, fmt.Errorf("cliproxy: %w", errResolvePluginsDir)

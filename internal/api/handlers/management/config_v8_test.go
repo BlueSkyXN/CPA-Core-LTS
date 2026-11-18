@@ -1054,6 +1054,99 @@ api-keys:
 	}
 }
 
+func TestConfigV8ResourceAllowlistsUpdate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("access:\n  api-keys: [fixture-key]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config/*path", h.ConfigV8)
+	router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+
+	request := func(method, suffix, body string, status int) *httptest.ResponseRecorder {
+		t.Helper()
+		reply := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/v8/management/config/access/"+suffix, strings.NewReader(body))
+		router.ServeHTTP(reply, req)
+		if reply.Code != status {
+			t.Fatalf("%s %s returned %d: %s", method, suffix, reply.Code, reply.Body)
+		}
+		return reply
+	}
+	request(http.MethodPut, "resource-allowlists", `{"auth-files":{"team.json":[]},"models":{"model.private":[]}}`, http.StatusOK)
+	request(http.MethodPut, "api-keys", `["fixture-key","new-fixture-key"]`, http.StatusOK)
+	request(http.MethodPut, "resource-allowlists", `{"auth-file":{"team.json":[]}}`, http.StatusUnprocessableEntity)
+	reply := request(http.MethodGet, "resource-allowlists", "", http.StatusOK)
+	if !strings.Contains(reply.Body.String(), `"team.json":[]`) || !strings.Contains(reply.Body.String(), `"model.private":[]`) {
+		t.Fatalf("saved allowlists = %s", reply.Body)
+	}
+}
+
+func TestConfigV8ResourceAllowlistsUpstreamKeyEdit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`access:
+  resource-allowlists:
+    upstream-api-keys:
+      team: []
+api-keys:
+  codex:
+    - name: fixture
+      base-url: https://example.invalid
+      keys:
+        - api-key: example-original
+          credential-id: team
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config/*path", h.ConfigV8)
+	router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+	router.PUT("/v0/management/codex-api-key", h.PutCodexKeys)
+
+	request := func(method, endpoint, payload string, status int) {
+		t.Helper()
+		reply := httptest.NewRecorder()
+		router.ServeHTTP(reply, httptest.NewRequest(method, endpoint, strings.NewReader(payload)))
+		if reply.Code != status {
+			t.Fatalf("%s %s returned %d: %s", method, endpoint, reply.Code, reply.Body)
+		}
+	}
+	endpoint := "/v8/management/config/api-keys/codex"
+	request(http.MethodPut, endpoint, `[{"name":"fixture","base-url":"https://example.invalid","keys":[{"api-key":"example-rotated"}]}]`, http.StatusUnprocessableEntity)
+	request(http.MethodPut, "/v0/management/codex-api-key", `[{"base-url":"https://example.invalid","api-key":"example-rotated"}]`, http.StatusUnprocessableEntity)
+	if after := h.configSnapshot(); after.CodexKey[0].CredentialID != "team" {
+		t.Fatal("rejected legacy update affected management runtime state")
+	}
+	if current, err := os.ReadFile(path); err != nil || string(current) != string(raw) {
+		t.Fatalf("rejected updates altered the persisted configuration, read error = %v", err)
+	}
+	request(http.MethodPut, endpoint, `[{"name":"fixture","base-url":"https://example.invalid","keys":[{"api-key":"example-rotated","credential-id":"team"}]}]`, http.StatusOK)
+	rotated, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.CodexKey[0].CredentialID != "team" || rotated.CodexKey[0].APIKey != "example-rotated" {
+		t.Fatal("rotation did not preserve the credential identity")
+	}
+	policy, err := rotated.CompileResourceAllowlists(false)
+	if err != nil || policy.AllowsConfiguredUpstreamAPIKey("example-rotated", strings.Repeat("a", 64)) {
+		t.Fatalf("rotated key must still deny all callers, error = %v", err)
+	}
+}
+
 func TestConfigV8_SensitiveWordsReplace(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")

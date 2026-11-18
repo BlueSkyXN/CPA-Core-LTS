@@ -292,11 +292,33 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 // saveConfigAndSnapshotLocked saves h.cfg and returns a full runtime config snapshot.
 // Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
+	if errValidate := h.cfg.ValidateResourceAllowlists(); errValidate != nil {
+		// Legacy list handlers edit h.cfg before saving. Restore the persisted
+		// snapshot so a rejected credential edit does not leak into later saves.
+		h.restorePersistedConfigLocked()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": errValidate.Error()})
+		return configReloadSnapshot{}, false
+	}
 	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
 	}
 	return h.reloadSnapshotConfigLocked(), true
+}
+
+func (h *Handler) restorePersistedConfigLocked() {
+	data, err := os.ReadFile(h.configFilePath)
+	if err != nil {
+		return
+	}
+	persisted, err := config.ParseConfigBytes(data)
+	if err != nil {
+		return
+	}
+	persisted.Home = h.cfg.Home
+	persisted.AuthDir = h.cfg.AuthDir
+	persisted.SourceHash = config.ComputeSourceHash(data)
+	h.cfg = persisted
 }
 
 // reloadConfigAfterManagementSave reloads from an independent config snapshot.
@@ -518,12 +540,10 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
-	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+	snapshot, saved := h.saveConfigAndSnapshotLocked(c)
+	if !saved {
 		return false
 	}
-	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	var reqCtx context.Context
 	if c != nil && c.Request != nil {

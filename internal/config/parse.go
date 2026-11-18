@@ -44,6 +44,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
+	if err := cfg.ValidateResourceAllowlists(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateReasoningEffort(); err != nil {
 		return nil, err
 	}
@@ -164,5 +167,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
 
+	if err := cfg.ValidateResourceAllowlists(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }

@@ -182,6 +182,9 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 			c.JSON(503, gin.H{"error": "amp upstream proxy not available"})
 			return
 		}
+		if !allowAmpForwarding(c, baseHandler) {
+			return
+		}
 		proxy.ServeHTTP(c.Writer, c.Request)
 	}
 
@@ -238,6 +241,7 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 	geminiV1Beta1Fallback := NewFallbackHandlerWithMapper(func() *httputil.ReverseProxy {
 		return m.getProxy()
 	}, m.modelMapper, m.forceModelMappings)
+	geminiV1Beta1Fallback.baseHandler = baseHandler
 	geminiV1Beta1Handler := geminiV1Beta1Fallback.WrapHandler(geminiBridge)
 
 	// Route POST model calls through Gemini bridge with FallbackHandler.
@@ -276,6 +280,7 @@ func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *han
 	fallbackHandler := NewFallbackHandlerWithMapper(func() *httputil.ReverseProxy {
 		return m.getProxy()
 	}, m.modelMapper, m.forceModelMappings)
+	fallbackHandler.baseHandler = baseHandler
 
 	// Provider-specific routes under /api/provider/:provider
 	ampProviders := engine.Group("/api/provider")

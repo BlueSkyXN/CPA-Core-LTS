@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -80,6 +81,7 @@ type FallbackHandler struct {
 	getProxy           func() *httputil.ReverseProxy
 	modelMapper        ModelMapper
 	forceModelMappings func() bool
+	baseHandler        *handlers.BaseAPIHandler
 }
 
 // NewFallbackHandler creates a new fallback handler wrapper
@@ -135,6 +137,12 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 			// Can't determine model, proceed with normal handler
 			handler(c)
 			return
+		}
+		if fh.baseHandler != nil {
+			if err := fh.baseHandler.AuthManager.CheckResourceModelAccess(c.Request.Context(), modelName); err != nil {
+				fh.baseHandler.WriteErrorResponse(c, handlers.ExecutionErrorMessage(err))
+				return
+			}
 		}
 
 		// Normalize model (handles dynamic thinking suffixes)
@@ -226,6 +234,9 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 		if len(providers) == 0 {
 			proxy := fh.getProxy()
 			if proxy != nil {
+				if fh.baseHandler != nil && !allowAmpForwarding(c, fh.baseHandler) {
+					return
+				}
 				// Log: Forwarding to ampcode.com (uses Amp credits)
 				logAmpRouting(RouteTypeAmpCredits, modelName, "", "", requestPath)
 
@@ -280,6 +291,14 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 			handler(c)
 		}
 	}
+}
+
+func allowAmpForwarding(c *gin.Context, baseHandler *handlers.BaseAPIHandler) bool {
+	if err := baseHandler.AuthManager.CheckUnresolvedModelAccess(c.Request.Context()); err != nil {
+		baseHandler.WriteErrorResponse(c, handlers.ExecutionErrorMessage(err))
+		return false
+	}
+	return true
 }
 
 // filterAntropicBetaHeader filters Anthropic-Beta header to remove features requiring special subscription

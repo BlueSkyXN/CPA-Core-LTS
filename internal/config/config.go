@@ -12,6 +12,8 @@ type ServerResponseCompression = ResponseCompressionConfig
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
+	// ResourceAllowlists restricts selected upstream credentials and models by caller key.
+	ResourceAllowlists *ResourceAllowlists `yaml:"resource-allowlists,omitempty" json:"resource-allowlists,omitempty"`
 	// FlowControl is opt-in and independent of Home credential concurrency.
 	FlowControl FlowControlConfig `yaml:"flow-control,omitempty" json:"flow-control,omitempty"`
 	// ServerResponseCompression is the JSON-visible mirror of the downstream

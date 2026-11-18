@@ -16,6 +16,8 @@ type VertexCompatKey struct {
 	// APIKey is the authentication key for accessing the Vertex-compatible API.
 	// Maps to the x-goog-api-key header.
 	APIKey string `yaml:"api-key" json:"api-key"`
+	// CredentialID is an optional stable name for resource allowlists.
+	CredentialID string `yaml:"credential-id,omitempty" json:"credential-id,omitempty"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.

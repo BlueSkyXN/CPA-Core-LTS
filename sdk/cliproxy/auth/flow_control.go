@@ -211,6 +211,9 @@ func (m *Manager) flowRequest(ctx context.Context, req cliproxyexecutor.Request,
 // Request slots count one logical Manager operation across its retries. Attempt
 // slots below count each executor invocation, including parallel retry branches.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if err := m.checkResourceExecution(ctx, nil, req, opts); err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx, permit, err := m.flowRequest(ctx, req, opts)
 	if err != nil {
@@ -224,6 +227,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	return m.executeRequestUncontrolled(ctx, providers, req, opts)
 }
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if err := m.checkResourceExecution(ctx, nil, req, opts); err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx, permit, err := m.flowRequest(ctx, req, opts)
 	if err != nil {
@@ -233,6 +239,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	return m.executeCountRequestUncontrolled(ctx, providers, req, opts)
 }
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if err := m.checkResourceExecution(ctx, nil, req, opts); err != nil {
+		return nil, err
+	}
 	req, opts = ensureExecutionRequestID(req, opts)
 	ctx, permit, err := m.flowRequest(ctx, req, opts)
 	if err != nil {
@@ -282,6 +291,9 @@ func withCodexCacheLifetime(ctx context.Context, providers []string) (context.Co
 // admitFlowExecution precedes provider admission and selected-auth publication.
 // Local queue errors never mark the credential unavailable or spend retry rounds.
 func (m *Manager) admitFlowExecution(ctx context.Context, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (context.Context, error) {
+	if err := m.checkResourceExecution(ctx, auth, req, opts); err != nil {
+		return ctx, err
+	}
 	// LTS model policy: final pre-dispatch check on the real upstream model. This
 	// is the shared boundary for normal execution, Home dispatch, the Codex Live
 	// uncatalogued route, and Antigravity credits fallback; a denial here is a
@@ -359,6 +371,10 @@ func (m *Manager) admitFlowExecution(ctx context.Context, executor ProviderExecu
 	if allowed, _ := m.codexRateLimitContinuityDispatchDisposition(ctx); !allowed {
 		p.CancelBeforeDispatch()
 		return ctx, wrapRequestStopError(&flowcontrol.Error{Code: "flow_control_target_changed"})
+	}
+	// A queued request may wait across a configuration reload.
+	if err := m.checkResourceExecution(ctx, auth, req, opts); err != nil {
+		return ctx, err
 	}
 	admitted, err := admitExecutorExecution(ctx, executor, auth, req, opts)
 	if err != nil {

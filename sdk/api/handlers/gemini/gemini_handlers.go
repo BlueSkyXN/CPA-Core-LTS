@@ -107,7 +107,11 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 		}
 	}
 
-	if targetModel != nil {
+	visible := h.AuthManager.ResourceModelVisibility(c.Request.Context(), []string{action})
+	if targetModel != nil && (visible == nil || visible(action)) {
+		if visible != nil {
+			c.Header("Cache-Control", "private, no-store")
+		}
 		// Ensure the name has 'models/' prefix in the output if it's a Gemini model
 		if name, ok := targetModel["name"].(string); ok && name != "" && !strings.HasPrefix(name, "models/") {
 			targetModel["name"] = "models/" + name

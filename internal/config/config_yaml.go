@@ -15,6 +15,9 @@ import (
 // Existing v8 documents are saved in the latest layout. Successful migration
 // also synchronizes cfg's OAuth scope for runtime snapshots.
 func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...bool) error {
+	if err := cfg.ValidateResourceAllowlists(); err != nil {
+		return err
+	}
 	persistCfg := cfg
 	migrating := len(migrateV8) > 0 && migrateV8[0]
 	// Load original YAML as a node tree to preserve comments and ordering.

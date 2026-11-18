@@ -64,6 +64,7 @@ func (s *Server) setupRoutes() {
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
 	s.museCodeHandler = musecode.NewHandler(s.handlers.AuthManager, s.cfg)
 	s.museCodeHandler.SetModelListHooks(s.loadMuseCodeHomeModels, s.writeModelListResponse)
+	directResourceAccess := s.requireDirectResourceAccess
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
@@ -92,8 +93,8 @@ func (s *Server) setupRoutes() {
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		v1.POST("/alpha/search", s.codexAlphaSearch)
-		v1.POST("/live", s.codexLiveHandler.Handle)
-		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
+		v1.POST("/live", directResourceAccess, s.codexLiveHandler.Handle)
+		v1.GET("/live/:call_id", directResourceAccess, s.codexLiveHandler.HandleSideband)
 	}
 
 	s.engine.GET("/v1/tunnel", s.handleWebsocketTunnel)
@@ -103,20 +104,20 @@ func (s *Server) setupRoutes() {
 
 	realtimeAuth := realtimeAuthMiddleware(s.accessManager, s.codexLiveHandler)
 	standardAuth := realtimeStandardAuthMiddleware(s.accessManager)
-	s.engine.GET("/v1/realtime", realtimeAuth, s.codexLiveHandler.HandleRealtimeWebsocket)
-	s.engine.POST("/v1/realtime", realtimeAuth, s.codexLiveHandler.Handle)
-	s.engine.POST("/v1/realtime/calls", realtimeAuth, s.codexLiveHandler.Handle)
-	s.engine.GET("/v1/realtime/calls/:call_id", realtimeAuth, s.codexLiveHandler.HandleSideband)
-	s.engine.POST("/v1/realtime/client_secrets", standardAuth, s.codexLiveHandler.CreateClientSecret)
-	s.engine.POST("/v1/realtime/sessions", standardAuth, s.codexLiveHandler.CreateLegacySession)
-	s.engine.POST("/v1/realtime/transcription_sessions", standardAuth, s.codexLiveHandler.HandleTranscriptionSession)
-	s.engine.GET("/v1/realtime/translations", realtimeAuth, s.codexLiveHandler.HandleTranslation)
-	s.engine.POST("/v1/realtime/translations", realtimeAuth, s.codexLiveHandler.HandleTranslation)
-	s.engine.POST("/v1/realtime/translations/client_secrets", standardAuth, s.codexLiveHandler.HandleTranslation)
-	s.engine.POST("/v1/realtime/calls/:call_id/hangup", standardAuth, s.codexLiveHandler.HandleHangup)
-	s.engine.POST("/v1/realtime/calls/:call_id/accept", standardAuth, s.codexLiveHandler.HandleSIPControl)
-	s.engine.POST("/v1/realtime/calls/:call_id/reject", standardAuth, s.codexLiveHandler.HandleSIPControl)
-	s.engine.POST("/v1/realtime/calls/:call_id/refer", standardAuth, s.codexLiveHandler.HandleSIPControl)
+	s.engine.GET("/v1/realtime", realtimeAuth, directResourceAccess, s.codexLiveHandler.HandleRealtimeWebsocket)
+	s.engine.POST("/v1/realtime", realtimeAuth, directResourceAccess, s.codexLiveHandler.Handle)
+	s.engine.POST("/v1/realtime/calls", realtimeAuth, directResourceAccess, s.codexLiveHandler.Handle)
+	s.engine.GET("/v1/realtime/calls/:call_id", realtimeAuth, directResourceAccess, s.codexLiveHandler.HandleSideband)
+	s.engine.POST("/v1/realtime/client_secrets", standardAuth, directResourceAccess, s.codexLiveHandler.CreateClientSecret)
+	s.engine.POST("/v1/realtime/sessions", standardAuth, directResourceAccess, s.codexLiveHandler.CreateLegacySession)
+	s.engine.POST("/v1/realtime/transcription_sessions", standardAuth, directResourceAccess, s.codexLiveHandler.HandleTranscriptionSession)
+	s.engine.GET("/v1/realtime/translations", realtimeAuth, directResourceAccess, s.codexLiveHandler.HandleTranslation)
+	s.engine.POST("/v1/realtime/translations", realtimeAuth, directResourceAccess, s.codexLiveHandler.HandleTranslation)
+	s.engine.POST("/v1/realtime/translations/client_secrets", standardAuth, directResourceAccess, s.codexLiveHandler.HandleTranslation)
+	s.engine.POST("/v1/realtime/calls/:call_id/hangup", standardAuth, directResourceAccess, s.codexLiveHandler.HandleHangup)
+	s.engine.POST("/v1/realtime/calls/:call_id/accept", standardAuth, directResourceAccess, s.codexLiveHandler.HandleSIPControl)
+	s.engine.POST("/v1/realtime/calls/:call_id/reject", standardAuth, directResourceAccess, s.codexLiveHandler.HandleSIPControl)
+	s.engine.POST("/v1/realtime/calls/:call_id/refer", standardAuth, directResourceAccess, s.codexLiveHandler.HandleSIPControl)
 
 	openaiV1 := s.engine.Group("/openai/v1")
 	openaiV1.Use(AuthMiddleware(s.accessManager))
@@ -141,9 +142,9 @@ func (s *Server) setupRoutes() {
 	museCode.Use(AuthMiddleware(s.accessManager))
 	{
 		museCode.GET("/models", s.museCodeHandler.HandleModels)
-		museCode.GET("/config", s.museCodeHandler.Handle)
-		museCode.POST("/search", s.museCodeHandler.Handle)
-		museCode.POST("/browser_open", s.museCodeHandler.Handle)
+		museCode.GET("/config", directResourceAccess, s.museCodeHandler.Handle)
+		museCode.POST("/search", directResourceAccess, s.museCodeHandler.Handle)
+		museCode.POST("/browser_open", directResourceAccess, s.museCodeHandler.Handle)
 	}
 
 	// Gemini compatible API routes
@@ -335,6 +336,13 @@ func sanitizeCodexAlphaSearchBody(body []byte) []byte {
 	return sanitizedBody
 }
 
+func (s *Server) requireDirectResourceAccess(c *gin.Context) {
+	if err := s.handlers.AuthManager.CheckUnresolvedResourceAccess(c.Request.Context()); err != nil {
+		s.handlers.WriteErrorResponse(c, handlers.ExecutionErrorMessage(err))
+		c.Abort()
+	}
+}
+
 // rewriteCodexAlphaSearchModel replaces the top-level model field with the
 // credential-resolved upstream model before the request is forwarded.
 func rewriteCodexAlphaSearchModel(body []byte, upstreamModel string) []byte {
@@ -405,6 +413,16 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	if err = json.Unmarshal(trimmedBody, &routing); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Codex search request JSON"})
 		return
+	}
+	if err = s.handlers.AuthManager.CheckResourceModelAccess(c.Request.Context(), routing.Model); err != nil {
+		s.handlers.WriteErrorResponse(c, handlers.ExecutionErrorMessage(err))
+		return
+	}
+	if strings.TrimSpace(routing.Model) == "" {
+		if err = s.handlers.AuthManager.CheckUnresolvedModelAccess(c.Request.Context()); err != nil {
+			s.handlers.WriteErrorResponse(c, handlers.ExecutionErrorMessage(err))
+			return
+		}
 	}
 	upstreamRequestBody := sanitizeCodexAlphaSearchBody(body)
 
@@ -502,6 +520,12 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		routeModel = strings.TrimSpace(routing.Model)
 	}
 	performRequest := func(current *auth.Auth, confirmDispatch bool) (*http.Response, bool, error) {
+		if errAccess := s.handlers.AuthManager.CheckSelectedResourceAccess(ctx, current, routeModel); errAccess != nil {
+			return nil, false, errAccess
+		}
+		if errAccess := s.handlers.AuthManager.CheckSelectedResourceAccess(ctx, current, routing.Model); errAccess != nil {
+			return nil, false, errAccess
+		}
 		headers := baseHeaders.Clone()
 		if accountID, ok := current.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
 			headers.Set("Chatgpt-Account-Id", accountID)
@@ -520,6 +544,9 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			}
 			upstreamURL = strings.TrimRight(baseURL, "/") + "/alpha/search"
 			if upstreamModel := s.handlers.AuthManager.ResolveExecutionModel(current, routeModel); upstreamModel != "" {
+				if errAccess := s.handlers.AuthManager.CheckResourceModelAccess(ctx, upstreamModel); errAccess != nil {
+					return nil, false, errAccess
+				}
 				requestBody = rewriteCodexAlphaSearchModel(upstreamRequestBody, upstreamModel)
 			}
 		}

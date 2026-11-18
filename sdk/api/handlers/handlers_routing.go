@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/net/context"
@@ -125,7 +126,7 @@ func nativeInteractionsExecutionError() *interfaces.ErrorMessage {
 // providersForExecution resolves the providers and normalized model for a request. When a model
 // router selected a built-in provider, it skips model->provider resolution and uses the router's
 // provider (with an optional target model); otherwise it falls back to the registry-based path.
-func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, string, *interfaces.ErrorMessage) {
+func (h *BaseAPIHandler) providersForExecution(ctx context.Context, modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, string, *interfaces.ErrorMessage) {
 	forcedProvider := strings.ToLower(strings.TrimSpace(execOptions.ForcedProvider))
 	if forcedProvider != "" {
 		if routeDecision.ExecutorPluginID != "" {
@@ -158,6 +159,17 @@ func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel
 			return nil, "", errMsg
 		}
 		return []string{routeDecision.Provider}, normalizedModel, nil
+	}
+	if h.AuthManager.ResourceAllowlistsEnabled() && !h.AuthManager.HomeEnabled() {
+		if parsed := thinking.ParseSuffix(modelName); parsed.ModelName == "auto" {
+			modelName = h.resolveAuthorizedAutoModel(ctx)
+			if modelName == "" {
+				return nil, "", executionErrorMessage(coreauth.ErrResourceAccessDenied)
+			}
+			if parsed.HasSuffix {
+				modelName += "(" + parsed.RawSuffix + ")"
+			}
+		}
 	}
 	return h.getRequestDetailsWithOptions(modelName, allowImageModel, execOptions.AllowSpeechModel)
 }

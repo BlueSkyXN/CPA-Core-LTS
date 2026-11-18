@@ -2496,6 +2496,9 @@ func (m *Manager) PrepareHttpRequest(ctx context.Context, auth *Auth, req *http.
 	if ctx != nil {
 		*req = *req.WithContext(ctx)
 	}
+	if err := m.CheckSelectedResourceAccess(ctx, auth, ""); err != nil {
+		return err
+	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {
 		return &Error{Code: "provider_not_found", Message: "auth provider is empty"}
@@ -2547,6 +2550,9 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	}
 	if req == nil {
 		return nil, &Error{Code: "invalid_request", Message: "http request is nil"}
+	}
+	if err := m.CheckSelectedResourceAccess(ctx, auth, ""); err != nil {
+		return nil, err
 	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {

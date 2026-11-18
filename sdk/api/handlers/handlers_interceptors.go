@@ -801,6 +801,18 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		WriteUpstreamHeaders(c.Writer.Header(), FilterUpstreamHeaders(resp.Headers))
 	}
 
+	if h != nil && h.AuthManager.ResourceAllowlistsEnabled() {
+		var err error
+		body, err = h.filterResourceModelList(c.Request.Context(), body)
+		c.Header("Cache-Control", "private, no-store")
+		c.Writer.Header().Del("Content-Length")
+		if err != nil {
+			lifecycle.complete(pluginapi.RequestCompletionFailed, http.StatusBadGateway, err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "Invalid model catalog", "type": "api_error"}})
+			return
+		}
+	}
+
 	if modelID, detail := c.Get(ModelDetailIDContextKey); detail {
 		c.Writer.Header().Del("Content-Length")
 		var catalog struct {

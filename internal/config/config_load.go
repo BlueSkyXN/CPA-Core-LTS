@@ -219,6 +219,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	if err := cfg.ValidateResourceAllowlists(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateReasoningEffort(); err != nil {
 		return nil, err
 	}
@@ -269,20 +272,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if err := ValidateOAuthModelPolicy(cfg.OAuthModelPolicy); err != nil {
 		return nil, err
-	}
-
-	// Hash remote management key if plaintext is detected (nested)
-	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
-	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
-		hashed, errHash := hashSecret(cfg.RemoteManagement.SecretKey)
-		if errHash != nil {
-			return nil, fmt.Errorf("failed to hash remote management key: %w", errHash)
-		}
-		cfg.RemoteManagement.SecretKey = hashed
-
-		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
-		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, managementSecretKeyPath(data), hashed)
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
@@ -373,6 +362,20 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
+
+	// Sanitization may have removed an unusable or duplicate upstream key.
+	if err := cfg.ValidateResourceAllowlists(); err != nil {
+		return nil, err
+	}
+	// Persist the bcrypt hash only after validating the effective config.
+	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
+		hashed, errHash := hashSecret(cfg.RemoteManagement.SecretKey)
+		if errHash != nil {
+			return nil, fmt.Errorf("failed to hash remote management key: %w", errHash)
+		}
+		cfg.RemoteManagement.SecretKey = hashed
+		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, managementSecretKeyPath(data), hashed)
+	}
 
 	// Preserve the source identity without rewriting the V8 document on load.
 	cfg.SourceHash = ComputeSourceHash(data)

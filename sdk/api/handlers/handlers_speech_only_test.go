@@ -185,7 +185,7 @@ func TestHandlerProvidersForExecutionRejectsSpeechOnlyModelOnProviderRoute(t *te
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, errMsg := handler.providersForExecution(tc.modelName, tc.originalModel, false, tc.decision, tc.execOptions)
+			_, _, errMsg := handler.providersForExecution(context.Background(), tc.modelName, tc.originalModel, false, tc.decision, tc.execOptions)
 			requireSpeechOnlyError(t, errMsg)
 		})
 	}

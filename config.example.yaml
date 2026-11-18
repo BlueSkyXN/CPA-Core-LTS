@@ -527,6 +527,12 @@ access:
         - "your-api-key-1"
         - "your-api-key-2"
         - "your-api-key-3"
+    # 按客户端 API key 保留认证文件、上游 API key 或模型。值填写 GET /v0/management/flow-control 的 keys[].ref。
+    # 单个资源的值为空数组时，禁止所有客户端调用该资源。示例见 docs/lts/resource-allowlists.md。
+    resource-allowlists:
+        auth-files: {}
+        upstream-api-keys: {} # 资源名对应 api-keys.<provider>[].keys[].credential-id
+        models: {}
 # 模型目录可使用 HTTP(S) URL 或绝对文件路径；失败时保留最后有效目录。
 # 显式来源优先于 --local-model；Home 模式不加载通用模型目录。
 models:
@@ -907,6 +913,7 @@ config-version: 8
 #         - "*codex*"         # wildcard matching substring (e.g. gpt-5-codex-low)
 #       keys:
 #         - api-key: "sk-atSM..."
+#           credential-id: "codex-team" # 可选。供 access.resource-allowlists.upstream-api-keys 引用，轮换密钥时保留该名称。
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           # connection-pool:                # optional: per-key override of the group pool setting
 #           #   enabled: false                # opt this key out while the group stays pooled

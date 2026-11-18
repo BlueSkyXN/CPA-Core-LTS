@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -186,6 +187,14 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	} else {
 		cfg = cfg.CloneForRuntime()
 	}
+	prior := m.runtimeConfigSnapshot()
+	trackConfiguredKeys := prior != nil && prior.ResourceAllowlists.TracksConfiguredUpstreamAPIKeys()
+	rules, err := cfg.CompileResourceAllowlists(trackConfiguredKeys)
+	if err != nil {
+		log.WithError(err).Warn("rejected runtime config with invalid resource allowlists")
+		return false
+	}
+	cfg.ResourceAllowlists = rules
 	m.configureFlowControl(cfg)
 	// Publish policy and invalidate old absolute deadlines atomically with
 	// respect to begin/MarkResult, preserving manager -> continuity lock order.
