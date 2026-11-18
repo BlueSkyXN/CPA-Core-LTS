@@ -43,7 +43,7 @@ func (h *BaseAPIHandler) HasAlternativeExecutionTarget(ctx context.Context, hand
 	if routeDecision.ExecutorPluginID != "" {
 		return false
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, false, routeDecision, execOptions)
+	providers, normalizedModel, errMsg := h.providersForExecution(ctx, modelName, originalRequestedModel, false, routeDecision, execOptions)
 	if errMsg != nil {
 		return false
 	}
@@ -339,6 +339,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 }
 
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	if err := h.AuthManager.CheckResourceModelAccess(ctx, modelName); err != nil {
+		return nil, nil, resourceAccessStreamError(err)
+	}
 	originalRequestedModel := modelName
 	// Speech-only models are reachable solely through the speech entry protocol.
 	execOptions.AllowSpeechModel = isModelExecutionSpeechProtocol(entryProtocol)
@@ -354,9 +357,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	if routeDecision.ExecutorPluginID != "" {
+		if err := h.AuthManager.CheckUnresolvedResourceAccess(ctx); err != nil {
+			return nil, nil, resourceAccessStreamError(err)
+		}
 		return h.streamWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
+	providers, normalizedModel, errMsg := h.providersForExecution(ctx, modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -805,6 +811,13 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		}
 	}()
 	return dataChan, upstreamHeaders, errChan
+}
+
+func resourceAccessStreamError(err error) <-chan *interfaces.ErrorMessage {
+	errChan := make(chan *interfaces.ErrorMessage, 1)
+	errChan <- executionErrorMessage(err)
+	close(errChan)
+	return errChan
 }
 
 type sseJSONValidationState struct {

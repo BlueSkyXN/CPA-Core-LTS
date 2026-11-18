@@ -172,6 +172,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		log.WithError(errValidate).Warn("rejected config update with invalid model policy")
 		return configCommit{}
 	}
+	if errValidate := newCfg.ValidateResourceAllowlists(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid resource allowlists")
+		return configCommit{}
+	}
 
 	if errValidate := newCfg.Models.Validate(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected invalid model catalog sources")

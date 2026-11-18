@@ -84,6 +84,7 @@ func buildV8Paths() []configPath {
 		{"github-token", "server.github-token"},
 		{"tls", "server.tls"}, {"shutdown-timeout", "server.shutdown-timeout"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"}, {"kv-store", "server.kv-store"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
+		{"resource-allowlists", "access.resource-allowlists"},
 		{"credential-concurrency", "credentials.concurrency"}, {"credential-in-flight", "credentials.in-flight"},
 		{"force-model-prefix", "routing.force-model-prefix"},
 		{"request-retry", "routing.retry.request-retry"}, {"max-retry-credentials", "routing.retry.max-retry-credentials"},
@@ -446,6 +447,9 @@ func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
 	for index, group := range groups.Content {
 		if group.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("api-keys.%s[%d] must be a mapping", provider, index)
+		}
+		if yamlPath(group, "credential-id") != nil {
+			return nil, fmt.Errorf("api-keys.%s[%d].credential-id belongs on an individual key entry", provider, index)
 		}
 		keys := yamlPath(group, "keys")
 		if keys == nil || keys.Kind != yaml.SequenceNode {
@@ -1032,5 +1036,8 @@ func ValidateV8Config(data []byte) error {
 	if errDecode := decoder.Decode(&cfg); errDecode != nil {
 		return errDecode
 	}
-	return cfg.Models.Validate()
+	if err := cfg.Models.Validate(); err != nil {
+		return err
+	}
+	return (*Config)(&cfg).ValidateResourceAllowlists()
 }

@@ -37,6 +37,7 @@ the corresponding group value. Legacy field names are rejected by v8 writes.
 | Example path | Value or purpose |
 | --- | --- |
 | `/config/access/api-keys` | Client authentication keys, for example `["client-key"]`. |
+| `/config/access/resource-allowlists` | Client key references allowed to use reserved auth files, upstream API keys and models. [Configuration guide](lts/resource-allowlists.md). |
 | `/config/api-keys` | All upstream provider groups. |
 | `/config/api-keys/codex` | Codex upstream groups. |
 | `/config/client/codex/optimize-multi-agent-v2` | Boolean, default `false`; applies to Codex clients across OAuth and API-key routes. |

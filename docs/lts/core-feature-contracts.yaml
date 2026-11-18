@@ -18,6 +18,30 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: client-key-resource-allowlists
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Reserved auth files, configured upstream API keys and models must stay within caller authorization across catalog listing, retries and runtime credential changes.
+    config_keys:
+      - access.resource-allowlists
+    core_files:
+      - internal/config/resource_allowlists.go
+      - internal/config/resource_upstream_keys.go
+      - internal/config/config_v8.go
+      - sdk/cliproxy/auth/resource_access.go
+      - sdk/api/handlers/resource_model_list.go
+      - docs/lts/resource-allowlists.md
+    required_markers:
+      - access.resource-allowlists
+      - upstream-api-keys
+      - credential-id
+      - resource_access_denied
+    validation:
+      - go test ./internal/config ./internal/api ./sdk/cliproxy/auth -run 'ResourceAllowlists|ResourceAccess'
+      - scripts/check-lts-contract.sh
+
   - id: cache-request-diagnostics
     kind: lts-feature
     support: maintained

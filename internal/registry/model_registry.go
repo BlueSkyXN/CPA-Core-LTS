@@ -2301,3 +2301,10 @@ func (r *ModelRegistry) GetModelsForClient(clientID string) []*ModelInfo {
 	models, _ := r.GetModelsAndEpochForClient(clientID)
 	return models
 }
+
+// GetModelIDsForClient returns the registered IDs independently of their metadata.
+func (r *ModelRegistry) GetModelIDsForClient(clientID string) []string {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return append([]string(nil), r.clientModels[clientID]...)
+}

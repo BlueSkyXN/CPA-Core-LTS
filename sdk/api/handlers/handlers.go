@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -83,6 +84,10 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
 	}
 
 	trimmed := strings.TrimSpace(errText)
+
+	if errors.Is(err, coreauth.ErrResourceAccessDenied) {
+		return []byte(`{"error":{"message":"This API key cannot use the requested resource.","type":"permission_error","code":"resource_access_denied","retryable":false}}`)
+	}
 
 	if coreauth.IsTerminalAuthError(err) {
 		message := errText

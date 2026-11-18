@@ -403,7 +403,7 @@ func (m *Manager) runCodexPostAttemptContinuity(ctx context.Context, session *co
 	if _, enabled := m.canRunCodexContinuity(ctx, providers); !enabled {
 		return false, continuityOutcomeDisabled, nil
 	}
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := m.authSelectionEligibilityForModel(ctx, opts, model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	if !m.retryAllowedForRequest(ctx, attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {
 		session.terminated = true
@@ -679,7 +679,7 @@ func (m *Manager) buildCodexContinuityCandidates(
 	if !providersIncludeCodex(providers) {
 		return nil
 	}
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := m.authSelectionEligibilityForModel(ctx, opts, model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	excludedSet := excludedAuthIDsFromMetadata(opts.Metadata)
 	for _, id := range homeExcludedAuthIDsFromMetadata(opts.Metadata) {
@@ -892,7 +892,7 @@ func (m *Manager) evaluatePreOutputStreamQuotaGate(
 		return false, markContinuityTerminatedError(err)
 	}
 	retryModel := authSelectionModelFromOptions(opts, model)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := m.authSelectionEligibilityForModel(ctx, opts, model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	defaultRequestRetry, _, _ := m.retrySettings()
 	if !m.retryAllowedForRequest(ctx, session.codexAttemptsUsed, normalized, retryModel, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {

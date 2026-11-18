@@ -533,6 +533,12 @@ func (h *OpenAIResponsesAPIHandler) authenticateResponsesWebsocketTurn(c *gin.Co
 		}
 	}
 	if result == nil {
+		if c != nil && c.Request != nil && updateRequestContext {
+			c.Set("userApiKey", "")
+			c.Set("accessProvider", "")
+			c.Set("accessMetadata", nil)
+			c.Request = c.Request.WithContext(usage.WithCapturedIdentity(c.Request.Context(), "", ""))
+		}
 		return "", nil
 	}
 	if c != nil && updateRequestContext {
@@ -544,9 +550,7 @@ func (h *OpenAIResponsesAPIHandler) authenticateResponsesWebsocketTurn(c *gin.Co
 			c.Set("accessMetadata", nil)
 		}
 		if c.Request != nil {
-			reqCtx := usage.WithAPIKey(c.Request.Context(), result.Principal)
-			reqCtx = usage.WithAccessProvider(reqCtx, result.Provider)
-			reqCtx = usage.WithIsNativeKey(reqCtx, usage.IsNativeAccessProvider(result.Provider))
+			reqCtx := usage.WithCapturedIdentity(c.Request.Context(), result.Principal, result.Provider, usage.IsNativeAccessProvider(result.Provider))
 			c.Request = c.Request.WithContext(reqCtx)
 		}
 	}
@@ -836,7 +840,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		if requestModelName == "" {
 			requestModelName = strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(lastRequest, "model").String()))
 		}
-		if _, errAuth := h.authenticateResponsesWebsocketTurn(c, upgradeRequest, payload, requestModelName, true); errAuth != nil {
+		_, errAuth := h.authenticateResponsesWebsocketTurn(c, upgradeRequest, payload, requestModelName, true)
+		if errAuth == nil {
+			if errAccess := h.AuthManager.CheckResourceModelAccess(c.Request.Context(), requestModelName); errAccess != nil {
+				errAuth = handlers.ExecutionErrorMessage(errAccess)
+			}
+		}
+		if errAuth != nil {
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errAuth)
 			markAPIResponseTimestamp(c)
 			errorPayload, errWrite := writeResponsesWebsocketError(writer, wsTimelineLog, errAuth)
@@ -1158,18 +1168,30 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			turnStartEpoch := inputEpoch.Load()
 			var cliCancel handlers.APIHandlerCancelFunc
 			cliCtx, cliCancel = h.GetContextWithCancel(h, c, turnExecutionParent)
+			if h.AccessManager != nil {
+				authenticatedCtx := c.Request.Context()
+				provider := usage.AccessProviderFromContext(authenticatedCtx)
+				cliCtx = usage.WithCapturedIdentity(cliCtx, usage.APIKeyFromContext(authenticatedCtx), provider, usage.IsNativeAccessProvider(provider))
+			}
 			cliCtx = multiagentv2.WithInitialPlaintextToolProvenance(cliCtx, plaintextTools)
 			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 			cliCtx = cliproxyexecutor.WithLocalWebsocketTurnTracker(cliCtx)
 			cliCtx = cliproxyexecutor.WithWebsocketInputEpoch(cliCtx, &inputEpoch, msgEpoch)
-			if duplexInput != nil {
+			useDuplex := duplexInput != nil && !h.AuthManager.ResourceAllowlistsEnabled()
+			if useDuplex {
 				cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
+				authorizationCtx := cliCtx
 				cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
 					current, ok := sessionAuthByID(authID)
-					return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled
+					return ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled &&
+						h.AuthManager.CheckSelectedResourceAccess(authorizationCtx, current, "") == nil
 				})
 				boundPrincipal := usage.APIKeyFromContext(cliCtx)
 				cliCtx = cliproxyexecutor.WithWebsocketTurnAuthorizer(cliCtx, func(turnPayload []byte) ([]byte, error) {
+					if h.AuthManager.ResourceAllowlistsEnabled() {
+						// This stream started before resource rules were enabled.
+						return buildResponsesWebsocketErrorPayload(handlers.ExecutionErrorMessage(coreauth.ErrResourceAccessDenied))
+					}
 					principal, errAuth := h.authenticateResponsesWebsocketTurn(c, upgradeRequest, turnPayload, modelName, false)
 					if errAuth == nil && principal != "" && principal != boundPrincipal {
 						errAuth = &interfaces.ErrorMessage{
@@ -1207,7 +1229,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					return
 				}
 				attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
-				codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
+				codexDuplexStream.Store(useDuplex && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 				preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
 					rememberPinnedAuth(authID, modelName)

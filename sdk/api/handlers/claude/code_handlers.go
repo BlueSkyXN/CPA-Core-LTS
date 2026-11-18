@@ -71,21 +71,10 @@ func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
 // Parameters:
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
-	// Extract raw JSON data from the incoming request
-	rawJSON, err := h.ReadRequestBody(c)
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := h.readModelRequest(c)
+	if !ok {
 		return
 	}
-
-	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
-	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
 
 	// Check if the client requested a streaming response.
 	streamResult := ojson.GetBytesNoCopy(rawJSON, "stream")
@@ -103,21 +92,10 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
-	// Extract raw JSON data from the incoming request
-	rawJSON, err := h.ReadRequestBody(c)
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := h.readModelRequest(c)
+	if !ok {
 		return
 	}
-
-	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
-	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
 
 	c.Header("Content-Type", "application/json")
 
@@ -135,6 +113,28 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
+}
+
+// readModelRequest authorizes the client-visible name before resolving the routing name.
+func (h *ClaudeCodeAPIHandler) readModelRequest(c *gin.Context) ([]byte, bool) {
+	raw, err := h.ReadRequestBody(c)
+	if err != nil {
+		c.JSON(handlers.RequestBodyStatusCode(err), handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return nil, false
+	}
+	if h.AuthManager.ResourceAllowlistsEnabled() {
+		model := ojson.GetBytesNoCopy(raw, "model").String()
+		if err = h.AuthManager.CheckResourceModelAccess(c.Request.Context(), model); err != nil {
+			h.WriteErrorResponse(c, handlers.ExecutionErrorMessage(err))
+			return nil, false
+		}
+	}
+	return rewriteClaudeDDModelInBody(raw), true
 }
 
 // rewriteClaudeDDModelInBody decodes model IDs of the form claude-fable-5-dd-<reversed>

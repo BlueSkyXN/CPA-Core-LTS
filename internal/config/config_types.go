@@ -806,6 +806,8 @@ type CloakConfig struct {
 type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+	// CredentialID is an optional stable name for resource allowlists.
+	CredentialID string `yaml:"credential-id,omitempty" json:"credential-id,omitempty"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -931,6 +933,8 @@ func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking
 type CodexKey struct {
 	// APIKey is the authentication key for accessing Codex API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+	// CredentialID is an optional stable name for resource allowlists.
+	CredentialID string `yaml:"credential-id,omitempty" json:"credential-id,omitempty"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -1060,6 +1064,8 @@ type MetaModel = CodexModel
 type GeminiKey struct {
 	// APIKey is the authentication key for accessing Gemini API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+	// CredentialID is an optional stable name for resource allowlists.
+	CredentialID string `yaml:"credential-id,omitempty" json:"credential-id,omitempty"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -1199,6 +1205,8 @@ type OpenAICompatibility struct {
 type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+	// CredentialID is an optional stable name for resource allowlists.
+	CredentialID string `yaml:"credential-id,omitempty" json:"credential-id,omitempty"`
 
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
