@@ -1424,3 +1424,49 @@ func TestUsageAttributionAndExecutorResponsesJSON(t *testing.T) {
 		t.Fatalf("decodedStream = %+v", decodedStream)
 	}
 }
+
+func TestResponseInterceptRequestKindFieldOrderAndJSON(t *testing.T) {
+	if ResponseInterceptKindModelList != "model_list" {
+		t.Fatalf("ResponseInterceptKindModelList = %q, want %q", ResponseInterceptKindModelList, "model_list")
+	}
+	if ResponseInterceptKindExecution != "execution" {
+		t.Fatalf("ResponseInterceptKindExecution = %q, want %q", ResponseInterceptKindExecution, "execution")
+	}
+	if ResponseInterceptKindCountTokens != "count_tokens" {
+		t.Fatalf("ResponseInterceptKindCountTokens = %q, want %q", ResponseInterceptKindCountTokens, "count_tokens")
+	}
+
+	reqType := reflect.TypeFor[ResponseInterceptRequest]()
+	if reqType.NumField() == 0 {
+		t.Fatal("ResponseInterceptRequest has no fields")
+	}
+	firstField := reqType.Field(0)
+	if firstField.Name != "Kind" {
+		t.Fatalf("ResponseInterceptRequest.Field(0).Name = %q, want %q", firstField.Name, "Kind")
+	}
+	if firstField.Type.Kind() != reflect.String {
+		t.Fatalf("ResponseInterceptRequest.Field(0).Type = %v, want string", firstField.Type)
+	}
+	if firstField.Tag != "" {
+		t.Fatalf("ResponseInterceptRequest.Field(0).Tag = %q, want empty tag", firstField.Tag)
+	}
+
+	raw, errMarshal := json.Marshal(ResponseInterceptRequest{
+		Kind:      ResponseInterceptKindModelList,
+		RequestID: "req-1",
+		Body:      []byte(`{"object":"list"}`),
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal ResponseInterceptRequest: %v", errMarshal)
+	}
+	if !strings.HasPrefix(string(raw), `{"Kind":"model_list",`) {
+		t.Fatalf("marshaled ResponseInterceptRequest = %s, want leading Kind field", raw)
+	}
+	var decoded ResponseInterceptRequest
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("unmarshal ResponseInterceptRequest: %v", errUnmarshal)
+	}
+	if decoded.Kind != ResponseInterceptKindModelList || decoded.RequestID != "req-1" {
+		t.Fatalf("decoded = %+v, want Kind=%q RequestID=%q", decoded, ResponseInterceptKindModelList, "req-1")
+	}
+}

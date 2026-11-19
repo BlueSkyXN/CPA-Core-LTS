@@ -633,6 +633,9 @@ oauth:
     # Authentication directory (supports ~ for home directory)
     auth-dir: "~/.cli-proxy-api"
     providers:
+        # Claude OAuth login scopes. Set false to omit org:create_api_key on new logins.
+        # claude:
+        #     oauth-include-create-api-key: true
         antigravity:
             antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
             # sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
