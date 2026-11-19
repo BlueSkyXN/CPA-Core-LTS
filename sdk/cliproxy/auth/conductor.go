@@ -314,6 +314,9 @@ type Manager struct {
 	refreshLoop   *authAutoRefreshLoop
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
+	// Under m.mu, an entry marks a replacement in progress. Only a transactional
+	// save can roll back; its channel signals when the surviving grant is known.
+	replacingCredentials map[string]chan struct{}
 
 	requestPrepareLocks sync.Map
 	// refreshLocks serializes credential refresh per auth ID so concurrent

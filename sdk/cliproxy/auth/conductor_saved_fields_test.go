@@ -366,7 +366,7 @@ func TestManagerSavePreservesConcurrentRefreshState(t *testing.T) {
 					}
 				}()
 				<-store.entered
-				job := manager.markRefreshPending(nil, base.ID, base.RegistrationEpoch, time.Now())
+				job := manager.markRefreshPending(nil, base.ID, base.RegistrationEpoch, base.CredentialVersion, time.Now())
 				if job == nil {
 					t.Fatal("failed to schedule concurrent refresh")
 				}

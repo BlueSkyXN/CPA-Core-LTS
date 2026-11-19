@@ -49,7 +49,7 @@ func TestClaudeExpiredRefreshSurvivesConcurrentRequestResult(t *testing.T) {
 					}
 					m.MarkResult(ctx, result)
 				}
-				job := m.markRefreshPending(nil, a.ID, a.RegistrationEpoch, now)
+				job := m.markRefreshPending(nil, a.ID, a.RegistrationEpoch, a.CredentialVersion, now)
 				if job == nil || !m.beginRefreshJob(ctx, job) {
 					t.Fatal("refresh job did not begin")
 				}

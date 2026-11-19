@@ -180,7 +180,7 @@ func TestAutoRefreshDeferralDoesNotClearPendingBackoffToZero(t *testing.T) {
 		t.Fatal(errRegister)
 	}
 	loop := newAuthAutoRefreshLoop(manager, refreshCheckInterval, 1)
-	job := manager.markRefreshPending(loop, registered.ID, registered.RegistrationEpoch, now)
+	job := manager.markRefreshPending(loop, registered.ID, registered.RegistrationEpoch, registered.CredentialVersion, now)
 	if job == nil {
 		t.Fatal("expected pending refresh job")
 	}
@@ -228,7 +228,7 @@ func TestClaudeAutoRefreshDeferralDoesNotClearPendingBackoffToZero(t *testing.T)
 		t.Fatal(errRegister)
 	}
 	loop := newAuthAutoRefreshLoop(manager, refreshCheckInterval, 1)
-	job := manager.markRefreshPending(loop, registered.ID, registered.RegistrationEpoch, now)
+	job := manager.markRefreshPending(loop, registered.ID, registered.RegistrationEpoch, registered.CredentialVersion, now)
 	if job == nil {
 		t.Fatal("expected pending refresh job")
 	}

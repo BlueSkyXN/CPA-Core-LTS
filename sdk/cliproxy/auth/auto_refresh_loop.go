@@ -33,6 +33,7 @@ type authAutoRefreshLoop struct {
 type authRefreshJob struct {
 	id                string
 	registrationEpoch uint64
+	credentialVersion uint64
 	pendingUntil      time.Time
 	loop              *authAutoRefreshLoop
 	running           bool // guarded by manager.mu
@@ -101,7 +102,7 @@ func (l *authAutoRefreshLoop) worker(ctx context.Context) {
 				continue
 			}
 			if l.manager.beginRefreshJob(ctx, job) {
-				_, _ = l.manager.refreshAuthForRequestAtEpoch(ctx, job.id, "", job.registrationEpoch)
+				_, _ = l.manager.refreshAuthForRequestAtVersion(ctx, job.id, "", job.registrationEpoch, job.credentialVersion)
 			}
 			l.manager.finishRefreshJob(job, time.Time{}, false)
 		}
@@ -266,57 +267,13 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	if authID == "" {
 		return
 	}
-
-	manager := l.manager
-
-	manager.mu.RLock()
-	auth := manager.auths[authID]
-	if auth == nil {
-		manager.mu.RUnlock()
+	epoch, version, due := l.dueCredential(authID, now)
+	if !due {
 		return
 	}
-	next, shouldSchedule := manager.nextRefreshCheckAt(now, auth, l.interval)
-	shouldRefresh := manager.shouldRefresh(auth, now)
-	exec, _ := manager.executorLocked(executorKeyFromAuth(auth))
-	registrationEpoch := auth.RegistrationEpoch
-	manager.mu.RUnlock()
-
-	if !shouldSchedule {
-		l.remove(authID)
-		return
-	}
-
-	if !shouldRefresh {
-		if !next.After(now) {
-			delay := l.interval
-			if delay <= 0 {
-				delay = refreshCheckInterval
-			}
-			next = now.Add(delay)
-		}
-		l.upsert(authID, next)
-		return
-	}
-
-	if exec == nil {
-		l.upsert(authID, now.Add(l.interval))
-		return
-	}
-
-	job := manager.markRefreshPending(l, authID, registrationEpoch, now)
+	job := l.manager.markRefreshPending(l, authID, epoch, version, now)
 	if job == nil {
-		manager.mu.RLock()
-		auth = manager.auths[authID]
-		next, shouldSchedule = manager.nextRefreshCheckAt(now, auth, l.interval)
-		manager.mu.RUnlock()
-		if shouldSchedule {
-			if !next.After(now) {
-				next = now.Add(l.interval)
-			}
-			l.upsert(authID, next)
-		} else {
-			l.remove(authID)
-		}
+		l.rescheduleCurrent(authID, now, true)
 		return
 	}
 
@@ -329,28 +286,62 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 		}
 	}
 	// A full queue must not hold the dispatcher or leave a phantom pending job.
-	retryAt := now.Add(l.interval)
-	manager.finishRefreshJob(job, retryAt, false)
-	l.upsert(authID, retryAt)
+	l.manager.finishRefreshJob(job, now.Add(l.interval), false)
+	l.rescheduleCurrent(authID, now, false)
+}
+
+// dueCredential applies queue-only decisions while the observed credential is
+// still current. A worker reservation rechecks both versions under the write lock.
+func (l *authAutoRefreshLoop) dueCredential(authID string, now time.Time) (epoch, version uint64, due bool) {
+	m := l.manager
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	auth := m.auths[authID]
+	if auth == nil {
+		return 0, 0, false
+	}
+	next, ok := m.nextRefreshCheckAt(now, auth, l.interval)
+	if !ok {
+		l.remove(authID)
+		return 0, 0, false
+	}
+	if !m.shouldRefresh(auth, now) {
+		if !next.After(now) {
+			delay := l.interval
+			if delay <= 0 {
+				delay = refreshCheckInterval
+			}
+			next = now.Add(delay)
+		}
+		l.upsert(authID, next)
+		return 0, 0, false
+	}
+	if exec, _ := m.executorLocked(executorKeyFromAuth(auth)); exec == nil {
+		l.upsert(authID, now.Add(l.interval))
+		return 0, 0, false
+	}
+	return auth.RegistrationEpoch, auth.CredentialVersion, true
+}
+
+// Keep the state read and heap write together. In particular remove clears the
+// dirty notification, which may otherwise belong to a newer registration.
+func (l *authAutoRefreshLoop) rescheduleCurrent(authID string, now time.Time, delayDue bool) {
+	l.manager.mu.RLock()
+	defer l.manager.mu.RUnlock()
+	next, ok := l.manager.nextRefreshCheckAt(now, l.manager.auths[authID], l.interval)
+	if !ok {
+		l.remove(authID)
+		return
+	}
+	if delayDue && !next.After(now) {
+		next = now.Add(l.interval)
+	}
+	l.upsert(authID, next)
 }
 
 func (l *authAutoRefreshLoop) applyDirty(now time.Time) {
-	dirty := l.drainDirty()
-	if len(dirty) == 0 {
-		return
-	}
-
-	for _, authID := range dirty {
-		l.manager.mu.RLock()
-		auth := l.manager.auths[authID]
-		next, ok := l.manager.nextRefreshCheckAt(now, auth, l.interval)
-		l.manager.mu.RUnlock()
-
-		if !ok {
-			l.remove(authID)
-			continue
-		}
-		l.upsert(authID, next)
+	for _, authID := range l.drainDirty() {
+		l.rescheduleCurrent(authID, now, false)
 	}
 }
 

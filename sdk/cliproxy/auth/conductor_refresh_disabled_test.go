@@ -471,10 +471,10 @@ func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
 	// a refresh job must restore NextRefreshAfter=exp and the scheduler must not spin or re-trigger before exp.
 	m.mu.Lock()
 	m.auths[a.ID].NextRefreshAfter = now.Add(-time.Second)
-	epoch := m.auths[a.ID].RegistrationEpoch
+	epoch, version := m.auths[a.ID].RegistrationEpoch, m.auths[a.ID].CredentialVersion
 	m.mu.Unlock()
 
-	job := m.markRefreshPending(nil, a.ID, epoch, now)
+	job := m.markRefreshPending(nil, a.ID, epoch, version, now)
 	if job == nil {
 		t.Fatal("expected markRefreshPending to create job when NextRefreshAfter is in the past")
 	}
