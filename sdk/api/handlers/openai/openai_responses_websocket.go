@@ -1178,6 +1178,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			cliCtx = multiagentv2.WithInitialPlaintextToolProvenance(cliCtx, plaintextTools)
 			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+			if !nativeWebsocketPassthrough && !ojson.GetBytesNoCopy(payload, "instructions").Exists() {
+				if inherited := ojson.GetBytesNoCopy(requestJSON, "instructions"); inherited.Exists() {
+					cliCtx = cliproxyexecutor.WithInheritedWebsocketInstructions(cliCtx, strings.Clone(inherited.Raw))
+				}
+			}
 			cliCtx = cliproxyexecutor.WithLocalWebsocketTurnTracker(cliCtx)
 			cliCtx = cliproxyexecutor.WithWebsocketInputEpoch(cliCtx, &inputEpoch, msgEpoch)
 			useDuplex := duplexInput != nil && !h.AuthManager.ResourceAllowlistsEnabled()
