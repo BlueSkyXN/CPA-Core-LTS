@@ -1138,6 +1138,7 @@ patches:
     affected_upstream_range: through 17a65ee5470fbaf0e22fc219381e6a4ae9e07624 (upstream main, 2026-09-01); 12b88f3a adds public RegistrationEpoch and Generation values for scheduler/registry snapshot ordering. Those values do not replace the downstream process-local, non-persisted lifecycle generation carried through execute, stream, count, request-auth preparation, refresh, fallback, and Home paths, nor do they reject every stale provider writeback before hooks and persistence. LTS composes both scopes and keeps the patch required.
     files:
       - docs/lts/downstream-patches.yaml
+      - internal/auth/codex/refresh_patch.go
       - sdk/cliproxy/auth/auto_refresh_loop.go
       - sdk/cliproxy/auth/conductor.go
       - sdk/cliproxy/auth/conductor_cooldown.go
@@ -1171,6 +1172,9 @@ patches:
       - TestCanceledRefreshAfterCredentialReplacement
       - TestConcurrentUnauthorizedRespectsRefreshBackoff
       - TestUnauthorizedRefreshBackoffScope
+      - TestUnauthorizedBackoffAfterPartialCodexRefresh
+      - TestUnauthorizedBackoffUsesRequestedPartitionError
+      - TestPartialRefreshDoesNotTransfer401AcrossReplacement
       - TestRefreshJobKeepsCredentialVersion
       - TestRefreshReservationUsesObservedCredentialVersion
       - TestLateRemovalKeepsReregisteredRefreshSchedule

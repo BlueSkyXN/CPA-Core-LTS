@@ -216,16 +216,10 @@ type PartitionRefreshError struct {
 	siwcErr  error
 }
 
-// NewPartitionRefreshError returns a combined error carrying both outer and SIWC refresh errors when present.
+// NewPartitionRefreshError preserves which partition failed, including when only one was attempted.
 func NewPartitionRefreshError(outerErr, siwcErr error) error {
 	if outerErr == nil && siwcErr == nil {
 		return nil
-	}
-	if outerErr != nil && siwcErr == nil {
-		return outerErr
-	}
-	if siwcErr != nil && outerErr == nil {
-		return siwcErr
 	}
 	return &PartitionRefreshError{outerErr: outerErr, siwcErr: siwcErr}
 }

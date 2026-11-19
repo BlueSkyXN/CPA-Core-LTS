@@ -461,6 +461,35 @@ type unauthorizedRefreshFailure struct {
 	err        *Error
 }
 
+func (f *unauthorizedRefreshFailure) remember(auth *Auth, err error, now time.Time) {
+	if err == nil || !auth.NextRefreshAfter.After(now) {
+		return
+	}
+	if refreshCanceledOrDeferred(err) && !codex.IsRefreshOutcomeUnknown(err) {
+		return
+	}
+	*f = unauthorizedRefreshFailure{retryAfter: auth.NextRefreshAfter, err: sanitizeRenewalError(auth, err)}
+}
+
+func requestPartitionRefreshError(err error, siwc bool) error {
+	var partitions interface {
+		OuterRefreshError() error
+		SIWCRefreshError() error
+	}
+	if errors.As(err, &partitions) {
+		if siwc {
+			return partitions.SIWCRefreshError()
+		}
+		return partitions.OuterRefreshError()
+	}
+	// Executors may also return a typed SIWC error directly.
+	var inner interface{ IsSIWCRefreshError() bool }
+	if !siwc && errors.As(err, &inner) && inner.IsSIWCRefreshError() {
+		return nil
+	}
+	return err
+}
+
 // A 401 on one access token may reuse that token's failed attempt. The other
 // Codex partition and the first 401 after a background failure can still renew.
 func (l *authRefreshLock) failureFor401(auth *Auth, token string) *unauthorizedRefreshFailure {
@@ -478,6 +507,50 @@ func (l *authRefreshLock) failureFor401(auth *Auth, token string) *unauthorizedR
 	default:
 		return nil
 	}
+}
+
+// A Codex refresh can publish a rotated partition while the other partition
+// reports a failure. Carry backoff forward only for an unchanged access/grant
+// pair and only arm it in response to a 401 on that pair.
+func (l *authRefreshLock) afterRefresh(base, updated, saved *Auth, failedToken string, now time.Time) {
+	patch := updated.CodexRefreshPatch
+	if patch == nil {
+		if saved.RefreshError == nil {
+			l.outerFailure, l.siwcFailure = unauthorizedRefreshFailure{}, unauthorizedRefreshFailure{}
+		}
+		return
+	}
+
+	// A partial rotation can merge with a concurrent credential replacement.
+	// Transfer request failures only across the credential change we submitted.
+	expectedVersion := base.CredentialVersion
+	if CredentialsChanged(base, updated) {
+		expectedVersion++
+	}
+	if saved.generation != base.generation || saved.RegistrationEpoch != base.RegistrationEpoch ||
+		saved.CredentialVersion != expectedVersion || CredentialsChanged(updated, saved) {
+		l.outerFailure, l.siwcFailure = unauthorizedRefreshFailure{}, unauthorizedRefreshFailure{}
+		return
+	}
+	l.generation, l.credentialVersion = saved.generation, saved.CredentialVersion
+
+	requestFailure := l.failureFor401(saved, failedToken)
+	outerToken, outerGrant := authOuterAccessToken(saved), authRefreshToken(saved)
+	siwcToken, siwcGrant := authSIWCTokenField(saved, "access_token"), authSIWCTokenField(saved, "refresh_token")
+	if patch.RefreshedOuter() || outerToken != authOuterAccessToken(base) || outerGrant != authRefreshToken(base) {
+		l.outerFailure = unauthorizedRefreshFailure{}
+	} else if requestFailure == &l.outerFailure && outerGrant != "" && patch.FailedOuterRefreshToken() == outerGrant {
+		l.outerFailure.remember(saved, patch.OuterError(), now)
+	}
+	if patch.RefreshedSIWC() || siwcToken != authSIWCTokenField(base, "access_token") || siwcGrant != authSIWCTokenField(base, "refresh_token") {
+		l.siwcFailure = unauthorizedRefreshFailure{}
+	} else if requestFailure == &l.siwcFailure && siwcGrant != "" && patch.FailedSIWCRefreshToken() == siwcGrant {
+		l.siwcFailure.remember(saved, patch.SIWCError(), now)
+	}
+}
+
+func refreshCanceledOrDeferred(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, baseauth.ErrRefreshDeferred) || errors.Is(err, codex.ErrSIWCRefreshDeferred)
 }
 
 func authOuterAccessToken(auth *Auth) string {
@@ -1490,7 +1563,7 @@ func (m *Manager) refreshAuthForRequestAtVersion(ctx context.Context, id, failed
 	}
 
 	requestFailure := lock.failureFor401(auth, failedAccessToken)
-	if requestFailure != nil && requestFailure.err != nil && !forceRefresh && auth.RefreshError != nil {
+	if requestFailure != nil && requestFailure.err != nil && !forceRefresh {
 		now := time.Now()
 		if requestFailure.retryAfter.After(now) && auth.NextRefreshAfter.After(now) {
 			return nil, requestFailure.err.Clone()
@@ -1508,7 +1581,7 @@ func (m *Manager) refreshAuthForRequestAtVersion(ctx context.Context, id, failed
 		}
 		if errors.As(err, &partitions) {
 			for _, partitionErr := range []error{partitions.OuterRefreshError(), partitions.SIWCRefreshError()} {
-				if partitionErr != nil && !errors.Is(partitionErr, context.Canceled) && !errors.Is(partitionErr, baseauth.ErrRefreshDeferred) && !errors.Is(partitionErr, codex.ErrSIWCRefreshDeferred) {
+				if partitionErr != nil && !refreshCanceledOrDeferred(partitionErr) {
 					refreshCanceled = false
 					break
 				}
@@ -1761,7 +1834,7 @@ func (m *Manager) refreshAuthForRequestAtVersion(ctx context.Context, id, failed
 				}
 			}
 			if requestFailure != nil {
-				*requestFailure = unauthorizedRefreshFailure{retryAfter: current.NextRefreshAfter, err: sanitizedRefreshErr}
+				requestFailure.remember(current, requestPartitionRefreshError(err, requestFailure == &lock.siwcFailure), now)
 			}
 			m.auths[id] = current
 			if m.scheduler != nil {
@@ -1837,9 +1910,7 @@ func (m *Manager) refreshAuthForRequestAtVersion(ctx context.Context, id, failed
 	if saved == nil {
 		return nil, fmt.Errorf("auth %s not found", id)
 	}
-	if saved.RefreshError == nil {
-		lock.outerFailure, lock.siwcFailure = unauthorizedRefreshFailure{}, unauthorizedRefreshFailure{}
-	}
+	lock.afterRefresh(auth, updated, saved, failedAccessToken, now)
 	targetAuth := saved
 	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(id)
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))

@@ -249,6 +249,184 @@ func TestUnauthorizedRefreshBackoffScope(t *testing.T) {
 	})
 }
 
+func newCodexPartitionRefreshManager(t *testing.T, useSIWC bool, refresh func(*Auth) (*Auth, error)) (*Manager, *Auth) {
+	t.Helper()
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(&codexPartialRefreshExecutor{
+		unauthorizedRefreshExecutor: unauthorizedRefreshExecutor{id: "codex"},
+		refresh:                     refresh,
+	})
+	expired := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	auth, err := m.Register(t.Context(), &Auth{
+		ID: t.Name(), Provider: "codex", Status: StatusActive,
+		Metadata: map[string]any{
+			"access_token": "outer-access", "refresh_token": "outer-grant", "expired": expired, "use_siwc": useSIWC,
+			"siwc": map[string]any{"access_token": "siwc-access", "refresh_token": "siwc-grant", "client_id": "fixture", "expires_at": expired},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, auth
+}
+
+func TestUnauthorizedBackoffAfterPartialCodexRefresh(t *testing.T) {
+	for _, partition := range []string{"outer", "siwc"} {
+		t.Run(partition, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				useSIWC := partition == "siwc"
+				failure := errors.New(partition + " temporarily unavailable")
+				calls := 0
+				m, auth := newCodexPartitionRefreshManager(t, useSIWC, func(before *Auth) (*Auth, error) {
+					calls++
+					updated := before.Clone()
+					healthy := updated.Metadata
+					expiryKey := "expired"
+					var outerErr, siwcErr error
+					if useSIWC {
+						siwcErr = codex.WrapSIWCRefreshError(failure)
+					} else {
+						outerErr = failure
+						healthy = updated.Metadata["siwc"].(map[string]any)
+						expiryKey = "expires_at"
+					}
+					healthy["access_token"] = fmt.Sprintf("rotated-%d", calls)
+					healthy[expiryKey] = time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+					updated.CodexRefreshPatch = codex.NewCredentialRefreshPatch(before.Metadata, updated.Metadata, useSIWC, !useSIWC)
+					updated.CodexRefreshPatch.SetPartitionErrors(outerErr, siwcErr)
+					return updated, nil
+				})
+				failedToken := authAccessToken(auth)
+				saved, err := m.refreshAuthForRequest(ctx, auth.ID, failedToken)
+				if err != nil || saved == nil {
+					t.Fatalf("partial rotation did not commit: %v", err)
+				}
+				healthyToken := authSIWCTokenField(saved, "access_token")
+				if useSIWC {
+					healthyToken = authOuterAccessToken(saved)
+				}
+				if healthyToken != "rotated-1" || authAccessToken(saved) != failedToken || !saved.NextRefreshAfter.After(time.Now()) {
+					t.Fatal("partial refresh must publish the healthy token and schedule the failed partition")
+				}
+				_, err = m.refreshAuthForRequest(ctx, auth.ID, failedToken)
+				var previous *Error
+				if calls != 1 || !errors.As(err, &previous) || previous.Message != failure.Error() {
+					t.Fatalf("duplicate 401 got %v after %d calls", err, calls)
+				}
+				forced, err := m.ForceRefreshAuth(ctx, auth.ID)
+				if err != nil || calls != 2 || forced == nil || !forced.NextRefreshAfter.After(time.Now()) {
+					t.Fatalf("explicit refresh got %v after %d calls", err, calls)
+				}
+				time.Sleep(time.Until(forced.NextRefreshAfter) + time.Second)
+				if _, err = m.refreshAuthForRequest(ctx, auth.ID, failedToken); err != nil || calls != 3 {
+					t.Fatalf("retry after backoff got %v after %d calls", err, calls)
+				}
+			})
+		})
+	}
+}
+
+func TestUnauthorizedBackoffUsesRequestedPartitionError(t *testing.T) {
+	outerFailure := errors.New("outer endpoint unavailable")
+	siwcFailure := codex.WrapSIWCRefreshError(errors.New("inner endpoint unavailable"))
+	for _, tc := range []struct {
+		name     string
+		useSIWC  bool
+		outerErr error
+		siwcErr  error
+		want     error // nil when the next request should retry immediately
+	}{
+		{"outer", false, outerFailure, siwcFailure, outerFailure},
+		{"siwc", true, outerFailure, siwcFailure, siwcFailure},
+		{"outer-canceled", false, context.Canceled, siwcFailure, nil},
+		{"siwc-deferred", true, outerFailure, codex.ErrSIWCRefreshDeferred, nil},
+		{"only-siwc-failed", false, nil, siwcFailure, nil},
+		{"only-outer-failed", true, outerFailure, nil, nil},
+		{"requested-outer-only", false, outerFailure, nil, outerFailure},
+		{"requested-siwc-only", true, nil, siwcFailure, siwcFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := codex.NewPartitionRefreshError(tc.outerErr, tc.siwcErr)
+			calls := 0
+			m, auth := newCodexPartitionRefreshManager(t, tc.useSIWC, func(*Auth) (*Auth, error) {
+				calls++
+				return nil, failure
+			})
+			token := authAccessToken(auth)
+			_, firstErr := m.refreshAuthForRequest(t.Context(), auth.ID, token)
+			if !errors.Is(firstErr, failure) || (tc.outerErr != nil && !errors.Is(firstErr, tc.outerErr)) || (tc.siwcErr != nil && !errors.Is(firstErr, tc.siwcErr)) {
+				t.Fatalf("first refresh lost a partition error: %v", firstErr)
+			}
+			current, _ := m.GetByID(auth.ID)
+			if !current.NextRefreshAfter.After(time.Now()) {
+				t.Fatal("expected a future retry deadline")
+			}
+			_, err := m.refreshAuthForRequest(t.Context(), auth.ID, token)
+			if tc.want == nil {
+				if calls != 2 || !errors.Is(err, failure) {
+					t.Fatalf("request should retry, got %v after %d calls", err, calls)
+				}
+				return
+			}
+			var previous *Error
+			if calls != 1 || !errors.As(err, &previous) || previous.Message != tc.want.Error() {
+				t.Fatalf("duplicate 401 got %v after %d calls, want %v", err, calls, tc.want)
+			}
+		})
+	}
+}
+
+func TestPartialRefreshDoesNotTransfer401AcrossReplacement(t *testing.T) {
+	for _, restore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restore-original-grant=%t", restore), func(t *testing.T) {
+			ctx := t.Context()
+			var m *Manager
+			var auth *Auth
+			calls := 0
+			m, auth = newCodexPartitionRefreshManager(t, false, func(before *Auth) (*Auth, error) {
+				calls++
+				if calls == 1 {
+					replacement := before.Clone()
+					replacement.Metadata["refresh_token"] = "replacement-grant"
+					changed, err := m.Update(ctx, replacement)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if restore {
+						changed.Metadata["refresh_token"] = authRefreshToken(before)
+						if _, err = m.Update(ctx, changed); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				updated := before.Clone()
+				siwc := updated.Metadata["siwc"].(map[string]any)
+				siwc["access_token"] = fmt.Sprintf("rotated-%d", calls)
+				siwc["expires_at"] = time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+				updated.CodexRefreshPatch = codex.NewCredentialRefreshPatch(before.Metadata, updated.Metadata, false, true)
+				updated.CodexRefreshPatch.SetPartitionErrors(errors.New("outer endpoint unavailable"), nil)
+				return updated, nil
+			})
+			token := authOuterAccessToken(auth)
+			saved, err := m.refreshAuthForRequest(ctx, auth.ID, token)
+			if err != nil || saved == nil {
+				t.Fatalf("partial refresh did not commit: %v", err)
+			}
+			wantGrant := "replacement-grant"
+			if restore {
+				wantGrant = authRefreshToken(auth)
+			}
+			if authRefreshToken(saved) != wantGrant || authOuterAccessToken(saved) != token || authSIWCTokenField(saved, "access_token") != "rotated-1" || !saved.NextRefreshAfter.After(time.Now()) {
+				t.Fatal("expected the live outer grant, the rotated SIWC token and a future refresh time")
+			}
+			if _, err = m.refreshAuthForRequest(ctx, auth.ID, token); err != nil || calls != 2 {
+				t.Fatalf("replacement inherited old 401 failure, got %v after %d calls", err, calls)
+			}
+		})
+	}
+}
+
 func TestRefreshReservationUsesObservedCredentialVersion(t *testing.T) {
 	ctx := WithSkipPersist(context.Background())
 	m, executor, primary, _, _ := newUnauthorizedRefreshFixture(t, false)
