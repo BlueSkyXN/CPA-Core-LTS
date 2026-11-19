@@ -103,13 +103,15 @@ func (m *Manager) queueRefreshReschedule(authID string) {
 	loop.queueReschedule(authID)
 }
 
-func (m *Manager) queueRefreshUnschedule(authID string) {
+func (m *Manager) unscheduleRemovedAuth(authID string, removalEpoch uint64) {
 	if m == nil || authID == "" {
 		return
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.unscheduleRefreshLocked(authID)
+	if m.auths[authID] == nil && m.authEpochs[authID] == removalEpoch {
+		m.unscheduleRefreshLocked(authID)
+	}
 }
 
 func (m *Manager) unscheduleRefreshLocked(authID string) {
@@ -362,11 +364,11 @@ func lookupMetadataTime(meta map[string]any, keys ...string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (m *Manager) markRefreshPending(loop *authAutoRefreshLoop, id string, registrationEpoch uint64, now time.Time) *authRefreshJob {
+func (m *Manager) markRefreshPending(loop *authAutoRefreshLoop, id string, registrationEpoch, credentialVersion uint64, now time.Time) *authRefreshJob {
 	m.mu.Lock()
 	auth := m.auths[id]
 	_, replacing := m.replacingCredentials[id]
-	if auth == nil || replacing || auth.RegistrationEpoch != registrationEpoch || hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) {
+	if auth == nil || replacing || auth.RegistrationEpoch != registrationEpoch || auth.CredentialVersion != credentialVersion || hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) {
 		m.mu.Unlock()
 		return nil
 	}

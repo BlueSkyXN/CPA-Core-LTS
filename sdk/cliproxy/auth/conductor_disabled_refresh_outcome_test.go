@@ -56,7 +56,7 @@ func TestDisabledRefreshOutcomeJobCycle(t *testing.T) {
 				if at, ok := nextRefreshCheckAt(now, registered, time.Minute); !ok || at.After(now) {
 					t.Fatalf("disabled auth must remain eligible for proactive refresh: %v, %v", at, ok)
 				}
-				job := m.markRefreshPending(nil, a.ID, registered.RegistrationEpoch, now)
+				job := m.markRefreshPending(nil, a.ID, registered.RegistrationEpoch, registered.CredentialVersion, now)
 				if job == nil {
 					t.Fatal("refresh was not queued")
 				}
@@ -92,7 +92,7 @@ func TestDisabledRefreshOutcomeJobCycle(t *testing.T) {
 					if !current.NextRefreshAfter.Equal(want) {
 						t.Fatalf("backoff=%v, want %v", current.NextRefreshAfter, want)
 					}
-					if m.markRefreshPending(nil, a.ID, current.RegistrationEpoch, current.LastRefreshedAt) != nil {
+					if m.markRefreshPending(nil, a.ID, current.RegistrationEpoch, current.CredentialVersion, current.LastRefreshedAt) != nil {
 						t.Fatal("no-op refresh immediately requeued")
 					}
 				}

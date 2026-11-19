@@ -958,7 +958,7 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 		m.scheduler.RecordRemovalTombstone(id, tombstoneEpoch)
 	}
 	m.structuralEpoch.Add(1)
-	m.queueRefreshUnschedule(id)
+	m.unscheduleRemovedAuth(id, tombstoneEpoch)
 	m.invalidateSessionAffinity(id)
 
 	if provider != "" {

@@ -1172,6 +1172,8 @@ patches:
       - TestConcurrentUnauthorizedRespectsRefreshBackoff
       - TestUnauthorizedRefreshBackoffScope
       - TestRefreshJobKeepsCredentialVersion
+      - TestRefreshReservationUsesObservedCredentialVersion
+      - TestLateRemovalKeepsReregisteredRefreshSchedule
       - TestManager_RestoreCooldownRecordProviderCompatibility
     upstream_issue_or_pr: not-filed
     state: required
