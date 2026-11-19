@@ -1351,6 +1351,7 @@ func TestCodexExecutorAbnormalReasoningRetry_ManagerDeliversStreamingClientUsage
 func TestCodexExecutorAbnormalReasoningRetry_QualityStreamDeliversWinnerUsageIntoChatCompletionsFormat(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
+	secondaryArrived := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		calls++
@@ -1361,9 +1362,16 @@ func TestCodexExecutorAbnormalReasoningRetry_QualityStreamDeliversWinnerUsageInt
 		case 1:
 			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 1, 2, 3)))
 		case 2:
+			// The winner must see the other retry in flight for this two-lane scenario.
+			select {
+			case <-secondaryArrived:
+			case <-r.Context().Done():
+				return
+			}
 			_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"clean"}` + "\n\n"))
 			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 128, 5, 200, 205)))
-		default:
+		case 3:
+			close(secondaryArrived)
 			_, _ = w.Write([]byte(codexCompletedSSEWithUsage("gpt-5.5", 516, 2, 4, 6)))
 		}
 	}))
@@ -1384,7 +1392,9 @@ func TestCodexExecutorAbnormalReasoningRetry_QualityStreamDeliversWinnerUsageInt
 		t.Fatalf("register auth: %v", err)
 	}
 
-	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := manager.ExecuteStream(ctx, []string{"codex"}, cliproxyexecutor.Request{
 		Model:   "gpt-5.5",
 		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`),
 	}, cliproxyexecutor.Options{
