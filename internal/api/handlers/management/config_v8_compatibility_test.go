@@ -382,9 +382,9 @@ func TestConfigV8ClaudeOAuthIncludeCreateAPIKey(t *testing.T) {
 	}
 	h := &Handler{cfg: cfg, configFilePath: file}
 	router := gin.New()
-	router.PATCH("/v8/management/config", h.ConfigV8)
+	router.PATCH("/v8/management/config", h.configV8WithCurrentRevisionForTest(t))
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete} {
-		router.Handle(method, "/v8/management/config/*path", h.ConfigV8)
+		router.Handle(method, "/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
 	}
 
 	putRec := httptest.NewRecorder()

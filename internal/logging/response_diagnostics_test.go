@@ -54,7 +54,7 @@ func TestResponseDiagnosticsAreBoundedAndReleased(t *testing.T) {
 func TestResponseDiagnosticsSurviveOmittedAttempts(t *testing.T) {
 	capture := NewDeferredAPICapture()
 	for range MaxDeferredAPIResponseAttempts + 1 {
-		capture.RecordRequest(nil, func(int, time.Time, []byte, bool, bool) DeferredAPIRequest {
+		capture.RecordRequest(nil, func(int, time.Time, []byte, bool, bool, int) DeferredAPIRequest {
 			return func() []byte { return []byte("request") }
 		})
 	}
