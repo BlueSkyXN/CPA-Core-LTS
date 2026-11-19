@@ -571,8 +571,8 @@ func TestHomeCodexAlphaSearchRequestLogPreservesBodyReturnedWithReadError(t *tes
 	}
 	rawAPIResponse, okResponse := c.Get("API_RESPONSE")
 	apiResponse, _ := rawAPIResponse.([]byte)
-	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || !strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
-		t.Fatalf("API_RESPONSE = %q, want upstream body and read error", apiResponse)
+	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
+		t.Fatalf("API_RESPONSE = %q, want upstream body without local read error", apiResponse)
 	}
 }
 
@@ -2732,6 +2732,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			MaxCompletionTokens: 64000,
 			Thinking:            &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
 		},
+		{ID: "gpt-6.2-sol", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{
 			ID:            "custom-codex-model-test",
 			Object:        "model",
@@ -2813,10 +2814,14 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := gpt55["max_tokens"].(float64); got != 64000 {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
-	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || len(serviceTiers) != 1 {
-		t.Fatalf("Codex provider should advertise its priority service tier, got %#v", gpt55["service_tiers"])
+	for _, slug := range []string{"gpt-5.5", "gpt-6.2-sol"} {
+		expected := ojson.GetBytesNoCopy(registry.GetCodexClientModelsJSON(), `models.#(slug=="`+slug+`").service_tiers`)
+		actual := ojson.GetBytesNoCopy(rr.Body.Bytes(), `models.#(slug=="`+slug+`").service_tiers`)
+		if !expected.IsArray() || !actual.IsArray() || !reflect.DeepEqual(actual.Value(), expected.Value()) {
+			t.Fatalf("%s service tiers = %s, want catalog tiers %s", slug, actual.Raw, expected.Raw)
+		}
 	}
+
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -484,6 +485,29 @@ func TestNormalizeXAIImageRefsDocArbitraryNestedExtensionPath(t *testing.T) {
 }
 
 func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testing.T) {
+	// A busy runner can pause one traversal. Keep the allocation cap on each
+	// fresh document and compare the median duration against the latency budget.
+	checkTraversal := func(t *testing.T, prepare func() *ojson.Doc, run func(*ojson.Doc)) {
+		t.Helper()
+		var durations [5]time.Duration
+		for i := range durations {
+			doc := prepare()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			start := time.Now()
+			run(doc)
+			durations[i] = time.Since(start)
+			runtime.ReadMemStats(&after)
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64*1024 {
+				t.Fatalf("cache control traversal allocated %d bytes (> 64 KiB)", allocated)
+			}
+		}
+		slices.Sort(durations[:])
+		if median := durations[len(durations)/2]; !raceDetectorEnabled && median > 20*time.Millisecond {
+			t.Fatalf("cache control traversal median %v (> 20ms), samples %v", median, durations)
+		}
+	}
+
 	t.Run("split messages container avoids 1MiB materialization", func(t *testing.T) {
 		chunk := strings.Repeat("a", 64*1024)
 		var b strings.Builder
@@ -500,33 +524,21 @@ func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testin
 		b.WriteString(`]}`)
 		raw := []byte(b.String())
 
-		doc := ojson.NewDoc(raw)
-		// Mutate messages.0 so "messages" splits into an ojson container (v.c != nil).
-		_ = doc.Set("messages.0.content.0.text", "short")
-
-		var mBefore, mAfter runtime.MemStats
-		runtime.ReadMemStats(&mBefore)
-		start := time.Now()
-		ensureCacheControlDoc(doc)
-		if got := countCacheControlsDoc(doc); got != 2 {
-			t.Fatalf("countCacheControlsDoc = %d, want 2", got)
-		}
-		enforceCacheControlLimitDoc(doc, 4)
-		upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
-		normalizeCacheControlTTLDoc(doc)
-		stripClaudeCacheControlTTLDoc(doc)
-		elapsed := time.Since(start)
-		runtime.ReadMemStats(&mAfter)
-
-		allocated := mAfter.TotalAlloc - mBefore.TotalAlloc
-		if allocated > 64*1024 {
-			t.Fatalf("split messages: cache control doc helpers allocated %d bytes (> 64 KiB)", allocated)
-		}
-		if raceDetectorEnabled {
-			t.Logf("split messages took %v with race instrumentation; the 20ms timing limit applies to non-race builds", elapsed)
-		} else if elapsed > 20*time.Millisecond {
-			t.Fatalf("split messages took %v (> 20ms); expected O(N) single-pass traversal", elapsed)
-		}
+		checkTraversal(t, func() *ojson.Doc {
+			doc := ojson.NewDoc(raw)
+			// Mutate messages.0 so "messages" splits into an ojson container (v.c != nil).
+			_ = doc.Set("messages.0.content.0.text", "short")
+			return doc
+		}, func(doc *ojson.Doc) {
+			ensureCacheControlDoc(doc)
+			if got := countCacheControlsDoc(doc); got != 2 {
+				t.Fatalf("countCacheControlsDoc = %d, want 2", got)
+			}
+			enforceCacheControlLimitDoc(doc, 4)
+			upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
+			normalizeCacheControlTTLDoc(doc)
+			stripClaudeCacheControlTTLDoc(doc)
+		})
 	})
 
 	t.Run("unsplit 1024 messages runs in single-pass O(N) time and <64KiB allocs", func(t *testing.T) {
@@ -549,30 +561,18 @@ func TestClaudeCacheControlDocChecksDoNotMaterializeLargeMessagesArray(t *testin
 		b.WriteString(`]}`)
 		raw := []byte(b.String())
 
-		doc := ojson.NewDoc(raw)
-		// Mutate only "model" so "messages" remains unsplit in root tail.
-		_ = doc.Set("model", "claude-sonnet-4-5-20250929")
-
-		var mBefore, mAfter runtime.MemStats
-		runtime.ReadMemStats(&mBefore)
-		start := time.Now()
-		if got := countCacheControlsDoc(doc); got != 2 {
-			t.Fatalf("countCacheControlsDoc = %d, want 2", got)
-		}
-		enforceCacheControlLimitDoc(doc, 4)
-		normalizeCacheControlTTLDoc(doc)
-		elapsed := time.Since(start)
-		runtime.ReadMemStats(&mAfter)
-
-		allocated := mAfter.TotalAlloc - mBefore.TotalAlloc
-		if allocated > 64*1024 {
-			t.Fatalf("unsplit 1024 messages: allocated %d bytes (> 64 KiB)", allocated)
-		}
-		if raceDetectorEnabled {
-			t.Logf("unsplit 1024 messages took %v with race instrumentation; the 20ms timing limit applies to non-race builds", elapsed)
-		} else if elapsed > 20*time.Millisecond {
-			t.Fatalf("unsplit 1024 messages took %v (> 20ms); expected O(N) single-pass traversal", elapsed)
-		}
+		checkTraversal(t, func() *ojson.Doc {
+			doc := ojson.NewDoc(raw)
+			// Mutate only "model" so "messages" remains unsplit in root tail.
+			_ = doc.Set("model", "claude-sonnet-4-5-20250929")
+			return doc
+		}, func(doc *ojson.Doc) {
+			if got := countCacheControlsDoc(doc); got != 2 {
+				t.Fatalf("countCacheControlsDoc = %d, want 2", got)
+			}
+			enforceCacheControlLimitDoc(doc, 4)
+			normalizeCacheControlTTLDoc(doc)
+		})
 	})
 }
 
