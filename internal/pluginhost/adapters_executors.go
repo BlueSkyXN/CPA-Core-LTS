@@ -303,17 +303,18 @@ func newExecutorAdapterRegistration(h *Host, record capabilityRecord, provider s
 	return executorRegistration{
 		provider: provider,
 		adapter: &executorAdapter{
-			host:          h,
-			pluginID:      record.id,
-			path:          record.path,
-			version:       record.version,
-			provider:      provider,
-			executor:      executor,
-			canceller:     record.plugin.Capabilities.ExecutionCanceller,
-			sessionCloser: record.plugin.Capabilities.ExecutionSessionCloser,
-			readiness:     record.plugin.Capabilities.ProviderReadiness,
-			inputFormats:  normalizeExecutorFormats(record.plugin.Capabilities.ExecutorInputFormats),
-			outputFormats: normalizeExecutorFormats(record.plugin.Capabilities.ExecutorOutputFormats),
+			host:              h,
+			pluginID:          record.id,
+			path:              record.path,
+			version:           record.version,
+			provider:          provider,
+			executor:          executor,
+			canceller:         record.plugin.Capabilities.ExecutionCanceller,
+			sessionCloser:     record.plugin.Capabilities.ExecutionSessionCloser,
+			readiness:         record.plugin.Capabilities.ProviderReadiness,
+			inputFormats:      normalizeExecutorFormats(record.plugin.Capabilities.ExecutorInputFormats),
+			outputFormats:     normalizeExecutorFormats(record.plugin.Capabilities.ExecutorOutputFormats),
+			usageExecutorType: helps.PluginExecutorType(record.id),
 		},
 	}
 }
@@ -735,17 +736,18 @@ func (h *Host) modelProvidersForPlugin(pluginID string) []string {
 }
 
 type executorAdapter struct {
-	host          *Host
-	pluginID      string
-	path          string
-	version       string
-	provider      string
-	executor      pluginapi.ProviderExecutor
-	canceller     pluginapi.ExecutionCanceller
-	sessionCloser pluginapi.ExecutionSessionCloser
-	readiness     pluginapi.ProviderReadiness
-	inputFormats  []sdktranslator.Format
-	outputFormats []sdktranslator.Format
+	host              *Host
+	pluginID          string
+	path              string
+	version           string
+	provider          string
+	executor          pluginapi.ProviderExecutor
+	canceller         pluginapi.ExecutionCanceller
+	sessionCloser     pluginapi.ExecutionSessionCloser
+	readiness         pluginapi.ProviderReadiness
+	inputFormats      []sdktranslator.Format
+	outputFormats     []sdktranslator.Format
+	usageExecutorType string
 }
 
 func (a *executorAdapter) Identifier() string {
@@ -753,6 +755,16 @@ func (a *executorAdapter) Identifier() string {
 		return ""
 	}
 	return a.provider
+}
+
+func (a *executorAdapter) UsageExecutorType() string {
+	if a == nil {
+		return ""
+	}
+	if a.usageExecutorType != "" {
+		return a.usageExecutorType
+	}
+	return helps.PluginExecutorType(a.pluginID)
 }
 
 func (a *executorAdapter) CompatibleExecutorReplacement(next coreauth.ProviderExecutor) bool {
@@ -1773,15 +1785,21 @@ func finalizeExecutorStreamFailure(ctx context.Context, cancelStream context.Can
 	}
 }
 
-func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
+func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	resp, _, err := a.executeWithAttribution(ctx, auth, req, opts)
+	return resp, err
+}
+
+func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, attribution *pluginapi.UsageAttribution, err error) {
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
-		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+		return coreexecutor.Response{}, nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
 	var reporter *helps.UsageReporter
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "Executor.Execute", recovered)
 			resp = coreexecutor.Response{}
+			attribution = nil
 			err = fmt.Errorf("plugin executor %s panic: %v", a.Identifier(), recovered)
 			if reporter != nil {
 				reporter.PublishFailure(ctx, err)
@@ -1795,16 +1813,16 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 
 	prepared, errPrepare := a.prepareExecutorCallForAuth(ctx, auth, req, opts)
 	if errPrepare != nil {
-		return coreexecutor.Response{}, errPrepare
+		return coreexecutor.Response{}, nil, errPrepare
 	}
 	pluginReq := buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts)
 	if !a.executionAdmitted(ctx, pluginReq) {
 		if errReady := a.ensureReady(ctx, pluginReq); errReady != nil {
-			return coreexecutor.Response{}, errReady
+			return coreexecutor.Response{}, nil, errReady
 		}
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return coreexecutor.Response{}, ctx.Err()
+		return coreexecutor.Response{}, nil, ctx.Err()
 	}
 	stopCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
 	defer stopCancellationWatch()
@@ -1818,15 +1836,18 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		if reporter != nil {
 			reporter.PublishFailure(ctx, ctx.Err())
 		}
-		return coreexecutor.Response{}, ctx.Err()
+		return coreexecutor.Response{}, nil, ctx.Err()
 	}
 	if errExecute != nil {
 		if reporter != nil {
 			reporter.PublishFailure(ctx, errExecute)
 		}
-		return coreexecutor.Response{}, errExecute
+		return coreexecutor.Response{}, nil, errExecute
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
+	if reporter != nil {
+		reporter.ApplyPluginExecutorAttribution(a.pluginID, pluginResp.Attribution)
+	}
 	if reporter != nil && len(pluginResp.Payload) > 0 {
 		reporter.MarkFirstResponseByte()
 		reporter.RecordFirstPacket()
@@ -1844,7 +1865,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 				}
 				reporter.PublishFailureWithDetail(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload), err)
 			}
-			return coreexecutor.Response{}, err
+			return coreexecutor.Response{}, nil, err
 		}
 	}
 	if translated == nil && prepared.requestedFormat != "" && prepared.outputFormat != prepared.requestedFormat {
@@ -1860,7 +1881,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 				}
 				reporter.PublishFailureWithDetail(ctx, helps.ParsePluginExecutorResponseUsage(prepared.outputFormat.String(), pluginResp.Payload), err)
 			}
-			return coreexecutor.Response{}, err
+			return coreexecutor.Response{}, nil, err
 		}
 	}
 	if reporter != nil {
@@ -1879,18 +1900,24 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req 
 		Payload:  translated,
 		Metadata: cloneAnyMap(pluginResp.Metadata),
 		Headers:  cloneHeader(pluginResp.Headers),
-	}, nil
+	}, pluginResp.Attribution, nil
 }
 
-func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result *coreexecutor.StreamResult, err error) {
+func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	result, _, err := a.executeStreamWithAttribution(ctx, auth, req, opts)
+	return result, err
+}
+
+func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result *coreexecutor.StreamResult, attribution *pluginapi.UsageAttribution, err error) {
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
-		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+		return nil, nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
 	var reporter *helps.UsageReporter
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "Executor.ExecuteStream", recovered)
 			result = nil
+			attribution = nil
 			err = fmt.Errorf("plugin executor %s stream panic: %v", a.Identifier(), recovered)
 			if reporter != nil {
 				reporter.PublishFailure(ctx, err)
@@ -1904,16 +1931,16 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 
 	prepared, errPrepare := a.prepareExecutorCallForAuth(ctx, auth, req, opts)
 	if errPrepare != nil {
-		return nil, errPrepare
+		return nil, nil, errPrepare
 	}
 	pluginReq := buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts)
 	if !a.executionAdmitted(ctx, pluginReq) {
 		if errReady := a.ensureReady(ctx, pluginReq); errReady != nil {
-			return nil, errReady
+			return nil, nil, errReady
 		}
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 	streamCtx := ctx
 	var cancelStream context.CancelFunc
@@ -1972,17 +1999,20 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		if reporter != nil {
 			reporter.PublishFailure(ctx, ctx.Err())
 		}
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 	if errExecuteStream != nil {
 		if reporter != nil {
 			reporter.PublishFailure(ctx, errExecuteStream)
 		}
-		return nil, errExecuteStream
+		return nil, nil, errExecuteStream
 	}
 	// 插件调用已返回，建流桥接解除；后续请求取消由跟随请求 ctx 的转换协程处理。
 	if stopCallerBridge != nil {
 		stopCallerBridge()
+	}
+	if reporter != nil {
+		reporter.ApplyPluginExecutorAttribution(a.pluginID, pluginResp.Attribution)
 	}
 	internallogging.SetResponseHeaders(ctx, cloneHeader(pluginResp.Headers))
 	if isClaudePluginOpenAI(prepared) {
@@ -1992,7 +2022,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		}
 		chunks := a.translateClaudePluginStream(parent, cancelStream, pluginReq, prepared, reporter, pluginResp.Chunks, cancelStreamToPlugin)
 		streamHandedOff = true
-		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(parent, chunks)}, nil
+		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(parent, chunks)}, pluginResp.Attribution, nil
 	}
 	if prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatOpenAIResponse {
 		// 转换和原始 usage 观察使用同一协程，避免上游先关闭时抢先发布成功。
@@ -2005,7 +2035,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		}
 		translated := a.translateExecutorStreamChunksWithUsage(convCtx, prepared, pluginChunks, reporter, cancelStream)
 		streamHandedOff = true
-		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(ctx, translated)}, nil
+		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(ctx, translated)}, pluginResp.Attribution, nil
 	}
 	rawPluginChunks := observeFormalPluginStreamUsage(streamCtx, reporter, prepared.outputFormat, pluginResp.Chunks)
 	pluginChunks := a.watchExecutorStreamCancellationShared(streamCtx, pluginReq, rawPluginChunks, cancelStreamToPlugin)
@@ -2014,7 +2044,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 		Headers: cloneHeader(pluginResp.Headers),
 		// 转换协程同样跟随请求 ctx：客户端取消要能终止转换与上游执行。
 		Chunks: mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunksWithUsage(ctx, prepared, pluginChunks, nil, cancelStream)),
-	}, nil
+	}, pluginResp.Attribution, nil
 }
 
 func (a *executorAdapter) watchExecutorStreamCancellation(ctx context.Context, req pluginapi.ExecutorRequest, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
