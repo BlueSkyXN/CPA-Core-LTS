@@ -172,6 +172,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 
+	doc = ojson.NewDoc(body)
+	sessionInstructions, errSession := helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, nil, nil, codexCompactionSummaryFromContext(ctx))
+	if errSession != nil {
+		return nil, errSession
+	}
+	body = doc.Bytes()
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
 	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
@@ -179,6 +185,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
+	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
+		identityState.affinity.close()
+		return nil, errFinal
+	}
 	body = upstreamBody
 	upstreamModel := strings.TrimSpace(ojson.GetBytesNoCopy(upstreamBody, "model").String())
 	if upstreamModel == "" {
@@ -221,7 +231,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		URL:       url,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
-		Body:      upstreamBody,
+		Body:      sessionInstructions.LogBody(upstreamBody),
 		Provider:  e.Identifier(),
 		AuthID:    authID,
 		AuthLabel: authLabel,

@@ -41,6 +41,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		return nil, err
 	}
 	var drops translatorcommon.UserTurnDrops
+	var toolOutputErr error
 	// Base OpenAI chat completions template with default values
 	outDoc := ojson.NewDocString(`{"model":"","messages":[],"stream":false}`)
 
@@ -184,6 +185,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		outputCounts := make(map[string]int)
 		deferredMessages := make([][]byte, 0)
 		mergeableAssistantIndex := -1
+		var pendingToolMedia [][][]byte
 
 		fallbackToolReasoning := func() string {
 			if latestReasoningContent != "" {
@@ -277,6 +279,14 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			}
 			appendMessage(message)
 			return len(messages) - 1
+		}
+		flushPendingToolMedia := func() {
+			for _, parts := range pendingToolMedia {
+				userDoc := ojson.NewDocString(`{"role":"user","content":[]}`)
+				translatorcommon.SetRawArrayItemsDoc(userDoc, "content", parts)
+				appendRegularMessage(userDoc.Bytes())
+			}
+			pendingToolMedia = nil
 		}
 		appendPendingReasoningMessage := func() {
 			reasoningContent := takePendingReasoningContent()
@@ -459,19 +469,28 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					// Orphan outputs (empty call_id or no matching assistant
 					// tool_calls, e.g. Codex send_message_to_thread cards) must
 					// not become tool messages. Emit as user text instead.
-					appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setFunctionCallOutputContentDoc, appendRegularMessage)
+					if errStandalone := appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setFunctionCallOutputContentDoc, appendRegularMessage); errStandalone != nil && toolOutputErr == nil {
+						toolOutputErr = errStandalone
+					}
 				} else {
 					toolMessageDoc := ojson.NewDocString(`{"role":"tool","tool_call_id":"","content":""}`)
 					_ = toolMessageDoc.Set("tool_call_id", callID)
 					delete(awaitingToolOutputs, callID)
-					var relayItems [][]byte
 					if output := item.Get("output"); output.Exists() {
-						relayItems = setFunctionCallOutputContentDoc(toolMessageDoc, output)
+						fileParts, errToolOut := setFunctionCallOutputContentDoc(toolMessageDoc, output, true)
+						if errToolOut != nil && toolOutputErr == nil {
+							toolOutputErr = errToolOut
+						}
+						if len(fileParts) > 0 {
+							pendingToolMedia = append(pendingToolMedia, fileParts)
+						}
 					}
 					appendMessage(toolMessageDoc.Bytes())
-					appendResponsesToolImageRelayMessage(appendMessage, relayItems)
+					if len(awaitingToolOutputs) == 0 {
+						flushPendingToolMedia()
+					}
 				}
-				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+				if len(awaitingToolOutputs) == 0 {
 					flushDeferredMessages()
 				}
 
@@ -511,19 +530,28 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					}
 				}
 				if _, awaiting := awaitingToolOutputs[callID]; !awaiting {
-					appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setCustomToolCallOutputContentDoc, appendRegularMessage)
+					if errStandalone := appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setCustomToolCallOutputContentDoc, appendRegularMessage); errStandalone != nil && toolOutputErr == nil {
+						toolOutputErr = errStandalone
+					}
 				} else {
 					toolMessageDoc := ojson.NewDocString(`{"role":"tool","tool_call_id":"","content":""}`)
 					_ = toolMessageDoc.Set("tool_call_id", callID)
 					delete(awaitingToolOutputs, callID)
-					var relayItems [][]byte
 					if output := item.Get("output"); output.Exists() {
-						relayItems = setCustomToolCallOutputContentDoc(toolMessageDoc, output)
+						fileParts, errToolOut := setCustomToolCallOutputContentDoc(toolMessageDoc, output, true)
+						if errToolOut != nil && toolOutputErr == nil {
+							toolOutputErr = errToolOut
+						}
+						if len(fileParts) > 0 {
+							pendingToolMedia = append(pendingToolMedia, fileParts)
+						}
 					}
 					appendMessage(toolMessageDoc.Bytes())
-					appendResponsesToolImageRelayMessage(appendMessage, relayItems)
+					if len(awaitingToolOutputs) == 0 {
+						flushPendingToolMedia()
+					}
 				}
-				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+				if len(awaitingToolOutputs) == 0 {
 					flushDeferredMessages()
 				}
 
@@ -533,6 +561,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 		}
 		flushPendingToolCalls()
+		flushPendingToolMedia()
 		appendPendingReasoningMessage()
 		flushDeferredMessages()
 	} else if input.Type == ojson.String {
@@ -576,7 +605,10 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		}
 	}
 
-	return outDoc.Bytes(), drops.Err()
+	if errDrops := drops.Err(); errDrops != nil {
+		return outDoc.Bytes(), errDrops
+	}
+	return outDoc.Bytes(), toolOutputErr
 }
 
 // responsesInputFileToChatPart maps a Responses input_file part onto a Chat
@@ -704,41 +736,100 @@ func convertResponsesTextFormatToChatResponseFormat(textFormat ojson.Result) []b
 	}
 }
 
-func appendStandaloneResponsesToolOutputAsUser(output ojson.Result, setContentDoc func(*ojson.Doc, ojson.Result) [][]byte, appendMessage func([]byte) int) {
+func appendStandaloneResponsesToolOutputAsUser(output ojson.Result, setContentDoc func(*ojson.Doc, ojson.Result, bool) ([][]byte, error), appendMessage func([]byte) int) error {
 	userMessageDoc := ojson.NewDocString(`{"role":"user","content":""}`)
 	if output.Exists() {
-		setContentDoc(userMessageDoc, output)
+		if _, errSet := setContentDoc(userMessageDoc, output, false); errSet != nil {
+			return errSet
+		}
 	}
 	userMessage := userMessageDoc.Bytes()
 	content := ojson.GetBytesNoCopy(userMessage, "content")
 	if !content.Exists() {
-		return
+		return nil
 	}
 	if content.Type == ojson.String && strings.TrimSpace(content.String()) == "" {
-		return
+		return nil
 	}
 	if content.IsArray() && !content.Get("0").Exists() {
-		return
+		return nil
 	}
 	appendMessage(userMessage)
+	return nil
 }
 
-// Chat Completions tool messages support text content only. Tool-output images
-// are relayed to a user message while retaining their original data and detail.
-const responsesToolImageRelayNotice = "Images returned by the preceding tool call(s):"
-
-func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Result) [][]byte {
+func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Result, separateFiles bool) ([][]byte, error) {
 	structuredContent := output
 	if output.Type == ojson.String {
 		if !ojson.Valid(output.String()) {
 			_ = toolMessageDoc.Set("content", output.String())
-			return nil
+			return nil, nil
 		}
 		structuredContent = ojson.Parse(output.String())
 	}
 
-	if hasChatToolOutputImagePart(structuredContent) {
-		relayImages := ojson.GetBytesNoCopy(toolMessageDoc.Bytes(), "role").String() == "tool"
+	items, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType := inspectChatToolOutputParts(structuredContent)
+	if unsupportedType != "" {
+		return nil, &translatorcommon.UnsupportedPartError{Type: unsupportedType}
+	}
+	if hasFile || (structuredContent.IsObject() && hasImage) {
+		if badImageType != "" {
+			return nil, &translatorcommon.UnsupportedPartError{Type: badImageType}
+		}
+		var toolItems [][]byte
+		var userMediaItems [][]byte
+		var textParts []string
+		for _, item := range items {
+			switch item.Get("type").String() {
+			case "input_file", "file":
+				if filePart, ok := chatToolOutputFilePart(item); ok {
+					if separateFiles {
+						userMediaItems = append(userMediaItems, filePart)
+					} else {
+						toolItems = append(toolItems, filePart)
+					}
+				}
+			case "image_url", "input_image":
+				if _, _, ok := chatToolOutputImageFields(item); ok {
+					imgPart := chatToolOutputContentPart(item)
+					if separateFiles {
+						userMediaItems = append(userMediaItems, imgPart)
+					} else {
+						toolItems = append(toolItems, imgPart)
+					}
+				}
+			case "text", "input_text", "output_text":
+				if item.Get("text").Type == ojson.String {
+					txt := item.Get("text").String()
+					textParts = append(textParts, txt)
+					toolItems = append(toolItems, chatToolOutputContentPart(item))
+				} else {
+					fallback := chatToolOutputFallbackPart(item)
+					textParts = append(textParts, ojson.GetBytesNoCopy(fallback, "text").String())
+					toolItems = append(toolItems, fallback)
+				}
+			default:
+				fallback := chatToolOutputFallbackPart(item)
+				textParts = append(textParts, ojson.GetBytesNoCopy(fallback, "text").String())
+				toolItems = append(toolItems, fallback)
+			}
+		}
+		if separateFiles {
+			if len(textParts) == 0 {
+				_ = toolMessageDoc.Set("content", "Attached media from tool output follows in the user message.")
+			} else {
+				_ = toolMessageDoc.Set("content", strings.Join(textParts, "\n"))
+			}
+			return userMediaItems, nil
+		}
+		translatorcommon.SetRawArrayItemsDoc(toolMessageDoc, "content", toolItems)
+		return nil, nil
+	}
+	if structuredContent.IsObject() && badImageType != "" {
+		return nil, &translatorcommon.UnsupportedPartError{Type: badImageType}
+	}
+	if hasImage && !invalidTextOrImage {
+		relayImages := separateFiles
 		contentItems := make([][]byte, 0, len(structuredContent.Array()))
 		relayItems := make([][]byte, 0, 2)
 		for _, item := range structuredContent.Array() {
@@ -751,45 +842,33 @@ func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Res
 			contentItems = append(contentItems, chatToolOutputContentPart(item))
 		}
 		if len(relayItems) > 0 {
-			// Parallel tool results are aligned before the following user messages.
-			placeholder := []byte(`{"type":"text","text":"[Tool images are included in a following user message.]"}`)
-			contentItems = append(contentItems, placeholder)
+			contentItems = append(contentItems, []byte(`{"type":"text","text":"[Tool images are included in a following user message.]"}`))
+			notice := []byte(`{"type":"text","text":"Images returned by the preceding tool call(s):"}`)
+			relayItems = append([][]byte{notice}, relayItems...)
 		}
 		translatorcommon.SetRawArrayItemsDoc(toolMessageDoc, "content", contentItems)
-		return relayItems
+		return relayItems, nil
 	}
 
 	_ = toolMessageDoc.Set("content", output.String())
-	return nil
+	return nil, nil
 }
 
-func setCustomToolCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Result) [][]byte {
+func setCustomToolCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Result, separateFiles bool) ([][]byte, error) {
 	structuredContent := output
 	if output.Type == ojson.String && ojson.Valid(output.String()) {
 		structuredContent = ojson.Parse(output.String())
 	}
-	if hasChatToolOutputImagePart(structuredContent) {
-		return setFunctionCallOutputContentDoc(toolMessageDoc, output)
+	_, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType := inspectChatToolOutputParts(structuredContent)
+	if unsupportedType != "" {
+		return nil, &translatorcommon.UnsupportedPartError{Type: unsupportedType}
+	}
+	if hasFile || (structuredContent.IsObject() && (hasImage || badImageType != "")) || (hasImage && !invalidTextOrImage) {
+		return setFunctionCallOutputContentDoc(toolMessageDoc, output, separateFiles)
 	}
 
 	_ = toolMessageDoc.Set("content", responsesToolOutputText(output))
-	return nil
-}
-
-// appendResponsesToolImageRelayMessage emits the user message that carries
-// tool-output images. Images must follow the tool messages (tool-call
-// adjacency), which matches where Claude-path relaying already puts them.
-func appendResponsesToolImageRelayMessage(appendMessage func([]byte), relayItems [][]byte) {
-	if len(relayItems) == 0 {
-		return
-	}
-	items := make([][]byte, 0, len(relayItems)+1)
-	noticeJSON, _ := ojson.SetBytes([]byte(`{"type":"text","text":""}`), "text", responsesToolImageRelayNotice)
-	items = append(items, noticeJSON)
-	items = append(items, relayItems...)
-	relayJSON := []byte(`{"role":"user"}`)
-	relayJSON, _ = ojson.SetRawBytes(relayJSON, "content", translatorcommon.JoinRawArray(items))
-	appendMessage(relayJSON)
+	return nil, nil
 }
 
 func chatToolOutputContentPart(item ojson.Result) []byte {
@@ -810,35 +889,80 @@ func chatToolOutputContentPart(item ojson.Result) []byte {
 			_ = partDoc.Set("image_url.detail", detail)
 		}
 		return partDoc.Bytes()
+	case "input_file", "file":
+		if filePart, ok := chatToolOutputFilePart(item); ok {
+			return filePart
+		}
+		return chatToolOutputFallbackPart(item)
 	default:
 		return chatToolOutputFallbackPart(item)
 	}
 }
 
-func hasChatToolOutputImagePart(content ojson.Result) bool {
-	if !content.IsArray() {
+func chatToolOutputFilePart(item ojson.Result) ([]byte, bool) {
+	if item.Get("type").String() == "file" && item.Get("file").IsObject() {
+		return responsesInputFileToChatPart(item.Get("file"))
+	}
+	return responsesInputFileToChatPart(item)
+}
+
+func isChatToolOutputPartObject(content ojson.Result) bool {
+	if !content.IsObject() {
 		return false
 	}
+	switch strings.ToLower(strings.TrimSpace(content.Get("type").String())) {
+	case "input_text", "output_text", "image_url", "input_image", "input_file", "file", "input_audio", "audio", "input_video", "video":
+		return true
+	case "text":
+		return content.Get("text").Type == ojson.String
+	default:
+		return false
+	}
+}
 
-	hasImage := false
-	for _, item := range content.Array() {
+func inspectChatToolOutputParts(content ojson.Result) (items []ojson.Result, hasImage bool, hasFile bool, invalidTextOrImage bool, badImageType string, unsupportedType string) {
+	switch {
+	case content.IsArray():
+		items = content.Array()
+	case isChatToolOutputPartObject(content):
+		items = []ojson.Result{content}
+	default:
+		return nil, false, false, false, "", ""
+	}
+
+	for _, item := range items {
 		itemType := item.Get("type")
 		if itemType.Type != ojson.String {
 			continue
 		}
-		switch itemType.String() {
+		typeName := itemType.String()
+		switch typeName {
 		case "text", "input_text", "output_text":
 			if item.Get("text").Type != ojson.String {
-				return false
+				invalidTextOrImage = true
 			}
 		case "image_url", "input_image":
 			if _, _, ok := chatToolOutputImageFields(item); !ok {
-				return false
+				invalidTextOrImage = true
+				if badImageType == "" {
+					badImageType = typeName
+				}
+			} else {
+				hasImage = true
 			}
-			hasImage = true
+		case "input_file", "file":
+			if _, ok := chatToolOutputFilePart(item); ok {
+				hasFile = true
+			} else if unsupportedType == "" {
+				unsupportedType = typeName
+			}
+		case "input_audio", "audio", "input_video", "video":
+			if unsupportedType == "" {
+				unsupportedType = typeName
+			}
 		}
 	}
-	return hasImage
+	return items, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType
 }
 
 func chatToolOutputImageFields(item ojson.Result) (imageURL, detail string, ok bool) {

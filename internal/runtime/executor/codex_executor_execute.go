@@ -246,6 +246,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 
+	doc = ojson.NewDoc(body)
+	sessionInstructions, errSession := helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, nil, nil, codexCompactionSummaryFromContext(ctx))
+	if errSession != nil {
+		return resp, errSession
+	}
+	body = doc.Bytes()
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
 	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
@@ -253,6 +259,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
+	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
+		identityState.affinity.close()
+		return resp, errFinal
+	}
 	body = upstreamBody
 	upstreamModel := strings.TrimSpace(ojson.GetBytesNoCopy(upstreamBody, "model").String())
 	if upstreamModel == "" {
@@ -290,7 +300,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		URL:       url,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
-		Body:      upstreamBody,
+		Body:      sessionInstructions.LogBody(upstreamBody),
 		Provider:  e.Identifier(),
 		AuthID:    authID,
 		AuthLabel: authLabel,
@@ -614,6 +624,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "codex executor", doc, isCompat, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
 	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
 	helps.NormalizeCodexToolSchemasDoc(doc)
+	helps.StripCodexSessionInstructionMarker(doc, from)
 	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
 	if err != nil {
 		return resp, err
@@ -630,6 +641,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
 	if err != nil {
 		return resp, err
+	}
+	if errMarker := helps.ValidateCodexSessionInstructionMarker(upstreamBody, from); errMarker != nil {
+		identityState.affinity.close()
+		return resp, errMarker
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
