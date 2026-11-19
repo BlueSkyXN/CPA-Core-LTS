@@ -779,7 +779,27 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 	// Runtime-only changes made during I/O are merged below, never overwritten.
 	existingBeforeSave := existing.Clone()
 	refreshPatchBeforeSave := auth.CodexRefreshPatch
-	if errPersist := m.persistLocked(ctx, auth); errPersist != nil {
+	// The per-auth mutation gate serializes replacements, but refresh outcomes
+	// can arrive under m.mu while Store.Save is running.
+	replacing := credChanged || !sameProvider
+	var replacementDone chan struct{}
+	if replacing {
+		if m.replacingCredentials == nil {
+			m.replacingCredentials = make(map[string]chan struct{})
+		}
+		if persistMetaMint {
+			replacementDone = make(chan struct{})
+		}
+		m.replacingCredentials[auth.ID] = replacementDone
+	}
+	errPersist := m.persistLocked(ctx, auth)
+	if replacing {
+		delete(m.replacingCredentials, auth.ID)
+		if replacementDone != nil {
+			close(replacementDone)
+		}
+	}
+	if errPersist != nil {
 		// A minted Meta key must reach the store before requests can use it.
 		if persistMetaMint {
 			m.mu.Unlock()
@@ -791,6 +811,10 @@ func (m *Manager) updateInternalWithGenerationLocked(ctx context.Context, base, 
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
 		m.mu.Unlock()
 		return nil, false, false, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
+	}
+	if replacing {
+		// A queued job can finish during Save. Its deadline belongs to the old grant.
+		existingBeforeSave.NextRefreshAfter = existing.NextRefreshAfter
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
 	if m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) {

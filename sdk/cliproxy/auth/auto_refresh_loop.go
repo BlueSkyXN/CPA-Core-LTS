@@ -33,6 +33,7 @@ type authAutoRefreshLoop struct {
 type authRefreshJob struct {
 	id                string
 	registrationEpoch uint64
+	credentialVersion uint64
 	pendingUntil      time.Time
 	loop              *authAutoRefreshLoop
 	running           bool // guarded by manager.mu
@@ -101,7 +102,7 @@ func (l *authAutoRefreshLoop) worker(ctx context.Context) {
 				continue
 			}
 			if l.manager.beginRefreshJob(ctx, job) {
-				_, _ = l.manager.refreshAuthForRequestAtEpoch(ctx, job.id, "", job.registrationEpoch)
+				_, _ = l.manager.refreshAuthForRequestAtVersion(ctx, job.id, "", job.registrationEpoch, job.credentialVersion)
 			}
 			l.manager.finishRefreshJob(job, time.Time{}, false)
 		}

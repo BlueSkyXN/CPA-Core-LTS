@@ -107,12 +107,14 @@ func (m *Manager) queueRefreshUnschedule(authID string) {
 		return
 	}
 	m.mu.RLock()
-	loop := m.refreshLoop
-	m.mu.RUnlock()
-	if loop == nil {
-		return
+	defer m.mu.RUnlock()
+	m.unscheduleRefreshLocked(authID)
+}
+
+func (m *Manager) unscheduleRefreshLocked(authID string) {
+	if m.refreshLoop != nil {
+		m.refreshLoop.remove(authID)
 	}
-	loop.remove(authID)
 }
 
 // codexAutoRefreshUnavailable mirrors the executor's local renewal requirements.
@@ -362,7 +364,8 @@ func lookupMetadataTime(meta map[string]any, keys ...string) (time.Time, bool) {
 func (m *Manager) markRefreshPending(loop *authAutoRefreshLoop, id string, registrationEpoch uint64, now time.Time) *authRefreshJob {
 	m.mu.Lock()
 	auth := m.auths[id]
-	if auth == nil || auth.RegistrationEpoch != registrationEpoch || hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) {
+	_, replacing := m.replacingCredentials[id]
+	if auth == nil || replacing || auth.RegistrationEpoch != registrationEpoch || hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) {
 		m.mu.Unlock()
 		return nil
 	}
@@ -373,6 +376,7 @@ func (m *Manager) markRefreshPending(loop *authAutoRefreshLoop, id string, regis
 	job := &authRefreshJob{
 		id:                id,
 		registrationEpoch: registrationEpoch,
+		credentialVersion: auth.CredentialVersion,
 		pendingUntil:      now.Add(refreshPendingBackoff),
 		loop:              loop,
 	}
@@ -393,11 +397,36 @@ func (m *Manager) beginRefreshJob(ctx context.Context, job *authRefreshJob) bool
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	auth := m.auths[job.id]
-	if ctx.Err() != nil || m.refreshJobs[job.id] != job || auth == nil || auth.RegistrationEpoch != job.registrationEpoch {
+	if ctx.Err() != nil || m.refreshJobs[job.id] != job || auth == nil || auth.RegistrationEpoch != job.registrationEpoch || auth.CredentialVersion != job.credentialVersion {
 		return false
 	}
 	job.running = true
 	return true
+}
+
+// lockRefreshCredential returns with m.mu held, even if the grant is stale.
+// Ordinary replacements publish even on a store error. Only a transactional
+// replacement requires waiting to learn which credential will remain active.
+func (m *Manager) lockRefreshCredential(base *Auth) *Auth {
+	m.mu.Lock()
+	for {
+		done, replacing := m.replacingCredentials[base.ID]
+		if !replacing {
+			break
+		}
+		if done == nil {
+			return nil
+		}
+		m.mu.Unlock()
+		<-done
+		m.mu.Lock()
+	}
+	current := m.auths[base.ID]
+	if current == nil || current.generation != base.generation || current.RegistrationEpoch != base.RegistrationEpoch ||
+		current.CredentialVersion != base.CredentialVersion || secretGrantChanged(base, current) {
+		return nil
+	}
+	return current
 }
 
 func (m *Manager) finishRefreshJob(job *authRefreshJob, retryAt time.Time, queuedOnly bool) {
@@ -407,7 +436,7 @@ func (m *Manager) finishRefreshJob(job *authRefreshJob, retryAt time.Time, queue
 		return
 	}
 	delete(m.refreshJobs, job.id)
-	if auth := m.auths[job.id]; auth != nil && auth.RegistrationEpoch == job.registrationEpoch && auth.NextRefreshAfter.Equal(job.pendingUntil) {
+	if auth := m.auths[job.id]; auth != nil && auth.RegistrationEpoch == job.registrationEpoch && auth.CredentialVersion == job.credentialVersion && auth.NextRefreshAfter.Equal(job.pendingUntil) {
 		// Clear only this job's pending marker, preserving newer refresh outcomes.
 		auth.NextRefreshAfter = retryAt
 		auth.Generation++
@@ -419,7 +448,33 @@ func (m *Manager) finishRefreshJob(job *authRefreshJob, retryAt time.Time, queue
 }
 
 type authRefreshLock struct {
-	mu sync.Mutex
+	mu                            sync.Mutex
+	generation, credentialVersion uint64
+	outerFailure, siwcFailure     unauthorizedRefreshFailure
+}
+
+type unauthorizedRefreshFailure struct {
+	retryAfter time.Time
+	err        *Error
+}
+
+// A 401 on one access token may reuse that token's failed attempt. The other
+// Codex partition and the first 401 after a background failure can still renew.
+func (l *authRefreshLock) failureFor401(auth *Auth, token string) *unauthorizedRefreshFailure {
+	if l.generation != auth.generation || l.credentialVersion != auth.CredentialVersion {
+		l.generation, l.credentialVersion = auth.generation, auth.CredentialVersion
+		l.outerFailure, l.siwcFailure = unauthorizedRefreshFailure{}, unauthorizedRefreshFailure{}
+	}
+	switch {
+	case token == "":
+		return nil
+	case token == authOuterAccessToken(auth):
+		return &l.outerFailure
+	case token == authSIWCTokenField(auth, "access_token"):
+		return &l.siwcFailure
+	default:
+		return nil
+	}
 }
 
 func authOuterAccessToken(auth *Auth) string {
@@ -1268,6 +1323,10 @@ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
 }
 
 func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAccessToken string, registrationEpoch uint64) (*Auth, error) {
+	return m.refreshAuthForRequestAtVersion(ctx, id, failedAccessToken, registrationEpoch, 0)
+}
+
+func (m *Manager) refreshAuthForRequestAtVersion(ctx context.Context, id, failedAccessToken string, registrationEpoch, credentialVersion uint64) (*Auth, error) {
 	if m == nil {
 		return nil, errors.New("auth manager is nil")
 	}
@@ -1329,6 +1388,9 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	if registrationEpoch != 0 && auth.RegistrationEpoch != registrationEpoch {
 		return nil, errors.New("auth registration changed before refresh")
 	}
+	if credentialVersion != 0 && auth.CredentialVersion != credentialVersion {
+		return nil, authLifecycleChangedError()
+	}
 	if hasDisabledInvalidGrantFailure(auth) && !forceRefresh {
 		return nil, errors.New("auth is disabled with invalid grant")
 	}
@@ -1350,11 +1412,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		if !accessTokenRejected && auth.HasValidAccessToken(checkNow) {
 			shouldReschedule := false
 			shouldUnschedule := false
-			m.mu.Lock()
-			if current := m.auths[id]; current != nil &&
-				current.RegistrationEpoch == auth.RegistrationEpoch &&
-				current.CredentialVersion == auth.CredentialVersion &&
-				authHasUnchangedRejectedRefreshToken(current) {
+			if current := m.lockRefreshCredential(auth); current != nil && authHasUnchangedRejectedRefreshToken(current) {
 				if exp, ok := current.AccessTokenExpirationTime(); ok && !exp.IsZero() && exp.After(checkNow) {
 					if !current.NextRefreshAfter.Equal(exp) {
 						current.NextRefreshAfter = exp
@@ -1369,11 +1427,12 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 					m.scheduler.upsertAuth(current.Clone())
 				}
 			}
+			if shouldUnschedule {
+				m.unscheduleRefreshLocked(id)
+			}
 			m.mu.Unlock()
 			if shouldReschedule {
 				m.queueRefreshReschedule(id)
-			} else if shouldUnschedule {
-				m.queueRefreshUnschedule(id)
 			}
 			if auth.RefreshError != nil {
 				return nil, auth.RefreshError
@@ -1384,11 +1443,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			return nil, errors.New("refresh token requires sign-in")
 		}
 		// Access token has expired (or was rejected by a 401) while refresh grant remains terminally rejected.
-		m.mu.Lock()
-		if current := m.auths[id]; current != nil &&
-			current.RegistrationEpoch == auth.RegistrationEpoch &&
-			current.CredentialVersion == auth.CredentialVersion &&
-			authHasUnchangedRejectedRefreshToken(current) {
+		if current := m.lockRefreshCredential(auth); current != nil && authHasUnchangedRejectedRefreshToken(current) {
 			wasTerminalUnauthorized := hasUnauthorizedAuthFailure(current)
 			current.Generation++
 			current.UpdatedAt = checkNow
@@ -1422,15 +1477,22 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			if m.scheduler != nil {
 				m.scheduler.upsertAuth(current.Clone())
 			}
+			m.unscheduleRefreshLocked(id)
 		}
 		m.mu.Unlock()
-		m.queueRefreshUnschedule(id)
 		if auth.RefreshError != nil {
 			return nil, auth.RefreshError
 		}
 		return nil, &Error{Code: "unauthorized", Message: "unauthorized (refresh token invalid)", HTTPStatus: http.StatusUnauthorized}
 	}
 
+	requestFailure := lock.failureFor401(auth, failedAccessToken)
+	if requestFailure != nil && requestFailure.err != nil && !forceRefresh && auth.RefreshError != nil {
+		now := time.Now()
+		if requestFailure.retryAfter.After(now) && auth.NextRefreshAfter.After(now) {
+			return nil, requestFailure.err.Clone()
+		}
+	}
 	base := auth.Clone()
 	updated, err := exec.Refresh(ctx, base.Clone())
 	now := time.Now()
@@ -1456,17 +1518,18 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			backoff = refreshCheckInterval
 		}
 		retryAfter := now.Add(backoff)
-		m.mu.Lock()
-		if current := m.auths[id]; current != nil {
-			pendingJob := m.refreshJobs[id]
-			isJobPending := pendingJob != nil && current.NextRefreshAfter.Equal(pendingJob.pendingUntil)
-			if isJobPending || current.NextRefreshAfter.IsZero() || current.NextRefreshAfter.Before(retryAfter) {
-				current.NextRefreshAfter = retryAfter
-			}
-			m.auths[id] = current
-			if m.scheduler != nil {
-				m.scheduler.upsertAuth(current.Clone())
-			}
+		current := m.lockRefreshCredential(base)
+		if current == nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		pendingJob := m.refreshJobs[id]
+		isJobPending := pendingJob != nil && current.NextRefreshAfter.Equal(pendingJob.pendingUntil)
+		if isJobPending || current.NextRefreshAfter.Before(retryAfter) {
+			current.NextRefreshAfter = retryAfter
+		}
+		if m.scheduler != nil {
+			m.scheduler.upsertAuth(current.Clone())
 		}
 		m.mu.Unlock()
 		m.queueRefreshReschedule(id)
@@ -1499,15 +1562,8 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 		shouldReschedule := false
 		isDisabled := false
 		shouldUnschedule := false
-		m.mu.Lock()
-		// Request results advance Generation without replacing the credential. Keep
-		// their state while applying this grant's failure/backoff; lifecycle and
-		// credential checks below still reject outcomes from obsolete credentials.
-		if current := m.auths[id]; current != nil && current.generation == expectedGeneration {
-			if base != nil && (current.RegistrationEpoch != base.RegistrationEpoch || current.CredentialVersion != base.CredentialVersion || secretGrantChanged(base, current)) {
-				m.mu.Unlock()
-				return nil, err
-			}
+		// Request results advance Generation independently of the credential.
+		if current := m.lockRefreshCredential(base); current != nil {
 			if hasUnauthorizedAuthFailure(current) && !forceRefresh {
 				m.mu.Unlock()
 				return nil, err
@@ -1540,8 +1596,8 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 				if m.scheduler != nil {
 					m.scheduler.upsertAuth(current.Clone())
 				}
+				m.unscheduleRefreshLocked(id)
 				m.mu.Unlock()
-				m.queueRefreshUnschedule(id)
 				return nil, err
 			}
 			current.Generation++
@@ -1700,6 +1756,9 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 					log.Warnf("credential refresh failed for %s (%s): %s; retaining active credential as access token is unexpired", current.Provider, current.ID, sanitizedRefreshErr.Message)
 				}
 			}
+			if requestFailure != nil {
+				*requestFailure = unauthorizedRefreshFailure{retryAfter: current.NextRefreshAfter, err: sanitizedRefreshErr}
+			}
 			m.auths[id] = current
 			if m.scheduler != nil {
 				m.scheduler.upsertAuth(current.Clone())
@@ -1708,11 +1767,12 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			m.mu.Unlock()
 			return nil, err
 		}
+		if shouldUnschedule {
+			m.unscheduleRefreshLocked(id)
+		}
 		m.mu.Unlock()
 		if shouldReschedule {
 			m.queueRefreshReschedule(id)
-		} else if shouldUnschedule {
-			m.queueRefreshUnschedule(id)
 		}
 		return nil, err
 	}
@@ -1772,6 +1832,9 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	}
 	if saved == nil {
 		return nil, fmt.Errorf("auth %s not found", id)
+	}
+	if saved.RefreshError == nil {
+		lock.outerFailure, lock.siwcFailure = unauthorizedRefreshFailure{}, unauthorizedRefreshFailure{}
 	}
 	targetAuth := saved
 	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(id)
