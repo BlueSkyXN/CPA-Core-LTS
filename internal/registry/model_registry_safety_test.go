@@ -378,3 +378,13 @@ func TestReRegisterClient_ClearsStaleProbedCapabilitiesWhenNoOtherClientSupports
 		t.Fatalf("GetModelsForClient(A): expected SupportsWebSearch=false, got %+v", clientAModels)
 	}
 }
+
+func TestFirstAvailableModelOrdersUnknownAndEqualDates(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("owner", "openai", []*ModelInfo{{ID: "unknown"}, {ID: "z", Created: 42}, {ID: "a", Created: 42}, {ID: "old", Created: 1}})
+	for i := 0; i < 16; i++ {
+		if got, err := r.GetFirstAvailableModel(""); err != nil || got != "a" {
+			t.Fatalf("latest model = %q, %v", got, err)
+		}
+	}
+}

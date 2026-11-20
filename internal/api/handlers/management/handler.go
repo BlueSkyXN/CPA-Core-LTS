@@ -407,6 +407,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
 		c.Header("X-CPA-SUPPORT-PLUGIN", pluginhost.SupportPluginHeaderValue())
 		c.Header("X-CPA-REASONING-EFFORT-POLICY", "1")
+		c.Header("X-CPA-AUTO-MODEL", "1")
 
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"

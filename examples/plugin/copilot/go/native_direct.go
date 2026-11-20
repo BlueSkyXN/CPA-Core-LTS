@@ -106,15 +106,8 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 	if err != nil {
 		return nil, hostHTTPStreamResponse{}, err
 	}
-	allowed := false
-	for _, model := range models {
-		if model.ID == req.Model {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return nil, hostHTTPStreamResponse{}, newPluginCallError("unsupported_model", "Copilot model must match an exact catalog ID", http.StatusBadRequest, false)
+	if !catalogAllowsMethod(models, req.Model, "chat") {
+		return nil, hostHTTPStreamResponse{}, newPluginCallError("unsupported_model", "Copilot model is unavailable for chat", http.StatusBadRequest, false)
 	}
 	if exec.isCanceled() {
 		return nil, hostHTTPStreamResponse{}, nativeCanceled()

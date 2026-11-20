@@ -74,15 +74,8 @@ func (r *pluginRuntime) executeEmbeddings(req rpcExecutorRequest) (pluginapi.Exe
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, err
 	}
-	allowed := false
-	for _, model := range models {
-		if model.ID == req.Model {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return pluginapi.ExecutorResponse{}, newPluginCallError("unsupported_model", "Copilot model must match an exact catalog ID", http.StatusBadRequest, false)
+	if !catalogAllowsMethod(models, req.Model, "embeddings") {
+		return pluginapi.ExecutorResponse{}, newPluginCallError("unsupported_model", "Copilot model is unavailable for embeddings", http.StatusBadRequest, false)
 	}
 	state, err := r.cachedCopilotToken(auth, req.HostCallbackID, cfg, "")
 	if err != nil {

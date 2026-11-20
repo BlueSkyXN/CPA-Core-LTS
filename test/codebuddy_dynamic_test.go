@@ -21,6 +21,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -51,19 +53,27 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 	if library == "" {
 		return
 	}
-	var responseMode atomic.Int32
+	var responseMode, catalogCalls, chatCalls atomic.Int32
+	var lastModel atomic.Value
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("X-API-Key") != "fixture-key" {
 			t.Error("selected credential lost")
 		}
 		switch req.URL.Path {
 		case "/v3/config":
+			catalogCalls.Add(1)
 			if !bytes.Contains([]byte(req.Header.Get("User-Agent")), []byte("CLI/")) {
 				t.Error("catalog client profile lost")
 			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3","credits":"x0.00"}],"agents":[{"name":"cli","models":["hy3"]}]}}`)
+			fmt.Fprint(w, `{"code":0,"data":{"models":[{"id":"hy3","name":"Hy3","credits":"x0.00"},{"id":"hy4flash-free"},{"id":"deepseek-v4.1-flash"},{"id":"auto"}],"agents":[{"name":"cli","models":["hy3","hy4flash-free","deepseek-v4.1-flash","auto"]}]}}`)
 		case "/v2/chat/completions":
+			chatCalls.Add(1)
+			var body struct{ Model string }
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			lastModel.Store(body.Model)
 			mode := responseMode.Load()
 			if mode == 3 {
 				w.Header().Set("Content-Type", "application/json")
@@ -126,10 +136,15 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := host.ModelsForAuth(ctx, auth)
-	if models.Err != nil || len(models.Models) != 1 || models.Models[0].ID != "hy3" {
+	if models.Err != nil || len(models.Models) != 4 {
 		t.Fatalf("catalog: %v", models.Err)
 	}
-	modelRegistry.RegisterClient(auth.ID, auth.Provider, models.Models)
+	for _, model := range models.Models {
+		if model.ID == "hy3" {
+			modelRegistry.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{model})
+			break
+		}
+	}
 	defer modelRegistry.UnregisterClient(auth.ID)
 	sink := &codeBuddyFixtureUsage{records: make(chan coreusage.Record, 8)}
 	coreusage.RegisterNamedPlugin("codebuddy-dynamic-fixture", sink)
@@ -273,6 +288,74 @@ func TestCodeBuddyDynamicHelper(t *testing.T) {
 		default:
 		}
 	}
+	t.Run("auto alias stays on Free", func(t *testing.T) {
+		var freeCalls atomic.Int32
+		var failFree atomic.Bool
+		free := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			freeCalls.Add(1)
+			var body struct{ Model string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Model != "deepseek-v4.1-flash" {
+				t.Errorf("Free received model %q, decode error %v", body.Model, err)
+			}
+			if failFree.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"free","model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":"free-ok"},"finish_reason":"stop"}]}`)
+		}))
+		defer free.Close()
+		next := cfg.CloneForRuntime()
+		next.Routing.AutoModel = config.AutoModelConfig{Enabled: true, Candidates: []string{"hy4-flash"}}
+		next.OpenAICompatibility = []config.OpenAICompatibility{{Name: "fixture-free", BaseURL: free.URL,
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "fixture-only"}},
+			Models:        []config.OpenAICompatibilityModel{{Name: "deepseek-v4.1-flash", Alias: "auto"}}}}
+		next.OAuthModelAlias = map[string][]config.OAuthModelAlias{"codebuddy": {{Name: "hy4flash-free", Alias: "hy4-flash"}}}
+		manager.SetConfig(next)
+		manager.SetOAuthModelAlias(next.OAuthModelAlias)
+		accounts, err := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{Config: next, Now: time.Now(), IDGenerator: synthesizer.NewStableIDGenerator()})
+		if err != nil || len(accounts) != 1 {
+			t.Fatalf("Free config synthesis: %d, %v", len(accounts), err)
+		}
+		freeAuth, err := manager.Register(ctx, accounts[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager.RegisterExecutor(runtimeexecutor.NewOpenAICompatExecutor(freeAuth.Provider, next))
+		modelRegistry.RegisterClient(freeAuth.ID, freeAuth.Provider, []*registry.ModelInfo{{ID: "auto", ConfiguredAlias: true, MetadataModelID: "deepseek-v4.1-flash"}})
+		defer modelRegistry.UnregisterClient(freeAuth.ID)
+		manager.RefreshSchedulerEntry(freeAuth.ID)
+		buddy := auth.Clone()
+		coreauth.SetModelPolicyAttribute(buddy, &coreauth.AccountModelPolicy{Allowlist: &coreauth.OAuthModelPolicy{Enabled: true, Models: []string{"deepseek-v4.1-flash", "hy4flash-free"}}})
+		if _, err := manager.Update(ctx, buddy); err != nil {
+			t.Fatal(err)
+		}
+		modelRegistry.RegisterClient(buddy.ID, buddy.Provider, []*registry.ModelInfo{{ID: "deepseek-v4.1-flash"}, {ID: "hy4-flash", MetadataModelID: "hy4flash-free"}})
+		manager.RefreshSchedulerEntry(buddy.ID)
+		invoke := func(model string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"fixture"}]}`, model)))
+			req.Header.Set("Authorization", "Bearer fixture-client-key")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			return rec
+		}
+		initialCatalog, initialChat := catalogCalls.Load(), chatCalls.Load()
+		if rec := invoke("auto"); rec.Code != 200 || !bytes.Contains(rec.Body.Bytes(), []byte("free-ok")) || freeCalls.Load() != 1 {
+			t.Fatalf("auto on Free: %d %s (calls %d)", rec.Code, rec.Body, freeCalls.Load())
+		}
+		failFree.Store(true)
+		if rec := invoke("auto"); rec.Code < 400 || freeCalls.Load() < 2 {
+			t.Fatalf("unavailable Free: %d %s (calls %d)", rec.Code, rec.Body, freeCalls.Load())
+		}
+		if catalogCalls.Load() != initialCatalog || chatCalls.Load() != initialChat {
+			t.Fatal("Free auto request reached CodeBuddy")
+		}
+		responseMode.Store(0)
+		if rec := invoke("hy4-flash"); rec.Code != 200 || lastModel.Load() != "hy4flash-free" {
+			t.Fatalf("direct CodeBuddy alias: %d %s, vendor model %v", rec.Code, rec.Body, lastModel.Load())
+		}
+	})
 }
 
 type codeBuddyFixtureUsage struct{ records chan coreusage.Record }

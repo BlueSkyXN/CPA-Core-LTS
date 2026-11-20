@@ -61,6 +61,9 @@ func (e *pluginRefreshCompatExecutor) UsesConfig(cfg *config.Config) bool {
 	return e != nil && e.cfg == cfg
 }
 
+// PluginManagedCredentials also marks native inference that delegates credential refresh to a plugin.
+func (*pluginRefreshCompatExecutor) PluginManagedCredentials() {}
+
 func (e *pluginRefreshCompatExecutor) Identifier() string {
 	if e == nil {
 		return ""

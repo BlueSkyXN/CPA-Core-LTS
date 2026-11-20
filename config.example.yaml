@@ -79,6 +79,11 @@ plugins:
 # antigravity-credits moved to the Claude provider example below.
 # Routing strategy for selecting credentials when multiple match.
 routing:
+    # An explicitly configured auto alias always uses its own credentials.
+    # Enable global selection only to resolve unaliased auto requests.
+    auto-model:
+        enabled: false
+        candidates: [] # In priority order, e.g. ["free"]. Empty selects the newest eligible model.
     strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first
     # weighted-round-robin uses each credential's integer weight (default 1, maximum 1,000,000).
     # Non-positive weights exclude the credential while this strategy is active.

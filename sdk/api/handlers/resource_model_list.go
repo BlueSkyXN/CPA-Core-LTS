@@ -7,31 +7,7 @@ import (
 	"strings"
 
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
-
-func (h *BaseAPIHandler) resolveAuthorizedAutoModel(ctx context.Context) string {
-	models := registry.GetGlobalRegistry()
-	available := models.GetAvailableModelInfos()
-	ids := make([]string, 0, len(available))
-	for _, model := range available {
-		ids = append(ids, model.ID)
-	}
-	visible := h.AuthManager.ResourceModelVisibility(ctx, ids)
-	var best *registry.ModelInfo
-	for _, model := range available {
-		if visible != nil && !visible(model.ID) {
-			continue
-		}
-		if (best == nil || model.Created > best.Created) && models.GetModelCount(model.ID) > 0 {
-			best = model
-		}
-	}
-	if best == nil {
-		return ""
-	}
-	return best.ID
-}
 
 // filterResourceModelList runs after response interceptors so renamed and
 // injected catalog entries are checked against the caller's registered routes.

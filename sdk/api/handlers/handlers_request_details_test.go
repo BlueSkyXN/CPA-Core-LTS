@@ -82,11 +82,9 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 			wantErr:       true,
 		},
 		{
-			name:          "auto suffix resolved",
-			inputModel:    "auto(high)",
-			wantProviders: []string{"gemini"},
-			wantModel:     "gemini-2.5-pro(high)",
-			wantErr:       false,
+			name:       "unpublished auto suffix with default routing",
+			inputModel: "auto(high)",
+			wantErr:    true,
 		},
 		{
 			name:          "special suffix none preserved",

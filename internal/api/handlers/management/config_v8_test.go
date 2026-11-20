@@ -68,7 +68,7 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request(http.MethodPatch, "/v8/management/config", `{"routing":{"retry":{"request-retry":0}},"oauth":{"providers":{"aistudio":{"ws-auth":false}}}}`, 200)
+	request(http.MethodPatch, "/v8/management/config", `{"routing":{"retry":{"request-retry":0},"auto-model":{"enabled":true,"candidates":["free","backup"]}},"oauth":{"providers":{"aistudio":{"ws-auth":false}}}}`, 200)
 	updatedFile, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.RequestRetry != 0 || loaded.WebsocketAuth || len(loaded.APIKeys) != 1 {
+	if !loaded.Routing.AutoModel.Enabled || strings.Join(loaded.Routing.AutoModel.Candidates, ",") != "free,backup" || loaded.RequestRetry != 0 || loaded.WebsocketAuth || len(loaded.APIKeys) != 1 {
 		t.Fatal("v8 patch lost effective values")
 	}
 	request(http.MethodPut, "/v0/management/request-retry", `{"value":5}`, 200)

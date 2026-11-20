@@ -119,14 +119,27 @@ func (f modelRegistrationFence) withAuth(a *coreauth.Auth) modelRegistrationFenc
 }
 
 func (f modelRegistrationFence) publishModels(s *Service, authID, providerKey string, models []*ModelInfo) bool {
-	return f.publishIfCurrent(s, authID, func() bool {
-		return GlobalModelRegistry().RegisterClientIfEpochCurrent(authID, providerKey, f.registryEpoch, models, func() bool { return true })
-	})
+	return f.publishCatalog(s, authID, providerKey, models, nil)
 }
 
 func (f modelRegistrationFence) publishUnregister(s *Service, authID string) bool {
+	return f.publishCatalog(s, authID, "", nil, nil)
+}
+
+// Keep the preview write under the same auth mutation fence as the successful publication.
+func (f modelRegistrationFence) publishCatalog(s *Service, authID, providerKey string, models []*ModelInfo, committed func()) bool {
 	return f.publishIfCurrent(s, authID, func() bool {
-		return GlobalModelRegistry().UnregisterClientIfEpochCurrent(authID, f.registryEpoch, func() bool { return true })
+		reg := GlobalModelRegistry()
+		var ok bool
+		if len(models) == 0 {
+			ok = reg.UnregisterClientIfEpochCurrent(authID, f.registryEpoch, func() bool { return true })
+		} else {
+			ok = reg.RegisterClientIfEpochCurrent(authID, providerKey, f.registryEpoch, models, func() bool { return true })
+		}
+		if ok && committed != nil {
+			committed()
+		}
+		return ok
 	})
 }
 

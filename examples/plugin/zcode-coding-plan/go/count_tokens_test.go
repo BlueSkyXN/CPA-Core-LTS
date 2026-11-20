@@ -91,7 +91,7 @@ func TestCountTokensEndpointRewrite(t *testing.T) {
 
 func TestCountTokensHappyPath(t *testing.T) {
 	r, f := newCountTestRuntime(t)
-	req := executorRequest{RequestID: "c1", CallbackID: "cb", AuthID: "synthetic-auth", ExecutionSessionID: "conversation", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"tools":[],"max_tokens":1,"stream":true}`)}
+	req := executorRequest{Model: "glm-5.3-flash", RequestID: "c1", CallbackID: "cb", AuthID: "synthetic-auth", ExecutionSessionID: "conversation", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"tools":[],"max_tokens":1,"stream":true}`)}
 	result, err := r.countTokens(req)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestCountTokensHappyPath(t *testing.T) {
 
 func TestCountTokensModelAllowlistEnforced(t *testing.T) {
 	r, _ := newCountTestRuntime(t)
-	req := executorRequest{RequestID: "c2", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"unknown-model","messages":[{"role":"user","content":"hi"}]}`)}
+	req := executorRequest{Model: "unknown-model", RequestID: "c2", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"unknown-model","messages":[{"role":"user","content":"hi"}]}`)}
 	_, err := r.countTokens(req)
 	if err == nil || safeError(err).Code != "model_not_found" {
 		t.Fatal("unlisted model accepted", err)
@@ -131,7 +131,7 @@ func TestCountTokensUpstreamAuthFailurePropagates(t *testing.T) {
 	f.mu.Lock()
 	f.rejectSig = true
 	f.mu.Unlock()
-	req := executorRequest{RequestID: "c3", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
+	req := executorRequest{Model: "glm-5.3", RequestID: "c3", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
 	_, err := r.countTokens(req)
 	if err == nil {
 		t.Fatal("upstream 401 accepted")
@@ -146,7 +146,7 @@ func TestCountTokensUpstreamBusinessReason(t *testing.T) {
 	r, f := newCountTestRuntime(t)
 	f.rejectSig = true
 	f.rejectBody = `{"error":{"code":1301,"message":"private prompt"}}`
-	req := executorRequest{RequestID: "count-business", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
+	req := executorRequest{Model: "glm-5.3", RequestID: "count-business", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
 	_, err := r.countTokens(req)
 	if err == nil {
 		t.Fatal("upstream error accepted")
@@ -162,9 +162,26 @@ func TestCountTokensInvalidCountResponseRejected(t *testing.T) {
 	f.mu.Lock()
 	f.badCountBody = true
 	f.mu.Unlock()
-	req := executorRequest{RequestID: "c4", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
+	req := executorRequest{Model: "glm-5.3", RequestID: "c4", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)}
 	_, err := r.countTokens(req)
 	if err == nil || safeError(err).Code != "invalid_response" {
 		t.Fatal("malformed count body accepted", err)
+	}
+}
+
+func TestCodingPlanChecksHostModelBeforeSigning(t *testing.T) {
+	for _, count := range []bool{false, true} {
+		r, host := newCountTestRuntime(t)
+		req := executorRequest{RequestID: "mismatch", CallbackID: "cb", AuthID: "synthetic-auth", Format: "claude", StorageJSON: inlineStorage(), Model: "glm-5.3", Payload: []byte(`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"fixture"}],"max_tokens":8}`)}
+		var err error
+		if count {
+			_, err = r.countTokens(req)
+		} else {
+			_, err = r.execute(req)
+		}
+		p, ok := err.(*apiError)
+		if !ok || p.Code != "unsupported_model" || host.countURL != "" || host.handshakes != 0 || host.models != 0 {
+			t.Fatalf("count=%v: error=%v", count, err)
+		}
 	}
 }

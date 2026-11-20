@@ -107,6 +107,16 @@ func (r *pluginRuntime) configurationForAuth(raw []byte, authID, authIndex strin
 	}
 	return c, nil
 }
+
+// 校验实际送去签名的正文。推理和计数共用宿主批准的模型 ID。
+func checkSelectedModel(req executorRequest, body map[string]any) error {
+	model, _ := body["model"].(string)
+	if req.Model == "" || req.Model != model {
+		return problem(400, "unsupported_model", "Request model must match the model selected by the host")
+	}
+	return nil
+}
+
 func (r *pluginRuntime) admit(req executorRequest, c *config) (*execution, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -311,6 +321,9 @@ func (r *pluginRuntime) execute(req executorRequest) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSelectedModel(req, body); err != nil {
+		return nil, err
+	}
 	stream, _ := body["stream"].(bool)
 	if stream != req.Stream {
 		return nil, problem(400, "invalid_request", "Payload stream flag disagrees with host")
@@ -413,6 +426,9 @@ func (r *pluginRuntime) countTokens(req executorRequest) (any, error) {
 	session := sessionID(c.AccountScope, req.CallerScope, req.WorkspaceIdentity, req.ExecutionSessionID)
 	body, err := transformCountTokenRequest(req, c, session)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkSelectedModel(req, body); err != nil {
 		return nil, err
 	}
 	signed, err := e.signer.headers(r, e, session)

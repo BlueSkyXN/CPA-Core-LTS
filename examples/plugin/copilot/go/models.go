@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -56,12 +57,52 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 	return pluginapi.ModelResponse{Provider: pluginIdentifier, Models: models}, err
 }
 
+func copilotGenerationMethods(model copilotCatalogModel) []string {
+	// Responses, including WebSocket, and Messages use the translated chat path.
+	chat, embeddings := false, false
+	for _, endpoint := range model.SupportedEndpoints {
+		path := strings.TrimPrefix(strings.TrimSpace(endpoint), "ws:")
+		switch strings.TrimPrefix(path, "/v1") {
+		case "/embeddings":
+			embeddings = true
+		case "/chat/completions", "/completions", "/responses", "/messages":
+			chat = true
+		}
+	}
+	if model.Capabilities != nil {
+		switch strings.ToLower(strings.TrimSpace(model.Capabilities.Type)) {
+		case "embeddings":
+			if chat && !embeddings {
+				return nil
+			}
+			return []string{"embeddings"}
+		case "chat", "completion":
+			if embeddings && !chat {
+				return nil
+			}
+			return []string{"chat"}
+		}
+	}
+	if embeddings {
+		if chat {
+			return []string{"chat", "embeddings"}
+		}
+		return []string{"embeddings"}
+	}
+	return []string{"chat"}
+}
+
+func catalogAllowsMethod(models []pluginapi.ModelInfo, id, method string) bool {
+	for _, model := range models {
+		if model.ID == id {
+			return slices.Contains(model.SupportedGenerationMethods, method)
+		}
+	}
+	return false
+}
+
 func copilotModelInfo(model copilotCatalogModel) pluginapi.ModelInfo {
 	inputModalities := []string{"text"}
-	methods := []string{"chat"}
-	if model.Capabilities != nil && strings.EqualFold(strings.TrimSpace(model.Capabilities.Type), "embeddings") {
-		methods = []string{"embeddings"}
-	}
 	var contextLength, inputLimit, outputLimit int64
 	var thinking *pluginapi.ThinkingSupport
 	if capabilities := model.Capabilities; capabilities != nil {
@@ -104,7 +145,7 @@ func copilotModelInfo(model copilotCatalogModel) pluginapi.ModelInfo {
 		Description:     strings.TrimSpace(model.Description),
 		InputTokenLimit: inputLimit, OutputTokenLimit: outputLimit,
 		ContextLength: contextLength, MaxCompletionTokens: outputLimit,
-		SupportedGenerationMethods: methods, SupportedInputModalities: inputModalities,
+		SupportedGenerationMethods: copilotGenerationMethods(model), SupportedInputModalities: inputModalities,
 		SupportedOutputModalities: []string{"text"}, Thinking: thinking,
 	}
 }

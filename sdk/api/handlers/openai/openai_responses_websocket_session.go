@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -42,8 +41,8 @@ func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, met
 	return false
 }
 
-func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputForModel(modelName string) bool {
-	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputForModel(ctx context.Context, modelName string) bool {
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(ctx, modelName)
 	for _, auth := range auths {
 		if responsesWebsocketAuthSupportsIncrementalInput(auth) {
 			return true
@@ -52,8 +51,8 @@ func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputFor
 	return false
 }
 
-func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsCompactionReplayForModel(modelName string) bool {
-	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsCompactionReplayForModel(ctx context.Context, modelName string) bool {
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(ctx, modelName)
 	if len(auths) == 0 {
 		return false
 	}
@@ -65,12 +64,11 @@ func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsCompactionReplayFor
 	return true
 }
 
-func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(modelName string) ([]*coreauth.Auth, string) {
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(ctx context.Context, modelName string) ([]*coreauth.Auth, string) {
 	if h == nil || h.AuthManager == nil {
 		return nil, ""
 	}
-	resolvedModelName := responsesWebsocketResolvedModelName(modelName)
-	providerSet, modelKey := responsesWebsocketProviderSetForModel(resolvedModelName)
+	providerSet, modelKey := responsesWebsocketProviderSetForModel(modelName)
 	if len(providerSet) == 0 {
 		return nil, modelKey
 	}
@@ -80,7 +78,7 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketAvailableAuthsForModel(mod
 	auths := h.AuthManager.List()
 	available := make([]*coreauth.Auth, 0, len(auths))
 	for _, auth := range auths {
-		if !responsesWebsocketAuthMatchesModel(auth, providerSet, modelKey, registryRef, now) {
+		if !h.AuthManager.CheckAutoRouteAccount(ctx, auth) || !responsesWebsocketAuthMatchesModel(auth, providerSet, modelKey, registryRef, now) {
 			continue
 		}
 		available = append(available, auth)
@@ -96,15 +94,15 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketHasAlternativeReplayTarget
 }
 
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesCodexWebsocketPassthrough(modelName string) bool {
-	return h.responsesWebsocketUsesUpstreamWebsocketPassthrough(modelName)
+	return h.responsesWebsocketUsesUpstreamWebsocketPassthrough(context.Background(), modelName)
 }
 
-func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesUpstreamWebsocketPassthrough(modelName string) bool {
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesUpstreamWebsocketPassthrough(ctx context.Context, modelName string) bool {
 	modelName = strings.TrimSpace(modelName)
 	if h == nil || h.AuthManager == nil || modelName == "" {
 		return false
 	}
-	auths, _ := h.responsesWebsocketAvailableAuthsForModel(modelName)
+	auths, _ := h.responsesWebsocketAvailableAuthsForModel(ctx, modelName)
 	if len(auths) == 0 {
 		return false
 	}
@@ -143,7 +141,7 @@ func responsesWebsocketPinnedAuthMatchesModel(auth *coreauth.Auth, modelName str
 	if auth == nil {
 		return false
 	}
-	providerSet, modelKey := responsesWebsocketProviderSetForModel(responsesWebsocketResolvedModelName(modelName))
+	providerSet, modelKey := responsesWebsocketProviderSetForModel(modelName)
 	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
 	if !homeRuntime || len(providerSet) > 0 {
 		if _, ok := providerSet[providerKey]; !ok {
@@ -158,18 +156,6 @@ func responsesWebsocketPinnedAuthMatchesModel(auth *coreauth.Auth, modelName str
 		return strings.EqualFold(strings.TrimSpace(pinnedModelKey), strings.TrimSpace(modelKey))
 	}
 	return registry.GetGlobalRegistry().ClientSupportsModel(auth.ID, modelKey)
-}
-
-func responsesWebsocketResolvedModelName(modelName string) string {
-	initialSuffix := thinking.ParseSuffix(modelName)
-	if initialSuffix.ModelName == "auto" {
-		resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
-		if initialSuffix.HasSuffix {
-			return fmt.Sprintf("%s(%s)", resolvedBase, initialSuffix.RawSuffix)
-		}
-		return resolvedBase
-	}
-	return util.ResolveAutoModel(modelName)
 }
 
 func responsesWebsocketProviderSetForModel(resolvedModelName string) (map[string]struct{}, string) {

@@ -18,7 +18,7 @@ func newAccountRuntime(t *testing.T) (*pluginRuntime, *fakeHost, executorRequest
 	if _, err := r.dispatch("plugin.register", managementRegistration(map[string]any{"host_logging_disabled": true})); err != nil {
 		t.Fatal(err)
 	}
-	req := executorRequest{RequestID: "first", CallbackID: "callback", AuthID: "account", AuthIndex: "index", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`)}
+	req := executorRequest{Model: "glm-5.3", RequestID: "first", CallbackID: "callback", AuthID: "account", AuthIndex: "index", Format: "claude", StorageJSON: inlineStorage(), Payload: []byte(`{"model":"glm-5.3","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`)}
 	return r, f, req
 }
 

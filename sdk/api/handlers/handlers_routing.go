@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
 
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -123,6 +125,39 @@ func nativeInteractionsExecutionError() *interfaces.ErrorMessage {
 	}
 }
 
+// ResolveAutoModelForRequest is shared by ordinary dispatch and Responses WebSocket turn preparation.
+func (h *BaseAPIHandler) ResolveAutoModelForRequest(ctx context.Context, name, protocol string, allowImage, allowSpeech bool) (context.Context, string, *interfaces.ErrorMessage) {
+	if h == nil || h.AuthManager == nil || thinking.ParseSuffix(name).ModelName != "auto" {
+		return ctx, name, nil
+	}
+	ctx, model, err := h.AuthManager.ResolveAutoRoute(ctx, name, func(id, modelType string, methods []string) bool {
+		if !allowImage && (isOpenAIImageOnlyModel(id) || modelType == registry.OpenAIImageModelType) || !allowSpeech && isXAISpeechOnlyModel(id) {
+			return false
+		}
+		if protocol == Embeddings {
+			return len(methods) == 0 || slices.Contains(methods, "embeddings") || slices.Contains(methods, "embedContent")
+		}
+		return len(methods) != 1 || methods[0] != "embeddings" && methods[0] != "embedContent"
+	})
+	if err != nil {
+		var routeErr *coreauth.Error
+		if errors.As(err, &routeErr) && routeErr.Code == "model_not_found" {
+			return ctx, "", modelNotFoundError(name)
+		}
+		return ctx, "", executionErrorMessage(err)
+	}
+	return ctx, model, nil
+}
+
+func (h *BaseAPIHandler) prepareExecutionRoute(ctx context.Context, protocol, model, original string, allowImage bool, route modelRouteDecision, options modelExecutionOptions) (context.Context, []string, string, *interfaces.ErrorMessage) {
+	ctx, model, err := h.ResolveAutoModelForRequest(ctx, model, protocol, allowImage, options.AllowSpeechModel)
+	if err != nil {
+		return ctx, nil, "", err
+	}
+	providers, resolved, err := h.providersForExecution(ctx, model, original, allowImage, route, options)
+	return ctx, providers, resolved, err
+}
+
 // providersForExecution resolves the providers and normalized model for a request. When a model
 // router selected a built-in provider, it skips model->provider resolution and uses the router's
 // provider (with an optional target model); otherwise it falls back to the registry-based path.
@@ -160,42 +195,11 @@ func (h *BaseAPIHandler) providersForExecution(ctx context.Context, modelName, o
 		}
 		return []string{routeDecision.Provider}, normalizedModel, nil
 	}
-	if h.AuthManager.ResourceAllowlistsEnabled() && !h.AuthManager.HomeEnabled() {
-		if parsed := thinking.ParseSuffix(modelName); parsed.ModelName == "auto" {
-			modelName = h.resolveAuthorizedAutoModel(ctx)
-			if modelName == "" {
-				return nil, "", executionErrorMessage(coreauth.ErrResourceAccessDenied)
-			}
-			if parsed.HasSuffix {
-				modelName += "(" + parsed.RawSuffix + ")"
-			}
-		}
-	}
 	return h.getRequestDetailsWithOptions(modelName, allowImageModel, execOptions.AllowSpeechModel)
 }
 
 func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowImageModel, allowSpeechModel bool) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
 	resolvedModelName := modelName
-	initialSuffix := thinking.ParseSuffix(modelName)
-	if initialSuffix.ModelName == "auto" {
-		if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
-			resolvedModelName = modelName
-		} else {
-			resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
-			if initialSuffix.HasSuffix {
-				resolvedModelName = fmt.Sprintf("%s(%s)", resolvedBase, initialSuffix.RawSuffix)
-			} else {
-				resolvedModelName = resolvedBase
-			}
-		}
-	} else {
-		if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
-			resolvedModelName = modelName
-		} else {
-			resolvedModelName = util.ResolveAutoModel(modelName)
-		}
-	}
-
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
 
@@ -221,27 +225,24 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	}
 
 	if len(providers) == 0 {
-		// The client asked for a model this proxy cannot route. Report it as a request
-		// error so streaming clients receive an actionable message instead of a
-		// gateway failure they would keep retrying. 400 is used rather than 404 to keep
-		// it distinguishable from an unregistered HTTP route.
-		// The model name is client supplied, so it is inserted through sjson rather
-		// than formatted into the JSON literal: an unescaped quote would otherwise
-		// corrupt the body or let the caller overwrite the error code.
-		body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
-		body, errSet := ojson.Set(body, "error.message", "unknown provider for model "+modelName)
-		if errSet != nil {
-			body = `{"error":{"message":"unknown provider for model","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
-		}
-		return nil, "", &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      errors.New(body),
-		}
+		return nil, "", modelNotFoundError(modelName)
 	}
 
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func modelNotFoundError(modelName string) *interfaces.ErrorMessage {
+	body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+	body, errSet := ojson.Set(body, "error.message", "unknown provider for model "+modelName)
+	if errSet != nil {
+		body = `{"error":{"message":"unknown provider for model","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+	}
+	return &interfaces.ErrorMessage{
+		StatusCode: http.StatusBadRequest,
+		Error:      errors.New(body),
+	}
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
@@ -373,6 +374,9 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
+	if thinking.ParseSuffix(modelName).ModelName == "auto" && h.AuthManager != nil && !h.AuthManager.HomeEnabled() {
+		return decision
+	}
 	host := h.modelRouterHost()
 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
 		return decision

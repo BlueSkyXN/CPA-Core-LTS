@@ -131,11 +131,11 @@ func (m *Manager) CheckUnresolvedModelAccess(ctx context.Context) error {
 
 func (m *Manager) resourceAuthFilter(ctx context.Context, model string) func(*Auth) bool {
 	access := m.resourceAccess(ctx)
-	if !access.hasRestrictions() {
+	if !access.hasRestrictions() && autoRouteFrom(ctx) == nil {
 		return nil
 	}
 	return func(credential *Auth) bool {
-		return m.allowsResourceRoute(access, credential, model)
+		return m.CheckAutoRouteAccount(ctx, credential) && m.allowsResourceRoute(access, credential, model)
 	}
 }
 
@@ -165,6 +165,11 @@ func resourceModelWithCanonicalPrefix(credential *Auth, model string) string {
 }
 
 func (m *Manager) checkResourceExecution(ctx context.Context, credential *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
+	if credential != nil {
+		if err := m.checkAutoDispatch(ctx, credential, req.Model); err != nil {
+			return err
+		}
+	}
 	access := m.resourceAccess(ctx)
 	if !access.hasRestrictions() {
 		return nil

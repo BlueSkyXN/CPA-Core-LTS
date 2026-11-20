@@ -757,6 +757,9 @@ func (a *executorAdapter) Identifier() string {
 	return a.provider
 }
 
+// PluginManagedCredentials marks a plugin-owned inference binding for account policy checks.
+func (*executorAdapter) PluginManagedCredentials() {}
+
 func (a *executorAdapter) UsageExecutorType() string {
 	if a == nil {
 		return ""
@@ -1343,9 +1346,8 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			return preparedExecutorCall{}, errThinking
 		}
 	}
-	// User payload rules are the last host-side mutation before the plugin sees
-	// the request, matching on the suffix-free model like the built-in executors
-	// and using the canonical client format as source protocol.
+	// Payload rules match the suffix-free model and canonical client format.
+	// The approved model field is restored after these rules run.
 	if a.host != nil {
 		if cfg := runtimeCfg; cfg != nil {
 			finalizeOpts := opts
@@ -1363,11 +1365,14 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(context.Background(), finalize), doc)
 		}
 	}
-	if doc.Len() > 0 {
-		nativeReq.Payload = doc.Bytes()
-	}
 	if hasPluginThinkingTarget {
 		nativeReq.Model = baseModel
+	}
+	if err := finalizePluginModel(doc, inputFormat, nativeReq.Model, originalTranslated, auth != nil); err != nil {
+		return preparedExecutorCall{}, err
+	}
+	if doc.Len() > 0 {
+		nativeReq.Payload = doc.Bytes()
 	}
 	nativeReq.Format = outputFormat
 	nativeOpts.SourceFormat = inputFormat
@@ -1384,6 +1389,49 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 		zcodeReplay:                 zcodeReplay,
 		zcodeSignedReasoningHistory: a.provider == "zcode-coding-plan" && inputRequested == sdktranslator.FormatOpenAIResponse && hasZcodeSignedReasoningHistory(req.Payload),
 	}, nil
+}
+
+// Final payload rules can remove or replace model. Preserve native extensions that carry no model field.
+func finalizePluginModel(doc *ojson.Doc, format sdktranslator.Format, model string, original []byte, hasAccount bool) error {
+	if model == "" || doc.Len() == 0 {
+		return nil
+	}
+	hasModel := doc.Get("model").Exists() || ojson.GetBytesNoCopy(original, "model").Exists()
+	switch format {
+	case sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.FormatCodex, "embeddings":
+		if !hasAccount && !hasModel {
+			return nil
+		}
+	case sdktranslator.FormatGemini, sdktranslator.FormatAntigravity, sdktranslator.FormatInteractions:
+		if !hasModel {
+			return nil
+		}
+	default:
+		return nil
+	}
+	root := ojson.ParseBytes(doc.Bytes())
+	if !root.IsObject() {
+		return nil
+	}
+	var current ojson.Result
+	ambiguous := false
+	root.ForEach(func(key, value ojson.Result) bool {
+		if strings.EqualFold(key.String(), "model") {
+			if current.Exists() || key.String() != "model" {
+				ambiguous = true
+				return false
+			}
+			current = value
+		}
+		return true
+	})
+	if ambiguous {
+		return coreauth.NewRequestScopedError("Supply one lowercase model field in the request body", http.StatusBadRequest)
+	}
+	if current.Type == ojson.String && current.String() == model {
+		return nil
+	}
+	return doc.Set("model", model)
 }
 
 func (a *executorAdapter) lookupPluginModelInfo(baseModel string) *registry.ModelInfo {

@@ -51,7 +51,7 @@ oauth:
 
 ## 与 legacy 黑名单的关系
 
-- `oauth.excluded-models`（渠道）与认证文件 `excluded_models`（账号）视为**始终生效、没有开关的黑名单来源**，与新的 denylist 取并集，不做冲突报错。
+- 非空的账号旧排除表 `excluded_models` 覆盖渠道旧排除表 `oauth.excluded-models`。实际采用的旧表与已启用的新黑名单共同生效。将渠道旧表迁入并启用渠道 denylist 后，有独立旧表的账号也会受迁入规则限制。
 - 旧 Management API（`/v0/management/oauth-excluded-models`）继续只操作旧键，行为不变。
 - 账号停用继续使用 `disabled`；不要用黑名单 `*` 表达停用（config API-key 的旧惯例不带入本结构）。
 - Copilot 插件自身的 `excluded_model_prefixes` 在插件返回目录时即生效（区分大小写、前缀语义），发生在 Core 策略之前，保持原样、不做机械迁移。
@@ -82,7 +82,7 @@ Core 提供两组配套面：
 
 Panel（`CPA-Panel-LTS`）提供：
 
-- Auth Files 页"渠道模型策略"卡片与 `/auth-files/model-policy` 编辑页：渠道黑白名单开关与名单编辑、legacy 排除规则展示与一键迁移（并入 denylist 并删除旧键，删除失败会提示且不影响已写入的 denylist）。
+- Auth Files 页"渠道模型策略"卡片与 `/auth-files/model-policy` 编辑页：渠道黑白名单开关与名单编辑、legacy 排除规则展示与一键迁移（并入 denylist 并在同一次条件写入中删除旧键）。
 - 账号编辑器（前缀/代理弹窗）内的"模型策略（本账号）"区块：账号级黑白名单，保存走同一 PATCH 通道并即时热重载。
 - 旧 Core（无此端点）时显示升级提示，不影响其余页面。
 

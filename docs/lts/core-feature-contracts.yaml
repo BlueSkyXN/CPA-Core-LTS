@@ -18,6 +18,31 @@ guard_policy:
     - HF Space smoke is optional post-merge evidence and must not expose secrets in logs or PR text.
 
 features:
+  - id: standalone-auto-model
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: An explicit public auto alias binds its credential pool. Global selection needs administrator opt-in and must respect caller and account permissions across retries.
+    config_keys:
+      - routing.auto-model.enabled
+      - routing.auto-model.candidates
+    core_files:
+      - internal/config/config_types.go
+      - internal/config/auto_model.go
+      - internal/api/handlers/management/handler.go
+      - sdk/cliproxy/auth/auto_model.go
+      - sdk/api/handlers/handlers_routing.go
+      - internal/pluginhost/adapters_executors.go
+      - docs/lts/resource-allowlists.md
+    required_markers:
+      - routing.auto-model.enabled
+      - routing.auto-model.candidates
+      - X-CPA-AUTO-MODEL
+    validation:
+      - go test ./internal/config ./internal/api -run AutoModel
+      - go test ./test -run TestCodeBuddyDynamicPlugin
+
   - id: client-key-resource-allowlists
     kind: lts-feature
     support: optional

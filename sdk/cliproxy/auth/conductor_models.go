@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -407,7 +408,11 @@ func (m *Manager) filterExecutionModelsForRequest(ctx context.Context, auth *Aut
 	now := time.Now()
 	access := m.resourceAccess(ctx)
 	out := make([]string, 0, len(candidates))
+	scope := autoRouteFrom(ctx)
 	for _, upstreamModel := range candidates {
+		if scope != nil && (auth == nil || !slices.Contains(scope.accounts[auth.ID].targets, upstreamModel)) {
+			continue
+		}
 		if !access.allowsModel(upstreamModel) {
 			continue
 		}
@@ -793,9 +798,9 @@ func compileAPIKeyModelAliasForModels[T interface {
 			out[key] = name
 		}
 	}
-	for i := range models {
-		alias := strings.TrimSpace(models[i].GetAlias())
-		name := strings.TrimSpace(models[i].GetName())
+	for _, model := range internalconfig.ConfiguredModelRoutes(models) {
+		alias := strings.TrimSpace(model.GetAlias())
+		name := strings.TrimSpace(model.GetName())
 		if alias == "" || name == "" {
 			continue
 		}
@@ -1111,8 +1116,8 @@ func asModelAliasEntries[T interface {
 		return nil
 	}
 	out := make([]modelAliasEntry, 0, len(models))
-	for i := range models {
-		out = append(out, models[i])
+	for _, model := range internalconfig.ConfiguredModelRoutes(models) {
+		out = append(out, model)
 	}
 	return out
 }

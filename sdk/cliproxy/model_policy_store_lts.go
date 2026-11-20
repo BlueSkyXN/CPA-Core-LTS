@@ -132,8 +132,9 @@ func (s *Service) PreviewModelPolicyForAuth(auth *coreauth.Auth) (ModelPolicyPre
 		CatalogAge:  "snapshot",
 		Evaluations: make([]ModelPolicyEvaluation, 0, len(ids)),
 	}
+	cfg := s.currentConfig()
 	for _, id := range ids {
-		decision := coreauth.EvaluateModelPolicy(s.cfg, auth, preview.Provider, id)
+		decision := coreauth.EvaluateModelPolicy(cfg, auth, preview.Provider, id)
 		preview.Evaluations = append(preview.Evaluations, ModelPolicyEvaluation{
 			ModelID: id,
 			Allowed: decision.Allowed,
