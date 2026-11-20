@@ -51,6 +51,10 @@ forbid_grep_ci() {
   fi
 }
 
+require_grep 'auto-model:' config.example.yaml
+require_grep 'X-CPA-AUTO-MODEL' internal/api/handlers/management/handler.go
+require_grep 'X-CPA-AUTO-MODEL' internal/api/server_middleware.go
+
 require_path docs/lts/reasoning-effort-policy.md
 require_grep 'reasoning-effort' internal/config/config_v8.go config.example.yaml
 require_grep 'X-CPA-REASONING-EFFORT-POLICY' internal/api/handlers/management/handler.go

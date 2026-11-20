@@ -184,11 +184,12 @@ func TestExecutorHostCallbacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	storage := inlineStorage()
-	req := executorRequest{RequestID: "r1", CallbackID: "cb", AuthID: "synthetic-auth", ExecutionSessionID: "conversation", Format: "claude", StorageJSON: storage, Payload: []byte(`{"model":"glm-5.3","max_tokens":2,"messages":[{"role":"user","content":"x"}]}`)}
+	req := executorRequest{Model: "glm-5.3", RequestID: "r1", CallbackID: "cb", AuthID: "synthetic-auth", ExecutionSessionID: "conversation", Format: "claude", StorageJSON: storage, Payload: []byte(`{"model":"glm-5.3","max_tokens":2,"messages":[{"role":"user","content":"x"}]}`)}
 	if _, err := r.execute(req); err != nil {
 		t.Fatal(err)
 	}
 	req.Stream = true
+	req.Model = "glm-5.3-flash"
 	req.StreamID = "host-stream"
 	req.RequestID = "r2"
 	req.Payload = []byte(`{"model":"glm-5.3-flash","max_tokens":2,"stream":true,"messages":[{"role":"user","content":"x"}]}`)

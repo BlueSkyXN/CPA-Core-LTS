@@ -350,3 +350,17 @@ func TestExecutorAdapterWithoutPayloadRulesLeavesPayloadUntouched(t *testing.T) 
 		t.Errorf("payload changed without rules:\n got %s\nwant %s", pluginPayload, body)
 	}
 }
+
+func TestPluginModelAfterPayloadRules(t *testing.T) {
+	host := New()
+	host.runtimeConfig = payloadRulesConfig("openai", "", map[string]any{"model": "other"})
+	adapter := newCurrentExecutorAdapterForTest(host, "model-finalizer", &fakeExecutor{identifier: "plugin-provider"}, []sdktranslator.Format{sdktranslator.FormatOpenAI}, []sdktranslator.Format{sdktranslator.FormatOpenAI})
+	body := []byte(`{"model":"public-alias","messages":[]}`)
+	p, err := adapter.prepareExecutorCall(coreexecutor.Request{Model: "claude-model", Payload: body}, coreexecutor.Options{OriginalRequest: body, SourceFormat: sdktranslator.FormatOpenAI})
+	if err != nil || p.req.Model != "claude-model" || ojson.GetBytes(p.req.Payload, "model").String() != p.req.Model || ojson.GetBytes(p.opts.OriginalRequest, "model").String() != "public-alias" {
+		t.Fatalf("final model %q, payload %s, original %s, err %v", p.req.Model, p.req.Payload, p.opts.OriginalRequest, err)
+	}
+	if err := finalizePluginModel(ojson.NewDoc([]byte(`{"model":"one","model":"two"}`)), sdktranslator.FormatClaude, "approved", nil, true); err == nil {
+		t.Fatal("accepted ambiguous model fields")
+	}
+}

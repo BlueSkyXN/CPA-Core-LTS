@@ -77,6 +77,7 @@ func newResourceAccessServer(t *testing.T) (*Server, *config.Config, *resourceAc
 			"codex": {{Name: "resource-upstream-private", Alias: "resource-private-alias", Fork: true}},
 		},
 	}
+	cfg.Routing.AutoModel.Enabled = true
 	cfg.APIKeys = []string{resourceOwner, resourceGuest}
 	cfg.CodexResponseSteering = true
 	server := newTestServerWithConfig(t, cfg)

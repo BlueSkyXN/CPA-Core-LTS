@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -847,7 +847,7 @@ type modelCompatEntry interface {
 	GetIsCompat() bool
 }
 
-func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, created int64, fallbackDisplayName string, userDefined bool) *ModelInfo {
+func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, fallbackDisplayName string, userDefined bool) *ModelInfo {
 	name := strings.TrimSpace(model.GetName())
 	alias := strings.TrimSpace(model.GetAlias())
 	if alias == "" {
@@ -870,8 +870,8 @@ func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, creat
 	info := &ModelInfo{
 		ID:              alias,
 		MetadataModelID: metadataModelID,
+		ConfiguredAlias: name != "" && !strings.EqualFold(name, alias),
 		Object:          "model",
-		Created:         created,
 		OwnedBy:         ownedBy,
 		Type:            modelType,
 		DisplayName:     displayName,
@@ -893,15 +893,13 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 	if compat == nil || len(compat.Models) == 0 {
 		return nil
 	}
-	now := time.Now().Unix()
 	models := make([]*ModelInfo, 0, len(compat.Models))
-	for i := range compat.Models {
-		model := compat.Models[i]
+	for _, model := range internalconfig.ConfiguredModelRoutes(compat.Models) {
 		modelType := "openai-compatibility"
 		if model.Image {
 			modelType = registry.OpenAIImageModelType
 		}
-		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
+		info := buildConfiguredModelInfo(model, compat.Name, modelType, strings.TrimSpace(model.Alias), false)
 		if info == nil {
 			continue
 		}
@@ -950,13 +948,11 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType, metadataCha
 	if len(models) == 0 {
 		return nil
 	}
-	now := time.Now().Unix()
 	out := make([]*ModelInfo, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
-	for i := range models {
-		model := models[i]
+	for _, model := range internalconfig.ConfiguredModelRoutes(models) {
 		name := strings.TrimSpace(model.GetName())
-		info := buildConfiguredModelInfo(model, ownedBy, modelType, now, name, true)
+		info := buildConfiguredModelInfo(model, ownedBy, modelType, name, true)
 		if info == nil {
 			continue
 		}
@@ -972,7 +968,8 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType, metadataCha
 		if resolved := modelconfig.ResolveModelInfo(name, modelType, model.GetThinking()); resolved.Thinking != nil {
 			info.Thinking = resolved.Thinking
 		}
-		if staticInfo := registry.LookupStaticModelInfoByChannel(name, metadataChannel); staticInfo != nil && staticInfo.NativeCapabilities != nil {
+		if staticInfo := registry.LookupStaticModelInfoByChannel(name, metadataChannel); staticInfo != nil {
+			info.Created = staticInfo.Created
 			info.NativeCapabilities = cloneModelInfoForCatalogRoute(staticInfo).NativeCapabilities
 		}
 		out = append(out, info)
@@ -1086,7 +1083,6 @@ func appendVertexServiceAccountModels(cfg *config.Config, a *coreauth.Auth, base
 		return baseModels
 	}
 
-	now := time.Now().Unix()
 	out := make([]*ModelInfo, 0, len(baseModels)+len(extraNames))
 	out = append(out, baseModels...)
 	for _, name := range extraNames {
@@ -1098,7 +1094,6 @@ func appendVertexServiceAccountModels(cfg *config.Config, a *coreauth.Auth, base
 			ID:              name,
 			MetadataModelID: name,
 			Object:          "model",
-			Created:         now,
 			OwnedBy:         ownedBy,
 			Type:            "vertex",
 			DisplayName:     name,
@@ -1343,12 +1338,25 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			if mappedID == id {
 				continue
 			}
+			replaceNative := -1
 			if _, exists := seen[mappedID]; exists {
-				continue
+				// A channel may return native auto before the model explicitly aliased to auto.
+				if mappedID == "auto" {
+					for i, prior := range out {
+						if prior.ID == mappedID && !prior.ConfiguredAlias {
+							replaceNative = i
+							break
+						}
+					}
+				}
+				if replaceNative < 0 {
+					continue
+				}
 			}
 			seen[mappedID] = struct{}{}
 			clone := cloneModelInfoForCatalogRoute(model)
 			clone.ID = mappedID
+			clone.ConfiguredAlias = true
 			if model.MetadataModelID != "" {
 				clone.MetadataModelID = model.MetadataModelID
 			} else {
@@ -1362,7 +1370,11 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			if clone.Name != "" {
 				clone.Name = rewriteModelInfoName(clone.Name, id, mappedID)
 			}
-			out = append(out, &clone)
+			if replaceNative >= 0 {
+				out[replaceNative] = &clone
+			} else {
+				out = append(out, &clone)
+			}
 			addedAlias = true
 		}
 

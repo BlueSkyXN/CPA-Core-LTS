@@ -477,6 +477,7 @@ func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModel
 		for _, item := range resp.Models {
 			model := pluginModelInfoToRegistryModelInfo(item)
 			if model != nil {
+				model.PluginCatalog = true
 				model.ID = strings.TrimSpace(model.ID)
 			}
 			if model != nil && model.ID != "" {

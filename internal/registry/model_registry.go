@@ -54,6 +54,10 @@ type ModelInfo struct {
 	// MetadataModelID identifies the canonical model used to resolve client metadata.
 	// It is internal and must not be exposed in model-list responses.
 	MetadataModelID string `json:"-"`
+	// ConfiguredAlias marks an alias actually projected from this credential’s approved catalog.
+	ConfiguredAlias bool `json:"-" yaml:"-"`
+	// PluginCatalog records account-scoped plugin discovery even when a native executor handles inference.
+	PluginCatalog bool `json:"-" yaml:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -1540,6 +1544,26 @@ func (r *ModelRegistry) ClientSupportsModel(clientID, modelID string) bool {
 	return false
 }
 
+// ClientCanServeModel reports availability for one credential's own public model.
+func (r *ModelRegistry) ClientCanServeModel(clientID, modelID string, requireAlias bool) bool {
+	now := r.now()
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	info := r.clientModelInfos[clientID][modelID]
+	if info == nil || requireAlias && !info.ConfiguredAlias {
+		return false
+	}
+	reg := r.models[modelID]
+	if reg == nil {
+		return false
+	}
+	if _, _, active := clientSuspensionActive(reg, clientID, now); active {
+		return false
+	}
+	recovery, ok := clientQuotaRecoveryAt(reg, clientID, reg.QuotaExceededClients[clientID])
+	return !ok || !now.Before(recovery)
+}
+
 // IsModelSuspendedForClient reports whether a model is currently suspended for a specific client.
 func (r *ModelRegistry) IsModelSuspendedForClient(clientID, modelID string) bool {
 	clientID = strings.TrimSpace(clientID)
@@ -2222,10 +2246,18 @@ func (r *ModelRegistry) GetFirstAvailableModel(handlerType string) (string, erro
 		// Extract created timestamps from map
 		createdI, okI := models[i]["created"].(int64)
 		createdJ, okJ := models[j]["created"].(int64)
-		if !okI || !okJ {
-			return false
+		if !okI || createdI < 0 {
+			createdI = 0
 		}
-		return createdI > createdJ
+		if !okJ || createdJ < 0 {
+			createdJ = 0
+		}
+		if createdI != createdJ {
+			return createdI > createdJ
+		}
+		idI, _ := models[i]["id"].(string)
+		idJ, _ := models[j]["id"].(string)
+		return idI < idJ
 	})
 
 	// Find the first model with available clients

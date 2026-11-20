@@ -551,7 +551,7 @@ func (s *Service) registerResolvedModelsForAuthFenced(a *coreauth.Auth, fence mo
 	return s.registerResolvedModelsForAuthWithConfigFenced(s.currentConfig(), a, fence, providerKey, models)
 }
 
-func (s *Service) registerResolvedModelsForAuthWithConfigFenced(cfg *config.Config, a *coreauth.Auth, fence modelRegistrationFence, providerKey string, models []*ModelInfo) bool {
+func (s *Service) registerResolvedModelsForAuthWithConfigFenced(cfg *config.Config, a *coreauth.Auth, fence modelRegistrationFence, providerKey string, models []*ModelInfo, legacyExcluded ...string) bool {
 	if a == nil || a.ID == "" {
 		return true
 	}
@@ -573,9 +573,11 @@ func (s *Service) registerResolvedModelsForAuthWithConfigFenced(cfg *config.Conf
 		normalizedModels = append(normalizedModels, &clone)
 	}
 	catalogIDs := make([]string, 0, len(normalizedModels))
-	published := make([]*ModelInfo, 0, len(normalizedModels))
 	for _, model := range normalizedModels {
 		catalogIDs = append(catalogIDs, model.ID)
+	}
+	published := make([]*ModelInfo, 0, len(normalizedModels))
+	for _, model := range applyExcludedModels(normalizedModels, legacyExcluded) {
 		if coreauth.EvaluateModelPolicy(cfg, a, providerKey, model.ID).Allowed {
 			published = append(published, model)
 		}
@@ -583,15 +585,16 @@ func (s *Service) registerResolvedModelsForAuthWithConfigFenced(cfg *config.Conf
 	published = applyOAuthModelAliasForAuth(cfg, providerKey, a.AuthKind(), a.Attributes, published)
 	published = applyOAuthSettingsForAuth(cfg, providerKey, a.AuthKind(), published)
 	published = applyModelPrefixes(published, a.Prefix, cfg != nil && cfg.ForceModelPrefix)
-	committed := false
-	if len(published) == 0 {
-		committed = fence.publishUnregister(s, a.ID)
-	} else {
-		committed = fence.publishModels(s, a.ID, providerKey, published)
-	}
-	if committed && s != nil && s.accountCatalogs != nil {
-		s.accountCatalogs.recordIDs(a.ID, a.RegistrationEpoch, catalogIDs)
-	}
+	committed := fence.publishCatalog(s, a.ID, providerKey, published, func() {
+		if s == nil || s.accountCatalogs == nil {
+			return
+		}
+		if len(catalogIDs) == 0 {
+			s.accountCatalogs.remove(a.ID)
+		} else {
+			s.accountCatalogs.recordIDs(a.ID, a.RegistrationEpoch, catalogIDs)
+		}
+	})
 	if !committed {
 		log.WithField("provider", providerKey).Warnf("model registration for auth %s was superseded; discarded stale publication", a.ID)
 	}
@@ -759,7 +762,6 @@ func (s *Service) tryRegisterPluginModelsForAuthWithConfigFenced(ctx context.Con
 	if ctx != nil && ctx.Err() != nil {
 		return true, ctx.Err()
 	}
-	models := applyExcludedModels(result.Models, activeExcluded)
 	s.clearPluginModelDiscoveryFailure(activeAuth.ID)
 	publicationFence := fence
 	if pluginAuthCommitted {
@@ -772,10 +774,7 @@ func (s *Service) tryRegisterPluginModelsForAuthWithConfigFenced(ctx context.Con
 	}
 	publicationFence.exclusionProvider = providerKey
 	publicationFence.fallbackExclusionProvider = fallbackExclusionProvider
-	if len(models) > 0 {
-		return true, modelRegistrationResult(s.registerResolvedModelsForAuthWithConfigFenced(cfg, activeAuth, publicationFence, providerKey, models))
-	}
-	return true, modelRegistrationResult(s.unregisterModelsForAuthFenced(activeAuth, publicationFence))
+	return true, modelRegistrationResult(s.registerResolvedModelsForAuthWithConfigFenced(cfg, activeAuth, publicationFence, providerKey, result.Models, activeExcluded...))
 }
 
 // notePluginModelDiscoveryFailure records a retryable plugin model discovery

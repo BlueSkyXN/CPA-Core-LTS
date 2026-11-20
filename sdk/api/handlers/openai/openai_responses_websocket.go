@@ -22,6 +22,7 @@ import (
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -771,7 +772,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		pinnedAuthID = authID
 		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
-		_, modelKey := responsesWebsocketProviderSetForModel(responsesWebsocketResolvedModelName(modelName))
+		_, modelKey := responsesWebsocketProviderSetForModel(modelName)
 		if providerKey != "" {
 			pinnedAuthByProvider[providerKey] = responsesWebsocketPinnedAuthState{authID: authID, modelKey: modelKey}
 		}
@@ -849,6 +850,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				errAuth = handlers.ExecutionErrorMessage(errAccess)
 			}
 		}
+		executionParent := context.WithValue(c.Request.Context(), "gin", c)
+		routedTurnModel := requestModelName
+		if errAuth == nil {
+			executionParent, routedTurnModel, errAuth = h.ResolveAutoModelForRequest(executionParent, requestModelName, h.HandlerType(), false, false)
+		}
 		if errAuth != nil {
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errAuth)
 			markAPIResponseTimestamp(c)
@@ -878,7 +884,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			continue
 		}
-		executionParent := context.WithValue(c.Request.Context(), "gin", c)
 		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
 			executionParent,
 			h.HandlerType(),
@@ -894,17 +899,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				providerKey = strings.ToLower(strings.TrimSpace(pinnedAuth.Provider))
 			}
 			state, hasState := pinnedAuthByProvider[providerKey]
-			if !ok || !hasState || state.authID != pinnedAuthID || !responsesWebsocketPinnedAuthMatchesModel(pinnedAuth, requestModelName, state.modelKey, homeRuntime) {
+			if !ok || !hasState || state.authID != pinnedAuthID || !h.AuthManager.CheckAutoRouteAccount(executionParent, pinnedAuth) || !responsesWebsocketPinnedAuthMatchesModel(pinnedAuth, routedTurnModel, state.modelKey, homeRuntime) {
 				pinnedAuthID = ""
 			}
 		}
 		if pinnedAuthID == "" {
-			providerSet, _ := responsesWebsocketProviderSetForModel(responsesWebsocketResolvedModelName(requestModelName))
+			providerSet, _ := responsesWebsocketProviderSetForModel(routedTurnModel)
 			if len(providerSet) == 1 {
 				for providerKey := range providerSet {
 					state, ok := pinnedAuthByProvider[providerKey]
 					candidateAuth, homeRuntime, okAuth := sessionAuthByIDWithSource(state.authID)
-					if ok && okAuth && responsesWebsocketPinnedAuthMatchesModel(candidateAuth, requestModelName, state.modelKey, homeRuntime) {
+					if ok && okAuth && h.AuthManager.CheckAutoRouteAccount(executionParent, candidateAuth) && responsesWebsocketPinnedAuthMatchesModel(candidateAuth, routedTurnModel, state.modelKey, homeRuntime) {
 						pinnedAuthID = state.authID
 					} else {
 						delete(pinnedAuthByProvider, providerKey)
@@ -912,7 +917,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 			}
 		}
-		useUpstreamWebsocketPassthrough := h.responsesWebsocketUsesUpstreamWebsocketPassthrough(requestModelName)
+		useUpstreamWebsocketPassthrough := h.responsesWebsocketUsesUpstreamWebsocketPassthrough(executionParent, routedTurnModel)
 		if pinnedAuthID != "" {
 			if pinnedAuth, ok := sessionAuthByID(pinnedAuthID); ok && responsesWebsocketAuthSupportsIncrementalInput(pinnedAuth) {
 				provider := strings.ToLower(strings.TrimSpace(pinnedAuth.Provider))
@@ -951,7 +956,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		observedCompactionReplayAuthID := ""
 		observedCompactionSupported := false
 		if observedCompaction.modelName != "" &&
-			responsesWebsocketResolvedModelName(observedCompaction.modelName) == responsesWebsocketResolvedModelName(requestModelName) {
+			observedCompaction.modelName == routedTurnModel {
 			if isPluginExecutorRoute {
 				if observedCompaction.pluginID != "" && observedCompaction.pluginID == pluginExecutorID {
 					observedCompactionSupported = true
@@ -982,7 +987,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 									observedCompactionSupported = true
 									observedCompactionReplayAuthID = observedCompaction.authID
 								}
-							} else if responsesWebsocketPinnedAuthMatchesModel(compactionAuth, requestModelName, observedCompaction.modelKey, false) {
+							} else if h.AuthManager.CheckAutoRouteAccount(executionParent, compactionAuth) && responsesWebsocketPinnedAuthMatchesModel(compactionAuth, routedTurnModel, observedCompaction.modelKey, false) {
 								observedCompactionSupported = true
 								observedCompactionReplayAuthID = observedCompaction.authID
 							}
@@ -998,7 +1003,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					allowCompactionReplayBypass = allowCompactionReplayBypass || responsesWebsocketAuthSupportsCompactionReplay(pinnedAuth)
 				}
 			} else {
-				allowCompactionReplayBypass = allowCompactionReplayBypass || h.websocketUpstreamSupportsCompactionReplayForModel(requestModelName)
+				allowCompactionReplayBypass = allowCompactionReplayBypass || h.websocketUpstreamSupportsCompactionReplayForModel(executionParent, routedTurnModel)
 			}
 		}
 
@@ -1185,7 +1190,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			cliCtx = cliproxyexecutor.WithLocalWebsocketTurnTracker(cliCtx)
 			cliCtx = cliproxyexecutor.WithWebsocketInputEpoch(cliCtx, &inputEpoch, msgEpoch)
-			useDuplex := duplexInput != nil && !h.AuthManager.ResourceAllowlistsEnabled()
+			standaloneAuto := thinking.ParseSuffix(requestModelName).ModelName == "auto" && !h.AuthManager.HomeEnabled()
+			useDuplex := duplexInput != nil && !standaloneAuto && !h.AuthManager.ResourceAllowlistsEnabled()
 			if useDuplex {
 				cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
 				authorizationCtx := cliCtx
@@ -1240,7 +1246,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				codexDuplexStream.Store(useDuplex && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 				preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
-					rememberPinnedAuth(authID, modelName)
+					rememberPinnedAuth(authID, routedTurnModel)
 				}
 			})
 			if executionAuthID != "" && !isPluginExecutorRoute {
@@ -1376,7 +1382,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				if (attemptedUpstreamMode == responsesWebsocketUpstreamModeWS || upstreamMode == responsesWebsocketUpstreamModeWS) && lastAttemptedAuthID != "" {
 					upstreamMode = responsesWebsocketUpstreamModeWS
 					upstreamWebsocketAuthID = lastAttemptedAuthID
-					rememberPinnedAuth(lastAttemptedAuthID, modelName)
+					rememberPinnedAuth(lastAttemptedAuthID, routedTurnModel)
 					passthroughModelName = modelName
 				}
 				break
@@ -1438,7 +1444,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		if localTurnExecuted {
 			attemptedUpstreamMode = responsesWebsocketUpstreamModeHTTP
 			if lastAttemptedAuthID != "" {
-				rememberPinnedAuth(lastAttemptedAuthID, modelName)
+				rememberPinnedAuth(lastAttemptedAuthID, routedTurnModel)
 			}
 			nextLastRequest = responsesWebsocketLocalCompactionBoundaryRequest(requestJSON)
 		}
@@ -1448,7 +1454,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			plaintextHistory.remember(lastAttemptedAuthID, completedResponseID, plaintextTools)
 			upstreamWebsocketAuthID = lastAttemptedAuthID
 			if lastAttemptedAuthID != "" {
-				rememberPinnedAuth(lastAttemptedAuthID, modelName)
+				rememberPinnedAuth(lastAttemptedAuthID, routedTurnModel)
 			}
 			passthroughModelName = modelName
 			lastRequest = nil
@@ -1462,17 +1468,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastRequest = nextLastRequest
 			lastResponseOutput = completedOutput
 			if inputContainsFullTranscript(util.ParseGJSONBytesNoCopy(completedOutput)) {
-				_, modelKey := responsesWebsocketProviderSetForModel(responsesWebsocketResolvedModelName(modelName))
+				_, modelKey := responsesWebsocketProviderSetForModel(routedTurnModel)
 				if isPluginExecutorRoute {
 					observedCompaction = responsesWebsocketObservedCompactionState{
-						modelName: modelName,
+						modelName: routedTurnModel,
 						modelKey:  modelKey,
 						pluginID:  pluginExecutorID,
 					}
 				} else {
 					currentProvider, currentTargetModel := handlers.PreparedStreamProviderRoute(executionParent)
 					observedCompaction = responsesWebsocketObservedCompactionState{
-						modelName:   modelName,
+						modelName:   routedTurnModel,
 						modelKey:    modelKey,
 						provider:    currentProvider,
 						targetModel: currentTargetModel,
@@ -1482,7 +1488,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			} else if observedCompaction.modelName != "" {
 				targetMismatch := false
 				currentProvider, currentTargetModel := handlers.PreparedStreamProviderRoute(executionParent)
-				if responsesWebsocketResolvedModelName(observedCompaction.modelName) != responsesWebsocketResolvedModelName(modelName) {
+				if observedCompaction.modelName != routedTurnModel {
 					targetMismatch = true
 				} else if isPluginExecutorRoute {
 					if pluginExecutorID != observedCompaction.pluginID {

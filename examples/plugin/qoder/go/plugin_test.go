@@ -438,3 +438,13 @@ func testAgentEvent(sequence uint64, eventType pluginapi.AgentEventType, payload
 		Sequence: sequence, Timestamp: timestamp, Payload: raw,
 	}
 }
+
+func TestQoderNativeAutoAndSelectedModel(t *testing.T) {
+	for _, selected := range []string{"qmodel", "auto"} {
+		payload, err := nativeRequestPayload(pluginapi.ExecutorRequest{Model: selected, Payload: []byte(`{"model":"auto","messages":[{"role":"user","content":"fixture"}]}`)})
+		var body struct{ Model string }
+		if err != nil || json.Unmarshal(payload, &body) != nil || body.Model != selected {
+			t.Fatalf("selected %s, wire %s, error %v", selected, body.Model, err)
+		}
+	}
+}

@@ -68,6 +68,9 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
+		if got := rec.Header().Get("X-CPA-AUTO-MODEL"); got != "1" {
+			t.Fatalf("auto model capability = %q", got)
+		}
 		if got := rec.Header().Get("X-CPA-REASONING-EFFORT-POLICY"); got != "1" {
 			t.Fatalf("effort policy capability = %q", got)
 		}
@@ -90,6 +93,9 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if got := rec.Header().Get("X-CPA-AUTO-MODEL"); got != "1" {
+			t.Fatalf("auto model capability = %q", got)
 		}
 		if got := rec.Header().Get("X-CPA-REASONING-EFFORT-POLICY"); got != "1" {
 			t.Fatalf("effort policy capability = %q", got)

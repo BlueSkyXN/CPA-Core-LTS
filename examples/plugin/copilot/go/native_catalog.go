@@ -181,6 +181,9 @@ func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 //   - embeddings 类型：无端点声明也保留（embeddings 线按 ID 匹配使用）；
 //   - 其余类型：必须声明 supported_endpoints，未声明的存档老模型不发布。
 func catalogModelPublishable(model copilotCatalogModel) bool {
+	if len(copilotGenerationMethods(model)) == 0 {
+		return false
+	}
 	if model.Capabilities != nil && strings.EqualFold(strings.TrimSpace(model.Capabilities.Type), "embeddings") {
 		return true
 	}

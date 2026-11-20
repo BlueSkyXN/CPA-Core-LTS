@@ -203,3 +203,54 @@ func TestModelPolicyNativeRegistrationBeforeAliasAndPrefix(t *testing.T) {
 		t.Fatal("preview did not retain the real upstream model")
 	}
 }
+
+func TestPluginLegacyExcludedModelsRemainInCommittedPreview(t *testing.T) {
+	a := &coreauth.Auth{ID: t.Name(), Provider: "codebuddy", FileName: "fixture.json", Attributes: map[string]string{"excluded_models": "*"}}
+	cfg := &config.Config{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	a, err := manager.Register(t.Context(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{cfg: cfg, coreManager: manager, accountCatalogs: newAccountCatalogStore()}
+	reg := GlobalModelRegistry()
+	defer reg.UnregisterClient(a.ID)
+	fence := newModelRegistrationFence(a, cfg)
+	models := []*ModelInfo{{ID: "native-one"}, {ID: "native-two"}}
+	if !s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, a.Provider, models, "*") {
+		t.Fatal("catalog publish failed")
+	}
+	if len(reg.GetModelsForClient(a.ID)) != 0 {
+		t.Fatal("legacy exclusion must block all published models")
+	}
+	if s.registerResolvedModelsForAuthWithConfigFenced(cfg, a, fence, a.Provider, []*ModelInfo{{ID: "stale"}}, "*") {
+		t.Fatal("stale catalog committed")
+	}
+	preview, ok := s.PreviewModelPolicyForAuth(a)
+	if !ok || len(preview.Evaluations) != 2 {
+		t.Fatalf("filtered preview: %#v", preview)
+	}
+	for _, row := range preview.Evaluations {
+		if row.Allowed || row.Layer != "account" || row.ModelID == "stale" {
+			t.Fatalf("stale or allowed preview row %#v", row)
+		}
+	}
+}
+
+func TestExplicitAutoProjectionOwnsNativeName(t *testing.T) {
+	aliases := []config.OAuthModelAlias{{Name: "real", Alias: "auto"}}
+	for _, models := range [][]*ModelInfo{{{ID: "auto"}, {ID: "real"}}, {{ID: "real"}, {ID: "auto"}}} {
+		projected := applyOAuthModelAliasEntries(aliases, models)
+		if len(projected) != 1 || !projected[0].ConfiguredAlias || projected[0].MetadataModelID != "real" {
+			t.Fatalf("unexpected auto projection: %+v", projected)
+		}
+	}
+	onlyNative := applyOAuthModelAliasEntries(aliases, []*ModelInfo{{ID: "auto"}})
+	if onlyNative[0].ConfiguredAlias {
+		t.Fatal("native auto claimed the missing alias target")
+	}
+	models := buildOpenAICompatibilityConfigModels(&config.OpenAICompatibility{Models: []config.OpenAICompatibilityModel{{Name: "auto"}, {Name: "real", Alias: "auto"}, {Name: "auto", Alias: "vendor-auto"}}})
+	if len(models) != 2 || !models[0].ConfiguredAlias || models[0].ID != "auto" || models[0].MetadataModelID != "real" || models[0].Created != 0 || models[1].ID != "vendor-auto" {
+		t.Fatal("config models lost alias ownership or synthesized a creation date")
+	}
+}

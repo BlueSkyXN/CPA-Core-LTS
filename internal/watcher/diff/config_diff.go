@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -259,6 +260,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("codex.live-media-relay.ice-servers: updated (%d -> %d entries, credentials redacted)", len(oldLiveRelay.ICEServers), len(newLiveRelay.ICEServers)))
 	}
 
+	if oldCfg.Routing.AutoModel.Enabled != newCfg.Routing.AutoModel.Enabled {
+		changes = append(changes, fmt.Sprintf("routing.auto-model.enabled: %t -> %t", oldCfg.Routing.AutoModel.Enabled, newCfg.Routing.AutoModel.Enabled))
+	}
+	if !slices.Equal(oldCfg.Routing.AutoModel.Candidates, newCfg.Routing.AutoModel.Candidates) {
+		changes = append(changes, fmt.Sprintf("routing.auto-model.candidates: ordered list updated (%d entries)", len(newCfg.Routing.AutoModel.Candidates)))
+	}
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}

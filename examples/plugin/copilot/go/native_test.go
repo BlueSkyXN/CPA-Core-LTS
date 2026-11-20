@@ -780,6 +780,7 @@ func TestParseNativeCatalogDropsLegacyEndpointlessModels(t *testing.T) {
 		`{"id":"gpt-4o","name":"GPT-4o","vendor":"Azure OpenAI","capabilities":{"type":"chat","limits":{"max_context_window_tokens":131072}}}`,
 		`{"id":"gpt-4o-mini","vendor":"Azure OpenAI","capabilities":{"type":"chat"}}`,
 		`{"id":"gpt-41-copilot","vendor":"Azure OpenAI","capabilities":{"type":"completion"}}`,
+		`{"id":"conflicting-methods","supported_endpoints":["/embeddings"],"capabilities":{"type":"chat"}}`,
 	}
 	current := []string{
 		`{"id":"gemini-4-argon","vendor":"Google","supported_endpoints":["/chat/completions"],"policy":{"state":"enabled"},"capabilities":{"type":"chat","supports":{"tool_calls":true}}}`,
@@ -806,10 +807,14 @@ func TestParseNativeCatalogDropsLegacyEndpointlessModels(t *testing.T) {
 	for _, m := range entry.models {
 		got[m.ID] = true
 	}
-	for _, id := range []string{"gpt-4o", "gpt-4o-mini", "gpt-41-copilot"} {
+	for _, id := range []string{"gpt-4o", "gpt-4o-mini", "gpt-41-copilot", "conflicting-methods"} {
 		if got[id] {
 			t.Errorf("legacy model %s should not be published", id)
 		}
+	}
+	if !catalogAllowsMethod(entry.models, "gpt-5.3-codex", "chat") || catalogAllowsMethod(entry.models, "gpt-5.3-codex", "embeddings") ||
+		!catalogAllowsMethod(entry.models, "text-embedding-3-small", "embeddings") || catalogAllowsMethod(entry.models, "text-embedding-3-small", "chat") {
+		t.Fatal("Responses chat and embeddings must stay on their respective endpoints")
 	}
 	for _, id := range []string{"gemini-4-argon", "claude-sonnet-5.5", "gpt-5.3-codex", "text-embedding-3-small"} {
 		if !got[id] {
