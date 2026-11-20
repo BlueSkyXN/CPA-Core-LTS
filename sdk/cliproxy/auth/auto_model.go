@@ -116,6 +116,23 @@ func (m *Manager) ownsAutoAlias(a *Auth) bool {
 	return mapped != "" && !strings.EqualFold(mapped, "auto")
 }
 
+// OwnsStandaloneAutoRoute reports whether local configuration owns bare auto.
+func (m *Manager) OwnsStandaloneAutoRoute() bool {
+	if m == nil || m.HomeEnabled() {
+		return false
+	}
+	cfg := m.runtimeConfigSnapshot()
+	if cfg == nil {
+		return false
+	}
+	if cfg.Routing.AutoModel.Enabled {
+		return true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.hasExplicitAutoLocked(cfg)
+}
+
 func pluginAllowsAuto(cfg *config.Config, a *Auth) bool {
 	if IsConfigAPIKeyAuth(a) {
 		return true

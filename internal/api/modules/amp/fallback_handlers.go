@@ -152,6 +152,10 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 		if suffixResult.HasSuffix {
 			thinkingSuffix = "(" + suffixResult.RawSuffix + ")"
 		}
+		localAuto := fh.baseHandler != nil &&
+			fh.baseHandler.AuthManager != nil &&
+			normalizedModel == "auto" &&
+			fh.baseHandler.AuthManager.OwnsStandaloneAutoRoute()
 
 		resolveMappedModel := func() (string, []string) {
 			if fh.modelMapper == nil {
@@ -193,7 +197,7 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 		// Check if model mappings should be forced ahead of local API keys
 		forceMappings := fh.forceModelMappings != nil && fh.forceModelMappings()
 
-		if forceMappings {
+		if forceMappings && !localAuto {
 			// FORCE MODE: Check model mappings FIRST (takes precedence over local API keys)
 			// This allows users to route Amp requests to their preferred OAuth providers
 			if mappedModel, mappedProviders := resolveMappedModel(); mappedModel != "" {
@@ -215,7 +219,7 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 			// DEFAULT MODE: Check local providers first, then mappings as fallback
 			providers = util.GetProviderName(normalizedModel)
 
-			if len(providers) == 0 {
+			if len(providers) == 0 && !localAuto {
 				// No providers configured - check if we have a model mapping
 				if mappedModel, mappedProviders := resolveMappedModel(); mappedModel != "" {
 					// Mapping found and provider available - rewrite the model in request body
@@ -228,6 +232,9 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 					providers = mappedProviders
 				}
 			}
+		}
+		if localAuto && len(providers) == 0 {
+			providers = []string{"standalone-auto"}
 		}
 
 		// If no providers available, fallback to ampcode.com
@@ -278,7 +285,7 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 			// proxies (e.g. NewAPI) may return a different model name and lack
 			// Amp-required fields like thinking.signature.
 			rewriter := NewResponseRewriterForRequest(c.Writer, modelName, bodyBytes)
-			rewriter.suppressThinking = providerName != "claude"
+			rewriter.suppressThinking = providerName != "claude" && !localAuto
 			c.Writer = rewriter
 			// Filter Anthropic-Beta header only for local handling paths
 			filterAntropicBetaHeader(c)
