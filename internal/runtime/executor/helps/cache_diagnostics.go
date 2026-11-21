@@ -71,7 +71,14 @@ func (r *UsageReporter) ObserveWebsocketDiagnosticsRequest(body []byte, endpoint
 	if sessionID != "" {
 		headers.Set("Session-Id", sessionID)
 	}
-	attempt := r.diagnosticExecution.Begin("websocket", diagnostics.EndpointKind(endpoint), body, headers)
+	r.ObserveWebsocketHandshakePayload(body, endpoint, headers)
+}
+
+func (r *UsageReporter) ObserveWebsocketHandshakePayload(body []byte, endpoint string, headers http.Header) {
+	if r == nil {
+		return
+	}
+	attempt := r.diagnosticExecution.Begin("websocket", endpoint, body, headers)
 	r.sizeMu.Lock()
 	r.diagnosticWebsocketAttempt = attempt
 	r.sizeMu.Unlock()

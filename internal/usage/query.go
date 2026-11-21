@@ -33,18 +33,22 @@ type QueryIdentity struct {
 }
 
 type QueryFilter struct {
-	Model      *string         `json:"model,omitempty"`
-	API        *string         `json:"api,omitempty"`
-	AuthIndex  *string         `json:"auth_index,omitempty"`
-	Identities []QueryIdentity `json:"identities,omitempty"`
-	Tier       string          `json:"tier,omitempty"`
-	TierFlow   string          `json:"tier_flow,omitempty"`
-	Effort     *string         `json:"effort,omitempty"`
-	Failed     *bool           `json:"failed,omitempty"`
-	Cached     *bool           `json:"cached,omitempty"`
-	Metric     string          `json:"metric,omitempty"`
-	Minimum    *float64        `json:"minimum,omitempty"`
-	Maximum    *float64        `json:"maximum,omitempty"`
+	Model           *string                  `json:"model,omitempty"`
+	API             *string                  `json:"api,omitempty"`
+	AuthIndex       *string                  `json:"auth_index,omitempty"`
+	Identities      []QueryIdentity          `json:"identities,omitempty"`
+	Tier            string                   `json:"tier,omitempty"`
+	TierFlow        string                   `json:"tier_flow,omitempty"`
+	Effort          *string                  `json:"effort,omitempty"`
+	Failed          *bool                    `json:"failed,omitempty"`
+	Cached          *bool                    `json:"cached,omitempty"`
+	CacheReadState  string                   `json:"cache_read_state,omitempty"`
+	CacheHistory    *CacheHistoryLookup      `json:"-"`
+	CacheRoute      *coreusage.CacheRouteKey `json:"cache_route,omitempty"`
+	CacheWriteState string                   `json:"cache_write_state,omitempty"`
+	Metric          string                   `json:"metric,omitempty"`
+	Minimum         *float64                 `json:"minimum,omitempty"`
+	Maximum         *float64                 `json:"maximum,omitempty"`
 }
 
 // 规则由 Panel 当前价格配置生成；Core 只分类，不存储单价或历史金额。
@@ -87,9 +91,11 @@ type QueryCapabilities struct {
 	AnalyticsVersion int      `json:"analytics_version"`
 	MaxAnalyticsRows int      `json:"max_analytics_rows"`
 	// RequestSizeVersion advertises the detail size-field contract.
-	RequestSizeVersion uint32 `json:"request_size_version"`
-	ExportVersion      int    `json:"export_version"`
-	MaxExportPageSize  int    `json:"max_export_page_size"`
+	RequestSizeVersion      uint32 `json:"request_size_version"`
+	CacheRouteVersion       int    `json:"cache_route_version"`
+	CacheObservationVersion int    `json:"cache_observation_version"`
+	ExportVersion           int    `json:"export_version"`
+	MaxExportPageSize       int    `json:"max_export_page_size"`
 }
 
 func queryEncode(value any) string {
@@ -124,7 +130,13 @@ func (s *RequestStatistics) QueryCapabilities() QueryCapabilities {
 		models = append(models, name)
 	}
 	sort.Strings(models)
-	return QueryCapabilities{QueryVersion, queryEncode(queryBound{s.queryGeneration, s.querySequence}), time.Now().UnixMilli(), models, MaxQueryPageSize, AnalyticsVersion, MaxAnalyticsRows, coreusage.RequestSizeVersionV1, QueryExportVersion, MaxQueryExportPageSize}
+	return QueryCapabilities{
+		Version: QueryVersion, Bound: queryEncode(queryBound{s.queryGeneration, s.querySequence}),
+		NowMS: time.Now().UnixMilli(), Models: models, MaxPageSize: MaxQueryPageSize,
+		AnalyticsVersion: AnalyticsVersion, MaxAnalyticsRows: MaxAnalyticsRows,
+		RequestSizeVersion: coreusage.RequestSizeVersionV1, CacheObservationVersion: 1, CacheRouteVersion: 1,
+		ExportVersion: QueryExportVersion, MaxExportPageSize: MaxQueryExportPageSize,
+	}
 }
 
 type QueryPriceGroup struct {
@@ -345,6 +357,16 @@ func validateQuery(q *QueryRequest) (*time.Location, error) {
 	if q.Filter.Minimum != nil && *q.Filter.Minimum < 0 || q.Filter.Maximum != nil && *q.Filter.Maximum < 0 || q.Filter.Minimum != nil && q.Filter.Maximum != nil && *q.Filter.Minimum > *q.Filter.Maximum {
 		return nil, ErrQueryInvalid
 	}
+	if q.Filter.CacheRoute != nil && !q.Filter.CacheRoute.ValidFilter() {
+		return nil, ErrQueryInvalid
+	}
+	for _, state := range []string{q.Filter.CacheReadState, q.Filter.CacheWriteState} {
+		switch state {
+		case "", cachePositive, cacheZero, cacheUnknown:
+		default:
+			return nil, ErrQueryInvalid
+		}
+	}
 	switch q.Filter.Metric {
 	case "", "totalInputTokens", "nonCacheReadInputTokens", "totalOutputTokens", "displayedOutputTokens", "reasoningTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens":
 	default:
@@ -418,6 +440,19 @@ func queryFilterMatches(f QueryFilter, api, model string, d RequestDetail) bool 
 	t := d.Tokens
 	if f.Cached != nil && *f.Cached != (t.CacheReadTokens > 0 || t.CacheCreationTokens > 0) {
 		return false
+	}
+	if f.CacheHistory != nil && !f.CacheHistory.matches(d) {
+		return false
+	}
+	if f.CacheRoute != nil && !d.CacheRoute.Matches(*f.CacheRoute) {
+		return false
+	}
+	if f.CacheReadState != "" || f.CacheWriteState != "" {
+		cache := observedCache(d)
+		if f.CacheReadState != "" && f.CacheReadState != cache.readState ||
+			f.CacheWriteState != "" && f.CacheWriteState != cache.writeState {
+			return false
+		}
 	}
 	var n int64
 	switch f.Metric {
@@ -655,9 +690,10 @@ func (h *queryHeap) Pop() any          { n := len(*h); v := (*h)[n-1]; *h = (*h)
 
 func queryFilterID(q QueryRequest) string {
 	fingerprint := sha256.Sum256([]byte(queryEncode(struct {
-		From, To *int64
-		Filter   QueryFilter
-	}{q.FromMS, q.ToMS, q.Filter})))
+		From, To     *int64
+		Filter       QueryFilter
+		CacheHistory *CacheHistoryLookup `json:",omitempty"`
+	}{q.FromMS, q.ToMS, q.Filter, q.Filter.CacheHistory})))
 	return hex.EncodeToString(fingerprint[:])
 }
 

@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/hex"
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"net/http"
 	"strings"
 )
@@ -26,10 +27,11 @@ func (h *Handler) GetCacheDiagnostics(c *gin.Context) {
 		return
 	}
 	trace, ok := h.authManager.CacheDiagnostics(id)
-	if !ok {
+	if !ok || (c.Query("instance_id") != "" && trace.InstanceID != c.Query("instance_id")) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "diagnostic record unavailable"})
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, trace)
 }
 
@@ -40,7 +42,12 @@ func (h *Handler) GetCacheDiagnosticsCapabilities(c *gin.Context) {
 	}
 	cfg := h.configSnapshot()
 	enabled := cfg != nil && cfg.UsageStatisticsEnabled
-	c.JSON(http.StatusOK, gin.H{"version": 1, "recording_enabled": enabled, "request_details": true, "session_snapshot": true, "store": h.authManager.CacheDiagnosticsOverview()})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"version": 1, "recording_enabled": enabled, "request_details": true, "session_snapshot": true,
+		"trace_search_version": 1, "lookup_id_types": diagnostics.LookupIDTypes,
+		"retention_seconds": int(diagnostics.Retention.Seconds()), "store": h.authManager.CacheDiagnosticsOverview(),
+	})
 }
 
 func (h *Handler) QueryCacheSession(c *gin.Context) {

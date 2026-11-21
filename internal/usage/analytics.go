@@ -70,22 +70,24 @@ type AnalyticsThroughputPoint struct {
 	ReasoningSamples     int64   `json:"reasoningSamples"`
 }
 type AnalyticsCachePoint struct {
-	TimestampMS      int64    `json:"timestampMs"`
-	Requests         int64    `json:"requests"`
-	CachedRequests   int64    `json:"cachedRequests"`
-	InputTokens      int64    `json:"inputTokens"`
-	CacheReadTokens  int64    `json:"cacheReadTokens"`
-	CacheWriteTokens int64    `json:"cacheWriteTokens"`
-	CacheRate        *float64 `json:"cacheRate"`
+	TimestampMS      int64                     `json:"timestampMs"`
+	Requests         int64                     `json:"requests"`
+	CachedRequests   int64                     `json:"cachedRequests"`
+	InputTokens      int64                     `json:"inputTokens"`
+	CacheReadTokens  int64                     `json:"cacheReadTokens"`
+	CacheWriteTokens int64                     `json:"cacheWriteTokens"`
+	CacheRate        *float64                  `json:"cacheRate"`
+	Observed         AnalyticsCacheObservation `json:"observed"`
 }
 type AnalyticsCacheSummary struct {
-	Requests             int64    `json:"requests"`
-	CachedRequests       int64    `json:"cachedRequests"`
-	InputTokens          int64    `json:"inputTokens"`
-	CacheReadTokens      int64    `json:"cacheReadTokens"`
-	CacheWriteTokens     int64    `json:"cacheWriteTokens"`
-	CacheReadRate        *float64 `json:"cacheReadRate"`
-	CacheHitRequestRatio *float64 `json:"cacheHitRequestRatio"`
+	Requests             int64                     `json:"requests"`
+	CachedRequests       int64                     `json:"cachedRequests"`
+	InputTokens          int64                     `json:"inputTokens"`
+	CacheReadTokens      int64                     `json:"cacheReadTokens"`
+	CacheWriteTokens     int64                     `json:"cacheWriteTokens"`
+	CacheReadRate        *float64                  `json:"cacheReadRate"`
+	CacheHitRequestRatio *float64                  `json:"cacheHitRequestRatio"`
+	Observed             AnalyticsCacheObservation `json:"observed"`
 }
 type AnalyticsFailurePoint struct {
 	TimestampMS int64    `json:"timestampMs"`
@@ -366,6 +368,7 @@ func finishAnalyticsGrain(ctx context.Context, buckets map[int64]*analyticsBucke
 		r.Latency.Average = append(r.Latency.Average, p.Average)
 		b.cache.TimestampMS = t
 		b.cache.CacheRate = analyticsRatio(b.cache.CacheReadTokens, b.cache.InputTokens)
+		b.cache.Observed.finish()
 		r.Cache = append(r.Cache, b.cache)
 		b.errors.TimestampMS = t
 		b.errors.FailureRate = analyticsRatio(b.errors.Failures, b.errors.Requests)
@@ -421,6 +424,8 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 		if r.Total > MaxAnalyticsRows {
 			return ErrAnalyticsTooLarge
 		}
+		cache := observedCache(d)
+		r.Data.Cache.Observed.add(cache)
 		ms := d.Timestamp.UnixMilli()
 		if ms <= 0 || ms > 8640000000000000 {
 			return nil
@@ -445,6 +450,7 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 				b = &analyticsBucket{}
 				buckets[floor[i]] = b
 			}
+			b.cache.Observed.add(cache)
 			b.cache.Requests++
 			b.cache.InputTokens += d.Tokens.InputTokens
 			b.cache.CacheReadTokens += d.Tokens.CacheReadTokens
@@ -515,6 +521,7 @@ func (s *RequestStatistics) buildAnalytics(ctx context.Context, q QueryRequest, 
 		r.Data.RequestSize = requestSize
 	}
 	c := &r.Data.Cache
+	c.Observed.finish()
 	c.CacheReadRate = analyticsRatio(c.CacheReadTokens, c.InputTokens)
 	c.CacheHitRequestRatio = analyticsRatio(c.CachedRequests, c.Requests)
 	e := &r.Data.Errors
