@@ -224,6 +224,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		InferenceGeo:          strings.TrimSpace(usageDetail.InferenceGeo),
 		CacheDetails:          usageDetail.CacheDetails.Clone(),
 		CacheObservation:      usageDetail.CacheObservation.Clone(),
+		CacheRoute:            record.CacheRoute.Clone(),
 		WebSearchRequests:     coreusage.CloneInt64Ptr(usageDetail.WebSearchRequests),
 		ImageCount:            coreusage.CloneInt64Ptr(usageDetail.ImageCount),
 		RequestedImageDetails: usageDetail.RequestedImageDetails.Clone(),
@@ -241,50 +242,51 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	requestDetail
-	AccountingVersion     int                         `json:"accounting_version"`
-	TokenBreakdown        coreusage.TokenBreakdown    `json:"token_breakdown"`
-	Provider              string                      `json:"provider"`
-	ExecutorType          string                      `json:"executor_type"`
-	Model                 string                      `json:"model"`
-	Alias                 string                      `json:"alias"`
-	UpstreamModel         string                      `json:"upstream_model,omitempty"`
-	Endpoint              string                      `json:"endpoint"`
-	AuthType              string                      `json:"auth_type"`
-	APIKey                string                      `json:"api_key"`
-	IsNativeKey           bool                        `json:"is_native_key"`
-	AccessProvider        string                      `json:"access_provider,omitempty"`
-	RequestID             string                      `json:"request_id"`
-	ReasoningEffort       string                      `json:"reasoning_effort"`
-	ServiceTier           string                      `json:"service_tier"`
-	RequestServiceTier    string                      `json:"request_service_tier"`
-	OutboundServiceTier   string                      `json:"outbound_service_tier,omitempty"`
-	ResponseServiceTier   string                      `json:"response_service_tier,omitempty"`
-	EffectiveServiceTier  string                      `json:"effective_service_tier,omitempty"`
-	ResponseCyberProgram  string                      `json:"response_cyber_program,omitempty"`
-	UpstreamServiceTier   string                      `json:"upstream_service_tier,omitempty"`
-	HomeSelection         *coreusage.HomeSelection    `json:"home_selection,omitempty"`
-	SessionID             string                      `json:"session_id,omitempty"`
-	ParentSessionID       string                      `json:"parent_session_id,omitempty"`
-	NodeKind              string                      `json:"node_kind,omitempty"`
-	IsFork                bool                        `json:"is_fork,omitempty"`
-	IsCompaction          bool                        `json:"is_compaction,omitempty"`
-	ResponseModel         string                      `json:"response_model,omitempty"`
-	ExecutionID           string                      `json:"execution_id,omitempty"`
-	DiagnosticsID         string                      `json:"diagnostics_id,omitempty"`
-	DiagnosticsInstanceID string                      `json:"diagnostics_instance_id,omitempty"`
-	TraceID               string                      `json:"trace_id,omitempty"`
-	Speed                 string                      `json:"speed,omitempty"`
-	InferenceGeo          string                      `json:"inference_geo,omitempty"`
-	CacheDetails          *coreusage.CacheDetails     `json:"cache_details,omitempty"`
-	CacheObservation      *coreusage.CacheObservation `json:"cache_observation,omitempty"`
-	WebSearchRequests     *int64                      `json:"web_search_requests,omitempty"`
-	ImageCount            *int64                      `json:"image_count,omitempty"`
-	RequestedImageDetails *coreusage.ImageDetails     `json:"requested_image_details,omitempty"`
-	ImageDetails          *coreusage.ImageDetails     `json:"image_details,omitempty"`
-	MediaCounts           *coreusage.MediaCounts      `json:"media_counts,omitempty"`
-	ToolUsageDetails      *coreusage.ToolUsageDetails `json:"tool_usage_details,omitempty"`
-	Iterations            []coreusage.IterationUsage  `json:"iterations,omitempty"`
-	CostDetails           *coreusage.CostDetails      `json:"cost_details,omitempty"`
+	AccountingVersion     int                          `json:"accounting_version"`
+	TokenBreakdown        coreusage.TokenBreakdown     `json:"token_breakdown"`
+	Provider              string                       `json:"provider"`
+	ExecutorType          string                       `json:"executor_type"`
+	Model                 string                       `json:"model"`
+	Alias                 string                       `json:"alias"`
+	UpstreamModel         string                       `json:"upstream_model,omitempty"`
+	Endpoint              string                       `json:"endpoint"`
+	AuthType              string                       `json:"auth_type"`
+	APIKey                string                       `json:"api_key"`
+	IsNativeKey           bool                         `json:"is_native_key"`
+	AccessProvider        string                       `json:"access_provider,omitempty"`
+	RequestID             string                       `json:"request_id"`
+	ReasoningEffort       string                       `json:"reasoning_effort"`
+	ServiceTier           string                       `json:"service_tier"`
+	RequestServiceTier    string                       `json:"request_service_tier"`
+	OutboundServiceTier   string                       `json:"outbound_service_tier,omitempty"`
+	ResponseServiceTier   string                       `json:"response_service_tier,omitempty"`
+	EffectiveServiceTier  string                       `json:"effective_service_tier,omitempty"`
+	ResponseCyberProgram  string                       `json:"response_cyber_program,omitempty"`
+	UpstreamServiceTier   string                       `json:"upstream_service_tier,omitempty"`
+	HomeSelection         *coreusage.HomeSelection     `json:"home_selection,omitempty"`
+	SessionID             string                       `json:"session_id,omitempty"`
+	ParentSessionID       string                       `json:"parent_session_id,omitempty"`
+	NodeKind              string                       `json:"node_kind,omitempty"`
+	IsFork                bool                         `json:"is_fork,omitempty"`
+	IsCompaction          bool                         `json:"is_compaction,omitempty"`
+	ResponseModel         string                       `json:"response_model,omitempty"`
+	ExecutionID           string                       `json:"execution_id,omitempty"`
+	DiagnosticsID         string                       `json:"diagnostics_id,omitempty"`
+	DiagnosticsInstanceID string                       `json:"diagnostics_instance_id,omitempty"`
+	TraceID               string                       `json:"trace_id,omitempty"`
+	Speed                 string                       `json:"speed,omitempty"`
+	InferenceGeo          string                       `json:"inference_geo,omitempty"`
+	CacheDetails          *coreusage.CacheDetails      `json:"cache_details,omitempty"`
+	CacheObservation      *coreusage.CacheObservation  `json:"cache_observation,omitempty"`
+	CacheRoute            *coreusage.CacheRouteSummary `json:"cache_route,omitempty"`
+	WebSearchRequests     *int64                       `json:"web_search_requests,omitempty"`
+	ImageCount            *int64                       `json:"image_count,omitempty"`
+	RequestedImageDetails *coreusage.ImageDetails      `json:"requested_image_details,omitempty"`
+	ImageDetails          *coreusage.ImageDetails      `json:"image_details,omitempty"`
+	MediaCounts           *coreusage.MediaCounts       `json:"media_counts,omitempty"`
+	ToolUsageDetails      *coreusage.ToolUsageDetails  `json:"tool_usage_details,omitempty"`
+	Iterations            []coreusage.IterationUsage   `json:"iterations,omitempty"`
+	CostDetails           *coreusage.CostDetails       `json:"cost_details,omitempty"`
 }
 
 type requestDetail struct {

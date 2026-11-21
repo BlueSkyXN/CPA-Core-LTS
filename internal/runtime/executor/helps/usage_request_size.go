@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -102,7 +101,7 @@ func (r *UsageReporter) ObserveUpstreamWebsocketRequestTo(body []byte, endpoint,
 	if sessionID != "" {
 		headers.Set("Session-Id", sessionID)
 	}
-	r.observeWebsocketRequest(len(body), body, diagnostics.EndpointKind(endpoint), headers)
+	r.observeWebsocketRequest(len(body), body, endpoint, headers)
 }
 
 func (r *UsageReporter) observeWebsocketRequest(payloadBytes int, body []byte, endpoint string, headers http.Header) {

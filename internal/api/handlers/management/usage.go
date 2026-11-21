@@ -291,6 +291,7 @@ func validateUsageImportRawShape(data []byte, version int) error {
 					"ttft_ms",
 					"ttfa_ms",
 					"trace_id",
+					"cache_route",
 					"size_version",
 					"client_request_bytes",
 					"client_request_encoding",

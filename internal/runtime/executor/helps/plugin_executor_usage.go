@@ -279,6 +279,7 @@ func mergeStreamStructuredFields(merged *usage.Detail, existing, update usage.De
 	if merged == nil {
 		return
 	}
+	merged.CacheObservation = usage.MergeCacheObservations(existing.CacheObservation, merged.CacheObservation)
 	if merged.UpstreamServiceTier == "" {
 		merged.UpstreamServiceTier = existing.UpstreamServiceTier
 	}

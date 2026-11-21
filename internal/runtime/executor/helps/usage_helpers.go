@@ -1018,9 +1018,19 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Byte counts belong to the primary model so side-model records do not
 	// double count the same HTTP exchange.
 	var size usage.RequestSize
+	var cacheRoute *usage.CacheRouteSummary
 	if model == r.model {
 		responseModel = r.ResponseModel()
 		size = r.requestSizeSnapshot()
+		var wireEvidence *usage.CacheObservation
+		r.diagnosticExecution.RecordUsage(detail)
+		cacheRoute, wireEvidence = r.diagnosticExecution.CacheEvidence()
+		if wireEvidence != nil {
+			detail.CacheObservation = wireEvidence
+		}
+		if cacheRoute != nil && detail.CacheObservation != nil {
+			cacheRoute.NoParsedResponse = false
+		}
 		if detail.ResponseCyberProgram == "" {
 			detail.ResponseCyberProgram = r.snapshotResponseCyberProgram()
 		}
@@ -1032,6 +1042,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		RequestID:             r.requestID,
 		DiagnosticsID:         r.diagnosticsID(),
 		DiagnosticsInstanceID: r.diagnosticsInstanceID(),
+		CacheRoute:            cacheRoute,
 		TraceID:               r.traceID,
 		Provider:              r.provider,
 		BaseURL:               r.baseURL,
@@ -1838,6 +1849,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
 				// come from the current frame, merged per the upstream stream
 				// rules when a previous detail exists.
 				structured := parseClaudeUsageNode(usageNode)
+				structured.CacheObservation = merged.CacheObservation
 				structured.InputTokens = merged.InputTokens
 				structured.OutputTokens = merged.OutputTokens
 				structured.ReasoningTokens = merged.ReasoningTokens
@@ -2302,7 +2314,7 @@ func parseOpenAIStyleUsageWithCache(root, usageNode ojson.Result) (usage.Detail,
 	// 无效 token 向量仍按既有契约整体拒绝；原始字段证据由传输诊断保存。
 	// 有效的全零向量包含 TokenBreakdown，仍可记录明确零值。
 	if !hasTokens || detail != (usage.Detail{}) {
-		detail.CacheObservation = observeOpenAICacheFields(usageNode)
+		detail.CacheObservation = usage.ObserveOpenAICache(usageNode)
 	}
 	return detail, hasTokens || hasStructuredUsageDetail(detail)
 }
@@ -3316,6 +3328,7 @@ func parseClaudeUsageNode(usageNode ojson.Result) usage.Detail {
 	}
 	nonReasoningOutput := outputTokens - reasoningTokens
 	detail := usage.Detail{
+		CacheObservation:    usage.ObserveClaudeCache(usageNode),
 		OutputTokens:        outputTokens,
 		ReasoningTokens:     reasoningTokens,
 		CachedTokens:        cacheReadTokens,
@@ -3829,12 +3842,13 @@ func parseGeminiFamilyUsageDetail(node ojson.Result) usage.Detail {
 		okInput = false
 	}
 	detail := usage.Detail{
-		InputTokens:     inputTokens,
-		OutputTokens:    candidatesTokens,
-		ReasoningTokens: thoughtsTokens,
-		TotalTokens:     totalTokens,
-		CachedTokens:    cachedTokens,
-		CacheReadTokens: cachedTokens,
+		CacheObservation: usage.ObserveGeminiCache(node),
+		InputTokens:      inputTokens,
+		OutputTokens:     candidatesTokens,
+		ReasoningTokens:  thoughtsTokens,
+		TotalTokens:      totalTokens,
+		CachedTokens:     cachedTokens,
+		CacheReadTokens:  cachedTokens,
 	}
 	if !okInput {
 		detail.InputTokens = 0
@@ -4234,6 +4248,7 @@ func parseInteractionsUsageDetail(node ojson.Result) usage.Detail {
 	totalTokenCount, _ := parseOptionalStrictUsageTokenCount(firstExistingUsageNode(node, "total_tokens", "totalTokenCount"))
 	inputTokenCount, okInput := sumNonNegativeUsageTokens(inputTokenCount, toolUseTokenCount)
 	detail := usage.Detail{
+		CacheObservation:    usage.ObserveInteractionsCache(node),
 		InputTokens:         inputTokenCount,
 		OutputTokens:        outputTokenCount,
 		ReasoningTokens:     reasoningTokenCount,
