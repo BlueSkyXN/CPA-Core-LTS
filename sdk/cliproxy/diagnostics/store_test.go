@@ -90,6 +90,66 @@ func TestResponseObservationConcurrentClose(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+func TestResponseObservationSkipsBinaryPayload(t *testing.T) {
+	for _, contentType := range []string{"Application/Octet-Stream; charset=binary", "image/png", "audio/mpeg", "video/mp4"} {
+		t.Run(contentType, func(t *testing.T) {
+			// The payload deliberately resembles JSON so any accidental parse is observable.
+			const payload = `{"usage":{"input_tokens_details":{"cached_tokens":9}}}`
+			meter := (*AttemptRef)(nil).WithUsageObserver("openai", nil)
+			raw := io.NopCloser(strings.NewReader(payload))
+			if body := meter.WrapResponse(raw, contentType, ""); body != raw {
+				t.Fatal("binary response was wrapped without a diagnostic record")
+			}
+
+			store := NewStore()
+			ref := FromContext(store.Begin(t.Context(), "request", "scope", "", "model", "responses", []byte(`{}`)))
+			attempt := (&Execution{Ref: ref}).Begin("http", "custom", []byte(`{}`), nil)
+			body := attempt.WrapResponse(raw, contentType, "")
+			data, err := io.ReadAll(body)
+			_ = body.Close()
+			if err != nil || string(data) != payload {
+				t.Fatalf("binary response changed: %v", err)
+			}
+			trace, _ := store.Get(ref.ID())
+			result := trace.Attempts[0]
+			if result.Outcome != "body_consumed" || result.CacheObservation != nil {
+				t.Fatalf("binary delivery or observation is incorrect: %+v", result)
+			}
+		})
+	}
+}
+
+func TestResponseObservationEndsPendingSSEOnlyAtEOF(t *testing.T) {
+	for _, terminate := range []string{"eof", "close"} {
+		t.Run(terminate, func(t *testing.T) {
+			store := NewStore()
+			ref := FromContext(store.Begin(t.Context(), "request", "scope", "", "model", "responses", []byte(`{}`)))
+			attempt := (&Execution{Ref: ref}).Begin("http", "custom", []byte(`{}`), nil)
+			const event = "data: {\"usage\":{\"input_tokens_details\":{\"cached_tokens\":4}}}\n"
+			body := attempt.WrapResponse(io.NopCloser(strings.NewReader(event)), "text/event-stream", "")
+			if terminate == "eof" {
+				if _, err := io.ReadAll(body); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := io.ReadFull(body, make([]byte, len(event))); err != nil {
+				t.Fatal(err)
+			}
+			_ = body.Close()
+			trace, _ := store.Get(ref.ID())
+			result := trace.Attempts[0]
+			if terminate == "eof" {
+				if result.Outcome != "body_consumed" || result.CacheObservation == nil ||
+					result.CacheObservation.Read.Value == nil || *result.CacheObservation.Read.Value != 4 {
+					t.Fatalf("clean EOF did not finish usage: %+v", result)
+				}
+			} else if result.Outcome != "closed" || result.CacheObservation != nil || !result.ResponseTruncated {
+				t.Fatalf("close did not discard pending usage: %+v", result)
+			}
+		})
+	}
+}
+
 func TestByteLimitDoesNotReturnDanglingAttempt(t *testing.T) {
 	store := NewStore()
 	ref := FromContext(store.Begin(t.Context(), "request", "scope", "", "model", "responses", []byte(`{}`)))

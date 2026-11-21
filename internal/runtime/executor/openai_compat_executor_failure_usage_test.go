@@ -84,7 +84,7 @@ func TestOpenAICompatStreamFailureKeepsSeparateAttempts(t *testing.T) {
 func TestOpenAICompatStreamFailurePreservesObservedUsage(t *testing.T) {
 	for _, scenario := range []string{
 		"later-error-event", "usage-in-error-event", "invalid-frame", "raw-error-body",
-		"error-event-without-data", "scanner-error", "responses-missing-done",
+		"error-event-without-data", "scanner-error", "unterminated-usage-read-error", "responses-missing-done",
 		"apply-patch-error", "apply-patch-eof", "synthetic-done-error",
 		"canceled-translation-error", "canceled-eof-error",
 	} {
@@ -122,10 +122,13 @@ func TestOpenAICompatStreamFailurePreservesObservedUsage(t *testing.T) {
 					body = strings.NewReader(usageFrame + "event: error\n\n")
 					wantFailure = "upstream error event ended without data"
 					wantClientError = wantFailure
-				case "scanner-error":
+				case "scanner-error", "unterminated-usage-read-error":
 					wantFailure = "synthetic upstream read failure"
 					wantStatus = http.StatusServiceUnavailable
 					wantClientError = wantFailure
+					if scenario == "unterminated-usage-read-error" {
+						usageFrame += "data: " + `{"object":"chat.completion.chunk","model":"synthetic-model","usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11,"prompt_tokens_details":{"cached_tokens":9}}}` + "\n"
+					}
 					body = io.MultiReader(strings.NewReader(usageFrame), openAICompatFailureReader{statusErr{code: wantStatus, msg: wantFailure}})
 				case "responses-missing-done":
 					opts.ResponseFormat = sdktranslator.FormatOpenAIResponse

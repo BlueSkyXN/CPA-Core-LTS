@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"github.com/MoeForge/moego/ojson"
-	"github.com/klauspost/compress/zstd"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +11,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MoeForge/moego/ojson"
+	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 const MaxResponseFrame = 2 << 20
@@ -320,21 +321,31 @@ func (a *AttemptRef) WrapResponse(body io.ReadCloser, contentType, encoding stri
 	if a == nil || body == nil {
 		return body
 	}
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	binary := mediaType == "application/octet-stream" || strings.HasPrefix(mediaType, "image/") ||
+		strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "video/")
+	if binary && a.ref == nil {
+		return body
+	}
 	if encoding != "" {
 		a.update(func(v *Attempt) { v.ObservationState = "encoded_response" })
 	}
-	return &observedBody{ReadCloser: body, attempt: a, sse: strings.Contains(contentType, "text/event-stream"), encoded: encoding != ""}
+	return &observedBody{
+		ReadCloser: body, attempt: a, sse: mediaType == "text/event-stream",
+		skipPayload: binary || encoding != "",
+	}
 }
 
 type observedBody struct {
 	io.ReadCloser
-	mu                           sync.Mutex
-	attempt                      *AttemptRef
-	buf                          []byte
-	event                        []byte
-	sse, encoded, dropping, done bool
-	droppingLine                 bool
-	handedOff                    bool
+	mu                               sync.Mutex
+	attempt                          *AttemptRef
+	buf                              []byte
+	event                            []byte
+	sse, skipPayload, dropping, done bool
+	droppingLine                     bool
+	handedOff                        bool
 }
 
 // Decoder handoff keeps the same attempt while parsing consumed decoded bytes.
@@ -342,7 +353,7 @@ type observedBody struct {
 func (b *observedBody) DecodedDiagnostics() *AttemptRef {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.encoded, b.handedOff = true, true
+	b.skipPayload, b.handedOff = true, true
 	return b.attempt
 }
 
@@ -350,7 +361,7 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if n > 0 && !b.encoded && !b.done {
+	if n > 0 && !b.skipPayload && !b.done {
 		b.consume(p[:n])
 	}
 	if err != nil {
@@ -376,12 +387,17 @@ func (b *observedBody) finish(state string) {
 	if b.handedOff {
 		return
 	}
-	if !b.encoded {
+	if !b.skipPayload {
 		if b.sse {
-			if len(b.buf) > 0 {
-				b.consumeEventLine(b.buf)
+			if state == "body_consumed" {
+				// Some upstreams finish their last event at a clean EOF.
+				if len(b.buf) > 0 {
+					b.consumeEventLine(b.buf)
+				}
+				b.finishEvent()
+			} else if len(b.buf) > 0 || len(b.event) > 0 {
+				b.attempt.Truncate()
 			}
-			b.finishEvent()
 		} else if !b.dropping && len(b.buf) > 0 {
 			b.attempt.Observe(b.buf)
 		}
