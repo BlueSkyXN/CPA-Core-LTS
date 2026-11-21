@@ -126,6 +126,8 @@ plugins:
 - **注意**：非流式执行（`executor.execute`）和流式执行（`executor.execute_stream`）两处报错路径均需要设置 `http_status`，以保证异常分类行为一致。
 - 原生动态库插件通过 C ABI 交换序列化的 JSON 缓冲区通信，因此状态码必须编码到序列化的 JSON 信封中（例如使用 `pluginabi.NewErrorEnvelope` 或自定义带 `http_status` 字段的信封结构体）。Go 语言原生的 error 对象无法跨越 C ABI 边界传递。
 
+非流式 `executor.execute` 在收到上游用量后仍可能失败，例如流提前截断。这时可随原错误返回 `error.partial_usage`，例如 `{"input_tokens":10,"output_tokens":2,"total_tokens":12}`。只填实际观察到的非负整数；可选的 `cache_read_tokens`、`cache_creation_tokens` 已计入输入，`reasoning_tokens` 已计入输出。没有用量就省略，明确报告的 `0` 不是缺失。支持该字段的宿主把计数记入同一条凭据失败记录；非法计数不改变原错误，旧宿主忽略该字段。流式执行继续使用流中的 usage，不重复上报。
+
 Go 语言编写的插件可导入 `github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi` 并直接使用 `pluginabi.NewErrorEnvelope(code, message, httpStatus)`：
 
 ```go
