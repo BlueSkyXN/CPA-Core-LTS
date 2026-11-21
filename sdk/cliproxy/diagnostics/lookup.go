@@ -19,30 +19,29 @@ type TraceLocation struct {
 
 type TraceRow struct {
 	TraceLocation
-	HistoryKey       string                   `json:"history_key,omitempty"`
-	At               time.Time                `json:"at"`
-	Model            string                   `json:"model"`
-	AuthIndex        string                   `json:"auth_index,omitempty"`
-	TraceID          string                   `json:"trace_id,omitempty"`
-	LogicalRequestID string                   `json:"logical_request_id,omitempty"`
-	ResponseID       string                   `json:"response_id,omitempty"`
-	Available        bool                     `json:"available"`
-	AttemptCount     int                      `json:"attempt_count,omitempty"`
-	Status           int                      `json:"status,omitempty"`
-	Outcome          string                   `json:"outcome,omitempty"`
-	Matched          []string                 `json:"matched,omitempty"`
-	InputTokens      *int64                   `json:"input_tokens,omitempty"`
-	CacheObservation *usage.CacheObservation  `json:"cache_observation,omitempty"`
-	CacheRoute       *usage.CacheRouteSummary `json:"cache_route,omitempty"`
-	Previous         *TraceLocation           `json:"previous,omitempty"`
-	PreviousSource   string                   `json:"previous_source,omitempty"`
+	At               time.Time               `json:"at"`
+	Model            string                  `json:"model"`
+	AuthIndex        string                  `json:"auth_index,omitempty"`
+	TraceID          string                  `json:"trace_id,omitempty"`
+	LogicalRequestID string                  `json:"logical_request_id,omitempty"`
+	ResponseID       string                  `json:"response_id,omitempty"`
+	Available        bool                    `json:"available"`
+	AttemptCount     int                     `json:"attempt_count,omitempty"`
+	Status           int                     `json:"status,omitempty"`
+	Outcome          string                  `json:"outcome,omitempty"`
+	Matched          []string                `json:"matched,omitempty"`
+	InputTokens      *int64                  `json:"input_tokens,omitempty"`
+	CacheObservation *usage.CacheObservation `json:"cache_observation,omitempty"`
+	CacheRoute       *CacheRouteSummary      `json:"cache_route,omitempty"`
+	Previous         *TraceLocation          `json:"previous,omitempty"`
+	PreviousSource   string                  `json:"previous_source,omitempty"`
 }
 
 type TraceQuery struct {
 	ID         string
 	InstanceID string
 	Focus      string
-	Route      *usage.CacheRouteKey
+	Route      *CacheRouteKey
 	FromMS     *int64
 	ToMS       *int64
 }
@@ -123,7 +122,7 @@ func (s *Store) Lookup(query TraceQuery) ([]TraceRow, string) {
 		matchedExecution := false
 		for i := len(t.Attempts) - 1; i >= 0; i-- {
 			a := &t.Attempts[i]
-			if !isInWindow(a.StartedAt) || !fastMatch && !slices.ContainsFunc(a.CacheReferences, func(ref usage.CacheRouteReference) bool {
+			if !isInWindow(a.StartedAt) || !fastMatch && !slices.ContainsFunc(a.CacheReferences, func(ref CacheRouteReference) bool {
 				return ref.CacheRouteKey == *query.Route
 			}) || !focusMatches(query.Focus, t, a) {
 				continue
@@ -239,9 +238,7 @@ func (e *Execution) RecordUsage(detail usage.Detail) {
 			if detail.InputTokens > 0 {
 				a.InputTokens = usage.Int64Ptr(detail.InputTokens)
 			}
-			if a.CacheObservation == nil && detail.CacheObservation != nil {
-				a.CacheObservation = detail.CacheObservation.Clone()
-			}
+			a.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation.Clone(), a.CacheObservation)
 			break
 		}
 	})

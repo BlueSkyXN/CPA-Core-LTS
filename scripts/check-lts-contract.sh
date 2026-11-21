@@ -367,7 +367,7 @@ require_grep 'json:"cache_observation,omitempty"' internal/usage/logger_plugin.g
 require_grep 'json:"diagnostics_instance_id,omitempty"' internal/usage/logger_plugin.go
 require_grep '"/cache-diagnostics/session"' internal/api/server_management.go
 require_grep '"/cache-diagnostics/traces"' internal/api/server_management.go
-require_grep 'json:"cache_route,omitempty"' internal/usage/logger_plugin.go internal/redisqueue/plugin.go
+require_grep 'json:"cache_route,omitempty"' sdk/cliproxy/diagnostics/lookup.go
 
 go test ./scripts/ltsregistry -count=1
 

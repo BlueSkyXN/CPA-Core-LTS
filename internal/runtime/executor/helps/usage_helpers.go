@@ -36,6 +36,7 @@ import (
 type UsageReporter struct {
 	diagnosticExecution        *diagnostics.Execution
 	diagnosticWebsocketAttempt *diagnostics.AttemptRef
+	attemptCacheUsage          *attemptCacheUsage
 	requestID                  string
 	traceID                    string
 	selectionID                string
@@ -1018,19 +1019,11 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Byte counts belong to the primary model so side-model records do not
 	// double count the same HTTP exchange.
 	var size usage.RequestSize
-	var cacheRoute *usage.CacheRouteSummary
 	if model == r.model {
 		responseModel = r.ResponseModel()
 		size = r.requestSizeSnapshot()
-		var wireEvidence *usage.CacheObservation
+		detail.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation, r.cacheUsageSnapshot())
 		r.diagnosticExecution.RecordUsage(detail)
-		cacheRoute, wireEvidence = r.diagnosticExecution.CacheEvidence()
-		if wireEvidence != nil {
-			detail.CacheObservation = wireEvidence
-		}
-		if cacheRoute != nil && detail.CacheObservation != nil {
-			cacheRoute.NoParsedResponse = false
-		}
 		if detail.ResponseCyberProgram == "" {
 			detail.ResponseCyberProgram = r.snapshotResponseCyberProgram()
 		}
@@ -1042,7 +1035,6 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		RequestID:             r.requestID,
 		DiagnosticsID:         r.diagnosticsID(),
 		DiagnosticsInstanceID: r.diagnosticsInstanceID(),
-		CacheRoute:            cacheRoute,
 		TraceID:               r.traceID,
 		Provider:              r.provider,
 		BaseURL:               r.baseURL,
@@ -1219,7 +1211,7 @@ func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.BeginResponseTiming()
 	t.reporter.beginUpstreamHTTPAttempt(req)
-	attempt := t.reporter.diagnosticExecution.BeginHTTP(req)
+	attempt := t.reporter.trackAttemptCacheUsage(t.reporter.diagnosticExecution.BeginHTTP(req), false)
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		attempt.Status(0, true)

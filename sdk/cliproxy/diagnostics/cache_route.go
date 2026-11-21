@@ -7,8 +7,59 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+const MaxCacheReferences = 12
+
+type CacheRouteKey struct {
+	Kind   string `json:"kind"`
+	Digest string `json:"digest"`
+	Scope  string `json:"scope,omitempty"`
+}
+
+func validCacheDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (k CacheRouteKey) ValidFilter() bool {
+	switch k.Kind {
+	case "input_session", "cache_group", "pck", "outbound_session", "named_cache":
+		return validCacheDigest(k.Digest) && validCacheDigest(k.Scope)
+	default:
+		return false
+	}
+}
+
+type CacheRouteReference struct {
+	CacheRouteKey
+	Method string `json:"method"`
+	Source string `json:"source,omitempty"`
+}
+
+type CacheRouteSelection struct {
+	Method       string `json:"method"`
+	Result       string `json:"result"`
+	PrefixLength int    `json:"prefix_length,omitempty"`
+	PrefixUnit   string `json:"prefix_unit,omitempty"`
+}
+
+type CacheRouteSummary struct {
+	Version          int                   `json:"version"`
+	References       []CacheRouteReference `json:"references,omitempty"`
+	Selection        *CacheRouteSelection  `json:"selection,omitempty"`
+	AttemptCount     int                   `json:"attempt_count"`
+	NoParsedResponse bool                  `json:"no_parsed_response,omitempty"`
+	Truncated        bool                  `json:"truncated,omitempty"`
+	OfficialLoss     bool                  `json:"official_loss,omitempty"`
+}
 
 func cacheDigest(value ojson.Result) string {
 	if value.Type != ojson.String || strings.TrimSpace(value.String()) == "" {
@@ -17,9 +68,9 @@ func cacheDigest(value ojson.Result) string {
 	return Hash(value.String())
 }
 
-func cacheReference(kind, digest, scope, method, source string) usage.CacheRouteReference {
-	return usage.CacheRouteReference{
-		CacheRouteKey: usage.CacheRouteKey{Kind: kind, Digest: digest, Scope: scope},
+func cacheReference(kind, digest, scope, method, source string) CacheRouteReference {
+	return CacheRouteReference{
+		CacheRouteKey: CacheRouteKey{Kind: kind, Digest: digest, Scope: scope},
 		Method:        method, Source: source,
 	}
 }
@@ -178,22 +229,21 @@ func claudeCacheControl(root ojson.Result) *CacheControl {
 	return control
 }
 
-func addCacheReference(summary *usage.CacheRouteSummary, ref usage.CacheRouteReference) {
-	if slices.ContainsFunc(summary.References, func(seen usage.CacheRouteReference) bool {
+func addCacheReference(summary *CacheRouteSummary, ref CacheRouteReference) {
+	if slices.ContainsFunc(summary.References, func(seen CacheRouteReference) bool {
 		return seen.CacheRouteKey == ref.CacheRouteKey
 	}) {
 		return
 	}
-	if len(summary.References) == usage.MaxCacheReferences {
+	if len(summary.References) == MaxCacheReferences {
 		summary.Truncated = true
 		return
 	}
 	summary.References = append(summary.References, ref)
 }
 
-func (t *Trace) cacheRoute(executionID, decisionID string) *usage.CacheRouteSummary {
-	summary := &usage.CacheRouteSummary{Version: 1, Truncated: t.Truncated,
-		LogicalDigest: Hash(t.LogicalRequestID), PreviousResponse: t.PreviousResponse}
+func (t *Trace) cacheRoute(executionID, decisionID string) *CacheRouteSummary {
+	summary := &CacheRouteSummary{Version: 1, Truncated: t.Truncated}
 	if t.InputSession != nil {
 		addCacheReference(summary, *t.InputSession)
 	}
@@ -205,24 +255,11 @@ func (t *Trace) cacheRoute(executionID, decisionID string) *usage.CacheRouteSumm
 			decisionID = attempt.DecisionID
 		}
 		summary.AttemptCount++
-		summary.NoParsedResponse = attempt.ObservationState == "not_observed" || attempt.ObservationState == "encoded_response"
+		summary.NoParsedResponse = attempt.CacheObservation == nil &&
+			(attempt.ObservationState == "not_observed" || attempt.ObservationState == "encoded_response")
 		summary.OfficialLoss = summary.OfficialLoss || attempt.hasOfficialCacheLoss()
-		if attempt.PreviousResponse != "" {
-			summary.PreviousResponse = attempt.PreviousResponse
-		}
 		for _, ref := range attempt.CacheReferences {
 			addCacheReference(summary, ref)
-		}
-		for _, id := range attempt.ResponseIDs {
-			digest := Hash(id)
-			if slices.Contains(summary.ResponseDigests, digest) {
-				continue
-			}
-			if len(summary.ResponseDigests) == usage.MaxCacheResponseIDs {
-				summary.Truncated = true
-				break
-			}
-			summary.ResponseDigests = append(summary.ResponseDigests, digest)
 		}
 	}
 	for _, e := range t.Events {
@@ -234,35 +271,13 @@ func (t *Trace) cacheRoute(executionID, decisionID string) *usage.CacheRouteSumm
 		case e.Method == "selection" && summary.Selection == nil,
 			e.Method == "session_binding" && e.Result == "reused",
 			e.Method == "websocket_connection" && e.Result == "reused":
-			summary.Selection = &usage.CacheRouteSelection{Method: e.Method, Result: e.Result}
+			summary.Selection = &CacheRouteSelection{Method: e.Method, Result: e.Result}
 		case e.Method == "lcp" && e.Result == "candidate_found":
 			// A candidate's prefix is evidence about the search, irrespective of later selection.
 			if summary.Selection == nil || summary.Selection.Method == "selection" {
-				summary.Selection = &usage.CacheRouteSelection{Method: e.Method, Result: e.Result, PrefixLength: e.PrefixLength, PrefixUnit: e.PrefixUnit}
+				summary.Selection = &CacheRouteSelection{Method: e.Method, Result: e.Result, PrefixLength: e.PrefixLength, PrefixUnit: e.PrefixUnit}
 			}
 		}
 	}
 	return summary
-}
-
-// CacheEvidence selects only this reporter's execution from the bounded trace.
-func (e *Execution) CacheEvidence() (*usage.CacheRouteSummary, *usage.CacheObservation) {
-	if e == nil || e.Ref == nil {
-		return nil, nil
-	}
-	s := e.Ref.store
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry := s.entries[e.Ref.id]
-	if entry == nil || s.now().Sub(entry.value.UpdatedAt) > Retention {
-		return nil, nil
-	}
-	summary := entry.value.cacheRoute(e.ID, e.Ref.decisionID)
-	for i := len(entry.value.Attempts) - 1; i >= 0; i-- {
-		attempt := entry.value.Attempts[i]
-		if attempt.ExecutionID == e.ID {
-			return summary, attempt.CacheObservation.Clone()
-		}
-	}
-	return summary, nil
 }

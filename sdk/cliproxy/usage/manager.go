@@ -28,7 +28,6 @@ type Record struct {
 	RequestID             string
 	DiagnosticsID         string
 	DiagnosticsInstanceID string
-	CacheRoute            *CacheRouteSummary
 	// TraceID identifies the parent inbound HTTP request when available (8-character hex).
 	TraceID string
 	// SelectionID identifies the scheduler selection decision that produced this usage record when available.

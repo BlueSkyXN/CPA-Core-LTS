@@ -95,10 +95,10 @@ Responses／Codex 入口已有 Responses 请求形状，原厂出口保留其控
 - `GET /cache-diagnostics/capabilities`：版本、记录开关、本实例 ID、保存数量与序列化 JSON 字节。
 - `GET /cache-diagnostics/requests/:id` 返回逻辑请求的入口摘要、事件和发送尝试。可传 `instance_id` 校验来源。无可用记录时返回 404。
 - `GET /cache-diagnostics/traces` 使用 `trace_search_version: 1`。省略参数可浏览近期请求，`q` 精确查找执行、日志、诊断、逻辑请求或上游响应 ID。重复 ID 返回多个候选。也支持 `instance_id`、`kind/digest/scope`、`from_ms/to_ms`、`focus` 和 `limit/cursor`。可用焦点为 `zero_read`、`retry`、`official_loss`。默认 30 条，最大 100 条。快照失效返回 409。
-- 精确 ID 及关联检索也覆盖可用的用量历史。仅有历史用量时条目标为 `available: false`。历史行的 `history_key` 标识当前实例用量快照中的行。只有同一出站作用域的已完成响应被明确引用，且前序唯一时，返回 `previous` 和 `previous_source`。Claude 进一步核对凭据，优先使用实际出站的 `thread.previous_message_id`，其次使用 `diagnostics.previous_message_id` 作为上游比较引用。
+- ID 和关联检索只访问当前实例的近期诊断，`history_included` 返回 `false`。只有同一出站作用域的已完成响应被明确引用，且前序唯一时，返回 `previous` 和 `previous_source`。Claude 进一步核对凭据，优先使用实际出站的 `thread.previous_message_id`，其次使用 `diagnostics.previous_message_id` 作为上游比较引用。
 - `POST /cache-diagnostics/session`：只读查询；请求包含 `provider`、`model`、64 位十六进制 `session_hash`，可带 `diagnostics_id` 读取最近一次已记录 OAuth 决定对应的作用域。请求体上限 4 KiB。
 
-`usage-statistics-enabled` 控制新增诊断记录。每个 Manager 实例最多保存 512 条，单条最多 128 个事件、32 次发送、64 KiB；保存的序列化 JSON 总量最多 8 MiB，最后更新后保留 1 小时。容量淘汰和过期均使详情不可用；404 无法单独证明是哪种原因。单个请求摘要扫描上限 32 MiB，响应 JSON／SSE 行上限 2 MiB，超限显示不完整证据。
+`usage-statistics-enabled` 控制新增诊断记录。每个 Manager 实例最多保存 512 条，单条最多 128 个事件、32 次发送、64 KiB。保存的序列化 JSON 总量最多 8 MiB，最后更新后最多保留 1 小时。容量淘汰和过期均使详情不可用。单个请求摘要扫描上限 32 MiB，响应 JSON／SSE 事件上限 2 MiB，超限显示不完整证据。
 
 账号绑定/LCP 快照最多 64 行，OAuth 快照另外最多 64 行。OAuth 查询仅根据该请求实际记录的作用域和明确身份执行；没有身份时返回 unavailable。查询不创建索引、不更新访问顺序、不清理过期对象。返回仍留在内存的过期对象时标记 expired；已被清理的对象无法据此还原。
 
@@ -116,10 +116,11 @@ WebSocket 响应在确定执行归属后记录诊断，模型观察不隐式改�
 
 ## 用量查询扩展
 
-用量能力声明 `cache_observation_version: 1` 和 `cache_route_version: 1`。
+用量能力声明 `cache_observation_version: 1`。缓存读写观测在执行消费上游响应时生成，流式证据在同一次发送内累积。用量记录和诊断可以消费同一份计量，诊断淘汰不会改变用量结果。
 
 - 读写分别接受 `cache_read_state`、`cache_write_state`，取值为 `positive`、`zero`、`unknown`。筛选、分页、查询导出共用快照与条件。
 - 分析接口在窗口、小时、日桶返回 `observed`。读写各有三类计数。比例使用上游读数有效、输入为正且读数不超过输入的同一批记录。分母为零时返回空值。
-- `cache_route` 版本 1 随 canonical v3 用量和 queue 保存关联与已观察的尝试。类型包含输入会话、出站会话、PCK、本地严格前缀组、命名缓存。精确过滤使用类型、完整摘要和作用域。作用域由实例、调用方及已知的真实出站地址组成，本地组还沿用算法记录的作用域。匹配字段保留实际出站证据，缺少作用域的标识仅供显示。
+- canonical v3 用量和 usage queue 保存既有用量字段、`cache_observation` 与请求引用。队列继续提供原有的 TTL 写入分项。带草稿 `cache_route` 的 v3 备份可导入，重新导出时只包含用量。
+- `cache_route` 出现在近期诊断检索结果中。类型包含输入会话、出站会话、PCK、本地严格前缀组、命名缓存。精确过滤使用类型、完整摘要和作用域。作用域由实例、调用方及已知的真实出站地址组成，本地组还沿用算法记录的作用域。缺少作用域的标识仅供显示。
 
 Meta 实际发送的 `X-Tbh-Session-Id` 以出站会话摘要记录。官方损失焦点使用 `cache_miss` 或上游回报的正数 `cache_missed_tokens`。比较记录不可用和诊断不可用各自保留原状态。

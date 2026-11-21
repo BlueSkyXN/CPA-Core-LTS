@@ -2,22 +2,31 @@ package redisqueue
 
 import (
 	"encoding/json"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"strings"
 	"testing"
+
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func TestCacheObservationQueuePreservesPresenceAndInstance(t *testing.T) {
 	withEnabledQueue(t, func() {
-		want := coreusage.CacheRouteKey{Kind: "pck", Digest: strings.Repeat("a", 64), Scope: strings.Repeat("b", 64)}
-		route := &coreusage.CacheRouteSummary{Version: 1, AttemptCount: 1, References: []coreusage.CacheRouteReference{{CacheRouteKey: want, Method: "outbound"}}}
-		(&usageQueuePlugin{}).HandleUsage(t.Context(), coreusage.Record{Provider: "openai", Model: "synthetic-model", RequestID: "execution", DiagnosticsID: "trace", DiagnosticsInstanceID: "instance", CacheRoute: route, Detail: coreusage.Detail{InputTokens: 12, OutputTokens: 1, CacheObservation: &coreusage.CacheObservation{Version: 1, Read: coreusage.CacheTokenObservation{State: "present", Value: coreusage.Int64Ptr(0)}, Write: coreusage.CacheTokenObservation{State: "absent"}}}})
+		(&usageQueuePlugin{}).HandleUsage(t.Context(), coreusage.Record{
+			Provider: "openai", Model: "synthetic-model", RequestID: "execution",
+			DiagnosticsID: "trace", DiagnosticsInstanceID: "instance",
+			Detail: coreusage.Detail{
+				InputTokens: 12, OutputTokens: 1, CacheCreationTokens: 3, CacheCreation1hTokens: coreusage.Int64Ptr(3),
+				CacheObservation: &coreusage.CacheObservation{
+					Version: 1,
+					Read:    coreusage.CacheTokenObservation{State: "present", Value: coreusage.Int64Ptr(0)},
+					Write:   coreusage.CacheTokenObservation{State: "absent"},
+				},
+			},
+		})
 		p := popSinglePayload(t)
 		requireStringField(t, p, "diagnostics_id", "trace")
 		requireStringField(t, p, "diagnostics_instance_id", "instance")
-		var cacheRoute coreusage.CacheRouteSummary
-		if err := json.Unmarshal(p["cache_route"], &cacheRoute); err != nil || !cacheRoute.Matches(want) {
-			t.Fatalf("queue route=%+v: %v", cacheRoute, err)
+		requireIntField(t, requireTokensPayload(t, p), "cache_creation_1h_tokens", 3)
+		if _, exists := p["cache_route"]; exists {
+			t.Fatal("queue included a diagnostic route")
 		}
 		var obs map[string]any
 		if err := json.Unmarshal(p["cache_observation"], &obs); err != nil {

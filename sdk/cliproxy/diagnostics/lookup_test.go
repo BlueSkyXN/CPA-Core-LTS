@@ -52,7 +52,7 @@ func TestCacheTraceLookupRespectsAssociationAndPredecessor(t *testing.T) {
 		t.Fatal("time adjacency produced a predecessor")
 	}
 	trace, _ := store.Get(branch.ID())
-	var pck, session usage.CacheRouteKey
+	var pck, session CacheRouteKey
 	for _, ref := range trace.Attempts[0].CacheReferences {
 		if ref.Kind == "pck" {
 			pck = ref.CacheRouteKey
@@ -165,7 +165,11 @@ func TestCacheTraceOfficialLossUsesReportedAmount(t *testing.T) {
 			ex := &Execution{Ref: FromContext(ctx), Provider: "codex", ID: "exec"}
 			attempt := ex.Begin("http", "https://fixture.invalid/v1/responses", []byte(`{}`), nil)
 			attempt.Observe([]byte(`{"object":"response","id":"resp","status":"completed","prompt_cache_diagnostics":{` + tt.diag + `}}`))
-			route, _ := ex.CacheEvidence()
+			recorded, _ := store.Lookup(TraceQuery{ID: ex.ID})
+			if len(recorded) != 1 {
+				t.Fatalf("recorded attempts = %d", len(recorded))
+			}
+			route := recorded[0].CacheRoute
 			rows, _ := store.Lookup(TraceQuery{Focus: "official_loss"})
 			if (len(rows) == 1) != tt.loss || route.OfficialLoss != tt.loss {
 				t.Fatalf("loss evidence in focus=%d summary=%t, want %t", len(rows), route.OfficialLoss, tt.loss)
@@ -180,8 +184,12 @@ func TestCacheRouteCapturesMetaSessionAndClaudeFieldDigests(t *testing.T) {
 	ex := &Execution{Ref: FromContext(ctx), Provider: "meta", ID: "exec"}
 	headers := http.Header{"X-Tbh-Session-Id": {"synthetic-meta-session"}, "Session-Id": {"other-input"}}
 	ex.Begin("http", "https://fixture.invalid/v1/chat", []byte(`{}`), headers)
-	route, _ := ex.CacheEvidence()
-	if !route.Valid() || len(route.References) != 1 ||
+	rows, _ := store.Lookup(TraceQuery{ID: ex.ID})
+	if len(rows) != 1 {
+		t.Fatalf("recorded attempts = %d", len(rows))
+	}
+	route := rows[0].CacheRoute
+	if len(route.References) != 1 ||
 		route.References[0].Source != "X-Tbh-Session-Id" ||
 		route.References[0].Digest != Hash("synthetic-meta-session") || !route.References[0].ValidFilter() {
 		t.Errorf("Meta route: %+v", route)

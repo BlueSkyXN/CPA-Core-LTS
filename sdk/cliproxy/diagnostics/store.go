@@ -47,24 +47,24 @@ type Event struct {
 }
 
 type Trace struct {
-	Version          uint32                     `json:"version"`
-	ID               string                     `json:"id"`
-	InstanceID       string                     `json:"instance_id"`
-	LogicalRequestID string                     `json:"logical_request_id"`
-	TraceID          string                     `json:"trace_id,omitempty"`
-	RouteScope       string                     `json:"route_scope,omitempty"`
-	InputSession     *usage.CacheRouteReference `json:"input_session,omitempty"`
-	InputPCKHash     string                     `json:"input_pck_hash,omitempty"`
-	PreviousResponse string                     `json:"previous_response_digest,omitempty"`
-	SessionHash      string                     `json:"session_hash,omitempty"`
-	Model            string                     `json:"model"`
-	SourceFormat     string                     `json:"source_format"`
-	CreatedAt        time.Time                  `json:"created_at"`
-	UpdatedAt        time.Time                  `json:"updated_at"`
-	Input            Payload                    `json:"input"`
-	Events           []Event                    `json:"events"`
-	Attempts         []Attempt                  `json:"attempts"`
-	Truncated        bool                       `json:"truncated"`
+	Version          uint32               `json:"version"`
+	ID               string               `json:"id"`
+	InstanceID       string               `json:"instance_id"`
+	LogicalRequestID string               `json:"logical_request_id"`
+	TraceID          string               `json:"trace_id,omitempty"`
+	RouteScope       string               `json:"route_scope,omitempty"`
+	InputSession     *CacheRouteReference `json:"input_session,omitempty"`
+	InputPCKHash     string               `json:"input_pck_hash,omitempty"`
+	PreviousResponse string               `json:"previous_response_digest,omitempty"`
+	SessionHash      string               `json:"session_hash,omitempty"`
+	Model            string               `json:"model"`
+	SourceFormat     string               `json:"source_format"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	Input            Payload              `json:"input"`
+	Events           []Event              `json:"events"`
+	Attempts         []Attempt            `json:"attempts"`
+	Truncated        bool                 `json:"truncated"`
 }
 
 type entry struct {

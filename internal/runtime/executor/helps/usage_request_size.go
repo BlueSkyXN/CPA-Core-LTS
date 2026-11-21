@@ -105,10 +105,7 @@ func (r *UsageReporter) ObserveUpstreamWebsocketRequestTo(body []byte, endpoint,
 }
 
 func (r *UsageReporter) observeWebsocketRequest(payloadBytes int, body []byte, endpoint string, headers http.Header) {
-	diagnosticAttempt := r.diagnosticExecution.Begin("websocket", endpoint, body, headers)
-	r.sizeMu.Lock()
-	r.diagnosticWebsocketAttempt = diagnosticAttempt
-	r.sizeMu.Unlock()
+	r.ObserveWebsocketHandshakePayload(body, endpoint, headers)
 	attempt := &upstreamSizeAttempt{transport: usage.UpstreamTransportWebsocket}
 	if payloadBytes > 0 {
 		attempt.requestBytes = int64(payloadBytes)

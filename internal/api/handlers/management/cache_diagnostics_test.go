@@ -1,19 +1,17 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
-	"net/url"
-	"time"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"net/http/httptest"
-	"strings"
-	"testing"
 )
 
 func TestCacheDiagnosticsManagementAuthAndBounds(t *testing.T) {
@@ -56,79 +54,49 @@ func TestCacheDiagnosticsManagementAuthAndBounds(t *testing.T) {
 	}
 }
 
-func TestCacheTraceHistoryLookupKeepsSourceInstanceAndSnapshot(t *testing.T) {
-	h := &Handler{authManager: auth.NewManager(nil, nil, nil), usageStats: usage.NewRequestStatistics()}
-	origin := "archive-fixture"
-	join := strings.Repeat("d", 64)
-	lookupID := "resp_archived_fixture"
-	at := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
-	add := func(id string, ts time.Time) {
-		h.usageStats.Record(t.Context(), coreusage.Record{
-			RequestID: id, TraceID: "log-fixture", DiagnosticsID: join, DiagnosticsInstanceID: origin,
-			RequestedAt: ts, Model: "fixture", APIKey: "fixture",
-			Detail:     coreusage.Detail{InputTokens: 100},
-			CacheRoute: &coreusage.CacheRouteSummary{Version: 1, AttemptCount: 1, ResponseDigests: []string{diagnostics.Hash(lookupID)}},
-		})
-	}
-	add("first", at)
-	add("second", at.Add(time.Second))
-	request := func(values url.Values) cacheTracePage {
-		t.Helper()
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("GET", "/cache-diagnostics/traces?"+values.Encode(), nil)
-		h.QueryCacheTraces(c)
-		var page cacheTracePage
-		if w.Code != 200 {
-			t.Fatalf("status %d: %s", w.Code, w.Body)
+func TestUsageManagementImportDropsDraftCacheRoute(t *testing.T) {
+	stats := usage.NewRequestStatistics()
+	h := &Handler{authManager: auth.NewManager(nil, nil, nil), usageStats: stats}
+	body := []byte(`{"version":3,"usage":{"apis":{"fixture":{"models":{"model":{"details":[{
+		"timestamp":"2026-11-20T08:00:00Z","request_id":"synthetic-execution","trace_id":"fixture-log",
+		"cache_route":{"version":1,"references":[{"kind":"pck","digest":"ephemeral-only"}]},
+		"cache_observation":{"version":1,"read":{"state":"present","value":0},"write":{"state":"absent"}},
+		"tokens":{"input_tokens":100,"output_tokens":1,"reasoning_tokens":0,"cached_tokens":0,"total_tokens":101}
+	}]}}}}}}`)
+	for _, expected := range []usage.MergeResult{{Added: 1}, {Skipped: 1}} {
+		resp := performUsageImport(h, body)
+		var receipt usage.MergeResult
+		if resp.Code != http.StatusOK || json.Unmarshal(resp.Body.Bytes(), &receipt) != nil || receipt != expected {
+			t.Fatalf("import status %d, receipt %+v, want %+v", resp.Code, receipt, expected)
 		}
-		if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
-			t.Fatal(err)
-		}
-		return page
 	}
-	filter := url.Values{"q": {lookupID}, "limit": {"1"}, "instance_id": {origin}}
-	first := request(filter)
-	if len(first.Items) != 1 || first.Items[0].RequestID != "second" || first.Items[0].Available ||
-		first.Items[0].Matched[0] != "response_id" || first.Items[0].InstanceID != origin || first.NextCursor == "" {
-		t.Fatalf("historical page: %+v", first)
-	}
-	add("late", at.Add(2*time.Second))
-	filter.Set("cursor", first.NextCursor)
-	second := request(filter)
-	if len(second.Items) != 1 || second.Items[0].RequestID != "first" || second.NextCursor != "" {
-		t.Fatalf("late usage crossed snapshot: %+v", second)
-	}
-	filter.Del("cursor")
-	filter.Set("instance_id", first.CurrentInstanceID)
-	if rows := request(filter).Items; len(rows) != 0 {
-		t.Fatalf("cross-instance match: %+v", rows)
-	}
-}
 
-func TestCacheTraceHistoryRowsWithoutIDsHaveStableDistinctKeys(t *testing.T) {
-	h := &Handler{authManager: auth.NewManager(nil, nil, nil), usageStats: usage.NewRequestStatistics()}
-	at := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
-	for _, source := range []string{"fixture-a", "fixture-b"} {
-		h.usageStats.Record(t.Context(), coreusage.Record{
-			TraceID: "shared-log", RequestedAt: at, Source: source, Model: "fixture", APIKey: "fixture",
-		})
-	}
-	request := func() cacheTracePage {
-		t.Helper()
+	for _, query := range []string{"synthetic-execution", "fixture-log"} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("GET", "/cache-diagnostics/traces?q=shared-log", nil)
+		c.Request = httptest.NewRequest("GET", "/cache-diagnostics/traces?q="+query, nil)
 		h.QueryCacheTraces(c)
 		var page cacheTracePage
-		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Items) != 2 {
-			t.Fatalf("unexpected lookup result %d: %s", w.Code, w.Body)
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || page.HistoryIncluded || len(page.Items) != 0 {
+			t.Fatalf("usage leaked into diagnostic lookup: %d %+v", w.Code, page)
 		}
-		return page
 	}
-	first, second := request(), request()
-	left, right := first.Items[0].HistoryKey, first.Items[1].HistoryKey
-	if left == "" || right == "" || left == right || left != second.Items[0].HistoryKey || right != second.Items[1].HistoryKey {
-		t.Fatalf("unstable or colliding historical keys: %+v", first.Items)
+
+	export := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(export)
+	h.ExportUsageStatistics(c)
+	if export.Code != http.StatusOK || bytes.Contains(export.Body.Bytes(), []byte("cache_route")) {
+		t.Fatalf("export includes draft route or failed: %d", export.Code)
+	}
+	var snapshot usageExportPayload
+	if err := json.Unmarshal(export.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	row := snapshot.Usage.APIs["fixture"].Models["model"].Details[0]
+	if snapshot.Version != 3 || row.RequestID != "synthetic-execution" || row.Tokens.InputTokens != 100 ||
+		row.CacheObservation == nil || row.CacheObservation.Read.State != "present" ||
+		row.CacheObservation.Read.Value == nil || *row.CacheObservation.Read.Value != 0 ||
+		row.CacheObservation.Write.State != "absent" {
+		t.Fatalf("export changed established metering: %+v", row)
 	}
 }

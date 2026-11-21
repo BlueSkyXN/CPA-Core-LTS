@@ -78,7 +78,7 @@ features:
       - sdk/cliproxy/auth/cache_diagnostics.go
       - sdk/cliproxy/auth/cache_snapshot.go
       - sdk/cliproxy/usage/cache_observation.go
-      - sdk/cliproxy/usage/cache_route.go
+      - sdk/cliproxy/diagnostics/cache_route.go
       - internal/api/handlers/management/cache_trace_query.go
       - internal/api/handlers/management/cache_diagnostics.go
       - docs/lts/cache-diagnostics.md

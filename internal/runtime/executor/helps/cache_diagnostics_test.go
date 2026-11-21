@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -13,6 +14,67 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+func TestCacheUsageSurvivesDiagnosticEviction(t *testing.T) {
+	for _, mode := range []string{"retained", "evicted", "disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			store := diagnostics.NewStore()
+			ctx := t.Context()
+			if mode != "disabled" {
+				ctx = store.Begin(ctx, "eviction-fixture", "caller", "", "model", "responses", []byte(`{}`))
+			}
+			reporter := NewUsageReporter(ctx, "codex", "model", nil)
+			reporter.ObserveUpstreamWebsocketRequestTo([]byte(`{"type":"response.create","input":[]}`), "wss://synthetic.invalid/v1/responses", "")
+			reporter.ObserveWebsocketDiagnostics([]byte(`{"type":"response.created","response":{"usage":{"input_tokens":32,"input_tokens_details":{"cached_tokens":0}}}}`))
+			if mode == "evicted" {
+				for i := range diagnostics.MaxTraces {
+					store.Begin(t.Context(), fmt.Sprintf("new-%d", i), "caller", "", "model", "responses", nil)
+				}
+			}
+			if _, ok := store.Get(diagnostics.FromContext(ctx).ID()); ok != (mode == "retained") {
+				t.Fatalf("unexpected trace retention for %s", mode)
+			}
+			reporter.ObserveWebsocketDiagnostics([]byte(`{"type":"response.completed","response":{"id":"resp_fixture","status":"completed","usage":{"input_tokens":32,"output_tokens":1,"input_tokens_details":{"cache_write_tokens":8}}}}`))
+			record := reporter.buildRecord(usage.Detail{InputTokens: 32}, false)
+			got := record.Detail.CacheObservation
+			if got == nil || got.Read.State != "present" || got.Read.Value == nil || *got.Read.Value != 0 ||
+				got.Write.State != "present" || got.Write.Value == nil || *got.Write.Value != 8 {
+				t.Fatalf("incorrect usage after response: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCacheUsageDoesNotCarryReadsAcrossAttempts(t *testing.T) {
+	reporter := NewUsageReporter(t.Context(), "codex", "model", nil)
+	first := reporter.trackAttemptCacheUsage(nil, false)
+	first.Observe([]byte(`{"usage":{"input_tokens_details":{"cached_tokens":12}}}`))
+	reporter.ObserveUpstreamWebsocketRequestTo(nil, "wss://synthetic.invalid/v1/responses", "")
+	reporter.ObserveWebsocketDiagnostics([]byte(`{"type":"response.completed","response":{"usage":{"input_tokens_details":{"cache_write_tokens":3}}}}`))
+	first.Observe([]byte(`{"usage":{"input_tokens_details":{"cached_tokens":11}}}`))
+	got := reporter.buildRecord(usage.Detail{InputTokens: 20}, false).Detail.CacheObservation
+	if got == nil || got.Read.State != "absent" || got.Write.Value == nil || *got.Write.Value != 3 {
+		t.Fatalf("wire observations from another attempt reached usage: %+v", got)
+	}
+}
+
+func TestCacheUsageRequiresCompleteSSEEvent(t *testing.T) {
+	reporter := NewUsageReporter(t.Context(), "openai-compat", "model", nil)
+	attempt := reporter.trackAttemptCacheUsage(nil, false)
+	stream := "data: {\"usage\":{\"prompt_tokens_details\":{\"cached_tokens\":99}}}\n" +
+		"data: {\"malformed_event\":true}\n\n" +
+		"data: {\"usage\":{\n" +
+		"data: \"prompt_tokens_details\":{\"cache_write_tokens\":3}}}\n\n"
+	body := attempt.WrapResponse(io.NopCloser(strings.NewReader(stream)), "text/event-stream", "")
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatal(err)
+	}
+	_ = body.Close()
+	obs := reporter.buildRecord(usage.Detail{InputTokens: 20}, false).Detail.CacheObservation
+	if obs == nil || obs.Read.State != "absent" || obs.Write.Value == nil || *obs.Write.Value != 3 {
+		t.Fatalf("wrong SSE usage evidence: %+v", obs)
+	}
+}
 
 func TestCacheDiagnosticsHTTPRetryAndDecodedResponse(t *testing.T) {
 	store := diagnostics.NewStore()
@@ -71,7 +133,11 @@ func TestCacheDiagnosticsHTTPRetryAndDecodedResponse(t *testing.T) {
 		t.Fatal("retry replaced first status")
 	}
 	record := reporter.buildRecord(usage.Detail{}, false)
-	wire, err := json.Marshal(record)
+	rows, _ := store.Lookup(diagnostics.TraceQuery{ID: reporter.requestID})
+	if len(rows) != 1 {
+		t.Fatalf("recorded attempts = %d", len(rows))
+	}
+	wire, err := json.Marshal(rows[0].CacheRoute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +213,11 @@ func TestCacheDiagnosticsProtocolWireEvidence(t *testing.T) {
 			if obs == nil || obs.Read.Source != tc.field || obs.Read.Value == nil || *obs.Read.Value != tc.read {
 				t.Fatalf("observation %+v", obs)
 			}
-			references := record.CacheRoute.References
+			trace, _ := store.Get(diagnostics.FromContext(ctx).ID())
+			references := trace.Attempts[0].CacheReferences
 			if tc.kind == "" && len(references) != 0 || tc.kind != "" && (len(references) != 1 || references[0].Kind != tc.kind || references[0].Scope == "") {
 				t.Fatalf("unexpected references %+v", references)
 			}
-			trace, _ := store.Get(diagnostics.FromContext(ctx).ID())
 			if tc.breakpoints != 0 {
 				control := trace.Attempts[0].CacheControl
 				buckets := trace.Attempts[0].CacheWriteByTTL
@@ -173,7 +239,8 @@ func TestCacheDiagnosticsPluginWithoutWireEvidence(t *testing.T) {
 		[]byte(`{"input":"synthetic","prompt_cache_key":"unobserved-input-key"}`))
 	reporter := NewUsageReporter(ctx, "fixture-plugin", "plugin-model", nil)
 	rec := reporter.buildRecord(usage.Detail{InputTokens: 32, CachedTokens: 8}, false)
-	if rec.CacheRoute.AttemptCount != 0 || len(rec.CacheRoute.References) != 0 || rec.Detail.CacheObservation != nil {
-		t.Fatalf("plugin usage manufactured wire evidence: %+v", rec.CacheRoute)
+	trace, _ := store.Get(rec.DiagnosticsID)
+	if len(trace.Attempts) != 0 || rec.Detail.CacheObservation != nil {
+		t.Fatalf("plugin usage manufactured wire evidence: %+v", rec.Detail.CacheObservation)
 	}
 }

@@ -2,10 +2,47 @@ package helps
 
 import (
 	"context"
+	"net/http"
+	"sync"
+
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
-	"net/http"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+type attemptCacheUsage struct {
+	mu          sync.Mutex
+	observation *usage.CacheObservation
+}
+
+func (r *UsageReporter) trackAttemptCacheUsage(attempt *diagnostics.AttemptRef, websocket bool) *diagnostics.AttemptRef {
+	meter := &attemptCacheUsage{}
+	attempt = attempt.WithUsageObserver(r.provider, func(update *usage.CacheObservation) {
+		meter.mu.Lock()
+		defer meter.mu.Unlock()
+		meter.observation = usage.MergeCacheObservations(meter.observation, update)
+	})
+	r.sizeMu.Lock()
+	defer r.sizeMu.Unlock()
+	r.attemptCacheUsage = meter
+	r.diagnosticWebsocketAttempt = nil
+	if websocket {
+		r.diagnosticWebsocketAttempt = attempt
+	}
+	return attempt
+}
+
+func (r *UsageReporter) cacheUsageSnapshot() *usage.CacheObservation {
+	r.sizeMu.Lock()
+	meter := r.attemptCacheUsage
+	r.sizeMu.Unlock()
+	if meter == nil {
+		return nil
+	}
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	return meter.observation.Clone()
+}
 
 // DiagnosticsContext binds transform events to this usage execution without
 // modifying the parent selection context shared by later retries.
@@ -79,9 +116,7 @@ func (r *UsageReporter) ObserveWebsocketHandshakePayload(body []byte, endpoint s
 		return
 	}
 	attempt := r.diagnosticExecution.Begin("websocket", endpoint, body, headers)
-	r.sizeMu.Lock()
-	r.diagnosticWebsocketAttempt = attempt
-	r.sizeMu.Unlock()
+	r.trackAttemptCacheUsage(attempt, true)
 }
 func (r *UsageReporter) SetDiagnosticsInput(body []byte) {
 	if r == nil || r.diagnosticExecution == nil || r.diagnosticExecution.Ref == nil {

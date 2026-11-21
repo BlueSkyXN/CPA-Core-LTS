@@ -1,33 +1,24 @@
 package management
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 const maxCacheTracePage = 100
 
 type cacheTraceCursor struct {
-	Instance      string `json:"i"`
-	Query         string `json:"q"`
-	Revision      string `json:"r"`
-	ActiveOffset  int    `json:"a"`
-	HistoryBound  string `json:"b,omitempty"`
-	HistoryCursor string `json:"c,omitempty"`
-	HistoryOffset int    `json:"h,omitempty"`
-	HistoryDone   bool   `json:"e,omitempty"`
+	Instance     string `json:"i"`
+	Query        string `json:"q"`
+	Revision     string `json:"r"`
+	ActiveOffset int    `json:"a"`
 }
 
 type cacheTracePage struct {
@@ -52,7 +43,7 @@ func readCacheTraceQuery(values url.Values) (diagnostics.TraceQuery, int, bool) 
 		return q, 0, false
 	}
 	if values.Has("kind") || values.Has("digest") || values.Has("scope") {
-		q.Route = &coreusage.CacheRouteKey{Kind: values.Get("kind"), Digest: values.Get("digest"), Scope: values.Get("scope")}
+		q.Route = &diagnostics.CacheRouteKey{Kind: values.Get("kind"), Digest: values.Get("digest"), Scope: values.Get("scope")}
 		if !q.Route.ValidFilter() {
 			return q, 0, false
 		}
@@ -128,8 +119,7 @@ func (h *Handler) QueryCacheTraces(c *gin.Context) {
 	if raw := params.Get("cursor"); raw != "" {
 		data, errDecode := base64.RawURLEncoding.DecodeString(raw)
 		if errDecode != nil || json.Unmarshal(data, &cursor) != nil ||
-			cursor.Query != queryHash || cursor.ActiveOffset < 0 ||
-			cursor.HistoryOffset < 0 || cursor.HistoryOffset >= maxCacheTracePage {
+			cursor.Query != queryHash || cursor.ActiveOffset < 0 {
 			invalid()
 			return
 		}
@@ -142,94 +132,12 @@ func (h *Handler) QueryCacheTraces(c *gin.Context) {
 			return
 		}
 	}
-	result := cacheTracePage{Version: 1, CurrentInstanceID: instance, Items: []diagnostics.TraceRow{}}
-	result.HistoryIncluded = h.usageStats != nil && q.Focus == "" && (q.ID != "" || q.Route != nil)
-	if result.HistoryIncluded {
-		if cursor.HistoryBound == "" {
-			cursor.HistoryBound = h.usageStats.QueryCapabilities().Bound
-		}
-	} else {
-		cursor.HistoryDone = true
-	}
-	lookup := &usage.CacheHistoryLookup{ID: q.ID, InstanceID: q.InstanceID, Excluded: map[string]bool{}}
-	if q.ID != "" {
-		lookup.Digest = diagnostics.Hash(q.ID)
-	}
-	for _, row := range active {
-		execution := row.RequestID
-		if q.ID == "" || len(row.Matched) > 0 && !slicesIDMatch(row.Matched) {
-			execution = ""
-		}
-		lookup.Excluded[usage.CacheHistoryKey(row.InstanceID, row.DiagnosticsID, execution)] = true
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-	defer cancel()
-	var history *usage.QueryDetails
-	for len(result.Items) < limit {
-		if !cursor.HistoryDone && history == nil {
-			history, err = h.usageStats.QueryDetails(ctx, usage.QueryRequest{
-				Bound: cursor.HistoryBound, Cursor: cursor.HistoryCursor, Limit: maxCacheTracePage,
-				FromMS: q.FromMS, ToMS: q.ToMS, Filter: usage.QueryFilter{CacheHistory: lookup, CacheRoute: q.Route},
-			})
-			switch {
-			case errors.Is(err, usage.ErrQueryExpired):
-				expired()
-				return
-			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-				c.JSON(http.StatusRequestTimeout, gin.H{"code": "cache_trace_query_timeout"})
-				return
-			case err != nil || cursor.HistoryOffset > len(history.Items):
-				invalid()
-				return
-			}
-			if len(history.Items) == 0 {
-				cursor.HistoryDone = true
-			}
-		}
-		var old *usage.QueryItem
-		if !cursor.HistoryDone && cursor.HistoryOffset < len(history.Items) {
-			old = &history.Items[cursor.HistoryOffset]
-		}
-		var recent *diagnostics.TraceRow
-		if cursor.ActiveOffset < len(active) {
-			recent = &active[cursor.ActiveOffset]
-		}
-		if recent == nil && old == nil {
-			break
-		}
-		if recent != nil && (old == nil || !recent.At.Before(old.Detail.Timestamp)) {
-			result.Items = append(result.Items, *recent)
-			cursor.ActiveOffset++
-			continue
-		}
-		d := old.Detail
-		row := diagnostics.TraceRow{
-			TraceLocation: diagnostics.TraceLocation{InstanceID: d.DiagnosticsInstanceID, DiagnosticsID: d.DiagnosticsID, RequestID: d.RequestID},
-			HistoryKey:    diagnostics.Hash(instance + "\x00" + old.ID),
-			At:            d.Timestamp, Model: old.Model, AuthIndex: d.AuthIndex, TraceID: d.TraceID,
-			Status: d.FailureStatus, Matched: lookup.Matched(d), InputTokens: &d.Tokens.InputTokens, CacheObservation: d.CacheObservation, CacheRoute: d.CacheRoute,
-		}
-		result.Items = append(result.Items, row)
-		cursor.HistoryOffset++
-		if cursor.HistoryOffset == len(history.Items) {
-			cursor.HistoryCursor, cursor.HistoryOffset = history.NextCursor, 0
-			cursor.HistoryDone = history.NextCursor == ""
-			history = nil
-		}
-	}
-	if cursor.ActiveOffset < len(active) || !cursor.HistoryDone {
+	end := min(cursor.ActiveOffset+limit, len(active))
+	result := cacheTracePage{Version: 1, CurrentInstanceID: instance, Items: active[cursor.ActiveOffset:end]}
+	if end < len(active) {
+		cursor.ActiveOffset = end
 		data, _ := json.Marshal(cursor)
 		result.NextCursor = base64.RawURLEncoding.EncodeToString(data)
 	}
 	c.JSON(http.StatusOK, result)
-}
-
-func slicesIDMatch(ids []string) bool {
-	for _, id := range ids {
-		if id == "request_id" || id == "response_id" {
-			return true
-		}
-	}
-	return false
 }
