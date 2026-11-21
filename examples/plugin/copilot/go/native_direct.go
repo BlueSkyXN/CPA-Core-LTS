@@ -45,6 +45,10 @@ func (reader *nativeReader) Read(out []byte) (int, error) {
 }
 
 func nativeRequestPayload(req pluginapi.ExecutorRequest, cacheBreakpoints bool) ([]byte, error) {
+	return configuredNativePayload(req, pluginConfig{ChatCacheBreakpoints: cacheBreakpoints})
+}
+
+func configuredNativePayload(req pluginapi.ExecutorRequest, cfg pluginConfig) ([]byte, error) {
 	if req.Format != "" && req.Format != "chat-completions" && req.Format != "openai" {
 		return nil, newPluginCallError("unsupported_format", "Copilot accepts host-translated Chat Completions only", http.StatusBadRequest, false)
 	}
@@ -72,7 +76,12 @@ func nativeRequestPayload(req pluginapi.ExecutorRequest, cacheBreakpoints bool) 
 	}
 	options["include_usage"] = true
 	body["stream_options"] = options
-	if cacheBreakpoints {
+	if cfg.CarbonImageBudget && req.Model == carbonImageModel {
+		if err := fitCarbonImages(req, messages); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.ChatCacheBreakpoints {
 		addChatCacheBreakpoints(body, messages, req.OriginalRequest)
 	}
 	raw, err := json.Marshal(body)
@@ -98,7 +107,7 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 		}
 	}()
 	cfg := exec.config
-	body, err := nativeRequestPayload(req.ExecutorRequest, cfg.ChatCacheBreakpoints)
+	body, err := configuredNativePayload(req.ExecutorRequest, cfg)
 	if err != nil {
 		return nil, hostHTTPStreamResponse{}, err
 	}
@@ -163,7 +172,7 @@ func (r *pluginRuntime) openNativeAttempt(req rpcExecutorRequest, exec *nativeEx
 				}
 				continue
 			}
-			return response, copilotUpstreamError(response.StatusCode, raw)
+			return response, copilotChatRefusal(req.Model, response.StatusCode, raw)
 		}
 		contentType := strings.ToLower(response.Headers.Get("Content-Type"))
 		if !strings.Contains(contentType, "text/event-stream") && !strings.Contains(contentType, "application/json") {

@@ -60,6 +60,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	var failStream, hangStream atomic.Bool
 	var recoveryPhase, recoveryCalls atomic.Int32
 	var protocolWire atomic.Pointer[copilotProtocolWire]
+	var imageWire atomic.Pointer[carbonBudgetWire]
 	started := make(chan struct{}, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
@@ -77,11 +78,15 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 			fmt.Fprint(w, `{"token":"cc-fixture","refresh_in":1800,"expires_at":4102444800}`)
 		case "/models":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5-codex","name":"GPT-5 Codex","capabilities":{"limits":{"max_context_window_tokens":272000,"max_output_tokens":128000},"supports":{"tool_calls":true,"streaming":true}},"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"]},{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}},{"id":"gemini-4-argon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["low","medium","high"],"tool_calls":true,"streaming":true}}}]}`)
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5-codex","name":"GPT-5 Codex","capabilities":{"limits":{"max_context_window_tokens":272000,"max_output_tokens":128000},"supports":{"tool_calls":true,"streaming":true}},"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"]},{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}},{"id":"gemini-4-carbon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"tool_calls":true,"streaming":true}}},{"id":"gemini-4-argon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["low","medium","high"],"tool_calls":true,"streaming":true}}}]}`)
 		case "/embeddings":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.125]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`)
 		case "/chat/completions":
+			if wire := imageWire.Load(); wire != nil {
+				wire.serve(w, req)
+				return
+			}
 			if wire := protocolWire.Load(); wire != nil {
 				wire.serve(w, req)
 				return
@@ -155,6 +160,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
     copilot:
       enabled: true
       chat_cache_breakpoints: true
+      carbon_image_budget: true
       github_endpoint: %s
       github_api_endpoint: %s
       copilot_api_endpoint: %s
@@ -222,7 +228,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	}
 	auth := &coreauth.Auth{ID: "fixture-auth", Index: "fixture-index", Provider: pluginIdentifier, Metadata: stored, Attributes: poll.Auth.Attributes}
 	models := host.ModelsForAuth(ctx, auth)
-	if models.Err != nil || len(models.Models) != 3 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {
+	if models.Err != nil || len(models.Models) != 4 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {
 		t.Fatalf("dynamic catalog failed: %v, models=%#v", models.Err, models.Models)
 	}
 	sink := &copilotUsageSink{records: make(chan coreusage.Record, 4)}
@@ -270,6 +276,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)
 	testCopilotProtocolMatrix(t, base, &protocolWire, sink, auth.Index)
+	testCarbonBudgetHandlers(t, base, &imageWire, sink, auth.Index)
 	api := openaihandlers.NewOpenAIResponsesAPIHandler(base)
 	postResponses := func(body []byte) ojson.Result {
 		t.Helper()

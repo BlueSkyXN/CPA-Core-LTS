@@ -302,6 +302,7 @@ func pluginRegistration() registration {
 				{Name: "excluded_model_prefixes", Type: pluginapi.ConfigFieldTypeArray, Description: "Case-sensitive model ID prefixes excluded from the published account catalog and from execution."},
 				{Name: "model_cache_ttl", Type: pluginapi.ConfigFieldTypeString, Description: "Per-credential live model catalog cache TTL, at most 10m."},
 				{Name: "chat_cache_breakpoints", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Add Copilot Chat prompt-cache markers to stable prefixes and completed tool batches. Off by default; existing Chat markers are preserved."},
+				{Name: "carbon_image_budget", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Allow gemini-4-carbon tool continuations to omit earlier images to fit 10 image blocks. Off by default. Unresolved history is rejected, not truncated."},
 			},
 			// 宿主请求日志对凭据交换端点的双向 body 脱敏；声明与宿主内置规则并集生效。
 			SensitiveEndpoints: []pluginapi.SensitiveEndpoint{
