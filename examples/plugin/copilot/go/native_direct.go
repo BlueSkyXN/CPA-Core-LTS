@@ -44,7 +44,7 @@ func (reader *nativeReader) Read(out []byte) (int, error) {
 	return n, nil
 }
 
-func nativeRequestPayload(req pluginapi.ExecutorRequest) ([]byte, error) {
+func nativeRequestPayload(req pluginapi.ExecutorRequest, cacheBreakpoints bool) ([]byte, error) {
 	if req.Format != "" && req.Format != "chat-completions" && req.Format != "openai" {
 		return nil, newPluginCallError("unsupported_format", "Copilot accepts host-translated Chat Completions only", http.StatusBadRequest, false)
 	}
@@ -72,6 +72,9 @@ func nativeRequestPayload(req pluginapi.ExecutorRequest) ([]byte, error) {
 	}
 	options["include_usage"] = true
 	body["stream_options"] = options
+	if cacheBreakpoints {
+		addChatCacheBreakpoints(body, messages, req.OriginalRequest)
+	}
 	raw, err := json.Marshal(body)
 	if err != nil || len(raw) > maxExecutorBodyBytes {
 		return nil, newPluginCallError("direct_request_too_large", "Copilot request exceeds the body limit", http.StatusRequestEntityTooLarge, false)
@@ -80,10 +83,6 @@ func nativeRequestPayload(req pluginapi.ExecutorRequest) ([]byte, error) {
 }
 
 func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, hostHTTPStreamResponse, error) {
-	body, err := nativeRequestPayload(req.ExecutorRequest)
-	if err != nil {
-		return nil, hostHTTPStreamResponse{}, err
-	}
 	auth, err := parseStoredAuth(req.StorageJSON)
 	if err != nil {
 		return nil, hostHTTPStreamResponse{}, newPluginCallError("invalid_auth", "Copilot credential is invalid", http.StatusUnauthorized, false)
@@ -98,7 +97,11 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 			r.releaseNative(exec)
 		}
 	}()
-	cfg := r.loadedConfig()
+	cfg := exec.config
+	body, err := nativeRequestPayload(req.ExecutorRequest, cfg.ChatCacheBreakpoints)
+	if err != nil {
+		return nil, hostHTTPStreamResponse{}, err
+	}
 	if cfg.CopilotAPIEndpoint == "" || validateDirectURL(cfg.CopilotAPIEndpoint, "copilot_api_endpoint") != nil {
 		return nil, hostHTTPStreamResponse{}, newPluginCallError("direct_endpoint_required", "Copilot API endpoint is not configured", http.StatusServiceUnavailable, false)
 	}
@@ -112,7 +115,10 @@ func (r *pluginRuntime) openNative(req rpcExecutorRequest) (*nativeExecution, ho
 	if exec.isCanceled() {
 		return nil, hostHTTPStreamResponse{}, nativeCanceled()
 	}
-	body = r.restoreNativeReasoning(exec, req.Model, body)
+	body, err = r.restoreNativeReasoning(exec, req.Model, body, req.OriginalRequest)
+	if err != nil {
+		return nil, hostHTTPStreamResponse{}, err
+	}
 	exec.open = func() (hostHTTPStreamResponse, error) {
 		return r.openNativeAttempt(req, exec, auth, cfg, body)
 	}
@@ -176,13 +182,13 @@ func (r *pluginRuntime) executeNative(req rpcExecutorRequest) (pluginapi.Executo
 	defer r.releaseNative(exec)
 	decoder, err := r.consumeNativeAttempts(req, exec, upstream, nil)
 	if err != nil {
-		return pluginapi.ExecutorResponse{}, err
+		return pluginapi.ExecutorResponse{}, withPartialUsage(err, decoder.projection.usage)
 	}
 	if exec.isCanceled() {
-		return pluginapi.ExecutorResponse{}, nativeCanceled()
+		return pluginapi.ExecutorResponse{}, withPartialUsage(nativeCanceled(), decoder.projection.usage)
 	}
 	if err := decoder.finish(); err != nil {
-		return pluginapi.ExecutorResponse{}, err
+		return pluginapi.ExecutorResponse{}, withPartialUsage(err, decoder.projection.usage)
 	}
 	r.rememberNativeReasoning(exec, req.Model, decoder.projection)
 	return decoder.projection.nonStreamResponse()
@@ -214,8 +220,8 @@ func (r *pluginRuntime) executeNativeStream(req rpcExecutorRequest) (rpcStreamRe
 		if err == nil {
 			r.rememberNativeReasoning(exec, req.Model, decoder.projection)
 		}
-		// 终结帧发出前释放会话占用，允许客户端立即提交下一轮。
-		r.releaseNative(exec)
+		// 先交接回放与在途批次，再公开终结帧，让客户端可以立即续调。
+		r.finishNative(exec, err != nil)
 		if err == nil {
 			err = decoder.finish()
 		}

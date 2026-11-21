@@ -59,6 +59,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	dir := filepath.Dir(library)
 	var failStream, hangStream atomic.Bool
 	var recoveryPhase, recoveryCalls atomic.Int32
+	var protocolWire atomic.Pointer[copilotProtocolWire]
 	started := make(chan struct{}, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
@@ -81,6 +82,10 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.125]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`)
 		case "/chat/completions":
+			if wire := protocolWire.Load(); wire != nil {
+				wire.serve(w, req)
+				return
+			}
 			if phase := recoveryPhase.Load(); phase > 0 {
 				recoveryCalls.Add(1)
 				recoveryPhase.Add(1)
@@ -96,6 +101,9 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 					if body["reasoning_effort"] != "high" || body["tool_choice"] != "required" {
 						t.Error("HTTP request controls lost")
 					}
+					if messages, _ := body["messages"].([]any); len(messages) != 1 || messages[0].(map[string]any)["copilot_cache_control"] == nil {
+						t.Error("Chat cache marker did not reach the upstream")
+					}
 					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", copilotToolResponse)
 				case 3:
 					var body struct {
@@ -108,6 +116,9 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 					for _, message := range body.Messages {
 						if message["role"] == "assistant" && message["tool_calls"] != nil {
 							found = message["reasoning_opaque"] == "fixture-opaque-state"
+						}
+						if _, marked := message["copilot_cache_control"]; marked {
+							t.Error("implicit mode on the original Responses request did not suppress Chat markers")
 						}
 					}
 					if !found {
@@ -143,6 +154,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
   configs:
     copilot:
       enabled: true
+      chat_cache_breakpoints: true
       github_endpoint: %s
       github_api_endpoint: %s
       copilot_api_endpoint: %s
@@ -256,7 +268,9 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	registry.GetGlobalRegistry().RegisterClient(auth.ID, pluginIdentifier, models.Models)
 	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 	gin.SetMode(gin.TestMode)
-	api := openaihandlers.NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)
+	testCopilotProtocolMatrix(t, base, &protocolWire, sink, auth.Index)
+	api := openaihandlers.NewOpenAIResponsesAPIHandler(base)
 	postResponses := func(body []byte) ojson.Result {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -305,7 +319,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 		input = append(input, json.RawMessage(item.Raw))
 	}
 	input = append(input, json.RawMessage(`{"type":"function_call_output","call_id":"call-fixture","output":"fixture result"}`))
-	followBody, _ := json.Marshal(map[string]any{"model": "gemini-4-argon", "stream": true, "input": input})
+	followBody, _ := json.Marshal(map[string]any{"model": "gemini-4-argon", "stream": true, "input": input, "prompt_cache_options": map[string]string{"mode": "implicit"}})
 	second := postResponses(followBody)
 	if !strings.Contains(second.Raw, "tool-result-ok") || recoveryCalls.Load() != 3 {
 		t.Fatalf("tool loop calls = %d", recoveryCalls.Load())

@@ -8,6 +8,10 @@ func (r *pluginRuntime) consumeNativeAttempts(req rpcExecutorRequest, exec *nati
 	var previousUsage pluginapi.AgentUsageV1
 	for attempt := 0; ; attempt++ {
 		decoder := newNativeDecoder(req.RequestID, req.Model, emit)
+		if emit != nil {
+			decoder.beforeTool = func(index int, tool nativeToolIdentity) { r.trackNativeTool(exec, index, tool) }
+			decoder.toolsFinished = func(count int) { r.finishNativeTools(exec, count) }
+		}
 		err := r.consumeNative(exec, upstream, decoder)
 		if err == nil {
 			err = decoder.resultError()

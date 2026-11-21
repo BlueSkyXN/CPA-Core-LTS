@@ -11,11 +11,13 @@ import (
 
 // 共用已验证的 Chat 投影语义；事件只存在于 Go 内存，不经过外部 runner。
 type nativeDecoder struct {
-	projection   *eventProjection
-	emit         func([]byte) error
-	finishReason string
-	sawResult    bool
-	nativeUsage  pluginapi.AgentUsageV1
+	projection    *eventProjection
+	emit          func([]byte) error
+	beforeTool    func(int, nativeToolIdentity)
+	toolsFinished func(int)
+	finishReason  string
+	sawResult     bool
+	nativeUsage   pluginapi.AgentUsageV1
 }
 
 func newNativeDecoder(requestID, model string, emit func([]byte) error) *nativeDecoder {
@@ -83,10 +85,14 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 			d.finishReason = choice.FinishReason
 		}
 		rawDelta := choice.Delta
-		if len(rawDelta) == 0 || bytes.Equal(rawDelta, []byte("null")) {
+		wholeMessage := len(rawDelta) == 0 || bytes.Equal(rawDelta, []byte("null"))
+		if wholeMessage {
 			rawDelta = choice.Message
 		}
 		if len(rawDelta) == 0 {
+			if d.finishReason != "" {
+				d.finishToolIdentities()
+			}
 			continue
 		}
 		var delta struct {
@@ -142,6 +148,27 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 				return false, nativeInvalidResponse()
 			}
 			previous := d.projection.toolCalls[index]
+			if d.beforeTool != nil {
+				tool := nativeToolIdentity{id: call.ID, name: call.Function.Name}
+				if previous != nil {
+					if previous.ID != "" {
+						tool.id = previous.ID
+					}
+					if previous.Name != "" {
+						tool.name = previous.Name
+					}
+					tool.arguments = previous.Arguments.String()
+				}
+				if tool.id != "" {
+					// 终止原因或非流式 message 才确认参数填完；不要把合法的 JSON 前缀当作最终值。
+					if d.finishReason != "" || wholeMessage {
+						tool.arguments = canonicalToolArguments(tool.arguments + call.Function.Arguments)
+					} else {
+						tool.arguments = ""
+					}
+					d.beforeTool(index, tool)
+				}
+			}
 			if previous == nil {
 				if call.ID == "" && call.Function.Name == "" && call.Function.Arguments == "" {
 					continue
@@ -162,8 +189,25 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 				return false, err
 			}
 		}
+		if d.finishReason != "" || wholeMessage {
+			d.finishToolIdentities()
+		}
 	}
 	return false, nil
+}
+
+func (d *nativeDecoder) finishToolIdentities() {
+	// finish_reason 可以单独在最后一个 delta 到达，补全先前分片的身份。
+	if d.beforeTool != nil {
+		for index, tool := range d.projection.toolCalls {
+			if tool.ID != "" {
+				d.beforeTool(index, nativeToolIdentity{tool.ID, tool.Name, canonicalToolArguments(tool.Arguments.String())})
+			}
+		}
+		if d.toolsFinished != nil {
+			d.toolsFinished(len(d.projection.toolCalls))
+		}
+	}
 }
 
 func (d *nativeDecoder) finish() error {
