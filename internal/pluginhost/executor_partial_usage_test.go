@@ -6,11 +6,16 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 type partialUsageCallbackClient struct {
@@ -94,5 +99,84 @@ func TestExecutorPartialUsagePreservesRPCFailure(t *testing.T) {
 	var lifecycle *coreauth.Error
 	if !errors.As(err, &lifecycle) || !lifecycle.Retryable || !p.observed || p.detail.TotalTokens != 3 {
 		t.Fatal("lost lifecycle error or counts")
+	}
+}
+
+func TestExecutorCanceledRPCSettlesPartialUsageOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name, partial string
+		wantTokens    int64
+		provenance    string
+		timeOut       bool
+	}{
+		{name: "reported", partial: `,"partial_usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}`, wantTokens: 9, provenance: coreusage.UsageProvenanceProviderReportedUnverified},
+		{name: "reported zero", partial: `,"partial_usage":{"total_tokens":0}`, provenance: coreusage.UsageProvenanceProviderReportedUnverified},
+		{name: "invalid", partial: `,"partial_usage":{"total_tokens":-1}`, provenance: coreusage.UsageProvenanceUnavailable},
+		{name: "cancel budget elapsed", partial: `,"partial_usage":{"total_tokens":3}`, provenance: coreusage.UsageProvenanceUnavailable, timeOut: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const provider = "partial-usage-cancel"
+			sink := newTestUsageCapturePlugin(provider)
+			registerTestUsagePlugin(t, "test:partial-usage-cancel", sink)
+
+			record := normalizeTestCapabilityRecord(capabilityRecord{id: "partial-usage-cancel-plugin"})
+			host := newHostWithRecords(record)
+			started, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			wire := []byte(`{"ok":false,"error":{"code":"request_cancelled","message":"cancelled"` + tc.partial + `}}`)
+			client := newGuardedPluginClient(partialUsageCallbackClient{staticEnvelopePluginClient{wire}, func([]byte) {
+				close(started)
+				<-release
+			}})
+			defer client.Shutdown()
+			defer unblock()
+			rpc := rpcPluginAdapter{id: record.id, host: host, client: client}
+			executor := &fakeExecutor{identifier: provider, execute: rpc.Execute}
+			formats := []sdktranslator.Format{sdktranslator.FormatOpenAI}
+			adapter := newExecutorAdapterForRecordForTest(host, record, executor, formats, formats)
+			adapter.provider = provider
+			auth := &coreauth.Auth{ID: "fixture-auth", Index: "fixture-index", Provider: provider}
+			req := coreexecutor.Request{Model: "fixture-model", Payload: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			returned := make(chan error, 1)
+			go func() {
+				_, err := adapter.Execute(ctx, auth, req, coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
+				returned <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("RPC did not start")
+			}
+			cancel()
+			select {
+			case err := <-returned:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("expected cancellation, got %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("cancellation waited for the plugin reply")
+			}
+			returnedAt := time.Now()
+			if !tc.timeOut {
+				unblock()
+			}
+			usage := sink.waitRecord(t, pluginExecutionLifecycleTimeout+2*time.Second)
+			if !usage.Failed || usage.AuthIndex != auth.Index || usage.Detail.TotalTokens != tc.wantTokens || usage.UsageProvenance != tc.provenance {
+				t.Fatalf("failure=%v auth=%s tokens=%d provenance=%s", usage.Failed, usage.AuthIndex, usage.Detail.TotalTokens, usage.UsageProvenance)
+			}
+			if usage.Latency <= 0 || usage.RequestedAt.Add(usage.Latency).After(returnedAt) {
+				t.Fatalf("counted accounting wait as request latency: %v", usage.Latency)
+			}
+			unblock()
+			client.Shutdown()
+			select {
+			case <-sink.records:
+				t.Fatal("published more than one failure")
+			default:
+			}
+		})
 	}
 }
