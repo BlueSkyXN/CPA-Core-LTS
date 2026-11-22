@@ -120,33 +120,53 @@ func TestNativeInterruptedToolReplay(t *testing.T) {
 }
 
 func TestNativeDistinctCompletedToolBatches(t *testing.T) {
-	r := newPluginRuntime(&copilotFixtureHost{})
-	req := copilotReq("B", true)
-	auth, _ := parseStoredAuth(req.StorageJSON)
-	exec, err := r.registerNative(req, auth)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.releaseNative(exec)
-	a := newNativeDecoder("A", req.Model, nil)
-	if _, err := a.data([]byte(matrixToolAnswer)); err != nil {
-		t.Fatal(err)
-	}
-	r.rememberNativeReasoning(exec, req.Model, a.projection)
-	b := newNativeDecoder("B", req.Model, func([]byte) error { return nil })
-	b.beforeTool = func(i int, call nativeToolIdentity) { r.trackNativeTool(exec, i, call) }
-	b.toolsFinished = func(count int) { r.finishNativeTools(exec, count) }
-	if _, err := b.data([]byte(strings.Replace(matrixToolAnswer, `\"n\":2`, `\"n\":3`, 1))); err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range []*nativeDecoder{a, b} {
-		msgs := []any{map[string]any{"role": "assistant", "tool_calls": d.projection.toolCallPayload()}, map[string]any{"role": "tool", "tool_call_id": "call-A", "content": "a"}, map[string]any{"role": "tool", "tool_call_id": "call-B", "content": "b"}}
-		raw, _ := json.Marshal(map[string]any{"messages": msgs})
-		out, err := r.restoreNativeReasoning(exec, req.Model, raw, nil)
-		if d == b {
+	for _, tc := range []struct{ name, upstream string }{
+		{"different arguments", strings.Replace(matrixToolAnswer, `\"n\":2`, `\"n\":3`, 1)},
+		{"different order", strings.NewReplacer(`"index":0,"id":"call-A"`, `"index":1,"id":"call-A"`, `"index":1,"id":"call-B"`, `"index":0,"id":"call-B"`).Replace(matrixToolAnswer)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPluginRuntime(&copilotFixtureHost{})
+			req := copilotReq("B", true)
+			auth, _ := parseStoredAuth(req.StorageJSON)
+			exec, err := r.registerNative(req, auth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.releaseNative(exec)
+			a := newNativeDecoder("A", req.Model, nil)
+			if _, err := a.data([]byte(matrixToolAnswer)); err != nil {
+				t.Fatal(err)
+			}
+			r.rememberNativeReasoning(exec, req.Model, a.projection)
+			b := newNativeDecoder("B", req.Model, func([]byte) error { return nil })
+			b.beforeTool = func(i int, call nativeToolIdentity) { r.trackNativeTool(exec, i, call) }
+			b.toolsFinished = func(count int) { r.finishNativeTools(exec, count) }
+			if _, err := b.data([]byte(tc.upstream)); err != nil {
+				t.Fatal(err)
+			}
+			restore := func(d *nativeDecoder) ([]byte, error) {
+				msgs := []any{
+					map[string]any{"role": "assistant", "tool_calls": d.projection.toolCallPayload()},
+					map[string]any{"role": "tool", "tool_call_id": "call-A", "content": "a"},
+					map[string]any{"role": "tool", "tool_call_id": "call-B", "content": "b"},
+				}
+				raw, _ := json.Marshal(map[string]any{"messages": msgs})
+				return r.restoreNativeReasoning(exec, req.Model, raw, nil)
+			}
+			assertA := func() {
+				t.Helper()
+				out, err := restore(a)
+				if err != nil || ojson.GetBytes(out, "messages.0.reasoning_opaque").String() != "fixture-matrix-state" {
+					t.Fatalf("completed A blocked by distinct batch B: %v", err)
+				}
+			}
+			assertA()
+			_, err = restore(b)
 			expectCopilotConflict(t, err, "tool_continuation_pending", true)
-		} else if err != nil || ojson.GetBytes(out, "messages.0.reasoning_opaque").String() != "fixture-matrix-state" {
-			t.Fatalf("completed A blocked by distinct batch B: %v", err)
-		}
+			r.finishNative(exec, true)
+			assertA()
+			_, err = restore(b)
+			expectCopilotConflict(t, err, "tool_continuation_ambiguous", false)
+		})
 	}
 }

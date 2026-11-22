@@ -48,22 +48,14 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 	if json.Unmarshal(raw, &obj) != nil || obj == nil {
 		return false, nativeInvalidResponse()
 	}
-	if errValue, exists := obj["error"]; exists && !bytes.Equal(errValue, []byte("null")) {
-		return false, newPluginCallError("direct_upstream_error", "Copilot reported an upstream stream error", http.StatusBadGateway, true)
+	errValue := obj["error"]
+	hasError := len(errValue) > 0 && !bytes.Equal(errValue, []byte("null"))
+	// An error frame can carry the last reported counters.
+	if err := d.observeUsage(obj["usage"]); err != nil && !hasError {
+		return false, err
 	}
-	usageRaw := obj["usage"]
-	if len(usageRaw) > 0 && !bytes.Equal(usageRaw, []byte("null")) {
-		var usage map[string]any
-		if json.Unmarshal(usageRaw, &usage) != nil {
-			return false, nativeInvalidResponse()
-		}
-		d.nativeUsage = mergeCopilotUsage(d.nativeUsage, usage)
-		merged := normalizeCopilotUsage(d.nativeUsage)
-		if chatUsage(merged) != nil {
-			if err := d.event(pluginapi.AgentEventUsageUpdated, merged); err != nil {
-				return false, err
-			}
-		}
+	if hasError {
+		return false, newPluginCallError("direct_upstream_error", "Copilot reported an upstream stream error", http.StatusBadGateway, true)
 	}
 	var choices []struct {
 		Index        int             `json:"index"`
@@ -194,6 +186,22 @@ func (d *nativeDecoder) data(raw []byte) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (d *nativeDecoder) observeUsage(raw []byte) error {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	var usage map[string]any
+	if json.Unmarshal(raw, &usage) != nil {
+		return nativeInvalidResponse()
+	}
+	d.nativeUsage = mergeCopilotUsage(d.nativeUsage, usage)
+	merged := normalizeCopilotUsage(d.nativeUsage)
+	if chatUsage(merged) == nil {
+		return nil
+	}
+	return d.event(pluginapi.AgentEventUsageUpdated, merged)
 }
 
 func (d *nativeDecoder) finishToolIdentities() {

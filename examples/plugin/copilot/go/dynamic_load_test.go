@@ -220,6 +220,8 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	if !ok {
 		t.Fatal("native Copilot executor was not registered")
 	}
+	// 每条 HTTP 用例独立验证用量，避免前一条模拟的上游 502 触发账号冷却。
+	stored["disable_cooling"] = true
 	auth := &coreauth.Auth{ID: "fixture-auth", Index: "fixture-index", Provider: pluginIdentifier, Metadata: stored, Attributes: poll.Auth.Attributes}
 	models := host.ModelsForAuth(ctx, auth)
 	if models.Err != nil || len(models.Models) != 3 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {

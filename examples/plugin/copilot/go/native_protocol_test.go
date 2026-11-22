@@ -89,6 +89,12 @@ func (f *copilotProtocolWire) serve(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 	case 5:
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}],\"usage\":{\"total_tokens\":0}}\n\n")
+	case 6:
+		fmt.Fprintf(w, "data: %s\n\n", `{"error":{"message":"upstream failed"},"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`)
+	case 7:
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", `{"choices":[],"usage":{"prompt_tokens":10}}`)
+	case 8:
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"partial"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`)
 	default:
 		f.t.Error("unexpected upstream replay")
 		http.Error(w, "unexpected request", 502)
@@ -364,13 +370,22 @@ func testCopilotProtocolMatrix(t *testing.T, base *handlers.BaseAPIHandler, slot
 				usage(true, 12, 3, reported)
 				wantCalls := int32(3)
 				if !stream {
-					for _, provenance := range []string{"unavailable", reported} {
+					for _, failure := range []struct {
+						name, provenance string
+						tokens           int64
+						attempts         int32
+					}{
+						{"no usage", "unavailable", 0, 1},
+						{"explicit zero", reported, 0, 1},
+						{"usage in error frame", reported, 6, 1},
+						{"partial usage across retry", reported, 16, 2},
+					} {
 						bad := matrixPost(t, router, path, session, body)
 						if bad.Code != http.StatusBadGateway || !strings.Contains(bad.Body.String(), `"error"`) || strings.Contains(bad.Body.String(), "partial_usage") {
-							t.Fatalf("unexpected non-stream error status=%d", bad.Code)
+							t.Fatalf("%s: unexpected non-stream error status=%d", failure.name, bad.Code)
 						}
-						usage(true, 0, 0, provenance)
-						wantCalls++
+						usage(true, failure.tokens, 0, failure.provenance)
+						wantCalls += failure.attempts
 					}
 				}
 				if f.calls.Load() != wantCalls {
