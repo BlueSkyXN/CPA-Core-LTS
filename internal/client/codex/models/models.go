@@ -255,6 +255,19 @@ func loadCodexClientModelTemplatesSnapshot(raw []byte, revision uint64) (map[str
 		}
 	}
 
+	// Keep fallback capabilities independent of the upstream template selected for shape.
+	if defaultTemplate != nil {
+		const contextWindow = 1_000_000
+		defaultTemplate["context_window"] = contextWindow
+		defaultTemplate["max_context_window"] = contextWindow
+		defaultTemplate["max_tokens"] = 128_000
+		delete(defaultTemplate, "auto_compact_token_limit")
+		applyCodexClientInputModalitiesMetadata(defaultTemplate, []string{"text", "image"})
+		applyCodexClientThinkingMetadata(defaultTemplate, &registry.ThinkingSupport{
+			Levels: []string{"low", "medium", "high", "xhigh", "max"},
+		}, "")
+	}
+
 	codexClientModelTemplatesLoaded = true
 	codexClientModelTemplatesRevision = revision
 	codexClientModelTemplates = templates
@@ -671,8 +684,16 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 		if info.Description != "" {
 			description = info.Description
 		}
-		if contextWindow <= 0 && info.ContextLength > 0 {
+		if contextWindow <= 0 {
 			contextWindow = info.ContextLength
+			if contextWindow <= 0 {
+				contextWindow = info.InputTokenLimit
+			}
+		}
+		if info.MaxCompletionTokens > 0 {
+			entry["max_tokens"] = info.MaxCompletionTokens
+		} else if info.OutputTokenLimit > 0 {
+			entry["max_tokens"] = info.OutputTokenLimit
 		}
 		if info.Type == registry.OpenAIImageModelType {
 			entry["visibility"] = "hide"
@@ -681,7 +702,9 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 		} else {
 			applyCodexClientInputModalitiesMetadata(entry, info.SupportedInputModalities)
 		}
-		if thinkingSupport == nil {
+		// The OpenAI-compatible executor has its own defaults. Explicit model
+		// settings and plugin metadata carry model-specific reasoning capabilities.
+		if thinkingSupport == nil && (info.Type != "openai-compatibility" || info.ExplicitThinking || info.PluginCatalog) {
 			thinkingSupport = info.Thinking
 		}
 	}
