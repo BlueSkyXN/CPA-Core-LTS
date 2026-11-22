@@ -59,6 +59,7 @@ func TestExecutorPartialUsagePreservesRPCFailure(t *testing.T) {
 		observed  bool
 	}{
 		{"absent", "", false}, {"null", `null`, false}, {"empty", `{}`, false}, {"zero", `{"total_tokens":0}`, true},
+		{"cache_zero", `{"input_tokens":8,"cache_read_tokens":0,"total_tokens":8}`, true},
 		{"subset", `{"input_tokens":10,"output_tokens":2,"total_tokens":12,"cache_read_tokens":4,"cache_creation_tokens":1,"reasoning_tokens":1}`, true},
 		{"partial", `{"total_tokens":8,"output_tokens":2}`, true}, {"fraction", `{"input_tokens":1.5}`, false}, {"negative", `{"output_tokens":-1}`, false},
 		{"string", `{"input_tokens":"42"}`, false}, {"null_count", `{"total_tokens":null}`, false}, {"overflow", `{"total_tokens":9223372036854775808}`, false},
@@ -88,6 +89,22 @@ func TestExecutorPartialUsagePreservesRPCFailure(t *testing.T) {
 				}
 				if tc.name == "subset" && p.observed && (p.detail.TotalTokens != 12 || p.detail.InputTokens != 10 || p.detail.OutputTokens != 2 || p.detail.CachedTokens != 4 || p.detail.CacheReadTokens != 4 || p.detail.CacheCreationTokens != 1 || p.detail.ReasoningTokens != 1 || !p.detail.TokenBreakdown.Valid()) {
 					t.Fatal("lost token breakdown")
+				}
+				if p.observed && method == pluginabi.MethodExecutorExecute {
+					switch tc.name {
+					case "subset":
+						if p.detail.CacheObservation == nil || p.detail.CacheObservation.Read.State != "present" || p.detail.CacheObservation.Read.Value == nil || *p.detail.CacheObservation.Read.Value != 4 || p.detail.CacheObservation.Write.State != "present" || p.detail.CacheObservation.Write.Value == nil || *p.detail.CacheObservation.Write.Value != 1 {
+							t.Fatalf("unexpected subset cache observation: %+v", p.detail.CacheObservation)
+						}
+					case "zero":
+						if p.detail.CacheObservation == nil || p.detail.CacheObservation.Read.State != "absent" || p.detail.CacheObservation.Write.State != "absent" {
+							t.Fatalf("unexpected zero cache observation: %+v", p.detail.CacheObservation)
+						}
+					case "cache_zero":
+						if p.detail.CacheObservation == nil || p.detail.CacheObservation.Read.State != "present" || p.detail.CacheObservation.Read.Value == nil || *p.detail.CacheObservation.Read.Value != 0 || p.detail.CacheObservation.Write.State != "absent" {
+							t.Fatalf("unexpected cache_zero cache observation: %+v", p.detail.CacheObservation)
+						}
+					}
 				}
 			}
 		})
