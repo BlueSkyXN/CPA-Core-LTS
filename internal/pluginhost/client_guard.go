@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 type pluginCallFinishKey struct{}
@@ -110,6 +112,11 @@ func (c *guardedPluginClient) Call(ctx context.Context, method string, request [
 		}
 		return callResult.response, callResult.err
 	case <-ctx.Done():
+		if method == pluginabi.MethodExecutorExecute {
+			if partial := executorPartialUsageFromContext(ctx); partial != nil {
+				partial.late = result
+			}
+		}
 		return nil, ctx.Err()
 	}
 }

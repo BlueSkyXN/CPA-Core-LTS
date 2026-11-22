@@ -7,6 +7,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -145,6 +146,24 @@ func TestNativeTerminalBoundaries(t *testing.T) {
 					}
 				}
 			}
+			if tc.code != "" {
+				_, err := runtime.executeNative(copilotReq(tc.name+"-json", false))
+				if err == nil {
+					t.Fatal("failed non-streaming attempt returned success")
+				}
+				wire := ojson.ParseBytes(errorEnvelope(err)).Get("error")
+				partial := wire.Get("partial_usage")
+				if wire.Get("code").String() != tc.code {
+					t.Fatal("lost original error code")
+				}
+				if strings.HasPrefix(tc.name, "persistent_") {
+					if partial.Get("total_tokens").Int() != 14 || partial.Get("provenance").Exists() {
+						t.Fatal("failed retry lost observed usage or supplied attribution")
+					}
+				} else if partial.Exists() {
+					t.Fatal("unobserved usage attached to error")
+				}
+			}
 			assertNativeReleased(t, runtime, host)
 		})
 	}
@@ -153,11 +172,11 @@ func TestNativeTerminalBoundaries(t *testing.T) {
 func assertNativeReleased(t *testing.T, runtime *pluginRuntime, host *copilotFixtureHost) {
 	t.Helper()
 	runtime.mu.Lock()
-	active, sessions := len(runtime.nativeActive), len(runtime.nativeSessions)
+	active := len(runtime.nativeActive)
 	runtime.mu.Unlock()
 	host.mu.Lock()
 	defer host.mu.Unlock()
-	if active != 0 || sessions != 0 || len(host.streams) != 0 {
+	if active != 0 || len(host.streams) != 0 {
 		t.Fatal("native execution leaked ownership or HTTP stream")
 	}
 	for _, count := range host.closeCounts {
@@ -171,7 +190,7 @@ func TestNativeRequestPreservesReasoningEffortAndToolChoice(t *testing.T) {
 	for _, choice := range []string{`"none"`, `"auto"`, `"required"`, `{"type":"function","function":{"name":"lookup"}}`} {
 		req := copilotReq("fields", true).ExecutorRequest
 		req.Payload = []byte(`{"messages":[{"role":"user","content":"fixture"}],"reasoning_effort":"high","tool_choice":` + choice + `}`)
-		payload, err := nativeRequestPayload(req)
+		payload, err := nativeRequestPayload(req, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,8 +249,8 @@ func TestNativeCancelDuringEmptyRetry(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("empty retry did not start")
 	}
-	if _, err := runtime.executeNativeStream(copilotReq("conflict-during-retry", true)); err == nil {
-		t.Fatal("retry released session ownership")
+	if _, err := runtime.executeNativeStream(req); err == nil {
+		t.Fatal("empty retry released request ownership")
 	}
 	runtime.cancelNative(pluginapi.CancelExecutionRequest{RequestID: req.RequestID, CallerScope: req.CallerScope})
 	if closed := waitCopilotClose(t, host); closed.ErrorCode != "request_cancelled" {

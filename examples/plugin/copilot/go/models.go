@@ -58,38 +58,35 @@ func (r *pluginRuntime) modelsForAuth(raw []byte) (pluginapi.ModelResponse, erro
 }
 
 func copilotGenerationMethods(model copilotCatalogModel) []string {
-	// Responses, including WebSocket, and Messages use the translated chat path.
-	chat, embeddings := false, false
+	// 入口由宿主转换；目录必须与插件真正会调用的 HTTP 出口一致。
+	var chat, embeddings bool
 	for _, endpoint := range model.SupportedEndpoints {
-		path := strings.TrimPrefix(strings.TrimSpace(endpoint), "ws:")
-		switch strings.TrimPrefix(path, "/v1") {
-		case "/embeddings":
-			embeddings = true
-		case "/chat/completions", "/completions", "/responses", "/messages":
+		switch strings.TrimSpace(endpoint) {
+		case "/chat/completions", "/v1/chat/completions":
 			chat = true
+		case "/embeddings", "/v1/embeddings":
+			embeddings = true
 		}
 	}
 	if model.Capabilities != nil {
 		switch strings.ToLower(strings.TrimSpace(model.Capabilities.Type)) {
 		case "embeddings":
-			if chat && !embeddings {
-				return nil
+			if len(model.SupportedEndpoints) == 0 || embeddings {
+				return []string{"embeddings"}
 			}
-			return []string{"embeddings"}
+			return nil
 		case "chat", "completion":
-			if embeddings && !chat {
-				return nil
-			}
-			return []string{"chat"}
+			embeddings = false
 		}
+	}
+	var methods []string
+	if chat {
+		methods = append(methods, "chat")
 	}
 	if embeddings {
-		if chat {
-			return []string{"chat", "embeddings"}
-		}
-		return []string{"embeddings"}
+		methods = append(methods, "embeddings")
 	}
-	return []string{"chat"}
+	return methods
 }
 
 func catalogAllowsMethod(models []pluginapi.ModelInfo, id, method string) bool {

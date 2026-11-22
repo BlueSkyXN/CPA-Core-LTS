@@ -136,10 +136,14 @@ func TestNativeReasoningReplayScopeAndLifetime(t *testing.T) {
 	}
 	runtime.rememberNativeReasoning(exec, req.Model, decoder.projection)
 	body := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"id":"call-fixture","type":"function","function":{"name":"lookup","arguments":"{ \"city\": \"Paris\" }"}}]}]}`)
-	hasOpaque := func(out []byte) bool {
+	hasOpaque := func(out []byte, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
 		return ojson.GetBytes(out, "messages.0.reasoning_opaque").String() == "fixture-opaque-state"
 	}
-	if !hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body)) {
+	if !hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body, nil)) {
 		t.Fatal("matching call did not replay")
 	}
 	for name, change := range map[string]func(*rpcExecutorRequest){
@@ -158,26 +162,26 @@ func TestNativeReasoningReplayScopeAndLifetime(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			other := req
 			change(&other)
-			if hasOpaque(runtime.restoreNativeReasoning(execution(other), other.Model, body)) {
+			if hasOpaque(runtime.restoreNativeReasoning(execution(other), other.Model, body, nil)) {
 				t.Fatal("opaque crossed scope")
 			}
 		})
 	}
-	if hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, []byte(strings.ReplaceAll(string(body), "Paris", "Rome")))) {
+	if hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, []byte(strings.ReplaceAll(string(body), "Paris", "Rome")), nil)) {
 		t.Fatal("changed arguments reused opaque")
 	}
 	key := nativeReasoningKey(exec, req.Model, decoder.projection.toolCallPayload())
 	replay := runtime.nativeReasoning[key]
 	replay.created = time.Now().Add(-2 * nativeReasoningTTL)
 	runtime.nativeReasoning[key] = replay
-	if hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body)) {
+	if hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body, nil)) {
 		t.Fatal("expired opaque replayed")
 	}
 	runtime.rememberNativeReasoning(exec, req.Model, decoder.projection)
 	if err := runtime.closeExecutionSessions(pluginapi.CloseExecutionSessionRequest{Scope: pluginapi.ExecutionSessionCloseScopeSession, ExecutionSessionID: req.ExecutionSessionID, CallerScope: req.CallerScope}); err != nil {
 		t.Fatal(err)
 	}
-	if hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body)) {
+	if hasOpaque(runtime.restoreNativeReasoning(exec, req.Model, body, nil)) {
 		t.Fatal("closed session kept opaque")
 	}
 	runtime.rememberNativeReasoning(exec, req.Model, decoder.projection)
@@ -209,7 +213,7 @@ func TestNativeReasoningReplayBounded(t *testing.T) {
 	}
 	decoder.projection.reasoningOpaque = strings.Repeat("x", nativeReasoningMaxBytes+1)
 	runtime.rememberNativeReasoning(exec, "model", decoder.projection)
-	if _, ok := runtime.nativeReasoning[nativeReasoningKey(exec, "model", decoder.projection.toolCallPayload())]; ok {
-		t.Fatal("oversized opaque retained")
+	if replay, ok := runtime.nativeReasoning[nativeReasoningKey(exec, "model", decoder.projection.toolCallPayload())]; !ok || replay.opaque != "" || !replay.ambiguous {
+		t.Fatal("oversized state must block automatic replay without retaining its bytes")
 	}
 }

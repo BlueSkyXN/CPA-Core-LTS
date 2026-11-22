@@ -287,6 +287,9 @@ func TestNativeTokenSingleFlightExpiryMarginAndRotation(t *testing.T) {
 
 func copilotModelsPayload() string {
 	return `{"object":"list","data":[
+		{"id":"responses-only","supported_endpoints":["/responses"]},
+		{"id":"messages-only","supported_endpoints":["/v1/messages"]},
+		{"id":"ws-only","supported_endpoints":["ws:/responses"]},
 		{"id":"gpt-5-codex","name":"GPT-5 Codex","preview":false,"vendor":"openai","version":"2025-09-01","model_picker_enabled":true,
 		 "capabilities":{"family":"gpt","tokenizer":"o200k","type":"chat","limits":{"max_context_window_tokens":272000,"max_output_tokens":128000,"max_prompt_tokens":272000},
 		 "supports":{"tool_calls":true,"parallel_tool_calls":true,"streaming":true,"structured_outputs":true,"vision":true,"adaptive_thinking":true,"max_thinking_budget":32000,"min_thinking_budget":0}},
@@ -535,19 +538,48 @@ func TestNativeRejectsUnknownModelAndBadFrames(t *testing.T) {
 	}
 }
 
+func TestNativeRejectsModelsWithoutChatEndpointBeforeInference(t *testing.T) {
+	r, _ := copilotFixture(t, func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/copilot_internal/v2/token":
+			copilotTokenFixture(w)
+		case "/models":
+			serveCopilotModels(w)
+		default:
+			t.Errorf("unsupported model reached %s", req.URL.Path)
+			http.NotFound(w, req)
+		}
+	})
+	for _, id := range []string{"responses-only", "messages-only", "ws-only", "text-embedding-3-small"} {
+		for _, stream := range []bool{false, true} {
+			req := copilotReq(id, stream)
+			req.Model = id
+			var err error
+			if stream {
+				_, err = r.executeNativeStream(req)
+			} else {
+				_, err = r.executeNative(req)
+			}
+			if e, ok := err.(*pluginCallError); !ok || e.code != "unsupported_model" || e.statusCode != http.StatusBadRequest {
+				t.Errorf("%s stream=%t: expected unsupported_model, got %v", id, stream, err)
+			}
+		}
+	}
+}
+
 func TestNativeRequestPayloadGuards(t *testing.T) {
 	req := copilotReq("guard", false).ExecutorRequest
 	req.Format = "responses"
-	if _, err := nativeRequestPayload(req); err == nil {
+	if _, err := nativeRequestPayload(req, false); err == nil {
 		t.Fatal("non chat-completions format accepted")
 	}
 	req = copilotReq("guard", false).ExecutorRequest
 	req.Payload = []byte(`{"messages":[{"role":"user","content":"hi"}],"n":2}`)
-	if _, err := nativeRequestPayload(req); err == nil {
+	if _, err := nativeRequestPayload(req, false); err == nil {
 		t.Fatal("n>1 accepted")
 	}
 	req.Payload = []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	raw, err := nativeRequestPayload(req)
+	raw, err := nativeRequestPayload(req, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,11 +613,15 @@ func TestNativeCancelOwnershipQuiesceAndContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	conflict := copilotReq("two", true)
-	conflictRaw, _ := json.Marshal(conflict)
-	if _, err := runtime.executeStream(conflictRaw); err == nil {
-		t.Fatal("same session admitted concurrent turn")
+	if _, err := runtime.executeStream(raw); err == nil {
+		t.Fatal("admitted a duplicate active request")
 	}
+	second := copilotReq("two", true)
+	secondRaw, _ := json.Marshal(second)
+	if _, err := runtime.executeStream(secondRaw); err != nil {
+		t.Fatal(err)
+	}
+	<-started
 	_ = runtime.cancelExecution(pluginapi.CancelExecutionRequest{RequestID: "one", CallerScope: "wrong"})
 	runtime.mu.Lock()
 	canceled := runtime.nativeActive["one"].isCanceled()
@@ -594,16 +630,12 @@ func TestNativeCancelOwnershipQuiesceAndContinuation(t *testing.T) {
 		t.Fatal("foreign caller canceled request")
 	}
 	_ = runtime.cancelExecution(pluginapi.CancelExecutionRequest{RequestID: "one", CallerScope: "caller", AuthIndex: "index"})
-	if close := waitCopilotClose(t, host); close.ErrorCode != "request_cancelled" {
-		t.Fatal("cancellation lost")
+	if close := waitCopilotClose(t, host); close.ErrorCode != "request_cancelled" || close.StreamID != req.StreamID {
+		t.Fatal("cancellation did not target the first request")
 	}
-	if _, err := runtime.executeStream(conflictRaw); err != nil {
-		t.Fatal(err)
-	}
-	<-started
 	runtime.quiesce()
-	if close := waitCopilotClose(t, host); close.ErrorCode != "request_cancelled" {
-		t.Fatal("quiesce did not cancel")
+	if close := waitCopilotClose(t, host); close.ErrorCode != "request_cancelled" || close.StreamID != second.StreamID {
+		t.Fatal("quiesce did not cancel the remaining request")
 	}
 	if _, err := runtime.executeStream(raw); err == nil {
 		t.Fatal("quiesced plugin admitted request")
@@ -773,19 +805,21 @@ func TestNativeDecoderEmptyStreamYieldsReadableError(t *testing.T) {
 }
 
 // 目录发布过滤：无 supported_endpoints 声明的存档老模型（gpt-4o/4.1/3.5、
-// completion 型 gpt-41-copilot）不发布；现行模型与 embeddings 全保留。
-// 夹具覆盖目录中的端点声明与 embeddings 例外。
+// completion 型 gpt-41-copilot）与没有可用 HTTP Chat 出口的模型不发布。
 func TestParseNativeCatalogDropsLegacyEndpointlessModels(t *testing.T) {
 	legacy := []string{
 		`{"id":"gpt-4o","name":"GPT-4o","vendor":"Azure OpenAI","capabilities":{"type":"chat","limits":{"max_context_window_tokens":131072}}}`,
 		`{"id":"gpt-4o-mini","vendor":"Azure OpenAI","capabilities":{"type":"chat"}}`,
 		`{"id":"gpt-41-copilot","vendor":"Azure OpenAI","capabilities":{"type":"completion"}}`,
 		`{"id":"conflicting-methods","supported_endpoints":["/embeddings"],"capabilities":{"type":"chat"}}`,
+		`{"id":"responses-only","supported_endpoints":["/responses","ws:/responses"],"capabilities":{"type":"chat"}}`,
+		`{"id":"messages-only","supported_endpoints":["/v1/messages"]}`,
+		`{"id":"ws-only","supported_endpoints":["ws:/chat/completions"]}`,
 	}
 	current := []string{
 		`{"id":"gemini-4-argon","vendor":"Google","supported_endpoints":["/chat/completions"],"policy":{"state":"enabled"},"capabilities":{"type":"chat","supports":{"tool_calls":true}}}`,
 		`{"id":"claude-sonnet-5.5","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"],"capabilities":{"type":"chat"}}`,
-		`{"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","ws:/responses"],"capabilities":{"type":"chat"}}`, // 无 policy 块但声明端点
+		`{"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","/v1/messages","/chat/completions"],"capabilities":{"type":"chat"}}`,
 		`{"id":"text-embedding-3-small","vendor":"Azure OpenAI","capabilities":{"type":"embeddings"}}`,
 	}
 	var b strings.Builder
@@ -807,7 +841,7 @@ func TestParseNativeCatalogDropsLegacyEndpointlessModels(t *testing.T) {
 	for _, m := range entry.models {
 		got[m.ID] = true
 	}
-	for _, id := range []string{"gpt-4o", "gpt-4o-mini", "gpt-41-copilot", "conflicting-methods"} {
+	for _, id := range []string{"gpt-4o", "gpt-4o-mini", "gpt-41-copilot", "conflicting-methods", "responses-only", "messages-only", "ws-only"} {
 		if got[id] {
 			t.Errorf("legacy model %s should not be published", id)
 		}

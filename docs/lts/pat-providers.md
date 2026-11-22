@@ -49,6 +49,10 @@ Copilot 插件（`cpa-provider-copilot`，0.1.2）以 Provider 身份 `copilot` 
 
 工具结果续接时，插件按账号、调用方、workspace、会话、模型和工具调用内容恢复 `reasoning_opaque`，支持经过 Responses 转换后只回传标准工具字段的客户端。客户端仍需提供对话历史及稳定的会话标识；Chat 响应也保留该扩展字段供客户端回传。opaque 缓存仅在当前插件进程内有效，最多 256 条、每条 64 KiB、保留 1 小时；关闭会话、重新配置或重启插件会清除对应状态。Copilot 顶层 `reasoning_tokens` 纳入 usage，total 明确表明 reasoning 独立于 completion 时会转换为 Chat Completions 的包含关系。
 
+**Carbon 图片预算（可选）** 在 Copilot 插件私有配置里设置 `carbon_image_budget: true`，只影响实际出站模型 `gemini-4-carbon`。默认关闭，保持全部视觉输入；若上游明确报张数超限，插件只返回张数和上限，不回显上游正文。开启后，最终 Chat 消息不超过 10 个图片块时不因预算改写；超过时仅尝试处理已闭合的工具续调。当前任务的附件、刚返回的整批图片、调用 ID、原序和工具文本保留。助手答复后还需出现下一条独立用户指令，前一段的图片才可能成为可省略的旧图。对这类可确定归属的旧图，按批次从早到晚处理，每批优先省略靠后的图片，只腾必要的名额；原位改为文字说明，不下载、不保存或移动图片。Responses / Messages 的用户直传图片不作为旧工具图淘汰；原生 Chat 缺少同等来源信息，开启本选项即允许省略已答复轮次中的用户视觉块。
+
+超限时，插件检查触发本轮工具调用的用户指令和后续消息。纯工具续调及「继续」「执行工具」等固定指令可以省略已结束任务的旧图。使用「对照」加图片 URL 或 Markdown 链接，可以保留请求中有确切地址的旧图。自由文本指代、重复或来源不明的图片、以及保护剩余图片后仍超出 10 张的请求，会在发起推理前收到 HTTP 400。它不拆分推理，不改变其他模型的限额，也不保证上游缓存命中。
+
 ## Coding Plan（多账号 direct Anthropic）
 
 `zcode-coding-plan` 为原生 Go/C ABI 插件，通过 Core 通用 Anthropic/Responses JSON/SSE 与 WS 适配接入。不启动 Node worker 或官方 Agent，不执行工具、不维护第二份历史。它要求现有 schema 6 及五项 host_features。账号唯一形态是单文件内联凭据（`api_key`/`device_id` 直接保存在 auth 文件里，与 Qoder/CodeBuddy PAT 文件同模式），内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型（1M 上下文、low/high/max 思考档），无需额外凭据挂载或环境变量；0.4.0 移除了 0.3.x 的私有配置文件引用链与 `docker-compose.coding-plan.yml`。没有 OAuth、账号发现或额度轮询。

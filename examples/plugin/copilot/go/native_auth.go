@@ -75,7 +75,7 @@ func (r *pluginRuntime) cachedCopilotToken(auth copilotAuth, callbackID string, 
 		return copilotTokenState{}, newPluginCallError("auth_unavailable", "Copilot token exchange requires a host callback context", http.StatusServiceUnavailable, true)
 	}
 	r.mu.Lock()
-	epoch := r.generation
+	epoch := cfg.generation
 	key := sessionDigest([]string{copilotTokenCacheKey(auth, cfg.GitHubAPIEndpoint), cfg.CopilotAPIEndpoint, strconv.FormatUint(epoch, 10)})
 	cached, exists := r.tokenCache[key]
 	if exists && cached.State.ExpiresAt.After(time.Now().Add(30*time.Second)) && (rejectedToken == "" || cached.State.Token != rejectedToken) {

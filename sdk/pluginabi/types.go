@@ -229,6 +229,9 @@ type Error struct {
 	HTTPStatus int `json:"http_status,omitempty"`
 	// FailureReason is an optional safe, provider-scoped usage diagnostic, independent of Code and retry policy.
 	FailureReason string `json:"failure_reason,omitempty"`
+	// PartialUsage optionally carries observed token counts on an executor.execute failure.
+	// Decode independently: invalid counts must not change the error or its routing semantics.
+	PartialUsage json.RawMessage `json:"partial_usage,omitempty"`
 	// RetryAfterSeconds carries upstream retry guidance for cooldown and response headers.
 	// It is an optional hint. Schema-version agreement does not negotiate support for
 	// this field, and older hosts silently ignore it, so plugins must not depend on it
