@@ -73,8 +73,7 @@ func fitCarbonImages(req pluginapi.ExecutorRequest, messages []any) error {
 	if last < 0 || len(req.OriginalRequest) == 0 || len(req.OriginalRequest) > maxExecutorBodyBytes {
 		return failure
 	}
-	// Only project while answering a closed batch. An ordinary follow-up question might
-	// refer to any earlier image, even when it contains no image-related keywords.
+	// Only project after the latest tool batch has closed.
 	end := last + 1
 	for end < len(messages) {
 		m, _ := messages[end].(map[string]any)
@@ -86,6 +85,10 @@ func fitCarbonImages(req pluginapi.ExecutorRequest, messages []any) error {
 	if end == last+1 || !completeChatToolBatch(messages[last:end]) {
 		return failure
 	}
+	allowed, ok := carbonEvictable(req, images)
+	if !ok {
+		return failure
+	}
 	answered, continued := false, false
 	for _, v := range messages[end:] {
 		m, _ := v.(map[string]any)
@@ -93,7 +96,7 @@ func fitCarbonImages(req pluginapi.ExecutorRequest, messages []any) error {
 		case "assistant":
 			answered, continued = true, false
 		case "user", "system", "developer":
-			if !carbonContinuationContent(m["content"]) {
+			if !carbonContinuationContent(m["content"], allowed) {
 				return failure
 			}
 			if answered && m["role"] == "user" {
@@ -121,10 +124,6 @@ func fitCarbonImages(req pluginapi.ExecutorRequest, messages []any) error {
 			}
 		}
 	}
-	allowed, ok := carbonEvictable(req, images)
-	if !ok {
-		return failure
-	}
 	over := len(images) - carbonImageLimit
 	var omit []carbonImageSlot
 	for _, g := range groups {
@@ -150,14 +149,10 @@ func fitCarbonImages(req pluginapi.ExecutorRequest, messages []any) error {
 	return nil
 }
 
-func carbonContinuationContent(content any) bool {
-	benign := func(s string) bool {
-		s = strings.TrimSpace(s)
-		return s == "" || s == "继续" || strings.EqualFold(s, "continue") || s == "Images returned by the preceding tool call(s):" || (strings.HasPrefix(s, "<system-reminder>") && strings.HasSuffix(s, "</system-reminder>"))
-	}
+func carbonContinuationContent(content any, allowed map[string]bool) bool {
 	switch v := content.(type) {
 	case string:
-		return benign(v)
+		return carbonPinInstruction(v, allowed)
 	case []any:
 		for _, p := range v {
 			part, _ := p.(map[string]any)
@@ -165,7 +160,7 @@ func carbonContinuationContent(content any) bool {
 			case "image_url":
 			case "text":
 				s, ok := part["text"].(string)
-				if !ok || !benign(s) {
+				if !ok || !carbonPinInstruction(s, allowed) {
 					return false
 				}
 			default:
@@ -211,46 +206,18 @@ func carbonEvictable(req pluginapi.ExecutorRequest, images []carbonImageSlot) (m
 	if len(items) == 0 {
 		return nil, false
 	}
-	var source []string
-	allowed := map[string]bool{}
-	seen := map[string]bool{}
-	lastAnswer, lastCall, boundary := -1, -1, -1
-	for i, v := range items {
-		m, _ := v.(map[string]any)
-		typ, _ := m["type"].(string)
-		calls, _ := m["tool_calls"].([]any)
-		producer := typ == "function_call" || typ == "custom_tool_call" || len(calls) > 0
-		text, _ := m["content"].(string)
-		hasText := strings.TrimSpace(text) != ""
-		parts, _ := m["content"].([]any)
-		for _, p := range parts {
-			b, _ := p.(map[string]any)
-			switch b["type"] {
-			case "tool_use":
-				producer = true
-			case "text", "output_text":
-				t, _ := b["text"].(string)
-				hasText = hasText || strings.TrimSpace(t) != ""
-			}
-		}
-		if producer {
-			lastCall, boundary = i, lastAnswer
-		} else if m["role"] == "assistant" && hasText {
-			lastAnswer = i
-		}
-	}
-	if lastCall < 0 || boundary < 0 {
+	boundary := carbonHistoryBoundary(items)
+	if boundary < 0 {
 		return nil, false
 	}
+	var source []string
+	allowed := make(map[string]bool, len(images))
 	add := func(url string, eligible bool) bool {
-		if url == "" || seen[url] {
+		if _, exists := allowed[url]; url == "" || exists {
 			return false
 		}
-		seen[url] = true
 		source = append(source, url)
-		if eligible {
-			allowed[url] = true
-		}
+		allowed[url] = eligible
 		return true
 	}
 	calls := map[string]bool{}
@@ -366,23 +333,14 @@ func carbonEvictable(req pluginapi.ExecutorRequest, images []carbonImageSlot) (m
 	if len(results) != len(calls) {
 		return nil, false
 	}
-	// A literal URL in the active user's instruction refers to that visual
-	// occurrence. Match bounded tokens in one pass; never fetch a locator.
+	// The active instruction often precedes the tool call. Check the original,
+	// where that instruction is still separate from synthetic image carriers.
 	for _, v := range items[boundary+1:] {
 		m, _ := v.(map[string]any)
-		if m["role"] != "user" {
-			continue
-		}
-		if text, ok := m["content"].(string); ok {
-			carbonPinLocators(text, allowed)
-		}
-		parts, _ := m["content"].([]any)
-		for _, v := range parts {
-			b, _ := v.(map[string]any)
-			if b["type"] == "text" || b["type"] == "input_text" {
-				text, _ := b["text"].(string)
-				carbonPinLocators(text, allowed)
-			}
+		if m["role"] == "user" && !eachCarbonText(m["content"], func(text string) bool {
+			return carbonPinInstruction(text, allowed)
+		}) {
+			return nil, false
 		}
 	}
 	if len(source) != len(images) {
@@ -396,11 +354,99 @@ func carbonEvictable(req pluginapi.ExecutorRequest, images []carbonImageSlot) (m
 	return allowed, true
 }
 
-func carbonPinLocators(text string, allowed map[string]bool) {
-	for token := range strings.FieldsSeq(text) {
-		delete(allowed, token)
-		delete(allowed, strings.Trim(token, "<>[](){}\"'`,.;，。；（）【】"))
+const carbonToolImageNotice = "Images returned by the preceding tool call(s):"
+
+func carbonHistoryBoundary(items []any) int {
+	pendingAnswer, settledAnswer, boundary := -1, -1, -1
+	for i, v := range items {
+		m, _ := v.(map[string]any)
+		typ, _ := m["type"].(string)
+		role, _ := m["role"].(string)
+		calls, _ := m["tool_calls"].([]any)
+		producer := typ == "function_call" || typ == "custom_tool_call" || (role == "assistant" && len(calls) > 0)
+		if role == "assistant" {
+			parts, _ := m["content"].([]any)
+			for _, p := range parts {
+				b, _ := p.(map[string]any)
+				producer = producer || b["type"] == "tool_use"
+			}
+		}
+		if producer {
+			boundary, pendingAnswer = settledAnswer, -1
+			continue
+		}
+		switch role {
+		case "assistant":
+			noText := eachCarbonText(m["content"], func(text string) bool { return strings.TrimSpace(text) == "" })
+			if !noText {
+				pendingAnswer = i
+			}
+		case "user":
+			if pendingAnswer < 0 || typ != "" && typ != "message" {
+				continue
+			}
+			// Require a new instruction after an answer. A progress update,
+			// tool attachment or bare "continue" can still belong to the same task.
+			continuing := eachCarbonText(m["content"], carbonContinuationText)
+			if !continuing {
+				settledAnswer, pendingAnswer = pendingAnswer, -1
+			}
+		}
 	}
+	return boundary
+}
+
+func eachCarbonText(content any, check func(string) bool) bool {
+	if text, ok := content.(string); ok {
+		return check(text)
+	}
+	parts, _ := content.([]any)
+	for _, v := range parts {
+		part, _ := v.(map[string]any)
+		switch part["type"] {
+		case "text", "input_text", "output_text":
+			text, ok := part["text"].(string)
+			if !ok || !check(text) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func carbonContinuationText(text string) bool {
+	text = strings.TrimSpace(text)
+	return text == "" || text == carbonToolImageNotice || text == "继续" || strings.EqualFold(text, "continue")
+}
+
+var (
+	carbonReferenceCommand  = regexp.MustCompile(`(?i)^(?:(?:read the new files and )?compare(?: them)? with[ \t]+|continue (?:with|using)[ \t]+|(?:继续并对照|对比|对照)[ \t]*)(.+)$`)
+	carbonMarkdownReference = regexp.MustCompile(`^\[[^\[\]\r\n]+\]\(([^()\r\n]+)\)$`)
+)
+
+// A supported instruction is a fixed tool control or a single explicit image
+// locator. Free text may refer to any historical image, even with no image keywords.
+func carbonPinInstruction(text string, allowed map[string]bool) bool {
+	text = strings.TrimSpace(text)
+	if carbonContinuationText(text) || strings.EqualFold(text, "run the tools") || text == "执行工具" {
+		return true
+	}
+	if match := carbonReferenceCommand.FindStringSubmatch(text); match != nil {
+		text = strings.TrimSpace(match[1])
+	}
+	for _, locator := range []string{text, strings.TrimRight(text, ".。!?！？")} {
+		if match := carbonMarkdownReference.FindStringSubmatch(locator); match != nil {
+			locator = match[1]
+		}
+		if strings.HasPrefix(locator, "<") && strings.HasSuffix(locator, ">") {
+			locator = locator[1 : len(locator)-1]
+		}
+		if _, known := allowed[locator]; known {
+			allowed[locator] = false
+			return true
+		}
+	}
+	return false
 }
 
 func carbonClaudeURL(img map[string]any) string {

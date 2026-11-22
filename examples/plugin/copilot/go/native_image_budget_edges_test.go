@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestCarbonBudgetContinuationAfterAnswer(t *testing.T) {
@@ -104,6 +107,36 @@ func TestCarbonBudgetKeepsExplicitWireImageReference(t *testing.T) {
 	out, err := configuredNativePayload(req, pluginConfig{CarbonImageBudget: true})
 	if err != nil || !bytes.Contains(out, []byte(`"url":"https://example.com/fixture-05.png"`)) || bytes.Contains(out, []byte(`"url":"https://example.com/fixture-04.png"`)) {
 		t.Fatalf("explicit image locator was not protected: %v", err)
+	}
+}
+
+// The assistant text precedes tool production in the same user task.
+func carbonProgressFixture(t *testing.T, req pluginapi.ExecutorRequest) (pluginapi.ExecutorRequest, map[string]any) {
+	t.Helper()
+	messages, body := budgetWire(t, req)
+	for i := len(messages) - 1; i >= 0; i-- {
+		m, _ := messages[i].(budgetObj)
+		if m["role"] == "user" && m["content"] == "run the tools" {
+			m["content"] = []any{
+				budgetObj{"type": "text", "text": "run the tools"},
+				budgetObj{"type": "image_url", "image_url": budgetObj{"url": "https://example.com/reference.png"}},
+			}
+			progress := budgetObj{"role": "assistant", "content": "I will load the screenshots now."}
+			body["messages"] = slices.Insert(messages, i+1, any(progress))
+			req.Payload = budgetJSON(t, body)
+			req.OriginalRequest = req.Payload
+			return req, body
+		}
+	}
+	t.Fatal("fixture has no instruction for current tools")
+	return req, nil
+}
+
+func TestCarbonBudgetKeepsCurrentAttachmentAfterProgress(t *testing.T) {
+	req, _ := carbonProgressFixture(t, budgetFixture(t, "openai", []int{1, 9}, ""))
+	out, err := configuredNativePayload(req, pluginConfig{CarbonImageBudget: true})
+	if err != nil || !bytes.Contains(out, []byte(`"url":"https://example.com/reference.png"`)) || bytes.Contains(out, []byte("fixture-01.png")) {
+		t.Fatalf("current user attachment or historical selection changed: %v", err)
 	}
 }
 
