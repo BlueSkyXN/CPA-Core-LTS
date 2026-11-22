@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -35,26 +37,36 @@ func nativeToolBatch(exec *nativeExecution, model string, tools []any) (string, 
 	if len(tools) == 0 {
 		return "", nil
 	}
-	parts := []string{exec.identity.key, model}
+	ordered := make([]nativeToolIdentity, 0, len(tools))
 	batch := make(map[string]nativeToolIdentity, len(tools))
-	valid := true
 	for _, value := range tools {
 		tool, _ := value.(map[string]any)
 		id, _ := tool["id"].(string)
 		function, _ := tool["function"].(map[string]any)
 		name, _ := function["name"].(string)
 		arguments, _ := function["arguments"].(string)
-		canonical := canonicalToolArguments(arguments)
-		if _, duplicate := batch[id]; id == "" || name == "" || duplicate || canonical == "" {
-			valid = false
+		call := nativeToolIdentity{id, name, canonicalToolArguments(arguments)}
+		ordered = append(ordered, call)
+		batch[id] = call
+	}
+	return orderedNativeToolBatchKey(exec.identity.key, model, ordered), batch
+}
+
+func orderedNativeToolBatchKey(scope, model string, ordered []nativeToolIdentity) string {
+	if len(ordered) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 2+3*len(ordered))
+	parts = append(parts, scope, model)
+	seen := make(map[string]bool, len(ordered))
+	for _, call := range ordered {
+		if call.id == "" || call.name == "" || call.arguments == "" || seen[call.id] {
+			return ""
 		}
-		batch[id] = nativeToolIdentity{id, name, canonical}
-		parts = append(parts, id, name, canonical)
+		seen[call.id] = true
+		parts = append(parts, call.id, call.name, call.arguments)
 	}
-	if !valid {
-		return "", batch
-	}
-	return sessionDigest(parts), batch
+	return sessionDigest(parts)
 }
 
 func canonicalToolArguments(arguments string) string {
@@ -83,25 +95,39 @@ func (r *pluginRuntime) trackNativeTool(exec *nativeExecution, index int, tool n
 		exec.tools = make(map[int]nativeToolIdentity)
 	}
 	exec.tools[index] = tool
-	exec.toolsComplete = false
+	exec.toolBatchKey = ""
 }
 
 func (r *pluginRuntime) finishNativeTools(exec *nativeExecution, count int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	exec.toolsComplete = count > 0 && len(exec.tools) == count
+	exec.toolBatchKey = ""
+	if count == 0 || len(exec.tools) != count {
+		return
+	}
+	ordered := make([]nativeToolIdentity, 0, count)
+	for _, index := range slices.Sorted(maps.Keys(exec.tools)) {
+		ordered = append(ordered, exec.tools[index])
+	}
+	exec.toolBatchKey = orderedNativeToolBatchKey(exec.identity.key, exec.model, ordered)
 }
 
-func (r *pluginRuntime) nativeToolPendingLocked(exec *nativeExecution, model string, batch map[string]nativeToolIdentity, valid bool) bool {
+func (r *pluginRuntime) nativeToolPendingLocked(exec *nativeExecution, model string, batch map[string]nativeToolIdentity, key string) bool {
 	for _, active := range r.nativeActive {
-		if active.replayClosed || active.identity.key != exec.identity.key || active.model != model || active.generation != exec.generation || (valid && active.toolsComplete && len(active.tools) != len(batch)) {
+		if active.replayClosed || active.identity.key != exec.identity.key || active.model != model || active.generation != exec.generation {
+			continue
+		}
+		if key != "" && active.toolBatchKey != "" {
+			if key == active.toolBatchKey {
+				return true
+			}
 			continue
 		}
 		overlap, possible := false, true
 		for _, call := range active.tools {
 			want, ok := batch[call.id]
 			if !ok {
-				if valid {
+				if key != "" {
 					possible = false
 					break
 				}
@@ -195,10 +221,10 @@ func (r *pluginRuntime) applyNativeReasoning(exec *nativeExecution, model string
 				}
 			}
 		}
-		if continuation && r.nativeToolPendingLocked(exec, model, batch, key != "") {
+		if continuation && r.nativeToolPendingLocked(exec, model, batch, key) {
 			return false, newPluginCallError("tool_continuation_pending", "Copilot tool result arrived before its producing request finished; retry after the stream ends", http.StatusConflict, true)
 		}
-		if replay.ambiguous || (len(batch) > 0 && (ok || continuation) && r.interruptedNativeBatchLocked(exec, model, batch, key != "")) {
+		if replay.ambiguous || (len(batch) > 0 && (ok || continuation) && r.interruptedNativeBatchLocked(exec, model, batch, key)) {
 			if continuation {
 				return false, newPluginCallError("tool_continuation_ambiguous", "Copilot cannot identify the reasoning state for these tool results; restart from before the tool call without reusing this tool history", http.StatusConflict, false)
 			}

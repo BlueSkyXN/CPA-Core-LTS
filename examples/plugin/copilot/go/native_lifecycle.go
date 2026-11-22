@@ -12,20 +12,20 @@ import (
 
 // nativeExecution 只记录在途状态；对话历史仍由客户端逐次提供。
 type nativeExecution struct {
-	identity      executionIdentity
-	requestID     string
-	model         string
-	tools         map[int]nativeToolIdentity // 发给客户端的工具片段快照，由 pluginRuntime.mu 保护。
-	toolsComplete bool
-	replayClosed  bool // 会话关闭后，旧执行不能再登记待续调的状态。
-	config        pluginConfig
-	mu            sync.Mutex
-	upstream      string
-	canceled      bool
-	done          chan struct{}
-	once          sync.Once
-	open          func() (hostHTTPStreamResponse, error)
-	generation    uint64
+	identity     executionIdentity
+	requestID    string
+	model        string
+	tools        map[int]nativeToolIdentity // 发给客户端的工具片段快照，由 pluginRuntime.mu 保护。
+	toolBatchKey string                     // 仅在工具批次收齐且参数已确认时设置。
+	replayClosed bool                       // 会话关闭后，旧执行不能再登记待续调的状态。
+	config       pluginConfig
+	mu           sync.Mutex
+	upstream     string
+	canceled     bool
+	done         chan struct{}
+	once         sync.Once
+	open         func() (hostHTTPStreamResponse, error)
+	generation   uint64
 }
 
 func (r *pluginRuntime) registerNative(req rpcExecutorRequest, auth copilotAuth) (*nativeExecution, error) {

@@ -1887,10 +1887,8 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
 	}
 	if errExecute != nil {
 		if reporter != nil {
-			if partial.observed {
-				reporter.SetUsageProvenance(coreusage.UsageProvenanceProviderReportedUnverified)
-			}
-			reporter.PublishFailureWithDetail(ctx, partial.detail, errExecute)
+			partial.publishFailure(ctx, reporter, errExecute)
+			reporter = nil // The RPC failure path owns publication, including a deferred cancellation settlement.
 		}
 		return coreexecutor.Response{}, nil, errExecute
 	}

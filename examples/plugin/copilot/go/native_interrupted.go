@@ -12,7 +12,7 @@ type interruptedToolBatch struct {
 	identity executionIdentity
 	model    string
 	tools    []toolFingerprint
-	complete bool
+	key      string
 	created  time.Time
 }
 
@@ -30,7 +30,7 @@ func (r *pluginRuntime) interruptNativeToolsLocked(e *nativeExecution) {
 	if len(e.tools) == 0 || e.replayClosed || !r.accepting || r.generation != e.generation {
 		return
 	}
-	b := interruptedToolBatch{identity: e.identity, model: e.model, complete: e.toolsComplete, created: time.Now()}
+	b := interruptedToolBatch{identity: e.identity, model: e.model, key: e.toolBatchKey, created: time.Now()}
 	for _, t := range e.tools {
 		b.tools = append(b.tools, t.fingerprint())
 	}
@@ -41,11 +41,17 @@ func (r *pluginRuntime) interruptNativeToolsLocked(e *nativeExecution) {
 	r.interruptedTools = append(r.interruptedTools, b)
 }
 
-func (r *pluginRuntime) interruptedNativeBatchLocked(exec *nativeExecution, model string, batch map[string]nativeToolIdentity, valid bool) bool {
+func (r *pluginRuntime) interruptedNativeBatchLocked(exec *nativeExecution, model string, batch map[string]nativeToolIdentity, key string) bool {
 	var want map[[sha256.Size]byte]toolFingerprint
 	now := time.Now()
 	for _, failed := range r.interruptedTools {
-		if failed.identity.key != exec.identity.key || failed.model != model || now.Sub(failed.created) > nativeReasoningTTL || (valid && failed.complete && len(failed.tools) != len(batch)) {
+		if failed.identity.key != exec.identity.key || failed.model != model || now.Sub(failed.created) > nativeReasoningTTL {
+			continue
+		}
+		if key != "" && failed.key != "" {
+			if key == failed.key {
+				return true
+			}
 			continue
 		}
 		if want == nil {
@@ -59,7 +65,7 @@ func (r *pluginRuntime) interruptedNativeBatchLocked(exec *nativeExecution, mode
 		for _, f := range failed.tools {
 			w, ok := want[f.id]
 			if !ok {
-				if valid {
+				if key != "" {
 					possible = false
 					break
 				}
