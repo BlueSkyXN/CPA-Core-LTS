@@ -345,9 +345,9 @@ func callPluginRaw[T any](ctx context.Context, client pluginClient, method strin
 	out, errDecode := decodeEnvelopeResult[T](envelope)
 	if errDecode != nil {
 		if !envelope.OK {
-			if method == pluginabi.MethodExecutorExecute && envelope.Error != nil && len(envelope.Error.PartialUsage) != 0 && ctx != nil {
-				if counts, _ := ctx.Value(partialUsageContextKey{}).(*executorPartialUsage); counts != nil {
-					counts.detail, counts.observed = parseExecutorPartialUsage(envelope.Error.PartialUsage)
+			if method == pluginabi.MethodExecutorExecute {
+				if partial := executorPartialUsageFromContext(ctx); partial != nil {
+					partial.observe(envelope)
 				}
 			}
 			return zero, errDecode
