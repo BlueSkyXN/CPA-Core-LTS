@@ -28,7 +28,12 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 			OwnedBy:                  "mimo",
 			Type:                     "openai-compatibility",
 			DisplayName:              textOnlyModelID,
+			InputTokenLimit:          64_000,
+			OutputTokenLimit:         16_000,
 			SupportedInputModalities: []string{"text"},
+			ExplicitInputModalities:  true,
+			Thinking:                 &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+			ExplicitThinking:         true,
 		},
 		{
 			ID:                       "mimo-mixed-modalities-codex-test",
@@ -102,6 +107,12 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	}
 	if _, exists := textOnlyEntry["supports_image_detail_original"]; exists {
 		t.Fatalf("text-only model should not expose supports_image_detail_original: %#v", textOnlyEntry["supports_image_detail_original"])
+	}
+	assertCodexClientReasoningEfforts(t, textOnlyEntry, []string{"low", "medium", "high"})
+	for field, want := range map[string]int{"context_window": 64_000, "max_context_window": 64_000, "max_tokens": 16_000} {
+		if got := intModelValue(textOnlyEntry, field); got != want {
+			t.Errorf("%s %s = %d, want %d", textOnlyModelID, field, got, want)
+		}
 	}
 
 	if mixedEntry == nil {
@@ -507,8 +518,11 @@ func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
 		t.Fatalf("cached display_name = %q, want Second", got)
 	}
 
-	withoutGPT55 := []byte(`{"models":[{"slug":"gpt-6.1-sol","display_name":"Fallback First"},{"slug":"gpt-5.6-sol","display_name":"Fallback Second"}]}`)
-	_, defaultTemplate, err = loadCodexClientModelTemplatesSnapshot(withoutGPT55, 102)
+	withoutGPT55 := []byte(`{"models":[
+		{"slug":"gpt-6.1-sol","display_name":"Fallback First","context_window":500000,"max_context_window":872000,"max_tokens":64000,"auto_compact_token_limit":250000},
+		{"slug":"gpt-5.6-sol","display_name":"Fallback Second"}
+	]}`)
+	templates, defaultTemplate, err = loadCodexClientModelTemplatesSnapshot(withoutGPT55, 102)
 	if err != nil {
 		t.Fatalf("load snapshot without gpt-5.5: %v", err)
 	}
@@ -517,6 +531,19 @@ func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
 	}
 	if got := stringModelValue(defaultTemplate, "display_name"); got != "Fallback First" {
 		t.Fatalf("fallback default display_name = %q, want Fallback First", got)
+	}
+	for field, want := range map[string]int{"context_window": 1_000_000, "max_context_window": 1_000_000, "max_tokens": 128_000} {
+		if got := intModelValue(defaultTemplate, field); got != want {
+			t.Errorf("fallback %s = %d, want %d", field, got, want)
+		}
+	}
+	if _, exists := defaultTemplate["auto_compact_token_limit"]; exists {
+		t.Error("fallback inherited a template-specific compaction limit")
+	}
+	for field, want := range map[string]int{"context_window": 500_000, "max_context_window": 872_000, "max_tokens": 64_000, "auto_compact_token_limit": 250_000} {
+		if got := intModelValue(templates["gpt-6.1-sol"], field); got != want {
+			t.Errorf("gpt-6.1-sol %s = %d, want %d", field, got, want)
+		}
 	}
 }
 
@@ -536,15 +563,8 @@ func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *
 }
 
 func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) {
-	const wantOverride = 1048576
-	// Non-template models inherit context windows from the catalog's
-	// default template (currently the gpt-5.5 entry).
-	_, defaultTemplate, errLoadTemplates := loadCodexClientModelTemplates()
-	if errLoadTemplates != nil || defaultTemplate == nil {
-		t.Fatalf("load codex client model templates: %v", errLoadTemplates)
-	}
-	wantDefaultContext := intModelValue(defaultTemplate, "context_window")
-	wantDefaultMaxContext := intModelValue(defaultTemplate, "max_context_window")
+	const wantOverride = 1_048_576
+	const wantFallback = 1_000_000
 
 	resp := BuildResponse([]map[string]any{
 		{"id": "deepseek-v4-flash", "max_context_length": wantOverride},
@@ -567,7 +587,7 @@ func TestCodexClientModelsResponseAppliesMaxContextLengthOverride(t *testing.T) 
 		wantMaxContext int
 	}{
 		{slug: "deepseek-v4-flash", wantContext: wantOverride, wantMaxContext: wantOverride},
-		{slug: "deepseek-v4-pro", wantContext: wantDefaultContext, wantMaxContext: wantDefaultMaxContext},
+		{slug: "deepseek-v4-pro", wantContext: wantFallback, wantMaxContext: wantFallback},
 		{slug: "gpt-5.5", wantContext: wantOverride, wantMaxContext: wantOverride},
 	} {
 		entry := bySlug[testCase.slug]
@@ -977,6 +997,8 @@ func TestCodexClientModelsResponse_UnrelatedCustomProviderRetainsFallback(t *tes
 		{
 			ID:          "my-unrelated-custom-model",
 			DisplayName: "Unrelated Model",
+			Type:        "openai-compatibility",
+			Thinking:    &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 		},
 	})
 	t.Cleanup(func() {
@@ -1012,13 +1034,37 @@ func TestCodexClientModelsResponse_UnrelatedCustomProviderRetainsFallback(t *tes
 	if got, _ := entry["supports_search_tool"].(bool); got {
 		t.Errorf("supports_search_tool = %v, want false for non-template fallback", got)
 	}
-	// Fallback model without explicit modalities retains generic gpt-5.5 fallback modalities
 	mods, okMods := entry["input_modalities"].([]any)
-	if !okMods || len(mods) != 2 {
-		t.Fatalf("unrelated model input_modalities = %#v, want generic [text image]", entry["input_modalities"])
+	if !okMods || len(mods) != 2 || mods[0] != "text" || mods[1] != "image" {
+		t.Fatalf("unrelated model input_modalities = %#v, want [text image]", entry["input_modalities"])
+	}
+	assertCodexClientReasoningEfforts(t, entry, []string{"low", "medium", "high"})
+	if got := stringModelValue(entry, "default_reasoning_level"); got != "medium" {
+		t.Errorf("default_reasoning_level = %q, want medium", got)
+	}
+	if got := intModelValue(entry, "max_tokens"); got != 128_000 {
+		t.Errorf("max_tokens = %d, want 128000", got)
 	}
 	if got, ok := entry["supports_image_detail_original"].(bool); !ok || got {
 		t.Errorf("supports_image_detail_original = %#v, want false for generic fallback", entry["supports_image_detail_original"])
+	}
+}
+
+func TestCodexClientModelsResponse_UnregisteredModelGetsFiveTierFallback(t *testing.T) {
+	resp := BuildResponse([]map[string]any{
+		{"id": "unregistered-codex-fallback-test-model"},
+	}, nil, false)
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", resp["models"])
+	}
+	entry := models[0]
+	assertCodexClientReasoningEfforts(t, entry, []string{"low", "medium", "high", "xhigh", "max"})
+	if got := stringModelValue(entry, "default_reasoning_level"); got != "medium" {
+		t.Errorf("default_reasoning_level = %q, want medium", got)
+	}
+	if got := intModelValue(entry, "max_tokens"); got != 128_000 {
+		t.Errorf("max_tokens = %d, want 128000", got)
 	}
 }
 
