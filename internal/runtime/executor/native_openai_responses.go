@@ -33,8 +33,8 @@ func codexRequestTarget(from sdktranslator.Format, native bool) sdktranslator.Fo
 
 func observeNativeCacheIntent(ctx context.Context, body []byte) {
 	result, object := "absent", ""
-	if key := ojson.GetBytesNoCopy(body, "prompt_cache_key"); key.Exists() {
-		result, object = "forwarded", diagnostics.Hash(key.Raw)
+	if key := ojson.GetBytesNoCopy(body, "prompt_cache_key"); key.Type == ojson.String && key.String() != "" {
+		result, object = "forwarded", diagnostics.Hash(key.String())
 	}
 	diagnostics.Record(ctx, diagnostics.Event{Layer: "cache_key", Method: "native_api", Result: result, ObjectHash: object})
 }

@@ -3,8 +3,9 @@ package usage
 import (
 	"context"
 	"encoding/json"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"testing"
+
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func TestCacheObservationExportImportAndIsolation(t *testing.T) {

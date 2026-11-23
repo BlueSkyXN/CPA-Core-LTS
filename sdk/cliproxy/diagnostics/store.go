@@ -11,7 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
+	logging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 const (
@@ -44,24 +47,30 @@ type Event struct {
 }
 
 type Trace struct {
-	Version          uint32    `json:"version"`
-	ID               string    `json:"id"`
-	InstanceID       string    `json:"instance_id"`
-	LogicalRequestID string    `json:"logical_request_id"`
-	SessionHash      string    `json:"session_hash,omitempty"`
-	Model            string    `json:"model"`
-	SourceFormat     string    `json:"source_format"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Input            Payload   `json:"input"`
-	Events           []Event   `json:"events"`
-	Attempts         []Attempt `json:"attempts"`
-	Truncated        bool      `json:"truncated"`
+	Version          uint32               `json:"version"`
+	ID               string               `json:"id"`
+	InstanceID       string               `json:"instance_id"`
+	LogicalRequestID string               `json:"logical_request_id"`
+	TraceID          string               `json:"trace_id,omitempty"`
+	RouteScope       string               `json:"route_scope,omitempty"`
+	InputSession     *CacheRouteReference `json:"input_session,omitempty"`
+	InputPCKHash     string               `json:"input_pck_hash,omitempty"`
+	PreviousResponse string               `json:"previous_response_digest,omitempty"`
+	SessionHash      string               `json:"session_hash,omitempty"`
+	Model            string               `json:"model"`
+	SourceFormat     string               `json:"source_format"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	Input            Payload              `json:"input"`
+	Events           []Event              `json:"events"`
+	Attempts         []Attempt            `json:"attempts"`
+	Truncated        bool                 `json:"truncated"`
 }
 
 type entry struct {
-	value Trace
-	bytes int
+	value    Trace
+	bytes    int
+	revision uint64
 }
 type Store struct {
 	mu       sync.Mutex
@@ -139,6 +148,10 @@ func (s *Store) Begin(ctx context.Context, requestID, callerScope, session, mode
 	}
 	id := Hash(callerScope + "\x00" + requestID)
 	input := Snapshot(body)
+	root := ojson.Result{}
+	if input.Known {
+		root = ojson.ParseBytes(body)
+	}
 	s.mu.Lock()
 	now := s.now()
 	for key, e := range s.entries {
@@ -149,8 +162,22 @@ func (s *Store) Begin(ctx context.Context, requestID, callerScope, session, mode
 	}
 	if _, ok := s.entries[id]; !ok {
 		v := Trace{Version: 1, ID: id, InstanceID: s.instance, LogicalRequestID: bounded(requestID), Model: bounded(model), SourceFormat: bounded(format), CreatedAt: now, UpdatedAt: now, Input: input, Events: []Event{}, Attempts: []Attempt{}}
+		v.TraceID = bounded(usage.TraceIDFromContext(ctx))
+		if v.TraceID == "" {
+			v.TraceID = bounded(logging.GetRequestID(ctx))
+		}
+		if callerScope != "" {
+			v.RouteScope = Hash(s.instance + "\x00" + callerScope)
+		}
+		v.InputPCKHash = cacheDigest(root.Get("prompt_cache_key"))
+		v.PreviousResponse = cacheDigest(root.Get("previous_response_id"))
 		if session != "" {
 			v.SessionHash = Hash(session)
+			// These affinity namespaces describe a cache key or caller, not a conversation.
+			if !strings.HasPrefix(session, "pck:") && !strings.HasPrefix(session, "geminicache:") && !strings.HasPrefix(session, "user:") {
+				inputSession := cacheReference("input_session", v.SessionHash, v.RouteScope, "inbound", "session_metadata")
+				v.InputSession = &inputSession
+			}
 		}
 		b, _ := json.Marshal(v)
 		s.entries[id] = &entry{value: v, bytes: len(b)}
@@ -166,7 +193,7 @@ func (s *Store) evictLocked(keep string) {
 		old := ""
 		var at time.Time
 		for key, e := range s.entries {
-			if key != keep && (old == "" || e.value.UpdatedAt.Before(at)) {
+			if key != keep && (old == "" || e.value.UpdatedAt.Before(at) || e.value.UpdatedAt.Equal(at) && key < old) {
 				old, at = key, e.value.UpdatedAt
 			}
 		}
@@ -205,6 +232,7 @@ func (r *Ref) update(fn func(*Trace)) bool {
 	}
 	s.bytes += len(b) - e.bytes
 	e.bytes = len(b)
+	e.revision++
 	s.evictLocked(r.id)
 	return retained
 }

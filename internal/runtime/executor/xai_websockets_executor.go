@@ -614,7 +614,9 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	reporter.ObserveWebsocketHandshakePayload(wsReqBody, wsURL, wsHeaders)
 	if errSend := writeWebsocketPayloadMessage("xai", sess, conn, wsReqBody); errSend != nil {
+		reporter.ObserveWebsocketSendFailure()
 		errSend = mapXAIWebsocketWriteError(sess, conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 		if sess != nil && !isEphemeralSession {
@@ -670,7 +672,9 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			logXAIWebsocketRequest(executionSessionID, authID, wsURL, wsReqBodyRetry)
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
+			reporter.ObserveWebsocketHandshakePayload(wsReqBodyRetry, wsURL, wsHeaders)
 			if errSendRetry := writeWebsocketPayloadMessage("xai", sess, conn, wsReqBodyRetry); errSendRetry != nil {
+				reporter.ObserveWebsocketSendFailure()
 				errSendRetry = mapXAIWebsocketWriteError(sess, connRetry, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
@@ -816,6 +820,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				continue
 			}
 			reporter.MarkFirstResponseByte()
+			reporter.ObserveWebsocketDiagnostics(payload)
 			reporter.ObserveTimingMessage("openai-response", payload)
 			helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)

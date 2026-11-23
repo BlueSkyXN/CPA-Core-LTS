@@ -2,10 +2,49 @@ package helps
 
 import (
 	"context"
+	"net/http"
+	"sync"
+
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/diagnostics"
-	"net/http"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+type attemptCacheUsage struct {
+	attempt     *diagnostics.AttemptRef
+	mu          sync.Mutex
+	observation *usage.CacheObservation
+}
+
+func (r *UsageReporter) trackAttemptCacheUsage(attempt *diagnostics.AttemptRef, websocket bool) *diagnostics.AttemptRef {
+	meter := &attemptCacheUsage{}
+	attempt = attempt.WithUsageObserver(r.provider, func(update *usage.CacheObservation) {
+		meter.mu.Lock()
+		defer meter.mu.Unlock()
+		meter.observation = usage.MergeCacheObservations(meter.observation, update)
+	})
+	meter.attempt = attempt
+	r.sizeMu.Lock()
+	defer r.sizeMu.Unlock()
+	r.attemptCacheUsage = meter
+	r.diagnosticWebsocketAttempt = nil
+	if websocket {
+		r.diagnosticWebsocketAttempt = attempt
+	}
+	return attempt
+}
+
+func (r *UsageReporter) cacheUsageSnapshot() (*diagnostics.AttemptRef, *usage.CacheObservation) {
+	r.sizeMu.Lock()
+	meter := r.attemptCacheUsage
+	r.sizeMu.Unlock()
+	if meter == nil {
+		return nil, nil
+	}
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	return meter.attempt, meter.observation.Clone()
+}
 
 // DiagnosticsContext binds transform events to this usage execution without
 // modifying the parent selection context shared by later retries.
@@ -71,10 +110,15 @@ func (r *UsageReporter) ObserveWebsocketDiagnosticsRequest(body []byte, endpoint
 	if sessionID != "" {
 		headers.Set("Session-Id", sessionID)
 	}
-	attempt := r.diagnosticExecution.Begin("websocket", diagnostics.EndpointKind(endpoint), body, headers)
-	r.sizeMu.Lock()
-	r.diagnosticWebsocketAttempt = attempt
-	r.sizeMu.Unlock()
+	r.ObserveWebsocketHandshakePayload(body, endpoint, headers)
+}
+
+func (r *UsageReporter) ObserveWebsocketHandshakePayload(body []byte, endpoint string, headers http.Header) {
+	if r == nil {
+		return
+	}
+	attempt := r.diagnosticExecution.Begin("websocket", endpoint, body, headers)
+	r.trackAttemptCacheUsage(attempt, true)
 }
 func (r *UsageReporter) SetDiagnosticsInput(body []byte) {
 	if r == nil || r.diagnosticExecution == nil || r.diagnosticExecution.Ref == nil {

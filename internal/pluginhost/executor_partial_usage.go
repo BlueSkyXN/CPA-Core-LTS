@@ -83,6 +83,7 @@ func parseExecutorPartialUsage(raw []byte) (coreusage.Detail, bool) {
 		return coreusage.Detail{}, false
 	}
 	var d coreusage.Detail
+	var hasCacheRead, hasCacheWrite bool
 	for name, value := range fields {
 		n, err := strconv.ParseInt(string(value), 10, 64)
 		if err != nil || n < 0 {
@@ -97,8 +98,10 @@ func parseExecutorPartialUsage(raw []byte) (coreusage.Detail, bool) {
 			d.TotalTokens = n
 		case "cache_read_tokens":
 			d.CacheReadTokens = n
+			hasCacheRead = true
 		case "cache_creation_tokens":
 			d.CacheCreationTokens = n
+			hasCacheWrite = true
 		case "reasoning_tokens":
 			d.ReasoningTokens = n
 		default:
@@ -115,5 +118,19 @@ func parseExecutorPartialUsage(raw []byte) (coreusage.Detail, bool) {
 	}
 	d.CachedTokens = d.CacheReadTokens
 	d.TokenBreakdown = coreusage.NewPartialSubsetTokenBreakdown(input, d.CacheReadTokens, d.CacheCreationTokens, output, d.ReasoningTokens, d.TotalTokens)
+	obs := &coreusage.CacheObservation{
+		Version: 1,
+		Read:    coreusage.CacheTokenObservation{State: "absent"},
+		Write:   coreusage.CacheTokenObservation{State: "absent"},
+	}
+	if hasCacheRead {
+		read := d.CacheReadTokens
+		obs.Read = coreusage.CacheTokenObservation{State: "present", Value: &read, Source: "partial_usage.cache_read_tokens"}
+	}
+	if hasCacheWrite {
+		write := d.CacheCreationTokens
+		obs.Write = coreusage.CacheTokenObservation{State: "present", Value: &write, Source: "partial_usage.cache_creation_tokens"}
+	}
+	d.CacheObservation = obs
 	return d, true
 }

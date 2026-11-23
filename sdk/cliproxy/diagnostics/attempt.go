@@ -4,15 +4,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"github.com/MoeForge/moego/ojson"
-	"github.com/klauspost/compress/zstd"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MoeForge/moego/ojson"
+	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 const MaxResponseFrame = 2 << 20
@@ -27,6 +29,13 @@ type Attempt struct {
 	AuthType             string                  `json:"auth_type,omitempty"`
 	Transport            string                  `json:"transport"`
 	Endpoint             string                  `json:"endpoint"`
+	RouteScope           string                  `json:"route_scope,omitempty"`
+	CacheReferences      []CacheRouteReference   `json:"cache_references,omitempty"`
+	CacheWriteByTTL      map[string]int64        `json:"cache_write_by_ttl,omitempty"`
+	CacheControl         *CacheControl           `json:"cache_control,omitempty"`
+	PreviousResponse     string                  `json:"previous_response_digest,omitempty"`
+	PreviousSource       string                  `json:"previous_source,omitempty"`
+	ResponseIDs          []string                `json:"response_ids,omitempty"`
 	SessionHeaderHash    string                  `json:"session_header_hash,omitempty"`
 	StartedAt            time.Time               `json:"started_at"`
 	Status               int                     `json:"status,omitempty"`
@@ -40,6 +49,7 @@ type Attempt struct {
 	ComparisonIDSent     string                  `json:"comparison_id_sent"`
 	DiagnosticReturned   bool                    `json:"diagnostic_returned"`
 	Diagnostic           *Diagnostic             `json:"diagnostic,omitempty"`
+	InputTokens          *int64                  `json:"input_tokens,omitempty"`
 	CacheObservation     *usage.CacheObservation `json:"cache_observation,omitempty"`
 	InputTransformations int                     `json:"input_transformations,omitempty"`
 	ResponseTruncated    bool                    `json:"response_truncated"`
@@ -50,14 +60,36 @@ type Diagnostic struct {
 	CacheMissedTokens        *int64 `json:"cache_missed_tokens,omitempty"`
 	ComparisonReusableTokens *int64 `json:"comparison_reusable_tokens,omitempty"`
 }
+
+func (a Attempt) hasOfficialCacheLoss() bool {
+	d := a.Diagnostic
+	if !a.DiagnosticReturned || d == nil || d.Type == "comparison_response_not_found" || d.Type == "unavailable" {
+		return false
+	}
+	return d.Type == "cache_miss" || d.CacheMissedTokens != nil && *d.CacheMissedTokens > 0
+}
+
 type Execution struct {
 	Input                                    *Payload
 	Ref                                      *Ref
 	ID, Provider, Model, AuthIndex, AuthType string
 }
 type AttemptRef struct {
-	ref    *Ref
-	number int
+	ref          *Ref
+	number       int
+	provider     string
+	observeUsage func(*usage.CacheObservation)
+}
+
+// WithUsageObserver shares wire parsing with the execution's metering, even
+// when the bounded diagnostic store did not retain this attempt.
+func (a *AttemptRef) WithUsageObserver(provider string, observe func(*usage.CacheObservation)) *AttemptRef {
+	if a == nil {
+		a = &AttemptRef{}
+	}
+	a.provider = provider
+	a.observeUsage = observe
+	return a
 }
 
 func (e *Execution) Begin(transport, endpoint string, payload []byte, headers http.Header) *AttemptRef {
@@ -65,26 +97,19 @@ func (e *Execution) Begin(transport, endpoint string, payload []byte, headers ht
 		return nil
 	}
 	a := Attempt{ExecutionID: e.ID, Provider: bounded(e.Provider), Model: bounded(e.Model), AuthIndex: bounded(e.AuthIndex), AuthType: bounded(e.AuthType), Transport: transport, Endpoint: endpoint, Outcome: "started", ObservationState: "not_observed", Request: Snapshot(payload), ComparisonIDSent: "unknown"}
+	if strings.Contains(endpoint, "://") {
+		a.Endpoint = EndpointKind(endpoint)
+	}
 	a.DecisionID = e.Ref.decisionID
 	a.Input = e.Input
-	if a.Request.Known {
-		a.ComparisonIDSent = "absent"
-		if _, ok := a.Request.Fields["prompt_cache_options.comparison_response_id"]; ok {
-			a.ComparisonIDSent = "present"
-		}
-	}
-	for _, key := range []string{"Session-Id", "Session_id", "X-Session-Id"} {
-		if v := headers.Get(key); v != "" {
-			a.SessionHeaderHash = Hash(v)
-			break
-		}
-	}
-	ref := &AttemptRef{ref: e.Ref}
+	a.captureCacheRoute(payload, headers)
+	ref := &AttemptRef{ref: e.Ref, provider: a.Provider}
 	retained := e.Ref.update(func(t *Trace) {
 		if len(t.Attempts) >= MaxAttempts {
 			t.Truncated = true
 			return
 		}
+		a.scopeCacheRoute(t, endpoint)
 		a.Number = len(t.Attempts) + 1
 		a.StartedAt = e.Ref.store.now()
 		ref.number = a.Number
@@ -111,7 +136,7 @@ func (e *Execution) BeginHTTP(req *http.Request) *AttemptRef {
 	if req.URL != nil {
 		endpoint = req.URL.String()
 	}
-	a := e.Begin("http", EndpointKind(endpoint), body, req.Header)
+	a := e.Begin("http", endpoint, body, req.Header)
 	if a != nil && reason != "" {
 		a.update(func(v *Attempt) { v.Request.Reason = reason })
 	}
@@ -155,6 +180,20 @@ func (a *AttemptRef) update(fn func(*Attempt)) {
 		}
 	})
 }
+
+// RecordUsage backfills finalized usage on the retained send that supplied it.
+func (a *AttemptRef) RecordUsage(detail usage.Detail) {
+	if detail.InputTokens <= 0 && detail.CacheObservation == nil {
+		return
+	}
+	a.update(func(v *Attempt) {
+		if detail.InputTokens > 0 {
+			v.InputTokens = usage.Int64Ptr(detail.InputTokens)
+		}
+		v.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation.Clone(), v.CacheObservation)
+	})
+}
+
 func (a *AttemptRef) Status(status int, failed bool) {
 	a.update(func(v *Attempt) {
 		v.Status = status
@@ -186,18 +225,62 @@ func (a *AttemptRef) Observe(data []byte) {
 	if r := root.Get("response"); r.IsObject() {
 		root = r
 	}
+	if message := root.Get("message"); eventType == "message_start" && message.IsObject() {
+		root = message
+	}
+	if interaction := root.Get("interaction"); interaction.IsObject() {
+		root = interaction
+	}
 	usageNode := root.Get("usage")
+	gemini := root.Get("usageMetadata")
+	if !gemini.Exists() {
+		gemini = root.Get("usage_metadata")
+	}
 	diagnostic := root.Get("prompt_cache_diagnostics")
-	if !usageNode.IsObject() && !diagnostic.IsObject() && eventType != "response.created" && eventType != "response.completed" && eventType != "response.done" && eventType != "response.incomplete" && eventType != "response.failed" && root.Get("object").String() != "response" {
+	object := root.Get("object").String()
+	responseObject := object == "response" || object == "chat.completion" || object == "chat.completion.chunk"
+	responseEvent := eventType == "response.created" || eventType == "response.completed" ||
+		eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" ||
+		eventType == "message" || eventType == "message_start" || eventType == "message_stop"
+	if !usageNode.IsObject() && !gemini.IsObject() && !diagnostic.IsObject() && !responseObject && !responseEvent {
 		return
 	}
+	claude := a.provider == "claude" || strings.HasPrefix(eventType, "message_")
+	var observation *usage.CacheObservation
+	switch {
+	case gemini.IsObject():
+		observation = usage.ObserveGeminiCache(gemini)
+	case claude:
+		observation = usage.ObserveClaudeCache(usageNode)
+	case strings.Contains(eventType, "interaction.") || ojson.GetBytes(data, "interaction").IsObject():
+		observation = usage.ObserveInteractionsCache(usageNode)
+	default:
+		observation = usage.ObserveOpenAICache(usageNode)
+	}
+	if a.observeUsage != nil && observation != nil &&
+		(observation.Read.State != "absent" || observation.Write.State != "absent") {
+		a.observeUsage(observation)
+	}
 	a.update(func(v *Attempt) {
-		v.ObservationState = "partial"
-		if eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed" || eventType == "response.done" || eventType == "" && (root.Get("object").String() == "response" || root.Get("object").String() == "chat.completion") {
+		if v.ObservationState != "observed" {
+			v.ObservationState = "partial"
+		}
+		if gemini.IsObject() || eventType == "message" || eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed" || eventType == "response.done" || eventType == "" && (root.Get("object").String() == "response" || root.Get("object").String() == "chat.completion") {
 			v.ObservationState = "observed"
 		}
-		if id := safeToken(root.Get("id").String()); id != "" {
+		id := safeToken(root.Get("id").String())
+		if id == "" && gemini.IsObject() {
+			id = safeToken(root.Get("responseId").String())
+		}
+		if id != "" {
 			v.ResponseID = id
+			if !slices.Contains(v.ResponseIDs, id) {
+				if len(v.ResponseIDs) < 4 {
+					v.ResponseIDs = append(v.ResponseIDs, id)
+				} else {
+					v.ResponseTruncated = true
+				}
+			}
 		}
 		if model := safeToken(root.Get("model").String()); model != "" {
 			v.ResponseModel = model
@@ -205,9 +288,24 @@ func (a *AttemptRef) Observe(data []byte) {
 		if status := safeToken(root.Get("status").String()); status != "" {
 			v.ResponseStatus = status
 		}
-		if usageNode.IsObject() {
-			v.CacheObservation = &usage.CacheObservation{Version: 1, Read: observedCount(usageNode, "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"), Write: observedCount(usageNode, "input_tokens_details.cache_write_tokens", "input_tokens_details.cache_creation_tokens", "prompt_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_creation_tokens")}
+		// Claude supplies the ID in message_start. A consumed partial stream
+		// cannot serve as a predecessor until its message_stop is observed.
+		if v.Provider == "claude" && eventType == "message_stop" && v.ResponseID != "" {
+			v.ObservationState = "observed"
+			v.ResponseStatus = "completed"
 		}
+		if claude {
+			for _, ttl := range []string{"5m", "30m", "1h", "12h"} {
+				count := numberPointer(usageNode.Get("cache_creation.ephemeral_" + ttl + "_input_tokens"))
+				if count != nil {
+					if v.CacheWriteByTTL == nil {
+						v.CacheWriteByTTL = map[string]int64{}
+					}
+					v.CacheWriteByTTL[ttl] = *count
+				}
+			}
+		}
+		v.CacheObservation = usage.MergeCacheObservations(v.CacheObservation, observation)
 		if diagnostic.IsObject() {
 			v.DiagnosticReturned = true
 			d := &Diagnostic{Type: safeToken(diagnostic.Get("type").String()), Reason: safeToken(diagnostic.Get("reason").String())}
@@ -230,21 +328,6 @@ func numberPointer(v ojson.Result) *int64 {
 	}
 	return &n
 }
-func observedCount(node ojson.Result, paths ...string) usage.CacheTokenObservation {
-	for _, path := range paths {
-		v := node.Get(path)
-		if !v.Exists() {
-			continue
-		}
-		out := usage.CacheTokenObservation{State: "invalid", Source: path}
-		if n := numberPointer(v); n != nil {
-			out.State = "present"
-			out.Value = n
-		}
-		return out
-	}
-	return usage.CacheTokenObservation{State: "absent"}
-}
 
 // WrapResponse observes only bytes already consumed by the caller. It never
 // pre-reads a stream, changes chunks, or buffers before downstream delivery.
@@ -252,19 +335,31 @@ func (a *AttemptRef) WrapResponse(body io.ReadCloser, contentType, encoding stri
 	if a == nil || body == nil {
 		return body
 	}
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	binary := mediaType == "application/octet-stream" || strings.HasPrefix(mediaType, "image/") ||
+		strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "video/")
+	if binary && a.ref == nil {
+		return body
+	}
 	if encoding != "" {
 		a.update(func(v *Attempt) { v.ObservationState = "encoded_response" })
 	}
-	return &observedBody{ReadCloser: body, attempt: a, sse: strings.Contains(contentType, "text/event-stream"), encoded: encoding != ""}
+	return &observedBody{
+		ReadCloser: body, attempt: a, sse: mediaType == "text/event-stream",
+		skipPayload: binary || encoding != "",
+	}
 }
 
 type observedBody struct {
 	io.ReadCloser
-	mu                           sync.Mutex
-	attempt                      *AttemptRef
-	buf                          []byte
-	sse, encoded, dropping, done bool
-	handedOff                    bool
+	mu                               sync.Mutex
+	attempt                          *AttemptRef
+	buf                              []byte
+	event                            []byte
+	sse, skipPayload, dropping, done bool
+	droppingLine                     bool
+	handedOff                        bool
 }
 
 // Decoder handoff keeps the same attempt while parsing consumed decoded bytes.
@@ -272,7 +367,7 @@ type observedBody struct {
 func (b *observedBody) DecodedDiagnostics() *AttemptRef {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.encoded, b.handedOff = true, true
+	b.skipPayload, b.handedOff = true, true
 	return b.attempt
 }
 
@@ -280,7 +375,7 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if n > 0 && !b.encoded && !b.done {
+	if n > 0 && !b.skipPayload && !b.done {
 		b.consume(p[:n])
 	}
 	if err != nil {
@@ -306,8 +401,20 @@ func (b *observedBody) finish(state string) {
 	if b.handedOff {
 		return
 	}
-	if !b.encoded && !b.dropping && len(b.buf) > 0 {
-		b.attempt.Observe(b.buf)
+	if !b.skipPayload {
+		if b.sse {
+			if state == "body_consumed" {
+				// Some upstreams finish their last event at a clean EOF.
+				if len(b.buf) > 0 {
+					b.consumeEventLine(b.buf)
+				}
+				b.finishEvent()
+			} else if len(b.buf) > 0 || len(b.event) > 0 {
+				b.attempt.Truncate()
+			}
+		} else if !b.dropping && len(b.buf) > 0 {
+			b.attempt.Observe(b.buf)
+		}
 	}
 	b.attempt.End(state)
 }
@@ -328,25 +435,52 @@ func (b *observedBody) consume(data []byte) {
 		if i >= 0 {
 			part = data[:i]
 		}
-		if !b.dropping {
+		if !b.droppingLine {
 			if len(b.buf)+len(part) <= MaxResponseFrame {
 				b.buf = append(b.buf, part...)
 			} else {
 				b.buf = nil
-				b.dropping = true
+				b.dropping, b.droppingLine = true, true
 				b.attempt.Truncate()
 			}
 		}
 		if i < 0 {
 			return
 		}
-		if !b.dropping {
-			b.attempt.Observe(b.buf)
+		if !b.droppingLine {
+			b.consumeEventLine(b.buf)
 		}
 		b.buf = b.buf[:0]
-		b.dropping = false
+		b.droppingLine = false
 		data = data[i+1:]
 	}
+}
+
+func (b *observedBody) consumeEventLine(line []byte) {
+	line = bytes.TrimSuffix(line, []byte{'\r'})
+	if len(line) == 0 {
+		b.finishEvent()
+		return
+	}
+	value, ok := bytes.CutPrefix(line, []byte("data:"))
+	if !ok || b.dropping {
+		return
+	}
+	if len(b.event)+len(value)+1 > MaxResponseFrame {
+		b.dropping = true
+		b.attempt.Truncate()
+		return
+	}
+	b.event = append(b.event, bytes.TrimPrefix(value, []byte{' '})...)
+	b.event = append(b.event, '\n')
+}
+
+func (b *observedBody) finishEvent() {
+	if !b.dropping && len(b.event) > 0 {
+		b.attempt.Observe(b.event)
+	}
+	b.event = b.event[:0]
+	b.dropping = false
 }
 
 func EndpointKind(endpoint string) string {

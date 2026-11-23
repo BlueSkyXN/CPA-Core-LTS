@@ -9,6 +9,7 @@ import (
 )
 
 const MaxPayloadBytes = 32 << 20
+const maxPayloadFields = 32
 
 type Field struct {
 	Digest string `json:"digest"`
@@ -45,11 +46,15 @@ func Snapshot(body []byte) Payload {
 	}
 	// Chat/Claude/Gemini 的内容与推理配置也参与对比，只保留摘要。
 	// request 覆盖 Gemini CLI 的请求包装；连同下方子字段最多 32 项。
-	for _, key := range []string{"messages", "system", "contents", "systemInstruction", "system_instruction", "generationConfig", "generation_config", "thinking", "reasoning_effort", "request"} {
+	for _, key := range []string{"messages", "system", "contents", "systemInstruction", "system_instruction", "generationConfig", "generation_config", "thinking", "reasoning_effort", "request", "thread", "diagnostics"} {
 		selected[key] = true
 	}
 	add := func(path string, value ojson.Result) {
 		if !value.Exists() {
+			return
+		}
+		if len(out.Fields) >= maxPayloadFields {
+			out.Known, out.Reason = false, "field_limit"
 			return
 		}
 		f := Field{Digest: Hash(value.Raw)}
@@ -77,12 +82,14 @@ func Snapshot(body []byte) Payload {
 		switch path {
 		case "reasoning":
 			add("reasoning.effort", value.Get("effort"))
+		case "thread", "diagnostics":
+			add(path+".previous_message_id", value.Get("previous_message_id"))
 		case "prompt_cache_options":
 			for _, field := range []string{"comparison_response_id", "mode", "ttl", "prewarm"} {
 				add(path+"."+field, value.Get(field))
 			}
 		}
-		return true
+		return out.Known
 	})
 	return out
 }

@@ -43,6 +43,13 @@ func (m *Manager) CacheDiagnosticsOverview() diagnostics.Overview {
 	return m.cacheDiagnostics.Overview()
 }
 
+func (m *Manager) LookupCacheDiagnostics(q diagnostics.TraceQuery) ([]diagnostics.TraceRow, string) {
+	if m == nil {
+		return []diagnostics.TraceRow{}, ""
+	}
+	return m.cacheDiagnostics.Lookup(q)
+}
+
 func recordCacheSelection(ctx context.Context, auth *Auth, opts exec.Options, err error) {
 	event := diagnostics.Event{Layer: "account", Method: "selection", Result: "selected", SelectionID: selectionIDFromOptions(opts)}
 	if err != nil {

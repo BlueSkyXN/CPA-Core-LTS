@@ -258,9 +258,16 @@ func TestUsageAnalyticsPanelParity(t *testing.T) {
 			}
 			result := analyticsRead(t, s, QueryRequest{FromMS: f.From, ToMS: f.To, Timezone: f.Timezone})
 			actualBytes, _ := json.Marshal(result.Data)
-			var actual, expected any
+			var actual, expected map[string]any
 			json.Unmarshal(actualBytes, &actual)
 			json.Unmarshal(f.Expected, &expected)
+			// 既有 v1 fixture 同时验证旧消费者的投影。观测项在专门用例对账。
+			delete(actual["cache"].(map[string]any), "observed")
+			for _, grain := range []string{"hour", "day"} {
+				for _, point := range actual[grain].(map[string]any)["cache"].([]any) {
+					delete(point.(map[string]any), "observed")
+				}
+			}
 			if !reflect.DeepEqual(actual, expected) {
 				t.Fatalf("parity mismatch\nactual: %s\nexpected: %s", actualBytes, f.Expected)
 			}
