@@ -147,7 +147,7 @@ The field names and mandatory thinking behavior follow the official [GLM-5.3 mod
 
 `glm-5.3-flash`, `glm-5.3-flashx`, and `glm-5.4` receive image blocks directly. The plugin accepts Anthropic image blocks and images translated from Responses or Chat Completions. Supported sources are base64 JPEG, PNG, GIF and WebP, and HTTP(S) image URLs without embedded credentials. The plugin validates and forwards the source for upstream processing.
 
-For `glm-5.3`, `gateway_vision` enables image input through Coding Plan's server-side vision service. The plugin adds the `image_analysis` declaration to `glm-5.3` requests containing images. Set `gateway_vision: false` to make `glm-5.3` text-only. The plugin removes legacy `type: image_analysis` declarations from requests outside the gateway vision route. Ordinary functions named `image_analysis` remain available.
+For `glm-5.3`, `gateway_vision` enables image input through Coding Plan's server-side vision service. The plugin adds the `image_analysis` declaration to `glm-5.3` requests containing images. Set `gateway_vision: false` to make `glm-5.3` text-only. Outside the gateway vision route, the plugin removes legacy `type: image_analysis` declarations, references to those deleted definitions, and tool choices that they leave without a target. Ordinary functions named `image_analysis` and their references remain available.
 
 ### Client tools and native WebSearch
 
@@ -160,6 +160,8 @@ From 0.6.2, the plugin and matching Core preserve provider-executed `webReader` 
 The matching Core preserves optional plugin `ModelInfo.NativeCapabilities.WebSearch` metadata. Coding Plan declares it `true` for `glm-5.3`, `glm-5.3-flash`, and `glm-5.3-flashx`. The first two were verified on 2026-10-01. Flashx inherits the Flash declaration. The declaration for `glm-5.4` and custom IDs is left unknown. CPA-aware `/v1/models?client_version=cpa` consumers receive `cpa_capabilities.web_search=true` for models with a positive declaration. Other clients use their own capability settings.
 
 Coding Plan additionally declares `ModelInfo.NativeCapabilities.WebSearchReplay = "bigmodel"` on the same model IDs. Core's Responses translator uses that field to replay refer-tagged BigModel results verbatim. Native Anthropic routes use Anthropic's `encrypted_content` replay format.
+
+When a Responses request continues on `glm-5.4`, Core includes readable BigModel search hits and page contents from the request as assistant text. This fallback requires the results to be present in the effective request. Search result caching is scoped by model, account, caller and session.
 
 For ZCode, set only this model property, preserving ordinary tool support and the rest of the model configuration:
 

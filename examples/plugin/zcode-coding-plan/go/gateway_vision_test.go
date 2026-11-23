@@ -156,6 +156,48 @@ func TestGatewayVisionFiltersSystemDeclarations(t *testing.T) {
 	}
 }
 
+func TestGatewayVisionFiltersDanglingToolReferences(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.GatewayVision = false
+	cfg.applyExtraModels([]string{"glm-5.3-flashx"})
+	const reference = `{"type":"tool_reference","name":"image_analysis"}`
+	for _, model := range cfg.Models {
+		for _, call := range []struct {
+			name string
+			run  func(executorRequest, *config, string) (map[string]any, error)
+		}{
+			{"messages", transformExecution},
+			{"count_tokens", transformCountTokenRequest},
+		} {
+			t.Run(model+"/"+call.name, func(t *testing.T) {
+				const input = `{"model":%q,"max_tokens":100,"tools":[{"type":"image_analysis","name":"image_analysis"}%s],"tool_choice":{"type":"tool","name":"image_analysis"},"messages":[{"role":"system","clear_at":1,"content":[{"type":"tool_addition","tool":` + reference + `}%s,{"type":"text","text":"keep"}]},{"role":"user","content":"hello"}]}`
+				run := func(extraTool, extraChange string) map[string]any {
+					t.Helper()
+					body, err := call.run(executorRequest{Payload: []byte(fmt.Sprintf(input, model, extraTool, extraChange))}, cfg, "session")
+					if err != nil {
+						t.Fatal(err)
+					}
+					return body
+				}
+				clean := run("", `,{"type":"tool_removal","tool":`+reference+`}`)
+				if clean["tools"] != nil || clean["tool_choice"] != nil ||
+					string(encode(clean["messages"].([]any)[0])) != `{"clear_at":1,"content":[{"text":"keep","type":"text"}],"role":"system"}` {
+					t.Fatal("removed gateway tool must leave no dangling references or tool choice")
+				}
+
+				ordinary := run(`,{"name":"image_analysis","input_schema":{"type":"object"}}`, "")
+				systemMessage := ordinary["messages"].([]any)[0].(map[string]any)
+				addition := systemMessage["content"].([]any)[0].(map[string]any)
+				referencedTool, _ := addition["tool"].(map[string]any)
+				if ordinary["tool_choice"] == nil || len(ordinary["tools"].([]any)) != 1 ||
+					referencedTool["type"] != "tool_reference" || referencedTool["name"] != "image_analysis" {
+					t.Fatal("ordinary tool, its reference and choice must be retained")
+				}
+			})
+		}
+	}
+}
+
 func TestGatewayVisionHistoryFolding(t *testing.T) {
 	call := decodeBlock(t, gatewayVisionCall)
 	result := decodeBlock(t, gatewayVisionResult)
