@@ -58,6 +58,33 @@ func TestCacheUsageDoesNotCarryReadsAcrossAttempts(t *testing.T) {
 	}
 }
 
+func TestCacheUsageBackfillFollowsTrackedAttempt(t *testing.T) {
+	store := diagnostics.NewStore()
+	ctx := store.Begin(t.Context(), "tracked-send", "caller", "", "model", "responses", []byte(`{}`))
+	reporter := NewUsageReporter(ctx, "codex", "model", nil)
+	execution := reporter.diagnosticExecution
+
+	first := reporter.trackAttemptCacheUsage(execution.Begin("http", "https://fixture.invalid/v1/responses", nil, nil), false)
+	first.Observe([]byte(`{"usage":{"input_tokens_details":{"cached_tokens":3}}}`))
+
+	// A new send can be retained before its meter is installed. The usage
+	// snapshot still belongs to the meter which supplied the parsed evidence.
+	second := execution.Begin("http", "https://fixture.invalid/v1/responses", nil, nil)
+	if second == nil {
+		t.Fatal("expected second attempt")
+	}
+	reporter.buildRecord(usage.Detail{InputTokens: 10}, false)
+
+	trace, ok := store.Get(execution.Ref.ID())
+	if !ok || len(trace.Attempts) != 2 {
+		t.Fatal("expected two retained attempts")
+	}
+	earlier, later := trace.Attempts[0], trace.Attempts[1]
+	if earlier.InputTokens == nil || *earlier.InputTokens != 10 || later.InputTokens != nil || later.CacheObservation != nil {
+		t.Fatalf("backfill did not stay with its meter: earlier=%+v later=%+v", earlier, later)
+	}
+}
+
 func TestCacheUsageRequiresCompleteSSEEvent(t *testing.T) {
 	reporter := NewUsageReporter(t.Context(), "openai-compat", "model", nil)
 	attempt := reporter.trackAttemptCacheUsage(nil, false)

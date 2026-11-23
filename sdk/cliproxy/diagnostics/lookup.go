@@ -227,27 +227,3 @@ func focusMatches(focus string, trace *Trace, attempt *Attempt) bool {
 		return false
 	}
 }
-
-// RecordUsage adds finalized parser evidence to the latest retained attempt of this execution.
-func (e *Execution) RecordUsage(detail usage.Detail) {
-	if e == nil || e.Ref == nil || (detail.InputTokens <= 0 && detail.CacheObservation == nil) {
-		return
-	}
-	n := int(e.lastAttempt.Load())
-	if n <= 0 {
-		return
-	}
-	e.Ref.update(func(t *Trace) {
-		if n > len(t.Attempts) {
-			return
-		}
-		a := &t.Attempts[n-1]
-		if a.ExecutionID != e.ID {
-			return
-		}
-		if detail.InputTokens > 0 {
-			a.InputTokens = usage.Int64Ptr(detail.InputTokens)
-		}
-		a.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation.Clone(), a.CacheObservation)
-	})
-}

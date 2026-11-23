@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
@@ -74,7 +73,6 @@ type Execution struct {
 	Input                                    *Payload
 	Ref                                      *Ref
 	ID, Provider, Model, AuthIndex, AuthType string
-	lastAttempt                              atomic.Int64
 }
 type AttemptRef struct {
 	ref          *Ref
@@ -118,10 +116,8 @@ func (e *Execution) Begin(transport, endpoint string, payload []byte, headers ht
 		t.Attempts = append(t.Attempts, a)
 	})
 	if !retained || ref.number == 0 {
-		e.lastAttempt.Store(0)
 		return nil
 	}
-	e.lastAttempt.Store(int64(ref.number))
 	return ref
 }
 func (e *Execution) BeginHTTP(req *http.Request) *AttemptRef {
@@ -184,6 +180,20 @@ func (a *AttemptRef) update(fn func(*Attempt)) {
 		}
 	})
 }
+
+// RecordUsage backfills finalized usage on the retained send that supplied it.
+func (a *AttemptRef) RecordUsage(detail usage.Detail) {
+	if detail.InputTokens <= 0 && detail.CacheObservation == nil {
+		return
+	}
+	a.update(func(v *Attempt) {
+		if detail.InputTokens > 0 {
+			v.InputTokens = usage.Int64Ptr(detail.InputTokens)
+		}
+		v.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation.Clone(), v.CacheObservation)
+	})
+}
+
 func (a *AttemptRef) Status(status int, failed bool) {
 	a.update(func(v *Attempt) {
 		v.Status = status

@@ -11,6 +11,7 @@ import (
 )
 
 type attemptCacheUsage struct {
+	attempt     *diagnostics.AttemptRef
 	mu          sync.Mutex
 	observation *usage.CacheObservation
 }
@@ -22,6 +23,7 @@ func (r *UsageReporter) trackAttemptCacheUsage(attempt *diagnostics.AttemptRef, 
 		defer meter.mu.Unlock()
 		meter.observation = usage.MergeCacheObservations(meter.observation, update)
 	})
+	meter.attempt = attempt
 	r.sizeMu.Lock()
 	defer r.sizeMu.Unlock()
 	r.attemptCacheUsage = meter
@@ -32,16 +34,16 @@ func (r *UsageReporter) trackAttemptCacheUsage(attempt *diagnostics.AttemptRef, 
 	return attempt
 }
 
-func (r *UsageReporter) cacheUsageSnapshot() *usage.CacheObservation {
+func (r *UsageReporter) cacheUsageSnapshot() (*diagnostics.AttemptRef, *usage.CacheObservation) {
 	r.sizeMu.Lock()
 	meter := r.attemptCacheUsage
 	r.sizeMu.Unlock()
 	if meter == nil {
-		return nil
+		return nil, nil
 	}
 	meter.mu.Lock()
 	defer meter.mu.Unlock()
-	return meter.observation.Clone()
+	return meter.attempt, meter.observation.Clone()
 }
 
 // DiagnosticsContext binds transform events to this usage execution without

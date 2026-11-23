@@ -1023,8 +1023,9 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	if model == r.model {
 		responseModel = r.ResponseModel()
 		size = r.requestSizeSnapshot()
-		detail.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation, r.cacheUsageSnapshot())
-		r.diagnosticExecution.RecordUsage(detail)
+		attempt, observedCache := r.cacheUsageSnapshot()
+		detail.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation, observedCache)
+		attempt.RecordUsage(detail)
 		if detail.ResponseCyberProgram == "" {
 			detail.ResponseCyberProgram = r.snapshotResponseCyberProgram()
 		}

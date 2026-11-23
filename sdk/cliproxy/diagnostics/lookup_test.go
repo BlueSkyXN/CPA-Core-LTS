@@ -207,22 +207,24 @@ func TestRecordUsageIgnoresAttemptBeyondCap(t *testing.T) {
 	store := NewStore()
 	ref := FromContext(store.Begin(t.Context(), "cap-case", "caller", "", "model", "responses", []byte(`{}`)))
 	ex := &Execution{Ref: ref, ID: "execution", Provider: "codex"}
+	var latest *AttemptRef
 	for i := 0; i < MaxAttempts; i++ {
-		a := ex.Begin("http", "https://fixture.invalid/v1/responses", []byte(`{}`), nil)
-		if a == nil {
+		latest = ex.Begin("http", "https://fixture.invalid/v1/responses", []byte(`{}`), nil)
+		if latest == nil {
 			t.Fatalf("attempt %d unexpectedly dropped", i+1)
 		}
-		a.Status(200, false)
+		latest.Status(200, false)
 	}
 	trace, ok := store.Get(ref.ID())
 	if !ok || len(trace.Attempts) != MaxAttempts {
 		t.Fatalf("retained attempts = %d, want %d", len(trace.Attempts), MaxAttempts)
 	}
-	ex.RecordUsage(usage.Detail{InputTokens: 10})
-	if dropped := ex.Begin("http", "https://fixture.invalid/v1/responses", []byte(`{}`), nil); dropped != nil {
+	latest.RecordUsage(usage.Detail{InputTokens: 10})
+	dropped := ex.Begin("http", "https://fixture.invalid/v1/responses", []byte(`{}`), nil)
+	if dropped != nil {
 		t.Fatalf("expected attempt beyond cap to return nil, got %+v", dropped)
 	}
-	ex.RecordUsage(usage.Detail{InputTokens: 47})
+	dropped.WithUsageObserver("codex", nil).RecordUsage(usage.Detail{InputTokens: 47})
 	trace, _ = store.Get(ref.ID())
 	last := trace.Attempts[MaxAttempts-1]
 	if last.InputTokens == nil || *last.InputTokens != 10 {
