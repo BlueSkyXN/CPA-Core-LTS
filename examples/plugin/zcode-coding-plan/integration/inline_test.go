@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -58,20 +58,18 @@ func TestCPAInlineAuthAccount(t *testing.T) {
 	if models.Err != nil {
 		t.Fatal(models.Err)
 	}
-	if len(models.Models) != 2 {
-		t.Fatalf("default models missing: %d", len(models.Models))
-	}
-	var flash *registry.ModelInfo
+	ids := make([]string, 0, len(models.Models))
 	for _, m := range models.Models {
-		if m.ID == "glm-5.3-flash" {
-			flash = m
-		}
+		ids = append(ids, m.ID)
 		if m.ContextLength != 1000000 || m.MaxCompletionTokens != 128000 || m.Thinking == nil || len(m.Thinking.Levels) != 3 {
 			t.Fatalf("builtin metadata missing for %s", m.ID)
 		}
+		if !slices.Contains(m.SupportedInputModalities, "image") {
+			t.Fatalf("image modality missing for %s", m.ID)
+		}
 	}
-	if flash == nil || len(flash.SupportedInputModalities) != 2 {
-		t.Fatal("glm-5.3-flash image modality missing")
+	if !slices.Equal(ids, []string{"glm-5.3", "glm-5.3-flash", "glm-5.4"}) {
+		t.Fatalf("unexpected default models: %v", ids)
 	}
 	manager := coreauth.NewManager(nil, nil, nil)
 	h.RegisterExecutors(manager, nil)

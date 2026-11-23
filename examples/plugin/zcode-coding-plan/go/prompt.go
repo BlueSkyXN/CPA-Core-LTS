@@ -87,6 +87,9 @@ func transform(raw []byte, c *config, session string) (map[string]any, error) {
 			return nil, problem(400, "invalid_request", "stream must be boolean")
 		}
 	}
+	if !gatewayVisionEnabled(c, model) {
+		removeGatewayVisionDeclarations(b)
+	}
 	messages, ok := b["messages"].([]any)
 	if !ok || len(messages) == 0 {
 		return nil, problem(400, "invalid_request", "messages must be non-empty")
@@ -201,7 +204,7 @@ const (
 // injectGatewayVisionDeclaration 对 glm-5.3 的图片请求代注网关识图声明。
 // 触发后的转写由上游网关完成，插件不 fetch 图片、不本地转写、不增加模型调用。
 func injectGatewayVisionDeclaration(b map[string]any, c *config, model string) error {
-	if !c.GatewayVision || modelTemplateID(model) != "glm-5.3" {
+	if !gatewayVisionEnabled(c, model) {
 		return nil
 	}
 	images := countImageBlocks(b)

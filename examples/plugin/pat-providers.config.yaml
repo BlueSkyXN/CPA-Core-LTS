@@ -31,7 +31,8 @@ plugins:
       # 账号 = 单文件内联凭据（auth 文件直接带 api_key/device_id），无需额外私有凭据挂载。
       # 审核并关闭原始请求/错误体日志后，把 host_logging_disabled 设为 true；撤销后阻止调用：
       # host_logging_disabled: true
-      # 可选：upstream: zai 切国际区；models/model_limits 覆盖内置 glm-5.3/glm-5.3-flash 目录。
+      # 默认模型为 glm-5.3、glm-5.3-flash 和 glm-5.4。使用 models 替换目录，使用 model_limits 覆盖指定模型的限制。
+      # 设置 upstream: zai 可切换到国际区端点。
     cpa-provider-qoder:
       enabled: true
       permissions:

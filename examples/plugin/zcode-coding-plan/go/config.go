@@ -27,7 +27,7 @@ func limitsFor(c *config, model string) modelLimits {
 }
 
 // builtinModels 是无显式 allowlist 时的默认模型目录。
-var builtinModels = []string{"glm-5.3", "glm-5.3-flash"}
+var builtinModels = []string{"glm-5.3", "glm-5.3-flash", "glm-5.4"}
 
 const builtinContextLength int64 = 1000000
 const builtinOutputLimit int64 = 128000
@@ -36,9 +36,10 @@ var builtinThinkingLevels = []string{"low", "high", "max"}
 
 // modelTemplateID 只用于能力查找；请求和统计始终保留实际模型 ID。
 func modelTemplateID(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "glm-5.3", "glm-5.3-highspeed":
-		return "glm-5.3"
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch model {
+	case "glm-5.3", "glm-5.4":
+		return model
 	case "glm-5.3-flash", "glm-5.3-flashx":
 		return "glm-5.3-flash"
 	default:
@@ -48,28 +49,30 @@ func modelTemplateID(model string) string {
 
 // builtinModelLimits 按（大小写不敏感的）模型 ID 返回内置限额。
 func builtinModelLimits(model string) (modelLimits, bool) {
-	switch modelTemplateID(model) {
-	case "glm-5.3", "glm-5.3-flash":
-		return modelLimits{Context: builtinContextLength, Output: builtinOutputLimit}, true
+	if modelTemplateID(model) == "" {
+		return modelLimits{}, false
 	}
-	return modelLimits{}, false
+	return modelLimits{Context: builtinContextLength, Output: builtinOutputLimit}, true
 }
 
-// builtinModelImageInput 报告内置模板是否原生接受图片输入（flash）。
-// glm-5.3 的读图依赖网关服务端识图（见 gateway_vision 开关与 2026-11-10 探测
-// 文档），能力归 effectiveModelImageInput 按 config 判定。
+// builtinModelImageInput 报告内置模板是否原生接受图片输入。
 func builtinModelImageInput(model string) bool {
-	return modelTemplateID(model) == "glm-5.3-flash"
+	switch modelTemplateID(model) {
+	case "glm-5.3-flash", "glm-5.4":
+		return true
+	default:
+		return false
+	}
 }
 
-// effectiveModelImageInput 是图片能力的唯一判定点：flash 原生直通恒开；
-// glm-5.3 走网关识图，受 gateway_vision 开关控制——关闭时模型列表不带
-// image 模态、validateImage 拒图、transform 不代注声明，三处同判。
+func gatewayVisionEnabled(c *config, model string) bool {
+	return c.GatewayVision && modelTemplateID(model) == "glm-5.3"
+}
+
+// effectiveModelImageInput 供模型目录和请求校验使用。glm-5.3 依赖
+// gateway_vision，原生图片模型直接接收图片。
 func effectiveModelImageInput(c *config, model string) bool {
-	if modelTemplateID(model) == "glm-5.3" {
-		return c.GatewayVision
-	}
-	return builtinModelImageInput(model)
+	return gatewayVisionEnabled(c, model) || builtinModelImageInput(model)
 }
 
 func upstreamEndpoint(upstream string) string {

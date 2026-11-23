@@ -9,7 +9,7 @@ import (
 const imageFixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII="
 
 func TestThinkingEffortReachesProvider(t *testing.T) {
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "GLM-5.3-Flash", "glm-5.3-highspeed", "glm-5.3-flashx"} {
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "GLM-5.3-Flash", "glm-5.3-flashx", "glm-5.4"} {
 		for effort, expected := range map[string]string{"low": "low", "high": "high", "max": "max", "medium": "high", "med": "high", "xhigh": "max", " XHIGH ": "max"} {
 			for _, field := range []string{"reasoning_effort", "output_config", "reasoning"} {
 				t.Run(model+"/"+effort+"/"+field, func(t *testing.T) {
@@ -69,11 +69,11 @@ func TestFlashImageInputValidation(t *testing.T) {
 		{"type": "base64", "media_type": "image/png", "data": imageFixture},
 		{"type": "url", "url": "https://images.example.invalid/synthetic.png"},
 	}
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-highspeed", "glm-5.3-flashx"} {
+	cfg := defaultConfig()
+	cfg.applyExtraModels([]string{"glm-5.3-flashx"})
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"} {
 		for _, source := range sources {
 			body := map[string]any{"model": model, "max_tokens": 100, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image", "source": source}}}}}
-			cfg := defaultConfig()
-			cfg.applyExtraModels([]string{"glm-5.3-highspeed", "glm-5.3-flashx"})
 			result, err := transformExecution(executorRequest{Payload: encode(body)}, cfg, "session")
 			if err != nil {
 				t.Fatal(err)
@@ -82,9 +82,9 @@ func TestFlashImageInputValidation(t *testing.T) {
 			if string(encode(part)) != string(encode(map[string]any{"type": "image", "source": source})) {
 				t.Fatal("image payload changed")
 			}
-			// glm-5.3 模板必须代注网关识图声明（flash 原生视觉不需要）。
+			// glm-5.3 的图片请求需要网关识图声明。
 			tools, _ := result["tools"].([]any)
-			if modelTemplateID(model) == "glm-5.3" {
+			if model == "glm-5.3" {
 				injected := false
 				for _, v := range tools {
 					tool, ok := v.(map[string]any)
@@ -96,7 +96,7 @@ func TestFlashImageInputValidation(t *testing.T) {
 					t.Fatal("glm-5.3 image request missing injected gateway vision declaration")
 				}
 			} else if len(tools) != 0 {
-				t.Fatal("flash must not receive a gateway vision declaration")
+				t.Fatal("native image model received a gateway vision declaration", model)
 			}
 		}
 	}
@@ -107,6 +107,24 @@ func TestFlashImageInputValidation(t *testing.T) {
 		if err := validateImage(map[string]any{"source": source}, defaultConfig(), "glm-5.3"); err == nil {
 			t.Fatal("invalid image source accepted for glm-5.3")
 		}
+	}
+}
+
+func TestHighspeedUsesCustomModelCapabilities(t *testing.T) {
+	const model = "glm-5.3-highspeed"
+	cfg := defaultConfig()
+	cfg.applyExtraModels([]string{model})
+	models := modelList(cfg)
+	entry := models[len(models)-1].(map[string]any)
+	if entry["ID"] != model || entry["Thinking"] != nil || entry["NativeCapabilities"] != nil || limitsFor(cfg, model) != (modelLimits{}) {
+		t.Fatal("explicit highspeed configuration must use custom model capabilities")
+	}
+	if input := entry["SupportedInputModalities"].([]string); len(input) != 1 || input[0] != "text" {
+		t.Fatal("highspeed must advertise text input only", input)
+	}
+	body := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":100,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":%q}}]}]}`, model, imageFixture))
+	if _, err := transformExecution(executorRequest{Payload: body}, cfg, "session"); err == nil || !strings.Contains(err.Error(), "This model does not support image input") {
+		t.Fatal("highspeed must reject image input locally", err)
 	}
 }
 

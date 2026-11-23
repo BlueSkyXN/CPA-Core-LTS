@@ -1296,6 +1296,10 @@ func (a *executorAdapter) prepareExecutorCallForAuth(ctx context.Context, auth *
 			if inputRequested == sdktranslator.FormatOpenAIResponse {
 				zcodeReplay = a.zcodeSearchReplayScope(ctx, runtimeCfg, auth, req, opts, modelInfo)
 				envelope.Body = zcodeReplay.restoreRequest(ctx, envelope.Body)
+				if a.provider == "zcode-coding-plan" && strings.EqualFold(baseModel, "glm-5.4") &&
+					(modelInfo == nil || modelInfo.NativeCapabilities == nil || modelInfo.NativeCapabilities.WebSearchReplay != registry.NativeWebSearchReplayBigModel) {
+					envelope.Body = preserveZcodeLegacySearchHistory(envelope.Body)
+				}
 			}
 		}
 		translated := helps.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, opts.Headers, runtimeCfg, inputRequested, inputFormat, envelope)

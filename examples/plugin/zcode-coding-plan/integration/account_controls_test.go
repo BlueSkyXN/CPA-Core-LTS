@@ -22,7 +22,7 @@ func TestGLMEffortAliasesAcrossProtocols(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	models := []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-highspeed", "glm-5.3-flashx"}
+	models := []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"}
 	f := newV2Fixture(t, models...)
 	for _, model := range models {
 		for effort, expected := range map[string]string{"low": "low", "high": "high", "max": "max", "medium": "high", "med": "high", "xhigh": "max"} {
@@ -52,8 +52,9 @@ func TestResponsesThinkingAndImageControls(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	f := newV2Fixture(t, "glm-5.3", "glm-5.3-flash")
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash"} {
+	models := []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"}
+	f := newV2Fixture(t, models...)
+	for _, model := range models {
 		for _, effort := range []string{"low", "high", "max"} {
 			for _, stream := range []bool{false, true} {
 				res := f.post(t, fmt.Sprintf(`{"model":%q,"input":"hello","reasoning":{"effort":%q},"stream":%t}`, model, effort, stream))
@@ -67,24 +68,29 @@ func TestResponsesThinkingAndImageControls(t *testing.T) {
 				}
 			}
 		}
-		res := f.post(t, fmt.Sprintf(`{"model":%q,"input":[{"role":"user","content":[{"type":"input_text","text":"describe"},{"type":"input_image","image_url":"data:image/png;base64,%s"}]}]}`, model, flashImageFixture))
-		if res.Code != 200 {
-			t.Fatalf("%s image HTTP=%d: %s", model, res.Code, res.Body.String())
-		}
-		f.checkUsage(t, false)
-		body := f.transport.captured[len(f.transport.captured)-1]
-		if ojson.GetBytes(body, "messages.0.content.1.type").String() != "image" || ojson.GetBytes(body, "messages.0.content.1.source.data").String() != flashImageFixture {
-			t.Fatal("image was dropped or changed during translation")
-		}
-		// glm-5.3 走网关识图：图片请求必须带注入的 image_analysis 声明；flash 不注入。
-		declared := false
-		for _, tool := range ojson.GetBytes(body, "tools").Array() {
-			if tool.Get("type").String() == "image_analysis" && tool.Get("name").String() == "image_analysis" {
-				declared = true
+		for _, tc := range []struct{ path, template string }{
+			{"/v1/responses", `{"model":%q,"input":[{"role":"user","content":[{"type":"input_text","text":"describe"},{"type":"input_image","image_url":"data:image/png;base64,%s"}]}]}`},
+			{"/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,%s"}}]}]}`},
+		} {
+			rec := httptest.NewRecorder()
+			f.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(fmt.Sprintf(tc.template, model, flashImageFixture))))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %s image HTTP=%d: %s", tc.path, model, rec.Code, rec.Body.String())
 			}
-		}
-		if (model == "glm-5.3") != declared {
-			t.Fatalf("%s gateway vision declaration mismatch (declared=%t)", model, declared)
+			f.checkUsage(t, false)
+			body := f.transport.captured[len(f.transport.captured)-1]
+			if ojson.GetBytes(body, "model").String() != model || ojson.GetBytes(body, "messages.0.content.1.type").String() != "image" || ojson.GetBytes(body, "messages.0.content.1.source.data").String() != flashImageFixture {
+				t.Fatalf("%s %s model or image changed during translation", tc.path, model)
+			}
+			declared := false
+			for _, tool := range ojson.GetBytes(body, "tools").Array() {
+				if tool.Get("type").String() == "image_analysis" && tool.Get("name").String() == "image_analysis" {
+					declared = true
+				}
+			}
+			if (model == "glm-5.3") != declared {
+				t.Fatalf("%s %s gateway vision declaration mismatch (declared=%t)", tc.path, model, declared)
+			}
 		}
 	}
 }
@@ -93,8 +99,9 @@ func TestMessagesThinkingAndToolImages(t *testing.T) {
 	if isolateDynamic(t) {
 		return
 	}
-	f := newV2Fixture(t, "glm-5.3", "glm-5.3-flash")
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash"} {
+	models := []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"}
+	f := newV2Fixture(t, models...)
+	for _, model := range models {
 		for _, effort := range []string{"low", "high", "max"} {
 			for _, stream := range []bool{false, true} {
 				body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":100,"thinking":{"type":"adaptive"},"output_config":{"effort":%q},"stream":%t}`, model, effort, stream)
@@ -124,7 +131,7 @@ func TestMessagesThinkingAndToolImages(t *testing.T) {
 				t.Fatalf("native Messages image nested=%v HTTP=%d", nested, rec.Code)
 			}
 			f.checkUsage(t, false)
-			// glm-5.3 网关识图：native Messages 图片请求同样注入声明；flash 不注入。
+			// glm-5.3 的 native Messages 图片请求也需要网关识图声明。
 			last := f.transport.captured[len(f.transport.captured)-1]
 			declared := false
 			for _, tool := range ojson.GetBytes(last, "tools").Array() {
@@ -135,6 +142,34 @@ func TestMessagesThinkingAndToolImages(t *testing.T) {
 			if (model == "glm-5.3") != declared {
 				t.Fatalf("native Messages %s gateway vision declaration mismatch (declared=%t, nested=%v)", model, declared, nested)
 			}
+		}
+	}
+}
+
+func TestNativeMessagesKeepImageAndOrdinaryToolWithLegacyDeclaration(t *testing.T) {
+	if isolateDynamic(t) {
+		return
+	}
+	models := []string{"glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"}
+	f := newV2Fixture(t, models...)
+	for _, model := range models {
+		body := fmt.Sprintf(`{"model":%q,"max_tokens":100,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":%q}}]}],"tools":[{"type":"image_analysis","name":"image_analysis"},{"name":"image_analysis","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"image_analysis"}}`, model, flashImageFixture)
+		rec := httptest.NewRecorder()
+		f.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s image HTTP=%d: %s", model, rec.Code, rec.Body.String())
+		}
+		f.checkUsage(t, false)
+		wire := ojson.ParseBytes(f.transport.captured[len(f.transport.captured)-1])
+		if wire.Get("messages.0.content.0.source.data").String() != flashImageFixture {
+			t.Fatalf("%s native image changed", model)
+		}
+		tools := wire.Get("tools").Array()
+		if len(tools) != 1 || tools[0].Get("type").String() == "image_analysis" {
+			t.Fatalf("%s must remove only the legacy declaration", model)
+		}
+		if tools[0].Get("name").String() != "image_analysis" || tools[0].Get("input_schema.type").String() != "object" || wire.Get("tool_choice.name").String() != "image_analysis" {
+			t.Fatalf("%s must retain the ordinary function and its tool choice", model)
 		}
 	}
 }

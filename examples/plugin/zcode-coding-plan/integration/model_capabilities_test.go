@@ -14,7 +14,7 @@ import (
 )
 
 func TestSelectedAccountCapabilitiesIgnorePeerModels(t *testing.T) {
-	for _, upstream := range []string{"glm-5.3-flash", "glm-5.3-highspeed", "glm-5.3-flashx"} {
+	for _, upstream := range []string{"glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"} {
 		for _, alias := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/alias=%t", upstream, alias), func(t *testing.T) {
 				if isolateDynamic(t) {

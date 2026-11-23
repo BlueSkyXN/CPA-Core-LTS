@@ -531,8 +531,9 @@ func modelList(c *config) []any {
 		if _, known := builtinModelLimits(m); known {
 			model["SupportedParameters"] = append(parameters, "reasoning_effort", "thinking")
 			model["Thinking"] = map[string]any{"Levels": append([]string(nil), builtinThinkingLevels...), "ZeroAllowed": false}
-			// 已知 GLM ID（包括高速变体）复用内置模板的搜索能力；
-			// 自定义 ID 保持未知，不按名称前缀继承能力。
+		}
+		switch modelTemplateID(m) {
+		case "glm-5.3", "glm-5.3-flash":
 			// WebSearchReplay is the replay-protocol discriminator the host
 			// checks separately from search capability; the literal matches
 			// registry.NativeWebSearchReplayBigModel ("bigmodel").

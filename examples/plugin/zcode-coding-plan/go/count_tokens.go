@@ -42,6 +42,9 @@ func transformCountTokenRequest(req executorRequest, c *config, session string) 
 	if _, exists := body["messages"]; !exists {
 		return nil, problem(400, "invalid_request", "messages is required")
 	}
+	if !gatewayVisionEnabled(c, model) {
+		removeGatewayVisionDeclarations(body)
+	}
 	wire := struct {
 		Device  string `json:"device_id"`
 		Account string `json:"account_uuid"`
