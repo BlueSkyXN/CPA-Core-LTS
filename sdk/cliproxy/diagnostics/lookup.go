@@ -168,7 +168,11 @@ func (s *Store) Lookup(query TraceQuery) ([]TraceRow, string) {
 	})
 	var revision strings.Builder
 	for _, row := range rows {
-		fmt.Fprintf(&revision, "%s/%d/%d\n", row.DiagnosticsID, row.Attempt, updated[row.DiagnosticsID])
+		fmt.Fprintf(&revision, "%s/%d/%d", row.DiagnosticsID, row.Attempt, updated[row.DiagnosticsID])
+		if p := row.Previous; p != nil {
+			fmt.Fprintf(&revision, "|%s/%d/%d", p.DiagnosticsID, p.Attempt, updated[p.DiagnosticsID])
+		}
+		revision.WriteByte('\n')
 	}
 	return rows, Hash(revision.String())
 }

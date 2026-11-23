@@ -229,3 +229,35 @@ func TestRecordUsageIgnoresAttemptBeyondCap(t *testing.T) {
 		t.Fatalf("last retained attempt InputTokens = %v, want 10", last.InputTokens)
 	}
 }
+
+func TestCacheTraceRevisionTracksPredecessorExpiry(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 11, 21, 1, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	send := func(id, receivedID, previousID string) {
+		body := []byte(fmt.Sprintf(`{"prompt_cache_key":"shared-cache-key","previous_response_id":%q}`, previousID))
+		ctx := BeginSelection(store.Begin(usage.WithTraceID(t.Context(), "log-"+id), id, "caller-A", "session-1", "model", "responses", body))
+		ex := &Execution{Ref: FromContext(ctx), ID: "exec-" + id, AuthIndex: id, Provider: "codex"}
+		headers := http.Header{"Session-Id": {"wire-session-1"}}
+		attempt := ex.Begin("websocket", "wss://synthetic.invalid/v1/responses", body, headers)
+		attempt.Observe([]byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"status":"completed","usage":{"input_tokens":15,"input_tokens_details":{"cached_tokens":0}}}}`, receivedID)))
+		attempt.End("completed")
+	}
+	send("parent", "resp_parent", "")
+	now = now.Add(Retention - 5*time.Second)
+	send("child", "resp_child", "resp_parent")
+
+	rows1, rev1 := store.Lookup(TraceQuery{ID: "exec-child"})
+	if len(rows1) != 1 || rows1[0].Previous == nil {
+		t.Fatalf("expected predecessor before expiry: %+v", rows1)
+	}
+
+	now = now.Add(10 * time.Second)
+	rows2, rev2 := store.Lookup(TraceQuery{ID: "exec-child"})
+	if len(rows2) != 1 || rows2[0].Previous != nil {
+		t.Fatalf("expected predecessor to expire: %+v", rows2)
+	}
+	if rev2 == rev1 {
+		t.Fatalf("expected revision to change after predecessor expiry, stayed %q", rev2)
+	}
+}
