@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
@@ -73,6 +74,7 @@ type Execution struct {
 	Input                                    *Payload
 	Ref                                      *Ref
 	ID, Provider, Model, AuthIndex, AuthType string
+	lastAttempt                              atomic.Int64
 }
 type AttemptRef struct {
 	ref          *Ref
@@ -116,8 +118,10 @@ func (e *Execution) Begin(transport, endpoint string, payload []byte, headers ht
 		t.Attempts = append(t.Attempts, a)
 	})
 	if !retained || ref.number == 0 {
+		e.lastAttempt.Store(0)
 		return nil
 	}
+	e.lastAttempt.Store(int64(ref.number))
 	return ref
 }
 func (e *Execution) BeginHTTP(req *http.Request) *AttemptRef {
