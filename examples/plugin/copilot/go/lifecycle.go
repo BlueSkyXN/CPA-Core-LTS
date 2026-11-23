@@ -17,20 +17,20 @@ import (
 const shutdownWait = 3 * time.Second
 
 type pluginRuntime struct {
-	mu              sync.Mutex
-	caller          hostCaller
-	config          pluginConfig
-	accepting       bool
-	summaryCache    map[string]copilotSummaryCacheEntry
-	tokenCache      map[string]copilotTokenCacheEntry
-	loginFlows      map[string]*copilotLoginFlow
-	nativeActive    map[string]*nativeExecution
-	nativeSessions  map[string]*nativeExecution
-	tokenFlights    map[string]*tokenFlight
-	catalogFlights  map[string]*catalogFlight
-	nativeCatalogs  map[string]nativeCatalogEntry
-	nativeReasoning map[string]nativeReasoningReplay
-	generation      uint64
+	mu               sync.Mutex
+	caller           hostCaller
+	config           pluginConfig
+	accepting        bool
+	summaryCache     map[string]copilotSummaryCacheEntry
+	tokenCache       map[string]copilotTokenCacheEntry
+	loginFlows       map[string]*copilotLoginFlow
+	nativeActive     map[string]*nativeExecution
+	tokenFlights     map[string]*tokenFlight
+	catalogFlights   map[string]*catalogFlight
+	nativeCatalogs   map[string]nativeCatalogEntry
+	nativeReasoning  map[string]nativeReasoningReplay
+	interruptedTools []interruptedToolBatch
+	generation       uint64
 }
 
 // executionIdentity 唯一归属一次原生执行的所有权维度，用于 cancel/close 匹配。
@@ -49,7 +49,7 @@ func newPluginRuntime(caller hostCaller) *pluginRuntime {
 		summaryCache: make(map[string]copilotSummaryCacheEntry),
 		tokenCache:   make(map[string]copilotTokenCacheEntry),
 		loginFlows:   make(map[string]*copilotLoginFlow),
-		nativeActive: make(map[string]*nativeExecution), nativeSessions: make(map[string]*nativeExecution),
+		nativeActive: make(map[string]*nativeExecution),
 		tokenFlights: make(map[string]*tokenFlight), catalogFlights: make(map[string]*catalogFlight),
 		nativeCatalogs:  make(map[string]nativeCatalogEntry),
 		nativeReasoning: make(map[string]nativeReasoningReplay),
@@ -68,12 +68,14 @@ func (r *pluginRuntime) configure(raw []byte) error {
 		return newPluginCallError("invalid_config", errConfig.Error(), http.StatusBadRequest, false)
 	}
 	r.mu.Lock()
+	r.generation++
+	cfg.generation = r.generation
 	r.config = cfg
 	r.summaryCache = make(map[string]copilotSummaryCacheEntry)
 	r.tokenCache = make(map[string]copilotTokenCacheEntry)
 	r.nativeCatalogs = make(map[string]nativeCatalogEntry)
 	r.nativeReasoning = make(map[string]nativeReasoningReplay)
-	r.generation++
+	r.interruptedTools = nil
 	r.accepting = true
 	r.mu.Unlock()
 	return nil
@@ -117,13 +119,6 @@ func cancelMatches(identity *executionIdentity, req pluginapi.CancelExecutionReq
 
 func (r *pluginRuntime) closeExecutionSessions(req pluginapi.CloseExecutionSessionRequest) error {
 	r.closeNative(req)
-	r.mu.Lock()
-	for key, replay := range r.nativeReasoning {
-		if (req.Provider == "" || req.Provider == pluginIdentifier) && closeMatches(&replay.identity, req) {
-			delete(r.nativeReasoning, key)
-		}
-	}
-	r.mu.Unlock()
 	return nil
 }
 
@@ -165,6 +160,7 @@ func (r *pluginRuntime) shutdown() {
 	r.tokenCache = make(map[string]copilotTokenCacheEntry)
 	r.loginFlows = make(map[string]*copilotLoginFlow)
 	r.nativeReasoning = make(map[string]nativeReasoningReplay)
+	r.interruptedTools = nil
 	r.mu.Unlock()
 }
 

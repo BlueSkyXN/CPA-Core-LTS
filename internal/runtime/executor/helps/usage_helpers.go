@@ -70,6 +70,7 @@ type UsageReporter struct {
 	generate                   bool
 	stream                     bool
 	requestedAt                time.Time
+	finishedAt                 atomic.Pointer[time.Time]
 	timingMu                   sync.RWMutex
 	timing                     *responseTimingTracker
 	timingFormat               sdktranslator.Format
@@ -1155,15 +1156,22 @@ func safeUsageFailureReason(reason string) string {
 	return reason
 }
 
+// StopLatencyMeasurement records the response end when publication is deferred for accounting.
+func (r *UsageReporter) StopLatencyMeasurement() {
+	if r != nil {
+		now := time.Now()
+		r.finishedAt.CompareAndSwap(nil, &now)
+	}
+}
+
 func (r *UsageReporter) latency() time.Duration {
 	if r == nil || r.requestedAt.IsZero() {
 		return 0
 	}
-	latency := time.Since(r.requestedAt)
-	if latency < 0 {
-		return 0
+	if end := r.finishedAt.Load(); end != nil {
+		return max(0, end.Sub(r.requestedAt))
 	}
-	return latency
+	return max(0, time.Since(r.requestedAt))
 }
 
 func (r *UsageReporter) timingSnapshot() ResponseTimingSnapshot {

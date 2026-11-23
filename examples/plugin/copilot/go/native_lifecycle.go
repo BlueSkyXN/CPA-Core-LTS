@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,15 +12,20 @@ import (
 
 // nativeExecution 只记录在途状态；对话历史仍由客户端逐次提供。
 type nativeExecution struct {
-	identity   executionIdentity
-	requestID  string
-	mu         sync.Mutex
-	upstream   string
-	canceled   bool
-	done       chan struct{}
-	once       sync.Once
-	open       func() (hostHTTPStreamResponse, error)
-	generation uint64
+	identity     executionIdentity
+	requestID    string
+	model        string
+	tools        map[int]nativeToolIdentity // 发给客户端的工具片段快照，由 pluginRuntime.mu 保护。
+	toolBatchKey string                     // 仅在工具批次收齐且参数已确认时设置。
+	replayClosed bool                       // 会话关闭后，旧执行不能再登记待续调的状态。
+	config       pluginConfig
+	mu           sync.Mutex
+	upstream     string
+	canceled     bool
+	done         chan struct{}
+	once         sync.Once
+	open         func() (hostHTTPStreamResponse, error)
+	generation   uint64
 }
 
 func (r *pluginRuntime) registerNative(req rpcExecutorRequest, auth copilotAuth) (*nativeExecution, error) {
@@ -35,14 +41,11 @@ func (r *pluginRuntime) registerNative(req rpcExecutorRequest, auth copilotAuth)
 	if r.nativeActive[req.RequestID] != nil {
 		return nil, newPluginCallError("duplicate_request", "Copilot request is already active", http.StatusConflict, false)
 	}
-	if r.nativeSessions[key] != nil {
-		return nil, newPluginCallError("turn_conflict", "Copilot execution session already has an active turn", http.StatusConflict, true)
-	}
-	exec := &nativeExecution{requestID: req.RequestID, done: make(chan struct{}), generation: r.generation, identity: executionIdentity{
+	exec := &nativeExecution{requestID: req.RequestID, model: req.Model, done: make(chan struct{}), config: r.config, generation: r.generation, identity: executionIdentity{
 		key: key, authID: req.AuthID, authIndex: req.AuthIndex, callerScope: req.CallerScope,
 		workspaceIdentity: req.WorkspaceIdentity, executionSessionID: effectiveExecutionSessionID(req.ExecutorRequest),
 	}}
-	r.nativeActive[req.RequestID], r.nativeSessions[key] = exec, exec
+	r.nativeActive[req.RequestID] = exec
 	return exec, nil
 }
 
@@ -72,15 +75,17 @@ func (e *nativeExecution) closeUpstream(caller hostCaller, cancel bool) {
 
 func (e *nativeExecution) isCanceled() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.canceled }
 
-func (r *pluginRuntime) releaseNative(e *nativeExecution) {
+func (r *pluginRuntime) releaseNative(e *nativeExecution) { r.finishNative(e, false) }
+
+func (r *pluginRuntime) finishNative(e *nativeExecution, interrupted bool) {
 	e.once.Do(func() {
 		e.closeUpstream(r.caller, false)
 		r.mu.Lock()
 		if r.nativeActive[e.requestID] == e {
+			if interrupted || e.isCanceled() {
+				r.interruptNativeToolsLocked(e)
+			}
 			delete(r.nativeActive, e.requestID)
-		}
-		if r.nativeSessions[e.identity.key] == e {
-			delete(r.nativeSessions, e.identity.key)
 		}
 		r.mu.Unlock()
 		close(e.done)
@@ -104,9 +109,16 @@ func (r *pluginRuntime) closeNative(req pluginapi.CloseExecutionSessionRequest) 
 	var active []*nativeExecution
 	for _, e := range r.nativeActive {
 		if closeMatches(&e.identity, req) {
+			e.replayClosed = true
 			active = append(active, e)
 		}
 	}
+	for key, replay := range r.nativeReasoning {
+		if closeMatches(&replay.identity, req) {
+			delete(r.nativeReasoning, key)
+		}
+	}
+	r.interruptedTools = slices.DeleteFunc(r.interruptedTools, func(batch interruptedToolBatch) bool { return closeMatches(&batch.identity, req) })
 	r.mu.Unlock()
 	for _, e := range active {
 		e.closeUpstream(r.caller, true)

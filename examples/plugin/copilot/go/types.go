@@ -11,7 +11,7 @@ import (
 const (
 	pluginIdentifier     = "copilot"
 	pluginName           = "cpa-provider-copilot"
-	pluginVersion        = "0.1.3"
+	pluginVersion        = "0.1.4"
 	maxSSEFrameBytes     = 1024 * 1024
 	maxExecutorBodyBytes = 4 * 1024 * 1024
 )
@@ -23,17 +23,19 @@ type envelope struct {
 }
 
 type envelopeError struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	Retryable  bool   `json:"retryable,omitempty"`
-	HTTPStatus int    `json:"http_status,omitempty"`
+	Code         string                  `json:"code"`
+	Message      string                  `json:"message"`
+	Retryable    bool                    `json:"retryable,omitempty"`
+	HTTPStatus   int                     `json:"http_status,omitempty"`
+	PartialUsage *pluginapi.AgentUsageV1 `json:"partial_usage,omitempty"`
 }
 
 type pluginCallError struct {
-	code       string
-	message    string
-	statusCode int
-	retryable  bool
+	code         string
+	message      string
+	statusCode   int
+	retryable    bool
+	partialUsage *pluginapi.AgentUsageV1
 }
 
 func (e *pluginCallError) Error() string {
@@ -55,13 +57,27 @@ func okEnvelope(value any) ([]byte, error) {
 	return json.Marshal(envelope{OK: true, Result: raw})
 }
 
+func withPartialUsage(err error, usage pluginapi.AgentUsageV1) error {
+	if err == nil || chatUsage(usage) == nil {
+		return err
+	}
+	callErr, ok := err.(*pluginCallError)
+	if !ok {
+		callErr = &pluginCallError{code: "plugin_error", message: "Copilot plugin call failed", statusCode: http.StatusInternalServerError}
+	}
+	observed := *callErr
+	usage.Provenance = "" // 归属及来源标签由宿主决定。
+	observed.partialUsage = &usage
+	return &observed
+}
+
 func errorEnvelope(err error) []byte {
 	callErr, ok := err.(*pluginCallError)
 	if !ok {
 		callErr = &pluginCallError{code: "plugin_error", message: "Copilot plugin call failed", statusCode: http.StatusInternalServerError}
 	}
 	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{
-		Code: callErr.code, Message: callErr.message, Retryable: callErr.retryable, HTTPStatus: callErr.statusCode,
+		Code: callErr.code, Message: callErr.message, Retryable: callErr.retryable, HTTPStatus: callErr.statusCode, PartialUsage: callErr.partialUsage,
 	}})
 	return raw
 }

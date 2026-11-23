@@ -159,6 +159,8 @@ When a plugin executor encounters an upstream failure (such as `401 Unauthorized
 - **Important**: Both non-streaming (`executor.execute`) and streaming (`executor.execute_stream`) call sites must include `http_status` so failures are classified consistently.
 - Because native dynamic library plugins communicate across the C ABI via serialized JSON buffers, the status code must be encoded in the serialized JSON envelope (e.g. using `pluginabi.NewErrorEnvelope` or a custom envelope struct with an `http_status` field). Returning an unmarshaled Go error does not traverse the C ABI boundary.
 
+If non-streaming `executor.execute` fails after observing upstream usage (for example, a truncated stream), it can return `error.partial_usage` alongside the original error, e.g. `{"input_tokens":10,"output_tokens":2,"total_tokens":12}`. Send only observed nonnegative integer counts. Optional `cache_read_tokens` and `cache_creation_tokens` are included in input; `reasoning_tokens` are included in output. Omit unknown counts; an observed `0` is meaningful. Supporting hosts attach the counts to the one selected-credential failure record. Invalid counts do not change the error; older hosts ignore this field. Streaming executors continue reporting usage in stream frames only. After client cancellation, the host can settle a late RPC error within its cancellation window.
+
 Go plugins can import `github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi` and use `pluginabi.NewErrorEnvelope(code, message, httpStatus)`:
 
 ```go
