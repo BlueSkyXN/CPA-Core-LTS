@@ -42,6 +42,7 @@ const (
 	wsTurnStateHeader                     = "x-codex-turn-state"
 	wsTimelineBodyKey                     = "WEBSOCKET_TIMELINE_OVERRIDE"
 	wsCloseReasonMaxBytes                 = 123
+	wsTerminalWriterWait                  = 100 * time.Millisecond
 	wsTerminalWriteTimeout                = time.Second
 	wsHTTPReplayRequiredCloseReason       = "upstream requires HTTP replay"
 	responsesWebsocketInboundQueueSize    = 16
@@ -140,8 +141,22 @@ func websocketClosePayloadForUpstreamError(err error) (bool, []byte) {
 
 type responsesWebsocketWriter struct {
 	conn    *websocket.Conn
-	writeMu sync.Mutex
+	writeMu responsesWebsocketWriteLock
 	closing atomic.Bool
+}
+
+type responsesWebsocketWriteLock chan struct{}
+
+func (lock responsesWebsocketWriteLock) Lock()   { lock <- struct{}{} }
+func (lock responsesWebsocketWriteLock) Unlock() { <-lock }
+
+func (lock responsesWebsocketWriteLock) TryLock() bool {
+	select {
+	case lock <- struct{}{}:
+		return true
+	default:
+		return false
+	}
 }
 
 type responsesWebsocketInboundMessage = cliproxyexecutor.WebsocketInput
@@ -235,7 +250,7 @@ func pendingResponsesWebsocketReadError(readErrors <-chan error) error {
 }
 
 func newResponsesWebsocketWriter(conn *websocket.Conn) *responsesWebsocketWriter {
-	return &responsesWebsocketWriter{conn: conn}
+	return &responsesWebsocketWriter{conn: conn, writeMu: make(responsesWebsocketWriteLock, 1)}
 }
 
 // closeForUpstreamError sends a best-effort close frame without waiting behind
@@ -388,13 +403,22 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 	if !w.closing.CompareAndSwap(false, true) {
 		return false, nil
 	}
+	deadline := time.Now().Add(wsTerminalWriteTimeout)
 	if !w.writeMu.TryLock() {
-		return false, w.conn.Close()
+		// A data frame or Ping may be finishing. Give it a short window to
+		// release the writer before closing a connection that cannot drain.
+		wait := time.NewTimer(wsTerminalWriterWait)
+		defer wait.Stop()
+		select {
+		case w.writeMu <- struct{}{}:
+		case <-wait.C:
+			return false, w.conn.Close()
+		}
 	}
 	defer w.writeMu.Unlock()
 
 	// A peer that has stopped reading must not hold session cleanup indefinitely.
-	_ = w.conn.SetWriteDeadline(time.Now().Add(wsTerminalWriteTimeout))
+	_ = w.conn.SetWriteDeadline(deadline)
 	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
 	errClose := w.conn.Close()
 	if errWrite != nil {

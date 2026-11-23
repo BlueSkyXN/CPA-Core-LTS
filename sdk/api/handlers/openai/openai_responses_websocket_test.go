@@ -467,6 +467,66 @@ func TestResponsesWebsocketWriterCloseDoesNotWaitForActiveDataWriter(t *testing.
 	}
 }
 
+func TestResponsesWebsocketWriterSendsTerminalPayloadAfterActiveWrite(t *testing.T) {
+	type upgradeResult struct {
+		conn *websocket.Conn
+		err  error
+	}
+	upgraded := make(chan upgradeResult, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		upgraded <- upgradeResult{conn, err}
+	}))
+	t.Cleanup(server.Close)
+
+	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	peer := <-upgraded
+	if peer.err != nil {
+		t.Fatal(peer.err)
+	}
+	t.Cleanup(func() { _ = peer.conn.Close() })
+
+	const created = `{"type":"response.created"}`
+	const terminal = `{"type":"error","status":429}`
+	synctest.Test(t, func(t *testing.T) {
+		writer := newResponsesWebsocketWriter(peer.conn)
+		if err := writeResponsesWebsocketPayload(writer, nil, []byte(created), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		writer.writeMu.Lock()
+		result := make(chan error, 1)
+		go func() {
+			wrote, err := writer.closeWithPayload([]byte(terminal))
+			if err == nil && !wrote {
+				err = errors.New("terminal error frame was dropped")
+			}
+			result <- err
+		}()
+		synctest.Wait()
+		writer.writeMu.Unlock()
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{created, terminal} {
+		messageType, payload, err := client.ReadMessage()
+		if err != nil || messageType != websocket.TextMessage || string(payload) != want {
+			t.Fatalf("read frame = (%d, %s, %v), want %s", messageType, payload, err, want)
+		}
+	}
+}
+
 func TestResponsesWebsocketGenericDisconnectDoesNotWaitForActiveDataWriter(t *testing.T) {
 	serverErrCh := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
