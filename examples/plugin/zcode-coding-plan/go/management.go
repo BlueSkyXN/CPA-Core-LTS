@@ -147,7 +147,7 @@ func managementFields() []any {
 		map[string]any{"Name": "host_logging_disabled", "Type": "boolean", "Description": "Required for credential loading and execution: acknowledge that CPA raw request and error-body logs are disabled. False or inherit blocks calls after successful reload. Setting true does not disable any logger."},
 		map[string]any{"Name": "gateway_vision", "Type": "boolean", "Description": "Server-side gateway vision for glm-5.3 images (image_analysis declaration injection; verified on both bigmodel and zai upstreams). Default true. Turning it off makes glm-5.3 text-only until re-enabled."},
 		map[string]any{"Name": "upstream", "Type": "enum", "EnumValues": []string{"bigmodel", "zai"}, "Description": "Upstream preset: bigmodel (open.bigmodel.cn, default) or zai (api.z.ai international). Clear to inherit the default."},
-		map[string]any{"Name": "models", "Type": "array", "Description": "Optional explicit model allowlist (JSON array of model IDs). Clear to use the built-in glm-5.3 / glm-5.3-flash catalog."},
+		map[string]any{"Name": "models", "Type": "array", "Description": "Optional model allowlist (JSON array of model IDs). Clear to use " + strings.Join(builtinModels, ", ") + "."},
 		map[string]any{"Name": "model_limits", "Type": "object", "Description": "Optional per-model context/output limits, e.g. {\"glm-5.3\":{\"context\":1000000,\"output\":128000}}. Clear to use built-in limits."},
 	}
 }

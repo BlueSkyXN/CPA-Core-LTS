@@ -57,7 +57,7 @@
 {"type":"zcode-coding-plan","label":"Coding Plan","api_key":"<key>","device_id":"<device-id>","request_retry":0}
 ```
 
-凭据随 auth 文件保存（与 Qoder/CodeBuddy PAT 同模式）；内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型，1M 上下文、128k 输出、low/high/max 思考档。上传前在 **Plugins → Edit config** 把 `host_logging_disabled` 设为 true（日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志。撤销或清除后，成功热重载会阻止后续调用）。可选 `upstream: zai` 切国际区端点。之后 Check readiness 选择账号做本地诊断；容器重建后账号随 auth 目录持久化。0.3.x 的 `config_file` 引用和 `docker-compose.coding-plan.yml` 已移除；旧账号引用与旧插件配置字段会得到明确报错。新版 Panel 要求插件 ≥0.4.0，编辑账号会移除旧引用；管理员还需清理插件配置中的旧字段。同一账号可更新 key/device ID，删除旧账号并完成请求清理后可添加替代账号。
+凭据随 auth 文件保存。默认模型为 `glm-5.3`、`glm-5.3-flash` 和 `glm-5.4`，使用 1M 上下文、128k 输出及 low/high/max 思考档。`glm-5.3` 使用 `gateway_vision` 网关识图，Flash 和 5.4 接收原生图片。通过账号 `exmodel` 或全局 `models` 显式启用 `glm-5.3-flashx`。上传前在 **Plugins → Edit config** 把 `host_logging_disabled` 设为 true（日志审计确认；请先确认宿主与外部代理已关闭原始请求/错误体日志。撤销或清除后，成功热重载会阻止后续调用）。可选 `upstream: zai` 切国际区端点。之后 Check readiness 选择账号做本地诊断；容器重建后账号随 auth 目录持久化。0.3.x 的 `config_file` 引用和 `docker-compose.coding-plan.yml` 已移除；旧账号引用与旧插件配置字段会得到明确报错。新版 Panel 要求插件 ≥0.4.0，编辑账号会移除旧引用；管理员还需清理插件配置中的旧字段。同一账号可更新 key/device ID，删除旧账号并完成请求清理后可添加替代账号。
 
 ### 从本机 ZCode 获取凭据（macOS）
 

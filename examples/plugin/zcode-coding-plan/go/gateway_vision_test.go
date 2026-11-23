@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -94,6 +95,64 @@ func TestGatewayVisionToolsValidation(t *testing.T) {
 	bad := map[string]any{"messages": []any{}, "tools": []any{map[string]any{"type": "image_analysis"}}}
 	if err := validateTools(bad); err == nil || !strings.Contains(err.Error(), "name") {
 		t.Fatal("image_analysis without name must be rejected", err)
+	}
+}
+
+func TestGatewayVisionDeclarationScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+		enabled     bool
+		wantTool    bool
+	}{
+		{name: "bridged", model: "glm-5.3", enabled: true, wantTool: true},
+		{name: "bridge disabled", model: "glm-5.3"},
+		{name: "native", model: "glm-5.4", enabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			cfg.GatewayVision = tc.enabled
+			payload := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":100,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"image_analysis","name":"image_analysis"}],"tool_choice":{"type":"tool","name":"image_analysis"}}`, tc.model))
+			for _, transform := range []struct {
+				name string
+				run  func(executorRequest, *config, string) (map[string]any, error)
+			}{
+				{name: "messages", run: transformExecution},
+				{name: "count_tokens", run: transformCountTokenRequest},
+			} {
+				t.Run(transform.name, func(t *testing.T) {
+					result, err := transform.run(executorRequest{Payload: payload}, cfg, "session")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if (result["tools"] != nil) != tc.wantTool || (result["tool_choice"] != nil) != tc.wantTool {
+						t.Fatal("legacy declaration and tool choice must follow the gateway vision setting")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestGatewayVisionFiltersSystemDeclarations(t *testing.T) {
+	const legacyAddition = `{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"image_analysis","name":"image_analysis"}}}`
+	payload := []byte(`{"model":"glm-5.4","max_tokens":100,"messages":[` +
+		`{"role":"system","content":[` + legacyAddition + `]},` +
+		`{"role":"system","clear_at":1,"content":[` + legacyAddition + `,{"type":"text","text":"keep this instruction"}]},` +
+		`{"role":"user","content":"hello"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"image_analysis"}}`)
+	result, err := transformExecution(executorRequest{Payload: payload}, defaultConfig(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := result["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("expected system instruction and user message, got %d messages", len(messages))
+	}
+	want := `{"clear_at":1,"content":[{"text":"keep this instruction","type":"text"}],"role":"system"}`
+	if got := string(encode(messages[0])); got != want {
+		t.Fatalf("system instruction changed: %s", got)
+	}
+	if len(result["tools"].([]any)) != 1 || result["tool_choice"] != nil {
+		t.Fatal("ordinary tools must be retained and the removed tool choice cleared")
 	}
 }
 
@@ -217,6 +276,7 @@ func TestGatewayVisionSwitchDisablesCapability(t *testing.T) {
 
 	off := defaultConfig()
 	off.GatewayVision = false
+	off.applyExtraModels([]string{"glm-5.3-flashx"})
 	for _, m := range modelList(off) {
 		model := m.(map[string]any)
 		hasImage := false
@@ -225,11 +285,8 @@ func TestGatewayVisionSwitchDisablesCapability(t *testing.T) {
 				hasImage = true
 			}
 		}
-		if model["ID"] == "glm-5.3" && hasImage {
-			t.Fatal("glm-5.3 must not advertise image input with gateway_vision off")
-		}
-		if model["ID"] == "glm-5.3-flash" && !hasImage {
-			t.Fatal("glm-5.3-flash native vision must survive gateway_vision off")
+		if hasImage != (model["ID"] != "glm-5.3") {
+			t.Fatalf("unexpected image modality with gateway_vision off for %s", model["ID"])
 		}
 	}
 
@@ -247,9 +304,10 @@ func TestGatewayVisionSwitchDisablesCapability(t *testing.T) {
 		t.Fatal("no gateway vision declaration must be injected with the switch off")
 	}
 
-	// flash 原生识图不受开关影响。
-	if !effectiveModelImageInput(off, "glm-5.3-flash") {
-		t.Fatal("flash native vision must ignore the gateway_vision switch")
+	for _, model := range []string{"glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"} {
+		if err := validateImage(imageBlock, off, model); err != nil {
+			t.Fatalf("%s native image must work with gateway_vision off: %v", model, err)
+		}
 	}
 	// 管理面覆盖：false → 关，true/缺省 → 开。
 	var cfg managementConfig

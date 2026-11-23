@@ -30,7 +30,7 @@ func TestExtraModelsUpdatePreservesActiveAccountAndPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated == old || !slices.Equal(updated.Models, []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-highspeed"}) || len(old.Models) != 2 {
+	if updated == old || !slices.Equal(updated.Models, []string{"glm-5.3", "glm-5.3-flash", "glm-5.4", "glm-5.3-highspeed"}) || len(old.Models) != 3 {
 		t.Fatal("extra model update did not replace only the config snapshot")
 	}
 	if a.signer != signerA || signerA.closed || a.active != 1 || running.ctx.Err() != nil || b.config != peer || b.signer != signerB {
@@ -157,7 +157,7 @@ func TestMultiAccountReadinessAndModelsDoNotConsumeCapacity(t *testing.T) {
 			}
 		}
 		models, err := r.dispatch("model.for_auth", encode(map[string]any{"StorageJSON": accountStorage(id), "AuthID": id}))
-		if err != nil || len(models.(map[string]any)["Models"].([]any)) != 2 {
+		if err != nil || len(models.(map[string]any)["Models"].([]any)) != 3 {
 			t.Fatal("model discovery failed while another account is full", err)
 		}
 	}

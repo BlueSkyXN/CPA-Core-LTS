@@ -55,11 +55,13 @@ Copilot 插件（`cpa-provider-copilot`，0.1.2）以 Provider 身份 `copilot` 
 
 ## Coding Plan（多账号 direct Anthropic）
 
-`zcode-coding-plan` 为原生 Go/C ABI 插件，通过 Core 通用 Anthropic/Responses JSON/SSE 与 WS 适配接入。不启动 Node worker 或官方 Agent，不执行工具、不维护第二份历史。它要求现有 schema 6 及五项 host_features。账号唯一形态是单文件内联凭据（`api_key`/`device_id` 直接保存在 auth 文件里，与 Qoder/CodeBuddy PAT 文件同模式），内置 `glm-5.3`（纯文本）/`glm-5.3-flash`（含图片）默认模型（1M 上下文、low/high/max 思考档），无需额外凭据挂载或环境变量；0.4.0 移除了 0.3.x 的私有配置文件引用链与 `docker-compose.coding-plan.yml`。没有 OAuth、账号发现或额度轮询。
+`zcode-coding-plan` 为原生 Go/C ABI 插件，通过 Core 通用 Anthropic/Responses JSON/SSE 与 WS 适配接入。不启动 Node worker 或官方 Agent，不执行工具、不维护第二份历史。它要求现有 schema 6 及五项 host_features。账号将 `api_key` 和 `device_id` 保存在单个 auth 文件里，与 Qoder/CodeBuddy PAT 文件同模式。0.4.0 移除了 0.3.x 的私有配置文件引用链与 `docker-compose.coding-plan.yml`，无需额外凭据挂载或环境变量。没有 OAuth、账号发现或额度轮询。
+
+默认模型为 `glm-5.3`、`glm-5.3-flash` 和 `glm-5.4`，插件采用 1M 上下文和 low/high/max 思考档。`glm-5.3` 通过默认开启的 `gateway_vision` 接收图片，`glm-5.3-flash` 和 `glm-5.4` 接收原生图片。将 `glm-5.3-flashx` 显式加入 `models` 或账号 `exmodel` 可启用 Flashx 的原生图片能力。
 
 完整插件版包含 `zcode-coding-plan.so`，每个 Linux 架构导出 `zcode-coding-plan_<version>_linux_<arch>.zip`。版本来自插件 `types.go` 的单一 `pluginVersion`；包内只有动态库、说明、许可证和占位配置，不携带个人值。原三插件包保持不变。bundle 清单新增插件版本及 `plugin_transports`，总 `transport=mixed`，Coding Plan 为 `direct_anthropic`。
 
-Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_logging_disabled` 布尔字段是日志审计确认门，`upstream`/`models`/`model_limits` 为可选覆盖。Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。提示词固定透传，旧私有配置和提示词覆盖字段明确拒绝。日志确认改为 false 或清除并成功热重载后，缓存凭据失效且调用被阻止。从 0.5.0 源码起，同一插件支持多个 AuthID，凭据、签名缓存、关闭状态和并发计数按账号隔离，默认每账号最多 10 个在途请求。Core 继续负责账号选择、权重与 usage 归属。更新 key/device ID 只受该账号的在途请求限制；删除只取消并清理该账号，不影响其他账号，同一 AuthID 在清理后可重新添加。停用沿用 Core 的调度语义，不等于立即取消在途请求。四项管理设置仍为插件级，不支持同实例混用 bigmodel/zai；现有内联 auth 文件无需迁移。Panel 表单要求插件 ≥0.4.0，按实际 upstream 显示端点，并移除旧账号的 config_file 引用。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
+Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_logging_disabled` 布尔字段是日志审计确认门，`upstream`/`models`/`model_limits` 为可选覆盖。Panel 复用通用插件配置、Auth Files 上传和账号级 readiness。provider-only 不能声称账号就绪，选定账号仅验证本地配置，不调用签名握手、模型或额度。提示词固定透传，旧私有配置和提示词覆盖字段明确拒绝。日志确认改为 false 或清除并成功热重载后，缓存凭据失效且调用被阻止。从 0.5.0 源码起，同一插件支持多个 AuthID，凭据、签名缓存、关闭状态和并发计数按账号隔离，默认每账号最多 10 个在途请求。Core 继续负责账号选择、权重与 usage 归属。更新 key/device ID 只受该账号的在途请求限制；删除只取消并清理该账号，不影响其他账号，同一 AuthID 在清理后可重新添加。停用沿用 Core 的调度语义，不等于立即取消在途请求。管理设置为插件级，每个实例选择一个 upstream；现有内联 auth 文件无需迁移。Panel 表单要求插件 ≥0.4.0，按实际 upstream 显示端点，并移除旧账号的 config_file 引用。完整产品规则与限制见 `examples/plugin/zcode-coding-plan/SPEC.md` 和 README。镜像构建通过不等于真实服务/计费验收，发布仍需固定 Core tag、校验附件并配套包含通用管理能力的 Panel。
 
 ### Coding Plan 原生 Messages
 
@@ -69,9 +71,9 @@ Panel 添加账号表单直接提交内联凭据形态；管理配置的 `host_l
 
 0.4.2 源码明确区分客户端执行的 function/custom/MCP 工具与 provider-native server tools：前者保留定义、schema 和成对历史。原生 `web_search_20250305` / `web_search_20260209` 经 2026-10-01 真实凭据探测确认由上游执行，插件定向放行并把回包（`web_search_prime` server_tool_use + assistant 侧按 `tool_use_id` 配对的裸 `tool_result`）折叠为单个 Responses `web_search_call`（命中载荷在 Python-repr 载体形 `[{'text': [...]}]` 与无载体的双引号 JSON 形 `[[{...}]]` 之间交替，Core 两种都接受（字符串转义取两方言并集：repr 的 \xNN/\U… 与 JSON 的 \/、成对 \uXXXX 代理对；孤立代理与未知转义仍拒绝），其余形状显式失败）；其余 provider-native 工具仍在签名握手／模型请求前明确拒绝，给它们添加 `input_schema` 也不能绕过校验。无效函数定义按 `tools[index]` 指出字段，错误不回显调用者提供的名称、类型或 schema；不伪造搜索结果。
 
-插件模型 API 的可选 `ModelInfo.NativeCapabilities.WebSearch` 三态声明不变，ABI/schema 不变；旧插件缺省仍为未知。宿主深拷贝并保留此能力，Coding Plan 自 0.4.2 起对内置 allowlist ID 声明 `true`（真实上游探测支持），自定义 ID 保持保守。CPA-aware `/v1/models?client_version=cpa` 据此输出 `cpa_capabilities.web_search`。普通模型目录不会自动修改客户端本地配置。
+插件模型 API 的可选 `ModelInfo.NativeCapabilities.WebSearch` 三态声明不变，ABI/schema 不变；旧插件缺省仍为未知。宿主深拷贝并保留此能力，Coding Plan 对 `glm-5.3`、`glm-5.3-flash` 和复用 Flash 模板的 `glm-5.3-flashx` 声明 `true`。`glm-5.4` 和自定义 ID 的搜索能力为未知。CPA-aware `/v1/models?client_version=cpa` 据此输出 `cpa_capabilities.web_search`。普通模型目录不会自动修改客户端本地配置。
 
-`NativeCapabilities.WebSearchReplay` 是同层新增的可选加法字段（字符串协议判别器）：Core 的 Responses 转换器只对声明 `bigmodel` 的路由按 BigModel 协议回放搜索历史（带 `refer` 的裸结果原样回放），而同样声明 `WebSearch=true` 的原生 Anthropic 模型仍走严格 `encrypted_content` 回放契约——“支持原生搜索”不等于“采用 BigModel 回放协议”。Coding Plan 对内置 allowlist ID 同时声明两个字段，自定义 ID 两个都不声明；旧插件解码后该字段为空。
+`NativeCapabilities.WebSearchReplay` 是同层新增的可选加法字段（字符串协议判别器）：Core 的 Responses 转换器只对声明 `bigmodel` 的路由按 BigModel 协议回放搜索历史（带 `refer` 的裸结果原样回放），而同样声明 `WebSearch=true` 的原生 Anthropic 模型仍走严格 `encrypted_content` 回放契约——“支持原生搜索”不等于“采用 BigModel 回放协议”。Coding Plan 在声明 `WebSearch=true` 的 5.3 模型模板上同时声明回放协议；旧插件解码后该字段为空。
 
 ZCode 使用当前生效数据目录下的 `.zcode/v2/provider_config.json`；手动模型规则位于 `config.modelConfigRules.manualProviderModelRules[].config`。仅合并 `properties.supportsNativeWebSearch=false`，不关闭普通 tool call、不重复添加同一 provider/model 的自动和手动规则。内置 WebSearch 实际另发 provider-native 模型请求且没有外部搜索自动 fallback；联网需求应使用独立的客户端 function/MCP 搜索工具。具体限制见插件 [README](../../examples/plugin/zcode-coding-plan/README.md#client-tools-and-native-websearch)。源码版本不是已发布产物，本地合成回归不是线上真实模型或客户端 UI 验收。
 

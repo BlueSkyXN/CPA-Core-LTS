@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,7 @@ func TestInlineConfigurationRequiresLoggingAcknowledgement(t *testing.T) {
 	if c.APIKey != "synthetic-key.synthetic-secret" || c.DeviceID != "synthetic-device" {
 		t.Fatal("inline credentials not applied to config")
 	}
-	if len(c.Models) != 2 || c.Models[0] != "glm-5.3" || c.Models[1] != "glm-5.3-flash" {
+	if !slices.Equal(c.Models, []string{"glm-5.3", "glm-5.3-flash", "glm-5.4"}) {
 		t.Fatal("default model allowlist missing:", c.Models)
 	}
 	if c.Endpoint != "https://open.bigmodel.cn/api/anthropic/v1/messages" {
@@ -81,10 +82,10 @@ func TestInlineConfigurationRequiresLoggingAcknowledgement(t *testing.T) {
 func TestInlineModelMetadata(t *testing.T) {
 	c := defaultConfig()
 	list := modelList(c)
-	if len(list) != 2 {
+	if len(list) != 3 {
 		t.Fatal("default models missing")
 	}
-	c.applyExtraModels([]string{"glm-5.3-highspeed", "glm-5.3-flashx"})
+	c.applyExtraModels([]string{"glm-5.3-flashx"})
 	list = modelList(c)
 	if len(list) != 4 {
 		t.Fatal("optional models missing")
@@ -109,8 +110,12 @@ func TestInlineModelMetadata(t *testing.T) {
 		if len(input) != 2 || input[1] != "image" {
 			t.Fatal("built-in GLM models must accept images", id)
 		}
-		native := m["NativeCapabilities"].(map[string]any)
-		if native["WebSearch"] != true || native["WebSearchReplay"] != "bigmodel" {
+		native, _ := m["NativeCapabilities"].(map[string]any)
+		if id == "glm-5.4" {
+			if native != nil {
+				t.Fatal("glm-5.4 search capability requires upstream verification")
+			}
+		} else if native["WebSearch"] != true || native["WebSearchReplay"] != "bigmodel" {
 			t.Fatal("GLM template lost native search capability")
 		}
 	}
