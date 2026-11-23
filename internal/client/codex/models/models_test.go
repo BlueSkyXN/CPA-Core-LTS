@@ -1038,7 +1038,7 @@ func TestCodexClientModelsResponse_UnrelatedCustomProviderRetainsFallback(t *tes
 	if !okMods || len(mods) != 2 || mods[0] != "text" || mods[1] != "image" {
 		t.Fatalf("unrelated model input_modalities = %#v, want [text image]", entry["input_modalities"])
 	}
-	assertCodexClientReasoningEfforts(t, entry, []string{"low", "medium", "high", "xhigh", "max"})
+	assertCodexClientReasoningEfforts(t, entry, []string{"low", "medium", "high"})
 	if got := stringModelValue(entry, "default_reasoning_level"); got != "medium" {
 		t.Errorf("default_reasoning_level = %q, want medium", got)
 	}
@@ -1047,6 +1047,24 @@ func TestCodexClientModelsResponse_UnrelatedCustomProviderRetainsFallback(t *tes
 	}
 	if got, ok := entry["supports_image_detail_original"].(bool); !ok || got {
 		t.Errorf("supports_image_detail_original = %#v, want false for generic fallback", entry["supports_image_detail_original"])
+	}
+}
+
+func TestCodexClientModelsResponse_UnregisteredModelGetsFiveTierFallback(t *testing.T) {
+	resp := BuildResponse([]map[string]any{
+		{"id": "unregistered-codex-fallback-test-model"},
+	}, nil, false)
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", resp["models"])
+	}
+	entry := models[0]
+	assertCodexClientReasoningEfforts(t, entry, []string{"low", "medium", "high", "xhigh", "max"})
+	if got := stringModelValue(entry, "default_reasoning_level"); got != "medium" {
+		t.Errorf("default_reasoning_level = %q, want medium", got)
+	}
+	if got := intModelValue(entry, "max_tokens"); got != 128_000 {
+		t.Errorf("max_tokens = %d, want 128000", got)
 	}
 }
 

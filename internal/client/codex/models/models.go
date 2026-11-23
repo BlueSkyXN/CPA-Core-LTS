@@ -702,9 +702,9 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 		} else {
 			applyCodexClientInputModalitiesMetadata(entry, info.SupportedInputModalities)
 		}
-		// The OpenAI-compatible executor has its own defaults. Explicit model
-		// settings and plugin metadata carry model-specific reasoning capabilities.
-		if thinkingSupport == nil && (info.Type != "openai-compatibility" || info.ExplicitThinking || info.PluginCatalog) {
+		// OpenAI-compatible models without explicit thinking config default to low/medium/high,
+		// matching the executor's default capabilities.
+		if thinkingSupport == nil {
 			thinkingSupport = info.Thinking
 		}
 	}
