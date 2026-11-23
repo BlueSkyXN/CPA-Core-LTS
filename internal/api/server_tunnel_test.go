@@ -129,7 +129,19 @@ func TestServerWebsocketTunnel_EndToEndAndTenantIsolation(t *testing.T) {
 	t.Cleanup(func() {
 		_ = apiSrv.Stop(context.Background())
 	})
-	httpSrv := httptest.NewServer(apiSrv.Handler())
+	serverAReady, serverBReady := make(chan struct{}), make(chan struct{})
+	handler := apiSrv.Handler()
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r)
+		// The HTTP upgrade is visible before the tunnel handler registers the
+		// peer. Wait for both initial registrations before taking the snapshot.
+		switch r.URL.Query().Get("uuid") {
+		case "srv-a1":
+			close(serverAReady)
+		case "srv-b1":
+			close(serverBReady)
+		}
+	}))
 	t.Cleanup(httpSrv.Close)
 
 	// Server role without a valid type (>= 1 non-whitespace char) must fail with 400.
@@ -148,6 +160,8 @@ func TestServerWebsocketTunnel_EndToEndAndTenantIsolation(t *testing.T) {
 
 	srvA1 := dialServerTunnelWithType(t, httpSrv.URL, "tenant-a", wstunnel.RoleServer, "srv-a1", "Server A1", "cpa-desktop")
 	_ = dialServerTunnelWithType(t, httpSrv.URL, "tenant-b", wstunnel.RoleServer, "srv-b1", "Server B1", "cpa-cloud")
+	waitServerTunnelTransportSignal(t, serverAReady, "initial server registration for tenant A")
+	waitServerTunnelTransportSignal(t, serverBReady, "initial server registration for tenant B")
 
 	cliA := dialServerTunnel(t, httpSrv.URL, "tenant-a", wstunnel.RoleClient, "cli-a1", "Client A1")
 	initList := readServerTunnelJSON(t, cliA)
