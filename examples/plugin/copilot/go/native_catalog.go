@@ -32,7 +32,7 @@ func (r *pluginRuntime) nativeModels(auth copilotAuth, callbackID string, cfg pl
 		return nil, newPluginCallError("models_unavailable", "Copilot API endpoint is not configured", http.StatusServiceUnavailable, false)
 	}
 	r.mu.Lock()
-	epoch := r.generation
+	epoch := cfg.generation
 	key := sessionDigest([]string{copilotTokenCacheKey(auth, cfg.GitHubAPIEndpoint), cfg.CopilotAPIEndpoint, strconv.FormatUint(epoch, 10)})
 	if cached, ok := r.nativeCatalogs[key]; ok && time.Now().Before(cached.expires) {
 		r.mu.Unlock()
@@ -123,10 +123,7 @@ func parseNativeCatalog(raw []byte, excludedPrefixes []string) (nativeCatalogEnt
 		if model.Policy != nil && !strings.EqualFold(strings.TrimSpace(model.Policy.State), "enabled") {
 			continue
 		}
-		// 只发布声明了端点的现行模型。上游目录里的存档老模型（gpt-4o/4.1/3.5 等）
-		// 没有 supported_endpoints 声明、picker 关闭；embeddings 模型无端点概念但
-		// embeddings 线使用，按 capabilities.type 保留。
-		if !catalogModelPublishable(model) {
+		if len(copilotGenerationMethods(model)) == 0 {
 			continue
 		}
 		if modelExcludedByPrefix(id, excludedPrefixes) {
@@ -175,17 +172,4 @@ func cloneModels(input []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 		}
 	}
 	return out
-}
-
-// catalogModelPublishable 判断目录条目是否面向本插件发布：
-//   - embeddings 类型：无端点声明也保留（embeddings 线按 ID 匹配使用）；
-//   - 其余类型：必须声明 supported_endpoints，未声明的存档老模型不发布。
-func catalogModelPublishable(model copilotCatalogModel) bool {
-	if len(copilotGenerationMethods(model)) == 0 {
-		return false
-	}
-	if model.Capabilities != nil && strings.EqualFold(strings.TrimSpace(model.Capabilities.Type), "embeddings") {
-		return true
-	}
-	return len(model.SupportedEndpoints) > 0
 }

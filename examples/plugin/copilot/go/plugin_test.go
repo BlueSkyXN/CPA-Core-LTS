@@ -92,6 +92,16 @@ func TestCopilotConfigDefaultsAndAccountTypes(t *testing.T) {
 	if cfg.OAuthClientID != "Iv1.b507a08c87ecfe98" || cfg.EditorVersion != "1.110.1" || cfg.EditorPluginVersion != "copilot-chat/0.38.2" || cfg.UserAgent != "GitHubCopilotChat/0.38.2" || cfg.APIVersion != "2025-10-01" {
 		t.Fatalf("identity defaults = %#v", cfg)
 	}
+	if cfg.ChatCacheBreakpoints {
+		t.Fatal("chat cache markers enabled by default")
+	}
+	markers, err := decodePluginConfig([]byte("chat_cache_breakpoints: true\n"))
+	if err != nil || !markers.ChatCacheBreakpoints {
+		t.Fatalf("chat_cache_breakpoints not enabled: %v", err)
+	}
+	if _, err := decodePluginConfig([]byte("chat_cache_breakpoints: not-a-boolean\n")); err == nil {
+		t.Fatal("invalid chat_cache_breakpoints accepted")
+	}
 	business, err := decodePluginConfig([]byte("account_type: Business\n"))
 	if err != nil || business.CopilotAPIEndpoint != "https://api.business.githubcopilot.com" {
 		t.Fatalf("business = %#v, %v", business, err)

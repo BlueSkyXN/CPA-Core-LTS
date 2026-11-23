@@ -1875,20 +1875,20 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
 	stopCancellationWatch := a.watchExecutionCancellation(ctx, pluginReq)
 	defer stopCancellationWatch()
 	reporter = a.formalUsageReporter(ctx, auth, prepared)
+	var partial executorPartialUsage
 	if reporter != nil {
 		reporter.StartResponseTiming()
 		ctx = helps.WithUsageReporter(ctx, reporter)
+		ctx = context.WithValue(ctx, partialUsageContextKey{}, &partial)
 	}
 	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
 	if ctx != nil && ctx.Err() != nil {
-		if reporter != nil {
-			reporter.PublishFailure(ctx, ctx.Err())
-		}
-		return coreexecutor.Response{}, nil, ctx.Err()
+		errExecute = ctx.Err()
 	}
 	if errExecute != nil {
 		if reporter != nil {
-			reporter.PublishFailure(ctx, errExecute)
+			partial.publishFailure(ctx, reporter, errExecute)
+			reporter = nil // The RPC failure path owns publication, including a deferred cancellation settlement.
 		}
 		return coreexecutor.Response{}, nil, errExecute
 	}

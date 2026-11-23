@@ -59,6 +59,8 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	dir := filepath.Dir(library)
 	var failStream, hangStream atomic.Bool
 	var recoveryPhase, recoveryCalls atomic.Int32
+	var protocolWire atomic.Pointer[copilotProtocolWire]
+	var imageWire atomic.Pointer[carbonBudgetWire]
 	started := make(chan struct{}, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
@@ -76,11 +78,19 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 			fmt.Fprint(w, `{"token":"cc-fixture","refresh_in":1800,"expires_at":4102444800}`)
 		case "/models":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5-codex","name":"GPT-5 Codex","capabilities":{"limits":{"max_context_window_tokens":272000,"max_output_tokens":128000},"supports":{"tool_calls":true,"streaming":true}},"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"]},{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}},{"id":"gemini-4-argon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["low","medium","high"],"tool_calls":true,"streaming":true}}}]}`)
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5-codex","name":"GPT-5 Codex","capabilities":{"limits":{"max_context_window_tokens":272000,"max_output_tokens":128000},"supports":{"tool_calls":true,"streaming":true}},"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"]},{"id":"text-embedding-3-small","name":"Embeddings","capabilities":{"type":"embeddings"}},{"id":"gemini-4-carbon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"tool_calls":true,"streaming":true}}},{"id":"gemini-4-argon","supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","supports":{"reasoning_effort":["low","medium","high"],"tool_calls":true,"streaming":true}}}]}`)
 		case "/embeddings":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.125]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`)
 		case "/chat/completions":
+			if wire := imageWire.Load(); wire != nil {
+				wire.serve(w, req)
+				return
+			}
+			if wire := protocolWire.Load(); wire != nil {
+				wire.serve(w, req)
+				return
+			}
 			if phase := recoveryPhase.Load(); phase > 0 {
 				recoveryCalls.Add(1)
 				recoveryPhase.Add(1)
@@ -96,6 +106,9 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 					if body["reasoning_effort"] != "high" || body["tool_choice"] != "required" {
 						t.Error("HTTP request controls lost")
 					}
+					if messages, _ := body["messages"].([]any); len(messages) != 1 || messages[0].(map[string]any)["copilot_cache_control"] == nil {
+						t.Error("Chat cache marker did not reach the upstream")
+					}
 					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", copilotToolResponse)
 				case 3:
 					var body struct {
@@ -108,6 +121,9 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 					for _, message := range body.Messages {
 						if message["role"] == "assistant" && message["tool_calls"] != nil {
 							found = message["reasoning_opaque"] == "fixture-opaque-state"
+						}
+						if _, marked := message["copilot_cache_control"]; marked {
+							t.Error("implicit mode on the original Responses request did not suppress Chat markers")
 						}
 					}
 					if !found {
@@ -143,6 +159,8 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
   configs:
     copilot:
       enabled: true
+      chat_cache_breakpoints: true
+      carbon_image_budget: true
       github_endpoint: %s
       github_api_endpoint: %s
       copilot_api_endpoint: %s
@@ -208,9 +226,11 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	if !ok {
 		t.Fatal("native Copilot executor was not registered")
 	}
+	// 每条 HTTP 用例独立验证用量，避免前一条模拟的上游 502 触发账号冷却。
+	stored["disable_cooling"] = true
 	auth := &coreauth.Auth{ID: "fixture-auth", Index: "fixture-index", Provider: pluginIdentifier, Metadata: stored, Attributes: poll.Auth.Attributes}
 	models := host.ModelsForAuth(ctx, auth)
-	if models.Err != nil || len(models.Models) != 3 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {
+	if models.Err != nil || len(models.Models) != 4 || models.Models[0].ID != "gpt-5-codex" || models.Models[0].DisplayName != "GPT-5 Codex" {
 		t.Fatalf("dynamic catalog failed: %v, models=%#v", models.Err, models.Models)
 	}
 	sink := &copilotUsageSink{records: make(chan coreusage.Record, 4)}
@@ -256,7 +276,10 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 	registry.GetGlobalRegistry().RegisterClient(auth.ID, pluginIdentifier, models.Models)
 	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 	gin.SetMode(gin.TestMode)
-	api := openaihandlers.NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)
+	testCopilotProtocolMatrix(t, base, &protocolWire, sink, auth.Index)
+	testCarbonBudgetHandlers(t, base, &imageWire, sink, auth.Index)
+	api := openaihandlers.NewOpenAIResponsesAPIHandler(base)
 	postResponses := func(body []byte) ojson.Result {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -305,7 +328,7 @@ func TestDynamicCopilotPluginLoadHelper(t *testing.T) {
 		input = append(input, json.RawMessage(item.Raw))
 	}
 	input = append(input, json.RawMessage(`{"type":"function_call_output","call_id":"call-fixture","output":"fixture result"}`))
-	followBody, _ := json.Marshal(map[string]any{"model": "gemini-4-argon", "stream": true, "input": input})
+	followBody, _ := json.Marshal(map[string]any{"model": "gemini-4-argon", "stream": true, "input": input, "prompt_cache_options": map[string]string{"mode": "implicit"}})
 	second := postResponses(followBody)
 	if !strings.Contains(second.Raw, "tool-result-ok") || recoveryCalls.Load() != 3 {
 		t.Fatalf("tool loop calls = %d", recoveryCalls.Load())

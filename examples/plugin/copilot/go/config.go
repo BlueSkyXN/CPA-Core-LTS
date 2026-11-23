@@ -24,6 +24,9 @@ type pluginConfig struct {
 	CopilotAPIEndpoint    string        `yaml:"copilot_api_endpoint"`
 	ModelCacheTTL         time.Duration `yaml:"-"`
 	ModelCacheTTLRaw      string        `yaml:"model_cache_ttl"`
+	ChatCacheBreakpoints  bool          `yaml:"chat_cache_breakpoints"`
+	CarbonImageBudget     bool          `yaml:"carbon_image_budget"`
+	generation            uint64        // 随运行时配置快照传递，不从 YAML 读取。
 }
 
 func defaultPluginConfig() pluginConfig {

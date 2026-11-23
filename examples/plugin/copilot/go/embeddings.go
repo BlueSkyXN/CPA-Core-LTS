@@ -66,7 +66,7 @@ func (r *pluginRuntime) executeEmbeddings(req rpcExecutorRequest) (pluginapi.Exe
 		return pluginapi.ExecutorResponse{}, err
 	}
 	defer r.releaseNative(exec)
-	cfg := r.loadedConfig()
+	cfg := exec.config
 	if cfg.CopilotAPIEndpoint == "" || validateDirectURL(cfg.CopilotAPIEndpoint, "copilot_api_endpoint") != nil {
 		return pluginapi.ExecutorResponse{}, newPluginCallError("direct_endpoint_required", "Copilot API endpoint is not configured", http.StatusServiceUnavailable, false)
 	}
