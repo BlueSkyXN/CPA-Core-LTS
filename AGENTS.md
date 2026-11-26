@@ -21,7 +21,7 @@
 - 上游来源：`https://github.com/router-for-me/CLIProxyAPI`
 - 基线版本 / 提交：`v6.9.49` / `b8bba053fcdafd80abc2152c88c78f4e7713c05a`
 - 配套面板：`https://github.com/BlueSkyXN/CPA-Panel-LTS`
-- Go module path 当前跟随 upstream major path：`github.com/router-for-me/CLIProxyAPI/v7`；不要因为 LTS 仓库名而随意改 import path。
+- Go module path 当前跟随 upstream major path：`github.com/router-for-me/CLIProxyAPI/v8`；不要因为 LTS 仓库名而随意改 import path。
 
 必须保留：`usage-statistics-enabled`、`internal/usage/`、`/v0/management/usage`、`/v0/management/usage/export`、`/v0/management/usage/import`、`/v0/management/usage-queue`、`/v0/management/usage-statistics-enabled`，以及 API key、auth file、model、token、latency、success/failure、auth index 等统计字段。Core 默认从 `BlueSkyXN/CPA-Panel-LTS` latest release 下载 `management.html`，并保持 Panel `/usage` 页面、provider status bar、request events table 兼容。
 
@@ -97,6 +97,8 @@
 | `sdk/auth/` | Public OAuth authenticator manager and file token store | Yes | 修改 exported authenticator、login options、token-store persistence、plugin auth parser 前 |
 | `sdk/cliproxy/` | 可嵌入服务 SDK、auth conductor、usage plugin API | Yes | 修改 public SDK type、builder、service、auth scheduler、usage record 前 |
 | `sdk/cliproxy/auth/` | Runtime auth conductor、selection、cooldown、retry、Home dispatch | Yes | 修改 auth selection/result、session affinity、cooldown、model fallback、Home execution 前；先读父卡再读本卡 |
+| `sdk/cliproxy/diagnostics/` | Bounded per-instance cache/request diagnostics store、attempt observation、trace/session lookup | No | 修改缓存/请求诊断采集、有界存储、脱敏摘要或检索前，先读 `sdk/cliproxy/AGENTS.md` 与 `docs/lts/cache-diagnostics.md` |
+| `sdk/cliproxy/flowcontrol/` | Local flow-control admission engine、joint waiting queue、status/summary/migration | No | 修改本地流控引擎、联合准入、队列快照或迁移预览前，先读 `sdk/cliproxy/AGENTS.md` 与 `docs/lts/flow-control.md` |
 | `sdk/pluginabi/` | Dynamic plugin ABI method/schema constants | Yes | 修改 plugin ABI schema version、method names、RPC envelope 前 |
 | `sdk/pluginapi/` | Public plugin API types and capability contracts | Yes | 修改 plugin capability interfaces、request/response structs、public metadata 前 |
 | `sdk/pluginstore/` | Public plugin registry/install/auth facade | Yes | 修改 exported pluginstore aliases、resolved auth、manifest/install helper 或 compatibility surface 前 |

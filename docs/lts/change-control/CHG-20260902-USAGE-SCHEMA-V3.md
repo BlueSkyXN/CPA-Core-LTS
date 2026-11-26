@@ -1,6 +1,6 @@
 # Usage schema v3: semantic timing contract
 
-Status: proposed implementation baseline
+Status: implemented
 
 ## Scope
 
@@ -61,6 +61,25 @@ The Redis-compatible usage queue emits `timing_version`, `ttfb_ms`, `ttft_ms`,
 and `ttfa_ms`. Consumers must stop interpreting the old queue `ttft_ms` as
 TTFB and use `ttfb_ms` instead. This is an intentional compatibility change;
 there is no dual write of the old incorrect meaning.
+
+## Additive v3 cache observation and diagnostics linkage
+
+Canonical v3 `RequestDetail` also carries optional additive cache-metering and
+live-diagnostics linkage fields without advancing `CanonicalExportVersion`
+beyond `3` or changing duplicate identity and legacy scalar token totals:
+
+- `cache_observation` (`version: 1`, per-field `read` and `write` states
+  `present` | `absent` | `invalid`, optional non-negative `value` when
+  `present`, optional upstream field `source`); contradictory imported shapes
+  are rejected with `usage_v3_token_contract_invalid`.
+- `request_id` (per-attempt execution UUID), `diagnostics_id` (64-hex SHA-256
+  request diagnostics digest), and `diagnostics_instance_id` (Core instance
+  identifier scoping live diagnostics lookups across restarts and imports).
+
+These fields are also carried on `sdk/cliproxy/usage.Record` and the
+Redis-compatible usage queue. Canonical semantics, retention bounds, and
+`/v0/management/cache-diagnostics/*` query contracts are defined in
+[docs/lts/cache-diagnostics.md](../cache-diagnostics.md).
 
 ## Rollout and rollback
 

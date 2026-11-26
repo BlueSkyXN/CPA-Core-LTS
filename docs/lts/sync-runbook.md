@@ -76,7 +76,7 @@ Panel 的实践证明，单靠“这几个文件不能删”的文字规则不�
 先在主 worktree 检查真实状态：
 
 ```bash
-cd /Users/sky/Github/CPA-Core-LTS
+cd <repo-parent>/CPA-Core-LTS
 git status --short --branch
 git fetch origin --prune --tags
 git fetch upstream --prune --tags
@@ -107,7 +107,7 @@ mkdir -p local
 git status --short > "local/rehearsal-status-${date_tag}.txt"
 git diff --name-only --diff-filter=U > "local/rehearsal-conflicts-${date_tag}.txt"
 git merge --abort
-cd /Users/sky/Github/CPA-Core-LTS
+cd <repo-parent>/CPA-Core-LTS
 git worktree remove ../CPA-Core-LTS-rehearse
 ```
 
@@ -335,7 +335,7 @@ curl -k -sS -D - "${space_url}/v0/management/usage"
 同步完成后清理临时 worktree：
 
 ```bash
-cd /Users/sky/Github/CPA-Core-LTS
+cd <repo-parent>/CPA-Core-LTS
 git worktree remove ../CPA-Core-LTS-sync-stage-N
 ```
 
