@@ -101,6 +101,57 @@ func TestPatchHistoryRejectsDeletionAndSkippedRetirement(t *testing.T) {
 	})
 }
 
+func TestRemergeDiffGuardRejectsDroppedConflictTestAndAllowsRetainedTest(t *testing.T) {
+	setupConflictBranches := func(t *testing.T) (string, string) {
+		t.Helper()
+		root := writeValidFixture(t)
+		baseRef := initGitRepo(t, root)
+
+		runGit := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+
+		runGit("checkout", "-qb", "upstream-stage")
+		writeFixtureFile(t, root, "internal/demo/demo_test.go", "package demo\n\nimport \"testing\"\n\nfunc TestDemo(t *testing.T) {\n\tt.Log(\"upstream\")\n}\n\nfunc TestUpstreamRegression(t *testing.T) {\n\tt.Log(\"must survive sync\")\n}\n")
+		runGit("add", "internal/demo/demo_test.go")
+		runGit("commit", "-qm", "upstream adds regression test")
+
+		runGit("checkout", "-q", "-")
+		writeFixtureFile(t, root, "internal/demo/demo_test.go", "package demo\n\nimport \"testing\"\n\nfunc TestDemo(t *testing.T) {\n\tt.Log(\"downstream\")\n}\n\nfunc TestDownstreamBehavior(t *testing.T) {\n\tt.Log(\"lts\")\n}\n")
+		runGit("add", "internal/demo/demo_test.go")
+		runGit("commit", "-qm", "downstream adds behavior test")
+
+		mergeCmd := exec.Command("git", "-C", root, "merge", "--no-commit", "upstream-stage")
+		_ = mergeCmd.Run()
+		return root, baseRef
+	}
+
+	t.Run("dropped upstream test fails", func(t *testing.T) {
+		root, baseRef := setupConflictBranches(t)
+		writeFixtureFile(t, root, "internal/demo/demo_test.go", "package demo\n\nimport \"testing\"\n\nfunc TestDemo(t *testing.T) {\n\tt.Log(\"downstream\")\n}\n\nfunc TestDownstreamBehavior(t *testing.T) {\n\tt.Log(\"lts\")\n}\n")
+		commitAll(t, root, "bad conflict resolution dropping upstream test")
+
+		err := validateRootAgainst(root, baseRef)
+		if err == nil || !strings.Contains(err.Error(), "remerge-diff test guard") || !strings.Contains(err.Error(), "TestUpstreamRegression") {
+			t.Fatalf("validateRootAgainst() error = %v, want remerge-diff dropped test failure", err)
+		}
+	})
+
+	t.Run("adapted and retained upstream test passes", func(t *testing.T) {
+		root, baseRef := setupConflictBranches(t)
+		writeFixtureFile(t, root, "internal/demo/demo_test.go", "package demo\n\nimport \"testing\"\n\nfunc TestDemo(t *testing.T) {\n\tt.Log(\"merged\")\n}\n\nfunc TestDownstreamBehavior(t *testing.T) {\n\tt.Log(\"lts\")\n}\n\nfunc TestUpstreamRegression(t *testing.T) {\n\tt.Log(\"adapted for lts signature\")\n}\n")
+		commitAll(t, root, "clean conflict resolution retaining both tests")
+
+		if err := validateRootAgainst(root, baseRef); err != nil {
+			t.Fatalf("validateRootAgainst() unexpected error:\n%v", err)
+		}
+	})
+}
+
 func TestValidationFailures(t *testing.T) {
 	tests := []struct {
 		name       string

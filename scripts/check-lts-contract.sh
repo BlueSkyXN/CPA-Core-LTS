@@ -235,7 +235,13 @@ require_grep "removeSessionPreservingKey" sdk/cliproxy/auth/codex_rate_limit_con
 require_grep "CodexModelFallbackContextResetReplayMetadataKey" sdk/cliproxy/executor/types.go sdk/api/handlers/openai/openai_responses_websocket.go
 require_grep "ResolveCodexReasoningReplaySessionKey" internal/cache/codex_reasoning_replay_scope.go internal/runtime/executor/codex_executor_reasoning.go sdk/cliproxy/auth/codex_model_fallback.go
 require_grep "ValidateCodexClientModelsLTSCompatibility" internal/registry/codex_client_models.go internal/registry/codex_client_models_test.go cmd/validate_codex_models/main.go
-require_grep "refresh-model-catalogs.sh" .github/workflows/pr-test-build.yml .github/workflows/release.yaml .github/workflows/docker-image.yml .github/workflows/pat-provider-delivery.yml
+for catalog_workflow in \
+  .github/workflows/pr-test-build.yml \
+  .github/workflows/release.yaml \
+  .github/workflows/docker-image.yml \
+  .github/workflows/pat-provider-delivery.yml; do
+  require_grep "refresh-model-catalogs.sh" "$catalog_workflow"
+done
 require_grep "codex_client_models.json" .github/scripts/refresh-model-catalogs.sh
 require_grep "ref: \${{ env.RELEASE_TAG }}" .github/workflows/release.yaml .github/workflows/docker-image.yml
 require_grep "Verify manual workflow source" .github/workflows/release.yaml .github/workflows/docker-image.yml
