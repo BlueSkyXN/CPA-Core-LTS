@@ -200,7 +200,7 @@ func (t *Trace) matchID(id string) []string {
 		return nil
 	}
 	var matches []string
-	if id == t.ID {
+	if strings.EqualFold(id, t.ID) {
 		matches = append(matches, "diagnostics_id")
 	}
 	if id == t.TraceID {

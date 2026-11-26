@@ -69,6 +69,7 @@ type Trace struct {
 
 type entry struct {
 	value    Trace
+	raw      []byte
 	bytes    int
 	revision uint64
 }
@@ -180,7 +181,7 @@ func (s *Store) Begin(ctx context.Context, requestID, callerScope, session, mode
 			}
 		}
 		b, _ := json.Marshal(v)
-		s.entries[id] = &entry{value: v, bytes: len(b)}
+		s.entries[id] = &entry{value: v, raw: b, bytes: len(b)}
 		s.bytes += len(b)
 		s.evictLocked(id)
 	}
@@ -205,7 +206,7 @@ func (s *Store) evictLocked(keep string) {
 	}
 }
 
-func (r *Ref) update(fn func(*Trace)) bool {
+func (r *Ref) update(fn func(*Trace) bool) bool {
 	if r == nil || r.store == nil {
 		return false
 	}
@@ -216,8 +217,13 @@ func (r *Ref) update(fn func(*Trace)) bool {
 	if e == nil {
 		return false
 	}
-	previous, _ := json.Marshal(e.value)
-	fn(&e.value)
+	if !fn(&e.value) {
+		return true
+	}
+	previous := e.raw
+	if previous == nil {
+		previous, _ = json.Marshal(e.value)
+	}
 	e.value.UpdatedAt = s.now()
 	b, _ := json.Marshal(e.value)
 	retained := true
@@ -227,11 +233,22 @@ func (r *Ref) update(fn func(*Trace)) bool {
 		var restored Trace
 		_ = json.Unmarshal(previous, &restored)
 		e.value = restored
-		e.value.Truncated = true
-		b, _ = json.Marshal(e.value)
+		if !e.value.Truncated {
+			e.value.Truncated = true
+			b, _ = json.Marshal(e.value)
+			s.bytes += len(b) - e.bytes
+			e.bytes = len(b)
+			e.raw = b
+			e.revision++
+		} else if e.raw == nil {
+			e.raw = previous
+		}
+		s.evictLocked(r.id)
+		return retained
 	}
 	s.bytes += len(b) - e.bytes
 	e.bytes = len(b)
+	e.raw = b
 	e.revision++
 	s.evictLocked(r.id)
 	return retained
@@ -263,19 +280,30 @@ func (r *Ref) Record(event Event) {
 	for i := range event.Changes {
 		event.Changes[i] = bounded(event.Changes[i])
 	}
-	r.update(func(t *Trace) {
+	r.update(func(t *Trace) bool {
 		if len(t.Events) >= MaxEvents {
+			if t.Truncated {
+				return false
+			}
 			t.Truncated = true
-			return
+			return true
 		}
 		event.Sequence = len(t.Events) + 1
 		event.At = r.store.now()
 		t.Events = append(t.Events, event)
+		return true
 	})
 }
 func (r *Ref) SetSession(session string) {
-	if session != "" {
-		r.update(func(t *Trace) { t.SessionHash = Hash(session) })
+	if r != nil && session != "" {
+		hash := Hash(session)
+		r.update(func(t *Trace) bool {
+			if t.SessionHash == hash {
+				return false
+			}
+			t.SessionHash = hash
+			return true
+		})
 	}
 }
 
@@ -290,9 +318,12 @@ func (s *Store) Get(id string) (Trace, bool) {
 		return Trace{}, false
 	}
 	// 查询复制有限记录，不清理、不续期，也不触碰算法索引。
-	b, _ := json.Marshal(e.value)
+	raw := e.raw
+	if raw == nil {
+		raw, _ = json.Marshal(e.value)
+	}
 	var out Trace
-	_ = json.Unmarshal(b, &out)
+	_ = json.Unmarshal(raw, &out)
 	return out, true
 }
 

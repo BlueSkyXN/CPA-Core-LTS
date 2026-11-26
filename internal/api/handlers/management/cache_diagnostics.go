@@ -17,7 +17,7 @@ func validDiagnosticHash(value string) bool {
 }
 
 func (h *Handler) GetCacheDiagnostics(c *gin.Context) {
-	id := strings.TrimSpace(c.Param("id"))
+	id := strings.ToLower(strings.TrimSpace(c.Param("id")))
 	if !validDiagnosticHash(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid diagnostic id"})
 		return
@@ -51,6 +51,7 @@ func (h *Handler) GetCacheDiagnosticsCapabilities(c *gin.Context) {
 }
 
 func (h *Handler) QueryCacheSession(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var query struct {
 		Provider      string `json:"provider"`
 		Model         string `json:"model"`
@@ -70,5 +71,5 @@ func (h *Handler) QueryCacheSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid diagnostic id"})
 		return
 	}
-	c.JSON(http.StatusOK, h.authManager.SnapshotCacheSession(strings.TrimSpace(query.Provider), strings.TrimSpace(query.Model), strings.ToLower(query.SessionHash), query.DiagnosticsID))
+	c.JSON(http.StatusOK, h.authManager.SnapshotCacheSession(strings.TrimSpace(query.Provider), strings.TrimSpace(query.Model), strings.ToLower(query.SessionHash), strings.ToLower(query.DiagnosticsID)))
 }
