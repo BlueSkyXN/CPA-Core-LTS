@@ -49,6 +49,7 @@
 |---|---|---:|---|
 | `.github/` | Actions、PR guard、release、path/contract checks | Yes | 修改 workflow、权限、release、PR guard、CI gate 前 |
 | `.codex/` | 本地 Codex 配置/临时上下文 | No | 仅当用户明确要求维护本地 Codex 资产 |
+| `.env.example` | 运行环境变量模板（`WRITABLE_PATH`、`MANAGEMENT_*`、`PGSTORE_*`、`GITSTORE_*`、`OBJECTSTORE_*`） | No | 新增/改名/删除运行环境变量前，同时核对 `cmd/server/AGENTS.md`、`internal/managementasset/AGENTS.md` 与 `internal/util/util.go` |
 | `.gocache/` | 本地 Go build/test cache | No | 默认忽略，不纳入产品改动或验收结论 |
 | `.playwright-mcp/` | 本地 Playwright MCP 运行残留/配置 | No | 默认忽略，不纳入产品改动 |
 | `auths/` | auth 目录占位；运行时挂载真实凭据目录 | No | 默认不要提交真实 token/auth file；形状变更读 `internal/auth/` 和 `internal/watcher/` |

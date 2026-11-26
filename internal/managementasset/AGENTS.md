@@ -13,6 +13,7 @@ Key files: `updater.go`, `updater_test.go`.
 ## Required before changes
 
 - Confirm whether the change affects `DefaultPanelGitHubRepository`, `defaultManagementReleaseURL`, `defaultManagementFallbackURL`, or `managementAssetName`.
+- Preserve `StaticDir` / `FilePath` resolution order: `MANAGEMENT_STATIC_PATH` (either a directory or a direct `management.html` file path) -> `<WRITABLE_PATH>/static` -> `<config-dir>/static`.
 - Check `internal/config/AGENTS.md` if config keys or defaults are involved.
 - Check `internal/api/AGENTS.md` if serving routes or auth behavior are involved.
 
