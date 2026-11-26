@@ -231,6 +231,13 @@ func TestCacheDiagnosticsUppercaseIDAndSessionNoStore(t *testing.T) {
 		t.Fatalf("trace ID=%q, want %q", gotTrace.ID, traceID)
 	}
 
+	pageRes := doManagementJSONRequest(router, "GET", "/traces?q="+strings.ToUpper(traceID), "")
+	var page cacheTracePage
+	if pageRes.Code != http.StatusOK || json.Unmarshal(pageRes.Body.Bytes(), &page) != nil ||
+		len(page.Items) != 1 || page.Items[0].DiagnosticsID != traceID {
+		t.Fatalf("uppercase diagnostic search returned status %d, %d rows", pageRes.Code, len(page.Items))
+	}
+
 	// QueryCacheSession must accept uppercase 64-hex diagnostics_id and session_hash, and emit Cache-Control: no-store.
 	sessionBody := fmt.Sprintf(`{"provider":%q,"model":"diag-model","session_hash":%q,"diagnostics_id":%q}`,
 		executor.provider, strings.ToUpper(sessionHash), strings.ToUpper(traceID))

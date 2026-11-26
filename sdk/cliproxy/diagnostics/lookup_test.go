@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,28 @@ func TestCacheTraceLookupSeparatesResponseIDAndResend(t *testing.T) {
 	if trace.Attempts[0].Status != 503 || trace.Attempts[0].ResponseID != "" ||
 		trace.Attempts[0].RouteScope != trace.Attempts[1].RouteScope {
 		t.Fatalf("attempts were merged or differ by transport: %+v", trace.Attempts)
+	}
+}
+
+func TestCacheTraceLookupFoldsOnlyDiagnosticDigest(t *testing.T) {
+	store := NewStore()
+	opaqueID := strings.Repeat("Ab", 32)
+	ctx := store.Begin(usage.WithTraceID(t.Context(), opaqueID), opaqueID, "caller", "", "model", "responses", nil)
+	ref := FromContext(ctx)
+	a := (&Execution{Ref: ref, ID: opaqueID}).Begin("http", "", nil, nil)
+	a.Observe([]byte(fmt.Sprintf(`{"object":"response","id":%q}`, opaqueID)))
+
+	for _, id := range []string{ref.ID(), strings.ToUpper(ref.ID())} {
+		rows, _ := store.Lookup(TraceQuery{ID: id})
+		if len(rows) != 1 || !slices.Equal(rows[0].Matched, []string{"diagnostics_id"}) {
+			t.Fatalf("diagnostic digest %q: %+v", id, rows)
+		}
+	}
+	if rows, _ := store.Lookup(TraceQuery{ID: opaqueID}); len(rows) != 1 {
+		t.Fatalf("exact opaque identifier: %d matches", len(rows))
+	}
+	if rows, _ := store.Lookup(TraceQuery{ID: strings.ToLower(opaqueID)}); len(rows) != 0 {
+		t.Fatalf("opaque identifiers matched with changed case: %+v", rows)
 	}
 }
 
