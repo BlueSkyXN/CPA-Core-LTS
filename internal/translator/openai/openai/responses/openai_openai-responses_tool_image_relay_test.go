@@ -316,3 +316,36 @@ func TestResponsesCompleteParallelGroupPreservedDespiteLaterDuplicateCallID(t *t
 		}
 	}
 }
+
+func TestResponsesToolMediaOrderIsLocalToMatchedGroup(t *testing.T) {
+	const group = `{"type":"function_call","call_id":"a","name":"Read","arguments":"{}"},
+		{"type":"custom_tool_call","call_id":"b","name":"view_image","input":"b"},
+		{"type":"function_call_output","call_id":"a","output":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]},
+		{"role":"user","content":"interleaved"},
+		{"type":"custom_tool_call_output","call_id":"b","output":[{"type":"input_image","image_url":"data:image/png;base64,AQ=="}]},
+		{"role":"user","content":"next turn"}`
+	const other = `{"type":"function_call","call_id":"c","name":"Read","arguments":"{}"}`
+	for name, suffix := range map[string]string{
+		"later missing output": other,
+		"later duplicate output": other + `,{"type":"function_call_output","call_id":"c","output":"first"},
+			{"type":"function_call_output","call_id":"c","output":"second"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(`{"input":[` + group + "," + suffix + "]}")
+			out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("model", raw, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for path, want := range map[string]string{
+				"messages.1.tool_call_id": "a", "messages.2.tool_call_id": "b",
+				"messages.3.content.1.image_url.url": "data:image/png;base64,AA==",
+				"messages.4.content.1.image_url.url": "data:image/png;base64,AQ==",
+				"messages.5.content":                 "interleaved", "messages.6.content": "next turn",
+			} {
+				if got := ojson.GetBytesNoCopy(out, path).String(); got != want {
+					t.Errorf("%s = %q, want %q", path, got, want)
+				}
+			}
+		})
+	}
+}
