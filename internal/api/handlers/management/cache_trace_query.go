@@ -1,8 +1,10 @@
 package management
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -118,19 +120,36 @@ func (h *Handler) QueryCacheTraces(c *gin.Context) {
 	expired := func() { c.JSON(http.StatusConflict, gin.H{"code": "cache_trace_query_expired"}) }
 	if raw := params.Get("cursor"); raw != "" {
 		data, errDecode := base64.RawURLEncoding.DecodeString(raw)
-		if errDecode != nil || json.Unmarshal(data, &cursor) != nil ||
-			cursor.Query != queryHash || cursor.ActiveOffset < 0 {
+		if errDecode != nil {
 			invalid()
 			return
 		}
-		if cursor.Instance != instance || cursor.Revision != revision {
+		var decoded struct {
+			Instance     *string `json:"i"`
+			Query        *string `json:"q"`
+			Revision     *string `json:"r"`
+			ActiveOffset *int    `json:"a"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		var trailing any
+		if dec.Decode(&decoded) != nil || dec.Decode(&trailing) != io.EOF ||
+			decoded.Instance == nil || *decoded.Instance == "" ||
+			decoded.Query == nil || *decoded.Query != queryHash ||
+			decoded.Revision == nil || *decoded.Revision == "" ||
+			decoded.ActiveOffset == nil || *decoded.ActiveOffset < 0 {
+			invalid()
+			return
+		}
+		if *decoded.Instance != instance || *decoded.Revision != revision {
 			expired()
 			return
 		}
-		if cursor.ActiveOffset > len(active) {
+		if *decoded.ActiveOffset > len(active) {
 			invalid()
 			return
 		}
+		cursor.ActiveOffset = *decoded.ActiveOffset
 	}
 	end := min(cursor.ActiveOffset+limit, len(active))
 	result := cacheTracePage{Version: 1, CurrentInstanceID: instance, Items: active[cursor.ActiveOffset:end]}

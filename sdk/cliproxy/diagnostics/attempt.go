@@ -74,11 +74,104 @@ type Execution struct {
 	Ref                                      *Ref
 	ID, Provider, Model, AuthIndex, AuthType string
 }
+
+var cacheTTLs = [4]string{"5m", "30m", "1h", "12h"}
+
+type attemptState struct {
+	initialized          bool
+	provider             string
+	requestReason        string
+	status               int
+	outcome              string
+	observationState     string
+	responseID           string
+	responseIDs          []string
+	responseModel        string
+	responseStatus       string
+	cacheWriteByTTL      [4]int64
+	cacheWriteByTTLSet   [4]bool
+	cacheObservation     *usage.CacheObservation
+	diagnosticReturned   bool
+	diagnostic           *Diagnostic
+	inputTokens          *int64
+	inputTransformations int
+	responseTruncated    bool
+}
+
+func (s *attemptState) syncFromAttempt(v *Attempt) {
+	s.initialized = true
+	s.provider = v.Provider
+	s.requestReason = v.Request.Reason
+	s.status = v.Status
+	s.outcome = v.Outcome
+	s.observationState = v.ObservationState
+	s.responseID = v.ResponseID
+	s.responseIDs = slices.Clone(v.ResponseIDs)
+	s.responseModel = v.ResponseModel
+	s.responseStatus = v.ResponseStatus
+	s.cacheWriteByTTL = [4]int64{}
+	s.cacheWriteByTTLSet = [4]bool{}
+	for i, ttl := range cacheTTLs {
+		if val, ok := v.CacheWriteByTTL[ttl]; ok {
+			s.cacheWriteByTTL[i] = val
+			s.cacheWriteByTTLSet[i] = true
+		}
+	}
+	s.cacheObservation = v.CacheObservation.Clone()
+	s.diagnosticReturned = v.DiagnosticReturned
+	s.diagnostic = cloneDiagnostic(v.Diagnostic)
+	s.inputTokens = usage.CloneInt64Ptr(v.InputTokens)
+	s.inputTransformations = v.InputTransformations
+	s.responseTruncated = v.ResponseTruncated
+}
+
+func int64PtrEqual(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func cacheTokenObservationEqual(a, b usage.CacheTokenObservation) bool {
+	return a.State == b.State && a.Source == b.Source && int64PtrEqual(a.Value, b.Value)
+}
+
+func cacheObservationsEqual(a, b *usage.CacheObservation) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Version == b.Version &&
+		cacheTokenObservationEqual(a.Read, b.Read) &&
+		cacheTokenObservationEqual(a.Write, b.Write)
+}
+
+func diagnosticsEqual(a, b *Diagnostic) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Type == b.Type &&
+		a.Reason == b.Reason &&
+		int64PtrEqual(a.CacheMissedTokens, b.CacheMissedTokens) &&
+		int64PtrEqual(a.ComparisonReusableTokens, b.ComparisonReusableTokens)
+}
+
+func cloneDiagnostic(d *Diagnostic) *Diagnostic {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.CacheMissedTokens = usage.CloneInt64Ptr(d.CacheMissedTokens)
+	out.ComparisonReusableTokens = usage.CloneInt64Ptr(d.ComparisonReusableTokens)
+	return &out
+}
+
 type AttemptRef struct {
+	mu           sync.Mutex
 	ref          *Ref
 	number       int
 	provider     string
 	observeUsage func(*usage.CacheObservation)
+	state        attemptState
 }
 
 // WithUsageObserver shares wire parsing with the execution's metering, even
@@ -87,8 +180,10 @@ func (a *AttemptRef) WithUsageObserver(provider string, observe func(*usage.Cach
 	if a == nil {
 		a = &AttemptRef{}
 	}
+	a.mu.Lock()
 	a.provider = provider
 	a.observeUsage = observe
+	a.mu.Unlock()
 	return a
 }
 
@@ -104,16 +199,21 @@ func (e *Execution) Begin(transport, endpoint string, payload []byte, headers ht
 	a.Input = e.Input
 	a.captureCacheRoute(payload, headers)
 	ref := &AttemptRef{ref: e.Ref, provider: a.Provider}
-	retained := e.Ref.update(func(t *Trace) {
+	ref.state.syncFromAttempt(&a)
+	retained := e.Ref.update(func(t *Trace) bool {
 		if len(t.Attempts) >= MaxAttempts {
+			if t.Truncated {
+				return false
+			}
 			t.Truncated = true
-			return
+			return true
 		}
 		a.scopeCacheRoute(t, endpoint)
 		a.Number = len(t.Attempts) + 1
 		a.StartedAt = e.Ref.store.now()
 		ref.number = a.Number
 		t.Attempts = append(t.Attempts, a)
+		return true
 	})
 	if !retained || ref.number == 0 {
 		return nil
@@ -138,7 +238,23 @@ func (e *Execution) BeginHTTP(req *http.Request) *AttemptRef {
 	}
 	a := e.Begin("http", endpoint, body, req.Header)
 	if a != nil && reason != "" {
-		a.update(func(v *Attempt) { v.Request.Reason = reason })
+		a.mu.Lock()
+		if !a.state.initialized || a.state.requestReason != reason {
+			var postState attemptState
+			retained := a.update(func(v *Attempt) bool {
+				if v.Request.Reason == reason {
+					postState.syncFromAttempt(v)
+					return false
+				}
+				v.Request.Reason = reason
+				postState.syncFromAttempt(v)
+				return true
+			})
+			if retained {
+				a.state = postState
+			}
+		}
+		a.mu.Unlock()
 	}
 	return a
 }
@@ -170,42 +286,134 @@ func readRequestBody(body io.Reader, encoding string) ([]byte, string) {
 	}
 	return b, ""
 }
-func (a *AttemptRef) update(fn func(*Attempt)) {
+func (a *AttemptRef) update(fn func(*Attempt) bool) bool {
 	if a == nil || a.ref == nil {
-		return
+		return false
 	}
-	a.ref.update(func(t *Trace) {
+	found := false
+	retained := a.ref.update(func(t *Trace) bool {
 		if a.number > 0 && a.number <= len(t.Attempts) {
-			fn(&t.Attempts[a.number-1])
+			found = true
+			return fn(&t.Attempts[a.number-1])
 		}
+		return false
 	})
+	return found && retained
 }
 
 // RecordUsage backfills finalized usage on the retained send that supplied it.
 func (a *AttemptRef) RecordUsage(detail usage.Detail) {
-	if detail.InputTokens <= 0 && detail.CacheObservation == nil {
+	if a == nil || (detail.InputTokens <= 0 && detail.CacheObservation == nil) {
 		return
 	}
-	a.update(func(v *Attempt) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.initialized {
+		nextInput := a.state.inputTokens
 		if detail.InputTokens > 0 {
-			v.InputTokens = usage.Int64Ptr(detail.InputTokens)
+			nextInput = usage.Int64Ptr(detail.InputTokens)
 		}
-		v.CacheObservation = usage.MergeCacheObservations(detail.CacheObservation.Clone(), v.CacheObservation)
+		nextObs := usage.MergeCacheObservations(detail.CacheObservation.Clone(), a.state.cacheObservation)
+		if int64PtrEqual(a.state.inputTokens, nextInput) && cacheObservationsEqual(a.state.cacheObservation, nextObs) {
+			return
+		}
+	}
+	var postState attemptState
+	retained := a.update(func(v *Attempt) bool {
+		changed := false
+		if detail.InputTokens > 0 && (v.InputTokens == nil || *v.InputTokens != detail.InputTokens) {
+			v.InputTokens = usage.Int64Ptr(detail.InputTokens)
+			changed = true
+		}
+		nextObs := usage.MergeCacheObservations(detail.CacheObservation.Clone(), v.CacheObservation)
+		if !cacheObservationsEqual(v.CacheObservation, nextObs) {
+			v.CacheObservation = nextObs.Clone()
+			changed = true
+		}
+		postState.syncFromAttempt(v)
+		return changed
 	})
+	if retained {
+		a.state = postState
+	}
 }
 
 func (a *AttemptRef) Status(status int, failed bool) {
-	a.update(func(v *Attempt) {
-		v.Status = status
-		if failed {
-			v.Outcome = "transport_error"
-		} else {
-			v.Outcome = "response_received"
+	if a == nil {
+		return
+	}
+	outcome := "response_received"
+	if failed {
+		outcome = "transport_error"
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.initialized && a.state.status == status && a.state.outcome == outcome {
+		return
+	}
+	var postState attemptState
+	retained := a.update(func(v *Attempt) bool {
+		if v.Status == status && v.Outcome == outcome {
+			postState.syncFromAttempt(v)
+			return false
 		}
+		v.Status = status
+		v.Outcome = outcome
+		postState.syncFromAttempt(v)
+		return true
 	})
+	if retained {
+		a.state = postState
+	}
 }
-func (a *AttemptRef) End(outcome string) { a.update(func(v *Attempt) { v.Outcome = outcome }) }
-func (a *AttemptRef) Truncate()          { a.update(func(v *Attempt) { v.ResponseTruncated = true }) }
+
+func (a *AttemptRef) End(outcome string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.initialized && a.state.outcome == outcome {
+		return
+	}
+	var postState attemptState
+	retained := a.update(func(v *Attempt) bool {
+		if v.Outcome == outcome {
+			postState.syncFromAttempt(v)
+			return false
+		}
+		v.Outcome = outcome
+		postState.syncFromAttempt(v)
+		return true
+	})
+	if retained {
+		a.state = postState
+	}
+}
+
+func (a *AttemptRef) Truncate() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.initialized && a.state.responseTruncated {
+		return
+	}
+	var postState attemptState
+	retained := a.update(func(v *Attempt) bool {
+		if v.ResponseTruncated {
+			postState.syncFromAttempt(v)
+			return false
+		}
+		v.ResponseTruncated = true
+		postState.syncFromAttempt(v)
+		return true
+	})
+	if retained {
+		a.state = postState
+	}
+}
 
 func (a *AttemptRef) Observe(data []byte) {
 	if a == nil {
@@ -245,7 +453,12 @@ func (a *AttemptRef) Observe(data []byte) {
 	if !usageNode.IsObject() && !gemini.IsObject() && !diagnostic.IsObject() && !responseObject && !responseEvent {
 		return
 	}
-	claude := a.provider == "claude" || strings.HasPrefix(eventType, "message_")
+	a.mu.Lock()
+	provider := a.provider
+	observeUsage := a.observeUsage
+	hasRef := a.ref != nil
+	a.mu.Unlock()
+	claude := provider == "claude" || strings.HasPrefix(eventType, "message_")
 	var observation *usage.CacheObservation
 	switch {
 	case gemini.IsObject():
@@ -257,66 +470,223 @@ func (a *AttemptRef) Observe(data []byte) {
 	default:
 		observation = usage.ObserveOpenAICache(usageNode)
 	}
-	if a.observeUsage != nil && observation != nil &&
+	if observeUsage != nil && observation != nil &&
 		(observation.Read.State != "absent" || observation.Write.State != "absent") {
-		a.observeUsage(observation)
+		observeUsage(observation)
 	}
-	a.update(func(v *Attempt) {
-		if v.ObservationState != "observed" {
-			v.ObservationState = "partial"
+	if !hasRef {
+		return
+	}
+	terminalObs := gemini.IsObject() || eventType == "message" || eventType == "response.completed" ||
+		eventType == "response.incomplete" || eventType == "response.failed" || eventType == "response.done" ||
+		eventType == "" && (object == "response" || object == "chat.completion")
+	id := safeToken(root.Get("id").String())
+	if id == "" && gemini.IsObject() {
+		id = safeToken(root.Get("responseId").String())
+	}
+	model := safeToken(root.Get("model").String())
+	status := safeToken(root.Get("status").String())
+	var ttlCounts [4]int64
+	var ttlSet [4]bool
+	if claude {
+		for i, ttl := range cacheTTLs {
+			if count := numberPointer(usageNode.Get("cache_creation.ephemeral_" + ttl + "_input_tokens")); count != nil {
+				ttlCounts[i] = *count
+				ttlSet[i] = true
+			}
 		}
-		if gemini.IsObject() || eventType == "message" || eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed" || eventType == "response.done" || eventType == "" && (root.Get("object").String() == "response" || root.Get("object").String() == "chat.completion") {
-			v.ObservationState = "observed"
+	}
+	var diag *Diagnostic
+	if diagnostic.IsObject() {
+		diag = &Diagnostic{
+			Type:                     safeToken(diagnostic.Get("type").String()),
+			Reason:                   safeToken(diagnostic.Get("reason").String()),
+			CacheMissedTokens:        numberPointer(diagnostic.Get("cache_missed_tokens")),
+			ComparisonReusableTokens: numberPointer(diagnostic.Get("comparison_reusable_tokens")),
 		}
-		id := safeToken(root.Get("id").String())
-		if id == "" && gemini.IsObject() {
-			id = safeToken(root.Get("responseId").String())
+	}
+	var transformsCount int
+	hasTransforms := false
+	if transforms := root.Get("input_transformations"); transforms.IsArray() {
+		hasTransforms = true
+		transformsCount = len(transforms.Array())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.initialized {
+		nextObsState := a.state.observationState
+		if nextObsState != "observed" {
+			nextObsState = "partial"
 		}
+		if terminalObs {
+			nextObsState = "observed"
+		}
+		nextRespID := a.state.responseID
+		nextRespTruncated := a.state.responseTruncated
+		appendID := false
 		if id != "" {
-			v.ResponseID = id
-			if !slices.Contains(v.ResponseIDs, id) {
-				if len(v.ResponseIDs) < 4 {
-					v.ResponseIDs = append(v.ResponseIDs, id)
+			nextRespID = id
+			if !slices.Contains(a.state.responseIDs, id) {
+				if len(a.state.responseIDs) < 4 {
+					appendID = true
 				} else {
-					v.ResponseTruncated = true
+					nextRespTruncated = true
 				}
 			}
 		}
-		if model := safeToken(root.Get("model").String()); model != "" {
-			v.ResponseModel = model
+		nextModel := a.state.responseModel
+		if model != "" {
+			nextModel = model
 		}
-		if status := safeToken(root.Get("status").String()); status != "" {
-			v.ResponseStatus = status
+		nextStatus := a.state.responseStatus
+		if status != "" {
+			nextStatus = status
 		}
 		// Claude supplies the ID in message_start. A consumed partial stream
 		// cannot serve as a predecessor until its message_stop is observed.
-		if v.Provider == "claude" && eventType == "message_stop" && v.ResponseID != "" {
-			v.ObservationState = "observed"
-			v.ResponseStatus = "completed"
+		if a.state.provider == "claude" && eventType == "message_stop" && nextRespID != "" {
+			nextObsState = "observed"
+			nextStatus = "completed"
 		}
-		if claude {
-			for _, ttl := range []string{"5m", "30m", "1h", "12h"} {
-				count := numberPointer(usageNode.Get("cache_creation.ephemeral_" + ttl + "_input_tokens"))
-				if count != nil {
-					if v.CacheWriteByTTL == nil {
-						v.CacheWriteByTTL = map[string]int64{}
-					}
-					v.CacheWriteByTTL[ttl] = *count
+		ttlChanged := false
+		for i := range cacheTTLs {
+			if ttlSet[i] && (!a.state.cacheWriteByTTLSet[i] || a.state.cacheWriteByTTL[i] != ttlCounts[i]) {
+				ttlChanged = true
+				break
+			}
+		}
+		nextCacheObs := usage.MergeCacheObservations(a.state.cacheObservation, observation)
+		cacheObsChanged := !cacheObservationsEqual(a.state.cacheObservation, nextCacheObs)
+		nextDiagReturned := a.state.diagnosticReturned
+		nextDiag := a.state.diagnostic
+		if diag != nil {
+			nextDiagReturned = true
+			nextDiag = diag
+		}
+		diagChanged := nextDiagReturned != a.state.diagnosticReturned || !diagnosticsEqual(a.state.diagnostic, nextDiag)
+		nextTransforms := a.state.inputTransformations
+		if hasTransforms {
+			nextTransforms = transformsCount
+		}
+		if nextObsState == a.state.observationState &&
+			nextRespID == a.state.responseID &&
+			!appendID &&
+			nextRespTruncated == a.state.responseTruncated &&
+			nextModel == a.state.responseModel &&
+			nextStatus == a.state.responseStatus &&
+			!ttlChanged &&
+			!cacheObsChanged &&
+			!diagChanged &&
+			nextTransforms == a.state.inputTransformations {
+			return
+		}
+	}
+
+	var postState attemptState
+	retained := a.update(func(v *Attempt) bool {
+		nextObsState := v.ObservationState
+		if nextObsState != "observed" {
+			nextObsState = "partial"
+		}
+		if terminalObs {
+			nextObsState = "observed"
+		}
+		nextRespID := v.ResponseID
+		nextRespTruncated := v.ResponseTruncated
+		appendID := false
+		if id != "" {
+			nextRespID = id
+			if !slices.Contains(v.ResponseIDs, id) {
+				if len(v.ResponseIDs) < 4 {
+					appendID = true
+				} else {
+					nextRespTruncated = true
 				}
 			}
 		}
-		v.CacheObservation = usage.MergeCacheObservations(v.CacheObservation, observation)
-		if diagnostic.IsObject() {
-			v.DiagnosticReturned = true
-			d := &Diagnostic{Type: safeToken(diagnostic.Get("type").String()), Reason: safeToken(diagnostic.Get("reason").String())}
-			d.CacheMissedTokens = numberPointer(diagnostic.Get("cache_missed_tokens"))
-			d.ComparisonReusableTokens = numberPointer(diagnostic.Get("comparison_reusable_tokens"))
-			v.Diagnostic = d
+		nextModel := v.ResponseModel
+		if model != "" {
+			nextModel = model
 		}
-		if transforms := root.Get("input_transformations"); transforms.IsArray() {
-			v.InputTransformations = len(transforms.Array())
+		nextStatus := v.ResponseStatus
+		if status != "" {
+			nextStatus = status
 		}
+		// Claude supplies the ID in message_start. A consumed partial stream
+		// cannot serve as a predecessor until its message_stop is observed.
+		if v.Provider == "claude" && eventType == "message_stop" && nextRespID != "" {
+			nextObsState = "observed"
+			nextStatus = "completed"
+		}
+		ttlChanged := false
+		for i, ttl := range cacheTTLs {
+			if ttlSet[i] {
+				if cur, ok := v.CacheWriteByTTL[ttl]; !ok || cur != ttlCounts[i] {
+					ttlChanged = true
+					break
+				}
+			}
+		}
+		nextCacheObs := usage.MergeCacheObservations(v.CacheObservation, observation)
+		cacheObsChanged := !cacheObservationsEqual(v.CacheObservation, nextCacheObs)
+		nextDiagReturned := v.DiagnosticReturned
+		nextDiag := v.Diagnostic
+		if diag != nil {
+			nextDiagReturned = true
+			nextDiag = diag
+		}
+		diagChanged := nextDiagReturned != v.DiagnosticReturned || !diagnosticsEqual(v.Diagnostic, nextDiag)
+		nextTransforms := v.InputTransformations
+		if hasTransforms {
+			nextTransforms = transformsCount
+		}
+		changed := nextObsState != v.ObservationState ||
+			nextRespID != v.ResponseID ||
+			appendID ||
+			nextRespTruncated != v.ResponseTruncated ||
+			nextModel != v.ResponseModel ||
+			nextStatus != v.ResponseStatus ||
+			ttlChanged ||
+			cacheObsChanged ||
+			diagChanged ||
+			nextTransforms != v.InputTransformations
+		if !changed {
+			postState.syncFromAttempt(v)
+			return false
+		}
+		v.ObservationState = nextObsState
+		v.ResponseID = nextRespID
+		if appendID {
+			v.ResponseIDs = append(v.ResponseIDs, id)
+		}
+		v.ResponseTruncated = nextRespTruncated
+		v.ResponseModel = nextModel
+		v.ResponseStatus = nextStatus
+		if ttlChanged {
+			if v.CacheWriteByTTL == nil {
+				v.CacheWriteByTTL = map[string]int64{}
+			}
+			for i, ttl := range cacheTTLs {
+				if ttlSet[i] {
+					v.CacheWriteByTTL[ttl] = ttlCounts[i]
+				}
+			}
+		}
+		if cacheObsChanged {
+			v.CacheObservation = nextCacheObs.Clone()
+		}
+		if diagChanged {
+			v.DiagnosticReturned = nextDiagReturned
+			v.Diagnostic = cloneDiagnostic(nextDiag)
+		}
+		v.InputTransformations = nextTransforms
+		postState.syncFromAttempt(v)
+		return true
 	})
+	if retained {
+		a.state = postState
+	}
 }
 func numberPointer(v ojson.Result) *int64 {
 	if v.Type != ojson.Number {
@@ -343,7 +713,23 @@ func (a *AttemptRef) WrapResponse(body io.ReadCloser, contentType, encoding stri
 		return body
 	}
 	if encoding != "" {
-		a.update(func(v *Attempt) { v.ObservationState = "encoded_response" })
+		a.mu.Lock()
+		if !a.state.initialized || a.state.observationState != "encoded_response" {
+			var postState attemptState
+			retained := a.update(func(v *Attempt) bool {
+				if v.ObservationState == "encoded_response" {
+					postState.syncFromAttempt(v)
+					return false
+				}
+				v.ObservationState = "encoded_response"
+				postState.syncFromAttempt(v)
+				return true
+			})
+			if retained {
+				a.state = postState
+			}
+		}
+		a.mu.Unlock()
 	}
 	return &observedBody{
 		ReadCloser: body, attempt: a, sse: mediaType == "text/event-stream",
