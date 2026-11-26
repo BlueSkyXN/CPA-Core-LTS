@@ -300,6 +300,7 @@ func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnaps
 		return configReloadSnapshot{}, false
 	}
 	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
+		h.restorePersistedConfigLocked()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
 	}
@@ -315,8 +316,10 @@ func (h *Handler) restorePersistedConfigLocked() {
 	if err != nil {
 		return
 	}
-	persisted.Home = h.cfg.Home
-	persisted.AuthDir = h.cfg.AuthDir
+	if h.cfg != nil {
+		persisted.Home = h.cfg.Home
+		persisted.AuthDir = h.cfg.AuthDir
+	}
 	persisted.SourceHash = config.ComputeSourceHash(data)
 	h.cfg = persisted
 }

@@ -243,14 +243,14 @@ func (m *Manager) ResolveAutoRoute(ctx context.Context, name string, accepts fun
 				continue
 			}
 			published = true
-			if !m.allowsResourceRoute(access, a, id) {
+			model := preserveRequestedModelSuffix(name, id)
+			if !m.allowsResourceRoute(access, a, model) {
 				denied = true
 				continue
 			}
 			if !catalog.ClientCanServeModel(a.ID, id, explicit) {
 				continue
 			}
-			model := preserveRequestedModelSuffix(name, id)
 			usable := m.availableAutoTargets(ctx, cfg, a, model)
 			if len(usable) == 0 {
 				continue

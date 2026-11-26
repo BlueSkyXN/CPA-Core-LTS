@@ -190,11 +190,21 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "unsupported_config_layout", "message": "Use the v8 configuration API to edit this layout."})
 		return
 	}
+	if h.cfg != nil {
+		validatedCfg.Home = h.cfg.Home
+	}
+	if err := validatedCfg.ValidateResourceAllowlists(); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
+	}
 	if h.authManager != nil {
 		if err := h.authManager.CheckFlowControlConfig(validatedCfg); err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "flow_control_update_rejected", "message": err.Error()})
 			return
 		}
+	} else if err := validatedCfg.ValidateFlowControl(); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
 	}
 	if WriteConfig(h.configFilePath, body) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
