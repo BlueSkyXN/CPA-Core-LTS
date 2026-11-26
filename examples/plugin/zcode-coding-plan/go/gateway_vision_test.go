@@ -7,7 +7,7 @@ import (
 )
 
 // gatewayVisionFixture 是探测捕获的 mcp_tool_use/mcp_tool_result 历史形状
-// （local/2026-11-10-glm-server-side-vision-mcp-discovery.md 第 3 节）。
+// （见 SPEC.md 网关识图历史折叠约定）。
 const gatewayVisionCall = `{"type":"mcp_tool_use","id":"call_93643d8af7f242c380b4a34e","name":"analyze_image","input":{"imageSource":"https://glm-file.bigmodel.cn/ccproxy/file-input/abc-3576?OSSAccessKeyId=x&Expires=1794332302&Signature=y","prompt":"Describe this image"},"server_name":"4_5v_mcp"}`
 
 const gatewayVisionResult = `{"type":"mcp_tool_result","tool_use_id":"call_93643d8af7f242c380b4a34e","content":[{"type":"text","text":"# Detailed Image Description\n\nRed square top-left, blue triangle top-right."}],"is_error":false}`

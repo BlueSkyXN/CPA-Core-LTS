@@ -15,6 +15,7 @@ patches:
       - internal/runtime/executor/helps/reasoning_effort_policy.go
       - internal/runtime/executor/helps/payload_finalizer.go
       - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_executors_lts.go
       - internal/api/handlers/management/handler.go
       - docs/lts/reasoning-effort-policy.md
     regression_tests:
@@ -895,6 +896,7 @@ patches:
     files:
       - docs/lts/downstream-patches.yaml
       - internal/translator/openai/openai/responses/openai_openai-responses_request.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_tool_media_lts.go
       - internal/translator/openai/openai/responses/openai_openai-responses_request_test.go
       - internal/translator/openai/openai/responses/openai_openai-responses_tool_turn_grouping_lts_test.go
     regression_tests:
@@ -997,12 +999,14 @@ patches:
       - internal/runtime/executor/kimi_delegation_test.go
       - internal/runtime/executor/helps/responses_delegation_contract_test.go
       - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_executors_lts.go
       - internal/pluginhost/adapters_delegation_test.go
       # TestV2DelegationContract runs in the nested module via zcode-coding-plan/test-cpa.sh.
       - examples/plugin/zcode-coding-plan/integration/delegation_test.go
       - internal/translator/claude/openai/responses/claude_agent_message_contract_test.go
       - internal/translator/gemini/openai/responses/gemini_openai-responses_request.go
       - internal/translator/openai/openai/responses/openai_openai-responses_request.go
+      - internal/translator/openai/openai/responses/openai_openai-responses_tool_media_lts.go
       - internal/translator/openai/openai/responses/openai_openai-responses_tool_turn_grouping_lts_test.go
       - docs/lts/responses-client-compatibility.md
     regression_tests:
@@ -1961,6 +1965,7 @@ patches:
       - internal/runtime/executor/codex_translation_request_scoped_test.go
       - internal/runtime/executor/codex_translation_usage_test.go
       - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_executors_lts.go
       - internal/pluginhost/adapters_executor_usage.go
       - internal/pluginhost/missing_tool_calls_test.go
     regression_tests:

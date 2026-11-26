@@ -106,6 +106,7 @@ features:
       - internal/thinking/effort_policy.go
       - internal/runtime/executor/helps/reasoning_effort_policy.go
       - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_executors_lts.go
       - internal/api/handlers/management/handler.go
       - docs/lts/reasoning-effort-policy.md
       - config.example.yaml
@@ -739,6 +740,8 @@ features:
       - internal/api/handlers/management/plugin_readiness.go
       - internal/pluginhost/snapshot.go
       - internal/pluginhost/adapters_executors.go
+      - internal/pluginhost/adapters_executors_lts.go
+      - internal/pluginhost/adapters_zcode_lts.go
       - internal/pluginhost/claude_responses_sse.go
       - internal/pluginhost/http_bridge.go
       - internal/pluginhost/rpc_schema.go
