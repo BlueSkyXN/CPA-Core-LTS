@@ -306,6 +306,9 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
+			if itemType != "function_call_output" && itemType != "custom_tool_call_output" && !hasAwaitingToolOutput() {
+				flushPendingToolMedia()
+			}
 
 			switch itemType {
 			case "message", "":
@@ -466,6 +469,9 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					}
 				}
 				if _, awaiting := awaitingToolOutputs[callID]; !awaiting {
+					if !hasAwaitingToolOutput() {
+						flushPendingToolMedia()
+					}
 					// Orphan outputs (empty call_id or no matching assistant
 					// tool_calls, e.g. Codex send_message_to_thread cards) must
 					// not become tool messages. Emit as user text instead.
@@ -530,6 +536,9 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					}
 				}
 				if _, awaiting := awaitingToolOutputs[callID]; !awaiting {
+					if !hasAwaitingToolOutput() {
+						flushPendingToolMedia()
+					}
 					if errStandalone := appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setCustomToolCallOutputContentDoc, appendRegularMessage); errStandalone != nil && toolOutputErr == nil {
 						toolOutputErr = errStandalone
 					}

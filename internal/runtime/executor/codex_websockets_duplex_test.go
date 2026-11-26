@@ -677,3 +677,90 @@ func TestCodexDuplexNativeAliasContinuationUsesRealModel(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexDuplexCloseClearsActiveConnection(t *testing.T) {
+	serverDone := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverDone)
+		c, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Error(errUpgrade)
+			return
+		}
+		defer func() { _ = c.Close() }()
+		if _, _, errRead := c.ReadMessage(); errRead != nil {
+			return
+		}
+		if errWrite := c.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"r1","output":[]}}`)); errWrite != nil {
+			t.Error(errWrite)
+			return
+		}
+		_, _, _ = c.ReadMessage()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{Codex: config.CodexConfig{ResponseSteering: true}}
+	exec := NewCodexWebsocketsExecutor(cfg)
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	const sessionID = "duplex-close-clears-active-conn"
+	defer exec.CloseExecutionSession(sessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	input := make(chan core.WebsocketInput, 1)
+	ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
+	auth := &cliproxyauth.Auth{ID: "duplex-active-auth", Provider: "codex", Attributes: map[string]string{"api_key": "test-key", "base_url": upstream.URL, "websockets": "true"}}
+	req := core.Request{Model: "gpt-6-astra", Payload: []byte(`{"model":"gpt-6-astra","input":[]}`)}
+	opts := core.Options{SourceFormat: sdktranslator.FromString("codex"), Metadata: map[string]any{core.ExecutionSessionMetadataKey: sessionID}}
+
+	stream, errStream := exec.ExecuteStream(ctx, auth, req, opts)
+	if errStream != nil {
+		t.Fatal(errStream)
+	}
+
+	var connection codexWebsocketConnectionRef
+	var sig *codexWebsocketRequestSignal
+	sess := exec.getOrCreateSession(sessionID)
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error before response.created: %v", chunk.Err)
+		}
+		if ojson.GetBytes(chunk.Payload, "type").String() == "response.created" {
+			sess.connMu.Lock()
+			connection = codexWebsocketConnectionRef{conn: sess.conn, generation: sess.connGen}
+			sess.connMu.Unlock()
+			var ok bool
+			var ch chan codexWebsocketRead
+			ch, sig, ok = sess.activeFor(connection)
+			if !ok || ch == nil || sig == nil {
+				t.Fatalf("activeFor(connection) = (ch=%v, sig=%v, ok=%t), want active connection", ch, sig, ok)
+			}
+			cancel()
+			break
+		}
+	}
+	for range stream.Chunks {
+	}
+
+	sess.activeMu.Lock()
+	gotActive := sess.active
+	legacyActive := sess.activeConn != nil || sess.activeCh != nil || sess.activeDone != nil || sess.activeCancel != nil
+	sess.activeMu.Unlock()
+	if gotActive != (codexWebsocketActive{}) {
+		t.Fatalf("sess.active = %#v, want zero value after duplex close", gotActive)
+	}
+	if legacyActive {
+		t.Fatal("legacy active state unexpectedly populated on Codex duplex session")
+	}
+	if _, _, ok := sess.activeFor(connection); ok {
+		t.Fatal("activeFor(connection) = true after duplex close, want false")
+	}
+	if sig == nil || sig.ctx.Err() == nil {
+		t.Fatal("requestSignal context was not canceled on duplex close")
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream handler did not finish")
+	}
+}
