@@ -1639,8 +1639,9 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var deframer *executorSSEDeframer
 	if sameFormat && sdktranslator.HasStreamResponseTransformer(prepared.outputFormat, prepared.requestedFormat) {
-		in = deframeExecutorSSEChunks(ctx, in)
+		deframer = &executorSSEDeframer{}
 	}
 	out := make(chan pluginapi.ExecutorStreamChunk)
 	go func() {
@@ -1661,6 +1662,40 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 		}()
 		var completionDelta, completionStop []byte
 		deferClaudeCompletion := prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatClaude
+		processPayload := func(payload []byte) bool {
+			frames := a.translateExecutorStreamPayload(ctx, prepared, payload, &param)
+			if helps.ApplyPatchTranslationError(param) != nil {
+				streamErr = pluginResponseConversionError()
+			}
+			for _, frame := range frames {
+				// usage 尾帧之后仍可能报告失败；完成事件等待插件无错误关闭。
+				// 正文和工具参数继续直接交付。
+				if deferClaudeCompletion {
+					switch executorClaudeCompletionEvent(frame) {
+					case "message_delta":
+						completionDelta = bytes.Clone(frame)
+						continue
+					case "message_stop":
+						completionStop = bytes.Clone(frame)
+						continue
+					}
+				}
+				if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+					return false
+				}
+			}
+			if streamErr != nil {
+				_ = sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr})
+				if reporter != nil {
+					// 转换失败后 upstream 常见的 include_usage 尾帧仍需计入统计；
+					// 有界收尾只观察不再交付，失败帧已交付、下游不受影响。
+					usageHandedOff = true
+					go finalizeExecutorStreamFailure(ctx, cancelStream, in, &usage, streamErr)
+				}
+				return false
+			}
+			return true
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -1669,6 +1704,13 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 				if !ok {
 					if ctx.Err() != nil {
 						return
+					}
+					if deframer != nil {
+						if tail := deframer.flush(); len(tail) > 0 {
+							if !processPayload(tail) {
+								return
+							}
+						}
 					}
 					frames := a.translatedExecutorStreamTail(ctx, prepared, &param)
 					if helps.ApplyPatchTranslationError(param) != nil {
@@ -1695,40 +1737,33 @@ func (a *executorAdapter) translateExecutorStreamChunksWithUsage(ctx context.Con
 				if chunk.Err != nil {
 					streamErr = chunk.Err
 					usage.publish(ctx, streamErr)
+					if deframer != nil {
+						if tail := deframer.flush(); len(tail) > 0 {
+							for _, frame := range a.translateExecutorStreamPayload(ctx, prepared, tail, &param) {
+								if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+									return
+								}
+							}
+						}
+					}
 					_ = sendExecutorPluginStreamChunk(ctx, out, chunk)
 					return
 				}
+				// usage 必须观察原始分片（如不带换行符的完整 JSON 块），而翻译接收 deframed 事件。
 				usage.observe(chunk.Payload)
-				frames := a.translateExecutorStreamPayload(ctx, prepared, chunk.Payload, &param)
-				if helps.ApplyPatchTranslationError(param) != nil {
-					streamErr = pluginResponseConversionError()
-				}
-				for _, frame := range frames {
-					// usage 尾帧之后仍可能报告失败；完成事件等待插件无错误关闭。
-					// 正文和工具参数继续直接交付。
-					if deferClaudeCompletion {
-						switch executorClaudeCompletionEvent(frame) {
-						case "message_delta":
-							completionDelta = bytes.Clone(frame)
-							continue
-						case "message_stop":
-							completionStop = bytes.Clone(frame)
+				if deframer != nil {
+					for _, payload := range deframer.feed(chunk.Payload) {
+						if len(payload) == 0 {
 							continue
 						}
+						if !processPayload(payload) {
+							return
+						}
 					}
-					if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+				} else {
+					if !processPayload(chunk.Payload) {
 						return
 					}
-				}
-				if streamErr != nil {
-					_ = sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Err: streamErr})
-					if reporter != nil {
-						// 转换失败后 upstream 常见的 include_usage 尾帧仍需计入统计；
-						// 有界收尾只观察不再交付，失败帧已交付、下游不受影响。
-						usageHandedOff = true
-						go finalizeExecutorStreamFailure(ctx, cancelStream, in, &usage, streamErr)
-					}
-					return
 				}
 			}
 		}
@@ -2076,8 +2111,10 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
 		streamHandedOff = true
 		return &coreexecutor.StreamResult{Headers: cloneHeader(pluginResp.Headers), Chunks: mapExecutorStreamChunks(parent, chunks)}, pluginResp.Attribution, nil
 	}
-	if prepared.outputFormat == sdktranslator.FormatOpenAI && prepared.requestedFormat == sdktranslator.FormatOpenAIResponse {
-		// 转换和原始 usage 观察使用同一协程，避免上游先关闭时抢先发布成功。
+	if !a.executorStreamPassthrough(prepared) {
+		// 所有非直通流（跨格式、同格式 OpenAIResponse、含流转换器或响应 hook 的同格式）
+		// 统一走单协程结算与转换路径，避免上游先关闭时抢先发布成功；
+		// 仅纯直通流落入下方的 observeFormalPluginStreamUsage。
 		pluginChunks := a.watchExecutorStreamCancellationShared(streamCtx, pluginReq, pluginResp.Chunks, cancelStreamToPlugin)
 		// 转换协程的 select/发送跟随请求 ctx（带 reporter 值）；插件与 watch
 		// 留在与请求取消解耦的执行 ctx 上，收尾期间不受客户端取消影响。

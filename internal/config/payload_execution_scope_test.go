@@ -17,6 +17,8 @@ func payloadScopeConfigYAML(layout, section, gates string) string {
 		params = "      params: {service_tier: '\"flex\"'}\n"
 	} else if section == "filter" {
 		params = "      params: [service_tier]\n"
+	} else if section == "replace" {
+		params = "      target: {role: user, all: true}\n      replacements: [{old: new}]\n"
 	}
 	source := "payload:\n  " + section + ":\n    - models:\n        - name: scope-model\n          protocol: codex\n" + gates + params
 	if layout == "v8" {
@@ -27,7 +29,7 @@ func payloadScopeConfigYAML(layout, section, gates string) string {
 
 func TestPayloadExecutionScopeConfigRoundTrip(t *testing.T) {
 	for _, layout := range []string{"legacy", "v8"} {
-		for _, section := range []string{"default", "default-raw", "override", "override-raw", "filter"} {
+		for _, section := range []string{"default", "default-raw", "override", "override-raw", "replace", "filter"} {
 			t.Run(layout+"/"+section, func(t *testing.T) {
 				source := payloadScopeConfigYAML(layout, section, "          auth-kind: apikey\n          request-paths: [/v1/responses, /backend-api/codex/responses]\n")
 				cfg, err := ParseConfigBytes([]byte(source))
@@ -90,14 +92,18 @@ func TestPayloadExecutionScopeConfigRoundTrip(t *testing.T) {
 
 func TestPayloadExecutionScopeRejectsInvalidConfig(t *testing.T) {
 	invalid := []string{
-		"auth-kind: api-key", "auth-kind: unknown", "auth-kind: ' '",
-		"request-paths: []", "request-paths: ['']", "request-paths: [v1/responses]",
+		"auth-kind: api-key", "auth-kind: unknown", "auth-kind: ' '", "auth-kind: '   '",
+		`auth-kind: "\t\n"`, `auth-kind: "\u00a0"`,
+		"request-paths: []", "request-paths: ['']", "request-paths: ['   ']",
+		`request-paths: ["\t\n"]`, `request-paths: ["\u00a0"]`,
+		"request-paths: [' /v1/responses']", "request-paths: ['/v1/responses ']",
+		"request-paths: [v1/responses]",
 		"request-paths: ['/v1/*']", "request-paths: ['/v1/responses?x=1']",
 		"request-paths: ['/v1/responses#fragment']", "request-paths: ['/v1/../responses']",
 		"request-paths: ['//host/responses']", "request-paths: ['/v1/%72esponses']",
 		"request-paths: ['/v1/responses', '/v1/invalid path']",
 	}
-	for _, section := range []string{"default", "default-raw", "override", "override-raw", "filter"} {
+	for _, section := range []string{"default", "default-raw", "override", "override-raw", "replace", "filter"} {
 		for _, gate := range invalid {
 			t.Run(section+"/"+gate, func(t *testing.T) {
 				source := payloadScopeConfigYAML("v8", section, "          "+gate+"\n")
@@ -119,13 +125,19 @@ func TestPayloadExecutionScopeRejectsInvalidConfig(t *testing.T) {
 }
 
 func TestPayloadExecutionScopeOmittedKeepsLegacyRules(t *testing.T) {
+	for _, section := range []string{"override", "replace"} {
+		cfg, err := ParseConfigBytes([]byte(payloadScopeConfigYAML("legacy", section, "")))
+		if err != nil {
+			t.Fatalf("%s: %v", section, err)
+		}
+		rule := payloadScopeModel(cfg, section)
+		if rule.AuthKind != "" || rule.RequestPaths != nil {
+			t.Fatalf("%s unexpected default scope: %+v", section, rule)
+		}
+	}
 	cfg, err := ParseConfigBytes([]byte(payloadScopeConfigYAML("legacy", "override", "")))
 	if err != nil {
 		t.Fatal(err)
-	}
-	rule := cfg.Payload.Override[0].Models[0]
-	if rule.AuthKind != "" || rule.RequestPaths != nil {
-		t.Fatalf("unexpected default scope: %+v", rule)
 	}
 	cfg.Payload.Override[0].Models[0].AuthKind = "oauth"
 	if err := cfg.ValidatePayloadExecutionScopes(); err != nil {
@@ -143,6 +155,8 @@ func payloadScopeModel(cfg *Config, section string) PayloadModelRule {
 		return cfg.Payload.Override[0].Models[0]
 	case "override-raw":
 		return cfg.Payload.OverrideRaw[0].Models[0]
+	case "replace":
+		return cfg.Payload.Replace[0].Models[0]
 	case "filter":
 		return cfg.Payload.Filter[0].Models[0]
 	default:

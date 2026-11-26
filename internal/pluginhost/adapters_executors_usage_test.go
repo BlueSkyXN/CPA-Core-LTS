@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -1669,5 +1671,705 @@ func TestExecutorAdapterPropagatesAttributionAndPluginExecutorType(t *testing.T)
 		streamRec.AuthType != "oauth" ||
 		streamRec.Source != "stream-acct" {
 		t.Fatalf("auth-backed ExecuteStream rec = %+v", streamRec)
+	}
+}
+
+func TestExecutorAdapterExecuteStreamNonPassthroughSettlement(t *testing.T) {
+	t.Run("cross_format_openai_to_claude", func(t *testing.T) {
+		for _, outcome := range []string{"normal_eof", "upstream_error", "client_cancel"} {
+			t.Run(outcome, func(t *testing.T) {
+				provider := "plugin-provider-p104-oai-claude-" + outcome
+				plugin := newTestUsageCapturePlugin(provider)
+				registerTestUsagePlugin(t, "test-p104-oai-claude-"+outcome, plugin)
+
+				record := normalizeTestCapabilityRecord(capabilityRecord{id: "exec-p104-oai-claude-" + outcome})
+				host := newHostWithRecords(record)
+				pluginChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
+				cancelRequests := make(chan pluginapi.CancelExecutionRequest, 2)
+				upstreamErr := errors.New("synthetic upstream error")
+				doneCh := make(chan struct{})
+
+				exec := &fakeExecutor{
+					identifier: provider,
+					executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+						switch outcome {
+						case "normal_eof":
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":22,\"total_tokens\":33}}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: [DONE]\n\n")}
+							close(pluginChunks)
+						case "upstream_error":
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"part\"}}]}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Err: upstreamErr}
+							close(pluginChunks)
+						case "client_cancel":
+							go func() {
+								defer close(doneCh)
+								defer close(pluginChunks)
+								pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n")}
+								<-ctx.Done()
+							}()
+						}
+						return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+					},
+				}
+				adapter := newExecutorAdapterForRecordForTest(host, record, exec,
+					[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+					[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+				)
+				adapter.provider = provider
+				adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+					cancelRequests <- req
+					return nil
+				})
+
+				auth := &coreauth.Auth{ID: "auth-" + outcome, Provider: provider, Index: "idx-" + outcome}
+				req := coreexecutor.Request{
+					Model:   "test-model",
+					Payload: []byte(`{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+				}
+				opts := coreexecutor.Options{
+					SourceFormat:    sdktranslator.FormatOpenAI,
+					ResponseFormat:  sdktranslator.FormatClaude,
+					OriginalRequest: req.Payload,
+					Stream:          true,
+					Metadata:        map[string]any{coreexecutor.RequestIDMetadataKey: "req-oai-claude-" + outcome},
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				res, err := adapter.ExecuteStream(ctx, auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+
+				if outcome == "client_cancel" {
+					select {
+					case chunk, ok := <-res.Chunks:
+						if !ok || chunk.Err != nil || len(chunk.Payload) == 0 {
+							t.Fatalf("expected initial translated chunk before cancel, got ok=%t chunk=%+v", ok, chunk)
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for initial translated chunk")
+					}
+					cancel()
+					for range res.Chunks {
+					}
+					<-doneCh
+					select {
+					case cancelReq := <-cancelRequests:
+						if cancelReq.RequestID != "req-oai-claude-"+outcome {
+							t.Fatalf("cancelReq = %+v", cancelReq)
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for CancelExecution")
+					}
+					rec := plugin.waitRecord(t, 2*time.Second)
+					if !rec.Failed {
+						t.Fatalf("client_cancel rec.Failed = false, want true")
+					}
+					plugin.assertNoRecord(t, 50*time.Millisecond)
+					return
+				}
+
+				var gotErr error
+				var payloads [][]byte
+				for chunk := range res.Chunks {
+					if len(chunk.Payload) > 0 {
+						payloads = append(payloads, chunk.Payload)
+					}
+					if chunk.Err != nil {
+						gotErr = chunk.Err
+					}
+				}
+				rec := plugin.waitRecord(t, 2*time.Second)
+				switch outcome {
+				case "normal_eof":
+					if gotErr != nil || len(payloads) == 0 {
+						t.Fatalf("normal_eof err=%v payloads=%d", gotErr, len(payloads))
+					}
+					if rec.Failed || rec.Detail.InputTokens != 11 || rec.Detail.OutputTokens != 22 || rec.Detail.TotalTokens != 33 {
+						t.Fatalf("normal_eof rec = %+v", rec)
+					}
+				case "upstream_error":
+					if !errors.Is(gotErr, upstreamErr) {
+						t.Fatalf("upstream_error gotErr=%v, want %v", gotErr, upstreamErr)
+					}
+					if !rec.Failed {
+						t.Fatalf("upstream_error rec.Failed = false, want true")
+					}
+				}
+				plugin.assertNoRecord(t, 50*time.Millisecond)
+			})
+		}
+	})
+
+	t.Run("cross_format_apply_patch_error_captures_trailing_usage", func(t *testing.T) {
+		provider := "plugin-provider-p104-patch-err"
+		plugin := newTestUsageCapturePlugin(provider)
+		registerTestUsagePlugin(t, "test-p104-patch-err", plugin)
+
+		clientFormat := sdktranslator.Format("test-p104-patch-" + strings.ReplaceAll(uuid.NewString(), "-", ""))
+		sdktranslator.Register(
+			clientFormat,
+			sdktranslator.FormatOpenAI,
+			func(_ string, rawJSON []byte, _ bool) ([]byte, error) { return rawJSON, nil },
+			sdktranslator.ResponseTransform{
+				Stream: func(_ context.Context, _ string, _, _, rawJSON []byte, param *any) [][]byte {
+					if bytes.Contains(rawJSON, []byte("trigger_patch_err")) {
+						state := &translatorcommon.ApplyPatchErrorState{}
+						state.SetToolInputError(errors.New("synthetic apply_patch error"))
+						*param = state
+						return nil
+					}
+					return [][]byte{rawJSON}
+				},
+			},
+		)
+		t.Cleanup(func() { sdktranslator.Unregister(clientFormat, sdktranslator.FormatOpenAI) })
+
+		record := normalizeTestCapabilityRecord(capabilityRecord{id: "exec-p104-patch-err"})
+		host := newHostWithRecords(record)
+		pluginChunks := make(chan pluginapi.ExecutorStreamChunk)
+		exec := &fakeExecutor{
+			identifier: provider,
+			executeStream: func(_ context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+				return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+			},
+		}
+		adapter := newExecutorAdapterForRecordForTest(host, record, exec,
+			[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+			[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+		)
+		adapter.provider = provider
+
+		auth := &coreauth.Auth{ID: "auth-patch-err", Provider: provider, Index: "idx-patch-err"}
+		req := coreexecutor.Request{
+			Model:   "test-model",
+			Payload: []byte(`{"model":"test-model","stream":true}`),
+		}
+		opts := coreexecutor.Options{
+			SourceFormat:    sdktranslator.FormatOpenAI,
+			ResponseFormat:  clientFormat,
+			OriginalRequest: req.Payload,
+			Stream:          true,
+		}
+
+		res, err := adapter.ExecuteStream(context.Background(), auth, req, opts)
+		if err != nil {
+			t.Fatalf("ExecuteStream() error = %v", err)
+		}
+
+		pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n")}
+		pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"trigger_patch_err\"}}]}\n\n")}
+
+		var streamErr error
+		for chunk := range res.Chunks {
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+		}
+		if streamErr == nil {
+			t.Fatal("expected conversion error from stream, got nil")
+		}
+		if scoped, ok := errors.AsType[coreexecutor.RequestScopedError](streamErr); !ok || !scoped.IsRequestScoped() {
+			t.Fatalf("expected request-scoped conversion error, got %v", streamErr)
+		}
+
+		// Trailing include_usage chunk arrives after downstream already failed and closed out.
+		// finalizeExecutorStreamFailure (invoked only when reporter != nil) must capture it.
+		pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":25,\"total_tokens\":40}}\n\n")}
+		close(pluginChunks)
+
+		rec := plugin.waitRecord(t, 2*time.Second)
+		if !rec.Failed {
+			t.Fatalf("expected Failed=true for ApplyPatchErrorState, got rec=%+v", rec)
+		}
+		if rec.Detail.InputTokens != 15 || rec.Detail.OutputTokens != 25 || rec.Detail.TotalTokens != 40 {
+			t.Fatalf("expected trailing usage preserved (15/25/40), got %+v", rec.Detail)
+		}
+		plugin.assertNoRecord(t, 50*time.Millisecond)
+	})
+
+	t.Run("same_format_openai_response", func(t *testing.T) {
+		for _, outcome := range []string{"normal_eof", "upstream_error", "client_cancel"} {
+			t.Run(outcome, func(t *testing.T) {
+				provider := "plugin-provider-p104-resp-" + outcome
+				plugin := newTestUsageCapturePlugin(provider)
+				registerTestUsagePlugin(t, "test-p104-resp-"+outcome, plugin)
+
+				record := normalizeTestCapabilityRecord(capabilityRecord{id: "exec-p104-resp-" + outcome})
+				host := newHostWithRecords(record)
+				pluginChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
+				cancelRequests := make(chan pluginapi.CancelExecutionRequest, 2)
+				upstreamErr := errors.New("synthetic responses error")
+				doneCh := make(chan struct{})
+
+				exec := &fakeExecutor{
+					identifier: provider,
+					executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+						switch outcome {
+						case "normal_eof":
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":21,\"output_tokens\":9,\"total_tokens\":30}}}\n\n")}
+							close(pluginChunks)
+						case "upstream_error":
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Err: upstreamErr}
+							close(pluginChunks)
+						case "client_cancel":
+							go func() {
+								defer close(doneCh)
+								defer close(pluginChunks)
+								pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\n")}
+								<-ctx.Done()
+							}()
+						}
+						return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+					},
+				}
+				adapter := newExecutorAdapterForRecordForTest(host, record, exec,
+					[]sdktranslator.Format{sdktranslator.FormatOpenAIResponse},
+					[]sdktranslator.Format{sdktranslator.FormatOpenAIResponse},
+				)
+				adapter.provider = provider
+				adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+					cancelRequests <- req
+					return nil
+				})
+
+				auth := &coreauth.Auth{ID: "auth-resp-" + outcome, Provider: provider, Index: "idx-resp-" + outcome}
+				req := coreexecutor.Request{Model: "test-model", Payload: []byte(`{"model":"test-model","stream":true}`)}
+				opts := coreexecutor.Options{
+					SourceFormat:   sdktranslator.FormatOpenAIResponse,
+					ResponseFormat: sdktranslator.FormatOpenAIResponse,
+					Stream:         true,
+					Metadata:       map[string]any{coreexecutor.RequestIDMetadataKey: "req-resp-" + outcome},
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				res, err := adapter.ExecuteStream(ctx, auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+
+				if outcome == "client_cancel" {
+					select {
+					case chunk, ok := <-res.Chunks:
+						if !ok || chunk.Err != nil || len(chunk.Payload) == 0 {
+							t.Fatalf("expected initial chunk before cancel, got ok=%t chunk=%+v", ok, chunk)
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for initial chunk")
+					}
+					cancel()
+					for range res.Chunks {
+					}
+					<-doneCh
+					select {
+					case <-cancelRequests:
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for CancelExecution")
+					}
+					rec := plugin.waitRecord(t, 2*time.Second)
+					if !rec.Failed {
+						t.Fatalf("client_cancel rec.Failed = false, want true")
+					}
+					plugin.assertNoRecord(t, 50*time.Millisecond)
+					return
+				}
+
+				var body strings.Builder
+				var gotErr error
+				for chunk := range res.Chunks {
+					body.Write(chunk.Payload)
+					if chunk.Err != nil {
+						gotErr = chunk.Err
+					}
+				}
+				rec := plugin.waitRecord(t, 2*time.Second)
+				switch outcome {
+				case "normal_eof":
+					if gotErr != nil {
+						t.Fatalf("normal_eof gotErr = %v", gotErr)
+					}
+					if !strings.Contains(body.String(), "input_tokens_details") || !strings.Contains(body.String(), "output_tokens_details") {
+						t.Fatalf("expected normalized usage details in responses payload: %s", body.String())
+					}
+					if rec.Failed || rec.Detail.InputTokens != 21 || rec.Detail.OutputTokens != 9 || rec.Detail.TotalTokens != 30 {
+						t.Fatalf("normal_eof rec = %+v", rec)
+					}
+				case "upstream_error":
+					if !errors.Is(gotErr, upstreamErr) {
+						t.Fatalf("upstream_error gotErr = %v, want %v", gotErr, upstreamErr)
+					}
+					if !rec.Failed {
+						t.Fatalf("upstream_error rec.Failed = false, want true")
+					}
+				}
+				plugin.assertNoRecord(t, 50*time.Millisecond)
+			})
+		}
+	})
+
+	t.Run("same_format_openai_with_deframe", func(t *testing.T) {
+		for _, outcome := range []string{"normal_eof", "error_without_close", "client_cancel"} {
+			t.Run(outcome, func(t *testing.T) {
+				provider := "plugin-provider-p104-oai-oai-" + outcome
+				plugin := newTestUsageCapturePlugin(provider)
+				registerTestUsagePlugin(t, "test-p104-oai-oai-"+outcome, plugin)
+
+				record := normalizeTestCapabilityRecord(capabilityRecord{id: "exec-p104-oai-oai-" + outcome})
+				host := newHostWithRecords(record)
+				pluginChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
+				cancelRequests := make(chan pluginapi.CancelExecutionRequest, 2)
+				upstreamErr := errors.New("synthetic open-channel error")
+				doneCh := make(chan struct{})
+
+				exec := &fakeExecutor{
+					identifier: provider,
+					executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+						switch outcome {
+						case "normal_eof":
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("lo\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\ndata: [DONE]\n\n")}
+							close(pluginChunks)
+						case "error_without_close":
+							go func() {
+								defer close(doneCh)
+								defer close(pluginChunks)
+								pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n")}
+								pluginChunks <- pluginapi.ExecutorStreamChunk{Err: upstreamErr}
+								// Keep channel open until adapter cancels streamCtx.
+								<-ctx.Done()
+							}()
+						case "client_cancel":
+							go func() {
+								defer close(doneCh)
+								defer close(pluginChunks)
+								pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n")}
+								<-ctx.Done()
+							}()
+						}
+						return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+					},
+				}
+				adapter := newExecutorAdapterForRecordForTest(host, record, exec,
+					[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+					[]sdktranslator.Format{sdktranslator.FormatOpenAI},
+				)
+				adapter.provider = provider
+				adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+					cancelRequests <- req
+					return nil
+				})
+
+				auth := &coreauth.Auth{ID: "auth-oai-oai-" + outcome, Provider: provider, Index: "idx-oai-oai-" + outcome}
+				req := coreexecutor.Request{Model: "test-model", Payload: []byte(`{"model":"test-model","stream":true}`)}
+				opts := coreexecutor.Options{
+					SourceFormat:   sdktranslator.FormatOpenAI,
+					ResponseFormat: sdktranslator.FormatOpenAI,
+					Stream:         true,
+					Metadata:       map[string]any{coreexecutor.RequestIDMetadataKey: "req-oai-oai-" + outcome},
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				res, err := adapter.ExecuteStream(ctx, auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+
+				if outcome == "client_cancel" {
+					select {
+					case chunk, ok := <-res.Chunks:
+						if !ok || chunk.Err != nil || len(chunk.Payload) == 0 {
+							t.Fatalf("expected initial chunk before cancel, got ok=%t chunk=%+v", ok, chunk)
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for initial chunk")
+					}
+					cancel()
+					for range res.Chunks {
+					}
+					<-doneCh
+					select {
+					case <-cancelRequests:
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for CancelExecution")
+					}
+					rec := plugin.waitRecord(t, 2*time.Second)
+					if !rec.Failed {
+						t.Fatalf("client_cancel rec.Failed = false, want true")
+					}
+					plugin.assertNoRecord(t, 50*time.Millisecond)
+					return
+				}
+
+				var payloads []string
+				var gotErr error
+				for chunk := range res.Chunks {
+					if len(chunk.Payload) > 0 {
+						payloads = append(payloads, string(chunk.Payload))
+					}
+					if chunk.Err != nil {
+						gotErr = chunk.Err
+					}
+				}
+				if outcome == "error_without_close" {
+					<-doneCh
+					if !errors.Is(gotErr, upstreamErr) {
+						t.Fatalf("error_without_close gotErr = %v, want %v", gotErr, upstreamErr)
+					}
+					rec := plugin.waitRecord(t, 2*time.Second)
+					if !rec.Failed {
+						t.Fatalf("error_without_close rec.Failed = false, want true")
+					}
+					plugin.assertNoRecord(t, 50*time.Millisecond)
+					return
+				}
+
+				if gotErr != nil || len(payloads) == 0 {
+					t.Fatalf("normal_eof gotErr=%v payloads=%v", gotErr, payloads)
+				}
+				for _, p := range payloads {
+					if strings.HasPrefix(p, "data:") {
+						t.Fatalf("expected deframed bare JSON output for OpenAI->OpenAI, got %q", p)
+					}
+				}
+				rec := plugin.waitRecord(t, 2*time.Second)
+				if rec.Failed || rec.Detail.InputTokens != 7 || rec.Detail.OutputTokens != 5 || rec.Detail.TotalTokens != 12 {
+					t.Fatalf("normal_eof rec = %+v", rec)
+				}
+				plugin.assertNoRecord(t, 50*time.Millisecond)
+			})
+		}
+	})
+
+	t.Run("same_format_claude_with_response_hooks", func(t *testing.T) {
+		for _, outcome := range []string{"normal_eof", "client_cancel"} {
+			t.Run(outcome, func(t *testing.T) {
+				provider := "plugin-provider-p104-claude-hook-" + outcome
+				plugin := newTestUsageCapturePlugin(provider)
+				registerTestUsagePlugin(t, "test-p104-claude-hook-"+outcome, plugin)
+
+				hookRecord := normalizeTestCapabilityRecord(capabilityRecord{
+					id: "response-hook-p104-" + outcome,
+					plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+						ResponseBeforeTranslator: &testResponseNormalizerFunc{
+							normalize: func(_ context.Context, req pluginapi.ResponseTransformRequest) (pluginapi.PayloadResponse, error) {
+								return pluginapi.PayloadResponse{Body: bytes.ReplaceAll(req.Body, []byte("want"), []byte("hook"))}, nil
+							},
+						},
+					}},
+				})
+				execRecord := normalizeTestCapabilityRecord(capabilityRecord{id: "exec-p104-claude-hook-" + outcome})
+				host := newHostWithRecords(execRecord, hookRecord)
+				sdktranslator.SetPluginHooks(host)
+				t.Cleanup(func() { sdktranslator.SetPluginHooks(nil) })
+
+				pluginChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
+				cancelRequests := make(chan pluginapi.CancelExecutionRequest, 2)
+				doneCh := make(chan struct{})
+
+				exec := &fakeExecutor{
+					identifier: provider,
+					executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+						switch outcome {
+						case "normal_eof":
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":14,\"output_tokens\":2}}}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"want\"}}\n\n")}
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":6}}\n\n")}
+							close(pluginChunks)
+						case "client_cancel":
+							go func() {
+								defer close(doneCh)
+								defer close(pluginChunks)
+								pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":14,\"output_tokens\":2}}}\n\n")}
+								<-ctx.Done()
+							}()
+						}
+						return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+					},
+				}
+				adapter := newExecutorAdapterForRecordForTest(host, execRecord, exec,
+					[]sdktranslator.Format{sdktranslator.FormatClaude},
+					[]sdktranslator.Format{sdktranslator.FormatClaude},
+				)
+				adapter.provider = provider
+				adapter.canceller = executionCancellerFunc(func(_ context.Context, req pluginapi.CancelExecutionRequest) error {
+					cancelRequests <- req
+					return nil
+				})
+
+				auth := &coreauth.Auth{ID: "auth-claude-hook-" + outcome, Provider: provider, Index: "idx-claude-hook-" + outcome}
+				req := coreexecutor.Request{Model: "claude-sonnet-4-6", Payload: []byte(`{"model":"claude-sonnet-4-6","stream":true}`)}
+				opts := coreexecutor.Options{
+					SourceFormat:   sdktranslator.FormatClaude,
+					ResponseFormat: sdktranslator.FormatClaude,
+					Stream:         true,
+					Metadata:       map[string]any{coreexecutor.RequestIDMetadataKey: "req-claude-hook-" + outcome},
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				res, err := adapter.ExecuteStream(ctx, auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream() error = %v", err)
+				}
+
+				if outcome == "client_cancel" {
+					select {
+					case chunk, ok := <-res.Chunks:
+						if !ok || chunk.Err != nil || len(chunk.Payload) == 0 {
+							t.Fatalf("expected initial chunk before cancel, got ok=%t chunk=%+v", ok, chunk)
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for initial chunk")
+					}
+					cancel()
+					for range res.Chunks {
+					}
+					<-doneCh
+					select {
+					case <-cancelRequests:
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for CancelExecution")
+					}
+					rec := plugin.waitRecord(t, 2*time.Second)
+					if !rec.Failed {
+						t.Fatalf("client_cancel rec.Failed = false, want true")
+					}
+					plugin.assertNoRecord(t, 50*time.Millisecond)
+					return
+				}
+
+				var body strings.Builder
+				for chunk := range res.Chunks {
+					if chunk.Err != nil {
+						t.Fatalf("unexpected chunk error: %v", chunk.Err)
+					}
+					body.Write(chunk.Payload)
+				}
+				if !strings.Contains(body.String(), "hook") || strings.Contains(body.String(), "want") {
+					t.Fatalf("expected hook rewrite in Claude stream: %s", body.String())
+				}
+				rec := plugin.waitRecord(t, 2*time.Second)
+				if rec.Failed || rec.Detail.InputTokens != 14 || rec.Detail.OutputTokens != 6 || rec.Detail.TotalTokens != 20 {
+					t.Fatalf("normal_eof rec = %+v", rec)
+				}
+				plugin.assertNoRecord(t, 50*time.Millisecond)
+			})
+		}
+	})
+}
+
+func TestExecutorAdapterExecuteStreamPurePassthroughSettlement(t *testing.T) {
+	sdktranslator.SetPluginHooks(nil)
+	for _, outcome := range []string{"normal_eof", "upstream_error", "client_cancel"} {
+		t.Run(outcome, func(t *testing.T) {
+			provider := "plugin-provider-p104-passthrough-" + outcome
+			plugin := newTestUsageCapturePlugin(provider)
+			registerTestUsagePlugin(t, "test-p104-passthrough-"+outcome, plugin)
+
+			record := normalizeTestCapabilityRecord(capabilityRecord{id: "exec-p104-passthrough-" + outcome})
+			host := newHostWithRecords(record)
+			pluginChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
+			upstreamErr := errors.New("synthetic passthrough error")
+			doneCh := make(chan struct{})
+			const verbatimPayload = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n"
+
+			exec := &fakeExecutor{
+				identifier: provider,
+				executeStream: func(ctx context.Context, _ pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+					switch outcome {
+					case "normal_eof":
+						pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(verbatimPayload)}
+						close(pluginChunks)
+					case "upstream_error":
+						pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")}
+						pluginChunks <- pluginapi.ExecutorStreamChunk{Err: upstreamErr}
+						close(pluginChunks)
+					case "client_cancel":
+						go func() {
+							defer close(doneCh)
+							defer close(pluginChunks)
+							pluginChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")}
+							<-ctx.Done()
+						}()
+					}
+					return pluginapi.ExecutorStreamResponse{Chunks: pluginChunks}, nil
+				},
+			}
+			adapter := newExecutorAdapterForRecordForTest(host, record, exec,
+				[]sdktranslator.Format{sdktranslator.FormatClaude},
+				[]sdktranslator.Format{sdktranslator.FormatClaude},
+			)
+			adapter.provider = provider
+
+			auth := &coreauth.Auth{ID: "auth-passthrough-" + outcome, Provider: provider, Index: "idx-passthrough-" + outcome}
+			req := coreexecutor.Request{Model: "claude-sonnet-4-6", Payload: []byte(`{"model":"claude-sonnet-4-6","stream":true}`)}
+			opts := coreexecutor.Options{
+				SourceFormat:   sdktranslator.FormatClaude,
+				ResponseFormat: sdktranslator.FormatClaude,
+				Stream:         true,
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			res, err := adapter.ExecuteStream(ctx, auth, req, opts)
+			if err != nil {
+				t.Fatalf("ExecuteStream() error = %v", err)
+			}
+
+			if outcome == "client_cancel" {
+				select {
+				case chunk, ok := <-res.Chunks:
+					if !ok || chunk.Err != nil || len(chunk.Payload) == 0 {
+						t.Fatalf("expected initial chunk before cancel, got ok=%t chunk=%+v", ok, chunk)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("timed out waiting for initial chunk")
+				}
+				cancel()
+				for range res.Chunks {
+				}
+				<-doneCh
+				rec := plugin.waitRecord(t, 2*time.Second)
+				if !rec.Failed {
+					t.Fatalf("client_cancel rec.Failed = false, want true")
+				}
+				plugin.assertNoRecord(t, 50*time.Millisecond)
+				return
+			}
+
+			var body strings.Builder
+			var gotErr error
+			for chunk := range res.Chunks {
+				body.Write(chunk.Payload)
+				if chunk.Err != nil {
+					gotErr = chunk.Err
+				}
+			}
+			rec := plugin.waitRecord(t, 2*time.Second)
+			switch outcome {
+			case "normal_eof":
+				if gotErr != nil || body.String() != verbatimPayload {
+					t.Fatalf("normal_eof err=%v body=%q, want %q", gotErr, body.String(), verbatimPayload)
+				}
+				if rec.Failed || rec.Detail.InputTokens != 10 || rec.Detail.OutputTokens != 5 || rec.Detail.TotalTokens != 15 {
+					t.Fatalf("normal_eof rec = %+v", rec)
+				}
+			case "upstream_error":
+				if !errors.Is(gotErr, upstreamErr) {
+					t.Fatalf("upstream_error gotErr = %v, want %v", gotErr, upstreamErr)
+				}
+				if !rec.Failed {
+					t.Fatalf("upstream_error rec.Failed = false, want true")
+				}
+			}
+			plugin.assertNoRecord(t, 50*time.Millisecond)
+		})
 	}
 }

@@ -50,6 +50,11 @@ func (cfg *Config) ValidatePayloadExecutionScopes() error {
 			}
 		}
 	}
+	for i, rule := range cfg.Payload.Replace {
+		if err := validate("replace", i, rule.Models); err != nil {
+			return err
+		}
+	}
 	for i, rule := range cfg.Payload.Filter {
 		if err := validate("filter", i, rule.Models); err != nil {
 			return err

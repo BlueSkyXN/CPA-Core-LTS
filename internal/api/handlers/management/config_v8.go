@@ -213,11 +213,22 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
+	// Runtime-only ownership state is never sourced from an uploaded YAML document.
+	if h.cfg != nil {
+		next.Home = h.cfg.Home
+	}
+	if err = next.ValidateResourceAllowlists(); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
+	}
 	if h.authManager != nil {
 		if err = h.authManager.CheckFlowControlConfig(next); err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "flow_control_update_rejected", "message": err.Error()})
 			return
 		}
+	} else if err = next.ValidateFlowControl(); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
 	}
 	// Save the validated canonical tree directly: projecting runtime defaults
 	// back onto it loses explicit nulls, empty maps, and opaque plugin settings.
@@ -230,8 +241,6 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	// and only for sections whose archived comment block is in the written document.
 	config.WarnUnrecognizedV8Sections(config.FilterArchivedV8Sections(data, commentedSections))
 	config.WarnUnrecognizedV8Sections(finalCommented)
-	// Runtime-only ownership state is never sourced from an uploaded YAML document.
-	next.Home = h.cfg.Home
 	// Secret rotation invalidates cached management credentials (upstream 51b98e746).
 	// LTS keeps its explicit no-ETag response; the disk-read ETag logic stays out.
 	prevSecretHash := ""
