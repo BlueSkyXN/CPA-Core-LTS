@@ -39,6 +39,7 @@ const attemptMaxIdleTime = 2 * time.Hour
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
 	cfg                        *config.Config
+	acceptedConfig             *config.Config // Immutable snapshot of the last accepted save or reload.
 	configFilePath             string
 	mu                         sync.Mutex
 	authStatusMu               sync.Mutex
@@ -91,6 +92,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 	}
+	h.acceptedConfig = h.cfg.CloneForRuntime()
 	h.startAttemptCleanup()
 	return h
 }
@@ -149,6 +151,7 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 		prevSecretHash = h.cfg.RemoteManagement.SecretKey
 	}
 	h.cfg = cloned
+	h.acceptedConfig = cloned.CloneForRuntime()
 	nextSecretHash := ""
 	if cloned != nil {
 		nextSecretHash = cloned.RemoteManagement.SecretKey
@@ -156,6 +159,23 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	if prevSecretHash != nextSecretHash {
 		h.authCache.invalidate()
 	}
+}
+
+// readOnlyConfig returns a snapshot that getters may serialize after releasing h.mu.
+func (h *Handler) readOnlyConfig() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.readOnlyConfigLocked()
+}
+
+func (h *Handler) readOnlyConfigLocked() *config.Config {
+	if h.acceptedConfig != nil {
+		return h.acceptedConfig
+	}
+	return h.cfg.CloneForRuntime()
 }
 
 // configSnapshot returns an independent copy of h.cfg under h.mu, for code that runs outside the request holding it.
@@ -283,6 +303,7 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 		return configReloadSnapshot{}
 	}
 	h.reloadGeneration++
+	h.acceptedConfig = h.cfg.CloneForRuntime()
 	return configReloadSnapshot{
 		cfg:        h.cfg.CloneForRuntime(),
 		generation: h.reloadGeneration,
@@ -293,8 +314,7 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 // Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
 	if errValidate := h.cfg.ValidateResourceAllowlists(); errValidate != nil {
-		// Legacy list handlers edit h.cfg before saving. Restore the persisted
-		// snapshot so a rejected credential edit does not leak into later saves.
+		// Legacy setters edit h.cfg in place. A rejected edit must not reach a later save.
 		h.restorePersistedConfigLocked()
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": errValidate.Error()})
 		return configReloadSnapshot{}, false
@@ -308,6 +328,10 @@ func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnaps
 }
 
 func (h *Handler) restorePersistedConfigLocked() {
+	if h.acceptedConfig != nil {
+		h.cfg = h.acceptedConfig.CloneForRuntime()
+		return
+	}
 	data, err := os.ReadFile(h.configFilePath)
 	if err != nil {
 		return
@@ -322,6 +346,7 @@ func (h *Handler) restorePersistedConfigLocked() {
 	}
 	persisted.SourceHash = config.ComputeSourceHash(data)
 	h.cfg = persisted
+	h.acceptedConfig = persisted.CloneForRuntime()
 }
 
 // reloadConfigAfterManagementSave reloads from an independent config snapshot.

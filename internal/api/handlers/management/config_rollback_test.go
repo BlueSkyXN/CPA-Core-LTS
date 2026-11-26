@@ -149,3 +149,100 @@ func TestRestorePersistedConfigLockedHandlesNilConfig(t *testing.T) {
 		t.Fatalf("restorePersistedConfigLocked with nil h.cfg got %+v", h.cfg)
 	}
 }
+
+func TestFailedConfigEditWhileFileUnavailableDoesNotSurviveRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("port: 8317\ndebug: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(cfg, path, nil)
+	router := gin.New()
+	router.PUT("/debug", h.PutDebug)
+	router.PUT("/retry", h.PutRequestRetry)
+	router.GET("/debug", h.GetDebug)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return w
+	}
+
+	// 先成功保存一次，回滚目标必须是最近一次生效的配置。
+	if w := request("PUT", "/retry", `{"value":3}`); w.Code != 200 {
+		t.Fatalf("initial save: %d", w.Code)
+	}
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if w := request("PUT", "/debug", `{"value":true}`); w.Code != 500 {
+		t.Fatalf("failed edit: %d", w.Code)
+	}
+	if w := request("GET", "/debug", ""); w.Body.String() != `{"debug":false}` {
+		t.Errorf("debug after failed save: %s", w.Body.String())
+	}
+	if h.configSnapshot().RequestRetry != 3 {
+		t.Fatal("rollback discarded the earlier successful edit")
+	}
+	if err := os.Rename(path+".saved", path); err != nil {
+		t.Fatal(err)
+	}
+	if w := request("PUT", "/retry", `{"value":5}`); w.Code != 200 {
+		t.Fatalf("subsequent save: %d", w.Code)
+	}
+	saved, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Debug || saved.RequestRetry != 5 {
+		t.Fatalf("persisted debug=%t retry=%d", saved.Debug, saved.RequestRetry)
+	}
+}
+
+func TestLegacyConfigReadsDuringSaveAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(&config.Config{Port: 8317}, path, nil)
+	router := gin.New()
+	router.GET("/config", h.GetConfig)
+	router.GET("/debug", h.GetDebug)
+	router.GET("/keys", h.GetAPIKeys)
+	router.PUT("/debug", h.PutDebug)
+
+	// 留住读者取得的版本，并发保存与重载均不能更改这个版本。
+	first := h.readOnlyConfig()
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(started)
+		for range 32 {
+			for _, route := range []string{"/config", "/debug", "/keys"} {
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, route, nil))
+				if w.Code != http.StatusOK {
+					t.Errorf("GET %s: %d", route, w.Code)
+					return
+				}
+			}
+		}
+	}()
+	<-started
+	for range 8 {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/debug", strings.NewReader(`{"value":true}`)))
+		if w.Code != http.StatusOK {
+			t.Errorf("PUT /debug: %d", w.Code)
+			break
+		}
+		h.SetConfig(&config.Config{Port: 9000})
+	}
+	<-done
+	if first.Debug || first.Port != 8317 || h.readOnlyConfig().Port != 9000 {
+		t.Fatal("reader did not retain its configuration across saves and reloads")
+	}
+}

@@ -79,7 +79,14 @@ type pluginMenuInfo struct {
 
 // ListPlugins returns discovered, configured, and registered plugin entries.
 func (h *Handler) ListPlugins(c *gin.Context) {
-	if h == nil || h.cfg == nil {
+	var cfg *config.Config
+	var host *pluginhost.Host
+	if h != nil {
+		h.mu.Lock()
+		cfg, host = h.readOnlyConfigLocked(), h.pluginHost
+		h.mu.Unlock()
+	}
+	if cfg == nil {
 		c.JSON(http.StatusOK, pluginListResponse{
 			PluginsDir: "plugins",
 			Plugins:    []pluginListEntry{},
@@ -87,15 +94,9 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 		return
 	}
 
-	h.mu.Lock()
-	pluginsEnabled := h.cfg.Plugins.Enabled
-	pluginsDir := normalizedPluginsDir(h.cfg.Plugins.Dir)
-	configs := make(map[string]config.PluginInstanceConfig, len(h.cfg.Plugins.Configs))
-	for id, item := range h.cfg.Plugins.Configs {
-		configs[id] = item
-	}
-	host := h.pluginHost
-	h.mu.Unlock()
+	pluginsEnabled := cfg.Plugins.Enabled
+	pluginsDir := normalizedPluginsDir(cfg.Plugins.Dir)
+	configs := cfg.Plugins.Configs
 
 	resolvedPluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(pluginsDir)
 	if errResolvePluginsDir != nil {
@@ -423,6 +424,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 	delete(h.cfg.Plugins.Configs, id)
 	if configured {
 		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
+			h.restorePersistedConfigLocked()
 			h.mu.Unlock()
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error":        "config_save_failed",
