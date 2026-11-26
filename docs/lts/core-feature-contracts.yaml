@@ -191,6 +191,7 @@ features:
       - internal/api/server_management.go
       - config.example.yaml
       - docs/lts/usage-request-size.md
+      - docs/lts/daybreak-usage.md
     required_markers:
       - usage-statistics-enabled
       - UsageReporter
@@ -801,6 +802,8 @@ features:
       - internal/api/handlers/management/flow_control.go
       - internal/api/server_management.go
       - docs/lts/flow-control.md
+      - docs/lts/flow-control-v2.md
+      - docs/lts/flow-control-v3.md
     required_markers:
       - local_flow_control
       - key-model
@@ -818,6 +821,131 @@ features:
       - go test -race ./sdk/cliproxy/flowcontrol
       - go test ./sdk/cliproxy/auth ./internal/config ./internal/api/handlers/management -run Flow
       - scripts/check-lts-contract.sh
+
+  - id: codex-outbound-policy
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Align Codex OAuth outbound transport, zstd request compression, and Accept-Encoding behavior with official clients while preserving explicit rollback controls.
+    config_keys:
+      - upstream.codex.outbound.transport
+      - upstream.codex.outbound.websocket-threshold-bytes
+      - upstream.codex.outbound.request-compression
+      - upstream.codex.outbound.accept-encoding
+    core_files:
+      - internal/config/codex_outbound.go
+      - internal/config/codex_outbound_test.go
+      - internal/runtime/executor/codex_executor_compression.go
+      - internal/runtime/executor/codex_outbound_transport_test.go
+      - docs/lts/codex-outbound.md
+      - config.example.yaml
+    required_markers:
+      - websocket-threshold-bytes
+      - request-compression
+      - accept-encoding
+    validation:
+      - go test ./internal/config -run CodexOutbound
+      - go test ./internal/runtime/executor -run 'CodexAutoExecutorOutbound|CodexRequestCompression|AcceptEncodingMode'
+
+  - id: oauth-model-policy
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Enforce channel-level and credential-level model allowlists and denylists across registration, selection, dispatch, and preview for OAuth and auth-file providers.
+    routes:
+      - /v0/management/oauth-model-policy
+      - /v0/management/auth-files/models/policy-preview
+      - /v8/management/credentials/fields
+    config_keys:
+      - oauth-model-policy
+    core_files:
+      - internal/config/oauth_model_policy.go
+      - internal/config/oauth_model_policy_test.go
+      - internal/api/handlers/management/oauth_model_policy.go
+      - internal/api/server_management.go
+      - internal/api/server_management_v8.go
+      - internal/watcher/diff/oauth_model_policy.go
+      - sdk/cliproxy/service_executors.go
+      - docs/lts/oauth-model-policy.md
+    required_markers:
+      - oauth-model-policy
+      - policy-preview
+      - model_policy
+    validation:
+      - go test ./internal/config ./internal/api/handlers/management ./sdk/cliproxy -run ModelPolicy
+
+  - id: pat-provider-plugins
+    kind: lts-feature
+    support: optional
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Maintain native Go dynamic provider plugins (CodeBuddy, Copilot, Qoder, Coding Plan), credential catalog refresh, and optional PAT container/archive packaging.
+    routes:
+      - /v0/management/auth-files/models/refresh
+    core_files:
+      - docs/lts/pat-providers.md
+      - examples/plugin/codebuddy/
+      - examples/plugin/copilot/
+      - examples/plugin/qoder/
+      - examples/plugin/zcode-coding-plan/
+      - examples/plugin/pat-providers.config.yaml
+      - internal/api/server_management.go
+      - .github/workflows/pat-provider-delivery.yml
+      - Dockerfile.pat-providers
+      - scripts/package-pat-providers.py
+      - scripts/smoke-pat-providers.py
+    required_markers:
+      - /auth-files/models/refresh
+      - cpa-provider-codebuddy
+      - cpa-provider-copilot
+      - cpa-provider-qoder
+    validation:
+      - go test -count=1 ./test -run '^TestCodeBuddyDynamic'
+      - python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
+      - scripts/check-lts-contract.sh
+
+  - id: payload-execution-scope
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Scope payload default, override, replace, and filter rules by upstream auth-kind and exact CPA business request-paths without weakening invalid gates.
+    core_files:
+      - internal/config/payload_execution_scope.go
+      - internal/config/payload_execution_scope_test.go
+      - internal/api/handlers/management/config_payload_execution_scope_test.go
+      - docs/lts/payload-execution-scope.md
+      - config.example.yaml
+    required_markers:
+      - ValidatePayloadExecutionScopes
+      - auth-kind
+      - request-paths
+    validation:
+      - go test ./internal/config ./internal/api/handlers/management -run 'PayloadExecutionScope|PayloadReplacePaths'
+
+  - id: responses-client-compatibility
+    kind: lts-feature
+    support: maintained
+    owner: cpa-core-lts
+    upstream_relation: downstream-only
+    reason: Preserve explicit plaintext multi-agent delegation conversion across Responses providers and fail closed when encrypted or untranslatable delegation cannot be represented.
+    config_keys:
+      - client.codex.optimize-multi-agent-v2
+    core_files:
+      - docs/lts/responses-client-compatibility.md
+      - internal/runtime/executor/helps/codex_multi_agent_v2.go
+      - internal/translator/common/agent_messages.go
+      - sdk/api/handlers/openai/openai_responses_handlers.go
+      - sdk/api/handlers/openai/openai_responses_websocket_plaintext_tools.go
+      - config.example.yaml
+    required_markers:
+      - optimize-multi-agent-v2
+      - agent_message cannot be sent to this provider
+    validation:
+      - go test ./sdk/api/handlers/openai -run 'MultiAgent|PlaintextTools'
+      - go test ./internal/runtime/executor -run 'SpawnAgent'
 
 review_seams:
   - id: provider-runtime-usage-seams

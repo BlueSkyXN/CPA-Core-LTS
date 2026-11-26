@@ -138,3 +138,84 @@ func TestV8OpaquePluginYAMLRejectsLossyJSONView(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigV8PromotesExplicitNullParentMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		raw    string
+	}{
+		{
+			name:   "put nested under explicit null parent",
+			method: http.MethodPut,
+			raw:    "config-version: 8\nserver:\n  port: 8317\nplugins:\n  configs: null\n",
+		},
+		{
+			name:   "patch nested under implicit blank null parent",
+			method: http.MethodPatch,
+			raw:    "config-version: 8\nserver:\n  port: 8317\nplugins:\n  configs:\n",
+		},
+		{
+			name:   "put nested under tilde null ancestor",
+			method: http.MethodPut,
+			raw:    "config-version: 8\nserver:\n  port: 8317\nplugins: ~\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := &Handler{cfg: cfg, configFilePath: path}
+			router := gin.New()
+			router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+			router.PATCH("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, "/v8/management/config/plugins/configs/sample", strings.NewReader(`{"enabled":true,"permissions":{"auth-read":true}}`))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200; body=%s", tc.method, w.Code, w.Body.String())
+			}
+
+			loaded, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatalf("reload saved config: %v", err)
+			}
+			sample, ok := loaded.Plugins.Configs["sample"]
+			if !ok || sample.Enabled == nil || !*sample.Enabled || !sample.Permissions.AuthRead {
+				t.Fatalf("expected promoted plugin config, got %#v", loaded.Plugins.Configs)
+			}
+		})
+	}
+
+	t.Run("non-null scalar parent still rejected", func(t *testing.T) {
+		raw := "config-version: 8\nserver:\n  port: 8317\nplugins:\n  configs:\n    sample:\n      enabled: true\n"
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := &Handler{cfg: cfg, configFilePath: path}
+		router := gin.New()
+		router.PUT("/v8/management/config/*path", h.configV8WithCurrentRevisionForTest(t))
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/v8/management/config/plugins/configs/sample/enabled/nested", strings.NewReader(`{"x":1}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_path") {
+			t.Fatalf("status = %d body = %s, want 400 invalid_path", w.Code, w.Body.String())
+		}
+	})
+}

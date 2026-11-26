@@ -207,6 +207,13 @@ func TestValidationFailures(t *testing.T) {
 			},
 		},
 		{
+			name: "v8 management route without source evidence",
+			want: "route \"/v8/management/missing\" has no evidence token \"/missing\"",
+			mutateRoot: func(t *testing.T, root string) {
+				replaceFile(t, root, featureRegistryPath, "- /v8/management/v8-example", "- /v8/management/missing")
+			},
+		},
+		{
 			name: "config key without source evidence",
 			want: "config key \"demo.nonexistent-key\" does not exist in config.example.yaml or the internal/config Go schema",
 			mutateRoot: func(t *testing.T, root string) {
@@ -360,7 +367,7 @@ func writeValidFixture(t *testing.T) string {
 	root := t.TempDir()
 	writeFixtureFile(t, root, "docs/lts/sync-runbook.md", "# Sync runbook\n")
 	writeFixtureFile(t, root, "config.example.yaml", "demo:\n  enabled: true\n")
-	writeFixtureFile(t, root, "internal/demo/demo.go", "package demo\n\nconst FeatureAMarker = \"feature-a-marker\"\nconst FeatureBMarker = \"feature-b-marker\"\nconst ProfileMarker = \"profile-marker\"\nconst ExampleRoute = \"/v0/example\"\nconst DemoConfigKey = \"demo.enabled\"\n")
+	writeFixtureFile(t, root, "internal/demo/demo.go", "package demo\n\nconst FeatureAMarker = \"feature-a-marker\"\nconst FeatureBMarker = \"feature-b-marker\"\nconst ProfileMarker = \"profile-marker\"\nconst ExampleRoute = \"/v0/example\"\nconst V8ExampleRoute = \"/v8-example\"\nconst DemoConfigKey = \"demo.enabled\"\n")
 	writeFixtureFile(t, root, "internal/demo/demo_test.go", "package demo\n\nimport \"testing\"\n\nfunc TestDemo(t *testing.T) {}\n")
 	writeFixtureFile(t, root, featureRegistryPath, validFeatureRegistryYAML)
 	writeFixtureFile(t, root, protectedDeltasPath, validProtectedDeltasYAML)
@@ -511,7 +518,8 @@ features:
     owner: cpa-core-lts
     upstream_relation: downstream-only
     reason: Feature B is maintained downstream.
-    routes: []
+    routes:
+      - /v8/management/v8-example
     config_keys:
       - demo.enabled
     core_files:

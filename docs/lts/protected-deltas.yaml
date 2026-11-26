@@ -329,6 +329,63 @@ lts_owned_features:
       - scripts/check-lts-contract.sh
     conflict_policy: preserve_commercial_neutral_docs_and_assets
 
+  - id: codex-outbound-policy
+    registry_feature: codex-outbound-policy
+    maintenance_policy: long-term-maintained
+    markers:
+      - websocket-threshold-bytes
+      - request-compression
+      - accept-encoding
+    validation:
+      - go test ./internal/config -run CodexOutbound
+      - go test ./internal/runtime/executor -run 'CodexAutoExecutorOutbound|CodexRequestCompression|AcceptEncodingMode'
+    conflict_policy: preserve_official_client_outbound_alignment_and_rollback_switches
+
+  - id: oauth-model-policy
+    registry_feature: oauth-model-policy
+    maintenance_policy: long-term-maintained
+    markers:
+      - oauth-model-policy
+      - policy-preview
+      - model_policy
+    validation:
+      - go test ./internal/config ./internal/api/handlers/management ./sdk/cliproxy -run ModelPolicy
+    conflict_policy: preserve_channel_and_account_allowlist_denylist_enforcement
+
+  - id: pat-provider-plugins
+    registry_feature: pat-provider-plugins
+    maintenance_policy: long-term-maintained-optional-integration
+    markers:
+      - /v0/management/auth-files/models/refresh
+      - cpa-provider-codebuddy
+      - cpa-provider-copilot
+      - cpa-provider-qoder
+    validation:
+      - go test -count=1 ./test -run '^TestCodeBuddyDynamic'
+      - python3 -m unittest discover -s scripts -p 'test_*pat_providers.py'
+    conflict_policy: preserve_native_go_plugin_packaging_and_catalog_refresh
+
+  - id: payload-execution-scope
+    registry_feature: payload-execution-scope
+    maintenance_policy: long-term-maintained
+    markers:
+      - ValidatePayloadExecutionScopes
+      - auth-kind
+      - request-paths
+    validation:
+      - go test ./internal/config ./internal/api/handlers/management -run 'PayloadExecutionScope|PayloadReplacePaths'
+    conflict_policy: preserve_auth_kind_and_exact_request_paths_scoping
+
+  - id: responses-client-compatibility
+    registry_feature: responses-client-compatibility
+    maintenance_policy: long-term-maintained
+    markers:
+      - optimize-multi-agent-v2
+      - agent_message cannot be sent to this provider
+    validation:
+      - go test ./sdk/api/handlers/openai -run 'MultiAgent|PlaintextTools'
+    conflict_policy: preserve_plaintext_multi_agent_conversion_and_fail_closed_delegation
+
 shared_review_seams:
   - id: provider-runtime-usage-seams
     registry_seam: provider-runtime-usage-seams

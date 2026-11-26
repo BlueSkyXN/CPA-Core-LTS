@@ -51,12 +51,21 @@ func metaUserAgent() string {
 
 // MetaExecutor implements the cliproxyauth.ProviderExecutor for Meta Muse models (api.meta.ai).
 type MetaExecutor struct {
-	cfg *config.Config
+	cfg     *config.Config
+	mintURL string
 }
 
 // NewMetaExecutor constructs a new Meta executor.
 func NewMetaExecutor(cfg *config.Config) *MetaExecutor {
 	return &MetaExecutor{cfg: cfg}
+}
+
+// SetMintURL overrides the Meta API key minting endpoint (primarily for unit tests).
+func (e *MetaExecutor) SetMintURL(u string) {
+	if e == nil {
+		return
+	}
+	e.mintURL = strings.TrimSpace(u)
 }
 
 // Identifier returns the provider identifier "meta".
@@ -126,8 +135,15 @@ func (e *MetaExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 	}
 
-	mintRes, err, _ := metaRefreshGroup.Do(dcaToken, func() (any, error) {
+	sfKey := dcaToken
+	if e.mintURL != "" {
+		sfKey = e.mintURL + "\x00" + dcaToken
+	}
+	mintRes, err, _ := metaRefreshGroup.Do(sfKey, func() (any, error) {
 		authSvc := metaauth.NewMetaAuthWithProxyURL(e.cfg, auth.ProxyURL)
+		if e.mintURL != "" {
+			authSvc.SetMintURL(e.mintURL)
+		}
 		return authSvc.MintAPIKey(ctx, dcaToken)
 	})
 	if err != nil {

@@ -25,6 +25,8 @@ import (
 const (
 	// DefaultAPIBaseURL is the default official Meta API base URL.
 	DefaultAPIBaseURL = "https://api.meta.ai/v1"
+	// DefaultMintEndpoint is the official Meta Muse API key minting endpoint.
+	DefaultMintEndpoint = "https://api.meta.ai/muse-code/key"
 	// AuthHost is the Meta account OAuth authorization server.
 	AuthHost = "https://auth.meta.com"
 	// DeviceAuthorizationEndpoint is the device authorization request endpoint.
@@ -41,6 +43,10 @@ const (
 	MaxPollDuration = 15 * time.Minute
 	// httpClientTimeout bounds credential-acquisition HTTP calls.
 	httpClientTimeout = 30 * time.Second
+	// maxMetaResponseBytes bounds OAuth/mint HTTP response bodies read into memory.
+	maxMetaResponseBytes = 1 << 20
+	// maxMetaErrorBodyBytes bounds non-2xx upstream response excerpts included in errors/logs.
+	maxMetaErrorBodyBytes = 4 << 10
 )
 
 // DeviceCodeResponse represents Meta's device authorization response.
@@ -286,13 +292,16 @@ func (a *MetaAuth) StartDeviceFlowWithEndpoint(ctx context.Context, endpoint str
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, tooLarge, err := readBoundedResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("meta device flow: read response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("meta device flow failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("meta device flow failed (HTTP %d): %s", resp.StatusCode, formatBoundedErrorBody(body))
+	}
+	if tooLarge {
+		return nil, fmt.Errorf("meta device flow: response exceeds %d bytes", maxMetaResponseBytes)
 	}
 
 	var dcr DeviceCodeResponse
@@ -363,7 +372,7 @@ func (a *MetaAuth) WaitForAuthorization(ctx context.Context, dcr *DeviceCodeResp
 				continue
 			}
 
-			body, errRead := io.ReadAll(resp.Body)
+			body, tooLarge, errRead := readBoundedResponseBody(resp.Body)
 			_ = resp.Body.Close()
 			if errRead != nil {
 				log.Warnf("meta auth: read token response error: %v (retrying)", errRead)
@@ -371,6 +380,9 @@ func (a *MetaAuth) WaitForAuthorization(ctx context.Context, dcr *DeviceCodeResp
 			}
 
 			if resp.StatusCode == http.StatusOK {
+				if tooLarge {
+					return nil, fmt.Errorf("meta auth: token response exceeds %d bytes", maxMetaResponseBytes)
+				}
 				var tokenData TokenData
 				if err := json.Unmarshal(body, &tokenData); err != nil {
 					return nil, fmt.Errorf("meta auth: parse token response: %w", err)
@@ -416,10 +428,29 @@ func (a *MetaAuth) WaitForAuthorization(ctx context.Context, dcr *DeviceCodeResp
 				if errResp.Error != "" {
 					return nil, fmt.Errorf("meta auth: error from authorization server: %s: %s", errResp.Error, errResp.ErrorDescription)
 				}
-				log.Warnf("meta auth: unexpected response %d: %s", resp.StatusCode, string(body))
+				log.Warnf("meta auth: unexpected response %d: %s", resp.StatusCode, formatBoundedErrorBody(body))
 			}
 		}
 	}
+}
+
+func readBoundedResponseBody(r io.Reader) ([]byte, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxMetaResponseBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(body) > maxMetaResponseBytes {
+		return body[:maxMetaResponseBytes], true, nil
+	}
+	return body, false, nil
+}
+
+func formatBoundedErrorBody(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > maxMetaErrorBodyBytes {
+		return trimmed[:maxMetaErrorBodyBytes] + "...(truncated)"
+	}
+	return trimmed
 }
 
 // MintAPIKey exchanges a Device Client Access token (dca:...) for an LLM API key via https://api.meta.ai/muse-code/key.
@@ -438,11 +469,7 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, dcaToken string) (*MintedKeyR
 
 	mintURL := a.mintURL
 	if mintURL == "" {
-		if envMint := strings.TrimSpace(os.Getenv("META_MINT_URL")); envMint != "" {
-			mintURL = envMint
-		} else {
-			mintURL = "https://api.meta.ai/muse-code/key"
-		}
+		mintURL = DefaultMintEndpoint
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mintURL, bytes.NewReader(reqBody))
 	if err != nil {
@@ -463,13 +490,16 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, dcaToken string) (*MintedKeyR
 		}
 	}()
 
-	body, errRead := io.ReadAll(resp.Body)
+	body, tooLarge, errRead := readBoundedResponseBody(resp.Body)
 	if errRead != nil {
 		return nil, fmt.Errorf("meta auth: read mint response: %w", errRead)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("meta auth: mint key failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("meta auth: mint key failed (HTTP %d): %s", resp.StatusCode, formatBoundedErrorBody(body))
+	}
+	if tooLarge {
+		return nil, fmt.Errorf("meta auth: mint response exceeds %d bytes", maxMetaResponseBytes)
 	}
 
 	var minted MintedKeyResponse

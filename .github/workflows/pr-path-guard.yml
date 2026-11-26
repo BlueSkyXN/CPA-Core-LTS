@@ -9,6 +9,9 @@ on:
       - labeled
       - unlabeled
 
+permissions:
+  contents: read
+
 jobs:
   ensure-no-translator-changes:
     runs-on: ubuntu-latest
@@ -18,10 +21,27 @@ jobs:
           fetch-depth: 0
       - name: Detect internal/translator changes
         id: changed-files
-        uses: tj-actions/changed-files@v45
-        with:
-          files: |
-            internal/translator/**
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${BASE_SHA}" || git fetch --no-tags origin "${BASE_REF}"
+          fi
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${HEAD_SHA}" || git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          fi
+          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- internal/translator)"
+          if [[ -n "${changed}" ]]; then
+            echo "Detected changes under internal/translator:"
+            printf '%s\n' "${changed}"
+            echo "any_changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "any_changed=false" >> "${GITHUB_OUTPUT}"
+          fi
       - name: Determine translator override
         id: translator-override
         env:

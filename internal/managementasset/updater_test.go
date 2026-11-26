@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
@@ -267,5 +271,177 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	}
 	if remoteHash != "abc123" {
 		t.Fatalf("remoteHash = %q, want %q", remoteHash, "abc123")
+	}
+}
+
+func resetUpdaterThrottleForTest(t *testing.T) {
+	t.Helper()
+	lastUpdateCheckMu.Lock()
+	lastUpdateCheckTime = time.Time{}
+	lastUpdateCheckMu.Unlock()
+}
+
+func TestIsDefaultPanelRepository(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		repo string
+		want bool
+	}{
+		{"", true},
+		{"   ", true},
+		{config.DefaultPanelGitHubRepository, true},
+		{"https://github.com/BlueSkyXN/CPA-Panel-LTS/", true},
+		{"https://github.com/blueskyxn/cpa-panel-lts.git", true},
+		{defaultManagementReleaseURL, true},
+		{"https://api.github.com/repos/BlueSkyXN/CPA-Panel-LTS", true},
+		{"BlueSkyXN/CPA-Panel-LTS", true},
+		{"https://github.com/example/custom-panel", false},
+		{"https://api.github.com/repos/example/custom-panel/releases/latest", false},
+		{"example/custom-panel", false},
+		{"https://github.example.internal/BlueSkyXN/CPA-Panel-LTS", false},
+		{"not a url", false},
+	}
+
+	for _, tc := range cases {
+		if got := isDefaultPanelRepository(tc.repo); got != tc.want {
+			t.Errorf("isDefaultPanelRepository(%q) = %t, want %t", tc.repo, got, tc.want)
+		}
+	}
+}
+
+func TestEnsureLatestManagementHTMLCustomRepositorySkipsDefaultFallback(t *testing.T) {
+	t.Run("release metadata fetch failure", func(t *testing.T) {
+		resetUpdaterThrottleForTest(t)
+		var fallbackHits atomic.Int32
+		prevFactory := httpClientFactory
+		t.Cleanup(func() { httpClientFactory = prevFactory })
+
+		httpClientFactory = func(string) *http.Client {
+			return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.String() == defaultManagementFallbackURL {
+					fallbackHits.Add(1)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader("<html>default-fallback</html>")),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("upstream error")),
+				}, nil
+			})}
+		}
+
+		staticDir := t.TempDir()
+		ok := EnsureLatestManagementHTML(context.Background(), staticDir, "", "https://github.com/example/custom-panel")
+		if ok {
+			t.Fatal("EnsureLatestManagementHTML() = true, want false when custom repository fetch fails")
+		}
+		if fallbackHits.Load() != 0 {
+			t.Fatalf("fallback hits = %d, want 0 for custom repository", fallbackHits.Load())
+		}
+		if _, err := os.Stat(filepath.Join(staticDir, managementAssetName)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected local management.html file after failed custom sync: %v", err)
+		}
+	})
+
+	t.Run("asset download failure", func(t *testing.T) {
+		resetUpdaterThrottleForTest(t)
+		var fallbackHits atomic.Int32
+		prevFactory := httpClientFactory
+		t.Cleanup(func() { httpClientFactory = prevFactory })
+
+		httpClientFactory = func(string) *http.Client {
+			return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.String() {
+				case "https://api.github.com/repos/example/custom-panel/releases/latest":
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": {"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(`{"assets":[{"name":"management.html","browser_download_url":"https://objects.example/custom-management.html","digest":"sha256:abc123"}]}`)),
+					}, nil
+				case "https://objects.example/custom-management.html":
+					return &http.Response{
+						StatusCode: http.StatusBadGateway,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader("download failed")),
+					}, nil
+				case defaultManagementFallbackURL:
+					fallbackHits.Add(1)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader("<html>default-fallback</html>")),
+					}, nil
+				default:
+					t.Fatalf("unexpected request URL: %s", req.URL)
+					return nil, nil
+				}
+			})}
+		}
+
+		staticDir := t.TempDir()
+		ok := EnsureLatestManagementHTML(context.Background(), staticDir, "", "https://github.com/example/custom-panel")
+		if ok {
+			t.Fatal("EnsureLatestManagementHTML() = true, want false when custom asset download fails")
+		}
+		if fallbackHits.Load() != 0 {
+			t.Fatalf("fallback hits = %d, want 0 for custom repository", fallbackHits.Load())
+		}
+		if _, err := os.Stat(filepath.Join(staticDir, managementAssetName)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected local management.html file after failed custom download: %v", err)
+		}
+	})
+}
+
+func TestEnsureLatestManagementHTMLDefaultRepositoryUsesFallbackWhenMissing(t *testing.T) {
+	for _, repo := range []string{"", config.DefaultPanelGitHubRepository} {
+		t.Run("repo="+repo, func(t *testing.T) {
+			resetUpdaterThrottleForTest(t)
+			var fallbackHits atomic.Int32
+			prevFactory := httpClientFactory
+			t.Cleanup(func() { httpClientFactory = prevFactory })
+
+			httpClientFactory = func(string) *http.Client {
+				return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					switch req.URL.String() {
+					case defaultManagementReleaseURL:
+						return &http.Response{
+							StatusCode: http.StatusForbidden,
+							Header:     make(http.Header),
+							Body:       io.NopCloser(strings.NewReader("rate limited")),
+						}, nil
+					case defaultManagementFallbackURL:
+						fallbackHits.Add(1)
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Header:     make(http.Header),
+							Body:       io.NopCloser(strings.NewReader("<html>official-fallback</html>")),
+						}, nil
+					default:
+						t.Fatalf("unexpected request URL: %s", req.URL)
+						return nil, nil
+					}
+				})}
+			}
+
+			staticDir := t.TempDir()
+			if !EnsureLatestManagementHTML(context.Background(), staticDir, "", repo) {
+				t.Fatal("EnsureLatestManagementHTML() = false, want true for default repository fallback")
+			}
+			if fallbackHits.Load() != 1 {
+				t.Fatalf("fallback hits = %d, want 1", fallbackHits.Load())
+			}
+			saved, err := os.ReadFile(filepath.Join(staticDir, managementAssetName))
+			if err != nil {
+				t.Fatalf("read saved fallback asset: %v", err)
+			}
+			if string(saved) != "<html>official-fallback</html>" {
+				t.Fatalf("saved asset = %q, want official fallback HTML", string(saved))
+			}
+		})
 	}
 }

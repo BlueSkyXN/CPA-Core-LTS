@@ -628,6 +628,9 @@ func routeEvidenceToken(route string) string {
 	if strings.HasPrefix(route, "/v0/management/") {
 		return strings.TrimPrefix(route, "/v0/management")
 	}
+	if strings.HasPrefix(route, "/v8/management/") {
+		return strings.TrimPrefix(route, "/v8/management")
+	}
 	return route
 }
 

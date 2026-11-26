@@ -730,7 +730,16 @@ func (h *Handler) resolveMetaToken(ctx context.Context, auth *coreauth.Auth, req
 	if h != nil {
 		cfg = h.cfg
 	}
-	preparer := metaManagementPreparer{executor: executor.NewMetaExecutor(cfg), proxyURL: requestProxyURL}
+	var metaExec *executor.MetaExecutor
+	if h != nil && h.authManager != nil {
+		if registered, ok := h.authManager.Executor("meta"); ok {
+			metaExec, _ = registered.(*executor.MetaExecutor)
+		}
+	}
+	if metaExec == nil {
+		metaExec = executor.NewMetaExecutor(cfg)
+	}
+	preparer := metaManagementPreparer{executor: metaExec, proxyURL: requestProxyURL}
 	if !preparer.ShouldPrepareRequestAuth(auth) {
 		return "", nil
 	}

@@ -423,9 +423,11 @@ func TestAPICallResolvesMetaToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("META_MINT_URL", server.URL+"/key")
-
+	cfg := &config.Config{}
 	manager := coreauth.NewManager(nil, nil, nil)
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(server.URL + "/key")
+	manager.RegisterExecutor(metaExec)
 	metaAuth := &coreauth.Auth{
 		ID:       "meta:oauth:user1",
 		Provider: "meta",
@@ -439,7 +441,7 @@ func TestAPICallResolvesMetaToken(t *testing.T) {
 	authIndex := metaAuth.EnsureIndex()
 
 	h := &Handler{
-		cfg:         &config.Config{},
+		cfg:         cfg,
 		authManager: manager,
 		tokenStore:  &memoryAuthStore{},
 	}
@@ -477,14 +479,17 @@ func TestResolveMetaTokenUpdatesManagerAndStore(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"api_key": "LLM|minted", "base_url": " https://regional.meta.example/v1 "})
 	}))
 	defer server.Close()
-	t.Setenv("META_MINT_URL", server.URL)
+	cfg := &config.Config{}
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(server.URL)
+	manager.RegisterExecutor(metaExec)
 	auth, err := manager.Register(coreauth.WithSkipPersist(context.Background()), &coreauth.Auth{ID: "meta-management", Provider: "meta", Metadata: map[string]any{"dca_token": "dca:test", "base_url": "https://previous.meta.example/v1"}, Attributes: map[string]string{"base_url": "https://previous.meta.example/v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{cfg: &config.Config{}, authManager: manager, tokenStore: store}
+	h := &Handler{cfg: cfg, authManager: manager, tokenStore: store}
 	for i := 0; i < 2; i++ {
 		token, err := h.resolveTokenForAuth(context.Background(), h.authByIndex(auth.Index), "")
 		if err != nil {
@@ -527,15 +532,18 @@ func TestResolveMetaTokenPropagatesStoreFailure(t *testing.T) {
 		_, _ = w.Write([]byte(`{"api_key":"LLM|minted"}`))
 	}))
 	defer server.Close()
-	t.Setenv("META_MINT_URL", server.URL)
+	cfg := &config.Config{}
 	saveErr := errors.New("test store unavailable")
 	store := &failingMetaTokenStore{err: saveErr}
 	manager := coreauth.NewManager(store, nil, nil)
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(server.URL)
+	manager.RegisterExecutor(metaExec)
 	auth, err := manager.Register(coreauth.WithSkipPersist(context.Background()), &coreauth.Auth{ID: "meta-save-failure", Provider: "meta", Metadata: map[string]any{"dca_token": "dca:test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{cfg: &config.Config{}, authManager: manager, tokenStore: store}
+	h := &Handler{cfg: cfg, authManager: manager, tokenStore: store}
 	token, err := h.resolveTokenForAuth(context.Background(), h.authByIndex(auth.Index), "")
 	if !errors.Is(err, saveErr) {
 		t.Fatalf("error = %v, want store failure", err)
@@ -565,9 +573,12 @@ func TestResolveMetaToken_ConcurrentSingleflight(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("META_MINT_URL", server.URL)
+	cfg := &config.Config{}
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(server.URL)
+	manager.RegisterExecutor(metaExec)
 	auth, err := manager.Register(coreauth.WithSkipPersist(context.Background()), &coreauth.Auth{
 		ID:       "meta-mgmt-concurrent",
 		Provider: "meta",
@@ -577,7 +588,7 @@ func TestResolveMetaToken_ConcurrentSingleflight(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &Handler{cfg: &config.Config{}, authManager: manager, tokenStore: store}
+	h := &Handler{cfg: cfg, authManager: manager, tokenStore: store}
 
 	const callers = 5
 	var entryWg sync.WaitGroup
@@ -597,7 +608,7 @@ func TestResolveMetaToken_ConcurrentSingleflight(t *testing.T) {
 			var token string
 			var errToken error
 			if i%2 == 0 {
-				prepared, err := manager.PrepareRequestAuth(context.Background(), executor.NewMetaExecutor(h.cfg), auth.Clone())
+				prepared, err := manager.PrepareRequestAuth(context.Background(), metaExec, auth.Clone())
 				errToken = err
 				token = metaTokenFromAuth(prepared)
 			} else {
@@ -640,9 +651,12 @@ func TestResolveMetaTokenUsesRequestProxyWithoutSavingOverride(t *testing.T) {
 		_, _ = w.Write([]byte(`{"api_key":"LLM|proxied"}`))
 	}))
 	defer proxy.Close()
-	t.Setenv("META_MINT_URL", "http://meta.invalid/key")
+	cfg := &config.Config{}
 	store := &memoryAuthStore{}
 	manager := coreauth.NewManager(store, nil, nil)
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL("http://meta.invalid/key")
+	manager.RegisterExecutor(metaExec)
 	auth, err := manager.Register(coreauth.WithSkipPersist(context.Background()), &coreauth.Auth{
 		ID: "meta-proxy.json", Provider: "meta", ProxyURL: "http://127.0.0.1:1",
 		Metadata: map[string]any{"dca_token": "dca:proxy-test"},
@@ -650,7 +664,7 @@ func TestResolveMetaTokenUsesRequestProxyWithoutSavingOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{cfg: &config.Config{}, authManager: manager, tokenStore: store}
+	h := &Handler{cfg: cfg, authManager: manager, tokenStore: store}
 	token, err := h.resolveMetaToken(context.Background(), auth.Clone(), proxy.URL)
 	if err != nil || token != "LLM|proxied" {
 		t.Fatalf("resolve via request proxy: token=%q, err=%v", token, err)
