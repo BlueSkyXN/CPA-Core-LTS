@@ -63,11 +63,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}()
 	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
-	affinityReq := codexAffinityRequestMetadata(req, opts)
-	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
-	if affinityActive {
-		req = affinityReq
-	}
+	req, _ = e.prepareCodexAffinityRequest(ctx, auth, req, opts)
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	preserveNativeOutput := helps.IsNativeCodexRequest(req.Payload, opts)
@@ -137,12 +133,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
 		helps.NormalizeCodexToolSchemasDoc(doc)
 	}
-	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
+	var optimizeMultiAgentV2 bool
+	body, optimizeMultiAgentV2, err = optimizeCodexMultiAgentV2Doc(ctx, doc, opts.Headers, e.cfg, auth, isCompat)
 	if err != nil {
 		return nil, err
 	}
-	*doc = *ojson.NewDoc(optimizedBody)
-	body = doc.Bytes()
 	var skipReplay bool
 	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
 	if err != nil {
@@ -184,12 +179,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
-	affinityTransferred := false
-	defer func() {
-		if !affinityTransferred {
-			identityState.affinity.close()
-		}
-	}()
+	affinityGuard := newCodexAffinityGuard(&identityState)
+	defer affinityGuard.Close()
 	reporter.SetOutboundServiceTier(upstreamBody)
 	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
 		return nil, errFinal
@@ -510,7 +501,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		return finalizeCodexAbnormalReasoningRetryStream(headers, chunks, previous, abnormalRetry.clientUsageAggregation)
 	})
-	affinityTransferred = true
+	affinityGuard.HandOff()
 	go func() {
 		defer close(out)
 		defer identityState.affinity.close()

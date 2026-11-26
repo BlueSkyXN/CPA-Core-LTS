@@ -43,47 +43,64 @@ func TestXAIWebsocketTerminalReadInvalidationCancelsSaturatedActiveChannel(t *te
 	conn := &websocket.Conn{}
 	sess := &codexWebsocketSession{
 		conn:                 conn,
+		connGen:              1,
 		connCloser:           &websocketConnectionCloser{},
 		authID:               "xai-auth",
 		wsURL:                "ws://example.test/responses",
 		upstreamDisconnectCh: make(chan error, 1),
 	}
-	ch := sess.activate(conn)
-	for i := 0; i < cap(ch); i++ {
-		ch <- codexWebsocketRead{payload: []byte("queued")}
+	connection := codexWebsocketConnectionRef{conn: conn, generation: 1}
+	ch := make(chan codexWebsocketRead, 4096)
+	signal, errActive := sess.setActiveConnection(connection, ch)
+	if errActive != nil {
+		t.Fatalf("setActiveConnection() error = %v", errActive)
 	}
-	_, done := sess.activeForConn(conn)
-	if done == nil {
-		t.Fatal("active done channel is nil")
+	for i := 0; i < cap(ch); i++ {
+		ch <- codexWebsocketRead{connection: connection, conn: conn, msgType: websocket.TextMessage, payload: []byte("queued")}
 	}
 
 	exec := &XAIWebsocketsExecutor{}
 	terminalErr := errors.New("upstream disconnected")
 	result := make(chan bool, 1)
 	go func() {
-		result <- sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: terminalErr}, func() {
-			exec.invalidateUpstreamConn(sess, conn, "upstream_disconnected", terminalErr)
-		})
+		dispatched := sess.dispatchRead(connection, codexWebsocketRead{conn: conn, err: terminalErr}, true)
+		exec.invalidateUpstreamConn(sess, connection, "upstream_disconnected", terminalErr)
+		result <- dispatched
 	}()
 
 	select {
-	case invalidated := <-result:
-		if !invalidated {
-			t.Fatal("saturated terminal read should report invalidation")
+	case dispatched := <-result:
+		if !dispatched {
+			t.Fatal("saturated terminal read should report dispatch")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("terminal read remained blocked after connection invalidation")
 	}
 	select {
-	case <-done:
+	case <-signal.ctx.Done():
+		if !errors.Is(context.Cause(signal.ctx), terminalErr) {
+			t.Fatalf("signal cause = %v, want %v", context.Cause(signal.ctx), terminalErr)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("connection invalidation did not cancel active reader")
+		t.Fatal("connection invalidation did not cancel active request signal")
 	}
 	if sess.conn != nil {
 		t.Fatal("invalidated connection still attached to session")
 	}
+	if _, ok := sess.activeConnection(); ok {
+		t.Fatal("active connection remained set after terminal dispatch")
+	}
 	if got := len(ch); got != cap(ch) {
 		t.Fatalf("saturated channel length = %d, want %d queued items preserved", got, cap(ch))
+	}
+	for i := 0; i < cap(ch); i++ {
+		_, payload, errRead := readXAIWebsocketMessage(context.Background(), sess, connection, ch, signal)
+		if errRead != nil || string(payload) != "queued" {
+			t.Fatalf("item %d = (%q, %v), want (\"queued\", nil)", i, payload, errRead)
+		}
+	}
+	if _, _, errRead := readXAIWebsocketMessage(context.Background(), sess, connection, ch, signal); !errors.Is(errRead, terminalErr) {
+		t.Fatalf("terminal read error after draining = %v, want %v", errRead, terminalErr)
 	}
 }
 
@@ -2318,7 +2335,7 @@ func TestXAIWebsocketsCompactionTriggerFreshSessionFallback(t *testing.T) {
 func TestConfigureXAIWebsocketConnResetsTerminalErrorOnReplacement(t *testing.T) {
 	oldConn := &websocket.Conn{}
 	newConn := &websocket.Conn{}
-	sess := &codexWebsocketSession{conn: oldConn}
+	sess := &codexWebsocketSession{conn: oldConn, connGen: 1}
 	oldErr := errors.New("old connection terminated")
 	if !sess.markTerminalError(oldConn, oldErr) {
 		t.Fatal("old connection terminal error was not recorded")
@@ -2326,6 +2343,7 @@ func TestConfigureXAIWebsocketConnResetsTerminalErrorOnReplacement(t *testing.T)
 
 	sess.connMu.Lock()
 	sess.conn = newConn
+	sess.connGen = 2
 	sess.connMu.Unlock()
 	configureXAIWebsocketConn(sess, newConn)
 
@@ -2346,14 +2364,9 @@ func TestConfigureXAIWebsocketConnResetsTerminalErrorOnReplacement(t *testing.T)
 	if !sess.markTerminalError(newConn, newErr) {
 		t.Fatal("replacement connection terminal error was not recorded")
 	}
-	readCh := sess.activate(newConn)
-	select {
-	case event, ok := <-readCh:
-		if !ok || event.conn != newConn || !errors.Is(event.err, newErr) {
-			t.Fatalf("replacement terminal event = %#v, want replacement connection error", event)
-		}
-	default:
-		t.Fatal("replacement connection terminal error was not replayed")
+	newConnection := codexWebsocketConnectionRef{conn: newConn, generation: 2}
+	if _, errActive := sess.setActiveConnection(newConnection, make(chan codexWebsocketRead, 1)); !errors.Is(errActive, newErr) {
+		t.Fatalf("setActiveConnection() error = %v, want replacement connection error %v", errActive, newErr)
 	}
 }
 
@@ -3135,29 +3148,20 @@ func TestXAIWebsocketExecuteStreamLegacyActiveSessionLifecycle(t *testing.T) {
 
 	sess := exec.getOrCreateSession(sessionID)
 	sess.connMu.Lock()
-	conn := sess.conn
+	connection := codexWebsocketConnectionRef{conn: sess.conn, generation: sess.connGen}
 	sess.connMu.Unlock()
-	if conn == nil {
+	if connection.conn == nil || connection.generation == 0 {
 		close(releaseResponse)
-		t.Fatal("session conn is nil while xAI stream is active")
+		t.Fatalf("session connection = %#v while xAI stream is active, want non-nil generational connection", connection)
 	}
-	sess.activeMu.Lock()
-	activeConn := sess.activeConn
-	activeCh := sess.activeCh
-	activeDone := sess.activeDone
-	modernActive := sess.active
-	sess.activeMu.Unlock()
-	if activeConn != conn || activeCh == nil || activeDone == nil {
+	active, ok := sess.activeConnection()
+	if !ok || active.connection != connection || active.ch == nil || active.signal == nil {
 		close(releaseResponse)
-		t.Fatalf("legacy active state not populated via activate(): conn=%v activeConn=%v ch=%v done=%v", conn, activeConn, activeCh, activeDone)
+		t.Fatalf("activeConnection() = (%#v, %t), want active generational state for %#v", active, ok, connection)
 	}
-	if modernActive != (codexWebsocketActive{}) {
+	if ch, sig, ok := sess.activeFor(connection); !ok || ch != active.ch || sig != active.signal {
 		close(releaseResponse)
-		t.Fatalf("xAI touched modern sess.active = %#v, want zero", modernActive)
-	}
-	if ch, done := sess.activeForConn(conn); ch != activeCh || done != activeDone {
-		close(releaseResponse)
-		t.Fatalf("activeForConn() = (%v, %v), want (%v, %v)", ch, done, activeCh, activeDone)
+		t.Fatalf("activeFor() = (%v, %v, %t), want (%v, %v, true)", ch, sig, ok, active.ch, active.signal)
 	}
 
 	close(releaseResponse)
@@ -3167,18 +3171,14 @@ func TestXAIWebsocketExecuteStreamLegacyActiveSessionLifecycle(t *testing.T) {
 		}
 	}
 
-	sess.activeMu.Lock()
-	cleared := sess.activeConn == nil && sess.activeCh == nil && sess.activeDone == nil && sess.activeCancel == nil
-	modernAfter := sess.active
-	sess.activeMu.Unlock()
-	if !cleared {
-		t.Fatal("xAI clearActive() did not clear legacy active session fields on completion")
+	if after, ok := sess.activeConnection(); ok || after != (codexWebsocketActive{}) {
+		t.Fatalf("activeConnection() after completion = (%#v, %t), want zero state", after, ok)
 	}
-	if modernAfter != (codexWebsocketActive{}) {
-		t.Fatalf("xAI touched modern sess.active on close = %#v, want zero", modernAfter)
+	if active.signal.ctx.Err() == nil {
+		t.Fatal("xAI clearActiveConnection() did not cancel active request signal on completion")
 	}
-	if ch, done := sess.activeForConn(conn); ch != nil || done != nil {
-		t.Fatalf("activeForConn() after completion = (%v, %v), want (nil, nil)", ch, done)
+	if ch, sig, ok := sess.activeFor(connection); ok || ch != nil || sig != nil {
+		t.Fatalf("activeFor() after completion = (%v, %v, %t), want (nil, nil, false)", ch, sig, ok)
 	}
 	exec.CloseExecutionSession(sessionID)
 	select {

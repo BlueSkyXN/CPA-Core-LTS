@@ -17,7 +17,7 @@ import (
 // delivered, but before the stream goroutine cleared the active channel,
 // must be rejected outright instead of being written to the still-active
 // socket or falling back to a local cancellation. The test does not call
-// clearActive on purpose: it reproduces the window between completion
+// clearActiveConnection on purpose: it reproduces the window between completion
 // delivery and turn teardown.
 func TestInterruptExecutionSessionUnknownAfterTerminalDelivery(t *testing.T) {
 	interruptCount := make(chan int, 1)
@@ -90,7 +90,7 @@ func TestInterruptExecutionSessionUnknownAfterTerminalDelivery(t *testing.T) {
 	read()
 	read()
 
-	// Deliberately no clearActive here: the stream goroutine may not have
+	// Deliberately no clearActiveConnection here: the stream goroutine may not have
 	// run its deferred teardown yet, but the client has already seen
 	// response.completed and now sends an unknown interrupt.
 	errInterrupt := exec.InterruptExecutionSession(context.Background(), sessionID, []byte(`{"type":"response.interrupt","response_id":"unknown"}`))

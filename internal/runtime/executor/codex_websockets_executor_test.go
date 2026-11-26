@@ -504,22 +504,28 @@ func TestExistingWebsocketSessionConnRequiresMatchingHealthyConnection(t *testin
 	closer := newWebsocketConnectionCloser(conn)
 	sess := &codexWebsocketSession{
 		conn:       conn,
+		connGen:    1,
 		connCloser: closer,
+		connKey:    newCodexWebsocketConnectionKey("auth-a", "ws://example.test/responses", "gpt-5.4", [32]byte{}),
 		authID:     "auth-a",
 		wsURL:      "ws://example.test/responses",
 	}
 	sess.resetUpstreamDisconnectError(conn)
-	if gotConn, gotCloser := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", ""); gotConn != conn || gotCloser != closer {
+	matchingKey := newCodexWebsocketConnectionKey("auth-a", "ws://example.test/responses", "gpt-5.4", [32]byte{})
+	if gotConn, gotCloser := existingCodexWebsocketSessionConnection(sess, matchingKey); gotConn.conn != conn || gotConn.generation != 1 || gotCloser != closer {
 		t.Fatal("matching healthy websocket session was not reusable")
 	}
-	if got, _ := existingWebsocketSessionConn(sess, "auth-b", "ws://example.test/responses", ""); got != nil {
+	if got, _ := existingCodexWebsocketSessionConnection(sess, newCodexWebsocketConnectionKey("auth-b", "ws://example.test/responses", "gpt-5.4", [32]byte{})); got.conn != nil {
 		t.Fatal("websocket session matched a different auth")
 	}
-	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://other.test/responses", ""); got != nil {
+	if got, _ := existingCodexWebsocketSessionConnection(sess, newCodexWebsocketConnectionKey("auth-a", "ws://other.test/responses", "gpt-5.4", [32]byte{})); got.conn != nil {
 		t.Fatal("websocket session matched a different URL")
 	}
+	if got, _ := existingCodexWebsocketSessionConnection(sess, newCodexWebsocketConnectionKey("auth-a", "ws://example.test/responses", "gpt-5.3-codex", [32]byte{})); got.conn != nil {
+		t.Fatal("websocket session matched a different base model")
+	}
 	sess.setUpstreamDisconnectError(conn, errors.New("upstream disconnected"))
-	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", ""); got != nil {
+	if got, _ := existingCodexWebsocketSessionConnection(sess, matchingKey); got.conn != nil {
 		t.Fatal("disconnected websocket session remained reusable")
 	}
 }

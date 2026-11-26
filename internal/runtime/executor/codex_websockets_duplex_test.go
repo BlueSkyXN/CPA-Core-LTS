@@ -744,13 +744,9 @@ func TestCodexDuplexCloseClearsActiveConnection(t *testing.T) {
 
 	sess.activeMu.Lock()
 	gotActive := sess.active
-	legacyActive := sess.activeConn != nil || sess.activeCh != nil || sess.activeDone != nil || sess.activeCancel != nil
 	sess.activeMu.Unlock()
 	if gotActive != (codexWebsocketActive{}) {
 		t.Fatalf("sess.active = %#v, want zero value after duplex close", gotActive)
-	}
-	if legacyActive {
-		t.Fatal("legacy active state unexpectedly populated on Codex duplex session")
 	}
 	if _, _, ok := sess.activeFor(connection); ok {
 		t.Fatal("activeFor(connection) = true after duplex close, want false")

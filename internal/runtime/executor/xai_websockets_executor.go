@@ -569,20 +569,21 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 	logXAIWebsocketRequest(executionSessionID, authID, wsURL, wsReqBody)
 
-	var conn *websocket.Conn
+	var connection codexWebsocketConnectionRef
 	var closer *websocketConnectionCloser
 	var respHS *http.Response
 	var errDial error
 	// Include cold connection setup, as the HTTP attempt timer does.
 	reporter.StartResponseTiming()
+	wantedKey := newXAIWebsocketConnectionKey(authID, wsURL, executionProxyURL(ctx, sessCfg, auth))
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sessCfg, auth))
-		if conn == nil {
+		connection, closer = existingCodexWebsocketSessionConnection(sess, wantedKey)
+		if connection.conn == nil {
 			unlockStreamSession()
 			return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
 	} else {
-		conn, closer, respHS, errDial = e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
+		connection, closer, respHS, errDial = e.ensureUpstreamConnRef(ctx, auth, sess, authID, wsURL, wsHeaders)
 	}
 	var upstreamHeaders http.Header
 	if respHS != nil {
@@ -597,9 +598,9 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		unlockStreamSession()
 		return nil, errDial
 	}
-	if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
+	if errBind := sess.bindExecutionLifecycle(opts, connection.conn, closer, req.Model); errBind != nil {
 		unlockStreamSession()
-		closeWebsocketAfterBindFailure(sess, conn, closer)
+		closeWebsocketAfterBindFailure(sess, connection.conn, closer)
 		return nil, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
@@ -609,53 +610,65 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}
 
 	var readCh chan codexWebsocketRead
+	var requestSignal *codexWebsocketRequestSignal
 	if sess != nil {
-		readCh = sess.activate(conn)
+		readCh = make(chan codexWebsocketRead, 4096)
+		var errActive error
+		requestSignal, errActive = sess.setActiveConnection(connection, readCh)
+		if errActive != nil {
+			unlockStreamSession()
+			return nil, errActive
+		}
 	}
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	reporter.ObserveWebsocketHandshakePayload(wsReqBody, wsURL, wsHeaders)
-	if errSend := writeWebsocketPayloadMessage("xai", sess, conn, wsReqBody); errSend != nil {
+	if errSend := writeWebsocketPayloadMessage("xai", sess, connection.conn, wsReqBody); errSend != nil {
 		reporter.ObserveWebsocketSendFailure()
-		errSend = mapXAIWebsocketWriteError(sess, conn, errSend)
+		errSend = mapXAIWebsocketWriteError(sess, connection.conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 		if sess != nil && !isEphemeralSession {
 			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "send_error", errSend)
-				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, "send_error", errSend)
+				sess.clearActiveConnection(connection, readCh)
+				unlockStreamSession()
 				if !shouldRetryXAIWebsocketSend(errSend) {
 					return nil, errSend
 				}
 				return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 			}
-			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
+			e.invalidateUpstreamConn(sess, connection, "send_error", errSend)
 			if !shouldRetryXAIWebsocketSend(errSend) {
-				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				sess.clearActiveConnection(connection, readCh)
+				unlockStreamSession()
 				return nil, errSend
 			}
 			reporter.BeginResponseTiming()
-			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
-			if errDialRetry != nil || connRetry == nil {
+			connectionRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnRef(ctx, auth, sess, authID, wsURL, wsHeaders)
+			if errDialRetry != nil || connectionRetry.conn == nil {
 				bodyErrRetry := recordWebsocketDialRetryFailure(ctx, e.cfg, wsReqLog, respHSRetry, errDialRetry)
-				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				sess.clearActiveConnection(connection, readCh)
+				unlockStreamSession()
 				if respHSRetry != nil && respHSRetry.StatusCode > 0 {
 					return nil, xaiStatusErr(respHSRetry.StatusCode, bodyErrRetry)
 				}
 				return nil, errDialRetry
 			}
-			previousConn, previousReadCh := conn, readCh
-			conn = connRetry
-			closer = closerRetry
-			if errBind := sess.bindExecutionLifecycle(opts, conn, closer, req.Model); errBind != nil {
-				clearRetryActiveState(sess, previousConn, previousReadCh)
-				sess.reqMu.Unlock()
-				closeWebsocketAfterBindFailure(sess, conn, closer)
+			if errBind := sess.bindExecutionLifecycle(opts, connectionRetry.conn, closerRetry, req.Model); errBind != nil {
+				sess.clearActiveConnection(connection, readCh)
+				unlockStreamSession()
+				closeWebsocketAfterBindFailure(sess, connectionRetry.conn, closerRetry)
 				return nil, errBind
 			}
-			readCh = sess.activate(conn)
+			retrySignal, errActive := sess.setActiveConnection(connectionRetry, readCh)
+			if errActive != nil {
+				sess.clearActiveConnection(connection, readCh)
+				unlockStreamSession()
+				return nil, errActive
+			}
+			connection = connectionRetry
+			closer = closerRetry
+			requestSignal = retrySignal
 			// Transport retries reuse the exact final frame.
 			wsReqBodyRetry := wsReqBody
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
@@ -673,20 +686,20 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			reporter.ObserveWebsocketHandshakePayload(wsReqBodyRetry, wsURL, wsHeaders)
-			if errSendRetry := writeWebsocketPayloadMessage("xai", sess, conn, wsReqBodyRetry); errSendRetry != nil {
+			if errSendRetry := writeWebsocketPayloadMessage("xai", sess, connection.conn, wsReqBodyRetry); errSendRetry != nil {
 				reporter.ObserveWebsocketSendFailure()
-				errSendRetry = mapXAIWebsocketWriteError(sess, connRetry, errSendRetry)
+				errSendRetry = mapXAIWebsocketWriteError(sess, connection.conn, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
-				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
-				sess.clearActive(conn, readCh)
-				sess.reqMu.Unlock()
+				e.invalidateUpstreamConn(sess, connection, "send_error", errSendRetry)
+				sess.clearActiveConnection(connection, readCh)
+				unlockStreamSession()
 				return nil, errSendRetry
 			}
 			wsReqBody = wsReqBodyRetry
 		} else {
 			if sess != nil {
-				e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
-				sess.clearActive(conn, readCh)
+				e.invalidateUpstreamConn(sess, connection, "send_error", errSend)
+				sess.clearActiveConnection(connection, readCh)
 				if isEphemeralSession {
 					closeXAIWebsocketSession(sess, "send_error")
 				}
@@ -714,7 +727,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		defer close(out)
 		defer func() {
 			if sess != nil {
-				sess.clearActive(conn, readCh)
+				sess.clearActiveConnection(connection, readCh)
 				unlockStreamSession()
 				if isEphemeralSession {
 					closeXAIWebsocketSession(sess, terminateReason)
@@ -748,7 +761,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			terminateReason = "invalid_tool_arguments"
 			terminateErr = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
 			if sess != nil {
-				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, terminateReason, terminateErr)
+				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, terminateReason, terminateErr)
 			}
 			reporter.PublishFailure(ctx, terminateErr)
 		}
@@ -767,7 +780,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readXAIWebsocketMessage(ctx, sess, conn, readCh)
+			msgType, payload, errRead := readXAIWebsocketMessage(ctx, sess, connection, readCh, requestSignal)
 			if errRead != nil {
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
@@ -807,7 +820,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "unexpected_binary", errBinary)
 					reporter.PublishFailure(ctx, errBinary)
 					if sess != nil {
-						e.invalidateUpstreamConn(sess, conn, "unexpected_binary", errBinary)
+						e.invalidateUpstreamConn(sess, connection, "unexpected_binary", errBinary)
 					}
 					_ = send(cliproxyexecutor.StreamChunk{Err: errBinary})
 					return
@@ -831,7 +844,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", wsErr)
 				reporter.PublishFailure(ctx, wsErr)
 				if sess != nil {
-					e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "upstream_error", wsErr)
+					e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, "upstream_error", wsErr)
 				}
 				_ = send(cliproxyexecutor.StreamChunk{Err: wsErr})
 				return
@@ -1244,72 +1257,132 @@ func (e *XAIWebsocketsExecutor) UpstreamDisconnectChan(sessionID string) <-chan 
 }
 
 func (e *XAIWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
+	connection, closer, resp, err := e.ensureUpstreamConnRef(ctx, auth, sess, authID, wsURL, headers)
+	return connection.conn, closer, resp, err
+}
+
+func (e *XAIWebsocketsExecutor) ensureUpstreamConnRef(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header) (codexWebsocketConnectionRef, *websocketConnectionCloser, *http.Response, error) {
 	if sess == nil {
-		return e.dialXAIWebsocket(ctx, auth, wsURL, headers)
+		conn, closer, resp, errDial := e.dialXAIWebsocket(ctx, auth, wsURL, headers)
+		return codexWebsocketConnectionRef{conn: conn}, closer, resp, errDial
 	}
 
-	proxyURL := executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
-	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, proxyURL); staleConn != nil {
-		staleLastEvent := sess.getLastEventType(staleConn)
-		logXAIWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, staleAuthID, staleWSURL, "target_changed", staleLastEvent, nil)
-		if staleCloser != nil {
-			if errClose := staleCloser.Close(); errClose != nil {
+	wantedKey := newXAIWebsocketConnectionKey(authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth))
+
+	sess.connMu.Lock()
+	if sess.closed {
+		sess.connMu.Unlock()
+		return codexWebsocketConnectionRef{}, nil, nil, fmt.Errorf("xai websockets executor: session is closed")
+	}
+	connection := codexWebsocketConnectionRef{conn: sess.conn, generation: sess.connGen}
+	reader := codexWebsocketConnectionRef{conn: sess.readerConn, generation: sess.readerGen}
+	if connection.conn != nil && sess.effectiveConnKeyLocked() == wantedKey {
+		closer := sess.connCloser
+		startReader := reader != connection
+		if startReader {
+			sess.readerConn = connection.conn
+			sess.readerGen = connection.generation
+		}
+		sess.connMu.Unlock()
+		if startReader {
+			configureXAIWebsocketConn(sess, connection.conn)
+			go e.readUpstreamLoop(sess, connection)
+		}
+		logXAIWebsocketConnectedWithReused(sess, sess.sessionID, wantedKey.authID, wantedKey.wsURL, true)
+		return connection, closer, nil, nil
+	}
+	oldCloser := sess.connCloser
+	oldLifecycle := sess.lifecycle
+	oldAuthID := sess.authID
+	oldWSURL := sess.wsURL
+	if connection.conn != nil {
+		sess.conn = nil
+		sess.connCloser = nil
+		sess.connCfg = nil
+		sess.hasConnCfg = false
+		sess.multiAgentV2OptimizedGen = 0
+		sess.lifecycle = nil
+		sess.lifecycleModel = ""
+		sess.lifecycleGen = 0
+		sess.useSIWC = false
+		if reader == connection {
+			sess.readerConn = nil
+			sess.readerGen = 0
+		}
+		sess.connGen++
+		if sess.connGen == 0 {
+			sess.connGen++
+		}
+	}
+	sess.connKey = codexWebsocketConnectionKey{}
+	sess.connMu.Unlock()
+
+	if connection.conn != nil {
+		sess.cancelActiveConnection(fmt.Errorf("xai websockets executor: target changed"))
+		staleLastEvent := sess.getLastEventType(connection.conn)
+		logXAIWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, oldAuthID, oldWSURL, "target_changed", staleLastEvent, nil)
+		if oldCloser != nil {
+			if errClose := oldCloser.Close(); errClose != nil {
 				log.Errorf("xai websockets executor: close stale websocket error: %v", errClose)
 			}
+		} else if errClose := connection.conn.Close(); errClose != nil {
+			log.Errorf("xai websockets executor: close websocket error: %v", errClose)
 		}
-		if staleLifecycle != nil {
-			staleLifecycle.End("target_changed")
+		if oldLifecycle != nil {
+			oldLifecycle.End("target_changed")
 		}
 	}
 
-	sess.connMu.Lock()
-	conn := sess.conn
-	closer := sess.connCloser
-	readerConn := sess.readerConn
-	sess.connMu.Unlock()
-	if conn != nil {
-		if readerConn != conn {
-			sess.connMu.Lock()
-			sess.readerConn = conn
-			sess.connMu.Unlock()
-			configureXAIWebsocketConn(sess, conn)
-			go e.readUpstreamLoop(sess, conn)
-		}
-		logXAIWebsocketConnectedWithReused(sess, sess.sessionID, authID, wsURL, true)
-		return conn, closer, nil, nil
-	}
-
-	dialProxyURL := executionProxyURL(ctx, e.cfg, auth)
-	conn, closer, resp, errDial := e.dialXAIWebsocket(ctx, auth, wsURL, headers)
+	wantedKey.proxyURL = executionProxyURL(ctx, e.cfg, auth)
+	conn, closer, resp, errDial := e.dialXAIWebsocket(ctx, auth, wantedKey.wsURL, headers)
 	if errDial != nil {
-		return nil, closer, resp, errDial
+		return codexWebsocketConnectionRef{}, closer, resp, errDial
 	}
 
 	sess.connMu.Lock()
-	if sess.conn != nil {
-		previous := sess.conn
-		previousCloser := sess.connCloser
+	if sess.closed {
 		sess.connMu.Unlock()
 		if errClose := closer.Close(); errClose != nil {
 			log.Errorf("xai websockets executor: close websocket error: %v", errClose)
 		}
-		logXAIWebsocketConnectedWithReused(sess, sess.sessionID, authID, wsURL, true)
-		return previous, previousCloser, nil, nil
+		return codexWebsocketConnectionRef{}, nil, nil, fmt.Errorf("xai websockets executor: session closed while dialing")
 	}
+	if sess.conn != nil {
+		previous := codexWebsocketConnectionRef{conn: sess.conn, generation: sess.connGen}
+		previousCloser := sess.connCloser
+		previousKey := sess.effectiveConnKeyLocked()
+		sess.connMu.Unlock()
+		if errClose := closer.Close(); errClose != nil {
+			log.Errorf("xai websockets executor: close websocket error: %v", errClose)
+		}
+		if previousKey == wantedKey {
+			logXAIWebsocketConnectedWithReused(sess, sess.sessionID, wantedKey.authID, wantedKey.wsURL, true)
+			return previous, previousCloser, nil, nil
+		}
+		return codexWebsocketConnectionRef{}, nil, nil, fmt.Errorf("xai websockets executor: session connection profile changed while dialing")
+	}
+	sess.connGen++
+	if sess.connGen == 0 {
+		sess.connGen++
+	}
+	connection = codexWebsocketConnectionRef{conn: conn, generation: sess.connGen}
 	sess.conn = conn
 	sess.connCloser = closer
+	sess.connKey = wantedKey
 	sess.connCfg = e.cfg
 	sess.hasConnCfg = true
-	sess.wsURL = wsURL
-	sess.authID = authID
-	sess.proxyURL = dialProxyURL
+	sess.wsURL = wantedKey.wsURL
+	sess.authID = wantedKey.authID
+	sess.proxyURL = wantedKey.proxyURL
+	sess.useSIWC = false
 	sess.readerConn = conn
+	sess.readerGen = connection.generation
 	sess.connMu.Unlock()
 
 	configureXAIWebsocketConn(sess, conn)
-	go e.readUpstreamLoop(sess, conn)
-	logXAIWebsocketConnectedWithReused(sess, sess.sessionID, authID, wsURL, false)
-	return conn, closer, resp, nil
+	go e.readUpstreamLoop(sess, connection)
+	logXAIWebsocketConnectedWithReused(sess, sess.sessionID, wantedKey.authID, wantedKey.wsURL, false)
+	return connection, closer, resp, nil
 }
 
 func configureXAIWebsocketConn(sess *codexWebsocketSession, conn *websocket.Conn) {
@@ -1356,85 +1429,87 @@ func shouldRetryXAIWebsocketSend(err error) bool {
 	return shouldRetryCodexWebsocketSend(err)
 }
 
-func readXAIWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead) (int, []byte, error) {
+func readXAIWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, connection codexWebsocketConnectionRef, readCh chan codexWebsocketRead, requestSignal *codexWebsocketRequestSignal) (int, []byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if sess == nil {
-		if conn == nil {
+		if connection.conn == nil {
 			return 0, nil, fmt.Errorf("xai websockets executor: websocket conn is nil")
 		}
-		msgType, payload, errRead := conn.ReadMessage()
+		msgType, payload, errRead := connection.conn.ReadMessage()
 		return msgType, payload, errRead
 	}
-	if conn == nil {
+	if connection.conn == nil {
 		return 0, nil, fmt.Errorf("xai websockets executor: websocket conn is nil")
 	}
 	if readCh == nil {
 		return 0, nil, fmt.Errorf("xai websockets executor: session read channel is nil")
 	}
+	if requestSignal == nil || requestSignal.ctx == nil {
+		return 0, nil, fmt.Errorf("xai websockets executor: session request signal is nil")
+	}
+	readEvent := func(ev codexWebsocketRead, ok bool) (int, []byte, error, bool) {
+		if !ok {
+			return 0, nil, fmt.Errorf("xai websockets executor: session read channel closed"), true
+		}
+		if ev.connection != connection {
+			return 0, nil, nil, false
+		}
+		if ev.err != nil {
+			return 0, nil, ev.err, true
+		}
+		return ev.msgType, ev.payload, nil, true
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return 0, nil, ctx.Err()
+		case <-requestSignal.ctx.Done():
+			for {
+				select {
+				case ev, ok := <-readCh:
+					if msgType, payload, errRead, matched := readEvent(ev, ok); matched {
+						return msgType, payload, errRead
+					}
+				default:
+					cause := context.Cause(requestSignal.ctx)
+					if cause == nil {
+						cause = context.Canceled
+					}
+					return 0, nil, cause
+				}
+			}
 		case ev, ok := <-readCh:
-			if !ok {
-				return 0, nil, fmt.Errorf("xai websockets executor: session read channel closed")
+			if msgType, payload, errRead, matched := readEvent(ev, ok); matched {
+				return msgType, payload, errRead
 			}
-			if ev.conn != conn {
-				continue
-			}
-			if ev.err != nil {
-				return 0, nil, ev.err
-			}
-			return ev.msgType, ev.payload, nil
 		}
 	}
 }
 
-func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, conn *websocket.Conn) {
-	if e == nil || sess == nil || conn == nil {
+func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, connection codexWebsocketConnectionRef) {
+	if e == nil || sess == nil || connection.conn == nil {
 		return
 	}
 	for {
-		msgType, payload, errRead := conn.ReadMessage()
+		msgType, payload, errRead := connection.conn.ReadMessage()
+		if !sess.isCurrentConnection(connection) {
+			return
+		}
 		if errRead != nil {
-			sess.markTerminalError(conn, errRead)
-			invalidate := func() {
-				e.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
-			}
-			invalidated := false
-			ch, done := sess.activeForConn(conn)
-			if ch != nil {
-				invalidated = sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: errRead}, invalidate)
-				if sess.clearActive(conn, ch) {
-					close(ch)
-				}
-			}
-			if !invalidated {
-				invalidate()
-			}
+			sess.markTerminalError(connection.conn, errRead)
+			sess.dispatchRead(connection, codexWebsocketRead{conn: connection.conn, err: errRead}, true)
+			e.invalidateUpstreamConn(sess, connection, "upstream_disconnected", errRead)
 			return
 		}
 
 		if msgType != websocket.TextMessage {
 			if msgType == websocket.BinaryMessage {
 				errBinary := fmt.Errorf("xai websockets executor: unexpected binary message")
-				sess.markTerminalError(conn, errBinary)
-				invalidate := func() {
-					e.invalidateUpstreamConn(sess, conn, "unexpected_binary", errBinary)
-				}
-				invalidated := false
-				ch, done := sess.activeForConn(conn)
-				if ch != nil {
-					invalidated = sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: errBinary}, invalidate)
-					if sess.clearActive(conn, ch) {
-						close(ch)
-					}
-				}
-				if !invalidated {
-					invalidate()
-				}
+				sess.markTerminalError(connection.conn, errBinary)
+				sess.dispatchRead(connection, codexWebsocketRead{conn: connection.conn, err: errBinary}, true)
+				e.invalidateUpstreamConn(sess, connection, "unexpected_binary", errBinary)
 				return
 			}
 			continue
@@ -1444,31 +1519,24 @@ func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, co
 		if len(payload) > 0 {
 			eventType := strings.Clone(ojson.GetBytesNoCopy(payload, "type").String())
 			if eventType != "" {
-				sess.setLastEventType(conn, eventType)
+				sess.setLastEventType(connection.conn, eventType)
 			}
 		}
 
-		ch, done := sess.activeForConn(conn)
-		if ch == nil {
-			continue
-		}
-		select {
-		case ch <- codexWebsocketRead{conn: conn, msgType: msgType, payload: payload}:
-		case <-done:
-		}
+		sess.dispatchRead(connection, codexWebsocketRead{conn: connection.conn, msgType: msgType, payload: payload}, false)
 	}
 }
 
-func (e *XAIWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error) {
-	e.invalidateUpstreamConnWithNotify(sess, conn, reason, err, true)
+func (e *XAIWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSession, connection codexWebsocketConnectionRef, reason string, err error) {
+	e.invalidateUpstreamConnWithNotify(sess, connection, reason, err, true)
 }
 
-func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithoutDisconnectNotify(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error) {
-	e.invalidateUpstreamConnWithNotify(sess, conn, reason, err, false)
+func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithoutDisconnectNotify(sess *codexWebsocketSession, connection codexWebsocketConnectionRef, reason string, err error) {
+	e.invalidateUpstreamConnWithNotify(sess, connection, reason, err, false)
 }
 
-func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error, notify bool) {
-	if sess == nil || conn == nil {
+func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebsocketSession, connection codexWebsocketConnectionRef, reason string, err error, notify bool) {
+	if sess == nil || connection.conn == nil {
 		return
 	}
 
@@ -1477,7 +1545,7 @@ func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebs
 	authID := sess.authID
 	wsURL := sess.wsURL
 	sessionID := sess.sessionID
-	if current == nil || current != conn {
+	if current == nil || current != connection.conn || sess.connGen != connection.generation {
 		sess.connMu.Unlock()
 		return
 	}
@@ -1485,19 +1553,21 @@ func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebs
 	closer := sess.connCloser
 	sess.lifecycle = nil
 	sess.lifecycleModel = ""
+	sess.lifecycleGen = 0
 	sess.conn = nil
 	sess.connCloser = nil
 	sess.connCfg = nil
 	sess.hasConnCfg = false
-	if sess.readerConn == conn {
+	sess.connKey = codexWebsocketConnectionKey{}
+	sess.multiAgentV2OptimizedGen = 0
+	if sess.readerConn == connection.conn && sess.readerGen == connection.generation {
 		sess.readerConn = nil
+		sess.readerGen = 0
 	}
 	sess.connMu.Unlock()
 
-	// Wake a saturated reader channel before the terminal sender waits for
-	// capacity. The reader owns the eventual channel cleanup.
-	sess.cancelActiveRead()
-	lastEvent := sess.getLastEventType(conn)
+	sess.cancelActiveConnection(err)
+	lastEvent := sess.getLastEventType(connection.conn)
 	logXAIWebsocketDisconnectedWithLastEvent(sess, sessionID, authID, wsURL, reason, lastEvent, err)
 	if notify {
 		sess.notifyUpstreamDisconnect(err)
@@ -1506,6 +1576,8 @@ func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebs
 		if errClose := closer.Close(); errClose != nil {
 			log.Errorf("xai websockets executor: close websocket error: %v", errClose)
 		}
+	} else if errClose := connection.conn.Close(); errClose != nil {
+		log.Errorf("xai websockets executor: close websocket error: %v", errClose)
 	}
 	if lifecycle != nil {
 		lifecycle.End(reason)
@@ -1614,31 +1686,48 @@ func closeXAIWebsocketSession(sess *codexWebsocketSession, reason string) {
 	}
 
 	sess.connMu.Lock()
-	conn := sess.conn
+	connection := codexWebsocketConnectionRef{conn: sess.conn, generation: sess.connGen}
 	authID := sess.authID
 	wsURL := sess.wsURL
 	lifecycle := sess.lifecycle
 	closer := sess.connCloser
 	sess.lifecycle = nil
 	sess.lifecycleModel = ""
-	sess.conn = nil
+	sess.lifecycleGen = 0
 	sess.connCloser = nil
+	sess.multiAgentV2OptimizedGen = 0
 	sess.connCfg = nil
 	sess.hasConnCfg = false
-	if sess.readerConn == conn {
-		sess.readerConn = nil
-	}
 	sessionID := sess.sessionID
+	sess.closed = true
+	sess.conn = nil
+	sess.connKey = codexWebsocketConnectionKey{}
+	sess.connGen++
+	if sess.connGen == 0 {
+		sess.connGen++
+	}
+	if sess.readerConn == connection.conn && sess.readerGen == connection.generation {
+		sess.readerConn = nil
+		sess.readerGen = 0
+	}
 	sess.connMu.Unlock()
 
-	lastEvent := sess.getLastEventType(conn)
-	if conn != nil {
+	closeErr := fmt.Errorf("xai websockets executor: session closed: %s", reason)
+	if connection.conn != nil {
+		if delivered := sess.dispatchRead(connection, codexWebsocketRead{conn: connection.conn, err: closeErr}, true); !delivered {
+			sess.cancelActiveConnection(closeErr)
+		}
+		lastEvent := sess.getLastEventType(connection.conn)
 		logXAIWebsocketDisconnectedWithLastEvent(sess, sessionID, authID, wsURL, reason, lastEvent, nil)
 		if closer != nil {
 			if errClose := closer.Close(); errClose != nil {
 				log.Errorf("xai websockets executor: close websocket error: %v", errClose)
 			}
+		} else if errClose := connection.conn.Close(); errClose != nil {
+			log.Errorf("xai websockets executor: close websocket error: %v", errClose)
 		}
+	} else {
+		sess.cancelActiveConnection(closeErr)
 	}
 	if lifecycle != nil {
 		lifecycle.End(reason)

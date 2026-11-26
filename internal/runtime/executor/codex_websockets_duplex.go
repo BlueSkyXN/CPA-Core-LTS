@@ -600,12 +600,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(errPrepare)
 				return false
 			}
-			handedOff := false
-			defer func() {
-				if !handedOff && prepared != nil {
-					prepared.identityState.affinity.close()
-				}
-			}()
+			affinityGuard := newCodexAffinityGuard(&prepared.identityState)
+			defer affinityGuard.Close()
 			if errConn := prepared.sessionInstructions.OnConnection(conn); errConn != nil {
 				return rejectPreviousResponseNotFound(eventID)
 			}
@@ -631,7 +627,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			pending = append(pending, prepared)
 			pendingReporters[prepared] = nextReporter
 			allPrepared = append(allPrepared, prepared)
-			handedOff = true
+			affinityGuard.HandOff()
 			consumedPayload = nil // pending owns it now, including a possibly partial write
 			metadataMu.Unlock()
 			if prepared.optimizeMultiAgentV2 || prepared.multiAgentV2Conflict {
@@ -846,11 +842,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			metadataMu.Lock()
 			preparedRequests := append([]*codexWebsocketPrepared(nil), allPrepared...)
 			metadataMu.Unlock()
-			for _, prepared := range preparedRequests {
-				if prepared != nil {
-					prepared.identityState.affinity.close()
-				}
-			}
+			closePreparedCodexWebsocketAffinities(preparedRequests)
 		}()
 		send := func(chunk cliproxyexecutor.StreamChunk) bool {
 			select {

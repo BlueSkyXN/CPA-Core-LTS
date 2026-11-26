@@ -3,19 +3,18 @@ package executor
 import (
 	"context"
 	"crypto/sha256"
-
 	"fmt"
-
 	"net/http"
-
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 type codexWebsocketConnectionKey struct {
@@ -108,6 +107,18 @@ func (s *codexWebsocketSession) cancelActiveConnection(cause error) {
 	}
 	s.active = codexWebsocketActive{}
 	s.activeMu.Unlock()
+}
+
+func (s *codexWebsocketSession) activeConnection() (codexWebsocketActive, bool) {
+	if s == nil {
+		return codexWebsocketActive{}, false
+	}
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if s.active.connection.conn == nil || s.active.ch == nil || s.active.signal == nil {
+		return codexWebsocketActive{}, false
+	}
+	return s.active, true
 }
 
 func (s *codexWebsocketSession) activeFor(connection codexWebsocketConnectionRef) (chan codexWebsocketRead, *codexWebsocketRequestSignal, bool) {
@@ -243,6 +254,49 @@ func newCodexWebsocketConnectionKey(authID string, wsURL string, baseModel strin
 	}
 }
 
+func newXAIWebsocketConnectionKey(authID string, wsURL string, proxyURL string) codexWebsocketConnectionKey {
+	key := newCodexWebsocketConnectionKey(authID, wsURL, "", [sha256.Size]byte{})
+	key.proxyURL = strings.TrimSpace(proxyURL)
+	return key
+}
+
+func (s *codexWebsocketSession) effectiveConnKeyLocked() codexWebsocketConnectionKey {
+	if s == nil {
+		return codexWebsocketConnectionKey{}
+	}
+	if s.connKey != (codexWebsocketConnectionKey{}) {
+		return s.connKey
+	}
+	if s.authID == "" && s.wsURL == "" && s.proxyURL == "" && !s.useSIWC {
+		return codexWebsocketConnectionKey{}
+	}
+	return codexWebsocketConnectionKey{
+		useSIWC:  s.useSIWC,
+		authID:   strings.TrimSpace(s.authID),
+		wsURL:    strings.TrimSpace(s.wsURL),
+		proxyURL: strings.TrimSpace(s.proxyURL),
+	}
+}
+
+func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, useSIWC ...bool) bool {
+	if sess == nil {
+		return false
+	}
+	sess.connMu.Lock()
+	defer sess.connMu.Unlock()
+	current := sess.effectiveConnKeyLocked()
+	if current.authID == "" && current.wsURL == "" {
+		return false
+	}
+	wanted := newCodexWebsocketConnectionKey(authID, wsURL, current.baseModel, current.overrideHeaderProfile)
+	wanted.proxyURL = strings.TrimSpace(proxyURL)
+	wanted.useSIWC = current.useSIWC
+	if len(useSIWC) > 0 {
+		wanted.useSIWC = useSIWC[0]
+	}
+	return current != wanted
+}
+
 func existingCodexWebsocketSessionConnection(sess *codexWebsocketSession, wantedKey codexWebsocketConnectionKey) (codexWebsocketConnectionRef, *websocketConnectionCloser) {
 	if sess == nil {
 		return codexWebsocketConnectionRef{}, nil
@@ -250,10 +304,110 @@ func existingCodexWebsocketSessionConnection(sess *codexWebsocketSession, wanted
 	sess.connMu.Lock()
 	connection := codexWebsocketConnectionRef{conn: sess.conn, generation: sess.connGen}
 	closer := sess.connCloser
-	matches := connection.conn != nil && closer != nil && sess.connKey == wantedKey
+	matches := connection.conn != nil && closer != nil && sess.effectiveConnKeyLocked() == wantedKey
 	sess.connMu.Unlock()
 	if !matches || sess.upstreamDisconnectError(connection.conn) != nil {
 		return codexWebsocketConnectionRef{}, nil
 	}
 	return connection, closer
+}
+
+func optimizeCodexWebsocketMultiAgentV2Doc(ctx context.Context, doc *ojson.Doc, headers http.Header, cfg *config.Config, auth *cliproxyauth.Auth, isCompat bool) ([]byte, bool, bool, error) {
+	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflictDoc(doc)
+	body, optimizeMultiAgentV2, err := optimizeCodexMultiAgentV2Doc(ctx, doc, headers, cfg, auth, isCompat)
+	if err != nil {
+		return nil, false, false, err
+	}
+	return body, optimizeMultiAgentV2, multiAgentV2Conflict, nil
+}
+
+func prepareCodexWebsocketMultiAgentV2Doc(ctx context.Context, doc *ojson.Doc, headers http.Header, cfg *config.Config, auth *cliproxyauth.Auth, isCompat bool) ([]byte, multiagentv2.PlaintextToolProvenance, bool, bool, error) {
+	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflictDoc(doc)
+	body, plaintextTools := multiagentv2.PreparePlaintextTools(ctx, headers, doc.Bytes(), cfg)
+	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, headers, body, cfg, auth, isCompat)
+	if err != nil {
+		return nil, multiagentv2.PlaintextToolProvenance{}, false, false, err
+	}
+	*doc = *ojson.NewDoc(optimizedBody)
+	return doc.Bytes(), plaintextTools, optimizeMultiAgentV2, multiAgentV2Conflict, nil
+}
+
+func prepareCodexWebsocketPromptCacheDoc(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, doc *ojson.Doc, headers http.Header, affinityActive bool, nativeAPI bool) (codexCacheBase, http.Header, error) {
+	if affinityActive {
+		base, body, errPromptCache := oauthCacheBase(ctx, from, req, doc.Bytes(), codexAffinityHeaders(ctx, headers))
+		if errPromptCache != nil {
+			return codexCacheBase{}, nil, errPromptCache
+		}
+		*doc = *ojson.NewDoc(body)
+		return base, make(http.Header), nil
+	}
+	if nativeAPI {
+		return codexCacheBase{}, make(http.Header), nil
+	}
+	wsHeaders, _, errPromptCache := applyCodexPromptCacheHeadersWithContextDoc(ctx, from, req, doc, headers)
+	if errPromptCache != nil {
+		return codexCacheBase{}, nil, errPromptCache
+	}
+	return codexCacheBase{}, wsHeaders, nil
+}
+
+func (e *CodexWebsocketsExecutor) prepareCodexWebsocketUpstreamIdentity(
+	ctx context.Context,
+	auth *cliproxyauth.Auth,
+	req cliproxyexecutor.Request,
+	from sdktranslator.Format,
+	httpURL string,
+	originalPayloadSource []byte,
+	body []byte,
+	incomingHeaders http.Header,
+	wsHeaders http.Header,
+	base codexCacheBase,
+	affinityActive bool,
+	nativeAPI bool,
+) ([]byte, http.Header, codexIdentityConfuseState, *codexAffinityGuard, error) {
+	var identityState codexIdentityConfuseState
+	upstreamBody := body
+	if nativeAPI {
+		observeNativeCacheIntent(ctx, body)
+	} else {
+		var err error
+		upstreamBody, identityState, err = prepareCodexOutboundMetadata(ctx, e.cfg, auth, originalPayloadSource, body, incomingHeaders)
+		if err != nil {
+			return nil, nil, codexIdentityConfuseState{}, nil, err
+		}
+	}
+	if affinityActive {
+		upstreamBody = helps.SanitizeCodexInputItemIDs(upstreamBody)
+		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, incomingHeaders, base, &identityState)
+	}
+	return upstreamBody, wsHeaders, identityState, newCodexAffinityGuard(&identityState), nil
+}
+
+func finalizeCodexWebsocketHeaders(
+	ctx context.Context,
+	wsHeaders http.Header,
+	auth *cliproxyauth.Auth,
+	apiKey string,
+	cfg *config.Config,
+	nativeRequest bool,
+	upstreamModel string,
+	upstreamBody []byte,
+	clientHeaders http.Header,
+	modelHeaderProfile codexModelHeaderProfile,
+	identityState *codexIdentityConfuseState,
+) http.Header {
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, cfg, nativeRequest, clientHeaders)
+	applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, upstreamBody, clientHeaders)
+	applyFinalCodexClientHeaders(wsHeaders, modelHeaderProfile, auth)
+	applyCodexOutboundMetadataHeaders(wsHeaders, identityState)
+	identityState.verifyAffinityHeader(wsHeaders)
+	return wsHeaders
+}
+
+func closePreparedCodexWebsocketAffinities(preparedRequests []*codexWebsocketPrepared) {
+	for _, prepared := range preparedRequests {
+		if prepared != nil {
+			prepared.identityState.affinity.close()
+		}
+	}
 }

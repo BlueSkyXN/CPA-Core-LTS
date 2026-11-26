@@ -47,42 +47,65 @@ func ensureCodexWebsocketConnForTest(executor *CodexWebsocketsExecutor) func(con
 }
 
 func TestCodexWebsocketSessionActiveChannelBelongsToConnection(t *testing.T) {
-	sess := &codexWebsocketSession{}
 	oldConn := &websocket.Conn{}
 	newConn := &websocket.Conn{}
+	oldConnection := codexWebsocketConnectionRef{conn: oldConn, generation: 1}
+	newConnection := codexWebsocketConnectionRef{conn: newConn, generation: 2}
+	sess := &codexWebsocketSession{conn: oldConn, connGen: 1}
 	oldCh := make(chan codexWebsocketRead, 1)
 	newCh := make(chan codexWebsocketRead, 1)
 
-	sess.setActive(oldConn, oldCh)
-	if ch, _ := sess.activeForConn(oldConn); ch != oldCh {
+	oldSignal, err := sess.setActiveConnection(oldConnection, oldCh)
+	if err != nil {
+		t.Fatalf("setActiveConnection(old) error = %v", err)
+	}
+	if ch, sig, ok := sess.activeFor(oldConnection); !ok || ch != oldCh || sig != oldSignal {
 		t.Fatal("old connection did not own its active channel")
 	}
 
-	sess.setActive(newConn, newCh)
-	if sess.clearActive(oldConn, oldCh) {
-		t.Fatal("old connection cleared the new active channel")
+	sess.conn = newConn
+	sess.connGen = 2
+	newSignal, err := sess.setActiveConnection(newConnection, newCh)
+	if err != nil {
+		t.Fatalf("setActiveConnection(new) error = %v", err)
 	}
-	if ch, _ := sess.activeForConn(oldConn); ch != nil {
+	if oldSignal.ctx.Err() == nil {
+		t.Fatal("replacing active connection did not cancel old request signal")
+	}
+	sess.clearActiveConnection(oldConnection, oldCh)
+	if ch, _, ok := sess.activeFor(oldConnection); ok || ch != nil {
 		t.Fatal("old connection retained access to an active channel")
 	}
-	if ch, _ := sess.activeForConn(newConn); ch != newCh {
+	if ch, sig, ok := sess.activeFor(newConnection); !ok || ch != newCh || sig != newSignal {
 		t.Fatal("new connection lost its active channel")
 	}
-	if !sess.clearActive(newConn, newCh) {
+	sess.clearActiveConnection(newConnection, newCh)
+	if _, ok := sess.activeConnection(); ok {
 		t.Fatal("new connection could not clear its active channel")
 	}
 
-	closedOldCh := sess.activate(oldConn)
-	if !sess.clearActive(oldConn, closedOldCh) {
-		t.Fatal("old connection could not clear its active channel before retry")
+	sess.conn = oldConn
+	sess.connGen = 3
+	reusedOldRef := codexWebsocketConnectionRef{conn: oldConn, generation: 3}
+	closedOldCh := make(chan codexWebsocketRead, 1)
+	if _, err := sess.setActiveConnection(reusedOldRef, closedOldCh); err != nil {
+		t.Fatalf("setActiveConnection(reusedOldRef) error = %v", err)
 	}
+	sess.clearActiveConnection(reusedOldRef, closedOldCh)
 	close(closedOldCh)
-	retryCh := sess.activate(newConn)
+
+	sess.conn = newConn
+	sess.connGen = 4
+	retryRef := codexWebsocketConnectionRef{conn: newConn, generation: 4}
+	retryCh := make(chan codexWebsocketRead, 1)
+	if _, err := sess.setActiveConnection(retryRef, retryCh); err != nil {
+		t.Fatalf("setActiveConnection(retryRef) error = %v", err)
+	}
 	if retryCh == closedOldCh {
 		t.Fatal("retry reused the old connection's read channel")
 	}
 	select {
-	case retryCh <- codexWebsocketRead{conn: newConn}:
+	case retryCh <- codexWebsocketRead{connection: retryRef, conn: newConn}:
 	default:
 		t.Fatal("retry read channel was not writable")
 	}
@@ -126,14 +149,20 @@ func (l *trackedWebsocketLifecycle) End(string) {
 }
 
 func TestClearRetryActiveStateClearsOriginalConnection(t *testing.T) {
-	sess := &codexWebsocketSession{}
 	originalConn := &websocket.Conn{}
-	originalCh := sess.activate(originalConn)
-	if !clearRetryActiveState(sess, originalConn, originalCh) {
-		t.Fatal("clearRetryActiveState() = false, want true")
+	originalRef := codexWebsocketConnectionRef{conn: originalConn, generation: 1}
+	sess := &codexWebsocketSession{conn: originalConn, connGen: 1}
+	originalCh := make(chan codexWebsocketRead, 1)
+	signal, err := sess.setActiveConnection(originalRef, originalCh)
+	if err != nil {
+		t.Fatalf("setActiveConnection() error = %v", err)
 	}
-	if ch, done := sess.activeForConn(originalConn); ch != nil || done != nil {
-		t.Fatalf("original active state = %v/%v, want nil", ch, done)
+	sess.clearActiveConnection(originalRef, originalCh)
+	if signal.ctx.Err() == nil {
+		t.Fatal("clearActiveConnection() did not cancel request signal")
+	}
+	if active, ok := sess.activeConnection(); ok || active != (codexWebsocketActive{}) {
+		t.Fatalf("original active state = (%#v, %t), want zero", active, ok)
 	}
 }
 
@@ -282,10 +311,7 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 			if got := lifecycle.binds.Load(); got != 2 {
 				t.Fatalf("lifecycle binds = %d, want 2", got)
 			}
-			sess.activeMu.Lock()
-			active := sess.activeConn != nil || sess.activeCh != nil || sess.activeDone != nil || sess.activeCancel != nil
-			sess.activeMu.Unlock()
-			if active {
+			if _, active := sess.activeConnection(); active {
 				t.Fatal("retry bind failure left the old active websocket state")
 			}
 
@@ -493,7 +519,10 @@ func TestWebsocketLifecycleEndThenInvalidateAndCloseAllPhysicallyClosesOnce(t *t
 				exec := NewXAIWebsocketsExecutor(&config.Config{})
 				exec.store = &codexWebsocketSessionStore{sessions: map[string]*codexWebsocketSession{sess.sessionID: sess}}
 				lifecycle.End("lifecycle_ended")
-				exec.invalidateUpstreamConn(sess, conn, "invalidated", nil)
+				sess.connMu.Lock()
+				connection := codexWebsocketConnectionRef{conn: conn, generation: sess.connGen}
+				sess.connMu.Unlock()
+				exec.invalidateUpstreamConn(sess, connection, "invalidated", nil)
 				exec.CloseExecutionSession(cliproxyauth.CloseAllExecutionSessionsID)
 			},
 		},
