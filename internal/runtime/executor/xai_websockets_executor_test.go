@@ -3073,3 +3073,117 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
 		}
 	})
 }
+
+func TestXAIWebsocketExecuteStreamLegacyActiveSessionLifecycle(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	requestSeen := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	serverDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverDone)
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read request frame: %v", errRead)
+			return
+		}
+		close(requestSeen)
+		<-releaseResponse
+		completed := []byte(`{"type":"response.completed","response":{"id":"xai-legacy-1","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
+			t.Errorf("write completion: %v", errWrite)
+		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	const sessionID = "xai-legacy-active-lifecycle"
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	defer exec.CloseExecutionSession(sessionID)
+
+	auth := &cliproxyauth.Auth{
+		ID:         "xai-legacy-auth",
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL, "api_key": "xai-key", "websockets": "true"},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "grok-4",
+		Payload: []byte(`{"model":"grok-4","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata:       map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID},
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	select {
+	case <-requestSeen:
+	case <-time.After(3 * time.Second):
+		close(releaseResponse)
+		t.Fatal("upstream did not receive xAI request")
+	}
+
+	sess := exec.getOrCreateSession(sessionID)
+	sess.connMu.Lock()
+	conn := sess.conn
+	sess.connMu.Unlock()
+	if conn == nil {
+		close(releaseResponse)
+		t.Fatal("session conn is nil while xAI stream is active")
+	}
+	sess.activeMu.Lock()
+	activeConn := sess.activeConn
+	activeCh := sess.activeCh
+	activeDone := sess.activeDone
+	modernActive := sess.active
+	sess.activeMu.Unlock()
+	if activeConn != conn || activeCh == nil || activeDone == nil {
+		close(releaseResponse)
+		t.Fatalf("legacy active state not populated via activate(): conn=%v activeConn=%v ch=%v done=%v", conn, activeConn, activeCh, activeDone)
+	}
+	if modernActive != (codexWebsocketActive{}) {
+		close(releaseResponse)
+		t.Fatalf("xAI touched modern sess.active = %#v, want zero", modernActive)
+	}
+	if ch, done := sess.activeForConn(conn); ch != activeCh || done != activeDone {
+		close(releaseResponse)
+		t.Fatalf("activeForConn() = (%v, %v), want (%v, %v)", ch, done, activeCh, activeDone)
+	}
+
+	close(releaseResponse)
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+	}
+
+	sess.activeMu.Lock()
+	cleared := sess.activeConn == nil && sess.activeCh == nil && sess.activeDone == nil && sess.activeCancel == nil
+	modernAfter := sess.active
+	sess.activeMu.Unlock()
+	if !cleared {
+		t.Fatal("xAI clearActive() did not clear legacy active session fields on completion")
+	}
+	if modernAfter != (codexWebsocketActive{}) {
+		t.Fatalf("xAI touched modern sess.active on close = %#v, want zero", modernAfter)
+	}
+	if ch, done := sess.activeForConn(conn); ch != nil || done != nil {
+		t.Fatalf("activeForConn() after completion = (%v, %v), want (nil, nil)", ch, done)
+	}
+	exec.CloseExecutionSession(sessionID)
+	select {
+	case <-serverDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server handler did not finish")
+	}
+}

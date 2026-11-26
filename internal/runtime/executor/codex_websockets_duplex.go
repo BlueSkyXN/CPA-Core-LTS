@@ -600,6 +600,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(errPrepare)
 				return false
 			}
+			handedOff := false
+			defer func() {
+				if !handedOff && prepared != nil {
+					prepared.identityState.affinity.close()
+				}
+			}()
 			if errConn := prepared.sessionInstructions.OnConnection(conn); errConn != nil {
 				return rejectPreviousResponseNotFound(eventID)
 			}
@@ -625,6 +631,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			pending = append(pending, prepared)
 			pendingReporters[prepared] = nextReporter
 			allPrepared = append(allPrepared, prepared)
+			handedOff = true
 			consumedPayload = nil // pending owns it now, including a possibly partial write
 			metadataMu.Unlock()
 			if prepared.optimizeMultiAgentV2 || prepared.multiAgentV2Conflict {
@@ -834,7 +841,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			// releasing the execution session. No goroutine outlives its socket.
 			e.invalidateUpstreamConnWithoutDisconnectNotify(sess, connection, "duplex_closed", nil)
 			<-writerDone
-			sess.clearActive(conn, readCh)
+			sess.clearActiveConnection(connection, readCh)
 			unlock()
 			metadataMu.Lock()
 			preparedRequests := append([]*codexWebsocketPrepared(nil), allPrepared...)

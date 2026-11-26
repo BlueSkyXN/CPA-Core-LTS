@@ -184,9 +184,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
+	affinityTransferred := false
+	defer func() {
+		if !affinityTransferred {
+			identityState.affinity.close()
+		}
+	}()
 	reporter.SetOutboundServiceTier(upstreamBody)
 	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
-		identityState.affinity.close()
 		return nil, errFinal
 	}
 	body = upstreamBody
@@ -214,12 +219,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 	}
 	identityState.verifyAffinityHeader(httpReq.Header)
-	affinityTransferred := false
-	defer func() {
-		if !affinityTransferred {
-			identityState.affinity.close()
-		}
-	}()
 	httpReq, _ = prepareCodexOutboundHTTPRequest(e.cfg, auth, url, httpReq, upstreamBody, true)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -513,8 +512,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	})
 	affinityTransferred = true
 	go func() {
-		defer identityState.affinity.close()
 		defer close(out)
+		defer identityState.affinity.close()
 		defer closeResponseBody()
 		buffering := abnormalStreamBuffering
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)

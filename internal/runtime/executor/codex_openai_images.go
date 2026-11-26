@@ -124,6 +124,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	if errCache != nil {
 		return resp, errCache
 	}
+	defer identityState.affinity.close()
 	reporter.SetOutboundServiceTier(body)
 	reporter.SetTranslatedReasoningEffort(body, "codex")
 	prepareHeaders := func(request *http.Request) {
@@ -241,6 +242,12 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	if errCache != nil {
 		return nil, errCache
 	}
+	affinityTransferred := false
+	defer func() {
+		if !affinityTransferred {
+			identityState.affinity.close()
+		}
+	}()
 	reporter.SetOutboundServiceTier(body)
 	reporter.SetTranslatedReasoningEffort(body, "codex")
 	prepareHeaders := func(request *http.Request) {
@@ -276,8 +283,10 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
+	affinityTransferred = true
 	go func() {
 		defer close(out)
+		defer identityState.affinity.close()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("codex executor: close response body error: %v", errClose)
@@ -382,6 +391,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	if errCache != nil {
 		return resp, errCache
 	}
+	defer identityState.affinity.close()
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
 	body, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), model, "openai", body, contentType, req, payloadOpts, auth.AuthKind())
@@ -458,6 +468,12 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	if errCache != nil {
 		return nil, errCache
 	}
+	affinityTransferred := false
+	defer func() {
+		if !affinityTransferred {
+			identityState.affinity.close()
+		}
+	}()
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
 	body, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), model, "openai", body, contentType, req, payloadOpts, auth.AuthKind())
@@ -504,8 +520,10 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
+	affinityTransferred = true
 	go func() {
 		defer close(out)
+		defer identityState.affinity.close()
 		var streamUsage helps.StreamUsageBuffer
 		streamUsage.SetRequestPayload(body, contentType)
 		usageObserver := helps.NewOpenAIStreamUsageObserver(&streamUsage, streamScannerBuffer)

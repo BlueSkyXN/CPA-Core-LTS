@@ -707,11 +707,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	emittedPayload := len(bufferedChunks) > 0 || len(initialChunks) > 0
 
 	go func() {
+		defer close(out)
 		defer identityState.affinity.close()
 		terminateReason := "completed"
 		var terminateErr error
 
-		defer close(out)
 		defer func() {
 			if sess != nil {
 				sess.clearActiveConnection(connection, readCh)
@@ -1130,6 +1130,12 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	replayScope = codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
 	clientBody := body
 	var identityState codexIdentityConfuseState
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			identityState.affinity.close()
+		}
+	}()
 	upstreamBody := body
 	if nativeAPI {
 		observeNativeCacheIntent(ctx, body)
@@ -1145,7 +1151,6 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, opts.Headers, base, &identityState)
 	}
 	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
-		identityState.affinity.close()
 		return nil, errFinal
 	}
 	upstreamModel := strings.TrimSpace(ojson.GetBytesNoCopy(upstreamBody, "model").String())
@@ -1165,6 +1170,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		}
 	}
 
+	handedOff = true
 	return &codexWebsocketPrepared{
 		from:                 from,
 		responseFormat:       responseFormat,

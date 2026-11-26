@@ -258,9 +258,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err != nil {
 		return resp, err
 	}
+	defer identityState.affinity.close()
 	reporter.SetOutboundServiceTier(upstreamBody)
 	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
-		identityState.affinity.close()
 		return resp, errFinal
 	}
 	body = upstreamBody
@@ -288,7 +288,6 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 	}
 	identityState.verifyAffinityHeader(httpReq.Header)
-	defer identityState.affinity.close()
 	httpReq, _ = prepareCodexOutboundHTTPRequest(e.cfg, auth, url, httpReq, upstreamBody, true)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
