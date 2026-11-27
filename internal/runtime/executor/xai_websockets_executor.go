@@ -1318,7 +1318,7 @@ func (e *XAIWebsocketsExecutor) ensureUpstreamConnRef(ctx context.Context, auth 
 	sess.connMu.Unlock()
 
 	if connection.conn != nil {
-		sess.cancelActiveConnection(fmt.Errorf("xai websockets executor: target changed"))
+		sess.cancelReadForConnection(connection, fmt.Errorf("xai websockets executor: target changed"))
 		staleLastEvent := sess.getLastEventType(connection.conn)
 		logXAIWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, oldAuthID, oldWSURL, "target_changed", staleLastEvent, nil)
 		if oldCloser != nil {
@@ -1564,14 +1564,15 @@ func (e *XAIWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWebs
 		sess.readerConn = nil
 		sess.readerGen = 0
 	}
-	sess.connMu.Unlock()
-
-	sess.cancelActiveConnection(err)
-	lastEvent := sess.getLastEventType(connection.conn)
-	logXAIWebsocketDisconnectedWithLastEvent(sess, sessionID, authID, wsURL, reason, lastEvent, err)
+	// Publish a session-wide disconnect while this generation still owns the slot.
 	if notify {
 		sess.notifyUpstreamDisconnect(err)
 	}
+	sess.connMu.Unlock()
+
+	sess.cancelReadForConnection(connection, err)
+	lastEvent := sess.getLastEventType(connection.conn)
+	logXAIWebsocketDisconnectedWithLastEvent(sess, sessionID, authID, wsURL, reason, lastEvent, err)
 	if closer != nil {
 		if errClose := closer.Close(); errClose != nil {
 			log.Errorf("xai websockets executor: close websocket error: %v", errClose)

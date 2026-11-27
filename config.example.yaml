@@ -627,7 +627,8 @@ management:
     # Defaults to http://127.0.0.1:<port> if not set. Can also be set via --management-base-url.
     # base-url: "https://proxy.example.com"
 
-    # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
+    # GitHub source for the management panel: owner/repo, repository URL or releases API URL.
+    # An unsupported source skips the download and keeps any existing local panel.
     panel-github-repository: "https://github.com/BlueSkyXN/CPA-Panel-LTS"
 oauth:
     # OAuth 渠道模型策略与账号策略共同作用于真实模型 ID；空的已启用 allowlist 排除全部模型。

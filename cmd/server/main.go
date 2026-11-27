@@ -670,7 +670,7 @@ func run() (exitStatus int) {
 		cfg.AuthDir = resolvedAuthDir
 	}
 	githubauth.SetToken(cfg.GitHubToken)
-	managementasset.SetCurrentConfig(cfg)
+	managementasset.SetCurrentConfigForFile(cfg, configFilePath)
 
 	// Create login options to be used in authentication flows.
 	options := &cmd.LoginOptions{

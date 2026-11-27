@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +25,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -40,14 +41,49 @@ const (
 const ManagementFileName = managementAssetName
 
 var (
-	lastUpdateCheckMu   sync.Mutex
-	lastUpdateCheckTime time.Time
-	currentConfigPtr    atomic.Pointer[config.Config]
+	updateMu            sync.Mutex
+	configuredPanels    = make(map[string]*panelSettings)
+	panelUpdates        = make(map[string]*panelUpdate)
 	schedulerOnce       sync.Once
 	schedulerConfigPath atomic.Value
-	sfGroup             singleflight.Group
 	httpClientFactory   = newHTTPClient
+	panelRepositorySlug = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
+
+type panelSource struct {
+	releaseURL string
+	proxyURL   string
+}
+
+func resolvePanelSource(repository, proxyURL string) panelSource {
+	return panelSource{releaseURL: resolveReleaseURL(repository), proxyURL: strings.TrimSpace(proxyURL)}
+}
+
+func (s panelSource) equal(other panelSource) bool {
+	return strings.EqualFold(s.releaseURL, other.releaseURL) && s.proxyURL == other.proxyURL
+}
+
+type panelUpdate struct {
+	panelSource
+	started time.Time
+	done    chan struct{}
+	cancel  context.CancelFunc // guarded by updateMu, released when the download finishes
+}
+
+// Each server publishes only the settings needed by its panel updater.
+type panelSettings struct {
+	panelSource
+	skipReason string
+	owner      *Registration
+}
+
+// The caller holds updateMu. The empty key is the process-wide default.
+func panelSettingsLocked(target string) *panelSettings {
+	if settings := configuredPanels[target]; settings != nil {
+		return settings
+	}
+	return configuredPanels[""]
+}
 
 func isHTTPSGitHubURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
@@ -89,11 +125,118 @@ func panelAuthorizationHeader(releaseURL string) string {
 
 // SetCurrentConfig stores the latest configuration snapshot for management asset decisions.
 func SetCurrentConfig(cfg *config.Config) {
+	setPanelConfig(cfg, "")
+}
+
+// SetCurrentConfigForFile supplies the background updater's configuration before a server takes ownership.
+func SetCurrentConfigForFile(cfg *config.Config, configFilePath string) {
+	setPanelConfig(cfg, configPanelTarget(configFilePath))
+}
+
+func configPanelTarget(configFilePath string) string {
+	if dir := StaticDir(configFilePath); dir != "" {
+		return panelUpdatePath(dir)
+	}
+	return ""
+}
+
+func setPanelConfig(cfg *config.Config, target string) {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	if current := configuredPanels[target]; current == nil || current.owner == nil {
+		setPanelConfigLocked(cfg, target, nil)
+	}
+}
+
+// Registration identifies the server allowed to update a panel file. Its target is guarded by updateMu.
+type Registration struct {
+	configFilePath string
+	target         string
+}
+
+// Register makes a server the owner of its physical panel destination.
+func Register(cfg *config.Config, configFilePath string) *Registration {
 	if cfg == nil {
-		currentConfigPtr.Store(nil)
+		return nil
+	}
+	r := &Registration{configFilePath: configFilePath, target: configPanelTarget(configFilePath)}
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	setPanelConfigLocked(cfg, r.target, r)
+	return r
+}
+
+// Update applies a reload while this registration still owns its destination.
+func (r *Registration) Update(cfg *config.Config) {
+	if r == nil || cfg == nil {
 		return
 	}
-	currentConfigPtr.Store(cfg)
+	target := configPanelTarget(r.configFilePath)
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	if current := configuredPanels[r.target]; current == nil || current.owner != r {
+		return
+	}
+	if target != r.target {
+		setPanelConfigLocked(nil, r.target, r)
+		if next := configuredPanels[target]; next != nil && next.owner != nil {
+			return
+		}
+		r.target = target
+	}
+	setPanelConfigLocked(cfg, target, r)
+}
+
+// Close retires this server's settings and cancels its outstanding download.
+func (r *Registration) Close() {
+	if r == nil {
+		return
+	}
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	if current := configuredPanels[r.target]; current != nil && current.owner == r {
+		setPanelConfigLocked(nil, r.target, r)
+	}
+}
+
+func setPanelConfigLocked(cfg *config.Config, target string, owner *Registration) {
+	if cfg != nil {
+		source := resolvePanelSource(cfg.RemoteManagement.PanelGitHubRepository, cfg.ProxyURL)
+		reason, _ := autoUpdateSkipReason(cfg)
+		if source.releaseURL == "" && reason == "" {
+			reason = "invalid panel-github-repository"
+		}
+		old := configuredPanels[target]
+		if old != nil && old.owner == owner && old.panelSource.equal(source) && old.skipReason == reason {
+			return
+		}
+		configuredPanels[target] = &panelSettings{panelSource: source, skipReason: reason, owner: owner}
+		// A server can adopt the CLI's matching bootstrap download. A superseded server loses its write.
+		if old != nil && (old.owner == nil || old.owner == owner) && old.panelSource.equal(source) {
+			return
+		}
+	} else {
+		delete(configuredPanels, target)
+	}
+	if target != "" {
+		discardPanelUpdateLocked(target)
+	} else {
+		// The process-wide setting applies to destinations without a server configuration.
+		for file := range panelUpdates {
+			if _, scoped := configuredPanels[file]; !scoped {
+				discardPanelUpdateLocked(file)
+			}
+		}
+	}
+}
+
+func discardPanelUpdateLocked(target string) {
+	if update := panelUpdates[target]; update != nil {
+		if update.cancel != nil {
+			update.cancel()
+		}
+		delete(panelUpdates, target)
+	}
 }
 
 // StartAutoUpdater launches a background goroutine that periodically ensures the management asset is up to date.
@@ -121,15 +264,21 @@ func runAutoUpdater(ctx context.Context) {
 	defer ticker.Stop()
 
 	runOnce := func() {
-		cfg := currentConfigPtr.Load()
-		if reason, skip := autoUpdateSkipReason(cfg); skip {
-			log.Debugf("management asset auto-updater skipped: %s", reason)
-			return
-		}
-
 		configPath, _ := schedulerConfigPath.Load().(string)
 		staticDir := StaticDir(configPath)
-		EnsureLatestManagementHTML(ctx, staticDir, cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository)
+		target := panelUpdatePath(staticDir)
+		updateMu.Lock()
+		settings := panelSettingsLocked(target)
+		updateMu.Unlock()
+		if settings == nil {
+			log.Debug("management asset auto-updater skipped: config not yet available")
+			return
+		}
+		if settings.skipReason != "" {
+			log.Debugf("management asset auto-updater skipped: %s", settings.skipReason)
+			return
+		}
+		ensurePanel(ctx, target, settings.panelSource, settings)
 	}
 
 	runOnce()
@@ -226,197 +375,226 @@ func FilePath(configFilePath string) string {
 	return filepath.Join(dir, ManagementFileName)
 }
 
-// EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
-// It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
-func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
-	if ctx == nil {
-		ctx = context.Background()
+func panelUpdatePath(staticDir string) string {
+	dir, err := filepath.Abs(staticDir)
+	if err != nil {
+		return filepath.Join(staticDir, managementAssetName)
 	}
+	// The static directory may not exist yet. Resolve its nearest existing ancestor
+	// so registration, first download and subsequent updates use the same key.
+	suffix := managementAssetName
+	for {
+		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			return filepath.Join(real, suffix)
+		}
+		parent := filepath.Dir(dir)
+		if !errors.Is(err, os.ErrNotExist) || parent == dir {
+			return filepath.Join(dir, suffix)
+		}
+		suffix = filepath.Join(filepath.Base(dir), suffix)
+		dir = parent
+	}
+}
 
+// beginPanelUpdate returns the shared attempt and whether the caller owns the download.
+func beginPanelUpdate(target string, source panelSource, expected *panelSettings, cancel context.CancelFunc) (*panelUpdate, bool) {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	configured := panelSettingsLocked(target)
+	if (expected != nil && expected != configured) || (configured != nil && !configured.panelSource.equal(source)) {
+		return nil, false
+	}
+	if source.releaseURL == "" {
+		discardPanelUpdateLocked(target)
+		return nil, false
+	}
+	now := time.Now()
+	for file, previous := range panelUpdates {
+		if now.Sub(previous.started) >= managementSyncMinInterval {
+			select {
+			case <-previous.done:
+				delete(panelUpdates, file)
+			default:
+			}
+		}
+	}
+	if current := panelUpdates[target]; current != nil && current.panelSource.equal(source) {
+		return current, false
+	}
+	discardPanelUpdateLocked(target)
+	update := &panelUpdate{panelSource: source, started: now, done: make(chan struct{}), cancel: cancel}
+	panelUpdates[target] = update
+	return update, true
+}
+
+// EnsureLatestManagementHTML coalesces checks for the same file, repository and proxy, and returns
+// whether a local panel is available after the attempt.
+func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	staticDir = strings.TrimSpace(staticDir)
 	if staticDir == "" {
 		log.Debug("management asset sync skipped: empty static directory")
 		return false
 	}
-	localPath := filepath.Join(staticDir, managementAssetName)
+	source := resolvePanelSource(panelRepository, proxyURL)
+	return ensurePanel(ctx, panelUpdatePath(staticDir), source, nil)
+}
 
-	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {
-		lastUpdateCheckMu.Lock()
-		now := time.Now()
-		timeSinceLastAttempt := now.Sub(lastUpdateCheckTime)
-		if !lastUpdateCheckTime.IsZero() && timeSinceLastAttempt < managementSyncMinInterval {
-			lastUpdateCheckMu.Unlock()
-			log.Debugf(
-				"management asset sync skipped by throttle: last attempt %v ago (interval %v)",
-				timeSinceLastAttempt.Round(time.Second),
-				managementSyncMinInterval,
-			)
-			return nil, nil
+// Ensure downloads a missing panel only while this server owns the requested destination.
+func (r *Registration) Ensure(ctx context.Context, staticDir string) bool {
+	if r == nil || staticDir == "" {
+		return false
+	}
+	target := panelUpdatePath(staticDir)
+	updateMu.Lock()
+	settings := panelSettingsLocked(target)
+	updateMu.Unlock()
+	if settings == nil || settings.owner != r {
+		return false
+	}
+	return ensurePanel(ctx, target, settings.panelSource, settings)
+}
+
+func ensurePanel(ctx context.Context, target string, source panelSource, expected *panelSettings) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	update, owner := beginPanelUpdate(target, source, expected, cancel)
+	switch {
+	case owner:
+		defer func() {
+			updateMu.Lock()
+			update.cancel = nil
+			close(update.done)
+			updateMu.Unlock()
+		}()
+		update.download(ctx, target)
+	case update != nil:
+		select {
+		case <-update.done:
+		case <-ctx.Done():
 		}
-		lastUpdateCheckTime = now
-		lastUpdateCheckMu.Unlock()
-
-		localFileMissing := false
-		if _, errStat := os.Stat(localPath); errStat != nil {
-			if errors.Is(errStat, os.ErrNotExist) {
-				localFileMissing = true
-			} else {
-				log.WithError(errStat).Debug("failed to stat local management asset")
-			}
-		}
-
-		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
-			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
-			return nil, nil
-		}
-
-		releaseURL := resolveReleaseURL(panelRepository)
-		allowFallback := isDefaultPanelRepository(panelRepository)
-		client := httpClientFactory(proxyURL)
-
-		localHash, err := fileSHA256(localPath)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				log.WithError(err).Debug("failed to read local management asset hash")
-			}
-			localHash = ""
-		}
-
-		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
-		if err != nil {
-			if localFileMissing && allowFallback {
-				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
-					return nil, nil
-				}
-				return nil, nil
-			}
-			log.WithError(err).Warn("failed to fetch latest management release information")
-			return nil, nil
-		}
-
-		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
-			log.Debug("management asset is already up to date")
-			return nil, nil
-		}
-
-		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
-		if err != nil {
-			if localFileMissing && allowFallback {
-				log.WithError(err).Warn("failed to download management asset, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
-					return nil, nil
-				}
-				return nil, nil
-			}
-			log.WithError(err).Warn("failed to download management asset")
-			return nil, nil
-		}
-
-		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
-			log.Errorf("management asset digest mismatch: expected %s got %s — aborting update for safety", remoteHash, downloadedHash)
-			return nil, nil
-		}
-
-		if err = atomicWriteFile(localPath, data); err != nil {
-			log.WithError(err).Warn("failed to update management asset on disk")
-			return nil, nil
-		}
-
-		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
-		return nil, nil
-	})
-
-	_, err := os.Stat(localPath)
+	case source.releaseURL == "":
+		log.Warn("invalid panel-github-repository: use a GitHub repository URL or its releases API URL")
+	}
+	_, err := os.Stat(target)
 	return err == nil
 }
 
-func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
-	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
-	if err != nil {
-		log.WithError(err).Warn("failed to download fallback management control panel page")
-		return false
+func (update *panelUpdate) download(ctx context.Context, target string) {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		log.WithError(err).Warn("failed to prepare static directory for management asset")
+		return
+	}
+	localHash, err := fileSHA256(target)
+	missing := errors.Is(err, os.ErrNotExist)
+	if err != nil && !missing {
+		log.WithError(err).Debug("failed to read local management asset hash")
 	}
 
-	log.Warnf("management asset downloaded from fallback URL without digest verification (hash=%s) — "+
-		"enable verified GitHub updates by keeping disable-auto-update-panel set to false", downloadedHash)
-
-	if err = atomicWriteFile(localPath, data); err != nil {
-		log.WithError(err).Warn("failed to persist fallback management control panel page")
-		return false
-	}
-
-	log.Infof("management asset updated from fallback page successfully (hash=%s)", downloadedHash)
-	return true
-}
-
-func isDefaultPanelRepository(repo string) bool {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return true
-	}
-	if strings.EqualFold(strings.TrimSuffix(strings.Trim(repo, "/"), ".git"), "BlueSkyXN/CPA-Panel-LTS") {
-		return true
-	}
-	parsed, err := url.Parse(repo)
-	if err != nil || parsed.Host == "" {
-		return false
-	}
-	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
-	cleanPath := strings.Trim(parsed.Path, "/")
-	switch host {
-	case "github.com":
-		parts := strings.Split(cleanPath, "/")
-		if len(parts) < 2 {
-			return false
+	client := httpClientFactory(update.proxyURL)
+	asset, remoteHash, err := fetchLatestAsset(ctx, client, update.releaseURL)
+	var data []byte
+	var downloadedHash string
+	if err == nil {
+		if remoteHash != "" && strings.EqualFold(remoteHash, localHash) {
+			log.Debug("management asset is already up to date")
+			return
 		}
-		repoName := strings.TrimSuffix(parts[1], ".git")
-		return strings.EqualFold(parts[0], "BlueSkyXN") && strings.EqualFold(repoName, "CPA-Panel-LTS")
-	case "api.github.com":
-		trimmed := strings.TrimSuffix(strings.ToLower(cleanPath), "/releases/latest")
-		return trimmed == "repos/blueskyxn/cpa-panel-lts"
-	default:
-		return false
+		data, downloadedHash, err = downloadAsset(ctx, client, asset.BrowserDownloadURL)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		if !missing || !strings.EqualFold(update.releaseURL, defaultManagementReleaseURL) {
+			log.WithError(err).Warn("failed to download management asset")
+			return
+		}
+		log.WithError(err).Warn("failed to fetch management asset, trying fallback page")
+		data, downloadedHash, err = downloadAsset(ctx, client, defaultManagementFallbackURL)
+		if err != nil {
+			log.WithError(err).Warn("failed to download fallback management control panel page")
+			return
+		}
+		log.Warnf("management asset downloaded from fallback URL without digest verification (hash=%s)", downloadedHash)
+	} else if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+		log.Errorf("management asset digest mismatch: expected %s got %s", remoteHash, downloadedHash)
+		return
+	}
+
+	if ctx.Err() != nil {
+		return
+	}
+	if err = update.publish(target, data); errors.Is(err, errPanelSourceChanged) {
+		log.Debug("discarded management asset after panel repository changed")
+	} else if err != nil {
+		log.WithError(err).Warn("failed to update management asset on disk")
+	} else {
+		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
 	}
 }
 
+// resolveReleaseURL returns the canonical latest-release URL, or an empty string
+// for an unsupported explicit source. Only an empty setting selects the default implicitly.
 func resolveReleaseURL(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
 		return defaultManagementReleaseURL
 	}
-
+	if panelRepositorySlug.MatchString(strings.TrimSuffix(repo, "/")) {
+		repo = "https://github.com/" + repo
+	}
 	parsed, err := url.Parse(repo)
-	if err != nil || parsed.Host == "" {
-		return defaultManagementReleaseURL
+	if err != nil || parsed.User != nil {
+		return ""
 	}
-
-	host := strings.ToLower(parsed.Host)
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
-
-	if host == "api.github.com" {
-		if !strings.HasSuffix(strings.ToLower(parsed.Path), "/releases/latest") {
-			parsed.Path = parsed.Path + "/releases/latest"
+	port := parsed.Port()
+	switch parsed.Scheme {
+	case "https":
+		if port != "" && port != "443" {
+			return ""
 		}
-		return parsed.String()
-	}
-
-	if host == "github.com" {
-		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
-			repoName := strings.TrimSuffix(parts[1], ".git")
-			return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], repoName)
+	case "http":
+		if port != "" && port != "80" {
+			return ""
 		}
+	default:
+		return ""
 	}
-
-	return defaultManagementReleaseURL
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	switch strings.ToLower(parsed.Hostname()) {
+	case "github.com":
+		// Repository links can also point at a page within the repository.
+	case "api.github.com":
+		if !strings.EqualFold(parts[0], "repos") {
+			return ""
+		}
+		parts = parts[1:]
+		if len(parts) > 2 {
+			switch strings.ToLower(strings.Join(parts[2:], "/")) {
+			case "releases", "releases/latest":
+			default:
+				return ""
+			}
+		}
+	default:
+		return ""
+	}
+	if len(parts) < 2 {
+		return ""
+	}
+	slug, err := url.PathUnescape(strings.Join(parts[:2], "/"))
+	slug = strings.TrimSuffix(slug, ".git")
+	if err != nil || !panelRepositorySlug.MatchString(slug) || path.Clean("/"+slug) != "/"+slug {
+		return ""
+	}
+	return "https://api.github.com/repos/" + slug + "/releases/latest"
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
-	if strings.TrimSpace(releaseURL) == "" {
-		releaseURL = defaultManagementReleaseURL
-	}
-
 	headers := map[string]string{
 		"Accept":     "application/vnd.github+json",
 		"User-Agent": httpUserAgent,
@@ -477,7 +655,9 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func atomicWriteFile(path string, data []byte) error {
+var errPanelSourceChanged = errors.New("panel repository changed during download")
+
+func (update *panelUpdate) publish(path string, data []byte) error {
 	tmpFile, err := os.CreateTemp(filepath.Dir(path), "management-*.html")
 	if err != nil {
 		return err
@@ -501,11 +681,13 @@ func atomicWriteFile(path string, data []byte) error {
 		return err
 	}
 
-	if err = os.Rename(tmpName, path); err != nil {
-		return err
+	// The rename and source selection share a lock. Network and temporary-file writes do not.
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	if panelUpdates[path] != update {
+		return errPanelSourceChanged
 	}
-
-	return nil
+	return os.Rename(tmpName, path)
 }
 
 func parseDigest(digest string) string {

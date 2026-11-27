@@ -79,7 +79,8 @@ type Server struct {
 	loggerToggle  func(bool)
 
 	// configFilePath is the absolute path to the YAML config file for persistence.
-	configFilePath string
+	configFilePath    string
+	panelRegistration *managementasset.Registration
 
 	// currentPath is the absolute path to the current working directory.
 	currentPath string
@@ -249,7 +250,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
 	githubauth.SetToken(cfg.GitHubToken)
-	managementasset.SetCurrentConfig(cfg)
+	s.panelRegistration = managementasset.Register(cfg, configFilePath)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
@@ -477,6 +478,7 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	s.panelRegistration.Close()
 
 	if s.keepAliveEnabled {
 		select {

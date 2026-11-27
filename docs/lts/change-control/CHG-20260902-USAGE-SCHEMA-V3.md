@@ -68,17 +68,21 @@ Canonical v3 `RequestDetail` also carries optional additive cache-metering and
 live-diagnostics linkage fields without advancing `CanonicalExportVersion`
 beyond `3` or changing duplicate identity and legacy scalar token totals:
 
-- `cache_observation` (`version: 1`, per-field `read` and `write` states
-  `present` | `absent` | `invalid`, optional non-negative `value` when
-  `present`, optional upstream field `source`); contradictory imported shapes
-  are rejected with `usage_v3_token_contract_invalid`.
+- `cache_observation` uses `version: 1`. For both `read` and `write`, the
+  `present` state requires a non-negative integer `value`, including zero.
+  For `absent` and `invalid`, omit `value` or set it to `null`. Each field
+  can include its upstream `source`. Import rejects contradictory values
+  with `usage_v3_token_contract_invalid`.
 - `request_id` (per-attempt execution UUID), `diagnostics_id` (64-hex SHA-256
   request diagnostics digest), and `diagnostics_instance_id` (Core instance
   identifier scoping live diagnostics lookups across restarts and imports).
 
-These fields are also carried on `sdk/cliproxy/usage.Record` and the
-Redis-compatible usage queue. Canonical semantics, retention bounds, and
-`/v0/management/cache-diagnostics/*` query contracts are defined in
+The Redis-compatible usage queue emits the per-attempt ID from
+`sdk/cliproxy/usage.Record.RequestID` as `execution_id`. Join this field to
+the exported detail's `request_id`. The queue's own `request_id` comes from
+the request log context. The queue uses the same field names as the export
+for `cache_observation`, `diagnostics_id`, and `diagnostics_instance_id`.
+Retention bounds and the `/v0/management/cache-diagnostics/*` query contracts are defined in
 [docs/lts/cache-diagnostics.md](../cache-diagnostics.md).
 
 ## Rollout and rollback

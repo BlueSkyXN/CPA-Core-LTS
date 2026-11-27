@@ -610,7 +610,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.connMu.Unlock()
 
 	if connection.conn != nil {
-		sess.cancelActiveConnection(fmt.Errorf("codex websockets executor: target changed"))
+		sess.cancelReadForConnection(connection, fmt.Errorf("codex websockets executor: target changed"))
 		logCodexWebsocketDisconnected(sess.sessionID, oldAuthID, oldWSURL, "target_changed", nil)
 		if oldCloser != nil {
 			if errClose := oldCloser.Close(); errClose != nil {
