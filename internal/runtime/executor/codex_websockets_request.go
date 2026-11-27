@@ -26,8 +26,13 @@ func (e *CodexWebsocketsExecutor) prepareSessionInstructions(ctx context.Context
 	if auth != nil {
 		authID = auth.ID
 	}
-	conn, _ := existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth), useSIWC)
-	return helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, &sess.sessionInstructions, conn, false)
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	modelHeaderProfile := resolveCodexModelHeaderProfile(baseModel)
+	connectionKey := newCodexWebsocketConnectionKey(authID, wsURL, baseModel, modelHeaderProfile.digest)
+	connectionKey.useSIWC = useSIWC
+	connectionKey.proxyURL = executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
+	connection, _ := existingCodexWebsocketSessionConnection(sess, connectionKey)
+	return helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, &sess.sessionInstructions, connection.conn, false)
 }
 
 func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {

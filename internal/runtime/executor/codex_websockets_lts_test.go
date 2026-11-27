@@ -1001,3 +1001,206 @@ func TestCodexWebsocketHandshakeRespectsModelLevelCooling(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexWebsocketExecute426FallbackReleasesSessionBeforeHTTP(t *testing.T) {
+	tests := []struct {
+		name      string
+		dialRetry bool
+	}{
+		{name: "initial_dial_426", dialRetry: false},
+		{name: "dial_retry_426", dialRetry: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			httpFallbackEntered := make(chan struct{})
+			releaseHTTPFallback := make(chan struct{})
+			var wsAttempts atomic.Int32
+
+			fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if websocket.IsWebSocketUpgrade(r) {
+					attempt := wsAttempts.Add(1)
+					if tt.dialRetry && attempt == 1 {
+						conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+						if errUpgrade != nil {
+							t.Errorf("upgrade primed websocket: %v", errUpgrade)
+							return
+						}
+						defer func() { _ = conn.Close() }()
+						for {
+							if _, _, errRead := conn.ReadMessage(); errRead != nil {
+								return
+							}
+						}
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUpgradeRequired)
+					_, _ = w.Write([]byte(`{"error":{"message":"websocket upgrade required"}}`))
+					return
+				}
+				close(httpFallbackEntered)
+				<-releaseHTTPFallback
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"http-fallback-1\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback ok\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_tokens\":4}}}\n\n"))
+			}))
+			defer fallbackServer.Close()
+
+			wsPeerEntered := make(chan struct{})
+			releaseWSPeer := make(chan struct{})
+			var wsPeerTurns atomic.Int32
+			healthyWSServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+				if errUpgrade != nil {
+					t.Errorf("upgrade concurrent websocket: %v", errUpgrade)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				for {
+					if _, _, errRead := conn.ReadMessage(); errRead != nil {
+						return
+					}
+					turn := wsPeerTurns.Add(1)
+					if turn == 2 {
+						close(wsPeerEntered)
+						<-releaseWSPeer
+					}
+					completed := []byte(`{"type":"response.completed","response":{"id":"ws-peer-1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ws ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+					if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
+						return
+					}
+				}
+			}))
+			defer healthyWSServer.Close()
+
+			exec := NewCodexWebsocketsExecutor(&config.Config{
+				SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll},
+			})
+			exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+			sessionID := "session-p2-10-" + tt.name
+			defer exec.CloseExecutionSession(sessionID)
+
+			authFallback := &cliproxyauth.Auth{
+				ID:         "auth-fallback-" + tt.name,
+				Provider:   "codex",
+				Attributes: map[string]string{"api_key": "sk-fallback", "base_url": fallbackServer.URL, "websockets": "true"},
+			}
+			authWS := &cliproxyauth.Auth{
+				ID:         "auth-ws-" + tt.name,
+				Provider:   "codex",
+				Attributes: map[string]string{"api_key": "sk-ws", "base_url": healthyWSServer.URL, "websockets": "true"},
+			}
+			req := cliproxyexecutor.Request{
+				Model:   "gpt-5.4",
+				Payload: []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":"hello"}]}`),
+			}
+			opts := cliproxyexecutor.Options{
+				SourceFormat:   sdktranslator.FormatOpenAIResponse,
+				ResponseFormat: sdktranslator.FormatOpenAIResponse,
+				Metadata: map[string]any{
+					cliproxyexecutor.ExecutionSessionMetadataKey: sessionID,
+				},
+			}
+
+			sess := exec.getOrCreateSession(sessionID)
+			if tt.dialRetry {
+				wsURL := "ws" + strings.TrimPrefix(fallbackServer.URL, "http") + "/responses"
+				key := newCodexWebsocketConnectionKey(authFallback.ID, wsURL, "gpt-5.4", resolveCodexModelHeaderProfile("gpt-5.4").digest)
+				primedConn, _, _, errEnsure := exec.ensureUpstreamConn(context.Background(), authFallback, sess, key, http.Header{})
+				if errEnsure != nil {
+					t.Fatalf("prime websocket connection: %v", errEnsure)
+				}
+				if errDeadline := primedConn.conn.SetWriteDeadline(time.Now().Add(-time.Second)); errDeadline != nil {
+					t.Fatalf("expire primed write deadline: %v", errDeadline)
+				}
+			}
+
+			firstErrCh := make(chan error, 1)
+			go func() {
+				resp, errExec := exec.Execute(context.Background(), authFallback, req, opts)
+				if errExec == nil && !bytes.Contains(resp.Payload, []byte("http-fallback-1")) {
+					errExec = errors.New("unexpected fallback payload: " + string(resp.Payload))
+				}
+				firstErrCh <- errExec
+			}()
+
+			select {
+			case <-httpFallbackEntered:
+			case errFirst := <-firstErrCh:
+				t.Fatalf("first Execute() exited before HTTP fallback: %v", errFirst)
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for 426 HTTP fallback to start")
+			}
+
+			// 1. Verify s.active was cleared BEFORE entering HTTP fallback.
+			if active, ok := sess.activeConnection(); ok || active != (codexWebsocketActive{}) {
+				close(releaseHTTPFallback)
+				t.Fatalf("activeConnection() during 426 HTTP fallback = (%#v, %t), want cleared zero state", active, ok)
+			}
+
+			// 2. Prove a concurrent Execute on the SAME session is NOT blocked on reqMu or s.active
+			// while the 426 HTTP fallback is still blocked on releaseHTTPFallback.
+			concurrentDone := make(chan error, 1)
+			go func() {
+				resp, errExec := exec.Execute(context.Background(), authWS, req, opts)
+				if errExec == nil && !bytes.Contains(resp.Payload, []byte("ws-peer-1")) {
+					errExec = errors.New("unexpected concurrent WS payload: " + string(resp.Payload))
+				}
+				concurrentDone <- errExec
+			}()
+			select {
+			case errConcurrent := <-concurrentDone:
+				if errConcurrent != nil {
+					close(releaseHTTPFallback)
+					t.Fatalf("concurrent Execute() on same session failed: %v", errConcurrent)
+				}
+			case <-time.After(2 * time.Second):
+				close(releaseHTTPFallback)
+				t.Fatal("concurrent request on same session blocked on reqMu/s.active during 426 HTTP fallback")
+			}
+
+			// 3. Start a third WS turn and hold it active while the first HTTP fallback returns,
+			// proving first request's defers neither double-unlock reqMu nor clobber the new s.active.
+			overlappingDone := make(chan error, 1)
+			go func() {
+				_, errExec := exec.Execute(context.Background(), authWS, req, opts)
+				overlappingDone <- errExec
+			}()
+			select {
+			case <-wsPeerEntered:
+			case <-time.After(2 * time.Second):
+				close(releaseWSPeer)
+				close(releaseHTTPFallback)
+				t.Fatal("timed out waiting for overlapping WS turn to become active")
+			}
+
+			close(releaseHTTPFallback)
+			select {
+			case errFirst := <-firstErrCh:
+				if errFirst != nil {
+					close(releaseWSPeer)
+					t.Fatalf("426 HTTP fallback Execute() error = %v", errFirst)
+				}
+			case <-time.After(3 * time.Second):
+				close(releaseWSPeer)
+				t.Fatal("timed out waiting for 426 HTTP fallback Execute() to finish")
+			}
+
+			// Overlapping WS turn must still own sess.active undisturbed after HTTP fallback defers ran.
+			if _, ok := sess.activeConnection(); !ok {
+				close(releaseWSPeer)
+				t.Fatal("426 HTTP fallback defer clobbered concurrent turn's s.active")
+			}
+
+			close(releaseWSPeer)
+			select {
+			case errOverlap := <-overlappingDone:
+				if errOverlap != nil {
+					t.Fatalf("overlapping WS Execute() error = %v", errOverlap)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for overlapping WS Execute() to finish")
+			}
+		})
+	}
+}

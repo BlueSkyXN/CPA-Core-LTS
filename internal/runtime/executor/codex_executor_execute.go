@@ -142,11 +142,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}()
 	defer func() { err = withCodexReasoningReplayScope(err, replayScope) }()
 
-	affinityReq := codexAffinityRequestMetadata(req, opts)
-	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
-	if affinityActive {
-		req = affinityReq
-	}
+	req, _ = e.prepareCodexAffinityRequest(ctx, auth, req, opts)
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	nativeAPI := nativeOpenAIResponses(auth, baseURL)
@@ -208,12 +204,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
 		helps.NormalizeCodexToolSchemasDoc(doc)
 	}
-	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
+	var optimizeMultiAgentV2 bool
+	body, optimizeMultiAgentV2, err = optimizeCodexMultiAgentV2Doc(ctx, doc, opts.Headers, e.cfg, auth, isCompat)
 	if err != nil {
 		return resp, err
 	}
-	*doc = *ojson.NewDoc(optimizedBody)
-	body = doc.Bytes()
 	var skipReplay bool
 	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
 	if err != nil {
@@ -624,12 +619,11 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	normalizeCodexParallelToolCallsDoc(doc, opts.Headers)
 	helps.NormalizeCodexToolSchemasDoc(doc)
 	helps.StripCodexSessionInstructionMarker(doc, from)
-	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, doc.Bytes(), e.cfg, auth, isCompat)
+	var optimizeMultiAgentV2 bool
+	body, optimizeMultiAgentV2, err = optimizeCodexMultiAgentV2Doc(ctx, doc, opts.Headers, e.cfg, auth, isCompat)
 	if err != nil {
 		return resp, err
 	}
-	*doc = *ojson.NewDoc(optimizedBody)
-	body = doc.Bytes()
 	body, err = thinking.NormalizeCodexReasoningEffortForWire(body, baseModel)
 	if err != nil {
 		return resp, err
@@ -641,8 +635,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	defer newCodexAffinityGuard(&identityState).Close()
 	if errMarker := helps.ValidateCodexSessionInstructionMarker(upstreamBody, from); errMarker != nil {
-		identityState.affinity.close()
 		return resp, errMarker
 	}
 	reporter.SetOutboundServiceTier(upstreamBody)

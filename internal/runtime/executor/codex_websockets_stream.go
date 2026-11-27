@@ -119,12 +119,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	reporter.EnableSemanticTiming(to.String())
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	reporter.SetOutboundServiceTier(upstreamBody)
-	affinityTransferred := false
-	defer func() {
-		if !affinityTransferred {
-			identityState.affinity.close()
-		}
-	}()
+	affinityGuard := newCodexAffinityGuard(&identityState)
+	defer affinityGuard.Close()
 
 	var authID, authLabel, authType, authValue string
 	authID = auth.ID
@@ -187,6 +183,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, codexWebsocketTurnEventID(errDial, originalPayload)
 		}
 		status, handshakeErr := codexWebsocketHandshakeFailure(ctx, e.cfg, wsReqLog, respHS, errDial, "dial")
+		if sess != nil {
+			sess.cancelActiveConnection(handshakeErr)
+		}
 		unlockStreamSession()
 		if status == http.StatusUpgradeRequired {
 			if opts.ExecutionLifecycle != nil || cliproxyexecutor.DownstreamWebsocket(ctx) {
@@ -363,7 +362,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		if proof, ok := multiagentv2.InitialPlaintextToolProvenance(ctx); ok {
 			prepared.plaintextTools = proof
 		}
-		affinityTransferred = true
+		affinityGuard.HandOff()
 		return e.streamCodexDuplex(ctx, auth, req, opts, sess, connection, readCh, requestSignal, input, prepared, reporter, upstreamHeaders, unlockStreamSession), nil
 	}
 
@@ -703,7 +702,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return &cliproxyexecutor.StreamResult{Headers: upstreamHeaders, Chunks: out}, nil
 	}
 
-	affinityTransferred = true
+	affinityGuard.HandOff()
 	emittedPayload := len(bufferedChunks) > 0 || len(initialChunks) > 0
 
 	go func() {
@@ -999,11 +998,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		}
 	}
 	var err error
-	affinityReq := codexAffinityRequestMetadata(req, opts)
-	affinityActive := codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq)
-	if affinityActive {
-		req = affinityReq
-	}
+	req, affinityActive := e.prepareCodexAffinityRequest(ctx, auth, req, opts)
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	preserveNativeOutput := helps.IsNativeCodexRequest(req.Payload, opts)
@@ -1054,15 +1049,12 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		normalizeCodexWebsocketParallelToolCallsDoc(doc, opts.Headers)
 		helps.NormalizeCodexToolSchemasDoc(doc)
 	}
-	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflictDoc(doc)
-	body = doc.Bytes()
-	body, plaintextTools := multiagentv2.PreparePlaintextTools(ctx, opts.Headers, body, e.cfg)
-	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
+	var plaintextTools multiagentv2.PlaintextToolProvenance
+	var optimizeMultiAgentV2, multiAgentV2Conflict bool
+	body, plaintextTools, optimizeMultiAgentV2, multiAgentV2Conflict, err = prepareCodexWebsocketMultiAgentV2Doc(ctx, doc, opts.Headers, e.cfg, auth, isCompat)
 	if err != nil {
 		return nil, err
 	}
-	*doc = *ojson.NewDoc(optimizedBody)
-	body = doc.Bytes()
 	var replayScope codexReasoningReplayScope
 	var skipReplay bool
 	body, replayScope, skipReplay, err = prepareCodexModelFallbackBody(ctx, from, req, opts, body)
@@ -1085,23 +1077,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, err
 	}
 
-	var base codexCacheBase
-	var wsHeaders http.Header
-	var errPromptCache error
-	if affinityActive {
-		base, body, errPromptCache = oauthCacheBase(ctx, from, req, doc.Bytes(), codexAffinityHeaders(ctx, opts.Headers))
-		if errPromptCache != nil {
-			return nil, errPromptCache
-		}
-		*doc = *ojson.NewDoc(body)
-		wsHeaders = make(http.Header)
-	} else if nativeAPI {
-		wsHeaders = make(http.Header)
-	} else {
-		wsHeaders, _, errPromptCache = applyCodexPromptCacheHeadersWithContextDoc(ctx, from, req, doc, opts.Headers)
-		if errPromptCache != nil {
-			return nil, errPromptCache
-		}
+	base, wsHeaders, errPromptCache := prepareCodexWebsocketPromptCacheDoc(ctx, from, req, doc, opts.Headers, affinityActive, nativeAPI)
+	if errPromptCache != nil {
+		return nil, errPromptCache
 	}
 	helps.SanitizeCodexInputItemIDsDoc(doc)
 	// Retain explicit clearing intent before SIWC removes empty instructions.
@@ -1129,27 +1107,11 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	replayScope = codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
 	clientBody := body
-	var identityState codexIdentityConfuseState
-	handedOff := false
-	defer func() {
-		if !handedOff {
-			identityState.affinity.close()
-		}
-	}()
-	upstreamBody := body
-	if nativeAPI {
-		observeNativeCacheIntent(ctx, body)
+	upstreamBody, wsHeaders, identityState, affinityGuard, err := e.prepareCodexWebsocketUpstreamIdentity(ctx, auth, req, from, httpURL, originalPayloadSource, body, opts.Headers, wsHeaders, base, affinityActive, nativeAPI)
+	if err != nil {
+		return nil, err
 	}
-	if !nativeAPI {
-		upstreamBody, identityState, err = prepareCodexOutboundMetadata(ctx, e.cfg, auth, originalPayloadSource, body, opts.Headers)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if affinityActive {
-		upstreamBody = helps.SanitizeCodexInputItemIDs(upstreamBody)
-		upstreamBody, wsHeaders = e.adaptOAuthCache(ctx, auth, req, from, httpURL, originalPayloadSource, upstreamBody, opts.Headers, base, &identityState)
-	}
+	defer affinityGuard.Close()
 	if errFinal := sessionInstructions.ValidateFinal(upstreamBody, from); errFinal != nil {
 		return nil, errFinal
 	}
@@ -1157,11 +1119,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if upstreamModel == "" {
 		upstreamModel = strings.TrimSpace(doc.Get("model").String())
 	}
-	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
-	applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, upstreamBody, opts.Headers)
-	applyFinalCodexClientHeaders(wsHeaders, modelHeaderProfile, auth)
-	applyCodexOutboundMetadataHeaders(wsHeaders, &identityState)
-	identityState.verifyAffinityHeader(wsHeaders)
+	wsHeaders = finalizeCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, upstreamModel, upstreamBody, opts.Headers, modelHeaderProfile, &identityState)
 	// Validate the final wire payload: payload rules applied during the wire
 	// finalize may strip or filter the hosted image tool before this point.
 	if bytes.Contains(upstreamBody, []byte(`"image_generation"`)) {
@@ -1170,7 +1128,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		}
 	}
 
-	handedOff = true
+	affinityGuard.HandOff()
 	return &codexWebsocketPrepared{
 		from:                 from,
 		responseFormat:       responseFormat,

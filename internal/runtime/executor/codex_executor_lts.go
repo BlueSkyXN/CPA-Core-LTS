@@ -1,20 +1,62 @@
 package executor
 
 import (
+	"context"
 	"crypto/sha256"
-	"github.com/MoeForge/moego/ojson"
-
 	"fmt"
-
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
+
+type codexAffinityGuard struct {
+	state     *codexIdentityConfuseState
+	handedOff bool
+}
+
+func newCodexAffinityGuard(state *codexIdentityConfuseState) *codexAffinityGuard {
+	return &codexAffinityGuard{state: state}
+}
+
+func (g *codexAffinityGuard) HandOff() {
+	if g != nil {
+		g.handedOff = true
+	}
+}
+
+func (g *codexAffinityGuard) Close() {
+	if g != nil && !g.handedOff && g.state != nil {
+		g.state.affinity.close()
+	}
+}
+
+func (e *CodexExecutor) prepareCodexAffinityRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, bool) {
+	affinityReq := codexAffinityRequestMetadata(req, opts)
+	if codexAffinityEnabled(e.cfg, auth) || e.hasFrozenAffinity(ctx, auth, affinityReq) {
+		return affinityReq, true
+	}
+	return req, false
+}
+
+func optimizeCodexMultiAgentV2Doc(ctx context.Context, doc *ojson.Doc, headers http.Header, cfg *config.Config, auth *cliproxyauth.Auth, isCompat bool) ([]byte, bool, error) {
+	if doc == nil {
+		return nil, false, nil
+	}
+	optimizedBody, optimizeMultiAgentV2, err := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, headers, doc.Bytes(), cfg, auth, isCompat)
+	if err != nil {
+		return nil, false, err
+	}
+	*doc = *ojson.NewDoc(optimizedBody)
+	return doc.Bytes(), optimizeMultiAgentV2, nil
+}
 
 type codexModelHeaderProfile struct {
 	overrides map[string]string

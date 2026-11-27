@@ -23,7 +23,7 @@ func TestWebsocketActivationAfterUpstreamDisconnect(t *testing.T) {
 		{
 			name: "xai",
 			readLoop: func(sess *codexWebsocketSession, conn *websocket.Conn) {
-				NewXAIWebsocketsExecutor(nil).readUpstreamLoop(sess, conn)
+				NewXAIWebsocketsExecutor(nil).readUpstreamLoop(sess, codexWebsocketConnectionRef{conn: conn, generation: sess.connGen})
 			},
 		},
 	}
@@ -50,9 +50,12 @@ func TestWebsocketActivationAfterUpstreamDisconnect(t *testing.T) {
 
 			sess := &codexWebsocketSession{
 				conn:       conn,
+				connGen:    1,
 				connCloser: newWebsocketConnectionCloser(conn),
 				readerConn: conn,
+				readerGen:  1,
 			}
+			connection := codexWebsocketConnectionRef{conn: conn, generation: 1}
 			sess.configureConn(conn)
 			go test.readLoop(sess, conn)
 
@@ -75,11 +78,15 @@ func TestWebsocketActivationAfterUpstreamDisconnect(t *testing.T) {
 				}
 			}
 
-			readCh := sess.activate(conn)
+			activationDone := make(chan error, 1)
+			go func() {
+				_, errActive := sess.setActiveConnection(connection, make(chan codexWebsocketRead, 1))
+				activationDone <- errActive
+			}()
 			select {
-			case event := <-readCh:
-				if event.err == nil {
-					t.Fatalf("expected terminal upstream error, got event %#v", event)
+			case errActive := <-activationDone:
+				if errActive == nil {
+					t.Fatal("expected terminal upstream error on activation after disconnect, got nil")
 				}
 			case <-time.After(time.Second):
 				t.Fatal("activation after upstream disconnect blocked forever")
