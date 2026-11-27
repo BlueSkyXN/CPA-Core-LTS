@@ -104,7 +104,7 @@ func defaultConfig() *config {
 	c.Upstream = "bigmodel"
 	c.Endpoint = upstreamEndpoint(c.Upstream)
 	// 网关服务端识图默认开启：bigmodel 与 zai 均已实测同行为
-	// （2026-11-11 补测，见 local/2026-11-10 探测文档第 8 节）。
+	// （2026-11-10 / 2026-11-11 双端实测验收，见 SPEC.md）。
 	c.GatewayVision = true
 	c.MaxInflight = 10
 	c.AccountScope = "local-account"

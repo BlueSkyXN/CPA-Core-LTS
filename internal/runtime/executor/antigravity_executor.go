@@ -17,6 +17,7 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	antigravityauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -38,8 +39,8 @@ const (
 	antigravityCountTokensPath             = "/v1internal:countTokens"
 	antigravityStreamPath                  = "/v1internal:streamGenerateContent"
 	antigravityGeneratePath                = "/v1internal:generateContent"
-	antigravityClientID                    = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityClientSecret                = "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"
+	antigravityClientID                    = antigravityauth.ClientID
+	antigravityClientSecret                = antigravityauth.ClientSecret
 	antigravityAuthType                    = "antigravity"
 	antigravityRequestTokenSafetyWindow    = 5 * time.Minute
 	antigravityCreditsHintRefreshInterval  = cliproxyauth.AntigravityCreditsHintRefreshInterval

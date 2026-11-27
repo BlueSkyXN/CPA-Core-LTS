@@ -82,55 +82,13 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		appendMessage(systemMessage)
 	}
 
-	duplicateOutputIDs := make(map[string]struct{})
+	var toolTracker *responsesToolMediaTracker
 
 	// Convert input array to messages
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
 		rawInputArray := toolIndex.toolSearchHistory(toolIndex.shellHistory(input.Array()))
-		explicitOutputCounts := make(map[string]int)
-		missingIDOutputsCount := 0
-		for _, item := range rawInputArray {
-			itemType := item.Get("type").String()
-			if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
-				id := translatorcommon.ExtractResponsesCallID(item)
-				if id != "" {
-					explicitOutputCounts[id]++
-				} else {
-					missingIDOutputsCount++
-				}
-			}
-		}
-
-		callCounts := make(map[string]int)
-		unclaimedCalls := make(map[string]bool)
-		for _, item := range rawInputArray {
-			itemType := item.Get("type").String()
-			if itemType == "function_call" || itemType == "custom_tool_call" {
-				id := translatorcommon.ExtractResponsesCallID(item)
-				if id == "" {
-					continue
-				}
-				callCounts[id]++
-				if explicitOutputCounts[id] == 0 {
-					unclaimedCalls[id] = true
-				}
-			}
-		}
-		inputItems := translatorcommon.NormalizeResponsesToolCallOutputs(rawInputArray)
-		if missingIDOutputsCount > 1 || (missingIDOutputsCount > 0 && len(unclaimedCalls) > 1) {
-			for idx, item := range inputItems {
-				itemType := item.Get("type").String()
-				if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
-					if idx < len(rawInputArray) && translatorcommon.ExtractResponsesCallID(rawInputArray[idx]) == "" {
-						rawDoc := ojson.NewDocString(item.Raw)
-						_ = rawDoc.Delete("call_id")
-						_ = rawDoc.Delete("tool_call_id")
-						_ = rawDoc.Delete("callId")
-						inputItems[idx] = util.ParseGJSONBytesNoCopy(rawDoc.Bytes())
-					}
-				}
-			}
-		}
+		var inputItems []ojson.Result
+		toolTracker, inputItems = newResponsesToolMediaTracker(rawInputArray)
 
 		hasReasoningInSession := false
 		if effortRes := root.Get("reasoning.effort"); effortRes.Exists() {
@@ -159,16 +117,9 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			}
 		}
 
-		pendingToolCalls := make([]interface{}, 0)
-		pendingToolCallIDs := make([]string, 0)
 		pendingReasoningContent := ""
 		latestReasoningContent := ""
-		awaitingToolOutputs := make(map[string]bool)
-		matchedOutputsPending := 0
-		outputCounts := make(map[string]int)
-		deferredMessages := make([][]byte, 0)
 		mergeableAssistantIndex := -1
-		var pendingToolMedia [][][]byte
 
 		fallbackToolReasoning := func() string {
 			if latestReasoningContent != "" {
@@ -186,10 +137,11 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			return reasoningContent
 		}
 		flushPendingToolCalls := func() {
-			if len(pendingToolCalls) == 0 {
+			if !toolTracker.hasPendingCalls() {
 				return
 			}
 
+			pendingToolCalls := toolTracker.pendingCalls()
 			reasoningContent := takePendingReasoningContent()
 			mergedIntoAssistant := false
 			if mergeableAssistantIndex >= 0 && mergeableAssistantIndex == len(messages)-1 {
@@ -223,50 +175,11 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 				appendMessage(assistantMessageDoc.Bytes())
 			}
-			// Defer interleaved messages only for a fully paired, unambiguous group.
-			// An incomplete group elsewhere in the history does not affect this one.
-			completeGroup := len(pendingToolCalls) == len(pendingToolCallIDs)
-			for _, id := range pendingToolCallIDs {
-				if callCounts[id] != 1 || explicitOutputCounts[id] != 1 || outputCounts[id] != 0 {
-					completeGroup = false
-					break
-				}
-			}
-			if completeGroup {
-				matchedOutputsPending += len(pendingToolCallIDs)
-			}
-			for _, id := range pendingToolCallIDs {
-				awaitingToolOutputs[id] = completeGroup
-			}
-			pendingToolCalls = pendingToolCalls[:0]
-			pendingToolCallIDs = pendingToolCallIDs[:0]
+			toolTracker.finishPendingCallGroup()
 			mergeableAssistantIndex = -1
 		}
-		flushDeferredMessages := func() {
-			for _, message := range deferredMessages {
-				appendMessage(message)
-			}
-			deferredMessages = deferredMessages[:0]
-		}
 		appendRegularMessage := func(message []byte) int {
-			// Keep tool-call adjacency strict for providers that require
-			// assistant(tool_calls) -> tool(tool_call_id) with no message in between.
-			// Messages arriving while calls are still buffered are deferred too,
-			// so one assistant turn of parallel calls stays in a single message.
-			if len(pendingToolCalls) > 0 || matchedOutputsPending > 0 {
-				deferredMessages = append(deferredMessages, message)
-				return -1
-			}
-			appendMessage(message)
-			return len(messages) - 1
-		}
-		flushPendingToolMedia := func() {
-			for _, parts := range pendingToolMedia {
-				userDoc := ojson.NewDocString(`{"role":"user","content":[]}`)
-				translatorcommon.SetRawArrayItemsDoc(userDoc, "content", parts)
-				appendRegularMessage(userDoc.Bytes())
-			}
-			pendingToolMedia = nil
+			return toolTracker.appendRegularMessage(message, appendMessage, func() int { return len(messages) })
 		}
 		appendPendingReasoningMessage := func() {
 			reasoningContent := takePendingReasoningContent()
@@ -286,9 +199,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
-			if itemType != "function_call_output" && itemType != "custom_tool_call_output" && matchedOutputsPending == 0 {
-				flushPendingToolMedia()
-			}
+			toolTracker.flushBeforeItem(itemType, appendRegularMessage)
 
 			switch itemType {
 			case "message", "":
@@ -428,10 +339,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				if arguments := item.Get("arguments"); arguments.Exists() {
 					_ = toolCallDoc.Set("function.arguments", arguments.String())
 				}
-				pendingToolCalls = append(pendingToolCalls, util.ParseGJSONBytesNoCopy(toolCallDoc.Bytes()).Value())
-				if callID := translatorcommon.ExtractResponsesCallID(item); callID != "" {
-					pendingToolCallIDs = append(pendingToolCallIDs, callID)
-				}
+				toolTracker.recordCall(util.ParseGJSONBytesNoCopy(toolCallDoc.Bytes()).Value(), translatorcommon.ExtractResponsesCallID(item))
 
 			case "function_call_output", "custom_tool_call_output":
 				// Flush buffered calls here (not on reasoning/message items) so a
@@ -439,51 +347,10 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				// assistant message ahead of its tool responses. The flush also
 				// merges calls and deferred reasoning into a preceding assistant
 				// message when the upstream turn included assistant content.
-				setContent := setFunctionCallOutputContentDoc
-				if itemType == "custom_tool_call_output" {
-					setContent = setCustomToolCallOutputContentDoc
-				}
 				flushPendingToolCalls()
 				mergeableAssistantIndex = -1
-				callID := translatorcommon.ExtractResponsesCallID(item)
-				if callID != "" {
-					outputCounts[callID]++
-					if outputCounts[callID] > 1 {
-						duplicateOutputIDs[callID] = struct{}{}
-					}
-				}
-				completeGroup, awaiting := awaitingToolOutputs[callID]
-				if !awaiting {
-					if matchedOutputsPending == 0 {
-						flushPendingToolMedia()
-					}
-					// Orphan outputs (empty call_id or no matching assistant
-					// tool_calls, e.g. Codex send_message_to_thread cards) must
-					// not become tool messages. Emit as user text instead.
-					if errStandalone := appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setContent, appendRegularMessage); errStandalone != nil && toolOutputErr == nil {
-						toolOutputErr = errStandalone
-					}
-				} else {
-					toolMessageDoc := ojson.NewDocString(`{"role":"tool","tool_call_id":"","content":""}`)
-					_ = toolMessageDoc.Set("tool_call_id", callID)
-					delete(awaitingToolOutputs, callID)
-					if completeGroup {
-						matchedOutputsPending--
-					}
-					if output := item.Get("output"); output.Exists() {
-						fileParts, errToolOut := setContent(toolMessageDoc, output, true)
-						if errToolOut != nil && toolOutputErr == nil {
-							toolOutputErr = errToolOut
-						}
-						if len(fileParts) > 0 {
-							pendingToolMedia = append(pendingToolMedia, fileParts)
-						}
-					}
-					appendMessage(toolMessageDoc.Bytes())
-				}
-				if len(awaitingToolOutputs) == 0 || (completeGroup && matchedOutputsPending == 0) {
-					flushPendingToolMedia()
-					flushDeferredMessages()
+				if errToolOut := toolTracker.handleToolOutput(itemType, item, appendMessage, appendRegularMessage); errToolOut != nil && toolOutputErr == nil {
+					toolOutputErr = errToolOut
 				}
 
 			case "custom_tool_call":
@@ -506,10 +373,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				_ = toolCallDoc.Set("function.name", functionName)
 				wrappedArgs, _ := ojson.SetBytes([]byte(`{"input":""}`), "input", item.Get("input").String())
 				_ = toolCallDoc.Set("function.arguments", string(wrappedArgs))
-				pendingToolCalls = append(pendingToolCalls, util.ParseGJSONBytesNoCopy(toolCallDoc.Bytes()).Value())
-				if callID := translatorcommon.ExtractResponsesCallID(item); callID != "" {
-					pendingToolCallIDs = append(pendingToolCallIDs, callID)
-				}
+				toolTracker.recordCall(util.ParseGJSONBytesNoCopy(toolCallDoc.Bytes()).Value(), translatorcommon.ExtractResponsesCallID(item))
 
 			default:
 				mergeableAssistantIndex = -1
@@ -517,9 +381,9 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 		}
 		flushPendingToolCalls()
-		flushPendingToolMedia()
+		toolTracker.flushPendingToolMedia(appendRegularMessage)
 		appendPendingReasoningMessage()
-		flushDeferredMessages()
+		toolTracker.flushDeferredMessages(appendMessage)
 	} else if input.Type == ojson.String {
 		msgDoc := ojson.NewDocString(`{}`)
 		_ = msgDoc.Set("role", "user")
@@ -528,11 +392,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	}
 
 	if len(messages) > 0 {
-		var extraAmbiguous []string
-		for id := range duplicateOutputIDs {
-			extraAmbiguous = append(extraAmbiguous, id)
-		}
-		messages = translatorcommon.AlignOpenAIToolCallMessages(messages, extraAmbiguous...)
+		messages = translatorcommon.AlignOpenAIToolCallMessages(messages, toolTracker.extraAmbiguousIDs()...)
 		_ = outDoc.SetRawBytes("messages", translatorcommon.JoinRawArray(messages))
 	}
 
@@ -785,23 +645,7 @@ func setFunctionCallOutputContentDoc(toolMessageDoc *ojson.Doc, output ojson.Res
 		return nil, &translatorcommon.UnsupportedPartError{Type: badImageType}
 	}
 	if hasImage && !invalidTextOrImage {
-		relayImages := separateFiles
-		contentItems := make([][]byte, 0, len(structuredContent.Array()))
-		relayItems := make([][]byte, 0, 2)
-		for _, item := range structuredContent.Array() {
-			if itemType := item.Get("type").String(); relayImages && (itemType == "image_url" || itemType == "input_image") {
-				if relayPart := chatToolOutputContentPart(item); relayPart != nil {
-					relayItems = append(relayItems, relayPart)
-					continue
-				}
-			}
-			contentItems = append(contentItems, chatToolOutputContentPart(item))
-		}
-		if len(relayItems) > 0 {
-			contentItems = append(contentItems, []byte(`{"type":"text","text":"[Tool images are included in a following user message.]"}`))
-			notice := []byte(`{"type":"text","text":"Images returned by the preceding tool call(s):"}`)
-			relayItems = append([][]byte{notice}, relayItems...)
-		}
+		contentItems, relayItems := relayChatToolOutputImages(structuredContent, separateFiles)
 		translatorcommon.SetRawArrayItemsDoc(toolMessageDoc, "content", contentItems)
 		return relayItems, nil
 	}
