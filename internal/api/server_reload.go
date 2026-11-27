@@ -184,6 +184,8 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.exampleAPIKeySafeModeActive.Store(exampleAPIKeySafeModeRequired)
 	}
 	s.cfgMu.Lock()
+	githubauth.SetToken(cfg.GitHubToken)
+	managementasset.SetCurrentConfigForFile(cfg, s.configFilePath)
 	s.cfg = cfg
 	s.cfgMu.Unlock()
 	if s.codexLiveHandler != nil {
@@ -199,8 +201,6 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
 	}
-	githubauth.SetToken(cfg.GitHubToken)
-	managementasset.SetCurrentConfig(cfg)
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}

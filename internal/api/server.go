@@ -249,7 +249,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
 	githubauth.SetToken(cfg.GitHubToken)
-	managementasset.SetCurrentConfig(cfg)
+	managementasset.SetCurrentConfigForFile(cfg, configFilePath)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)

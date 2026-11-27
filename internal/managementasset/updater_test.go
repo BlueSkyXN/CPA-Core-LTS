@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
@@ -262,9 +262,9 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 
 func resetUpdaterThrottleForTest(t *testing.T) {
 	t.Helper()
-	lastUpdateCheckMu.Lock()
-	lastUpdateCheckTime = time.Time{}
-	lastUpdateCheckMu.Unlock()
+	updateMu.Lock()
+	clear(panelUpdates)
+	updateMu.Unlock()
 }
 
 func TestResolveReleaseURLPreservesPanelRepository(t *testing.T) {
@@ -409,6 +409,193 @@ func TestUnsupportedPanelRepositoryRetainsLocalAssetWithoutFetching(t *testing.T
 	}
 	if data, err := os.ReadFile(localPath); err != nil || string(data) != existing {
 		t.Fatalf("local panel was changed: %v", err)
+	}
+}
+
+func TestPanelSourceChangesDuringDownload(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		name, oldRepo := "release asset", "example/panel-a"
+		if fallback {
+			name, oldRepo = "official fallback", config.DefaultPanelGitHubRepository
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				dir := t.TempDir()
+				t.Setenv("MANAGEMENT_STATIC_PATH", dir)
+				configFile := filepath.Join(dir, "config.yaml")
+				const newRepo = "example/panel-b"
+				started, resume := make(chan struct{}), make(chan struct{})
+				var newRequests atomic.Int32
+				mockPanelTransport(t, func(r *http.Request) (int, string) {
+					switch r.URL.String() {
+					case resolveReleaseURL(oldRepo):
+						if fallback {
+							return http.StatusServiceUnavailable, ""
+						}
+						return http.StatusOK, panelReleaseFixture("a")
+					case "https://assets.example/a", defaultManagementFallbackURL:
+						close(started)
+						<-resume
+						return http.StatusOK, "old panel"
+					case resolveReleaseURL(newRepo), resolveReleaseURL("EXAMPLE/panel-b"):
+						newRequests.Add(1)
+						return http.StatusOK, panelReleaseFixture("b")
+					case "https://assets.example/b":
+						return http.StatusOK, "new panel"
+					default:
+						return http.StatusNotFound, ""
+					}
+				})
+				setRepo := func(repo string) {
+					SetCurrentConfigForFile(&config.Config{RemoteManagement: config.RemoteManagement{PanelGitHubRepository: repo}}, configFile)
+				}
+				t.Cleanup(func() { SetCurrentConfigForFile(nil, configFile) })
+				start := func(repo string) <-chan bool {
+					done := make(chan bool, 1)
+					go func() { done <- EnsureLatestManagementHTML(t.Context(), dir, "", repo) }()
+					return done
+				}
+				setRepo(oldRepo)
+				old := start(oldRepo)
+				<-started
+				setRepo(newRepo)
+				newPanel := start(newRepo)
+				alsoNew := start("https://github.com:443/EXAMPLE/panel-b")
+				synctest.Wait()
+				before, _ := os.ReadFile(filepath.Join(dir, ManagementFileName))
+				close(resume)
+				<-old
+				ready, alsoReady := <-newPanel, <-alsoNew
+				data, err := os.ReadFile(filepath.Join(dir, ManagementFileName))
+				if err != nil || !ready || !alsoReady || string(before) != "new panel" || string(data) != "new panel" || newRequests.Load() != 1 {
+					t.Fatalf("new source ready=(%t,%t), metadata requests=%d, file before=%q after=%q, err=%v", ready, alsoReady, newRequests.Load(), before, data, err)
+				}
+			})
+		})
+	}
+}
+
+func TestCorrectedPanelSourceBootstrapsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	const valid = "example/panel"
+	var requests int
+	mockPanelTransport(t, func(r *http.Request) (int, string) {
+		requests++
+		if r.URL.String() == resolveReleaseURL(valid) {
+			return http.StatusOK, panelReleaseFixture("panel")
+		}
+		return http.StatusOK, "corrected panel"
+	})
+	if EnsureLatestManagementHTML(t.Context(), dir, "", "https://example.org/unsupported") || requests != 0 {
+		t.Fatal("unsupported source downloaded a panel")
+	}
+	if !EnsureLatestManagementHTML(t.Context(), dir, "", valid) || requests != 2 {
+		t.Fatalf("corrected source did not bootstrap immediately: %d HTTP requests", requests)
+	}
+	if !EnsureLatestManagementHTML(t.Context(), dir, "", valid) || requests != 2 {
+		t.Fatal("the same source and destination must share the throttle")
+	}
+	if !EnsureLatestManagementHTML(t.Context(), t.TempDir(), "", valid) || requests != 4 {
+		t.Fatal("a second destination must bootstrap independently")
+	}
+}
+
+func TestPanelSourceChangeWithoutAnotherDownload(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, ManagementFileName)
+	if err := os.WriteFile(target, []byte("installed panel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "example/panel-a"
+	started, resume := make(chan struct{}), make(chan struct{})
+	mockPanelTransport(t, func(req *http.Request) (int, string) {
+		if req.URL.String() == resolveReleaseURL(repo) {
+			return http.StatusOK, panelReleaseFixture("a")
+		}
+		close(started)
+		<-resume
+		return http.StatusOK, "obsolete download"
+	})
+	setRepo := func(repo string) {
+		SetCurrentConfig(&config.Config{RemoteManagement: config.RemoteManagement{PanelGitHubRepository: repo}})
+	}
+	t.Cleanup(func() { SetCurrentConfig(nil) })
+	setRepo(repo)
+	done := make(chan bool, 1)
+	go func() { done <- EnsureLatestManagementHTML(t.Context(), dir, "", repo) }()
+	select {
+	case <-started:
+	case <-done:
+		t.Fatal("the selected download did not start")
+	}
+	setRepo("example/panel-b")
+	setRepo(repo)
+	close(resume)
+	if !<-done {
+		t.Fatal("preinstalled local panel should remain available")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "installed panel" {
+		t.Fatalf("download from before the configuration changes replaced the local file: %q, %v", data, err)
+	}
+}
+
+func TestAutoUpdaterUsesScheduledConfigFile(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, key := range []string{"MANAGEMENT_STATIC_PATH", "WRITABLE_PATH", "writable_path"} {
+			t.Setenv(key, "")
+		}
+		fileA := filepath.Join(t.TempDir(), "config.yaml")
+		fileB := filepath.Join(t.TempDir(), "config.yaml")
+		configure := func(file, repo string) {
+			cfg := &config.Config{RemoteManagement: config.RemoteManagement{PanelGitHubRepository: repo}}
+			SetCurrentConfigForFile(cfg, file)
+			t.Cleanup(func() { SetCurrentConfigForFile(nil, file) })
+		}
+		configure(fileA, "example/panel-a")
+		configure(fileB, "example/panel-b")
+		previous, _ := schedulerConfigPath.Load().(string)
+		schedulerConfigPath.Store(fileA)
+		t.Cleanup(func() { schedulerConfigPath.Store(previous) })
+		mockPanelTransport(t, func(r *http.Request) (int, string) {
+			switch r.URL.Path {
+			case "/repos/example/panel-a/releases/latest":
+				return http.StatusOK, panelReleaseFixture("a")
+			case "/a":
+				return http.StatusOK, "panel A"
+			default:
+				return http.StatusNotFound, ""
+			}
+		})
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() { defer close(done); runAutoUpdater(ctx) }()
+		synctest.Wait()
+		cancel()
+		<-done
+		if data, err := os.ReadFile(FilePath(fileA)); err != nil || string(data) != "panel A" {
+			t.Fatalf("scheduled panel = %q, err = %v", data, err)
+		}
+		if _, err := os.Stat(FilePath(fileB)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected panel for unscheduled file: %v", err)
+		}
+	})
+}
+
+func panelReleaseFixture(asset string) string {
+	return `{"assets":[{"name":"management.html","browser_download_url":"https://assets.example/` + asset + `"}]}`
+}
+
+func mockPanelTransport(t *testing.T, serve func(*http.Request) (int, string)) {
+	t.Helper()
+	resetUpdaterThrottleForTest(t)
+	old := httpClientFactory
+	t.Cleanup(func() { httpClientFactory = old })
+	httpClientFactory = func(string) *http.Client {
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			code, body := serve(req)
+			return &http.Response{StatusCode: code, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
 	}
 }
 
