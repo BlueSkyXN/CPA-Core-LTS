@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +49,7 @@ var (
 	schedulerConfigPath atomic.Value
 	sfGroup             singleflight.Group
 	httpClientFactory   = newHTTPClient
+	panelRepositorySlug = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
 func isHTTPSGitHubURL(raw string) bool {
@@ -271,7 +274,11 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		}
 
 		releaseURL := resolveReleaseURL(panelRepository)
-		allowFallback := isDefaultPanelRepository(panelRepository)
+		if releaseURL == "" {
+			log.Warn("invalid panel-github-repository: use a GitHub repository URL or its releases API URL")
+			return nil, nil
+		}
+		allowFallback := strings.EqualFold(releaseURL, defaultManagementReleaseURL)
 		client := httpClientFactory(proxyURL)
 
 		localHash, err := fileSHA256(localPath)
@@ -350,73 +357,64 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 	return true
 }
 
-func isDefaultPanelRepository(repo string) bool {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return true
-	}
-	if strings.EqualFold(strings.TrimSuffix(strings.Trim(repo, "/"), ".git"), "BlueSkyXN/CPA-Panel-LTS") {
-		return true
-	}
-	parsed, err := url.Parse(repo)
-	if err != nil || parsed.Host == "" {
-		return false
-	}
-	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
-	cleanPath := strings.Trim(parsed.Path, "/")
-	switch host {
-	case "github.com":
-		parts := strings.Split(cleanPath, "/")
-		if len(parts) < 2 {
-			return false
-		}
-		repoName := strings.TrimSuffix(parts[1], ".git")
-		return strings.EqualFold(parts[0], "BlueSkyXN") && strings.EqualFold(repoName, "CPA-Panel-LTS")
-	case "api.github.com":
-		trimmed := strings.TrimSuffix(strings.ToLower(cleanPath), "/releases/latest")
-		return trimmed == "repos/blueskyxn/cpa-panel-lts"
-	default:
-		return false
-	}
-}
-
+// resolveReleaseURL returns the canonical latest-release URL, or an empty string
+// for an unsupported explicit source. Only an empty setting selects the default implicitly.
 func resolveReleaseURL(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
 		return defaultManagementReleaseURL
 	}
-
+	if panelRepositorySlug.MatchString(strings.TrimSuffix(repo, "/")) {
+		repo = "https://github.com/" + repo
+	}
 	parsed, err := url.Parse(repo)
-	if err != nil || parsed.Host == "" {
-		return defaultManagementReleaseURL
+	if err != nil || parsed.User != nil {
+		return ""
 	}
-
-	host := strings.ToLower(parsed.Host)
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
-
-	if host == "api.github.com" {
-		if !strings.HasSuffix(strings.ToLower(parsed.Path), "/releases/latest") {
-			parsed.Path = parsed.Path + "/releases/latest"
+	port := parsed.Port()
+	switch parsed.Scheme {
+	case "https":
+		if port != "" && port != "443" {
+			return ""
 		}
-		return parsed.String()
-	}
-
-	if host == "github.com" {
-		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
-			repoName := strings.TrimSuffix(parts[1], ".git")
-			return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], repoName)
+	case "http":
+		if port != "" && port != "80" {
+			return ""
 		}
+	default:
+		return ""
 	}
-
-	return defaultManagementReleaseURL
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	switch strings.ToLower(parsed.Hostname()) {
+	case "github.com":
+		// Repository links can also point at a page within the repository.
+	case "api.github.com":
+		if !strings.EqualFold(parts[0], "repos") {
+			return ""
+		}
+		parts = parts[1:]
+		if len(parts) > 2 {
+			switch strings.ToLower(strings.Join(parts[2:], "/")) {
+			case "releases", "releases/latest":
+			default:
+				return ""
+			}
+		}
+	default:
+		return ""
+	}
+	if len(parts) < 2 {
+		return ""
+	}
+	slug, err := url.PathUnescape(strings.Join(parts[:2], "/"))
+	slug = strings.TrimSuffix(slug, ".git")
+	if err != nil || !panelRepositorySlug.MatchString(slug) || path.Clean("/"+slug) != "/"+slug {
+		return ""
+	}
+	return "https://api.github.com/repos/" + slug + "/releases/latest"
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
-	if strings.TrimSpace(releaseURL) == "" {
-		releaseURL = defaultManagementReleaseURL
-	}
-
 	headers := map[string]string{
 		"Accept":     "application/vnd.github+json",
 		"User-Agent": httpUserAgent,

@@ -103,10 +103,7 @@ if git grep -n "github.com/router-for-me/CLIProxyAPI/v6" -- . ':(exclude)scripts
   exit 1
 fi
 
-if git grep -n "github.com/router-for-me/CLIProxyAPI/v7" -- '*.go' '*go.mod'; then
-  echo "legacy v7 module path references found in Go files; CPA-Core-LTS now follows upstream /v8" >&2
-  exit 1
-fi
+forbid_grep 'github[.]com/router-for-me/CLIProxyAPI/v7([^[:alnum:]_]|$)' '*.go' '*go.mod' '*.md'
 
 if git grep -n -I -E '^(<{7}( |$)|\|{7}( |$)|={7}$|>{7}( |$))' -- . ':(exclude)scripts/check-lts-contract.sh'; then
   echo "committed Git merge conflict markers found in tracked files" >&2

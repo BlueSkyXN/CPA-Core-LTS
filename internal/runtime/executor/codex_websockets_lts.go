@@ -47,6 +47,14 @@ type codexWebsocketActive struct {
 	signal     *codexWebsocketRequestSignal
 }
 
+// The caller holds activeMu. CancelCauseFunc treats a nil cause as context.Canceled.
+func (a *codexWebsocketActive) cancel(cause error) {
+	if a.signal != nil {
+		a.signal.cancel(cause)
+	}
+	*a = codexWebsocketActive{}
+}
+
 func (s *codexWebsocketSession) setActiveConnection(connection codexWebsocketConnectionRef, ch chan codexWebsocketRead) (*codexWebsocketRequestSignal, error) {
 	if s == nil {
 		return nil, fmt.Errorf("codex websockets executor: session is nil")
@@ -86,10 +94,16 @@ func (s *codexWebsocketSession) clearActiveConnection(connection codexWebsocketC
 	}
 	s.activeMu.Lock()
 	if s.active.connection == connection && s.active.ch == ch {
-		if s.active.signal != nil {
-			s.active.signal.cancel(context.Canceled)
-		}
-		s.active = codexWebsocketActive{}
+		s.active.cancel(context.Canceled)
+	}
+	s.activeMu.Unlock()
+}
+
+// A detached socket may finish cleanup after its replacement has started a turn.
+func (s *codexWebsocketSession) cancelReadForConnection(connection codexWebsocketConnectionRef, cause error) {
+	s.activeMu.Lock()
+	if s.active.connection == connection {
+		s.active.cancel(cause)
 	}
 	s.activeMu.Unlock()
 }
@@ -98,14 +112,8 @@ func (s *codexWebsocketSession) cancelActiveConnection(cause error) {
 	if s == nil {
 		return
 	}
-	if cause == nil {
-		cause = context.Canceled
-	}
 	s.activeMu.Lock()
-	if s.active.signal != nil {
-		s.active.signal.cancel(cause)
-	}
-	s.active = codexWebsocketActive{}
+	s.active.cancel(cause)
 	s.activeMu.Unlock()
 }
 
@@ -145,12 +153,7 @@ func (s *codexWebsocketSession) dispatchRead(connection codexWebsocketConnection
 		case s.active.ch <- event:
 		default:
 		}
-		cause := event.err
-		if cause == nil {
-			cause = context.Canceled
-		}
-		s.active.signal.cancel(cause)
-		s.active = codexWebsocketActive{}
+		s.active.cancel(event.err)
 		return true
 	}
 

@@ -67,20 +67,6 @@ func TestResolveReleaseURLDefaultsToCPAPanelLTS(t *testing.T) {
 	if got := resolveReleaseURL(""); got != defaultManagementReleaseURL {
 		t.Fatalf("resolveReleaseURL(\"\") = %q, want %q", got, defaultManagementReleaseURL)
 	}
-
-	if got := resolveReleaseURL("not a url"); got != defaultManagementReleaseURL {
-		t.Fatalf("resolveReleaseURL(invalid) = %q, want %q", got, defaultManagementReleaseURL)
-	}
-}
-
-func TestResolveReleaseURLAcceptsGitHubRepository(t *testing.T) {
-	t.Parallel()
-
-	got := resolveReleaseURL("https://github.com/BlueSkyXN/CPA-Panel-LTS")
-	want := "https://api.github.com/repos/BlueSkyXN/CPA-Panel-LTS/releases/latest"
-	if got != want {
-		t.Fatalf("resolveReleaseURL(repo) = %q, want %q", got, want)
-	}
 }
 
 func TestAutoUpdateSkipReason(t *testing.T) {
@@ -281,31 +267,33 @@ func resetUpdaterThrottleForTest(t *testing.T) {
 	lastUpdateCheckMu.Unlock()
 }
 
-func TestIsDefaultPanelRepository(t *testing.T) {
+func TestResolveReleaseURLPreservesPanelRepository(t *testing.T) {
 	t.Parallel()
 
+	const custom = "https://api.github.com/repos/example/custom-panel/releases/latest"
 	cases := []struct {
 		repo string
-		want bool
+		want string
 	}{
-		{"", true},
-		{"   ", true},
-		{config.DefaultPanelGitHubRepository, true},
-		{"https://github.com/BlueSkyXN/CPA-Panel-LTS/", true},
-		{"https://github.com/blueskyxn/cpa-panel-lts.git", true},
-		{defaultManagementReleaseURL, true},
-		{"https://api.github.com/repos/BlueSkyXN/CPA-Panel-LTS", true},
-		{"BlueSkyXN/CPA-Panel-LTS", true},
-		{"https://github.com/example/custom-panel", false},
-		{"https://api.github.com/repos/example/custom-panel/releases/latest", false},
-		{"example/custom-panel", false},
-		{"https://github.example.internal/BlueSkyXN/CPA-Panel-LTS", false},
-		{"not a url", false},
+		{"   ", defaultManagementReleaseURL},
+		{config.DefaultPanelGitHubRepository, defaultManagementReleaseURL},
+		{"https://github.com:443/blueskyxn/cpa-panel-lts.git/", defaultManagementReleaseURL},
+		{"https://api.github.com/repos/BlueSkyXN/CPA-Panel-LTS", defaultManagementReleaseURL},
+		{"BlueSkyXN/CPA-Panel-LTS", defaultManagementReleaseURL},
+		{"https://github.com/example/custom-panel", custom},
+		{"https://github.com:443/example/custom-panel", custom},
+		{"https://github.com/person_team/%63ustom-panel", "https://api.github.com/repos/person_team/custom-panel/releases/latest"},
+		{"https://api.github.com:443/repos/example/custom-panel/releases/latest", custom},
+		{"https://api.github.com/repos/example/custom-panel/releases", custom},
+		{"example/custom-panel", custom},
+		{"https://github.com:8443/example/custom-panel", ""},
+		{"https://example.org/BlueSkyXN/CPA-Panel-LTS", ""},
+		{"not a url", ""},
 	}
 
 	for _, tc := range cases {
-		if got := isDefaultPanelRepository(tc.repo); got != tc.want {
-			t.Errorf("isDefaultPanelRepository(%q) = %t, want %t", tc.repo, got, tc.want)
+		if got := resolveReleaseURL(tc.repo); !strings.EqualFold(got, tc.want) {
+			t.Errorf("resolveReleaseURL(%q) = %q, want %q", tc.repo, got, tc.want)
 		}
 	}
 }
@@ -351,6 +339,7 @@ func TestEnsureLatestManagementHTMLCustomRepositorySkipsDefaultFallback(t *testi
 	t.Run("asset download failure", func(t *testing.T) {
 		resetUpdaterThrottleForTest(t)
 		var fallbackHits atomic.Int32
+		var customAssetHits atomic.Int32
 		prevFactory := httpClientFactory
 		t.Cleanup(func() { httpClientFactory = prevFactory })
 
@@ -364,6 +353,7 @@ func TestEnsureLatestManagementHTMLCustomRepositorySkipsDefaultFallback(t *testi
 						Body:       io.NopCloser(strings.NewReader(`{"assets":[{"name":"management.html","browser_download_url":"https://objects.example/custom-management.html","digest":"sha256:abc123"}]}`)),
 					}, nil
 				case "https://objects.example/custom-management.html":
+					customAssetHits.Add(1)
 					return &http.Response{
 						StatusCode: http.StatusBadGateway,
 						Header:     make(http.Header),
@@ -384,9 +374,12 @@ func TestEnsureLatestManagementHTMLCustomRepositorySkipsDefaultFallback(t *testi
 		}
 
 		staticDir := t.TempDir()
-		ok := EnsureLatestManagementHTML(context.Background(), staticDir, "", "https://github.com/example/custom-panel")
+		ok := EnsureLatestManagementHTML(context.Background(), staticDir, "", "https://github.com:443/example/custom-panel")
 		if ok {
 			t.Fatal("EnsureLatestManagementHTML() = true, want false when custom asset download fails")
+		}
+		if got := customAssetHits.Load(); got != 1 {
+			t.Fatalf("custom asset download attempts = %d, want 1", got)
 		}
 		if fallbackHits.Load() != 0 {
 			t.Fatalf("fallback hits = %d, want 0 for custom repository", fallbackHits.Load())
@@ -397,8 +390,30 @@ func TestEnsureLatestManagementHTMLCustomRepositorySkipsDefaultFallback(t *testi
 	})
 }
 
+func TestUnsupportedPanelRepositoryRetainsLocalAssetWithoutFetching(t *testing.T) {
+	resetUpdaterThrottleForTest(t)
+	prevFactory := httpClientFactory
+	t.Cleanup(func() { httpClientFactory = prevFactory })
+	httpClientFactory = func(string) *http.Client {
+		t.Fatal("unexpected download for an unsupported explicit repository")
+		return nil
+	}
+	staticDir := t.TempDir()
+	localPath := filepath.Join(staticDir, ManagementFileName)
+	const existing = "<html>local panel</html>"
+	if err := os.WriteFile(localPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !EnsureLatestManagementHTML(t.Context(), staticDir, "", "https://example.org/org/repo") {
+		t.Fatal("existing panel should remain available")
+	}
+	if data, err := os.ReadFile(localPath); err != nil || string(data) != existing {
+		t.Fatalf("local panel was changed: %v", err)
+	}
+}
+
 func TestEnsureLatestManagementHTMLDefaultRepositoryUsesFallbackWhenMissing(t *testing.T) {
-	for _, repo := range []string{"", config.DefaultPanelGitHubRepository} {
+	for _, repo := range []string{"", config.DefaultPanelGitHubRepository, "https://api.github.com:443/repos/BlueSkyXN/CPA-Panel-LTS/releases/latest"} {
 		t.Run("repo="+repo, func(t *testing.T) {
 			resetUpdaterThrottleForTest(t)
 			var fallbackHits atomic.Int32

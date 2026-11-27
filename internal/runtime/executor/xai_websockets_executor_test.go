@@ -39,6 +39,38 @@ func TestXAIWebsocketsEnabledForConfigAPIKey(t *testing.T) {
 	}
 }
 
+func TestXAIWebsocketDetachedReadCannotCancelReplacement(t *testing.T) {
+	conn := &websocket.Conn{}
+	current := codexWebsocketConnectionRef{conn: conn, generation: 2}
+	sess := &codexWebsocketSession{conn: conn, connGen: current.generation}
+	ch := make(chan codexWebsocketRead, 1)
+	signal, err := sess.setActiveConnection(current, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disconnected := errors.New("upstream disconnected")
+	// Cleanup can resume after another turn has already activated its socket.
+	for _, stale := range []codexWebsocketConnectionRef{
+		{conn: conn, generation: 1},
+		{conn: &websocket.Conn{}, generation: current.generation},
+	} {
+		sess.cancelReadForConnection(stale, disconnected)
+		if cause := context.Cause(signal.ctx); cause != nil {
+			t.Fatalf("stale socket cancelled replacement: %v", cause)
+		}
+	}
+	if activeCh, _, ok := sess.activeFor(current); !ok || activeCh != ch {
+		t.Fatal("replacement read channel was detached")
+	}
+	sess.cancelReadForConnection(current, disconnected)
+	if cause := context.Cause(signal.ctx); !errors.Is(cause, disconnected) {
+		t.Fatalf("current cancel cause = %v, want %v", cause, disconnected)
+	}
+	if _, ok := sess.activeConnection(); ok {
+		t.Fatal("disconnected read channel is still active")
+	}
+}
+
 func TestXAIWebsocketTerminalReadInvalidationCancelsSaturatedActiveChannel(t *testing.T) {
 	conn := &websocket.Conn{}
 	sess := &codexWebsocketSession{
