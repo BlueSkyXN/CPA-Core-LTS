@@ -2427,6 +2427,30 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
+func TestServerStopReleasesOnlyItsPanelRegistration(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", dir)
+	if err := os.WriteFile(filepath.Join(dir, "management.html"), []byte("local panel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &proxyconfig.Config{}
+	cfg.RemoteManagement.PanelGitHubRepository = "https://example.invalid/local-only"
+	old := newTestServerWithConfig(t, cfg)
+	next := newTestServerWithConfig(t, cfg)
+	if err := old.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if old.panelRegistration.Ensure(t.Context(), dir) || !next.panelRegistration.Ensure(t.Context(), dir) {
+		t.Fatal("stopping the previous server disturbed panel ownership")
+	}
+	if err := next.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if next.panelRegistration.Ensure(t.Context(), dir) {
+		t.Fatal("stopped server still owns the panel")
+	}
+}
+
 func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	staticDir := t.TempDir()

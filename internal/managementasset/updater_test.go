@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -497,6 +498,159 @@ func TestCorrectedPanelSourceBootstrapsImmediately(t *testing.T) {
 	}
 	if !EnsureLatestManagementHTML(t.Context(), t.TempDir(), "", valid) || requests != 4 {
 		t.Fatal("a second destination must bootstrap independently")
+	}
+}
+
+func panelDirectoryAlias(t *testing.T, dir string) string {
+	t.Helper()
+	alias := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(dir, alias); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("directory symlink unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	return alias
+}
+
+func TestPanelTargetResolvesDirectoryAliasesBeforeBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	alias := panelDirectoryAlias(t, dir)
+	first := panelUpdatePath(filepath.Join(dir, "new", "static"))
+	linked := filepath.Join(alias, "new", "static")
+	if got := panelUpdatePath(linked); got != first {
+		t.Fatalf("before bootstrap: alias target %q, real target %q", got, first)
+	}
+	if err := os.MkdirAll(linked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := panelUpdatePath(linked); got != first {
+		t.Fatalf("after bootstrap: alias target %q, real target %q", got, first)
+	}
+}
+
+func TestLatePanelDownloadAfterDirectoryAliasHandover(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, key := range []string{"MANAGEMENT_STATIC_PATH", "WRITABLE_PATH", "writable_path"} {
+			t.Setenv(key, "")
+		}
+		dir := t.TempDir()
+		alias := panelDirectoryAlias(t, dir)
+		started, resume := make(chan struct{}), make(chan struct{})
+		mockPanelTransport(t, func(req *http.Request) (int, string) {
+			switch req.URL.Path {
+			case "/repos/example/a/releases/latest":
+				return http.StatusOK, panelReleaseFixture("a")
+			case "/repos/example/b/releases/latest":
+				return http.StatusOK, panelReleaseFixture("b")
+			case "/a":
+				close(started)
+				<-resume
+				return http.StatusOK, "old panel"
+			case "/b":
+				return http.StatusOK, "new panel"
+			}
+			return http.StatusNotFound, ""
+		})
+		start := func(dir, repo string) (*Registration, <-chan bool) {
+			cfg := &config.Config{RemoteManagement: config.RemoteManagement{PanelGitHubRepository: repo}}
+			file := filepath.Join(dir, "config.yaml")
+			r := Register(cfg, file)
+			t.Cleanup(r.Close)
+			done := make(chan bool, 1)
+			go func() { done <- r.Ensure(t.Context(), StaticDir(file)) }()
+			return r, done
+		}
+		old, oldDone := start(dir, "example/a")
+		<-started
+		_, nextDone := start(alias, "example/b")
+		synctest.Wait()
+		target := filepath.Join(dir, "static", ManagementFileName)
+		before, _ := os.ReadFile(target)
+		old.Close()
+		close(resume)
+		<-oldDone
+		ready := <-nextDone
+		after, err := os.ReadFile(target)
+		if err != nil || !ready || string(before) != "new panel" || string(after) != "new panel" {
+			t.Fatalf("successor ready=%v; before old completion=%q, after=%q, err=%v", ready, before, after, err)
+		}
+	})
+}
+
+func TestPanelRegistrationReleasesOnlyItsOwnSettingsAndDownload(t *testing.T) {
+	for _, key := range []string{"MANAGEMENT_STATIC_PATH", "WRITABLE_PATH", "writable_path"} {
+		t.Setenv(key, "")
+	}
+	cfg := &config.Config{RemoteManagement: config.RemoteManagement{PanelGitHubRepository: "example/panel"}}
+	for range 3 {
+		file := filepath.Join(t.TempDir(), "config.yaml")
+		target := configPanelTarget(file)
+		first := Register(cfg, file)
+		replacement := Register(cfg, file)
+		first.Update(&config.Config{})
+		first.Close()
+		updateMu.Lock()
+		settings := configuredPanels[target]
+		updateMu.Unlock()
+		if settings == nil || settings.owner != replacement || settings.releaseURL != resolveReleaseURL("example/panel") {
+			t.Fatal("a superseded registration changed its replacement")
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		pending, ownsDownload := beginPanelUpdate(target, settings.panelSource, settings, cancel)
+		if !ownsDownload {
+			t.Fatal("replacement could not start its download")
+		}
+		replacement.Close()
+		replacement.Close()
+		replacement.Update(cfg)
+		updateMu.Lock()
+		_, registered := configuredPanels[target]
+		_, canPublish := panelUpdates[target]
+		updateMu.Unlock()
+		close(pending.done)
+		if ctx.Err() == nil || registered || canPublish || replacement.Ensure(t.Context(), StaticDir(file)) {
+			t.Fatal("closed server retained its registration or could start another download")
+		}
+	}
+}
+
+func TestCorrectedPanelProxyRetriesImmediately(t *testing.T) {
+	const repo = "example/panel"
+	const bad, good = "http://old.invalid", "http://new.invalid"
+	dir := t.TempDir()
+	t.Setenv("MANAGEMENT_STATIC_PATH", dir)
+	file := filepath.Join(dir, "config.yaml")
+	configure := func(proxy string) {
+		cfg := &config.Config{RemoteManagement: config.RemoteManagement{PanelGitHubRepository: repo}}
+		cfg.ProxyURL = proxy
+		SetCurrentConfigForFile(cfg, file)
+	}
+	t.Cleanup(func() { SetCurrentConfigForFile(nil, file) })
+	previous := httpClientFactory
+	t.Cleanup(func() { httpClientFactory = previous })
+	var goodCalls int
+	httpClientFactory = func(proxy string) *http.Client {
+		return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			code, body := http.StatusServiceUnavailable, ""
+			if proxy == good {
+				goodCalls++
+				code, body = http.StatusOK, "panel"
+				if r.URL.String() == resolveReleaseURL(repo) {
+					body = panelReleaseFixture("panel")
+				}
+			}
+			return &http.Response{StatusCode: code, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+	}
+	configure(bad)
+	if EnsureLatestManagementHTML(t.Context(), dir, bad, repo) {
+		t.Fatal("unavailable proxy returned a panel")
+	}
+	configure(good)
+	if !EnsureLatestManagementHTML(t.Context(), dir, good, repo) || goodCalls != 2 {
+		t.Fatalf("corrected proxy received %d requests, want release metadata and asset", goodCalls)
 	}
 }
 
