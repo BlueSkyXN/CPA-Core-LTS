@@ -6,7 +6,7 @@ Key files: `model_registry.go`, `model_definitions.go`, `model_updater.go`, `cod
 
 ## Local invariants
 
-- Go module path remains `github.com/router-for-me/CLIProxyAPI/v7`; registry changes must not introduce legacy `/v6` imports.
+- Go module path remains `github.com/router-for-me/CLIProxyAPI/v8`; registry changes must not introduce legacy `/v6` or `/v7` imports.
 - Embedded model catalogs are refreshed by `.github/scripts/refresh-model-catalogs.sh` in PR/release/container workflows; local copies may be stale when offline.
 - Quota state and suspended clients affect runtime routing and auth conductor behavior.
 - Model metadata may be exposed through Management API, SDK, and provider routing.

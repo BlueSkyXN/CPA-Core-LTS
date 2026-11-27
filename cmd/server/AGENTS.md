@@ -10,6 +10,8 @@ Key files: `main.go`, `main_test.go`.
 - `--no-browser` must be honored by OAuth login flows.
 - `--tui` without `--standalone` is a client flow; `--tui --standalone` starts an embedded local server.
 - Cloud/Home mode config loading must not silently require local `config.yaml` when config is supplied by the remote store.
+- `WRITABLE_PATH` (`writable_path`, via `internal/util.WritablePath()`) sets the fallback writable base for `<WRITABLE_PATH>/logs`, `<WRITABLE_PATH>/static`, `<WRITABLE_PATH>/discovery`, and default remote-store local spools (`pgstore`, `gitstore`, `objectstore`) when `*_LOCAL_PATH` is unset.
+- `GITSTORE_GIT_BRANCH` (`gitstore_git_branch`) optionally pins the remote branch for `GITSTORE_GIT_URL`; leaving it unset or empty follows the remote repository's default branch.
 - Plugin command-line flags are registered before parse and executed through `pluginHost`.
 - Warning-only server behavior for unsafe example API keys must not mask a valid production config.
 
