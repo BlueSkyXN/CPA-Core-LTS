@@ -132,7 +132,12 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		// Paths identify YAML keys, never array indexes. Lists are replaced whole.
 		dst := root
 		for _, part := range parts {
-			if part == "" || dst.Kind != yaml.MappingNode {
+			if part == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_path"})
+				return
+			}
+			promoteNullYAMLMappingNode(dst)
+			if dst.Kind != yaml.MappingNode {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_path"})
 				return
 			}
@@ -360,6 +365,15 @@ func preserveV8TURNSecrets(root, before *yaml.Node) error {
 		}
 	}
 	return nil
+}
+
+func promoteNullYAMLMappingNode(node *yaml.Node) {
+	if node != nil && node.Kind == yaml.ScalarNode && node.ShortTag() == "!!null" {
+		node.Kind = yaml.MappingNode
+		node.Tag = "!!map"
+		node.Value = ""
+		node.Style = 0
+	}
 }
 
 func configV8Node(root *yaml.Node, parts []string) *yaml.Node {

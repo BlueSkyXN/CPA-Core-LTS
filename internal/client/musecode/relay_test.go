@@ -266,11 +266,12 @@ func TestRelayDCAOnlyMintsOnceAndUsesMintedOrigin(t *testing.T) {
 		_, _ = io.WriteString(w, `{"api_key":"minted-key-1","base_url":"`+apiServer.URL+`/v1"}`)
 	}))
 	defer mintServer.Close()
-	t.Setenv("META_MINT_URL", mintServer.URL)
 
 	cfg := &config.Config{}
 	manager := auth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(mintServer.URL)
+	manager.RegisterExecutor(metaExec)
 	cred := &auth.Auth{
 		ID:       "meta-dca-only",
 		Provider: "meta",
@@ -324,11 +325,12 @@ func TestRelayRefreshesOnceOn401AndRetiresOnSecond401(t *testing.T) {
 		_, _ = io.WriteString(w, `{"api_key":"fresh-minted-key","base_url":"`+apiURL+`/v1"}`)
 	}))
 	defer mintServer.Close()
-	t.Setenv("META_MINT_URL", mintServer.URL)
 
 	cfg := &config.Config{}
 	manager := auth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(mintServer.URL)
+	manager.RegisterExecutor(metaExec)
 	cred := &auth.Auth{
 		ID:       "meta-refresh-test",
 		Provider: "meta",
@@ -758,7 +760,6 @@ func TestRelayRespectsRequestScopedErrorRulesOn401And429(t *testing.T) {
 		_, _ = io.WriteString(w, `{"api_key":"should-not-mint"}`)
 	}))
 	defer mintServer.Close()
-	t.Setenv("META_MINT_URL", mintServer.URL)
 
 	var upstreamStatus atomic.Int32
 	var upstreamBody atomic.Value
@@ -791,7 +792,9 @@ func TestRelayRespectsRequestScopedErrorRulesOn401And429(t *testing.T) {
 	}
 	manager := auth.NewManager(nil, nil, nil)
 	manager.SetConfig(cfg)
-	manager.RegisterExecutor(executor.NewMetaExecutor(cfg))
+	metaExec := executor.NewMetaExecutor(cfg)
+	metaExec.SetMintURL(mintServer.URL)
+	manager.RegisterExecutor(metaExec)
 	cred := &auth.Auth{
 		ID:       "meta-request-scoped-test",
 		Provider: "meta",

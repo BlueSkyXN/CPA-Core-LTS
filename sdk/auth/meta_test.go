@@ -30,7 +30,6 @@ func TestMetaAuthenticator(t *testing.T) {
 func TestMetaLoginPreservesMintSubscriptionMetadata(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
-	t.Setenv("META_MINT_URL", "https://api.meta.ai/muse-code/key")
 
 	mintCalls := 0
 	http.DefaultTransport = metaTestTransport(func(req *http.Request) (*http.Response, error) {
@@ -49,7 +48,7 @@ func TestMetaLoginPreservesMintSubscriptionMetadata(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 
-	record, errLogin := (MetaAuthenticator{}).Login(context.Background(), &config.Config{}, &LoginOptions{NoBrowser: true})
+	record, errLogin := (MetaAuthenticator{mintURL: "https://api.meta.ai/muse-code/key"}).Login(context.Background(), &config.Config{}, &LoginOptions{NoBrowser: true})
 	if errLogin != nil {
 		t.Fatalf("Login() error = %v", errLogin)
 	}

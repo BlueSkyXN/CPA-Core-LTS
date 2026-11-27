@@ -68,6 +68,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Refresh models catalog
+        run: bash .github/scripts/refresh-model-catalogs.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '24.14.0'

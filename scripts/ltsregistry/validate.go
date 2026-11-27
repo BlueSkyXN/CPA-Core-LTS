@@ -33,6 +33,7 @@ var (
 	patchStates           = stringSet("required", "upstreamed", "removable", "retired")
 	registryEvidenceFiles = stringSet(featureRegistryPath, protectedDeltasPath, downstreamPatchesPath)
 	commitSHA             = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+	removedGoTestDecl     = regexp.MustCompile(`^-func\s+(Test[A-Za-z0-9_]+)\s*\(`)
 )
 
 type registryIndex struct {
@@ -96,6 +97,7 @@ func validateRootAgainst(root, baseRef string) error {
 	v.validateDownstreamPatches(patches)
 	if strings.TrimSpace(baseRef) != "" {
 		v.validatePatchHistory(patches, baseRef)
+		v.validateMergeConflictTestRetention(baseRef)
 	}
 	if len(v.problems) > 0 {
 		return v.problems
@@ -505,6 +507,108 @@ func (v *validator) validatePatchHistory(current downstreamPatches, baseRef stri
 	}
 }
 
+type removedMergeTest struct {
+	file string
+	name string
+}
+
+func (v *validator) validateMergeConflictTestRetention(baseRef string) {
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" || !v.repositoryHasGitHistory() || v.repositoryIsShallow() {
+		return
+	}
+	if err := exec.Command("git", "-C", v.root, "cat-file", "-e", baseRef+"^{commit}").Run(); err != nil {
+		return
+	}
+	mergesOut, err := exec.Command("git", "-C", v.root, "rev-list", "--merges", baseRef+"..HEAD").Output()
+	if err != nil {
+		v.addf("remerge-diff test guard: list merge commits in %s..HEAD: %v", baseRef, err)
+		return
+	}
+	for _, sha := range strings.Fields(string(mergesOut)) {
+		diffOut, err := exec.Command("git", "-C", v.root, "show", "--remerge-diff", "--format=", "--unified=0", "--no-renames", sha, "--", "*_test.go").Output()
+		if err != nil {
+			v.addf("remerge-diff test guard: inspect merge commit %s: %v", sha, err)
+			continue
+		}
+		var currentFile string
+		seen := make(map[removedMergeTest]struct{})
+		var candidates []removedMergeTest
+		for _, line := range strings.Split(string(diffOut), "\n") {
+			switch {
+			case strings.HasPrefix(line, "diff --git "):
+				currentFile = ""
+			case strings.HasPrefix(line, "--- a/"):
+				currentFile = strings.TrimSpace(strings.TrimPrefix(line, "--- a/"))
+			case strings.HasPrefix(line, "+++ b/"):
+				currentFile = strings.TrimSpace(strings.TrimPrefix(line, "+++ b/"))
+			default:
+				if currentFile == "" || !strings.HasSuffix(currentFile, "_test.go") {
+					continue
+				}
+				matches := removedGoTestDecl.FindStringSubmatch(line)
+				if len(matches) != 2 {
+					continue
+				}
+				item := removedMergeTest{file: currentFile, name: matches[1]}
+				if _, exists := seen[item]; !exists {
+					seen[item] = struct{}{}
+					candidates = append(candidates, item)
+				}
+			}
+		}
+		for _, candidate := range candidates {
+			if !v.testFunctionExistsAtCommit(sha, candidate.file, candidate.name) {
+				v.addf("remerge-diff test guard: merge commit %s dropped Go test %q from %s during conflict resolution", sha, candidate.name, candidate.file)
+			}
+		}
+	}
+}
+
+func (v *validator) testFunctionExistsAtCommit(sha, filePath, testName string) bool {
+	if v.fileAtCommitHasTestFunction(sha, filePath, testName) {
+		return true
+	}
+	dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(filePath)))
+	treeArgs := []string{"-C", v.root, "ls-tree", "--name-only", sha}
+	if dir != "" && dir != "." {
+		treeArgs = append(treeArgs, "--", dir+"/")
+	}
+	out, err := exec.Command("git", treeArgs...).Output()
+	if err != nil {
+		return false
+	}
+	for _, entry := range strings.Split(string(out), "\n") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || entry == filePath || !strings.HasSuffix(entry, "_test.go") {
+			continue
+		}
+		if v.fileAtCommitHasTestFunction(sha, entry, testName) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *validator) fileAtCommitHasTestFunction(sha, filePath, testName string) bool {
+	src, err := exec.Command("git", "-C", v.root, "show", sha+":"+filePath).Output()
+	if err != nil {
+		return false
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), filePath, src, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	testingImports := testingImportNames(file)
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && isGoTestFunction(fn, testName, testingImports) {
+			return true
+		}
+	}
+	return false
+}
+
 func loadPatchesAtRef(root, baseRef string) (downstreamPatches, bool, error) {
 	var patches downstreamPatches
 	baseRef = strings.TrimSpace(baseRef)
@@ -627,6 +731,9 @@ func routeEvidenceToken(route string) string {
 	route = strings.TrimSpace(route)
 	if strings.HasPrefix(route, "/v0/management/") {
 		return strings.TrimPrefix(route, "/v0/management")
+	}
+	if strings.HasPrefix(route, "/v8/management/") {
+		return strings.TrimPrefix(route, "/v8/management")
 	}
 	return route
 }

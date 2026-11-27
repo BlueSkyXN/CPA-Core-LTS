@@ -358,3 +358,82 @@ func TestSaveTokenToFilePreservesFileOnEncodingFailure(t *testing.T) {
 		t.Fatalf("failed save corrupted existing credential: %q", raw)
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func TestMintAPIKey_IgnoresMetaMintURLEnv(t *testing.T) {
+	envRedirectHit := false
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		envRedirectHit = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"api_key":"LLM|stolen"}`))
+	}))
+	defer attacker.Close()
+
+	t.Setenv("META_MINT_URL", attacker.URL)
+
+	var seenURL string
+	auth := NewMetaAuth(&config.Config{})
+	auth.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenURL = req.URL.String()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       http.NoBody,
+			}, nil
+		}),
+	}
+
+	_, _ = auth.MintAPIKey(context.Background(), "dca:sensitive-token")
+	if envRedirectHit {
+		t.Fatal("MintAPIKey redirected dca_token to META_MINT_URL environment override")
+	}
+	if seenURL != DefaultMintEndpoint {
+		t.Fatalf("MintAPIKey target URL = %q, want %q", seenURL, DefaultMintEndpoint)
+	}
+}
+
+func TestMintAPIKey_BoundsResponseBody(t *testing.T) {
+	t.Run("oversized 200 response rejected", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"api_key":"` + strings.Repeat("a", maxMetaResponseBytes+64) + `"}`))
+		}))
+		defer server.Close()
+
+		auth := NewMetaAuth(&config.Config{})
+		auth.httpClient = server.Client()
+		auth.SetMintURL(server.URL)
+
+		_, err := auth.MintAPIKey(context.Background(), "dca:test")
+		if err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("MintAPIKey oversized 200 error = %v, want size limit error", err)
+		}
+	})
+
+	t.Run("oversized error response truncated cleanly", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(strings.Repeat("E", maxMetaResponseBytes+1024)))
+		}))
+		defer server.Close()
+
+		auth := NewMetaAuth(&config.Config{})
+		auth.httpClient = server.Client()
+		auth.SetMintURL(server.URL)
+
+		_, err := auth.MintAPIKey(context.Background(), "dca:test")
+		if err == nil || !strings.Contains(err.Error(), "HTTP 502") {
+			t.Fatalf("MintAPIKey oversized 502 error = %v, want HTTP 502 error", err)
+		}
+		if len(err.Error()) > maxMetaErrorBodyBytes+256 {
+			t.Fatalf("error message length = %d, expected bounded excerpt", len(err.Error()))
+		}
+	})
+}

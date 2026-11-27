@@ -14,7 +14,9 @@ import (
 )
 
 // MetaAuthenticator implements the Meta Muse OAuth device-code flow.
-type MetaAuthenticator struct{}
+type MetaAuthenticator struct {
+	mintURL string
+}
 
 // NewMetaAuthenticator constructs a new Meta authenticator.
 func NewMetaAuthenticator() Authenticator {
@@ -46,6 +48,9 @@ func (a MetaAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *
 	}
 
 	authSvc := metaauth.NewMetaAuth(cfg)
+	if a.mintURL != "" {
+		authSvc.SetMintURL(a.mintURL)
+	}
 
 	fmt.Println("Starting Meta (Muse) authentication...")
 	deviceCode, err := authSvc.StartDeviceFlow(ctx)

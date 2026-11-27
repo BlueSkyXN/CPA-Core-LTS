@@ -261,8 +261,6 @@ func TestMetaExecutor_Refresh_RequiresManagerAcceptance(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("META_MINT_URL", server.URL+"/key")
-
 	auth := &cliproxyauth.Auth{
 		ID:       "meta-test.json",
 		FileName: "meta-test.json",
@@ -286,6 +284,7 @@ func TestMetaExecutor_Refresh_RequiresManagerAcceptance(t *testing.T) {
 		t.Fatal(errRegister)
 	}
 	exec := NewMetaExecutor(&config.Config{})
+	exec.SetMintURL(server.URL + "/key")
 	refreshed, err := exec.Refresh(context.Background(), auth.Clone())
 	if err != nil {
 		t.Fatalf("exec.Refresh error: %v", err)
@@ -372,8 +371,8 @@ func TestMetaExecutor_PrepareConcurrentAccounts(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("META_MINT_URL", server.URL+"/key")
 	exec := NewMetaExecutor(&config.Config{})
+	exec.SetMintURL(server.URL + "/key")
 
 	// 10 concurrent refreshes for account 1
 	var wg sync.WaitGroup
@@ -464,10 +463,9 @@ func TestMetaExecutor_Execute_DCARecovery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("META_MINT_URL", server.URL+"/key")
-
 	cfg := &config.Config{}
 	exec := NewMetaExecutor(cfg)
+	exec.SetMintURL(server.URL + "/key")
 
 	// Auth has ONLY a DCA token
 	auth := &cliproxyauth.Auth{
@@ -517,9 +515,10 @@ func TestMetaExecutorManagerRecoversUnauthorizedKey(t *testing.T) {
 		writeMetaResponsesOK(w, "recovered")
 	}))
 	defer server.Close()
-	t.Setenv("META_MINT_URL", server.URL+"/key")
 	manager := cliproxyauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(NewMetaExecutor(&config.Config{}))
+	metaExec := NewMetaExecutor(&config.Config{})
+	metaExec.SetMintURL(server.URL + "/key")
+	manager.RegisterExecutor(metaExec)
 	auth := &cliproxyauth.Auth{ID: "meta-401-recovery", Provider: "meta", Metadata: map[string]any{"access_token": "LLM|revoked", "api_key": "LLM|revoked", "dca_token": "dca:valid", "auth_kind": "oauth"}, Attributes: map[string]string{"base_url": server.URL}}
 	if _, err := manager.Register(context.Background(), auth); err != nil {
 		t.Fatal(err)
@@ -546,10 +545,11 @@ func TestMetaExecutorRefreshUsesMintedBaseURL(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"api_key": "LLM|replacement", "base_url": tc.minted})
 			}))
 			defer server.Close()
-			t.Setenv("META_MINT_URL", server.URL)
 			path := filepath.Join(t.TempDir(), "meta.json")
 			auth := &cliproxyauth.Auth{Provider: "meta", Metadata: map[string]any{"dca_token": "dca:test", "base_url": "https://previous.meta.example/v1"}, Attributes: map[string]string{"base_url": "https://previous.meta.example/v1", cliproxyauth.AttributePath: path}}
-			updated, err := NewMetaExecutor(nil).Refresh(context.Background(), auth)
+			metaExec := NewMetaExecutor(nil)
+			metaExec.SetMintURL(server.URL)
+			updated, err := metaExec.Refresh(context.Background(), auth)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -639,8 +639,8 @@ func TestMetaExecutor_RequestAuthPreparer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("META_MINT_URL", server.URL+"/key")
 	exec := NewMetaExecutor(&config.Config{})
+	exec.SetMintURL(server.URL + "/key")
 
 	authWithKey := &cliproxyauth.Auth{Provider: "meta", Attributes: map[string]string{"api_key": "exists"}}
 	if exec.ShouldPrepareRequestAuth(authWithKey) {
@@ -747,7 +747,6 @@ func TestMetaMintRejectsRemovedOrReloadedCredential(t *testing.T) {
 				defer server.Close()
 				var releaseOnce sync.Once
 				defer releaseOnce.Do(func() { close(release) })
-				t.Setenv("META_MINT_URL", server.URL)
 				dir := t.TempDir()
 				store := sdkauth.NewFileTokenStore()
 				store.SetBaseDir(dir)
@@ -758,6 +757,7 @@ func TestMetaMintRejectsRemovedOrReloadedCredential(t *testing.T) {
 					t.Fatal(err)
 				}
 				exec := NewMetaExecutor(nil)
+				exec.SetMintURL(server.URL)
 				done := make(chan error, 1)
 				go func() {
 					if prepare {
@@ -1323,8 +1323,6 @@ func TestMetaExecutor_Refresh_PreservesSubscriptionMetadata_Issue6117(t *testing
 		})
 	}))
 	defer server.Close()
-	t.Setenv("META_MINT_URL", server.URL)
-
 	auth := &cliproxyauth.Auth{
 		Provider: "meta",
 		Metadata: map[string]any{
@@ -1334,7 +1332,9 @@ func TestMetaExecutor_Refresh_PreservesSubscriptionMetadata_Issue6117(t *testing
 			"base_url": server.URL,
 		},
 	}
-	refreshed, errRefresh := NewMetaExecutor(nil).Refresh(context.Background(), auth)
+	metaExec := NewMetaExecutor(nil)
+	metaExec.SetMintURL(server.URL)
+	refreshed, errRefresh := metaExec.Refresh(context.Background(), auth)
 	if errRefresh != nil {
 		t.Fatalf("Refresh() error = %v", errRefresh)
 	}
@@ -1363,8 +1363,6 @@ func TestMetaExecutor_Refresh_ClearsStaleSubscriptionMetadata_Issue6117(t *testi
 		})
 	}))
 	defer server.Close()
-	t.Setenv("META_MINT_URL", server.URL)
-
 	auth := &cliproxyauth.Auth{
 		Provider: "meta",
 		Metadata: map[string]any{
@@ -1377,7 +1375,9 @@ func TestMetaExecutor_Refresh_ClearsStaleSubscriptionMetadata_Issue6117(t *testi
 			"base_url": server.URL,
 		},
 	}
-	refreshed, errRefresh := NewMetaExecutor(nil).Refresh(context.Background(), auth)
+	metaExec := NewMetaExecutor(nil)
+	metaExec.SetMintURL(server.URL)
+	refreshed, errRefresh := metaExec.Refresh(context.Background(), auth)
 	if errRefresh != nil {
 		t.Fatalf("Refresh() error = %v", errRefresh)
 	}

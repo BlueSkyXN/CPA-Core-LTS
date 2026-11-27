@@ -46,6 +46,7 @@ var (
 	schedulerOnce       sync.Once
 	schedulerConfigPath atomic.Value
 	sfGroup             singleflight.Group
+	httpClientFactory   = newHTTPClient
 )
 
 func isHTTPSGitHubURL(raw string) bool {
@@ -270,7 +271,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		}
 
 		releaseURL := resolveReleaseURL(panelRepository)
-		client := newHTTPClient(proxyURL)
+		allowFallback := isDefaultPanelRepository(panelRepository)
+		client := httpClientFactory(proxyURL)
 
 		localHash, err := fileSHA256(localPath)
 		if err != nil {
@@ -282,7 +284,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 
 		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
 		if err != nil {
-			if localFileMissing {
+			if localFileMissing && allowFallback {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
 				if ensureFallbackManagementHTML(ctx, client, localPath) {
 					return nil, nil
@@ -300,7 +302,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 
 		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
 		if err != nil {
-			if localFileMissing {
+			if localFileMissing && allowFallback {
 				log.WithError(err).Warn("failed to download management asset, trying fallback page")
 				if ensureFallbackManagementHTML(ctx, client, localPath) {
 					return nil, nil
@@ -346,6 +348,36 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 
 	log.Infof("management asset updated from fallback page successfully (hash=%s)", downloadedHash)
 	return true
+}
+
+func isDefaultPanelRepository(repo string) bool {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSuffix(strings.Trim(repo, "/"), ".git"), "BlueSkyXN/CPA-Panel-LTS") {
+		return true
+	}
+	parsed, err := url.Parse(repo)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	cleanPath := strings.Trim(parsed.Path, "/")
+	switch host {
+	case "github.com":
+		parts := strings.Split(cleanPath, "/")
+		if len(parts) < 2 {
+			return false
+		}
+		repoName := strings.TrimSuffix(parts[1], ".git")
+		return strings.EqualFold(parts[0], "BlueSkyXN") && strings.EqualFold(repoName, "CPA-Panel-LTS")
+	case "api.github.com":
+		trimmed := strings.TrimSuffix(strings.ToLower(cleanPath), "/releases/latest")
+		return trimmed == "repos/blueskyxn/cpa-panel-lts"
+	default:
+		return false
+	}
 }
 
 func resolveReleaseURL(repo string) string {

@@ -103,6 +103,16 @@ if git grep -n "github.com/router-for-me/CLIProxyAPI/v6" -- . ':(exclude)scripts
   exit 1
 fi
 
+if git grep -n "github.com/router-for-me/CLIProxyAPI/v7" -- '*.go' '*go.mod'; then
+  echo "legacy v7 module path references found in Go files; CPA-Core-LTS now follows upstream /v8" >&2
+  exit 1
+fi
+
+if git grep -n -I -E '^(<{7}( |$)|\|{7}( |$)|={7}$|>{7}( |$))' -- . ':(exclude)scripts/check-lts-contract.sh'; then
+  echo "committed Git merge conflict markers found in tracked files" >&2
+  exit 1
+fi
+
 grep -R "usage-statistics-enabled" -n \
   internal config.example.yaml README.md README_CN.md README_JA.md docs \
   --exclude-dir=.git \
@@ -150,6 +160,14 @@ require_path internal/config/config.go
 require_path internal/redisqueue
 require_path config.example.yaml
 require_path docs/lts/codex-429-resilience.md
+require_path docs/lts/codex-outbound.md
+require_path docs/lts/daybreak-usage.md
+require_path docs/lts/flow-control-v2.md
+require_path docs/lts/flow-control-v3.md
+require_path docs/lts/oauth-model-policy.md
+require_path docs/lts/pat-providers.md
+require_path docs/lts/payload-execution-scope.md
+require_path docs/lts/responses-client-compatibility.md
 require_path docs/lts/anthropic-plugin-responses.md
 require_path docs/lts/plugin-management-readiness.md
 require_path examples/plugin/zcode-coding-plan/SPEC.md
@@ -217,7 +235,13 @@ require_grep "removeSessionPreservingKey" sdk/cliproxy/auth/codex_rate_limit_con
 require_grep "CodexModelFallbackContextResetReplayMetadataKey" sdk/cliproxy/executor/types.go sdk/api/handlers/openai/openai_responses_websocket.go
 require_grep "ResolveCodexReasoningReplaySessionKey" internal/cache/codex_reasoning_replay_scope.go internal/runtime/executor/codex_executor_reasoning.go sdk/cliproxy/auth/codex_model_fallback.go
 require_grep "ValidateCodexClientModelsLTSCompatibility" internal/registry/codex_client_models.go internal/registry/codex_client_models_test.go cmd/validate_codex_models/main.go
-require_grep "refresh-model-catalogs.sh" .github/workflows/pr-test-build.yml .github/workflows/release.yaml .github/workflows/docker-image.yml
+for catalog_workflow in \
+  .github/workflows/pr-test-build.yml \
+  .github/workflows/release.yaml \
+  .github/workflows/docker-image.yml \
+  .github/workflows/pat-provider-delivery.yml; do
+  require_grep "refresh-model-catalogs.sh" "$catalog_workflow"
+done
 require_grep "codex_client_models.json" .github/scripts/refresh-model-catalogs.sh
 require_grep "ref: \${{ env.RELEASE_TAG }}" .github/workflows/release.yaml .github/workflows/docker-image.yml
 require_grep "Verify manual workflow source" .github/workflows/release.yaml .github/workflows/docker-image.yml
